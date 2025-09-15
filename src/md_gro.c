@@ -1,10 +1,11 @@
-#include <md_gro.h>
+﻿#include <md_gro.h>
 
 #include <md_util.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_array.h>
@@ -162,50 +163,49 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     ASSERT(alloc);
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    mol->atom.x       = md_array_create(float, capacity, alloc);
-    mol->atom.y       = md_array_create(float, capacity, alloc);
-    mol->atom.z       = md_array_create(float, capacity, alloc);
-    mol->atom.type    = md_array_create(md_label_t, capacity, alloc);
-    mol->atom.type_idx = md_array_create(md_atom_type_idx_t, capacity, alloc);
-    mol->atom.element = md_array_create(md_element_t, capacity, alloc);
+    md_array_ensure(mol->atom.x, capacity, alloc);
+    md_array_ensure(mol->atom.y, capacity, alloc);
+    md_array_ensure(mol->atom.z, capacity, alloc);
+    md_array_ensure(mol->atom.type_idx, capacity, alloc);
+    md_array_ensure(mol->atom.flags, capacity, alloc);
 
-    mol->atom.resid   = md_array_create(md_residue_id_t, capacity, alloc);
-    mol->atom.resname = md_array_create(md_label_t, capacity, alloc);
-    mol->atom.flags   = md_array_create(md_flags_t, capacity, alloc);
+    md_residue_id_t*    residue_ids   = md_vm_arena_push_array(temp_arena, md_residue_id_t, capacity);
+    str_t*              residue_names = md_vm_arena_push_array(temp_arena, str_t, capacity);
 
-    int32_t prev_res_id = -1;
+    mol->atom.type_data.count = 0;
+    md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+
     for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
-        str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name))};
-        str_t res_name  = (str_t){data->atom_data[i].res_name,  strnlen(data->atom_data[i].res_name, sizeof(data->atom_data[i].res_name))};
+        str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
+        str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
         md_residue_id_t res_id = data->atom_data[i].res_id;
-        md_flags_t flags = 0;
+        md_atomic_number_t atomic_number = md_atom_infer_atomic_number(atom_name, res_name);
 
-        if (prev_res_id != res_id) {
-			flags |= MD_FLAG_RES_BEG;
+        float mass = md_util_element_atomic_mass(atomic_number);
+        float radius = md_util_element_vdw_radius(atomic_number);
 
-            if (prev_res_id != -1) {
-            	*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
-            }
-            prev_res_id = res_id;
-        }
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type_data, atom_name, atomic_number, mass, radius, alloc);
 
         mol->atom.count += 1;
-        mol->atom.x[i] = x;
-        mol->atom.y[i] = y;
-        mol->atom.z[i] = z;
-        mol->atom.type[i] = make_label(atom_name);
-        mol->atom.type_idx[i] = -1; // Initialize to -1, will be set in postprocessing
-        mol->atom.element[i] = 0; // Initialize to unknown, will be filled below
-        mol->atom.resid[i] =  res_id;
-        mol->atom.resname[i] = make_label(res_name);
-        mol->atom.flags[i] = flags;
+        md_array_push_no_grow(mol->atom.x, x);
+        md_array_push_no_grow(mol->atom.y, y);
+        md_array_push_no_grow(mol->atom.z, z);
+        md_array_push_no_grow(mol->atom.type_idx, type_idx);
+        md_array_push_no_grow(mol->atom.flags, 0);
+
+        residue_ids[i] = res_id;
+        residue_names[i] = res_name;
     }
+
+    md_util_init_residue_data(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
+    md_util_identify_residue_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
     float box[3][3];
     MEMCPY(&box, data->box, sizeof(mat3_t));
@@ -218,20 +218,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     mol->unit_cell = md_util_unit_cell_from_matrix(box);
 
-    // Use hash-backed inference to assign elements (GRO typically lacks explicit element information)
-    md_util_element_guess(mol->atom.element, mol->atom.count, mol);
-
-    // Now populate the atom type table and assign type indices
-    for (size_t i = 0; i < mol->atom.count; ++i) {
-        md_label_t type_name = mol->atom.type[i];
-        md_element_t element = mol->atom.element[i];
-        float mass = md_util_element_atomic_mass(element);
-        float radius = md_util_element_vdw_radius(element);
-        
-        // Find or add the atom type
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
-        mol->atom.type_idx[i] = type_idx;
-    }
+    md_vm_arena_destroy(temp_arena);
 
     return true;
 }

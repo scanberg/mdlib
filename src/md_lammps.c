@@ -549,7 +549,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 			for (size_t i = 0; i < data->num_atoms; ++i) {
 				int32_t type = data->atoms[i].type;
-				data->atoms[i].mass = type < (int)ARRAY_SIZE(atom_type_mass_table) ? atom_type_mass_table[type] : 0.0f;
+				data->atoms[i].mass = type < (int)ARRAY_SIZE(atom_type_mass_table) ? (float)atom_type_mass_table[type] : 0.0f;
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
 			if (!data->num_bonds) {
@@ -700,12 +700,10 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_resize(mol->atom.type,    capacity, alloc);
+	md_array_resize(mol->atom.x,		capacity, alloc);
+	md_array_resize(mol->atom.y,		capacity, alloc);
+	md_array_resize(mol->atom.z,		capacity, alloc);
 	md_array_resize(mol->atom.type_idx, capacity, alloc);
-	md_array_resize(mol->atom.x,	   capacity, alloc);
-	md_array_resize(mol->atom.y,	   capacity, alloc);
-	md_array_resize(mol->atom.z,	   capacity, alloc);
-	md_array_resize(mol->atom.mass,    capacity, alloc);
 
 	bool has_resid = false;
 	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
@@ -98,9 +98,8 @@ static inline md_buffered_reader_t md_buffered_reader_from_str(str_t str) {
     return reader;
 }
 
-static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_reader_t* r) {
+static inline void md_buffered_reader_ensure_lines(md_buffered_reader_t* r) {
     ASSERT(r);
-    ASSERT(line);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
         const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
@@ -109,36 +108,25 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
             r->str.len = bytes_read;
         }
     }
-    
+}
+
+static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_reader_t* r) {
+    ASSERT(r);
+    ASSERT(line);
+    md_buffered_reader_ensure_lines(r);
     return str_extract_line(line, &r->str);
 }
 
 static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_t* r) {
     ASSERT(r);
     ASSERT(line);
-    if (r->file && !r->str.len) {
-        ASSERT(r->buf);
-        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
-        if (bytes_read > 0) {
-            r->str.ptr = r->buf;
-            r->str.len = bytes_read;
-        }
-    }
-
+    md_buffered_reader_ensure_lines(r);
     return str_peek_line(line, &r->str);
 }
 
 static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
     ASSERT(r);
-    if (r->file && !r->str.len) {
-        ASSERT(r->buf);
-        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
-        if (bytes_read > 0) {
-            r->str.ptr = r->buf;
-            r->str.len = bytes_read;
-        }
-    }
-
+    md_buffered_reader_ensure_lines(r);
     return str_skip_line(&r->str);
 }
 

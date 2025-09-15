@@ -1,4 +1,4 @@
-#include <md_pdb.h>
+﻿#include <md_pdb.h>
 
 #include <md_molecule.h>
 #include <md_trajectory.h>
@@ -14,6 +14,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
+#include <core/md_hash.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -448,10 +449,10 @@ md_chain_idx_t find_chain_idx(char chain_id, md_molecule_t* mol) {
     return -1;
 }
 
-bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
+bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* mol_alloc) {
     ASSERT(mol);
     ASSERT(data);
-    ASSERT(alloc);
+    ASSERT(mol_alloc);
 
     bool result = false;
 
@@ -473,16 +474,21 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     md_array(md_label_t) chain_ids = 0;
     md_array(md_range_t) chain_ranges = 0;
+    md_array(md_element_t) atom_elements = 0;
+    md_array(str_t)        atom_labels = 0;
+    md_array(str_t)        atom_resnames = 0;
+    md_array(md_residue_id_t) atom_resids = 0;
 
-    md_array_ensure(mol->atom.x,       capacity, alloc);
-    md_array_ensure(mol->atom.y,       capacity, alloc);
-    md_array_ensure(mol->atom.z,       capacity, alloc);
-    md_array_ensure(mol->atom.element, capacity, alloc);
-    md_array_ensure(mol->atom.type,    capacity, alloc);
-    md_array_ensure(mol->atom.type_idx, capacity, alloc);
-    md_array_ensure(mol->atom.resid,   capacity, alloc);
-    md_array_ensure(mol->atom.resname, capacity, alloc);
-    md_array_ensure(mol->atom.flags,   capacity, alloc);
+    md_array_ensure(atom_elements,  capacity, temp_alloc);
+    md_array_ensure(atom_labels,    capacity, temp_alloc);
+    md_array_ensure(atom_resnames,  capacity, temp_alloc);
+    md_array_ensure(atom_resids,    capacity, temp_alloc);
+
+    md_array_ensure(mol->atom.x,        capacity, mol_alloc);
+    md_array_ensure(mol->atom.y,        capacity, mol_alloc);
+    md_array_ensure(mol->atom.z,        capacity, mol_alloc);
+    md_array_ensure(mol->atom.type_idx, capacity, mol_alloc);
+    md_array_ensure(mol->atom.flags,    capacity, mol_alloc);
 
     int32_t prev_res_id = -1;
     char prev_chain_id = -1;
@@ -501,11 +507,8 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, we directly try to use that to lookup the element
-            str_t element_str = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
-            element = md_util_element_lookup_ignore_case(element_str);
-            if (element == 0) {
-                MD_LOG_INFO("Failed to lookup element with string '" STR_FMT "'", STR_ARG(element_str));
-            }
+            str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
+            element = md_atomic_number_from_symbol(sym);
         }
 
         if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
@@ -546,14 +549,13 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         md_array_push_no_grow(mol->atom.x, x);
         md_array_push_no_grow(mol->atom.y, y);
         md_array_push_no_grow(mol->atom.z, z);
-        md_array_push_no_grow(mol->atom.element, element);
-        md_array_push_no_grow(mol->atom.type, make_label(atom_type));
         md_array_push_no_grow(mol->atom.flags, flags);
-        md_array_push_no_grow(mol->atom.resname, make_label(res_name));
-        md_array_push_no_grow(mol->atom.resid, res_id);
+
+        md_array_push_no_grow(atom_elements, element);
+        md_array_push_no_grow(atom_labels,   atom_type);
         
-        // Set type_idx to -1 initially, will be updated in postprocessing
-        md_array_push_no_grow(mol->atom.type_idx, -1);
+        // Set type_idx to 0 == Undefined, will be updated later
+        md_array_push_no_grow(mol->atom.type_idx, 0);
     }
 
     if (chain_ids) {
@@ -561,7 +563,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
             md_array_push(chain_ids, (md_label_t){0}, temp_alloc);
         }
         // Copy chain ids if they are filled (meaning they had some form of entry)
-        md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), alloc);
+        md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), mol_alloc);
     }
 
     if (mol->atom.count > 0) {
@@ -621,9 +623,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                             instance_range.end = chain_ranges[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
-                            md_array_push(mol->instance.atom_range, instance_range, alloc);
-                            md_array_push(mol->instance.label, instance_label, alloc);
-                            md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
+                            md_array_push(mol->instance.atom_range, instance_range, mol_alloc);
+                            md_array_push(mol->instance.label, instance_label, mol_alloc);
+                            md_array_push(mol->instance.transform, data->transforms[tidx], mol_alloc);
                             instance_range = chain_ranges[chain_idx];
                         }
                     }
@@ -634,9 +636,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 }
             }
 
-            md_array_push(mol->instance.atom_range, instance_range, alloc);
-            md_array_push(mol->instance.label, instance_label, alloc);
-            md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
+            md_array_push(mol->instance.atom_range, instance_range, mol_alloc);
+            md_array_push(mol->instance.label, instance_label, mol_alloc);
+            md_array_push(mol->instance.transform, data->transforms[tidx], mol_alloc);
         }
     }
 
@@ -670,46 +672,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
     ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count);
 
-    // Fill in missing elements using hash-backed inference
-    for (size_t i = 0; i < mol->atom.count; ++i) {
-        if (mol->atom.element[i] == 0) {
-            // Use hash-backed inference for missing elements
-            str_t atom_name = LBL_TO_STR(mol->atom.type[i]);
-            
-            // Try direct element lookup first
-            md_element_t elem = md_util_element_lookup_ignore_case(atom_name);
-            
-            // If that fails, use the hash-backed inference from md_util_element_guess
-            // This handles cases like CA (carbon alpha vs calcium) using residue context
-            if (elem == 0) {
-                // Create a temporary molecule structure for the single atom to use element_guess
-                md_molecule_t temp_mol = {0};
-                temp_mol.atom.count = 1;
-                temp_mol.atom.type = &mol->atom.type[i];
-                temp_mol.atom.resname = &mol->atom.resname[i];
-                temp_mol.atom.flags = mol->atom.flags ? &mol->atom.flags[i] : NULL;
-                
-                md_element_t temp_element = 0;
-                if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
-                    elem = temp_element;
-                }
-            }
-            
-            mol->atom.element[i] = elem;
-        }
-    }
-
-    // Now populate the atom type table and assign type indices
-    for (size_t i = 0; i < mol->atom.count; ++i) {
-        md_label_t type_name = mol->atom.type[i];
-        md_element_t element = mol->atom.element[i];
-        float mass = md_util_element_atomic_mass(element);
-        float radius = md_util_element_vdw_radius(element);
-        
-        // Find or add the atom type
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
-        mol->atom.type_idx[i] = type_idx;
-    }
+    
 
     result = true;
 done:

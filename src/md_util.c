@@ -1167,41 +1167,39 @@ static bool water_heuristic(const md_element_t elements[], size_t size) {
     return false;
 }
 
-static inline bool cmp1(const char* str, const char* ref) {
-    return str[0] == ref[0] && str[1] == '\0';
+static inline bool cmp(str_t str, const char* ref, int len) {
+    // We compare against len + 1 to include the zero terminator character
+    return MEMCMP(str.ptr, ref, len + 1) == 0;
 }
 
-static inline bool cmp2(const char* str, const char* ref) {
-    return str[0] == ref[0] && str[1] == ref[1] && str[2] == '\0';
-}
-
-static inline bool cmp3(const char* str, const char* ref) {
-    return str[0] == ref[0] && str[1] == ref[1] && str[2] == ref[2] && str[3] == '\0';
-}
-
-static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* backbone_atoms, const md_label_t* atom_types, size_t count, int32_t atom_offset) {
-    if (count == 0) return false;
+static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* backbone_atoms, const md_atom_data_t* atom_data, md_range_t atom_range) {
+    ASSERT(atom_data);
+    int len = atom_range.end - atom_range.beg;
+    if (len < 4) return false;
 
     const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
     uint32_t bits = 0;
     md_protein_backbone_atoms_t bb = {0};
-    for (int i = 0; i < (int)count; ++i) {
-        if (!(bits & 1)  && cmp1(atom_types[i].buf, "N"))  { bb.n  = atom_offset + i; bits |= 1;  continue; }
-        if (!(bits & 16) && cmp2(atom_types[i].buf, "HN")) { bb.hn = atom_offset + i; bits |= 16; continue; }
-        if (!(bits & 2)  && cmp2(atom_types[i].buf, "CA")) { bb.ca = atom_offset + i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp1(atom_types[i].buf, "C"))  { bb.c  = atom_offset + i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp1(atom_types[i].buf, "O"))  { bb.o  = atom_offset + i; bits |= 8;  continue; }
+    for (int i = atom_range.beg; i < atom_range.end; ++i) {
+        str_t id = md_atom_get_atom_id(atom_data, i);
+        if (str_empty(id)) continue;
+
+        if (!(bits & 1)  && cmp(id, "N",  1)) { bb.n  = i; bits |= 1;  continue; }
+        if (!(bits & 16) && cmp(id, "HN", 2)) { bb.hn = i; bits |= 16; continue; }
+        if (!(bits & 2)  && cmp(id, "CA", 2)) { bb.ca = i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp(id, "C",  1)) { bb.c  = i; bits |= 4;  continue; }
+        if (!(bits & 8)  && cmp(id, "O",  1)) { bb.o  = i; bits |= 8;  continue; }
+
+        if (i == atom_range.end - 1 && (!(bits & 8)) && str_ptr(id)[0] == 'O') {
+            bb.o = i;
+            bits |= 8;
+        }
 
         // Check if done
         if (bits == all_bits) break;
     }
-    // Explicitly check and assign last atom if Oxgen
-    if (!(bits & 8) && atom_types[count - 1].buf[0] == 'O') {
-        bb.o = atom_offset + (int)count - 1;
-        bits |= 8;
-    }
 
-    // HN is not
+    // HN is optional
     const uint32_t req_bits = 1 | 2 | 4 | 8;
     if ((bits & req_bits) == req_bits) {
         if (backbone_atoms) *backbone_atoms = bb;
@@ -1210,19 +1208,25 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
     return false;
 }
 
-static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* backbone_atoms, const md_label_t* atom_types, size_t count, int32_t atom_offset) {
-    if (count == 0) return false;
+static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* backbone_atoms, const md_atom_data_t* atom_data, md_range_t atom_range) {
+    ASSERT(atom_data);
+    int len = atom_range.end - atom_range.beg;
+    if (len < 6) return false;
 
-    const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
+    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
+
     uint32_t bits = 0;
     md_nucleic_backbone_atoms_t bb = {0};
-    for (int i = 0; i < (int)count; ++i) {
-        if (!(bits & 1)  && cmp3(atom_types[i].buf, "C5'")) { bb.c5 = atom_offset + i; bits |= 1;  continue; }
-        if (!(bits & 2)  && cmp3(atom_types[i].buf, "C4'")) { bb.c4 = atom_offset + i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp3(atom_types[i].buf, "C3'")) { bb.c3 = atom_offset + i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp3(atom_types[i].buf, "O3'")) { bb.o3 = atom_offset + i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp1(atom_types[i].buf, "P"))   { bb.p  = atom_offset + i; bits |= 16; continue; }
-        if (!(bits & 32) && cmp3(atom_types[i].buf, "O5'")) { bb.o5 = atom_offset + i; bits |= 32; continue; }
+    for (int i = atom_range.beg; i < atom_range.end; ++i) {
+        str_t id = md_atom_get_atom_id(atom_data, i);
+        if (str_empty(id)) continue;
+
+        if (!(bits & 1)  && cmp(id, "C5'", 3)) { bb.c5 = i; bits |= 1;  continue; }
+        if (!(bits & 2)  && cmp(id, "C4'", 3)) { bb.c4 = i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp(id, "C3'", 3)) { bb.c3 = i; bits |= 4;  continue; }
+        if (!(bits & 8)  && cmp(id, "O3'", 3)) { bb.o3 = i; bits |= 8;  continue; }
+        if (!(bits & 16) && cmp(id, "P",   1)) { bb.p  = i; bits |= 16; continue; }
+        if (!(bits & 32) && cmp(id, "O5'", 3)) { bb.o5 = i; bits |= 32; continue; }
 
         // Check if done
         if (bits == all_bits) break;
@@ -1235,16 +1239,7 @@ static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* 
     return false;
 }
 
-static inline bool is_organic(char c) {
-    return c == 'C' || c == 'N' || c == 'O' || c == 'S' || c == 'P';
-}
-
-bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol) {
-    // Delegate to the new hash-backed atomic number inference system
-    return md_atoms_infer_atomic_numbers(element, capacity, mol);
-}
-
-bool md_util_element_from_mass(md_element_t element[], const float mass[], size_t count) {
+size_t md_util_element_from_mass(md_element_t element[], const float mass[], size_t count) {
     if (!element) {
         MD_LOG_ERROR("element is null");
         return false;
@@ -1255,170 +1250,33 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
         return false;
     }
 
-    size_t failed_matches = 0;
+    size_t successful_matches = 0;
 
-    const float eps = 1.0e-3f;
     for (size_t i = 0; i < count; ++i) {
         md_element_t elem = 0;
         const float m = mass[i];
 
+        // Use an epsilon which scales with the mass
+        const float eps = 0.001f * fmaxf(1.0f, m * 0.01f);
+
         if (0.0f < m && m != 1.0f) {
             // Linear search for matching atomic mass
-            for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
+            for (size_t j = 1; j < ARRAY_SIZE(element_atomic_mass); ++j) {
                 if (fabs(m - element_atomic_mass[j]) < eps) {
                     elem = j;
+                    break;
+                } else if (m < element_atomic_mass[j]) {
+                    //Masses are sorted, no need to continue searching
                     break;
                 }
             }
         }
 
         element[i] = elem;
-        if (elem == 0) {
-            //Found no matching element for mass
-            failed_matches++;
-        }
-    }
-    //Returns true if all masses found a matching element
-    //Elements with a value of 0 indicates no match
-    if (failed_matches == 0) {
-        return true;
-    }
-    else {
-        MD_LOG_ERROR("%zu masses had no matching element", failed_matches);
-        return false;
-    }
-}
-
-bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count) {
-    if (!out_element) {
-        MD_LOG_ERROR("out_element is null");
-        return false;
-    }
-    if (count > 0 && !in_mass) {
-        MD_LOG_ERROR("in_mass is null");
-        return false;
-    }
-    if (count == 0) {
-        return true;
+        successful_matches += (size_t)(elem != 0);
     }
 
-    // Initialize output to zero (unknown element)
-    for (size_t i = 0; i < count; ++i) {
-        out_element[i] = 0;
-    }
-
-    // Standard atomic masses for common elements used in all-atom simulations
-    typedef struct {
-        md_element_t element;
-        float mass;
-        float tolerance;
-    } element_mass_entry_t;
-
-    static const element_mass_entry_t standard_masses[] = {
-        {H,  1.008f,  0.2f},   // Hydrogen: Z <= 10, tolerance 0.2 amu
-        {C,  12.011f, 0.2f},   // Carbon
-        {N,  14.007f, 0.2f},   // Nitrogen  
-        {O,  15.999f, 0.2f},   // Oxygen
-        {F,  18.998f, 0.2f},   // Fluorine
-        {Na, 22.990f, 0.3f},   // Sodium: Z > 10, <= 20, tolerance 0.3 amu
-        {Mg, 24.305f, 0.3f},   // Magnesium
-        {P,  30.974f, 0.3f},   // Phosphorus
-        {S,  32.06f,  0.3f},   // Sulfur
-        {Cl, 35.45f,  0.3f},   // Chlorine
-        {K,  39.098f, 0.3f},   // Potassium
-        {Ca, 40.078f, 0.3f},   // Calcium
-        {Fe, 55.845f, 0.5f},   // Iron: Z > 20, tolerance 0.5 amu
-        {Zn, 65.38f,  0.5f},   // Zinc
-        {Br, 79.904f, 0.5f},   // Bromine
-        {I,  126.904f, 0.5f},  // Iodine
-    };
-    static const size_t num_standard_masses = sizeof(standard_masses) / sizeof(standard_masses[0]);
-
-    // CG/reduced-units detection heuristics
-    
-    // Count how many unique masses we have
-    float unique_masses[256];
-    size_t unique_count = 0;
-    
-    for (size_t i = 0; i < count; ++i) {
-        const float mass = in_mass[i];
-        if (mass <= 0.0f) continue; // Skip invalid masses
-        
-        // Check if this mass is already in our unique list
-        bool found = false;
-        for (size_t j = 0; j < unique_count; ++j) {
-            if (fabsf(mass - unique_masses[j]) < 1e-6f) {
-                found = true;
-                break;
-            }
-        }
-        
-        if (!found && unique_count < sizeof(unique_masses)/sizeof(unique_masses[0])) {
-            unique_masses[unique_count++] = mass;
-        }
-    }
-    
-    // Heuristic 1: Too few unique masses for the number of atoms suggests CG
-    if (unique_count < 3 && count > 10) {
-        return false; // Likely CG, skip mapping
-    }
-    
-    // Heuristic 2: Check for CG-like mass values (e.g., 72.0, 1.0, etc.)
-    for (size_t i = 0; i < unique_count; ++i) {
-        const float mass = unique_masses[i];
-        // Check for typical CG mass values - be careful not to catch legitimate hydrogen masses
-        if (fabsf(mass - 72.0f) < 0.001f ||   // Common CG mass
-            fabsf(mass - 36.0f) < 0.001f ||   // Common CG mass
-            mass > 200.0f) {                   // Unrealistically heavy for typical atoms
-            return false; // Likely CG/reduced units, skip mapping
-        }
-        // Check for reduced units (exactly 1.0, not hydrogen mass around 1.008)
-        if (fabsf(mass - 1.0f) < 1e-6f) {  // Much stricter tolerance for exactly 1.0
-            return false; // Likely reduced units
-        }
-    }
-
-    // Perform conservative mass→element mapping
-    size_t successful_mappings = 0;
-    
-    for (size_t i = 0; i < count; ++i) {
-        const float mass = in_mass[i];
-        if (mass <= 0.0f) continue;
-        
-        md_element_t best_element = 0;
-        float best_diff = FLT_MAX;
-        size_t num_candidates = 0;
-        
-        // Find the best matching element
-        for (size_t j = 0; j < num_standard_masses; ++j) {
-            const float diff = fabsf(mass - standard_masses[j].mass);
-            if (diff <= standard_masses[j].tolerance) {
-                num_candidates++;
-                if (diff < best_diff) {
-                    best_diff = diff;
-                    best_element = standard_masses[j].element;
-                }
-            }
-        }
-        
-        // Only assign if we have exactly one candidate (no ambiguity)
-        if (num_candidates == 1) {
-            out_element[i] = best_element;
-            successful_mappings++;
-        }
-        // If multiple elements match within tolerance, leave as 0 (ambiguous)
-    }
-    
-    // If we couldn't map a reasonable fraction, might be CG
-    if (successful_mappings == 0 || successful_mappings < (count + 2) / 3) { // At least 33% success rate
-        // Reset all to 0 and return false
-        for (size_t i = 0; i < count; ++i) {
-            out_element[i] = 0;
-        }
-        return false;
-    }
-    
-    return true;
+    return successful_matches;
 }
 
 const str_t* md_util_element_symbols(void) {
@@ -2599,6 +2457,9 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 #else
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
     uint8_t* type = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom->count);
+    uint8_t* elements = md_vm_arena_push_array(temp_arena, uint8_t, atom->count);
+
+    md_atom_extract_atomic_numbers(elements, atom->count, atom);
 
     // Identify Sp Sp2 and Sp3 types
     for (size_t i = 0; i < atom->count; ++i) {
@@ -2650,12 +2511,12 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         size_t num_rings = md_index_data_num_ranges(*rings);
         for (size_t ring_idx = 0; ring_idx < num_rings; ++ring_idx) {
             size_t ring_size = md_index_range_size(*rings, ring_idx);
-            md_atom_idx_t* atom_idx = md_index_range_beg(*rings, ring_idx);
+            md_atom_idx_t* ring_atom_idx = md_index_range_beg(*rings, ring_idx);
             bool set_c2_to_sp2 = false;
             if (ring_size == 5) {
                 vec3_t c[5];
                 for (size_t i = 0; i < 5; ++i) {
-                    c[i] = md_atom_coord(*atom, atom_idx[i]);
+                    c[i] = md_atom_coord(*atom, ring_atom_idx[i]);
                 }
 
                 vec3_t d[5] = {
@@ -2680,7 +2541,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             } else if (ring_size == 6) {
                 vec3_t c[6];
                 for (size_t i = 0; i < 6; ++i) {
-                    c[i] = md_atom_coord(*atom, atom_idx[i]);
+                    c[i] = md_atom_coord(*atom, ring_atom_idx[i]);
                 }
 
                 vec3_t d[6] = {
@@ -2707,8 +2568,9 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
             if (set_c2_to_sp2) {
                 for (size_t i = 0; i < ring_size; ++i) {
-                    if (md_bond_conn_count(*bond, atom_idx[i]) == 2) {
-                        type[atom_idx[i]] = 2;
+                    md_atom_idx_t atom_idx = ring_atom_idx[i];
+                    if (md_bond_conn_count(*bond, atom_idx) == 2) {
+                        type[atom_idx] = 2;
                     }
                 }
             }
@@ -2802,7 +2664,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     }
 
     for (size_t i = 0; i < atom->count; ++i) {
-        md_element_t elem_i = atom->element[i];
+        md_element_t elem_i = elements[i];
         uint32_t conn_beg = bond->conn.offset[i];
         uint32_t conn_end = bond->conn.offset[i+1];
         uint32_t conn_len = conn_end - conn_beg;
@@ -2814,7 +2676,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         uint64_t mask = 0;
         for (uint32_t j = conn_beg; j < conn_end; ++j) {
             md_atom_idx_t idx = bond->conn.atom_idx[j];
-            uint64_t elem = atom->element[idx];
+            uint64_t elem = elements[idx];
             mask |= ((uint64_t)1 << (elem & 63));
         }
 
@@ -2844,7 +2706,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         size_t n_len = extract_neighborhood(n_idx, ARRAY_SIZE(n_idx), bond, i, max_depth);
         ASSERT(n_len > 0);
 
-        graph_t neighborhood = make_graph(bond, atom->element, n_idx, n_len, temp_arena);
+        graph_t neighborhood = make_graph(bond, elements, n_idx, n_len, temp_arena);
 
         uint64_t n_mask = 0;
         for (size_t j = 0; j < neighborhood.vertex_count ; ++j) {
@@ -2934,7 +2796,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
             // First iterate to see that all atoms are sp2 and of correct element
             for (md_atom_idx_t *it = atom_beg; it != atom_end; ++it) {
-                if (type[*it] != 2 || !is_aromatic(atom->element[*it])) {
+                if (type[*it] != 2 || !is_aromatic(elements[*it])) {
                     goto next_ring;
                 }
             }
@@ -2943,10 +2805,10 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             int electron_count = 0;
             for (int *it = atom_beg, j = 0; it != atom_end; ++it, ++j) {
                 int i = *it;
-                md_element_t elem_i = atom->element[i];
+                md_element_t elem_i = elements[i];
 
                 ring_pattern_t p = {0};
-                p.node_type = atom->element[i];
+                p.node_type = elements[i];
                 
                 uint32_t conn_beg = bond->conn.offset[i];
                 uint32_t conn_end = bond->conn.offset[i+1];
@@ -2964,8 +2826,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
                     } else {
                         ring_bond = idx == it[-1] || idx == it[1];
                     }
-                    md_element_t elem = atom->element[bond->conn.atom_idx[k]];
-                    md_order_t  order = bond->order  [bond->conn.bond_idx[k]];
+                    md_element_t elem = elements[bond->conn.atom_idx[k]];
+                    md_order_t  order = bond->order[bond->conn.bond_idx[k]];
                     if (ring_bond) {
                         p.ring_order_sum += order;
                     } else {
@@ -3066,7 +2928,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
                 uint32_t conn_beg = bond->conn.offset[i];
                 uint32_t conn_end = bond->conn.offset[i+1];
                 for (uint32_t j = conn_beg; j < conn_end; ++j) {
-                    if (atom->element[bond->conn.atom_idx[j]] == O) {
+                    if (elements[bond->conn.atom_idx[j]] == O) {
                         bond->order[bond->conn.bond_idx[j]] = 2;
                         break;
                     }
@@ -3715,7 +3577,7 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* elem, size_t atom_count, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(alloc);
 
@@ -3728,9 +3590,14 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         goto done;
     }
 
-    if (!elem) {
-        MD_LOG_ERROR("Missing atom field element");
+    if (!atom_type_data) {
+        MD_LOG_ERROR("Missing atomic number field");
         goto done;
+    }
+
+    md_atomic_number_t* atomic_nr = md_vm_arena_push(temp_arena, sizeof(md_atomic_number_t) * atom_count);
+    for (size_t i = 0; i < atom_count; ++i) {
+        atomic_nr[i] = md_atom_type_atomic_number(atom_type_data, idx[i]);
     }
 
     int* atom_res_idx = 0;
@@ -3753,7 +3620,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
 
-        find_bonds_in_ranges(bond, x, y, z, elem, cell, prev_range, prev_range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, prev_range, alloc, temp_arena);
         for (size_t curr_idx = 1; curr_idx < res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
@@ -3770,11 +3637,11 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(bond, x, y, z, elem, cell, prev_range, curr_range, alloc, temp_arena);
+                    find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
-            find_bonds_in_ranges(bond, x, y, z, elem, cell, curr_range, curr_range, alloc, temp_arena);
+            find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
             prev_flags = curr_flags;
             prev_idx   = curr_idx;
@@ -3783,7 +3650,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
     }
     else {
         md_range_t range = {0, (int)atom_count};
-        find_bonds_in_ranges(bond, x, y, z, elem, cell, range, range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, range, range, alloc, temp_arena);
     }
 
     // Compute connectivity count
@@ -3814,7 +3681,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
 
     // Prune over-connected atoms by removing longest bonds
     for (size_t i = 0; i < atom_count; ++i) {
-        md_element_t e = elem[i];
+        md_element_t e = atomic_nr[i];
         const int max_con = max_neighbors_element(e);
 
         if ((int)c_count[i] > max_con) {
@@ -3962,86 +3829,83 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 
 #define MIN_RESIDUE_CHAIN_LEN 2
 
-bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, md_allocator_i* alloc) {
-    ASSERT(res);
-    ASSERT(atom);
+bool md_util_init_residue_data(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
+    ASSERT(out_res);
     ASSERT(alloc);
 
-    md_residue_id_t prev_resid = -1;
-    str_t prev_resstr = STR_LIT("");
-    md_flags_t prev_flags = 0;
-    for (size_t i = 0; i < atom->count; ++i) {
-        const md_residue_id_t resid = atom->resid[i];
-        const md_flags_t flags = atom->flags[i];
-        const str_t resstr = atom->resname ? LBL_TO_STR(atom->resname[i]) : STR_LIT("");
-
-        if (resid != prev_resid || !str_eq(resstr, prev_resstr) || flags & (MD_FLAG_RES_BEG | MD_FLAG_CHAIN_BEG) || prev_flags & (MD_FLAG_RES_END | MD_FLAG_CHAIN_END)) {
-            md_array_push(res->id, resid, alloc);
-            md_array_push(res->name, make_label(resstr), alloc);
-            md_array_push(res->atom_offset, (uint32_t)i, alloc);
-            md_array_push(res->flags, 0, alloc);
-            res->count += 1;
-        }
-
-        prev_resstr = resstr;
-        prev_resid = resid;
-        prev_flags = flags;
+    if (!atom_resid && !atom_resname) {
+        MD_LOG_ERROR("Missing residue information (resid/resname)");
+        return false;
     }
 
-    md_array_push(res->atom_offset, (uint32_t)atom->count, alloc);
+    md_residue_id_t prev_resid = -1;
+    str_t prev_resname = STR_LIT("");
+    for (size_t i = 0; i < atom_count; ++i) {
+        const md_residue_id_t resid = atom_resid ? atom_resid[i] : -1;
+        const str_t resname = atom_resname ? atom_resname[i] : STR_LIT("");
 
-    atom->res_idx = md_array_create(md_residue_idx_t, atom->count, alloc);
-    MEMSET(atom->res_idx, -1, md_array_bytes(atom->res_idx));
-
-    for (size_t i = 0; i < res->count; ++i) {
-        str_t resname = LBL_TO_STR(res->name[i]);
-        md_range_t range = md_residue_atom_range(*res, i);
-        size_t len = (size_t)(range.end - range.beg);
-
-        if (i == 130) {
-            while(0) {};
+        if (resid != prev_resid || !str_eq(resname, prev_resname)) {
+            md_array_push(out_res->id, resid, alloc);
+            md_array_push(out_res->name, make_label(resname), alloc);
+            md_array_push(out_res->atom_offset, (uint32_t)i, alloc);
+            md_array_push(out_res->flags, 0, alloc);
+            out_res->count += 1;
         }
+
+        prev_resname = resname;
+        prev_resid = resid;
+    }
+    md_array_push(out_res->atom_offset, (uint32_t)atom_count, alloc);
+
+    return true;
+}
+
+bool md_util_identify_residue_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data) {
+    ASSERT(out_res);
+    for (size_t i = 0; i < out_res->count; ++i) {
+        str_t resname = LBL_TO_STR(out_res->name[i]);
+        md_range_t range = md_residue_atom_range(*out_res, i);
+        size_t len = (size_t)(range.end - range.beg);
 
         md_protein_backbone_atoms_t prot_atoms = {0};
         md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg)))
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, atom_data, range)) {
+            out_res->flags[i] |= MD_FLAG_AMINO_ACID;
+            if (out_atom_flags) {
+                out_atom_flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
+                out_atom_flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
+                out_atom_flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
+                out_atom_flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
+                if (prot_atoms.hn != -1) {
+                    out_atom_flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
+                }
+                for (int j = range.beg; j < range.end; ++j) {
+                    out_atom_flags[j] |= MD_FLAG_AMINO_ACID;
+                }
+            }
+        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom_data, range)) {
+            out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
+            if (out_atom_flags) {
+                out_atom_flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
+                out_atom_flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
+                out_atom_flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
+                out_atom_flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
+                out_atom_flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
+                out_atom_flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
+                for (int j = range.beg; j < range.end; ++j) {
+                    out_atom_flags[j] |= MD_FLAG_NUCLEOTIDE;
+                }
+            }
+        } else if (((len == 1 || len == 3) && md_util_resname_water(resname)) ||
+                    (len == 1 && md_util_resname_water(md_atom_get_atom_id(atom_data, range.beg))))
         {
-            res->flags[i] |= MD_FLAG_AMINO_ACID;
-            atom->flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
-            atom->flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
-            atom->flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
-            //atom->flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
-        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && (atom->type && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom->type + range.beg, len, range.beg))) {
-            res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-            atom->flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
-            atom->flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
-            atom->flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
-            atom->flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
-            atom->flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
-            atom->flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
-        } else if ((len == 1 || len == 3) && (md_util_resname_water(resname) || (atom->type && len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg]))))) {
-            res->flags[i] |= MD_FLAG_WATER;
-        } else if (md_util_resname_amino_acid(resname) && atom->flags[range.beg] & MD_FLAG_CHAIN) {
-            res->flags[i] |= MD_FLAG_AMINO_ACID;
-        }
-#if 0
-        else if (len == 1) {
-            res->flags[i] |= MD_FLAG_ION;
-        }
-#endif
-
-        for (int j = range.beg; j < range.end; ++j) {
-            atom->res_idx[j] = (md_residue_idx_t)i;
-
-            // Propagate flags to atoms
-            atom->flags[j] |= res->flags[i];
-
-            // Propagate chain flags up
-            res->flags[i] |= (atom->flags[j] & (MD_FLAG_CHAIN_BEG | MD_FLAG_CHAIN_END));
+            out_res->flags[i] |= MD_FLAG_WATER;
+        } else if (md_util_resname_amino_acid(resname)) {
+            out_res->flags[i] |= MD_FLAG_AMINO_ACID;
+        } else if (md_util_resname_nucleotide(resname)) {
+            out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
         }
     }
-
-    return true;
 }
 
 // @TODO: Convert to a table
@@ -4085,124 +3949,192 @@ static bool monatomic_ion_element(md_element_t elem) {
     }
 }
 
-bool md_util_identify_ions(md_atom_data_t* atom, const md_bond_data_t* bond) {
+bool md_util_set_ion_flags(md_flags_t* out_flags, const md_atom_data_t* atom, const md_bond_data_t* bond) {
     ASSERT(atom);
     ASSERT(bond);
-    if (!atom->element || !bond->conn.offset) {
-        return false;
-    }
+
     for (size_t i = 0; i < atom->count; ++i) {
         // Check if it has no bonds
-        if (md_bond_conn_count(*bond, i) == 0 && monatomic_ion_element(atom->element[i]) && !(atom->flags[i] & MD_FLAG_WATER)) {
+        md_atomic_number_t z = md_atom_get_atomic_number(atom, i);
+
+        if (md_bond_conn_count(*bond, i) == 0 && monatomic_ion_element(z) && !(atom->flags[i] & MD_FLAG_WATER)) {
             atom->flags[i] |= MD_FLAG_ION;
         }
     }
     return true;
 }
 
-// @NOTE(Robin): This could certainly be improved to incorporate more characters
-// Perhaps first A-Z, then [A-Z]0-9, then AA-ZZ etc.
-static inline md_label_t generate_chain_id_from_index(size_t idx) {
-    char c = 'A' + (idx % 26);
-    str_t str = {&c, 1};
-    return make_label(str);
+// Excel-style chain-id generator: A..Z, AA..ZZ, AAA..
+// Notes:
+// - Uses only upper-case A-Z to avoid format-specific surprises.
+// - kMaxLen limits growth to a safe small size for md_label_t (tune if needed).
+// - If overflow occurs, it clamps at the maximum representable length.
+static inline md_label_t md_util_chain_id_from_index(size_t idx) {
+    // Convert 0-based idx to 1-based Excel-style base-26
+    // 0 -> A, 25 -> Z, 26 -> AA, ...
+    char buf[8];
+    int  len = 0;
+
+    size_t n = idx;
+    while (len < ARRAY_SIZE(buf)) {
+        size_t q = n / 26;
+        size_t r = n % 26;
+        buf[len++] = (char)('A' + (int)r);
+        if (q == 0) break;
+        n = q - 1;
+    }
+
+    // Reverse to get most significant first
+    for (int i = 0, j = len - 1; i < j; ++i, --j) {
+        char t = buf[i]; buf[i] = buf[j]; buf[j] = t;
+    }
+
+    return make_label((str_t){ buf, (size_t)len });
 }
 
-bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, const md_residue_data_t* res, const md_bond_data_t* bond, md_allocator_i* alloc) {
+static inline md_label_t md_util_next_chain_id(str_t last) {
+
+    // Fallback for empty/invalid: start at "A"
+    if (str_empty(last)) return make_label(STR_LIT("A"));
+
+    // Copy and normalize to upper-case A-Z; if anything else, fallback to "A"
+    char buf[8];
+    int len = (int)MIN(ARRAY_SIZE(buf), str_len(last));
+    for (int i = 0; i < len; ++i) {
+        char c = last.ptr[i];
+        if ('a' <= c && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (c < 'A' || c > 'Z') return make_label(STR_LIT("A"));
+        buf[i] = c;
+    }
+
+    // Increment with carry: Z->A and carry to the left, prepend 'A' on overflow
+    int i = len - 1;
+    while (i >= 0) {
+        if (buf[i] < 'Z') {
+            buf[i] = (char)(buf[i] + 1);
+            return make_label((str_t){ buf, (size_t)len });
+        }
+        buf[i] = 'A';
+        --i;
+    }
+
+    // Overflow: prepend 'A' if there's room, otherwise clamp to all 'Z'
+    if (len < ARRAY_SIZE(buf)) {
+        // shift right and set first to 'A'
+        for (int j = len; j > 0; --j) buf[j] = buf[j - 1];
+        buf[0] = 'A';
+        len += 1;
+        return make_label((str_t){ buf, (size_t)len });
+    } else {
+        for (int j = 0; j < len; ++j) buf[j] = 'Z';
+        return make_label((str_t){ buf, (size_t)len });
+    }
+}
+
+static inline bool has_id(const md_label_t* ids, size_t id_count, md_label_t id) {
+    str_t s = LBL_TO_STR(id);
+    for (size_t i = 0; i < id_count; ++i) {
+        if (str_eq(s, LBL_TO_STR(ids[i]))) return true;
+    }
+    return false;
+}
+
+// Generate the next unique chain id, skipping ones present in 'existing'.
+// If 'existing_count'==0, this is equivalent to md_util_next_chain_id(last).
+static inline md_label_t md_util_next_unique_chain_id(const md_label_t* existing, size_t existing_count) {
+    str_t last = (existing && existing_count > 0) ? LBL_TO_STR(existing[existing_count - 1]) : STR_LIT("");
+    md_label_t id = md_util_next_chain_id(last);
+
+    if (existing) {
+        while (has_id(existing, existing_count, id)) {
+            id = md_util_next_chain_id(LBL_TO_STR(id));
+        }
+    }
+    return id;
+}
+
+static size_t md_util_residue_sequential_ranges(md_array(md_range_t)* out_ranges,
+    const md_bond_pair_t res_bonds[],
+    size_t res_bond_count,
+    size_t res_count,
+    md_allocator_i* alloc)
+{
+    ASSERT(out_ranges);
+
+    if (!res_bonds || res_bond_count == 0 || res_count == 0) return 0;
+
+    // connected_to_prev[i] == 1 if there is a bond between (i-1) and i
+    size_t temp_pos = md_temp_get_pos();
+    uint8_t* connected_to_prev = (uint8_t*)md_temp_push_zero(res_count * sizeof(uint8_t));
+
+    // Mark adjacency links from bonds (only accept neighbors that differ by 1)
+    for (size_t k = 0; k < res_bond_count; ++k) {
+        int a = res_bonds[k].idx[0];
+        int b = res_bonds[k].idx[1];
+        if (a > b) { int t = a; a = b; b = t; }
+        if (0 <= a && a < (int)res_count && 0 <= b && b < (int)res_count) {
+            if (b - a == 1) {
+                connected_to_prev[b] = 1;
+            }
+        }
+    }
+
+    // Scan for runs of consecutive links and emit [beg, end) ranges
+    size_t num_ranges = 0;
+    md_range_t* ranges = 0;
+
+    size_t i = 0;
+    while (i < res_count) {
+        size_t beg = i;
+        size_t j = i + 1;
+
+        // Continue while each step has link to previous residue
+        while (j < res_count && connected_to_prev[j]) {
+            ++j;
+        }
+
+        md_array_push(ranges, ((md_range_t){ (int32_t)beg, (int32_t)j }), alloc);
+        ++num_ranges;
+        i = j;
+    }
+
+    md_temp_set_pos_back(temp_pos);
+    *out_ranges = ranges;
+    return num_ranges;
+}
+
+bool md_util_init_chain_data(md_chain_data_t* chain, const md_residue_data_t* res, md_allocator_i* alloc) {
     ASSERT(chain);
     ASSERT(alloc);
     
-    if (!atom) {
-        MD_LOG_ERROR("atom data is null");
-        return false;
-    }
-
-    if (!bond) {
-        MD_LOG_ERROR("bond data is null");
-        return false;
-    }
-
     if (res->count == 0) {
-        MD_LOG_DEBUG("Dataset only contains single residue, no artificial chains can be created");
         return false;
     }
 
     MEMSET(chain, 0, sizeof(md_chain_data_t));
 
-    if (res->count <= 1) {
-        return true;
-    }
+    size_t res_range_count = 0;
+    md_range_t res_ranges[] = 0;
 
-    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_get_temp_allocator());
-    md_residue_idx_t max_bonded_residue_idx = 0;
-    for (size_t i = 0; i < bond->count; ++i) {
-        if (bond->order[i] & MD_BOND_FLAG_INTER) {
-            const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
-            const md_residue_idx_t res_b = atom->res_idx[bond->pairs[i].idx[1]];
-            const md_residue_idx_t res_max = MAX(res_a, res_b);
-            if (abs(res_b - res_a) == 1) {
-                bitfield_set_bit(res_bond_to_prev, res_max);
-                max_bonded_residue_idx = MAX(max_bonded_residue_idx, res_max);
+    for (size_t i = 0; i < res_range_count; ++i) {
+        md_range_t range = res_ranges[i];
+        bool add_as_chain = true;
+        for (int32_t j = range.beg; j < range.end; ++j) {
+            if (!(res->flags[j] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE))) {
+                add_as_chain = false;
+                break;
             }
         }
-    }
-
-    int beg_idx = 0;
-    str_t prev_id = {0};
-    md_flags_t prev_flags = 0;
-    int chain_end_idx = 0;
-
-    for (int i = 0; i <= max_bonded_residue_idx + 1; ++i) {
-        str_t id = {0};
-        md_flags_t flags = 0;
-        if (i < res->count) {
-            const md_range_t atom_range = md_residue_atom_range(*res, i);
-            id = atom->chainid ? LBL_TO_STR(atom->chainid[atom_range.beg]) : (str_t){0};
-            flags = res->flags[i];
+        if (add_as_chain) {
+            md_range_t atom_range = {
+                md_residue_atom_range(*res, range.beg).beg,
+                md_residue_atom_range(*res, range.end - 1).end
+            };
+            md_array_push(chain->id, md_util_next_unique_chain_id(chain->id, chain->count), alloc);
+            md_array_push(chain->res_range, range, alloc);
+            md_array_push(chain->atom_range, atom_range, alloc);
+            chain->count += 1;
         }
-
-        if (i < max_bonded_residue_idx && !(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE))) {
-            beg_idx += 1;
-            goto next;
-        }
-
-        bool different_id = !str_empty(id) && !str_eq(id, prev_id);
-        bool chain_flags = (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END);
-        bool disconnected = !bitfield_test_bit(res_bond_to_prev, i);
-
-        if (different_id || chain_flags || disconnected) {
-            int end_idx = i;
-            if (end_idx - beg_idx >= MIN_RESIDUE_CHAIN_LEN) {
-                md_label_t lbl = str_empty(prev_id) ? generate_chain_id_from_index(chain->count) : make_label(prev_id);
-                md_range_t res_rng = {beg_idx, end_idx};
-                md_range_t atom_rng = {res->atom_offset[beg_idx], res->atom_offset[end_idx]};
-
-                md_array_push(chain->id, lbl, alloc);
-                md_array_push(chain->atom_range, atom_rng, alloc);
-                md_array_push(chain->res_range,   res_rng, alloc);
-
-                chain_end_idx = i;
-                chain->count += 1;
-            }
-            beg_idx = i;
-        }
-
-next:
-        prev_id = id;
-        prev_flags = flags;
-    }
-
-    md_array_resize(atom->chain_idx, atom->count, alloc);
-    MEMSET(atom->chain_idx, -1, md_array_bytes(atom->chain_idx));
-
-    for (size_t i = 0; i < chain->count; ++i) {
-        const md_range_t atom_range = md_chain_atom_range(*chain, i);
-        for (int j = atom_range.beg; j < atom_range.end; ++j) {
-            atom->chain_idx[j] = (md_chain_idx_t)i;
-            atom->flags[j] |= MD_FLAG_CHAIN;
-        }
-        atom->flags[atom_range.beg]     |= MD_FLAG_CHAIN_BEG;
-        atom->flags[atom_range.end - 1] |= MD_FLAG_CHAIN_END;
     }
 
     return true;
@@ -8158,103 +8090,9 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 
     if (mol->atom.count == 0) return false;
 
-    {
-#ifdef PROFILE
-        md_timestamp_t t0 = md_time_current();
-#endif
-        if (!mol->atom.flags) {
-            md_array_resize(mol->atom.flags, mol->atom.count, alloc);
-            MEMSET(mol->atom.flags, 0, md_array_bytes(mol->atom.flags));
-        }
-        if (!mol->atom.type) {
-            md_array_resize(mol->atom.type, mol->atom.count, alloc);
-            MEMSET(mol->atom.type, 0, md_array_bytes(mol->atom.type));
-        }
-        md_flags_t atom_flags = 0;
-        for (size_t i = 0; i < mol->atom.count; ++i) {
-            if (mol->atom.flags[i] & MD_FLAG_CHAIN_BEG) {
-                atom_flags |= MD_FLAG_CHAIN;
-            }
-            if (mol->atom.flags[i] & MD_FLAG_RES_BEG) {
-                atom_flags |= MD_FLAG_RES;
-            }
-
-
-
-            mol->atom.flags[i] |= atom_flags;
-
-            if (mol->atom.flags[i] & MD_FLAG_RES_END) {
-                atom_flags &= ~MD_FLAG_RES;
-            }
-            if (mol->atom.flags[i] & MD_FLAG_CHAIN_END) {
-                atom_flags &= ~MD_FLAG_CHAIN;
-            }
-        }
-#ifdef PROFILE
-        md_timestamp_t t1 = md_time_current();
-        MD_LOG_DEBUG("Postprocess: allocate missing fields %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_RESIDUE_BIT) {
-        // Create residues from resids
-        if (mol->residue.count == 0 && mol->atom.resid) {
-#ifdef PROFILE
-            md_timestamp_t t0 = md_time_current();
-#endif
-            md_util_compute_residue_data(&mol->residue, &mol->atom, alloc);
-#ifdef PROFILE
-            md_timestamp_t t1 = md_time_current();
-            MD_LOG_DEBUG("Postprocess: compute residues %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-        }
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_ELEMENT_BIT) {
-#ifdef PROFILE
-        md_timestamp_t t0 = md_time_current();
-#endif
-        if (!mol->atom.element) {
-            md_array_resize(mol->atom.element, mol->atom.count, alloc);
-            MEMSET(mol->atom.element, 0, md_array_bytes(mol->atom.element));
-        }
-        md_util_element_guess(mol->atom.element, mol->atom.count, mol);
-#ifdef PROFILE
-        md_timestamp_t t1 = md_time_current();
-        MD_LOG_DEBUG("Postprocess: guess elements %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_RADIUS_BIT) {
-#ifdef PROFILE
-        md_timestamp_t t0 = md_time_current();
-#endif
-        if (!mol->atom.radius) {
-            md_array_resize(mol->atom.radius, mol->atom.count, alloc);
-            for (size_t i = 0; i < mol->atom.count; ++i) {
-                mol->atom.radius[i] = mol->atom.element ? md_util_element_vdw_radius(mol->atom.element[i]) : 1.0f;
-            }
-        }
-#ifdef PROFILE
-        md_timestamp_t t1 = md_time_current();
-        MD_LOG_DEBUG("Postprocess: compute radii %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_MASS_BIT) {
-        if (!mol->atom.mass) {
-#ifdef PROFILE
-            md_timestamp_t t0 = md_time_current();
-#endif
-            md_array_resize(mol->atom.mass, mol->atom.count, alloc);
-            for (size_t i = 0; i < mol->atom.count; ++i) {
-                mol->atom.mass[i] = mol->atom.element ? md_util_element_atomic_mass(mol->atom.element[i]) : 1.0f;
-            }
-#ifdef PROFILE
-            md_timestamp_t t1 = md_time_current();
-            MD_LOG_DEBUG("Postprocess: compute masses %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-        }
+    if (!mol->atom.flags) {
+        md_array_resize(mol->atom.flags, mol->atom.count, alloc);
+        MEMSET(mol->atom.flags, 0, md_array_bytes(mol->atom.flags));
     }
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
@@ -8307,6 +8145,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     }
 #endif
 
+    /*
     if (flags & MD_UTIL_POSTPROCESS_ION_BIT) {
         if (mol->atom.element) {
 #ifdef PROFILE
@@ -8319,13 +8158,14 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #endif
         }
     }
+    */
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
         if (mol->chain.count == 0 && mol->residue.count > 0 && mol->bond.pairs) {
 #ifdef PROFILE
             md_timestamp_t t0 = md_time_current();
 #endif
-            md_util_compute_chain_data(&mol->chain, &mol->atom, &mol->residue, &mol->bond, alloc);
+            md_util_init_chain_data(&mol->chain, &mol->atom, &mol->residue, &mol->bond, alloc);
 #ifdef PROFILE
             md_timestamp_t t1 = md_time_current();
             MD_LOG_DEBUG("Postprocess: compute chains %.3f ms\n", md_time_as_milliseconds(t1-t0));
@@ -8334,7 +8174,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     }
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
-        if (mol->chain.count && mol->atom.type) {
+        if (mol->chain.count && mol->atom.type_idx) {
             // Compute backbone data
             // 
             // @NOTE: We should only attempt to compute backbone data for valid residues (e.g. amino acids / dna)
@@ -8342,7 +8182,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
             // We look within the chains and see if we can find consecutive ranges which form backbones.
 
             static const size_t MIN_BACKBONE_LENGTH = 3;
-            static const size_t MAX_BACKBONE_LENGTH = 1<<15;
+            static const size_t MAX_BACKBONE_LENGTH = 1 << 15;
 
             size_t temp_pos = md_temp_get_pos();
 
@@ -8355,13 +8195,9 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                     md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
 
-                        if (res_idx == 130) {
-                            while(0) {};
-                        }
-
                         md_protein_backbone_atoms_t atoms;
                         md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
-                        if (md_util_protein_backbone_atoms_extract(&atoms, mol->atom.type + atom_range.beg, atom_range.end - atom_range.beg, atom_range.beg)) {
+                        if (md_util_protein_backbone_atoms_extract(&atoms, &mol->atom, atom_range)) {
                             backbone_atoms[backbone_length++] = atoms;
                             if (res_base == -1) {
                                 res_base = res_idx;
@@ -8413,8 +8249,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
                         md_nucleic_backbone_atoms_t atoms;
                         md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
-                        const md_label_t* atom_labels = mol->atom.type + atom_range.beg;
-                        if (md_util_nucleic_backbone_atoms_extract(&atoms, atom_labels, atom_range.end - atom_range.beg, atom_range.beg)) {
+                        if (md_util_nucleic_backbone_atoms_extract(&atoms, &mol->atom, atom_range)) {
                             backbone_atoms[backbone_length++] = atoms;
                             if (res_base == -1) {
                                 res_base = res_idx;
@@ -9147,9 +8982,8 @@ done:
 
 enum {
     VERTEX_TYPE_MAPPING_UNDEFINED = 0,
-    VERTEX_TYPE_MAPPING_TYPE = 1,
-    VERTEX_TYPE_MAPPING_ELEMENT = 2,
-    VERTEX_TYPE_MAPPING_MASS = 3
+    VERTEX_TYPE_MAPPING_ATOM_TYPE = 1,
+    VERTEX_TYPE_MAPPING_ATOMIC_NUMBER = 2,
 };
 
 typedef int vertex_type_mapping_t;
@@ -9179,16 +9013,17 @@ static md_array(int) filter_structure_type(const int* indices, int64_t count, co
     return filt;
 }
 
-static inline bool filter_atom(const md_molecule_t* mol, int atom_i, md_util_match_flags_t filter) {
+static inline bool filter_atom(const md_atom_data_t* atom, const md_bond_data_t* bond, int atom_i, md_util_match_flags_t filter) {
+    md_atomic_number_t z_i = md_atom_get_atomic_number(atom, atom_i);
     if (filter & MD_UTIL_MATCH_FLAGS_NO_H) {
-        return mol->atom.element[atom_i] != H;
+        return z_i != MD_Z_H;
     } else if (filter & MD_UTIL_MATCH_FLAGS_NO_CH) {
-        if (mol->atom.element[atom_i] == H) {
-            uint32_t   conn_len = (uint32_t)md_bond_conn_count(mol->bond, atom_i);
-            uint32_t   conn_i   = mol->bond.conn.offset[atom_i];
+        if (z_i == MD_Z_H) {
+            uint32_t   conn_len = (uint32_t)md_bond_conn_count(*bond, atom_i);
+            uint32_t   conn_i   = bond->conn.offset[atom_i];
             for (uint32_t i = 0; i < conn_len; ++i) {
-                int atom_j = md_bond_conn_atom_idx(mol->bond, conn_i, i);
-                if (mol->atom.element[atom_j] == C) {
+                int atom_j = md_bond_conn_atom_idx(*bond, conn_i, i);
+                if (md_atom_get_atomic_number(atom, atom_j) == MD_Z_C) {
                     return false;
                 }
             }
@@ -9238,7 +9073,7 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
                 idx_range_t range = idx_range_create(out_structures);
                 for (int* it = md_index_range_beg(mol->structure, s_idx); it < md_index_range_end(mol->structure, s_idx); ++it) {
                     int i = *it;
-                    if (filter_atom(mol, i, filter)) {
+                    if (filter_atom(&mol->atom, &mol->bond, i, filter)) {
                         idx_range_push(range, i);
                     }
                 }
@@ -9261,7 +9096,7 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
             idx_range_t range = idx_range_create(out_structures);
             md_range_t res_range = md_residue_atom_range(mol->residue, r_idx);
             for (int i = res_range.beg; i < res_range.end; ++i) {
-                if (filter_atom(mol, i, filter)) {
+                if (filter_atom(&mol->atom, &mol->bond, i, filter)) {
                     idx_range_push(range, i);
                 }
             }
@@ -9276,7 +9111,7 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
             idx_range_t range = idx_range_create(out_structures);
             md_range_t chain_range = md_chain_atom_range(mol->chain, c_idx);
             for (int i = chain_range.beg; i < chain_range.end; ++i) {
-                if (filter_atom(mol, i, filter)) {
+                if (filter_atom(&mol->atom, &mol->bond, i, filter)) {
                     idx_range_push(range, i);
                 }
             }
@@ -9304,33 +9139,13 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     md_array(uint8_t) atom_type = md_vm_arena_push_array(temp_arena, uint8_t, mol->atom.count);
     md_array(int) structure_idx = md_vm_arena_push_array(temp_arena, int,     mol->atom.count);
 
-    if (mapping == VERTEX_TYPE_MAPPING_ELEMENT) {
+    if (mapping == VERTEX_TYPE_MAPPING_ATOMIC_NUMBER) {
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            atom_type[i] = mol->atom.element[i];
+            atom_type[i] = md_atom_get_atomic_number(&mol->atom, i);
         }
     } else {
-        uint32_t type_count = 0;
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            uint64_t key = 0;
-            switch (mapping) {
-            case VERTEX_TYPE_MAPPING_TYPE:
-                key = md_hash64(mol->atom.type[i].buf, mol->atom.type[i].len, 0);
-                break;
-            case VERTEX_TYPE_MAPPING_MASS:
-                key = md_hash64(&mol->atom.mass[i], sizeof(mol->atom.mass[i]), 0);
-                break;
-            default: ASSERT(false); break;
-            }
-            uint8_t type = 0;
-            uint32_t* val = md_hashmap_get(&map_table, key);
-            if (!val) {
-                type = (uint8_t)type_count++;
-                md_hashmap_add(&map_table, key, 1);
-            } else {
-                type = (uint8_t)*val;
-                *val += 1;
-            }
-            atom_type[i] = type;
+            atom_type[i] = mol->atom.type_idx[i];
         }
     }
 
@@ -9354,7 +9169,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     bool ref_hydro_present = false;
     for (size_t i = 0; i < ref_len; ++i) {
         int idx = ref_idx[i];
-        if (mol->atom.element[idx] == H) {
+        if (md_atom_get_atomic_number(&mol->atom, idx) == MD_Z_H) {
             ref_hydro_present = true;
             break;
         }
@@ -9464,11 +9279,11 @@ done:
 }
 
 md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_TYPE, mol, alloc);
+    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_ATOM_TYPE, mol, alloc);
 }
 
 md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_ELEMENT, mol, alloc);
+    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_ATOMIC_NUMBER, mol, alloc);
 }
 
 size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_molecule_t* mol, md_allocator_i* alloc) {
@@ -9479,8 +9294,8 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         return 0;
     }
 
-    if (!mol->atom.element) {
-        MD_LOG_ERROR("Molecule does not have any atom element field");
+    if (!mol->atom.type_idx) {
+        MD_LOG_ERROR("Missing atom type field");
         return 0;
     }
 
@@ -9524,11 +9339,13 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_alloc);
         const size_t s_size = md_index_range_size(structures, i);
         const int*   s_idx  = md_index_range_beg(structures, i);
+        md_atomic_number_t* s_type = md_vm_arena_push_array(temp_alloc, md_atomic_number_t, s_size);
 
         int s_type_count[256] = {0};
         for (size_t j = 0; j < s_size; ++j) {
             int idx = s_idx[j];
-            uint8_t type = mol->atom.element[idx];
+            uint8_t type = md_atom_get_atomic_number(&mol->atom, idx);
+            s_type[j] = type;
             s_type_count[type]++;
         }
 
@@ -9537,7 +9354,7 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
             if (ref_type_count[j] > s_type_count[j]) goto next;
         }
 
-        graph_t s_graph = make_graph(&mol->bond, mol->atom.element, s_idx, s_size, temp_alloc);
+        graph_t s_graph = make_graph(&mol->bond, s_type, s_idx, s_size, temp_alloc);
 
         if (flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT) {
             if (s_graph.vertex_count != ref_graph.vertex_count) {

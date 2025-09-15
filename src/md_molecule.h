@@ -9,7 +9,7 @@ typedef struct md_atom_type_data_t {
     size_t count;
 
     md_label_t*   name;
-    md_element_t* element;
+    md_atomic_number_t* z;
     float*        mass;
     float*        radius;
 } md_atom_type_data_t;
@@ -25,24 +25,14 @@ typedef struct md_atom_data_t {
     // Atom Type Index (NEW: references into atom_type table)
     md_atom_type_idx_t* type_idx;
 
-    // Atom Type Specific (@TODO: Compress this into a smaller set)
-    float* radius;
-    float* mass;
-    md_element_t* element;
-    md_label_t* type;
-
-    // @TODO: Move these into res and chain data structs
-    md_residue_id_t* resid;
-    md_label_t* resname;
-    md_label_t* chainid;
-
-    md_residue_idx_t* res_idx;
-    md_chain_idx_t* chain_idx;
-
+    // These should be removed as well
+    //md_residue_idx_t* res_idx;
+    //md_chain_idx_t* chain_idx;
     md_flags_t* flags;
+
+    md_atom_type_data_t type_data;
 } md_atom_data_t;
 
-// These are a bit superflous, but just replicate whatever is present in the atom data
 typedef struct md_residue_data_t {
     size_t count;
     md_label_t* name;
@@ -128,7 +118,6 @@ typedef struct md_bond_iter_t {
 typedef struct md_molecule_t {
     md_unit_cell_t              unit_cell;
     md_atom_data_t              atom;
-    md_atom_type_data_t         atom_type;
     md_residue_data_t           residue;
     md_chain_data_t             chain;
     md_protein_backbone_data_t  protein_backbone;
@@ -159,14 +148,15 @@ static inline vec3_t md_atom_coord(md_atom_data_t atom_data, size_t atom_idx) {
 }
 
 // Atom type table helper functions
-static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, md_label_t name, md_element_t element, float mass, float radius, struct md_allocator_i* alloc) {
+static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
     
     // First try to find existing atom type
     for (size_t i = 0; i < atom_type->count; ++i) {
-        if (MEMCMP(&atom_type->name[i], &name, sizeof(md_label_t)) == 0 && 
-            atom_type->element[i] == element &&
+        str_t atom_type_name = LBL_TO_STR(atom_type->name[i]);
+        if (str_eq(atom_type_name, name) && 
+            atom_type->z[i] == z &&
             atom_type->mass[i] == mass &&
             atom_type->radius[i] == radius) {
             return (md_atom_type_idx_t)i;
@@ -174,8 +164,8 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     }
     
     // Add new atom type
-    md_array_push(atom_type->name, name, alloc);
-    md_array_push(atom_type->element, element, alloc);
+    md_array_push(atom_type->name, make_label(name), alloc);
+    md_array_push(atom_type->z, z, alloc);
     md_array_push(atom_type->mass, mass, alloc);
     md_array_push(atom_type->radius, radius, alloc);
     atom_type->count++;
@@ -183,58 +173,70 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     return (md_atom_type_idx_t)(atom_type->count - 1);
 }
 
-static inline md_element_t md_atom_get_element(const md_molecule_t* mol, size_t atom_idx) {
-    ASSERT(mol);
-    ASSERT(atom_idx < mol->atom.count);
+// Fills an atom type table from the given arrays
+// all fields if passed must have the same length atom_count
+// atom_mass is optional and can be NULL
+// atom_radii is optional and can be NULL
+void md_atom_type_data_fill(md_atom_type_data_t* atom_types, const str_t atom_names[], const md_element_t atom_element[], const float atom_mass[], const float atom_radii[], const str_t atom_resname[], size_t atom_count, struct md_allocator_i* alloc);
+
+static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_data_t* type_data, md_atom_type_idx_t idx) {
+    ASSERT(type_data);
+    if (idx >= 0 && (size_t)idx < type_data->count) {
+        return type_data->z[idx];
+    }
+    return 0;
+}
+
+static inline md_atomic_number_t md_atom_get_atomic_number(const md_atom_data_t* atom_data, size_t atom_idx) {
+    ASSERT(atom_data);
+    ASSERT(atom_idx < atom_data->count);
     
     // Try atom type table first if type_idx is available
-    if (mol->atom.type_idx && mol->atom.type_idx[atom_idx] >= 0 && 
-        (size_t)mol->atom.type_idx[atom_idx] < mol->atom_type.count) {
-        return mol->atom_type.element[mol->atom.type_idx[atom_idx]];
-    }
-    
-    // Fallback to per-atom element if available
-    if (mol->atom.element) {
-        return mol->atom.element[atom_idx];
+    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
+        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
+        return atom_data->type_data.z[atom_data->type_idx[atom_idx]];
     }
     
     return 0;
 }
 
-static inline float md_atom_get_mass(const md_molecule_t* mol, size_t atom_idx) {
-    ASSERT(mol);
-    ASSERT(atom_idx < mol->atom.count);
+static inline float md_atom_get_mass(const md_atom_data_t* atom_data, size_t atom_idx) {
+    ASSERT(atom_data);
+    ASSERT(atom_idx < atom_data->count);
     
     // Try atom type table first if type_idx is available
-    if (mol->atom.type_idx && mol->atom.type_idx[atom_idx] >= 0 && 
-        (size_t)mol->atom.type_idx[atom_idx] < mol->atom_type.count) {
-        return mol->atom_type.mass[mol->atom.type_idx[atom_idx]];
-    }
-    
-    // Fallback to per-atom mass if available
-    if (mol->atom.mass) {
-        return mol->atom.mass[atom_idx];
+    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
+        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
+        return atom_data->type_data.mass[atom_data->type_idx[atom_idx]];
     }
     
     return 0.0f;
 }
 
-static inline float md_atom_get_radius(const md_molecule_t* mol, size_t atom_idx) {
-    ASSERT(mol);
-    ASSERT(atom_idx < mol->atom.count);
+static inline float md_atom_get_radius(const md_atom_data_t* atom_data, size_t atom_idx) {
+    ASSERT(atom_data);
+    ASSERT(atom_idx < atom_data->count);
     
     // Try atom type table first if type_idx is available
-    if (mol->atom.type_idx && mol->atom.type_idx[atom_idx] >= 0 && 
-        (size_t)mol->atom.type_idx[atom_idx] < mol->atom_type.count) {
-        return mol->atom_type.radius[mol->atom.type_idx[atom_idx]];
-    }
-    
-    // Fallback to per-atom radius if available
-    if (mol->atom.radius) {
-        return mol->atom.radius[atom_idx];
+    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
+        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
+        return atom_data->type_data.radius[atom_data->type_idx[atom_idx]];
     }
     
     return 0.0f;
+}
+
+static inline str_t md_atom_get_atom_id(const md_atom_data_t* atom_data, size_t atom_idx) {
+    ASSERT(atom_data);
+    ASSERT(atom_idx < atom_data->count);
+
+    // Try atom type table first if type_idx is available
+    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
+        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
+        return LBL_TO_STR(atom_data->type_data.name[atom_data->type_idx[atom_idx]]);
+    }
+
+    return (str_t){0};
 }
 
 static inline md_range_t md_residue_atom_range(md_residue_data_t res, size_t res_idx) {
@@ -290,33 +292,33 @@ static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx
 }
 
 // Convenience functions to extract atom properties into arrays
-static inline void md_atom_extract_radii(float out_radii[], size_t n, const md_molecule_t* mol) {
+static inline void md_atom_extract_radii(float out_radii[], size_t n, const md_atom_data_t* atom_data) {
     ASSERT(out_radii);
-    ASSERT(mol);
-    ASSERT(n <= mol->atom.count);
+    ASSERT(atom_data);
+    ASSERT(n <= atom_data->count);
     
     for (size_t i = 0; i < n; ++i) {
-        out_radii[i] = md_atom_get_radius(mol, i);
+        out_radii[i] = md_atom_get_radius(atom_data, i);
     }
 }
 
-static inline void md_atom_extract_masses(float out_masses[], size_t n, const md_molecule_t* mol) {
+static inline void md_atom_extract_masses(float out_masses[], size_t n, const md_atom_data_t* atom_data) {
     ASSERT(out_masses);
-    ASSERT(mol);
-    ASSERT(n <= mol->atom.count);
+    ASSERT(atom_data);
+    ASSERT(n <= atom_data->count);
     
     for (size_t i = 0; i < n; ++i) {
-        out_masses[i] = md_atom_get_mass(mol, i);
+        out_masses[i] = md_atom_get_mass(atom_data, i);
     }
 }
 
-static inline void md_atom_extract_elements(md_element_t out_elements[], size_t n, const md_molecule_t* mol) {
-    ASSERT(out_elements);
-    ASSERT(mol);
-    ASSERT(n <= mol->atom.count);
+static inline void md_atom_extract_atomic_numbers(md_atomic_number_t out_z[], size_t n, const md_atom_data_t* atom_data) {
+    ASSERT(out_z);
+    ASSERT(atom_data);
+    ASSERT(n <= atom_data->count);
     
     for (size_t i = 0; i < n; ++i) {
-        out_elements[i] = md_atom_get_element(mol, i);
+        out_z[i] = md_atom_get_atomic_number(atom_data, i);
     }
 }
 

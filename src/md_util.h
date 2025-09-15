@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include <md_molecule.h>
-#include <core/md_atomic.h>
 
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
@@ -62,14 +61,11 @@ static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
-// Element guess function - now delegates to the new inference system
-bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol);
+// Initializes residue data from atom data
+bool md_util_init_residue_data(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc);
+bool md_util_identify_residue_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
 
-bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
-
-// Conservative mass→element mapping for LAMMPS with CG/reduced-units detection
-// Returns false if data appears to be CG or reduced-units (skips mapping)
-bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
+size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
@@ -82,12 +78,12 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_molecule_t* mol);
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_element_t* in_elem, size_t atom_count, const md_residue_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_residue_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 static inline void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_molecule_t* mol, struct md_allocator_i* alloc) {
-    md_util_covalent_bonds_compute_exp(out_bonds, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.count, &mol->residue, &mol->unit_cell, alloc);    
+    md_util_covalent_bonds_compute_exp(out_bonds, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.type_idx, mol->atom.count, &mol->atom.type_data, &mol->residue, &mol->unit_cell, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
