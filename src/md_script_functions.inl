@@ -314,7 +314,7 @@ static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
 static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
-static int _split_bf                    (data_t*, data_t[], eval_context_t*);
+//static int _split_bf                    (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
@@ -694,7 +694,7 @@ static procedure_t procedures[] = {
     // --- MISC ---
     {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
     {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-    {CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
+    //{CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
 
     {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -1368,7 +1368,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
                     bf = &tmp_bf;
                 }
-                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
                 md_array_push(positions, com, ctx->temp_alloc);
             }
             ASSERT(num_bf == md_array_size(positions));
@@ -1410,7 +1410,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + in_idx[i] - 1;
-            out_xyzw[i] = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : default_weight);
+            out_xyzw[i] = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
         }
         break;
     }
@@ -1426,13 +1426,13 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
                 while (md_bitfield_iter_next(&it)) {
                     const uint64_t idx = md_bitfield_iter_idx(&it);
-                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : default_weight);
+                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
                     md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                 }
             }
             else {
                 for (int j = range.beg; j < range.end; ++j) {
-                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j], ctx->mol->atom.mass ? ctx->mol->atom.mass[j] : default_weight);
+                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j], ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
                     md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                 }
             }
@@ -1456,7 +1456,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 bf = &tmp_bf;
             }
             md_array_resize(out_xyzw, md_bitfield_popcount(bf), ctx->temp_alloc);
-            extract_xyzw_vec4(out_xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+            extract_xyzw_vec4(out_xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
         }
         else {
             md_array(int32_t) indices = 0;
@@ -1469,11 +1469,11 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 md_array_resize(indices, md_bitfield_popcount(bf), ctx->temp_alloc);
                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                 md_bitfield_iter_extract_indices(indices, md_array_size(indices), it);
-                vec3_t xyz = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, md_array_size(indices), &ctx->mol->unit_cell);
+                vec3_t xyz = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, indices, md_array_size(indices), &ctx->mol->unit_cell);
                 double w = 0;
-                if (ctx->mol->atom.mass) {
+                if (ctx->atom_mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
-                    w += ctx->mol->atom.mass[indices[j]];
+                    w += ctx->atom_mass[indices[j]];
                 }
                 } else {
                     w = (double)md_array_size(indices);
@@ -1606,7 +1606,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             return (vec3_t) { ctx->mol->atom.x[idx[0]], ctx->mol->atom.y[idx[0]], ctx->mol->atom.z[idx[0]] };
         }
         
-        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, num_idx, &ctx->mol->unit_cell);
+        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, idx, num_idx, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_IRANGE: {
@@ -1622,7 +1622,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             if (ctx->mol_ctx) {
                 size_t len = md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end));
-                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, indices, len, &ctx->mol->unit_cell), 1.0f);
                 md_array_push(xyzw_arr, xyzw, ctx->temp_alloc);
             }
             else {
@@ -1633,7 +1633,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
         }
 
@@ -1660,7 +1660,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             size_t len = md_bitfield_popcount(bf);
             int32_t* indices = md_vm_arena_push(ctx->temp_alloc, md_bitfield_popcount(bf) * sizeof(int32_t));
             md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-            com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell);
+            com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, indices, len, &ctx->mol->unit_cell);
         }
         else {
             // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
@@ -1676,7 +1676,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
             com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->mol->unit_cell);
         }
@@ -2093,7 +2093,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            str_t atom_str = LBL_TO_STR(ctx->mol->atom.type[i]);
+            str_t atom_str = md_atom_get_atom_id(&ctx->mol->atom, i);
             for (size_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], atom_str)) {
                     md_bitfield_set_bit(bf, i);
@@ -2110,7 +2110,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                str_t atom_str = LBL_TO_STR(ctx->mol->atom.type[i]);
+                str_t atom_str = md_atom_get_atom_id(&ctx->mol->atom, i);
                 if (match_query(str[j], atom_str)) {
                     match = true;
                     break;
@@ -2130,30 +2130,22 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     ASSERT(ctx && ctx->mol);
 
-    if (!ctx->mol->atom.element) {
-        if (!dst) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Dataset does not contain elements, perhaps it is coarse grained?");
-            return -1;
-        }
-        return 0;
-    }
-
-    uint8_t* elem_idx = 0;
+    md_atomic_number_t* query_z = 0;
 
     const size_t num_str = element_count(arg[0]);
     const str_t* str = as_string_arr(arg[0]);
 
     for (size_t i = 0; i < num_str; ++i) {
-        md_element_t elem = md_util_element_lookup(str[i]);
-        if (elem)
-            md_array_push(elem_idx, elem, ctx->temp_alloc);
+        md_atomic_number_t z = md_atomic_number_from_symbol(str[i]);
+        if (z)
+            md_array_push(query_z, z, ctx->temp_alloc);
         else if (!dst) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
             return -1;
         }
     }
-    const size_t num_elem = md_array_size(elem_idx);
-    if (!dst && num_elem == 0) {
+    const size_t num_query_z = md_array_size(query_z);
+    if (!dst && num_query_z == 0) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No valid arguments in Element");
         return -1;
     }
@@ -2168,24 +2160,27 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-            for (size_t j = 0; j < num_elem; ++j) {
-                if (elem_idx[j] == ctx->mol->atom.element[i]) {
+            md_atomic_number_t z = md_atom_get_atomic_number(&ctx->mol->atom, i);
+
+            for (size_t j = 0; j < num_query_z; ++j) {
+                if (query_z[j] == z) {
                     md_bitfield_set_bit(bf, i);
-                    //bit_set_idx(result.bits, i);
                     break;
                 }
             }
         }
     } else {
-        for (size_t j = 0; j < num_elem; ++j) {
-            bool found = false;
-            for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
-                if (elem_idx[j] == ctx->mol->atom.element[i]) {
-                    found = true;
+        for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
+            md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
+
+            size_t j = 0;
+            for (; j < num_query_z; ++j) {
+                md_atomic_number_t z_j = query_z[j];
+                if (z_i == z_j) {
                     break;
                 }
             }
-            if (!found) {
+            if (j == num_query_z) {
                 LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Element '%.*s' was not found within structure.", str[j].len, str[j].ptr);
                 return -1;
             }
@@ -2209,8 +2204,9 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
+            md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
             for (size_t j = 0; j < num_ranges; ++j) {
-                if (idx_in_range(ctx->mol->atom.element[i], ranges[j])) {
+                if (idx_in_range(z_i, ranges[j])) {
                     md_bitfield_set_bit(bf, i);
                     break;
                 }
@@ -2222,7 +2218,8 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                if (idx_in_range(ctx->mol->atom.element[i], ranges[j])) {
+                md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
+                if (idx_in_range(z_i, ranges[j])) {
                     match = true;
                     break;
                 }
@@ -3849,7 +3846,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(ctx && ctx->mol && ctx->mol->atom.mass);
+    ASSERT(ctx && ctx->mol && ctx->atom_mass);
 
     bool result = 0;
 
@@ -3877,8 +3874,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
                 };
 
-                extract_xyzw_vec4(xyzw[0], ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, &bf);
-                extract_xyzw_vec4(xyzw[1], ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
+                extract_xyzw_vec4(xyzw[0], ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->atom_mass, &bf);
+                extract_xyzw_vec4(xyzw[1], ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, &bf);
 
                 md_util_pbc_vec4(xyzw[0], count, &ctx->mol->unit_cell);
                 md_util_unwrap_vec4(xyzw[0], count, &ctx->mol->unit_cell);
@@ -4093,6 +4090,7 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+#if 0
 static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     if (!dst) return 0;
@@ -4218,6 +4216,7 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     return 0;
 }
+#endif
 
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
@@ -4378,7 +4377,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         size_t count = md_bitfield_popcount(&bf);
         vec4_t* xyzw = md_vm_arena_push(ctx->temp_alloc, count * sizeof(vec4_t));
-        extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
+        extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, &bf);
         //md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
 
         vec4_t mid_point = vec4_from_vec3(rc, 0);
@@ -5090,17 +5089,22 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
             if (!md_bitfield_test_bit(ref_bf, ref_idx)) {
                 return false;
             }
-            if (mol->atom.element) {
-                if (mol->atom.element[idx] != mol->atom.element[ref_idx]) {
-                    return false;
-                }
-            } else {
-                str_t a = LBL_TO_STR(mol->atom.type[idx]);
-                str_t b = LBL_TO_STR(mol->atom.type[ref_idx]);
-                if (!str_eq(a, b)) {
-                    return false;
-                }
 
+            if (mol->atom.type_idx[idx] == mol->atom.type_idx[ref_idx]) {
+                continue;
+            }
+
+            md_atomic_number_t z_idx = md_atom_get_atomic_number(&mol->atom, idx);
+            md_atomic_number_t z_ref = md_atom_get_atomic_number(&mol->atom, ref_idx);
+            if (z_idx != 0 && z_ref != 0 && z_idx != z_ref) {
+                return false;
+            } else {
+                // Test the type labels
+                str_t lbl_idx = md_atom_get_atom_id(&mol->atom, idx);
+                str_t lbl_ref = md_atom_get_atom_id(&mol->atom, ref_idx);
+                if (!str_eq(lbl_idx, lbl_ref)) {
+                    return false;
+                }
             }
         }
     }
@@ -5249,7 +5253,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float* const ref_x[2] = {ctx->initial_configuration.x, (const float*)ctx->mol->atom.x};
         const float* const ref_y[2] = {ctx->initial_configuration.y, (const float*)ctx->mol->atom.y};
         const float* const ref_z[2] = {ctx->initial_configuration.z, (const float*)ctx->mol->atom.z};
-        const float* ref_w = (const float*)ctx->mol->atom.mass;
+        const float* ref_w = (const float*)ctx->atom_mass;
 
         vec3_t ref_com[2] = {0};
 
@@ -5396,7 +5400,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const size_t count = md_bitfield_popcount(bf);
                 if (count > 0) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
-                    extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                    extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
                     vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
                     md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);

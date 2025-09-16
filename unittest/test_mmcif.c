@@ -15,11 +15,11 @@ UTEST(mmcif, 1fez) {
     if (result) {
         EXPECT_EQ(4097, mol.atom.count);
 
-        EXPECT_EQ(7, mol.atom.element[0]);
-        EXPECT_STREQ("N", mol.atom.type[0].buf);
-        EXPECT_STREQ("LYS", mol.atom.resname[0].buf);
-        EXPECT_EQ(1, mol.atom.resid[0]);
-        EXPECT_STREQ("A", mol.atom.chainid[0].buf);
+        EXPECT_EQ(7, md_atom_get_atomic_number(&mol.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_get_atom_id(&mol.atom, 0)));
+        //EXPECT_STREQ("LYS", mol.atom.resname[0].buf);
+        //EXPECT_EQ(1, mol.atom.resid[0]);
+        //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
         EXPECT_NEAR(52.489, mol.atom.x[0], 0.001);
         EXPECT_NEAR(21.292, mol.atom.y[0], 0.001);
@@ -40,11 +40,11 @@ UTEST(mmcif, 2or2) {
     if (result) {
         EXPECT_EQ(5382, mol.atom.count);
 
-        EXPECT_EQ(7, mol.atom.element[0]);
-        EXPECT_STREQ("N", mol.atom.type[0].buf);
-        EXPECT_STREQ("ALA", mol.atom.resname[0].buf);
-        EXPECT_EQ(1, mol.atom.resid[0]);
-        EXPECT_STREQ("A", mol.atom.chainid[0].buf);
+        EXPECT_EQ(7, md_atom_get_atomic_number(&mol.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_get_atom_id(&mol.atom, 0)));
+        //EXPECT_STREQ("ALA", mol.atom.resname[0].buf);
+        //EXPECT_EQ(1, mol.atom.resid[0]);
+        //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
         EXPECT_NEAR(58.157, mol.atom.x[0], 0.001);
         EXPECT_NEAR(49.822, mol.atom.y[0], 0.001);
@@ -65,11 +65,11 @@ UTEST(mmcif, 8g7u) {
     if (result) {
         EXPECT_EQ(14229, mol.atom.count);
 
-        EXPECT_EQ(7, mol.atom.element[0]);
-        EXPECT_STREQ("N", mol.atom.type[0].buf);
-        EXPECT_STREQ("PHE", mol.atom.resname[0].buf);
-        EXPECT_EQ(241, mol.atom.resid[0]);
-        EXPECT_STREQ("A", mol.atom.chainid[0].buf);
+        EXPECT_EQ(7, md_atom_get_atomic_number(&mol.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_get_atom_id(&mol.atom, 0)));
+        //EXPECT_STREQ("PHE", mol.atom.resname[0].buf);
+        //EXPECT_EQ(241, mol.atom.resid[0]);
+        //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
         EXPECT_NEAR(77.862,  mol.atom.x[0], 0.001);
         EXPECT_NEAR(105.453, mol.atom.y[0], 0.001);

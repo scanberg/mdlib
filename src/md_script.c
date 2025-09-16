@@ -300,6 +300,9 @@ typedef struct eval_context_t {
     const md_bitfield_t* mol_ctx;       // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
     const md_trajectory_i* traj;
 
+    const float* atom_mass;
+    const float* atom_radius;
+
     md_allocator_i* temp_alloc;         // For allocating transient data  (interface to temp vm arena)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
@@ -5604,13 +5607,18 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     // coordinate data for reading trajectory frames into
-    const size_t stride = ALIGN_TO(mol->atom.count, 8);    // Round up allocation size to simd width to allow for vectorized operations
+    const size_t stride = ALIGN_TO(mol->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
     const size_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_vm_arena_push(temp_alloc, coord_bytes);
     float* curr_coords = md_vm_arena_push(temp_alloc, coord_bytes);
+    float* atom_mass   = md_vm_arena_push(temp_alloc, sizeof(float) * stride);
+    float* atom_radius = md_vm_arena_push(temp_alloc, sizeof(float) * stride);
     
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(temp_alloc, num_expr * sizeof(data_t));
+
+    md_atom_extract_masses(atom_mass,   mol->atom.count, &mol->atom);
+    md_atom_extract_radii (atom_radius, mol->atom.count, &mol->atom);
 
     const size_t STACK_RESET_POINT = md_vm_arena_get_pos(temp_alloc);
 
@@ -5639,6 +5647,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
         .traj = traj,
+        .atom_mass = atom_mass,
+        .atom_radius = atom_radius,
         .temp_alloc = temp_alloc,
         .alloc = temp_alloc,
         .frame_header = &curr_header,

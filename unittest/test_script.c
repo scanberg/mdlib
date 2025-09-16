@@ -24,27 +24,32 @@
 static float mol_x[] = {1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8};
 static float mol_y[] = {4,3,2,1,4,3,2,1,1,1,1,1,1,1,1,1};
 static float mol_z[] = {3,2,1,4,3,2,1,2,2,2,2,2,2,2,2,2};
-static float mol_r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
-static float mol_m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
-static uint8_t mol_e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
-static md_label_t mol_t[] = {
-    MAKE_LABEL("H"),
-    MAKE_LABEL("O"),
-    MAKE_LABEL("H"),
-    MAKE_LABEL("He"),
-    MAKE_LABEL("C"),
-    MAKE_LABEL("N"),
-    MAKE_LABEL("CA"),
-    MAKE_LABEL("O"),
-    MAKE_LABEL("H"),
-    MAKE_LABEL("O"),
+static md_atom_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2, 3, 2, 4};
+
+#define ATOM_TYPE_COUNT 5
+static md_atomic_number_t atom_type_z[] = {1, 2, 6, 7, 8};
+static md_label_t atom_type_id[] = {
     MAKE_LABEL("H"),
     MAKE_LABEL("He"),
     MAKE_LABEL("C"),
     MAKE_LABEL("N"),
-    MAKE_LABEL("CA"),
     MAKE_LABEL("O")
 };
+static float atom_type_mass[] = {
+    1.008f,
+    4.002602f,
+    12.011f,
+    14.007f,
+    15.999f
+};
+static float atom_type_radius[] = {
+    1.2f,
+    1.4f,
+    1.7f,
+    1.55f,
+    1.52f
+};
+
 static md_label_t rname[] = {
     MAKE_LABEL("SOL"),
     MAKE_LABEL("SOL"),
@@ -81,24 +86,27 @@ md_molecule_t test_mol = {
         .x = mol_x,
         .y = mol_y,
         .z = mol_z,
-        .radius = mol_r,
-        .mass = mol_m,
-        .element = mol_e,
-        .type = mol_t,
-        .resname = rname,
-},
-.residue = {
+        .type_idx = mol_ti,
+        .type_data = {
+            .count = ATOM_TYPE_COUNT,
+            .name = atom_type_id,
+            .z = atom_type_z,
+            .mass = atom_type_mass,
+            .radius = atom_type_radius,
+        },
+    },
+    .residue = {
         .count = RES_COUNT,
         .name = r_name,
         .id = r_id,
         .atom_offset = r_off
-},
-.chain = {
+    },
+    .chain = {
         .count = CHAIN_COUNT,
         .id = c_id,
         .atom_range = c_atom_rng,
         .res_range = c_res_rng,
-}
+    }
 };
 
 struct script {

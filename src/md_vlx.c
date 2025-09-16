@@ -2862,18 +2862,28 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 	md_array_resize(mol->atom.y,		capacity, alloc);
 	md_array_resize(mol->atom.z,		capacity, alloc);
     md_array_resize(mol->atom.type_idx, capacity, alloc);
+    md_array_resize(mol->atom.flags,    capacity, alloc);
 
 	MEMSET(mol->atom.x,			0, md_array_bytes(mol->atom.x));
 	MEMSET(mol->atom.y,			0, md_array_bytes(mol->atom.y));
 	MEMSET(mol->atom.z,			0, md_array_bytes(mol->atom.z));
 	MEMSET(mol->atom.type_idx,  0, md_array_bytes(mol->atom.type_idx));
+    MEMSET(mol->atom.flags,		0, md_array_bytes(mol->atom.flags));
+
+	mol->atom.type_data.count = 0;
+    md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		mol->atom.element[i] = vlx->atomic_numbers[i];
-		mol->atom.type[i] = make_label(md_util_element_symbol(vlx->atomic_numbers[i]));
 		mol->atom.x[i] = (float)vlx->atom_coordinates[i].x;
 		mol->atom.y[i] = (float)vlx->atom_coordinates[i].y;
 		mol->atom.z[i] = (float)vlx->atom_coordinates[i].z;
+		
+		md_atomic_number_t z = vlx->atomic_numbers[i];
+		str_t sym  = md_symbol_from_atomic_number(z);
+        float mass = md_atomic_mass(z);
+		float radius = md_vdw_radius(z);
+
+		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type_data, sym, z, mass, radius, alloc);
 	}
 
 	return true;
