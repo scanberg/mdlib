@@ -97,9 +97,9 @@ UTEST_F(util, chain) {
     const md_molecule_t* mol = &utest_fixture->mol_centered;
     if (mol->chain.count == 0) return;
 
-    size_t ref_size = md_chain_atom_count(mol->chain, 0);
+    size_t ref_size = md_chain_atom_count(&mol->chain, 0);
     for (size_t i = 1; i < mol->chain.count; ++i) {
-        size_t size = md_chain_atom_count(mol->chain, i);
+        size_t size = md_chain_atom_count(&mol->chain, i);
         EXPECT_EQ(ref_size, size);
     }
 }
@@ -147,7 +147,8 @@ UTEST_F(util, rmsd) {
         mem + stride * 5,
     };
 
-    const float* w = mol->atom.mass;
+    float* w = md_alloc(alloc, sizeof(float) * stride);
+	md_atom_extract_masses(w, mol->atom.count, &mol->atom);
 
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 6) + stride * 3;
@@ -438,7 +439,7 @@ UTEST_F(util, structure_matching_amyloid_chain) {
         if (true) {
             md_array(int) new_idx = 0;
             for (size_t i = 0; i < ref_len; ++i) {
-                if (mol->atom.element[i] > 1) {
+                if (md_atom_get_atomic_number(&mol->atom, ref_idx[i]) > 1) {
                     md_array_push(new_idx, ref_idx[i], alloc);
                 }
             }
@@ -665,27 +666,20 @@ UTEST_F(util, structure_matching_smiles) {
             bool has_h = false;
             bool has_ch = false;
 
-            if (str_eq(mol->name, STR_LIT("ASPIRINE")) && str_eq(res->name, STR_LIT("ALA"))) {
-                while(0) {};
-            }
-
             for (size_t ref_idx = 0; ref_idx < ref_count; ++ref_idx) {
-                md_range_t atom_range = md_residue_atom_range(mol->mol->residue, ref_list[ref_idx]);
+                md_range_t atom_range = md_residue_atom_range(&mol->mol->residue, ref_list[ref_idx]);
                 for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-                    if (mol->mol->atom.element[i] == 1) {
+					md_atomic_number_t z_i = md_atom_get_atomic_number(&mol->mol->atom, i);
+                    if (z_i == MD_Z_H) {
                         has_h = true;
                     }
 
-                    if (mol->mol->atom.element[i] == 6) {
-                        md_bond_iter_t it = md_bond_iter(&mol->mol->bond, i);
-                        while (md_bond_iter_has_next(it)) {
-                            md_atom_idx_t j = md_bond_iter_atom_index(it);
-                            if (mol->mol->atom.element[j] == 1) {
-                                has_ch = true;
-                                break;
-                            }
-                            md_bond_iter_next(&it);
-                        }
+                    if (z_i == MD_Z_C) {
+						const md_atomic_number_t z_j[] = { MD_Z_H };
+                        if (md_atom_is_connected_to_atomic_numbers(&mol->mol->atom, &mol->mol->bond, i, z_j, ARRAY_SIZE(z_j))) {
+                            has_ch = true;
+                            break;
+						}
                     }
                 }
                 if (has_h && has_ch) {
@@ -702,8 +696,6 @@ UTEST_F(util, structure_matching_smiles) {
             }
 
             md_index_data_t match_result = { .alloc = alloc };
-
-
 
             for (size_t p_idx = 0; p_idx < ARRAY_SIZE(res->pattern); ++p_idx) {
                 str_t smiles = res->pattern[p_idx].smiles;
@@ -728,7 +720,7 @@ UTEST_F(util, structure_matching_smiles) {
                 md_hashset_t match_set = {.allocator = alloc};
                 for (size_t i = 0; i < match_count; ++i) {
                     int* atom_idx = md_index_range_beg(match_result, i);
-                    md_residue_idx_t res_idx = mol->mol->atom.res_idx[atom_idx[0]];
+                    md_residue_idx_t res_idx = md_residue_find_by_atom_idx(&mol->mol->residue, atom_idx[0]);
                     md_hashset_add(&match_set, res_idx);
                 }
                 

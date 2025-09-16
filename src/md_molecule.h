@@ -236,59 +236,136 @@ static inline str_t md_atom_get_atom_id(const md_atom_data_t* atom_data, size_t 
         return LBL_TO_STR(atom_data->type_data.name[atom_data->type_idx[atom_idx]]);
     }
 
-    return (str_t){0};
+    return STR_LIT("");
 }
 
-static inline md_range_t md_residue_atom_range(md_residue_data_t res, size_t res_idx) {
+static inline md_range_t md_residue_atom_range(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
 	md_range_t range = {0};
-	if (res.atom_offset && res_idx < res.count) {
-		range.beg = res.atom_offset[res_idx];
-		range.end = res.atom_offset[res_idx + 1];
+	if (res->atom_offset && res_idx < res->count) {
+		range.beg = res->atom_offset[res_idx];
+		range.end = res->atom_offset[res_idx + 1];
 	}
 	return range;
 }
 
-static inline size_t md_residue_atom_count(md_residue_data_t res, size_t res_idx) {
+static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data_t* res, size_t atom_idx) {
+    ASSERT(res);
+
+    md_residue_idx_t res_idx = -1;
+    if (res->atom_offset) {
+        for (size_t i = 0; i < res->count; ++i) {
+            int32_t beg = res->atom_offset[i];
+            int32_t end = res->atom_offset[i + 1];
+            if (beg <= atom_idx && atom_idx < end) {
+                res_idx = i;
+                break;
+            }
+            if (beg < atom_idx) {
+                break;
+            }
+        }
+    }
+
+    return res_idx;
+}
+
+static inline size_t md_residue_atom_count(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
     size_t count = 0;
-    if (res.atom_offset && res_idx < res.count) {
-        count = res.atom_offset[res_idx + 1] - res.atom_offset[res_idx];
+
+    if (res->atom_offset && res_idx < res->count) {
+        count = res->atom_offset[res_idx + 1] - res->atom_offset[res_idx];
     }
     return count;
 }
 
 
-static inline md_range_t md_chain_residue_range(md_chain_data_t chain, size_t chain_idx) {
+static inline md_range_t md_chain_residue_range(const md_chain_data_t* chain, size_t chain_idx) {
+    ASSERT(chain);
+
     md_range_t range = {0};
-    if (chain.res_range && chain_idx < chain.count) {
-        range = chain.res_range[chain_idx];
+    if (chain->res_range && chain_idx < chain->count) {
+        range = chain->res_range[chain_idx];
     }
     return range;
 }
 
-static inline size_t md_chain_residue_count(md_chain_data_t chain, size_t chain_idx) {
+static inline md_chain_idx_t md_chain_find_by_residue_idx(const md_chain_data_t* chain, size_t res_idx) {
+    ASSERT(chain);
+
+    md_chain_idx_t chain_idx = -1;
+    if (chain->res_range) {
+        for (size_t i = 0; i < chain->count; ++i) {
+            md_range_t range = chain->res_range[i];
+            if (range.beg <= res_idx && res_idx < range.end) {
+                chain_idx = (md_chain_idx_t)i;
+                break;
+            }
+            if (range.beg < res_idx) {
+                break;
+            }
+        }
+    }
+    return chain_idx;
+}
+
+static inline md_chain_idx_t md_chain_find_by_atom_idx(const md_chain_data_t* chain, size_t atom_idx) {
+    ASSERT(chain);
+
+    md_chain_idx_t chain_idx = -1;
+    if (chain->atom_range) {
+        for (size_t i = 0; i < chain->count; ++i) {
+            md_range_t range = chain->atom_range[i];
+            if (range.beg <= atom_idx && atom_idx < range.end) {
+                chain_idx = (md_chain_idx_t)i;
+                break;
+            }
+            if (range.beg < atom_idx) {
+                break;
+            }
+        }
+    }
+    return chain_idx;
+}
+
+static inline size_t md_chain_residue_count(const md_chain_data_t* chain, size_t chain_idx) {
+    ASSERT(chain);
+
     size_t count = 0;
-    if (chain.res_range && chain_idx < chain.count) {
-        md_range_t range = chain.res_range[chain_idx];
+    if (chain->res_range && chain_idx < chain->count) {
+        md_range_t range = chain->res_range[chain_idx];
         count = range.end - range.beg;
     }
     return count;
 }
 
-static inline md_range_t md_chain_atom_range(md_chain_data_t chain, size_t chain_idx) {
+static inline md_range_t md_chain_atom_range(const md_chain_data_t* chain, size_t chain_idx) {
+	ASSERT(chain);
+
     md_range_t range = {0};
-    if (chain.atom_range && chain_idx < chain.count) {
-        range = chain.atom_range[chain_idx];
+    if (chain->atom_range && chain_idx < chain->count) {
+        range = chain->atom_range[chain_idx];
     }
     return range;
 }
 
-static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx) {
+static inline size_t md_chain_atom_count(const md_chain_data_t* chain, size_t chain_idx) {
     size_t count = 0;
-    if (chain.atom_range && chain_idx < chain.count) {
-        md_range_t range = chain.atom_range[chain_idx];
+    if (chain->atom_range && chain_idx < chain->count) {
+        md_range_t range = chain->atom_range[chain_idx];
         count = range.end - range.beg;
     }
     return count;
+}
+
+static inline str_t md_chain_id(const md_chain_data_t* chain, size_t chain_idx) {
+    ASSERT(chain);
+    str_t id = STR_LIT("");
+    if (chain->id && chain_idx < chain->count) {
+        id = LBL_TO_STR(chain->id[chain_idx]);
+    }
+    return id;
 }
 
 // Convenience functions to extract atom properties into arrays
@@ -398,6 +475,26 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
     md_array_shrink(bond_data->conn.bond_idx, 0);
 
     md_bond_conn_clear(&bond_data->conn);
+}
+
+static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* atom_data, const md_bond_data_t* bond_data, size_t atom_idx, const md_atomic_number_t z_list[], size_t z_count) {
+    ASSERT(bond_data);
+    ASSERT(atom_data);
+    ASSERT(atom_idx < atom_data->count);
+    bool found = false;
+    md_bond_iter_t it = md_bond_iter(bond_data, atom_idx);
+    while (md_bond_iter_has_next(it) && !found) {
+        md_atom_idx_t other_atom_idx = md_bond_iter_atom_index(it);
+        md_atomic_number_t other_z = md_atom_get_atomic_number(atom_data, other_atom_idx);
+        for (size_t i = 0; i < z_count; ++i) {
+            if (other_z == z_list[i]) {
+                found = true;
+                break;
+            }
+        }
+        md_bond_iter_next(&it);
+    }
+    return found;
 }
 
 /*

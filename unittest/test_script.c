@@ -1310,7 +1310,7 @@ UTEST_F(script, visualize) {
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        size_t res_atom_count = md_residue_atom_count(mol->residue, 4);
+        size_t res_atom_count = md_residue_atom_count(&mol->residue, 4);
         size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }

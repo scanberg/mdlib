@@ -3608,7 +3608,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         // The padding applied to residue AABBs in order to determine potential overlap
         const float aabb_pad = 1.5f;
         size_t prev_idx = 0;
-        md_range_t prev_range = md_residue_atom_range(*res, prev_idx);
+        md_range_t prev_range = md_residue_atom_range(res, prev_idx);
         md_flags_t prev_flags = res->flags[prev_idx];
 
         for (int i = prev_range.beg; i < prev_range.end; ++i) {
@@ -3622,7 +3622,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
 
         find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, prev_range, alloc, temp_arena);
         for (size_t curr_idx = 1; curr_idx < res->count; ++curr_idx) {
-            md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
+            md_range_t curr_range = md_residue_atom_range(res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
 
             for (int i = curr_range.beg; i < curr_range.end; ++i) {
@@ -3864,7 +3864,7 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
     ASSERT(out_res);
     for (size_t i = 0; i < out_res->count; ++i) {
         str_t resname = LBL_TO_STR(out_res->name[i]);
-        md_range_t range = md_residue_atom_range(*out_res, i);
+        md_range_t range = md_residue_atom_range(out_res, i);
         size_t len = (size_t)(range.end - range.beg);
 
         md_protein_backbone_atoms_t prot_atoms = {0};
@@ -4127,8 +4127,8 @@ bool md_util_infer_chains(md_chain_data_t* chain, const md_residue_data_t* res, 
         }
         if (add_as_chain) {
             md_range_t atom_range = {
-                md_residue_atom_range(*res, range.beg).beg,
-                md_residue_atom_range(*res, range.end - 1).end
+                md_residue_atom_range(res, range.beg).beg,
+                md_residue_atom_range(res, range.end - 1).end
             };
             md_array_push(chain->id, md_util_next_unique_chain_id(chain->id, chain->count), alloc);
             md_array_push(chain->res_range, range, alloc);
@@ -8192,11 +8192,11 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 md_residue_idx_t res_base = -1;
         
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
-                    md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
+                    md_range_t range = md_chain_residue_range(&mol->chain, chain_idx);
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
 
                         md_protein_backbone_atoms_t atoms;
-                        md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
+                        md_range_t atom_range = md_residue_atom_range(&mol->residue, res_idx);
                         if (md_util_protein_backbone_atoms_extract(&atoms, &mol->atom, atom_range)) {
                             backbone_atoms[backbone_length++] = atoms;
                             if (res_base == -1) {
@@ -8245,10 +8245,10 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 md_residue_idx_t res_base = -1;
 
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
-                    md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
+                    md_range_t range = md_chain_residue_range(&mol->chain, chain_idx);
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
                         md_nucleic_backbone_atoms_t atoms;
-                        md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
+                        md_range_t atom_range = md_residue_atom_range(&mol->residue, res_idx);
                         if (md_util_nucleic_backbone_atoms_extract(&atoms, &mol->atom, atom_range)) {
                             backbone_atoms[backbone_length++] = atoms;
                             if (res_base == -1) {
@@ -8289,8 +8289,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     {
         for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
             md_chain_idx_t chain_idx = mol->protein_backbone.range.chain_idx[i];
-            size_t beg = md_chain_atom_range(mol->chain, chain_idx).beg;
-            size_t len = md_chain_atom_count(mol->chain, chain_idx);
+            size_t beg = md_chain_atom_range(&mol->chain, chain_idx).beg;
+            size_t len = md_chain_atom_count(&mol->chain, chain_idx);
             md_util_unwrap(mol->atom.x + beg, mol->atom.y + beg, mol->atom.z + beg, 0, len, &mol->unit_cell);
         }
     }
@@ -9090,11 +9090,11 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
         break;
     case MD_UTIL_MATCH_LEVEL_RESIDUE:
         for (size_t r_idx = 0; r_idx < mol->residue.count; ++r_idx) {
-            if (md_residue_atom_count(mol->residue, r_idx) < min_size) {
+            if (md_residue_atom_count(&mol->residue, r_idx) < min_size) {
                 continue;
             }
             idx_range_t range = idx_range_create(out_structures);
-            md_range_t res_range = md_residue_atom_range(mol->residue, r_idx);
+            md_range_t res_range = md_residue_atom_range(&mol->residue, r_idx);
             for (int i = res_range.beg; i < res_range.end; ++i) {
                 if (filter_atom(&mol->atom, &mol->bond, i, filter)) {
                     idx_range_push(range, i);
@@ -9105,11 +9105,11 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
         break;
     case MD_UTIL_MATCH_LEVEL_CHAIN:
         for (size_t c_idx = 0; c_idx < mol->chain.count; ++c_idx) {
-            if (md_chain_atom_count(mol->chain, c_idx) < min_size) {
+            if (md_chain_atom_count(&mol->chain, c_idx) < min_size) {
                 continue;
             }
             idx_range_t range = idx_range_create(out_structures);
-            md_range_t chain_range = md_chain_atom_range(mol->chain, c_idx);
+            md_range_t chain_range = md_chain_atom_range(&mol->chain, c_idx);
             for (int i = chain_range.beg; i < chain_range.end; ++i) {
                 if (filter_atom(&mol->atom, &mol->bond, i, filter)) {
                     idx_range_push(range, i);
