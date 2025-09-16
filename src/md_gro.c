@@ -204,8 +204,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         residue_names[i] = res_name;
     }
 
-    md_util_init_residue_data(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
-    md_util_identify_residue_flags(&mol->residue, mol->atom.flags, &mol->atom);
+    md_util_infer_residues(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
+    md_util_infer_residue_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
     float box[3][3];
     MEMCPY(&box, data->box, sizeof(mat3_t));

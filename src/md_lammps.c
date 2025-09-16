@@ -360,7 +360,6 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 		atom->resid = mappings[ATOM_FIELD_RESID] != -1 ? (int32_t)parse_int(tok[mappings[ATOM_FIELD_RESID]]) : -1;
 		atom->type = (int32_t)parse_int(tok[mappings[ATOM_FIELD_TYPE]]);
 		atom->charge = mappings[ATOM_FIELD_Q] != -1 ? (float)parse_float(tok[mappings[ATOM_FIELD_Q]]) : 0.0f;
-		atom->mass = mappings[ATOM_FIELD_MASS] != -1 ? (float)parse_float(tok[mappings[ATOM_FIELD_MASS]]) : 0.0f;
 		atom->x = (float)parse_float(tok[mappings[ATOM_FIELD_X]]);
 		atom->y = (float)parse_float(tok[mappings[ATOM_FIELD_Y]]);
 		atom->z = (float)parse_float(tok[mappings[ATOM_FIELD_Z]]);
@@ -437,11 +436,11 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static size_t parse_masses(double* mass_type_table, size_t mass_type_capacity, size_t expected_count, md_buffered_reader_t* reader) {
+static size_t parse_masses(md_lammps_atom_types_t types[], size_t num_atom_types, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
 	size_t extracted_count = 0;
-	for (size_t i = 0; i < expected_count; ++i) {
+	for (size_t i = 0; i < num_atom_types; ++i) {
 		if (!md_buffered_reader_extract_line(&line, reader)) {
 			MD_LOG_ERROR("Failed to extract mass line");
 			return 0;
@@ -457,7 +456,12 @@ static size_t parse_masses(double* mass_type_table, size_t mass_type_capacity, s
 			MD_LOG_ERROR("Invalid atom type index in Masses: %d (capacity %zu)", type, mass_type_capacity);
 			return 0;
 		}
-		mass_type_table[type] = mass;
+		for (size_t j = 0; j < num_atom_types; ++j) {
+			if (types[i].id == type) {
+				types[i].mass = mass;
+				break;
+			}
+		}
 		extracted_count += 1;
 	}
 
@@ -528,6 +532,10 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 
 	double atom_type_mass_table[512] = {0};
+	bool   use_atom_type_mass_table = false;
+
+	md_lammps_type_t default_type = {0};
+	md_array_push()
 
 	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
@@ -546,11 +554,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			}
 			// Sort atoms by id
 			qsort(data->atoms, data->num_atoms, sizeof(md_lammps_atom_t), compare_atom);
-
-			for (size_t i = 0; i < data->num_atoms; ++i) {
-				int32_t type = data->atoms[i].type;
-				data->atoms[i].mass = type < (int)ARRAY_SIZE(atom_type_mass_table) ? (float)atom_type_mass_table[type] : 0.0f;
-			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
 			if (!data->num_bonds) {
 				MD_LOG_ERROR("Encountered Bond entries, but number of bonds were not set or zero");
@@ -581,13 +584,24 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_dihedrals(data->dihedrals, data->num_dihedrals, reader)) {
 				return false;
 			}
+		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Impropers"))) {
+			if (!data->num_impropers) {
+				MD_LOG_ERROR("Encountered Impropers entries, but number of impropers were not set or zero");
+				return false;
+			}
+			md_buffered_reader_skip_line(reader);
+			md_array_resize(data->impropers, data->num_impropers, alloc);
+			if (!parse_dihedrals(data->impropers, data->num_impropers, reader)) {
+				return false;
+			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Masses"))) {
 			if (!data->num_atom_types) {
 				MD_LOG_ERROR("Encountered Mass entries, but number of atom types were not set or zero");
 				return false;
 			}
+			md_array_resize(data->atom_types, data->num_atom_types, alloc);
 			md_buffered_reader_skip_line(reader);
-			if (parse_masses(atom_type_mass_table, ARRAY_SIZE(atom_type_mass_table), data->num_atom_types, reader) != data->num_atom_types) {
+			if (parse_masses(data->types, data->num_atom_types, reader) != data->num_atom_types) {
 				MD_LOG_ERROR("Number of masses in table did not match the number of atom types");
 				return false;
 			}
@@ -647,6 +661,14 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		}
 	}
 
+	// Assign masses to atoms
+	if (use_atom_type_mass_table) {
+		for (size_t i = 0; i < data->num_atoms; ++i) {
+			int32_t type = data->atoms[i].type;
+			data->atoms[i].mass = type < (int)ARRAY_SIZE(atom_type_mass_table) ? (float)atom_type_mass_table[type] : 0.0f;
+		}
+	}
+
 	return true;
 }
 
@@ -700,32 +722,46 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_resize(mol->atom.x,		capacity, alloc);
-	md_array_resize(mol->atom.y,		capacity, alloc);
-	md_array_resize(mol->atom.z,		capacity, alloc);
-	md_array_resize(mol->atom.type_idx, capacity, alloc);
+	md_array_ensure(mol->atom.x,		capacity, alloc);
+	md_array_ensure(mol->atom.y,		capacity, alloc);
+	md_array_ensure(mol->atom.z,		capacity, alloc);
+	md_array_ensure(mol->atom.type_idx, capacity, alloc);
+	md_array_ensure(mol->atom.flags,    capacity, alloc);
+
+	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+	md_array(md_residue_id_t) 		atom_resid = 0;
+	md_array(float) 		  		atom_mass  = 0;
+	md_array(md_atomic_number_t) 	atom_atomic_number = 0;
+
+	md_array_reisze(atom_mass, 			capacity, temp_arena);
+	md_array_resize(atom_atomic_number, capacity, temp_arena);
 
 	bool has_resid = false;
 	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {
-		md_array_resize(mol->atom.resid, capacity, alloc);
+		md_array_ensure(atom_resid, capacity, temp_arena);
 		has_resid = true;
 	}
 
 	// Prepare for mass→element mapping first
-	md_array_resize(mol->atom.element, capacity, alloc);
 	bool mass_to_element_success = false;
+
+	mol->atom.type_data.count = 0;
+	md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0, 0, alloc);
+
+	md_util_element_from_mass(atom_atomic_number, );
 	
 	// Build atom type table from LAMMPS types - first pass
 	for (int lammps_type = 1; lammps_type <= (int)data->num_atom_types; ++lammps_type) {
-		md_label_t type_name = {0};
-		type_name.len = (uint8_t)snprintf(type_name.buf, sizeof(type_name.buf), "%i", lammps_type);
+		char buf[8];
+		int len = snprintf(buf, sizeof(buf), "TYPE_%i", lammps_type);
 		
-		md_element_t element = 0;
+		str_t type_id = {buf, len};
+		md_atomic_number_t z = 
 		float mass = 0.0f;
 		float radius = 0.0f;
 		
 		// Add to atom type table (will be updated after mass-to-element mapping)
-		md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+
 	}
 
 	for (size_t i = 0; i < data->num_atoms; ++i) {
@@ -742,7 +778,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
 		mol->atom.mass[i] = data->atoms[i].mass;
 		if (has_resid) {
-			mol->atom.resid[i] = data->atoms[i].resid;
+			atom_resid[i] = data->atoms[i].resid;
 		}
 	}
 
@@ -777,6 +813,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	M[2][1] = data->cell.yz;
 	mol->unit_cell = md_util_unit_cell_from_matrix(M);
 
+	md_vm_arena_destroy(temp_arena);
 	return true;
 }
 

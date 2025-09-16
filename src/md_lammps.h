@@ -42,7 +42,17 @@ typedef enum {
 	MD_LAMMPS_ATOM_FORMAT_COUNT
 } md_lammps_atom_format_t;
 
-//Contains data about a single atom
+// Representing atom type data
+typedef struct md_lammps_atom_type_t {
+	int32_t id;
+	float mass;
+	struct {
+		float epsilon;
+		float sigma;
+	} pair_coeff;
+}
+
+// Contains data about a single atom
 typedef struct md_lammps_atom_t {
 	int32_t id;
 	int32_t resid;
@@ -51,7 +61,6 @@ typedef struct md_lammps_atom_t {
 	float x;
 	float y;
 	float z;
-	float mass;
 } md_lammps_atom_t;
 
 typedef struct md_lammps_bond_t {
@@ -96,6 +105,7 @@ typedef struct md_lammps_data_t {
 
 	md_lammps_cell_t cell;
 
+	md_lammps_atom_type_t* atom_types;
 	md_lammps_atom_t* atoms;
 	md_lammps_bond_t* bonds;
 	md_lammps_angle_t* angles;
