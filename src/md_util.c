@@ -3829,7 +3829,7 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 
 #define MIN_RESIDUE_CHAIN_LEN 2
 
-bool md_util_init_residue_data(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
+bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
     ASSERT(out_res);
     ASSERT(alloc);
 
@@ -3860,7 +3860,7 @@ bool md_util_init_residue_data(md_residue_data_t* out_res, md_flags_t out_atom_f
     return true;
 }
 
-bool md_util_identify_residue_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data) {
+bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data) {
     ASSERT(out_res);
     for (size_t i = 0; i < out_res->count; ++i) {
         str_t resname = LBL_TO_STR(out_res->name[i]);
@@ -4103,7 +4103,7 @@ static size_t md_util_residue_sequential_ranges(md_array(md_range_t)* out_ranges
     return num_ranges;
 }
 
-bool md_util_init_chain_data(md_chain_data_t* chain, const md_residue_data_t* res, md_allocator_i* alloc) {
+bool md_util_infer_chains(md_chain_data_t* chain, const md_residue_data_t* res, md_allocator_i* alloc) {
     ASSERT(chain);
     ASSERT(alloc);
     

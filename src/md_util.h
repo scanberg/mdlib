@@ -62,8 +62,8 @@ static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot
 }
 
 // Initializes residue data from atom data
-bool md_util_init_residue_data(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc);
-bool md_util_identify_residue_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
+bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc);
+bool md_util_residue_infer_flags(md_residue_data_t* res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
@@ -85,6 +85,27 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* 
 static inline void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_molecule_t* mol, struct md_allocator_i* alloc) {
     md_util_covalent_bonds_compute_exp(out_bonds, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.type_idx, mol->atom.count, &mol->atom.type_data, &mol->residue, &mol->unit_cell, alloc);
 }
+
+typedef struct {
+    size_t      num_atoms;
+
+    // Required
+    str_t*      atom_type;
+    float*      atom_x;
+    float*      atom_y;
+    float*      atom_z;
+
+    // Optional
+    str_t*      atom_resname;
+    int32_t*    atom_resid;
+    str_t*      atom_chainid;
+    str_t*      atom_symbol;
+    uint8_t*    atom_atomic_number;
+    uint32_t*   atom_flags;
+
+} md_molecule_init_data_t;
+
+bool md_util_molecule_init(md_molecule_t* mol, const md_molecule_init_data_t* data);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask

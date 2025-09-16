@@ -472,17 +472,16 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
-    md_array(md_label_t) chain_ids = 0;
-    md_array(md_range_t) chain_ranges = 0;
-    md_array(md_element_t) atom_elements = 0;
-    md_array(str_t)        atom_labels = 0;
-    md_array(str_t)        atom_resnames = 0;
-    md_array(md_residue_id_t) atom_resids = 0;
+    md_array(md_range_t)        chain_ranges = 0;
+    md_array(str_t)             atom_chain_ids = 0;
+    md_array(str_t)             atom_labels = 0;
+    md_array(str_t)             atom_resnames = 0;
+    md_array(md_residue_id_t)   atom_resids = 0;
 
-    md_array_ensure(atom_elements,  capacity, temp_alloc);
     md_array_ensure(atom_labels,    capacity, temp_alloc);
     md_array_ensure(atom_resnames,  capacity, temp_alloc);
     md_array_ensure(atom_resids,    capacity, temp_alloc);
+    md_array_ensure(atom_chain_ids, capacity, temp_alloc);
 
     md_array_ensure(mol->atom.x,        capacity, mol_alloc);
     md_array_ensure(mol->atom.y,        capacity, mol_alloc);
@@ -490,59 +489,54 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     md_array_ensure(mol->atom.type_idx, capacity, mol_alloc);
     md_array_ensure(mol->atom.flags,    capacity, mol_alloc);
 
-    int32_t prev_res_id = -1;
     char prev_chain_id = -1;
+
+    mol->atom.type_data.count = 0;
+    md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, mol_alloc);
 
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
         float x = data->atom_coordinates[i].x;
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
         
-        str_t atom_type = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
-        str_t res_name  = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
+        str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
+        str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
         md_residue_id_t res_id = data->atom_coordinates[i].res_seq;
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = 0;
-        md_element_t element = 0;
+        md_atomic_number_t atomic_number = 0;
 
         if (data->atom_coordinates[i].element[0]) {
-            // If the element is available, we directly try to use that to lookup the element
+            // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
-            element = md_atomic_number_from_symbol(sym);
+            atomic_number = md_atomic_number_from_symbol(sym);
+        } else {
+            atomic_number = md_atom_infer_atomic_number(atom_type, res_name);
         }
 
+        float mass = md_atomic_mass(atomic_number);
+        float radius = md_vdw_radius(atomic_number);
+
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol-atom.type_data, atom_id, atomic_number, mass, radius, alloc);
+
         if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
-            flags |= MD_FLAG_CHAIN_END;
+            //flags |= MD_FLAG_CHAIN_END;
         }
 
         if (chain_id != ' ') {
-            // Populate chain_ids with empty ' '
+            // Populate chain_ids with empty str
             while (md_array_size(chain_ids) < mol->atom.count) {
-                md_array_push(chain_ids, (md_label_t){0}, temp_alloc);
+                md_array_push_nu_grow(chain_ids, STR_LIT(" "), temp_alloc);
             }
-            str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
-            md_array_push(chain_ids, make_label(chain_str), temp_alloc);
+            str_t chain_id = { &data->atom_coordinates[i].chain_id, 1 };
+            md_array_push_no_grow(chain_ids, chain_id);
 
             if (chain_id != prev_chain_id) {
-                if (prev_chain_id != -1) {
-                    *md_array_last(mol->atom.flags) |= MD_FLAG_CHAIN_END;
-                }
-                flags |= MD_FLAG_CHAIN_BEG;
                 md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
-                prev_chain_id = chain_id;
             }
 
             ASSERT(chain_ranges);
             md_array_last(chain_ranges)->end += 1;
-        }
-
-        if (res_id != prev_res_id) {
-            if (prev_res_id != -1) {
-				*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
-			}
-
-            flags |= MD_FLAG_RES_BEG;
-            prev_res_id = res_id;
         }
 
         mol->atom.count += 1;
@@ -554,35 +548,24 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         md_array_push_no_grow(atom_elements, element);
         md_array_push_no_grow(atom_labels,   atom_type);
         
-        // Set type_idx to 0 == Undefined, will be updated later
         md_array_push_no_grow(mol->atom.type_idx, 0);
+
+        prev_chain_id = chain_id;
     }
+
+    md_util_residue_infer(&mol->residue, mol->atom.flags, atom_resids, atom_resnames, mol->atom.count, mol_alloc);
+    md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
     if (chain_ids) {
         while (md_array_size(chain_ids) < mol->atom.count) {
-            md_array_push(chain_ids, (md_label_t){0}, temp_alloc);
+            md_array_push(chain_ids, STR_LIT(" "), temp_alloc);
         }
-        // Copy chain ids if they are filled (meaning they had some form of entry)
-        md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), mol_alloc);
-    }
-
-    if (mol->atom.count > 0) {
-        md_flags_t flags = MD_FLAG_RES_END;
-        if (mol->chain.id && !str_eq(LBL_TO_STR(mol->chain.id[mol->atom.count - 1]), STR_LIT(" "))) {
-            flags |= MD_FLAG_CHAIN_END;
-        }
-        mol->atom.flags[mol->atom.count - 1] |= flags;
     }
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        if (cryst->a == 1 && cryst->b == 1 && cryst->c == 1 && cryst->alpha == 90 && cryst->beta == 90 && cryst->gamma == 90) {
-            // This is a special case:
-            // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
-        } else {
-            mol->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
-        }
+        mol->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
     };
 
     // Create instances from assemblies
@@ -642,37 +625,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
     }
 
-    // Do not use the connectivity information from the PDB, it is often not complete and only provides the connectivity for HETATM
-    // Instead, we leave the connectivity information empty and the postprocessing figure out connectivity.
-#if 0
-    for (int64_t j = 0; j < data->num_connections; ++j) {
-        const md_pdb_connect_t* c = &data->connections[j];
-        const int32_t a = c->atom_serial[0] - 1;
-        if (a < 0 || (int32_t)mol->atom.count <= a) {
-            goto error;
-        }
-
-		for (int32_t i = 1; i < (int32_t)ARRAY_SIZE(c->atom_serial); ++i) {
-            const int32_t b = c->atom_serial[i] - 1;
-            if (b == -1) break;
-            if ((int32_t)mol->atom.count <= b) {
-                goto error;
-            }
-            md_bond_t bond = {a, b};
-            md_array_push(mol->bonds, bond, alloc);
-        }
-        continue;
-    error:
-        MD_LOG_ERROR("Malformed PDB dataset, connection refers to a non existing atom");
-        return false;
-    }
-#endif
-
     mol->instance.count = md_array_size(mol->instance.transform);
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
-    ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count);
-
-    
+    ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count); 
 
     result = true;
 done:

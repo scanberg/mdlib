@@ -866,16 +866,18 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 
 md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
     md_gl_mol_t handle = {0};
+    size_t temp_pos = md_temp_get_pos();
+
     if (mol) {
         if (mol->atom.count == 0) {
             MD_LOG_ERROR("The supplied molecule has no atoms.");
-            return handle;
+            goto done;
         }
 
         uint32_t id = {md_handle_pool_alloc_slot(&ctx.molecule_pool)};
         if (id == MD_HANDLE_INVALID_ID) {
             MD_LOG_ERROR("Fatal error: ran out of slots!");
-            return handle;
+            goto done;
         }
 
         int index = md_handle_index(id);
@@ -897,7 +899,10 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
         }
         md_gl_mol_zero_velocity(handle);
 
-        if (mol->atom.radius) md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, mol->atom.radius, 0);
+        float* radii = md_temp_push(sizeof(float) * mol->atom.count);
+        md_atom_extract_radii(radii, mol->atom.count, &mol->atom);
+
+        md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
         gl_mol->residue_count = (uint32_t)mol->residue.count;
@@ -1027,6 +1032,8 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
         }
     }
 
+done:
+    md_temp_set_pos_back(temp_pos);
     return handle;
 }
 
