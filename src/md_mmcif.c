@@ -123,7 +123,7 @@ static const str_t entity_type_str[] = {
     BAKE("water"),
 };
 
-typedef uint8_t mmcif_entity_type_t;
+typedef int mmcif_entity_type_t;
 
 enum {
     ENTITY_POLY_TYPE_UNKNOWN,
@@ -148,7 +148,7 @@ static const str_t entity_poly_type_str[] = {
     BAKE("polyribonucleotide"),
 };
 
-typedef uint8_t mmcif_entity_poly_type_t;
+typedef int mmcif_entity_poly_type_t;
 
 typedef struct {
     int id;
@@ -173,6 +173,156 @@ static inline str_t append_token(str_t cur, str_t new_tok) {
     const char* beg = str_beg(cur);
     const char* end = str_end(new_tok);
     return (str_t){beg, end - beg};
+}
+
+
+
+typedef struct {
+    md_buffered_reader_t* reader;
+    md_allocator_i*       alloc;     // For allocating semicolon text tokens
+    str_t                 cur_line;  // Remainder of current (peeked) line
+    bool                  have_line; // cur_line is synced with reader's next line
+    bool                  loop;      // Keep for section parsers if needed
+
+    // Lookahead cache
+    bool                  have_peek;
+    str_t                 peek_tok;
+} mmcif_parse_state_t;
+
+// Internal: fetch next non-empty line into state->cur_line without consuming it.
+// Returns false on EOF.
+static inline bool mmcif_peek_line_sync(mmcif_parse_state_t* s) {
+    ASSERT(s && s->reader);
+    if (s->have_line && s->cur_line.len > 0) return true;
+
+    str_t line;
+    while (md_buffered_reader_peek_line(&line, s->reader)) {
+        line = str_trim(line);
+        if (line.len == 0) {
+            // Consume blank line and continue
+            md_buffered_reader_skip_line(s->reader);
+            continue;
+        }
+        s->cur_line = line;
+        s->have_line = true;
+        return true;
+    }
+    s->cur_line = (str_t){0};
+    s->have_line = false;
+    return false;
+}
+
+// Internal: consume the current peeked line (call after finishing the line)
+static inline void mmcif_consume_line(mmcif_parse_state_t* s) {
+    if (s->have_line) {
+        md_buffered_reader_skip_line(s->reader);
+        s->cur_line = (str_t){0};
+        s->have_line = false;
+    }
+}
+
+// Tokenize next token from state->cur_line; handle quotes.
+// Expects s->have_line == true and cur_line has content.
+static inline bool mmcif_extract_token_from_line(mmcif_parse_state_t* s, str_t* out_tok) {
+    ASSERT(s && out_tok);
+    if (!s->have_line || s->cur_line.len == 0) return false;
+
+    str_t tok = {0};
+    if (!extract_token(&tok, &s->cur_line)) {
+        // No token left on this line
+        return false;
+    }
+
+    // If quoted, extend token to the next matching quote within the same line (CIF quotes do not span multiple lines)
+    if (tok.len > 0 && (tok.ptr[0] == '\'' || tok.ptr[0] == '\"')) {
+        size_t loc;
+        if (!str_find_char(&loc, s->cur_line, tok.ptr[0])) {
+            MD_LOG_ERROR("Unpaired quotes in mmCIF line!");
+            // Return the best-effort token; caller can decide how to proceed
+        } else {
+            tok.len  += loc - 1;
+            s->cur_line.ptr += loc;
+            s->cur_line.len -= loc;
+        }
+    }
+
+    *out_tok = tok;
+    return true;
+}
+
+static inline str_t mmcif_token_next(mmcif_parse_state_t* state) {
+    ASSERT(state && state->reader);
+
+    // Serve lookahead if present
+    if (state->have_peek) {
+        state->have_peek = false;
+        return state->peek_tok;
+    }
+
+    for (;;) {
+        // Ensure we have a line in cur_line
+        if (!mmcif_peek_line_sync(state)) {
+            return (str_t){0}; // EOF
+        }
+
+        // Comment line (treated as sentinel '#', consistent with existing code)
+        if (state->cur_line.len > 0 && state->cur_line.ptr[0] == '#') {
+            // Consume entire comment line and return '#'
+            mmcif_consume_line(state);
+            return STR_LIT("#");
+        }
+
+        // Semicolon-delimited multi-line text block (must start in column 1)
+        if (state->cur_line.len > 0 && state->cur_line.ptr[0] == ';') {
+            md_strb_t sb = {.alloc = state->alloc};
+
+            // Append content after leading ';' on first line
+            md_strb_push_str(&sb, str_substr(state->cur_line, 1, SIZE_MAX));
+            // Consume opening line
+            mmcif_consume_line(state);
+
+            // Accumulate until closing line starting with ';'
+            str_t line;
+            while (md_buffered_reader_peek_line(&line, state->reader)) {
+                str_t l = str_trim(line);
+                if (l.len > 0 && l.ptr[0] == ';') {
+                    // Consume closing line and stop
+                    md_buffered_reader_skip_line(state->reader);
+                    break;
+                }
+                // Consume and append this content line
+                md_buffered_reader_extract_line(&line, state->reader);
+                md_strb_push_str(&sb, line);
+            }
+
+            // Return an allocated token that remains valid
+            return str_copy(md_strb_to_str(sb), state->alloc);
+        }
+
+        // Standard line: extract token(s)
+        str_t tok = {0};
+        if (mmcif_extract_token_from_line(state, &tok)) {
+            // If we consumed the entire line, advance reader
+            if (state->cur_line.len == 0) {
+                mmcif_consume_line(state);
+            }
+            return tok;
+        } else {
+            // No tokens left on this line; consume and continue
+            mmcif_consume_line(state);
+        }
+    }
+}
+
+static inline str_t mmcif_token_peek(mmcif_parse_state_t* state) {
+    ASSERT(state);
+    if (state->have_peek) return state->peek_tok;
+
+    // Use next() to materialize lookahead (handles complex cases like semicolon blocks)
+    str_t tok = mmcif_token_next(state);
+    state->peek_tok = tok;
+    state->have_peek = true;
+    return tok;
 }
 
 // Extracts tokens from entries that potentially contain multi-line strings
@@ -399,7 +549,7 @@ static size_t mmcif_parse_entity_poly(mmcif_entity_t entities[], size_t num_enti
 
         // Attempt to assign type
         for (size_t i = 0; i < num_entities; ++i) {
-            if (entities[i].id = id) {
+            if (entities[i].id == id) {
                 entities[i].poly_type = (mmcif_entity_poly_type_t)poly_type;
             }
         }
@@ -552,6 +702,8 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
     md_array_ensure(atom_entries, 1024, temp_arena);
     md_array_ensure(entities, 4, temp_arena);
 
+    MEMSET(mol, 0, sizeof(md_molecule_t));
+
     mmcif_cell_params_t cell = {0};
 
     str_t line;
@@ -607,8 +759,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         md_array_ensure(atom_resname, reserve_size, temp_arena);
         md_array_ensure(atom_resid,   reserve_size, temp_arena);
 
-        mol->atom.type_data.count = 0;
-        md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
+        md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
 
         for (size_t i = 0; i < num_atoms; ++i) {
             if (atom_entries[i].label_alt_id != ' ') continue;
@@ -618,7 +769,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol);
             float mass = md_atomic_mass(atomic_number);
             float radius = md_vdw_radius(atomic_number);
-            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type_data, atom_id, atomic_number, mass, radius, alloc);
+            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, alloc);
 
             md_flags_t flags = 0;
             flags |= atom_entries[i].group_PDB == ATOM_SITE_GROUP_PDB_HETATM ? MD_FLAG_HETATM : 0;
@@ -634,7 +785,8 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             md_array_push_no_grow(atom_resname, str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id)));
             md_array_push_no_grow(atom_resid, atom_entries[i].label_seq_id);
         }
-        md_util_init_residue_data(&mol->residue, mol->atom.flags, atom_resid, atom_resname, mol->atom.count, alloc);
+        md_util_residue_infer(&mol->residue, mol->atom.flags, atom_resid, atom_resname, mol->atom.count, alloc);
+        md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
     }
 
     if (entity_parsed) {

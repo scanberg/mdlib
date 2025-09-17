@@ -176,8 +176,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     md_residue_id_t*    residue_ids   = md_vm_arena_push_array(temp_arena, md_residue_id_t, capacity);
     str_t*              residue_names = md_vm_arena_push_array(temp_arena, str_t, capacity);
 
-    mol->atom.type_data.count = 0;
-    md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    mol->atom.type.count = 0;
+    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
     for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
@@ -191,7 +191,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         float mass = md_util_element_atomic_mass(atomic_number);
         float radius = md_util_element_vdw_radius(atomic_number);
 
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type_data, atom_name, atomic_number, mass, radius, alloc);
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_name, atomic_number, mass, radius, alloc);
 
         mol->atom.count += 1;
         md_array_push_no_grow(mol->atom.x, x);
@@ -204,8 +204,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         residue_names[i] = res_name;
     }
 
-    md_util_infer_residues(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
-    md_util_infer_residue_flags(&mol->residue, mol->atom.flags, &mol->atom);
+    md_util_residue_infer(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
+    md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
     float box[3][3];
     MEMCPY(&box, data->box, sizeof(mat3_t));

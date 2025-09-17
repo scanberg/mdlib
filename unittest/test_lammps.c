@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <string.h>
 
 #include <md_lammps.h>
@@ -42,12 +42,12 @@ UTEST(lammps, water_ethane_cubic) {
     EXPECT_EQ(data.cell.yz, 0);
 
     const md_lammps_atom_t ref_atoms[] = {
-        {1, 1, 2, -0.06824945, 0.7171309449132868,  20.30016060370651,  16.45385018655536,  12.011},
-        {2, 1, 2, -0.06824945, 38.92628229188471,   19.676107297642947, 17.524030273606662, 12.011},
-        {3, 1, 1,  0.02274982, 0.35600433814655547, 21.295980033518028, 16.190304644421158, 1.008},
-        {4, 1, 1,  0.02274982, 0.7222350352475837,  19.67644034589673,  15.558042260533268, 1.008},
-        {5, 1, 1,  0.02274982, 1.736920897842471,   20.382201091257382, 16.834406173978778, 1.008},
-        {6, 1, 1,  0.02274982, 37.906493379107445,  19.594063602913423, 17.143473777787637, 1.008},
+        {1, 1, 2, -0.06824945, 0.7171309449132868,  20.30016060370651,  16.45385018655536 },
+        {2, 1, 2, -0.06824945, 38.92628229188471,   19.676107297642947, 17.524030273606662 },
+        {3, 1, 1,  0.02274982, 0.35600433814655547, 21.295980033518028, 16.190304644421158 },
+        {4, 1, 1,  0.02274982, 0.7222350352475837,  19.67644034589673,  15.558042260533268 },
+        {5, 1, 1,  0.02274982, 1.736920897842471,   20.382201091257382, 16.834406173978778 },
+        {6, 1, 1,  0.02274982, 37.906493379107445,  19.594063602913423, 17.143473777787637 },
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(ref_atoms); ++i) {
@@ -58,7 +58,19 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_NEAR(ref_atoms[i].x,         data.atoms[i].x,        1.0e-5f);
         EXPECT_NEAR(ref_atoms[i].y,         data.atoms[i].y,        1.0e-5f);
         EXPECT_NEAR(ref_atoms[i].z,         data.atoms[i].z,        1.0e-5f);
-        EXPECT_NEAR(ref_atoms[i].mass,      data.atoms[i].mass,     1.0e-5f);
+    }
+
+    const md_lammps_atom_type_t ref_atom_types[] = {
+        {1, 1.008f,    0.31f},
+        {2, 12.011f,   0.25f},
+        {3, 15.9994f,  0.70f},
+        {4, 1.008f,    0.65f},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(ref_atom_types); ++i) {
+        EXPECT_EQ(ref_atom_types[i].id,     data.atom_types[i].id);
+        EXPECT_NEAR(ref_atom_types[i].mass, data.atom_types[i].mass,   1.0e-5f);
+        EXPECT_NEAR(ref_atom_types[i].radius, data.atom_types[i].radius, 1.0e-5f);
     }
 
     const md_lammps_bond_t ref_bonds[] = {
@@ -69,6 +81,7 @@ UTEST(lammps, water_ethane_cubic) {
         {5, 1, {2, 6}},
         {6, 1, {2, 7}},
     };
+
     for (size_t i = 0; i < ARRAY_SIZE(ref_bonds); ++i) {
         EXPECT_EQ(ref_bonds[i].id, data.bonds[i].id);
         EXPECT_EQ(ref_bonds[i].type, data.bonds[i].type);
@@ -116,8 +129,32 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
         EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
         EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
-        EXPECT_NE(mol.atom.mass[i], 0.0f);
-        EXPECT_NE(mol.atom.element[i], 0);
+    }
+
+    for (size_t i = 0; i < mol.atom.type.count; ++i) {
+        str_t type_id = md_atom_type_name(&mol.atom.type, i);
+        float mass    = md_atom_type_mass(&mol.atom.type, i);
+        float radius  = md_atom_type_radius(&mol.atom.type, i);
+        md_atomic_number_t z = md_atom_type_atomic_number(&mol.atom.type, i);
+
+        bool found = false;
+        for (size_t j = 0; j < data.num_atom_types; ++j) {
+            char buf[8];
+            int len = snprintf(buf, sizeof(buf), "Type_%i", data.atom_types[j].id);
+            str_t ref_type_id = {buf, len};
+            float ref_mass = data.atom_types[j].mass;
+            float ref_radius = data.atom_types[j].radius;
+            md_atomic_number_t ref_z;
+            md_util_element_from_mass(&ref_z, &ref_mass, 1);
+            if (str_eq(type_id, ref_type_id)) {
+                found = true;
+                EXPECT_NEAR(mass, ref_mass, 1.0e-5f);
+                EXPECT_NEAR(radius, ref_radius, 1.0e-5f);
+                EXPECT_EQ(z, ref_z);
+                break;
+            }
+        }
+        EXPECT_TRUE(found);
     }
 
     md_molecule_free(&mol, alloc);
@@ -161,12 +198,12 @@ UTEST(lammps, water_ethane_triclinic) {
 
 
     const md_lammps_atom_t ref_atoms[] = {
-        {1, 1, 2, -0.06824945, 12.231602469911088, 29.301075267966024, 23.680986746474638, 12.011},
-        {2, 1, 2, -0.06824945, 10.905906375367397, 28.52065203980296,  23.693054990351918, 12.011},
-        {3, 1, 1,  0.02274982, 12.296277457009811, 29.94048021774919,  24.56331518414414,  1.008},
-        {4, 1, 1,  0.02274982, 12.289658698028006, 29.924248444294474, 22.78666604407197,  1.008},
-        {5, 1, 1,  0.02274982, 13.073614466503752, 28.606431083336908, 23.684196670413105, 1.008},
-        {6, 1, 1,  0.02274982, 10.063894441320446, 29.21529541522476,  23.689841754669413, 1.008},
+        {1, 1, 2, -0.06824945, 12.231602469911088, 29.301075267966024, 23.680986746474638},
+        {2, 1, 2, -0.06824945, 10.905906375367397, 28.52065203980296,  23.693054990351918},
+        {3, 1, 1,  0.02274982, 12.296277457009811, 29.94048021774919,  24.56331518414414 },
+        {4, 1, 1,  0.02274982, 12.289658698028006, 29.924248444294474, 22.78666604407197 },
+        {5, 1, 1,  0.02274982, 13.073614466503752, 28.606431083336908, 23.684196670413105},
+        {6, 1, 1,  0.02274982, 10.063894441320446, 29.21529541522476,  23.689841754669413},
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(ref_atoms); ++i) {
@@ -177,7 +214,6 @@ UTEST(lammps, water_ethane_triclinic) {
         EXPECT_NEAR(ref_atoms[i].x,         data.atoms[i].x,        1.0e-5f);
         EXPECT_NEAR(ref_atoms[i].y,         data.atoms[i].y,        1.0e-5f);
         EXPECT_NEAR(ref_atoms[i].z,         data.atoms[i].z,        1.0e-5f);
-        EXPECT_NEAR(ref_atoms[i].mass,      data.atoms[i].mass,     1.0e-5f);
     }
 
     const md_lammps_bond_t ref_bonds[] = {
@@ -235,9 +271,7 @@ UTEST(lammps, water_ethane_triclinic) {
         EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
         EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
         EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
-        EXPECT_EQ(mol.atom.mass[i], data.atoms[i].mass);
-        EXPECT_EQ(mol.atom.resid[i], data.atoms[i].resid);
-        EXPECT_NE(mol.atom.element[i], 0);
+        EXPECT_NE(mol.atom.type_idx[i], 0);
     }
 
     md_molecule_free(&mol, alloc);

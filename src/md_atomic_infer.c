@@ -117,7 +117,7 @@ size_t md_atoms_infer_atomic_numbers(md_atomic_number_t out_z[], const str_t ato
 
         uint32_t* cached_z = md_hashmap_get(&cache, key);
         if (cached_z) {
-            out_z[i] = *cached_z;
+            out_z[i] = (md_atomic_number_t)*cached_z;
             num_success += (size_t)(*cached_z != MD_Z_X);
             continue;
         }

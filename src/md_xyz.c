@@ -740,10 +740,9 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
     md_array_ensure(mol->atom.y, reserve_size, alloc);
     md_array_ensure(mol->atom.z, reserve_size, alloc);
     md_array_ensure(mol->atom.type_idx, reserve_size, alloc);
-    mol->atom.type_data.count = 0;
 
     // Setup atom types including unknown type
-    md_atom_type_find_or_add(&mol->atom.type_data, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
@@ -751,7 +750,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         float z = data->coordinates[i].z;
         str_t atom_symbol = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type_data, atom_symbol, atomic_number, md_atomic_mass(atomic_number), md_vdw_radius(atomic_number), alloc);
+        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_symbol, atomic_number, md_atomic_mass(atomic_number), md_vdw_radius(atomic_number), alloc);
 
         mol->atom.count += 1;
         md_array_push(mol->atom.x, x, alloc);

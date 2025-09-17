@@ -46,11 +46,8 @@ typedef enum {
 typedef struct md_lammps_atom_type_t {
 	int32_t id;
 	float mass;
-	struct {
-		float epsilon;
-		float sigma;
-	} pair_coeff;
-}
+	float radius; // Approximated from LJ or equivalent (if present)
+} md_lammps_atom_type_t;
 
 // Contains data about a single atom
 typedef struct md_lammps_atom_t {

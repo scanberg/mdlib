@@ -1181,7 +1181,7 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
     uint32_t bits = 0;
     md_protein_backbone_atoms_t bb = {0};
     for (int i = atom_range.beg; i < atom_range.end; ++i) {
-        str_t id = md_atom_get_atom_id(atom_data, i);
+        str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "N",  1)) { bb.n  = i; bits |= 1;  continue; }
@@ -1218,7 +1218,7 @@ static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* 
     uint32_t bits = 0;
     md_nucleic_backbone_atoms_t bb = {0};
     for (int i = atom_range.beg; i < atom_range.end; ++i) {
-        str_t id = md_atom_get_atom_id(atom_data, i);
+        str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "C5'", 3)) { bb.c5 = i; bits |= 1;  continue; }
@@ -1263,7 +1263,7 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
             // Linear search for matching atomic mass
             for (size_t j = 1; j < ARRAY_SIZE(element_atomic_mass); ++j) {
                 if (fabs(m - element_atomic_mass[j]) < eps) {
-                    elem = j;
+                    elem = (md_element_t)j;
                     break;
                 } else if (m < element_atomic_mass[j]) {
                     //Masses are sorted, no need to continue searching
@@ -2459,7 +2459,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     uint8_t* type = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom->count);
     uint8_t* elements = md_vm_arena_push_array(temp_arena, uint8_t, atom->count);
 
-    md_atom_extract_atomic_numbers(elements, atom->count, atom);
+    md_atom_extract_atomic_numbers(elements, 0, atom->count, atom);
 
     // Identify Sp Sp2 and Sp3 types
     for (size_t i = 0; i < atom->count; ++i) {
@@ -2467,14 +2467,14 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         uint32_t   conn_i   = bond->conn.offset[i];
 
         if (conn_len < 2) continue;
-        vec3_t xi = md_atom_coord(*atom, i);
+        vec3_t xi = md_atom_coord(atom, i);
 
         switch (conn_len) {
         case 2: {
             uint32_t j = md_bond_conn_atom_idx(*bond, conn_i, 0);
             uint32_t k = md_bond_conn_atom_idx(*bond, conn_i, 1);
-            vec3_t xj = md_atom_coord(*atom, j);
-            vec3_t xk = md_atom_coord(*atom, k);
+            vec3_t xj = md_atom_coord(atom, j);
+            vec3_t xk = md_atom_coord(atom, k);
             float theta = angle(xj, xi, xk);
             if (theta > 155.f) {
                 type[i] = 1;
@@ -2489,8 +2489,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             for (uint32_t idx = 0; idx < conn_len; ++idx) {
                 uint32_t j = md_bond_conn_atom_idx(*bond, conn_i, idx);
                 uint32_t k = md_bond_conn_atom_idx(*bond, conn_i, (idx + 1) % conn_len);
-                vec3_t xj = md_atom_coord(*atom, j);
-                vec3_t xk = md_atom_coord(*atom, k);
+                vec3_t xj = md_atom_coord(atom, j);
+                vec3_t xk = md_atom_coord(atom, k);
                 theta += angle(xj, xi, xk);
             }
             theta /= (float)conn_len;
@@ -2516,7 +2516,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             if (ring_size == 5) {
                 vec3_t c[5];
                 for (size_t i = 0; i < 5; ++i) {
-                    c[i] = md_atom_coord(*atom, ring_atom_idx[i]);
+                    c[i] = md_atom_coord(atom, ring_atom_idx[i]);
                 }
 
                 vec3_t d[5] = {
@@ -2541,7 +2541,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             } else if (ring_size == 6) {
                 vec3_t c[6];
                 for (size_t i = 0; i < 6; ++i) {
-                    c[i] = md_atom_coord(*atom, ring_atom_idx[i]);
+                    c[i] = md_atom_coord(atom, ring_atom_idx[i]);
                 }
 
                 vec3_t d[6] = {
@@ -3860,8 +3860,10 @@ bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags
     return true;
 }
 
-bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data) {
+bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom) {
     ASSERT(out_res);
+    ASSERT(atom);
+
     for (size_t i = 0; i < out_res->count; ++i) {
         str_t resname = LBL_TO_STR(out_res->name[i]);
         md_range_t range = md_residue_atom_range(out_res, i);
@@ -3869,7 +3871,7 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
 
         md_protein_backbone_atoms_t prot_atoms = {0};
         md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, atom_data, range)) {
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, atom, range)) {
             out_res->flags[i] |= MD_FLAG_AMINO_ACID;
             if (out_atom_flags) {
                 out_atom_flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
@@ -3883,7 +3885,7 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
                     out_atom_flags[j] |= MD_FLAG_AMINO_ACID;
                 }
             }
-        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom_data, range)) {
+        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom, range)) {
             out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
             if (out_atom_flags) {
                 out_atom_flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
@@ -3897,7 +3899,7 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
                 }
             }
         } else if (((len == 1 || len == 3) && md_util_resname_water(resname)) ||
-                    (len == 1 && md_util_resname_water(md_atom_get_atom_id(atom_data, range.beg))))
+                    (len == 1 && md_util_resname_water(md_atom_name(atom, range.beg))))
         {
             out_res->flags[i] |= MD_FLAG_WATER;
         } else if (md_util_resname_amino_acid(resname)) {
@@ -3906,6 +3908,8 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
             out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
         }
     }
+
+    return true;
 }
 
 // @TODO: Convert to a table
@@ -3955,7 +3959,7 @@ bool md_util_set_ion_flags(md_flags_t* out_flags, const md_atom_data_t* atom, co
 
     for (size_t i = 0; i < atom->count; ++i) {
         // Check if it has no bonds
-        md_atomic_number_t z = md_atom_get_atomic_number(atom, i);
+        md_atomic_number_t z = md_atom_atomic_number(atom, i);
 
         if (md_bond_conn_count(*bond, i) == 0 && monatomic_ion_element(z) && !(atom->flags[i] & MD_FLAG_WATER)) {
             atom->flags[i] |= MD_FLAG_ION;
@@ -4103,8 +4107,9 @@ static size_t md_util_residue_sequential_ranges(md_array(md_range_t)* out_ranges
     return num_ranges;
 }
 
-bool md_util_infer_chains(md_chain_data_t* chain, const md_residue_data_t* res, md_allocator_i* alloc) {
+bool md_util_chain_infer(md_chain_data_t* chain, const md_residue_data_t* res, md_allocator_i* alloc) {
     ASSERT(chain);
+    ASSERT(res);
     ASSERT(alloc);
     
     if (res->count == 0) {
@@ -4113,6 +4118,7 @@ bool md_util_infer_chains(md_chain_data_t* chain, const md_residue_data_t* res, 
 
     MEMSET(chain, 0, sizeof(md_chain_data_t));
 
+#if 0
     size_t res_range_count = 0;
     md_range_t res_ranges[] = 0;
 
@@ -4136,7 +4142,7 @@ bool md_util_infer_chains(md_chain_data_t* chain, const md_residue_data_t* res, 
             chain->count += 1;
         }
     }
-
+#endif
     return true;
 }
 
@@ -4796,7 +4802,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
 
     // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
-        int32_t idx = in_idx ? in_idx[i] : i;
+        int32_t idx = in_idx ? in_idx[i] : (int)i;
         float  r = in_r ? in_r[idx] : 0.0f;
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 1.0f };
 
@@ -8160,6 +8166,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     }
     */
 
+#if 0
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
         if (mol->chain.count == 0 && mol->residue.count > 0 && mol->bond.pairs) {
 #ifdef PROFILE
@@ -8172,6 +8179,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #endif
         }
     }
+#endif
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
         if (mol->chain.count && mol->atom.type_idx) {
@@ -9014,7 +9022,7 @@ static md_array(int) filter_structure_type(const int* indices, int64_t count, co
 }
 
 static inline bool filter_atom(const md_atom_data_t* atom, const md_bond_data_t* bond, int atom_i, md_util_match_flags_t filter) {
-    md_atomic_number_t z_i = md_atom_get_atomic_number(atom, atom_i);
+    md_atomic_number_t z_i = md_atom_atomic_number(atom, atom_i);
     if (filter & MD_UTIL_MATCH_FLAGS_NO_H) {
         return z_i != MD_Z_H;
     } else if (filter & MD_UTIL_MATCH_FLAGS_NO_CH) {
@@ -9023,7 +9031,7 @@ static inline bool filter_atom(const md_atom_data_t* atom, const md_bond_data_t*
             uint32_t   conn_i   = bond->conn.offset[atom_i];
             for (uint32_t i = 0; i < conn_len; ++i) {
                 int atom_j = md_bond_conn_atom_idx(*bond, conn_i, i);
-                if (md_atom_get_atomic_number(atom, atom_j) == MD_Z_C) {
+                if (md_atom_atomic_number(atom, atom_j) == MD_Z_C) {
                     return false;
                 }
             }
@@ -9141,7 +9149,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
 
     if (mapping == VERTEX_TYPE_MAPPING_ATOMIC_NUMBER) {
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            atom_type[i] = md_atom_get_atomic_number(&mol->atom, i);
+            atom_type[i] = md_atom_atomic_number(&mol->atom, i);
         }
     } else {
         for (size_t i = 0; i < mol->atom.count; ++i) {
@@ -9169,7 +9177,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     bool ref_hydro_present = false;
     for (size_t i = 0; i < ref_len; ++i) {
         int idx = ref_idx[i];
-        if (md_atom_get_atomic_number(&mol->atom, idx) == MD_Z_H) {
+        if (md_atom_atomic_number(&mol->atom, idx) == MD_Z_H) {
             ref_hydro_present = true;
             break;
         }
@@ -9344,7 +9352,7 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         int s_type_count[256] = {0};
         for (size_t j = 0; j < s_size; ++j) {
             int idx = s_idx[j];
-            uint8_t type = md_atom_get_atomic_number(&mol->atom, idx);
+            md_atomic_number_t type = md_atom_atomic_number(&mol->atom, idx);
             s_type[j] = type;
             s_type_count[type]++;
         }

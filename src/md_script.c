@@ -1,4 +1,4 @@
-/**
+﻿/**
 *   The script system allows for evaluation of expressions in the context of molecules.
 *   It is a statically typed language with a small set of types and operations.
 *   It is used both for 'filtering' i.e. selecting subsets of atoms through textual queries,
@@ -5617,8 +5617,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(temp_alloc, num_expr * sizeof(data_t));
 
-    md_atom_extract_masses(atom_mass,   mol->atom.count, &mol->atom);
-    md_atom_extract_radii (atom_radius, mol->atom.count, &mol->atom);
+    md_atom_extract_masses(atom_mass,   0, mol->atom.count, &mol->atom);
+    md_atom_extract_radii (atom_radius, 0, mol->atom.count, &mol->atom);
 
     const size_t STACK_RESET_POINT = md_vm_arena_get_pos(temp_alloc);
 

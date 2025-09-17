@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <string.h>
 
 #include <md_pdb.h>
@@ -148,7 +148,7 @@ UTEST_F(util, rmsd) {
     };
 
     float* w = md_alloc(alloc, sizeof(float) * stride);
-	md_atom_extract_masses(w, mol->atom.count, &mol->atom);
+	md_atom_extract_masses(w, 0, mol->atom.count, &mol->atom);
 
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 6) + stride * 3;
@@ -439,7 +439,7 @@ UTEST_F(util, structure_matching_amyloid_chain) {
         if (true) {
             md_array(int) new_idx = 0;
             for (size_t i = 0; i < ref_len; ++i) {
-                if (md_atom_get_atomic_number(&mol->atom, ref_idx[i]) > 1) {
+                if (md_atom_atomic_number(&mol->atom, ref_idx[i]) > 1) {
                     md_array_push(new_idx, ref_idx[i], alloc);
                 }
             }
@@ -589,46 +589,46 @@ UTEST_F(util, structure_matching_smiles) {
         const md_molecule_t* mol;
     } mol_t;
 
-#define AMIN_FLAGS 0
+#define PROT_FLAGS 0
 #define NUCL_FLAGS MD_UTIL_MATCH_FLAGS_NO_CH
 
     res_t residues[] = {
         {STR_LIT("ALA"), {
-            {ALANINE,                       AMIN_FLAGS},
-            {ALANINE_T1,                    AMIN_FLAGS},
-            {ALANINE_T2,                    AMIN_FLAGS}},
+            {ALANINE,                       PROT_FLAGS},
+            {ALANINE_T1,                    PROT_FLAGS},
+            {ALANINE_T2,                    PROT_FLAGS}},
         },
-        {STR_LIT("ARG"), {ARGININE,         AMIN_FLAGS}},
+        {STR_LIT("ARG"), {ARGININE,         PROT_FLAGS}},
         {STR_LIT("ASN"), {
-            {ASPARAGINE,                    AMIN_FLAGS},
-            {ASPARAGINE_T1,                 AMIN_FLAGS},
-            {ASPARAGINE_T2,                 AMIN_FLAGS}}
+            {ASPARAGINE,                    PROT_FLAGS},
+            {ASPARAGINE_T1,                 PROT_FLAGS},
+            {ASPARAGINE_T2,                 PROT_FLAGS}}
         },
-        {STR_LIT("ASP"), {ASPARTATE,        AMIN_FLAGS}},
-        {STR_LIT("CYS"), {CYSTEINE,         AMIN_FLAGS | MD_UTIL_MATCH_FLAGS_NO_H}},
+        {STR_LIT("ASP"), {ASPARTATE,        PROT_FLAGS}},
+        {STR_LIT("CYS"), {CYSTEINE,         PROT_FLAGS | MD_UTIL_MATCH_FLAGS_NO_H}},
         // Glycine is a b*tch. It has no sidechain. Therefore it will essentially match against every amino acid pattern
         // Thus, it has to be handled with extra care to avoid false positives.
         {STR_LIT("GLY"), {
-            {GLYCINE,                       AMIN_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT},
-            {GLYCINE_TERM,                  AMIN_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT}}
+            {GLYCINE,                       PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT},
+            {GLYCINE_TERM,                  PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT}}
         },
-        {STR_LIT("GLU"), {GLUTAMIC_ACID,    AMIN_FLAGS}},
-        {STR_LIT("GLN"), {GLUTAMINE,        AMIN_FLAGS}},
-        {STR_LIT("HIS"), {HISTIDINE,        AMIN_FLAGS}},
-        {STR_LIT("ILE"), {ISOLEUCINE,       AMIN_FLAGS}},
-        {STR_LIT("LEU"), {LEUCINE,          AMIN_FLAGS}},
-        {STR_LIT("LYS"), {LYSINE,           AMIN_FLAGS}},
-        {STR_LIT("MET"), {METHIONINE,       AMIN_FLAGS}},
-        {STR_LIT("PHE"), {PHENYLALANINE,    AMIN_FLAGS}},
-        {STR_LIT("PRO"), {PROLINE,          AMIN_FLAGS}},
-        {STR_LIT("SER"), {SERINE,           AMIN_FLAGS}},
-        {STR_LIT("THR"), {THREONINE,        AMIN_FLAGS}},
-        {STR_LIT("TRP"), {TRYPTOPHAN,       AMIN_FLAGS}},
-        {STR_LIT("TYR"), {TYROSINE,         AMIN_FLAGS}},
-        {STR_LIT("VAL"), {VALINE,           AMIN_FLAGS}},
+        {STR_LIT("GLU"), {GLUTAMIC_ACID,    PROT_FLAGS}},
+        {STR_LIT("GLN"), {GLUTAMINE,        PROT_FLAGS}},
+        {STR_LIT("HIS"), {HISTIDINE,        PROT_FLAGS}},
+        {STR_LIT("ILE"), {ISOLEUCINE,       PROT_FLAGS}},
+        {STR_LIT("LEU"), {LEUCINE,          PROT_FLAGS}},
+        {STR_LIT("LYS"), {LYSINE,           PROT_FLAGS}},
+        {STR_LIT("MET"), {METHIONINE,       PROT_FLAGS}},
+        {STR_LIT("PHE"), {PHENYLALANINE,    PROT_FLAGS}},
+        {STR_LIT("PRO"), {PROLINE,          PROT_FLAGS}},
+        {STR_LIT("SER"), {SERINE,           PROT_FLAGS}},
+        {STR_LIT("THR"), {THREONINE,        PROT_FLAGS}},
+        {STR_LIT("TRP"), {TRYPTOPHAN,       PROT_FLAGS}},
+        {STR_LIT("TYR"), {TYROSINE,         PROT_FLAGS}},
+        {STR_LIT("VAL"), {VALINE,           PROT_FLAGS}},
 
-        {STR_LIT("SEC"), {SELENOCYSTEINE,   AMIN_FLAGS}},
-        {STR_LIT("PYR"), {PYRROLYSINE,      AMIN_FLAGS}},
+        {STR_LIT("SEC"), {SELENOCYSTEINE,   PROT_FLAGS}},
+        {STR_LIT("PYR"), {PYRROLYSINE,      PROT_FLAGS}},
 
         {STR_LIT("DA"),  {{DA, NUCL_FLAGS}, {DA_alt, NUCL_FLAGS}}},
         {STR_LIT("DC"),  {{DC, NUCL_FLAGS}, {DC_alt, NUCL_FLAGS}}},
@@ -669,7 +669,7 @@ UTEST_F(util, structure_matching_smiles) {
             for (size_t ref_idx = 0; ref_idx < ref_count; ++ref_idx) {
                 md_range_t atom_range = md_residue_atom_range(&mol->mol->residue, ref_list[ref_idx]);
                 for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-					md_atomic_number_t z_i = md_atom_get_atomic_number(&mol->mol->atom, i);
+					md_atomic_number_t z_i = md_atom_atomic_number(&mol->mol->atom, i);
                     if (z_i == MD_Z_H) {
                         has_h = true;
                     }
@@ -804,107 +804,5 @@ UTEST(util, radix_sort) {
 
     for (size_t i = 0; i < len - 1; ++i) {
     	EXPECT_LE(arr[i], arr[i+1]);
-    }
-}
-
-UTEST(util, lammps_mass_element_mapping) {
-    // Test conservative mass→element mapping for LAMMPS with various scenarios
-    
-    {
-        // Test all-atom case with standard elements
-        float masses[] = {1.008f, 12.011f, 14.007f, 15.999f, 30.974f, 32.06f};
-        md_element_t elements[6] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, masses, count));
-        EXPECT_EQ(elements[0], 1);  // H
-        EXPECT_EQ(elements[1], 6);  // C  
-        EXPECT_EQ(elements[2], 7);  // N
-        EXPECT_EQ(elements[3], 8);  // O
-        EXPECT_EQ(elements[4], 15); // P
-        EXPECT_EQ(elements[5], 16); // S
-    }
-    
-    {
-        // Test with small deviations within tolerance
-        float masses[] = {1.01f, 12.1f, 14.1f, 15.9f}; // Within tolerance, but 1.01 instead of 1.0 to avoid reduced units filter
-        md_element_t elements[4] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, masses, count));
-        EXPECT_EQ(elements[0], 1);  // H
-        EXPECT_EQ(elements[1], 6);  // C  
-        EXPECT_EQ(elements[2], 7);  // N
-        EXPECT_EQ(elements[3], 8);  // O
-    }
-    
-    {
-        // Test CG-like masses (should fail and return false)
-        float masses[] = {72.0f, 72.0f, 72.0f, 72.0f, 72.0f}; // Typical CG mass
-        md_element_t elements[5] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
-        // All elements should remain 0 (unassigned)
-        for (size_t i = 0; i < count; ++i) {
-            EXPECT_EQ(elements[i], 0);
-        }
-    }
-    
-    {
-        // Test reduced units (should fail and return false)
-        float masses[] = {1.0f, 1.0f, 1.0f, 1.0f}; // Reduced units
-        md_element_t elements[4] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
-        // All elements should remain 0 (unassigned)
-        for (size_t i = 0; i < count; ++i) {
-            EXPECT_EQ(elements[i], 0);
-        }
-    }
-    
-    {
-        // Test partial mapping case (some masses match, some don't)
-        float masses[] = {12.011f, 45.0f}; // Carbon matches, 45.0f doesn't match any element well
-        md_element_t elements[2] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        bool result = md_util_lammps_element_from_mass(elements, masses, count);
-        // Should succeed because at least one element can be mapped
-        // The first should map to Carbon, second should remain 0
-        EXPECT_TRUE(result);
-        EXPECT_EQ(elements[0], 6);  // C
-        EXPECT_EQ(elements[1], 0);  // Unknown/unmatched
-    }
-    
-    {
-        // Test too few unique masses for the number of atoms (CG heuristic)
-        float masses[20];
-        for (int i = 0; i < 20; ++i) {
-            masses[i] = (i < 10) ? 36.0f : 72.0f; // Only 2 unique masses for 20 atoms
-        }
-        md_element_t elements[20] = {0};
-        size_t count = ARRAY_SIZE(masses);
-        
-        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
-        // All elements should remain 0 (unassigned)
-        for (size_t i = 0; i < count; ++i) {
-            EXPECT_EQ(elements[i], 0);
-        }
-    }
-    
-    {
-        // Test empty case
-        md_element_t elements[1] = {0};
-        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, NULL, 0));
-    }
-    
-    {
-        // Test invalid input
-        float masses[] = {12.011f};
-        EXPECT_FALSE(md_util_lammps_element_from_mass(NULL, masses, 1));
-        md_element_t elements[1] = {0};
-        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, NULL, 1));
     }
 }

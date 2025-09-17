@@ -7,10 +7,6 @@
 extern "C" {
 #endif
 
-void md_atom_type_data_fill(md_atom_type_data_t* atom_types, const str_t atom_names[], const md_atomic_number_t atom_element[], const float atom_mass[], const float atom_radii[], size_t atom_count, md_allocator_i* alloc) {
-    
-}
-
     void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
@@ -32,10 +28,10 @@ void md_atom_type_data_fill(md_atom_type_data_t* atom_types, const str_t atom_na
     if (mol->atom.flags) md_array_free(mol->atom.flags, alloc);
 
     // Atom Type
-    if (mol->atom.type_data.name)   md_array_free(mol->atom.type_data.name, alloc);
-    if (mol->atom.type_data.z)      md_array_free(mol->atom.type_data.z, alloc);
-    if (mol->atom.type_data.mass)   md_array_free(mol->atom.type_data.mass, alloc);
-    if (mol->atom.type_data.radius) md_array_free(mol->atom.type_data.radius, alloc);
+    if (mol->atom.type.name)   md_array_free(mol->atom.type.name, alloc);
+    if (mol->atom.type.z)      md_array_free(mol->atom.type.z, alloc);
+    if (mol->atom.type.mass)   md_array_free(mol->atom.type.mass, alloc);
+    if (mol->atom.type.radius) md_array_free(mol->atom.type.radius, alloc);
 
     // Residue
     if (mol->residue.name) md_array_free(mol->residue.name, alloc);
@@ -115,10 +111,10 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     //ARRAY_PUSH(atom, res_idx);
     //ARRAY_PUSH(atom, chain_idx);
 
-    ARRAY_PUSH(atom, type_data.name);
-    ARRAY_PUSH(atom, type_data.z);
-    ARRAY_PUSH(atom, type_data.mass);
-    ARRAY_PUSH(atom, type_data.radius);
+    ARRAY_PUSH(atom, type.name);
+    ARRAY_PUSH(atom, type.z);
+    ARRAY_PUSH(atom, type.mass);
+    ARRAY_PUSH(atom, type.radius);
 
     ARRAY_PUSH(protein_backbone, atoms);
     ARRAY_PUSH(protein_backbone, angle);
@@ -151,7 +147,7 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(residue, flags);
 
     dst->atom.count           = src->atom.count;
-    dst->atom.type_data.count      = src->atom.type_data.count;
+    dst->atom.type.count      = src->atom.type.count;
     dst->protein_backbone.count       = src->protein_backbone.count;
     dst->protein_backbone.range.count = src->protein_backbone.range.count;
     dst->nucleic_backbone.count       = src->nucleic_backbone.count;

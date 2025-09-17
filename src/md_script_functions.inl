@@ -2080,7 +2080,7 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->mol && ctx->mol->atom.type);
+    ASSERT(ctx && ctx->mol);
 
     const str_t* str = as_string_arr(arg[0]);
     const size_t num_str = element_count(arg[0]);
@@ -2093,9 +2093,9 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            str_t atom_str = md_atom_get_atom_id(&ctx->mol->atom, i);
+            str_t atom_id = md_atom_name(&ctx->mol->atom, i);
             for (size_t j = 0; j < num_str; ++j) {
-                if (match_query(str[j], atom_str)) {
+                if (match_query(str[j], atom_id)) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -2110,8 +2110,8 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                str_t atom_str = md_atom_get_atom_id(&ctx->mol->atom, i);
-                if (match_query(str[j], atom_str)) {
+                str_t atom_id = md_atom_name(&ctx->mol->atom, i);
+                if (match_query(str[j], atom_id)) {
                     match = true;
                     break;
                 }
@@ -2160,7 +2160,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-            md_atomic_number_t z = md_atom_get_atomic_number(&ctx->mol->atom, i);
+            md_atomic_number_t z = md_atom_atomic_number(&ctx->mol->atom, i);
 
             for (size_t j = 0; j < num_query_z; ++j) {
                 if (query_z[j] == z) {
@@ -2170,18 +2170,18 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
-            md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
-
-            size_t j = 0;
-            for (; j < num_query_z; ++j) {
-                md_atomic_number_t z_j = query_z[j];
+        for (size_t j = 0; j < num_query_z; ++j) {
+            md_atomic_number_t z_j = query_z[j];
+            bool found = false;
+            for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
+                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
                 if (z_i == z_j) {
+                    found = true;
                     break;
                 }
             }
-            if (j == num_query_z) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Element '%.*s' was not found within structure.", str[j].len, str[j].ptr);
+            if (!found) {
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Element '" STR_FMT "' was not found within structure.", STR_ARG(str[j]));
                 return -1;
             }
         }
@@ -2192,7 +2192,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
+    ASSERT(ctx && ctx->mol);
 
     irange_t* ranges = as_irange_arr(arg[0]);
     const size_t num_ranges = element_count(arg[0]);
@@ -2204,7 +2204,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-            md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
+            md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
             for (size_t j = 0; j < num_ranges; ++j) {
                 if (idx_in_range(z_i, ranges[j])) {
                     md_bitfield_set_bit(bf, i);
@@ -2218,7 +2218,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                md_atomic_number_t z_i = md_atom_get_atomic_number(&ctx->mol->atom, i);
+                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
                 if (idx_in_range(z_i, ranges[j])) {
                     match = true;
                     break;
@@ -5094,14 +5094,14 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
                 continue;
             }
 
-            md_atomic_number_t z_idx = md_atom_get_atomic_number(&mol->atom, idx);
-            md_atomic_number_t z_ref = md_atom_get_atomic_number(&mol->atom, ref_idx);
+            md_atomic_number_t z_idx = md_atom_atomic_number(&mol->atom, idx);
+            md_atomic_number_t z_ref = md_atom_atomic_number(&mol->atom, ref_idx);
             if (z_idx != 0 && z_ref != 0 && z_idx != z_ref) {
                 return false;
             } else {
                 // Test the type labels
-                str_t lbl_idx = md_atom_get_atom_id(&mol->atom, idx);
-                str_t lbl_ref = md_atom_get_atom_id(&mol->atom, ref_idx);
+                str_t lbl_idx = md_atom_name(&mol->atom, idx);
+                str_t lbl_ref = md_atom_name(&mol->atom, ref_idx);
                 if (!str_eq(lbl_idx, lbl_ref)) {
                     return false;
                 }

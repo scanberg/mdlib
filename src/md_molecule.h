@@ -24,13 +24,9 @@ typedef struct md_atom_data_t {
 
     // Atom Type Index (NEW: references into atom_type table)
     md_atom_type_idx_t* type_idx;
-
-    // These should be removed as well
-    //md_residue_idx_t* res_idx;
-    //md_chain_idx_t* chain_idx;
     md_flags_t* flags;
 
-    md_atom_type_data_t type_data;
+    md_atom_type_data_t type;
 } md_atom_data_t;
 
 typedef struct md_residue_data_t {
@@ -143,10 +139,6 @@ typedef struct md_molecule_t {
 extern "C" {
 #endif
 
-static inline vec3_t md_atom_coord(md_atom_data_t atom_data, size_t atom_idx) {
-    return vec3_set(atom_data.x[atom_idx], atom_data.y[atom_idx], atom_data.z[atom_idx]);
-}
-
 // Atom type table helper functions
 static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
@@ -173,70 +165,112 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     return (md_atom_type_idx_t)(atom_type->count - 1);
 }
 
-// Fills an atom type table from the given arrays
-// all fields if passed must have the same length atom_count
-// atom_mass is optional and can be NULL
-// atom_radii is optional and can be NULL
-void md_atom_type_data_fill(md_atom_type_data_t* atom_types, const str_t atom_names[], const md_element_t atom_element[], const float atom_mass[], const float atom_radii[], const str_t atom_resname[], size_t atom_count, struct md_allocator_i* alloc);
-
-static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_data_t* type_data, md_atom_type_idx_t idx) {
+static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
-    if (idx >= 0 && (size_t)idx < type_data->count) {
-        return type_data->z[idx];
+    if (type_idx < type_data->count) {
+        return type_data->z[type_idx];
     }
     return 0;
 }
 
-static inline md_atomic_number_t md_atom_get_atomic_number(const md_atom_data_t* atom_data, size_t atom_idx) {
+static inline float md_atom_type_mass(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_idx < type_data->count) {
+        return type_data->mass[type_idx];
+    }
+    return 0;
+}
+
+static inline float md_atom_type_radius(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_idx < type_data->count) {
+        return type_data->radius[type_idx];
+    }
+    return 0;
+}
+
+static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_idx < type_data->count) {
+        return LBL_TO_STR(type_data->name[type_idx]);
+    }
+    return STR_LIT("");
+}
+
+
+// Atom helpers
+
+static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
     ASSERT(atom_data);
-    ASSERT(atom_idx < atom_data->count);
+    return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
+}
+
+static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    ASSERT(atom_idx < atom->count);
     
     // Try atom type table first if type_idx is available
-    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
-        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
-        return atom_data->type_data.z[atom_data->type_idx[atom_idx]];
+    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
+        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
+        return atom->type.z[atom->type_idx[atom_idx]];
     }
     
     return 0;
 }
 
-static inline float md_atom_get_mass(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    ASSERT(atom_idx < atom_data->count);
+static inline float md_atom_mass(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    ASSERT(atom_idx < atom->count);
     
     // Try atom type table first if type_idx is available
-    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
-        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
-        return atom_data->type_data.mass[atom_data->type_idx[atom_idx]];
+    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
+        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
+        return atom->type.mass[atom->type_idx[atom_idx]];
     }
     
     return 0.0f;
 }
 
-static inline float md_atom_get_radius(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    ASSERT(atom_idx < atom_data->count);
+static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    ASSERT(atom_idx < atom->count);
     
-    // Try atom type table first if type_idx is available
-    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
-        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
-        return atom_data->type_data.radius[atom_data->type_idx[atom_idx]];
+    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
+        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
+        return atom->type.radius[atom->type_idx[atom_idx]];
     }
     
     return 0.0f;
 }
 
-static inline str_t md_atom_get_atom_id(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    ASSERT(atom_idx < atom_data->count);
+static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    ASSERT(atom_idx < atom->count);
 
-    // Try atom type table first if type_idx is available
-    if (atom_data->type_idx && atom_data->type_idx[atom_idx] >= 0 && 
-        (size_t)atom_data->type_idx[atom_idx] < atom_data->type_data.count) {
-        return LBL_TO_STR(atom_data->type_data.name[atom_data->type_idx[atom_idx]]);
+    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
+        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
+        return LBL_TO_STR(atom->type.name[atom->type_idx[atom_idx]]);
     }
 
     return STR_LIT("");
+}
+
+static inline str_t md_residue_name(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
+    str_t name = STR_LIT("");
+    if (res->name && res_idx < res->count) {
+        name = LBL_TO_STR(res->name[res_idx]);
+    }
+    return name;
+}
+
+static inline md_residue_id_t md_residue_id(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
+    md_residue_id_t id = 0;
+    if (res->id && res_idx < res->count) {
+        id = res->id[res_idx];
+    }
+    return id;
 }
 
 static inline md_range_t md_residue_atom_range(const md_residue_data_t* res, size_t res_idx) {
@@ -258,7 +292,7 @@ static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data
             int32_t beg = res->atom_offset[i];
             int32_t end = res->atom_offset[i + 1];
             if (beg <= atom_idx && atom_idx < end) {
-                res_idx = i;
+                res_idx = (md_residue_idx_t)i;
                 break;
             }
             if (beg < atom_idx) {
@@ -369,33 +403,33 @@ static inline str_t md_chain_id(const md_chain_data_t* chain, size_t chain_idx) 
 }
 
 // Convenience functions to extract atom properties into arrays
-static inline void md_atom_extract_radii(float out_radii[], size_t n, const md_atom_data_t* atom_data) {
+static inline void md_atom_extract_radii(float out_radii[], size_t offset, size_t length, const md_atom_data_t* atom_data) {
     ASSERT(out_radii);
     ASSERT(atom_data);
-    ASSERT(n <= atom_data->count);
+    ASSERT(offset + length <= atom_data->count);
     
-    for (size_t i = 0; i < n; ++i) {
-        out_radii[i] = md_atom_get_radius(atom_data, i);
+    for (size_t i = 0; i < length; ++i) {
+        out_radii[i] = md_atom_radius(atom_data, offset + i);
     }
 }
 
-static inline void md_atom_extract_masses(float out_masses[], size_t n, const md_atom_data_t* atom_data) {
+static inline void md_atom_extract_masses(float out_masses[], size_t offset, size_t length, const md_atom_data_t* atom_data) {
     ASSERT(out_masses);
     ASSERT(atom_data);
-    ASSERT(n <= atom_data->count);
+    ASSERT(offset + length <= atom_data->count);
     
-    for (size_t i = 0; i < n; ++i) {
-        out_masses[i] = md_atom_get_mass(atom_data, i);
+    for (size_t i = 0; i < length; ++i) {
+        out_masses[i] = md_atom_mass(atom_data, offset + i);
     }
 }
 
-static inline void md_atom_extract_atomic_numbers(md_atomic_number_t out_z[], size_t n, const md_atom_data_t* atom_data) {
+static inline void md_atom_extract_atomic_numbers(md_atomic_number_t out_z[], size_t offset, size_t length, const md_atom_data_t* atom_data) {
     ASSERT(out_z);
     ASSERT(atom_data);
-    ASSERT(n <= atom_data->count);
+    ASSERT(offset + length <= atom_data->count);
     
-    for (size_t i = 0; i < n; ++i) {
-        out_z[i] = md_atom_get_atomic_number(atom_data, i);
+    for (size_t i = 0; i < length; ++i) {
+        out_z[i] = md_atom_atomic_number(atom_data, offset + i);
     }
 }
 
@@ -485,7 +519,7 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
     md_bond_iter_t it = md_bond_iter(bond_data, atom_idx);
     while (md_bond_iter_has_next(it) && !found) {
         md_atom_idx_t other_atom_idx = md_bond_iter_atom_index(it);
-        md_atomic_number_t other_z = md_atom_get_atomic_number(atom_data, other_atom_idx);
+        md_atomic_number_t other_z = md_atom_atomic_number(atom_data, other_atom_idx);
         for (size_t i = 0; i < z_count; ++i) {
             if (other_z == z_list[i]) {
                 found = true;
