@@ -132,13 +132,13 @@ static inline md_hydrogen_bond_param_t md_hydrogen_bond_param_default(void) {
     return param;
 }
 
-// Attempts to identify hydrogen bonds based on distance and angle criteria
+// Attempts to infer hydrogen bonds based on distance and angle criteria
 // The identified hydrogen bonds are stored in hbond_data
 // atom_x, atom_y, atom_z: Arrays of atom coordinates
 // unitcell: Periodic boundary conditions, (optional, can be NULL for non-periodic systems)
 // desc: Descriptor for the hydrogen bond calculation (optional, can be NULL for default values)
-void md_util_hydrogen_bond_calc(md_hydrogen_bond_data_t* in_out_hbond_data, const float* in_x, const float* in_y, const float* in_z,
-                                    const md_unitcell_t* opt_in_unitcell, const md_hydrogen_bond_param_t* opt_in_param);
+void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const float* in_x, const float* in_y, const float* in_z,
+                                 const md_unitcell_t* opt_in_unitcell, const md_hydrogen_bond_param_t* opt_in_param);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.

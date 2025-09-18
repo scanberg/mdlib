@@ -132,6 +132,11 @@ typedef struct md_hydrogen_bond_acceptor_t {
     int num_of_lone_pairs;
 } md_hydrogen_bond_acceptor_t;
 
+typedef struct md_hydrogen_bond_pair_t {
+	uint32_t donor_idx;    // Index into donors array
+	uint32_t acceptor_idx; // Index into acceptors array
+} md_hydrogen_bond_pair_t;
+
 typedef struct md_hydrogen_bond_data_t {
     size_t num_acceptors;
     md_hydrogen_bond_acceptor_t* acceptors;
@@ -140,7 +145,7 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_donor_t* donors;
 
     size_t num_bonds;
-    md_atom_pair_t* bonds; // index[0] = donor atom idx, index[1] = acceptor atom idx
+    md_hydrogen_bond_pair_t* bonds; // index[0] = donor atom idx, index[1] = acceptor atom idx
 } md_hydrogen_bond_data_t;
 
 typedef struct md_molecule_t {
@@ -296,6 +301,30 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
     md_array_shrink(bond_data->conn.bond_idx, 0);
 
     md_bond_conn_clear(&bond_data->conn);
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bond_data_t* hbond_data, size_t donor_idx) {
+	ASSERT(hbond_data);
+    if (donor_idx < hbond_data->num_donors) {
+        return hbond_data->donors[donor_idx].d_idx;
+	}
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hydrogen_bond_data_t* hbond_data, size_t donor_idx) {
+    ASSERT(hbond_data);
+    if (donor_idx < hbond_data->num_donors) {
+        return hbond_data->donors[donor_idx].h_idx;
+    }
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_acceptor_atom_idx(const md_hydrogen_bond_data_t* hbond_data, size_t acceptor_idx) {
+    ASSERT(hbond_data);
+    if (acceptor_idx < hbond_data->num_acceptors) {
+        return hbond_data->acceptors[acceptor_idx].idx;
+    }
+    return -1;
 }
 
 /*

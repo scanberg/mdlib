@@ -94,7 +94,7 @@ UTEST(util, hbonds) {
     EXPECT_LT(0, hbond_data.num_donors);
     EXPECT_LT(0, hbond_data.num_acceptors);
 
-    md_util_hydrogen_bond_calc(&hbond_data, mol.atom.x, mol.atom.y, mol.atom.z, &mol.unitcell, NULL);
+    md_util_hydrogen_bond_infer(&hbond_data, mol.atom.x, mol.atom.y, mol.atom.z, &mol.unitcell, NULL);
     EXPECT_LT(0, hbond_data.num_bonds);
 
     md_vm_arena_destroy(arena);

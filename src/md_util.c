@@ -4189,8 +4189,8 @@ static bool hbond_iter(const md_spatial_hash_elem_t* elem, void* param) {
     return true;
 }
 
-void md_util_hydrogen_bond_calc(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
-                                    const md_unitcell_t* unitcell, const md_hydrogen_bond_param_t* in_param) {
+void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
+                                 const md_unitcell_t* unitcell, const md_hydrogen_bond_param_t* in_param) {
     ASSERT(hbond_data);
     ASSERT(atom_x);
     ASSERT(atom_y);
@@ -4248,9 +4248,9 @@ void md_util_hydrogen_bond_calc(md_hydrogen_bond_data_t* hbond_data, const float
 
             // Try to form bonds
             for (int j = 0; j < n ; ++j) {
-                int a_idx = arr[j].acc_idx;
+                uint32_t a_idx = (uint32_t)arr[j].acc_idx;
                 if (acc_cap[a_idx] > 0) {
-                    md_atom_pair_t bond = { hbond_data->acceptors[a_idx].idx, h_idx };
+                    md_hydrogen_bond_pair_t bond = { (uint32_t)i, a_idx };
                     md_array_push_no_grow(hbond_data->bonds, bond);
                     hbond_data->num_bonds += 1;
                     acc_cap[a_idx] -= 1;
@@ -8361,7 +8361,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
         if (mol->atom.element && mol->atom.count > 0 && mol->bond.count > 0) {
             md_util_hydrogen_bond_init(&mol->hydrogen_bond, &mol->atom, &mol->bond, alloc);
-            md_util_hydrogen_bond_calc(&mol->hydrogen_bond, mol->atom.x, mol->atom.y, mol->atom.z, &mol->unitcell, NULL);
+            md_util_hydrogen_bond_infer(&mol->hydrogen_bond, mol->atom.x, mol->atom.y, mol->atom.z, &mol->unitcell, NULL);
         }
     }
 
