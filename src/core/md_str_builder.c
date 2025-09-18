@@ -75,8 +75,8 @@ void md_strb_push_str(md_strb_t* sb, str_t str) {
 void md_strb_pop(md_strb_t* sb, size_t n) {
 	ASSERT(sb);
 	ASSERT(n > 0);
-	n = MIN(n, md_array_size(sb->buf));
-	md_array_shrink(sb->buf, n);
+	n = MIN(n + 1, md_array_size(sb->buf));
+	md_array_shrink(sb->buf, md_array_size(sb->buf) - n);
 	md_array_push(sb->buf, '\0', sb->alloc);
 }
 
