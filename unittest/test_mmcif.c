@@ -88,15 +88,21 @@ typedef struct {
     md_buffered_reader_t* reader;
     str_t cur_line;
     md_strb_t sb;
+    bool in_loop;
 } mmcif_parse_state_t;
+
+static bool mmcif_next_line(str_t* out_line, mmcif_parse_state_t* s) {
+    s->cur_line = (str_t){0};
+    return md_buffered_reader_extract_line(out_line, s->reader);
+}
 
 // Returns true if token was extracted,
 // False if EOF / stream
-static bool mmcif_token_next(str_t* out_tok, mmcif_parse_state_t* s) {
+static bool mmcif_next_token(str_t* out_tok, mmcif_parse_state_t* s) {
     str_t tok = {0};
     while (true) {
         if (str_empty(s->cur_line)) {
-            if (!md_buffered_reader_extract_line(&s->cur_line, s->reader)) {
+            if (!mmcif_next_line(s->cur_line)) {
                 return false;
             }
         }
@@ -151,41 +157,144 @@ static bool mmcif_token_next(str_t* out_tok, mmcif_parse_state_t* s) {
     return true;
 }
 
-UTEST(mmcif, tokenizer) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+typedef struct {
+    str_t label;
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+    size_t num_fields;
+    str_t* field_headers;
 
-    mmcif_parse_state_t state = {
-        .reader = &reader,
-        .cur_line = {0},
-        .sb = md_strb_create(alloc),
-    };
+    size_t num_entries;
+    str_t* data;
+} mmcif_section_t;
 
-    str_t tok;
-    
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("data_XXXX")));
+static bool mmcif_parse_section(mmcif_section_t* out_section, mmcif_parse_state_t* state, md_allocator_i* alloc) {
+    MEMSET(out_section, 0, sizeof(mmcif_section_t));
+    if (state->in_loop) {
+        str_t line;
+        // Read headers, lines which begin with _
+        while (mmcif_next_line(&line, state)) {
+            line = str_trim(line);
+            // TODO: Ensure that the line does not contain any whitespace characters
+            if (line.ptr[0] != '_') {
+                break;
+            }
+            md_array_push(out_section->headers, str_copy(line, alloc), alloc);
+        }
+        out_section->num_fields = md_array_size(out_sections->headers);
 
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("loop_")));
+        // Parse entries
+    } else {
 
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.name")));
-
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.pdbx_ordinal")));
-
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("Morais, M.C.")));
-
-    ASSERT_TRUE(mmcif_token_next(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("1")));
-
-    for (size_t i = 0; i < 1000; ++i) {
-        ASSERT_TRUE(mmcif_token_next(&tok, &state));
     }
+}
+
+UTEST(mmcif, tokenizer) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    {
+        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+        md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+        char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+
+        mmcif_parse_state_t state = {
+            .reader = &reader,
+            .sb = md_strb_create(alloc),
+        };
+
+        str_t tok;
+        
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("data_XXXX")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("loop_")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.name")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.pdbx_ordinal")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("Morais, M.C.")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("1")));
+
+        for (size_t i = 0; i < 1000; ++i) {
+            ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        }
+
+        md_file_close(file);
+    }
+
+    {
+        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
+        md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+        char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+
+        mmcif_parse_state_t state = {
+            .reader = &reader,
+            .sb = md_strb_create(alloc),
+        };
+
+        str_t tok;
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("data_8G7U")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("_entry.id")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("8G7U")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_conform.dict_name")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("mmcif_pdbx.dic")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_conform.dict_version")));
+
+        ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        EXPECT_TRUE(str_eq(tok, STR_LIT("5.381")));
+
+        for (size_t i = 0; i < 1000; ++i) {
+            ASSERT_TRUE(mmcif_next_token(&tok, &state));
+        }
+        
+        md_file_close(file);
+    }
+
+    str_t section = STR_LIT(
+"_entity_poly.entity_id                      1 
+_entity_poly.type                           \"polypeptide(L)\" 
+_entity_poly.nstd_linkage                   no 
+_entity_poly.nstd_monomer                   no 
+_entity_poly.pdbx_seq_one_letter_code       
+;KIEAVIFDWAGTTVDYGCFAPLEVFMEIFHKRGVAITAEEARKPMGLLKIDHVRALTEMPRIASEWNRVFRQLPTEADIQ
+EMYEEFEEILFAILPRYASPINAVKEVIASLRERGIKIGSTTGYTREMMDIVAKEAALQGYKPDFLVTPDDVPAGRPYPW
+MCYKNAMELGVYPMNHMIKVGDTVSDMKEGRNAGMWTVGVILGSSELGLTEEEVENMDSVELREKIEVVRNRFVENGAHF
+TIETMQELESVMEHIE
+;
+_entity_poly.pdbx_seq_one_letter_code_can   
+;KIEAVIFDWAGTTVDYGCFAPLEVFMEIFHKRGVAITAEEARKPMGLLKIDHVRALTEMPRIASEWNRVFRQLPTEADIQ
+EMYEEFEEILFAILPRYASPINAVKEVIASLRERGIKIGSTTGYTREMMDIVAKEAALQGYKPDFLVTPDDVPAGRPYPW
+MCYKNAMELGVYPMNHMIKVGDTVSDMKEGRNAGMWTVGVILGSSELGLTEEEVENMDSVELREKIEVVRNRFVENGAHF
+TIETMQELESVMEHIE
+;
+_entity_poly.pdbx_strand_id                 A,B 
+_entity_poly.pdbx_target_identifier         ? 
+# ");
+
+    // Parse non-loop section
+    {
+
+    }
+
+    md_vm_arena_destroy(alloc);
 }
