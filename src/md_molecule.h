@@ -121,18 +121,10 @@ typedef struct md_molecule_t {
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
-    // @TODO: move this into some containing structure
-    //md_array(md_hbond_data_t)  hbond_data;     
-
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
     md_instance_data_t          instance;           // Instances of the molecule (duplications of ranges with new transforms)
-    
-    // @NOTE(Robin): This should probably move elsewhere.
-    // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory
-    // So this should be computed over all frames in the preload
-    //md_array(md_bond_pair_t)    hydrogen_bonds;
 } md_molecule_t;
 
 #ifdef __cplusplus

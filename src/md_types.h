@@ -40,27 +40,32 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_RES_BEG 		    = 0x1,
-    MD_FLAG_RES_END 		    = 0x2,
-    MD_FLAG_RES                 = 0x4,
-    MD_FLAG_CHAIN_BEG 		    = 0x8,
-    MD_FLAG_CHAIN_END 		    = 0x10,
-    MD_FLAG_CHAIN 		        = 0x20,
-    MD_FLAG_HETATM              = 0x40,
-    MD_FLAG_AMINO_ACID		    = 0x80,
-    MD_FLAG_SIDE_CHAIN          = 0x100,
-    MD_FLAG_NUCLEOTIDE	        = 0x200,
-    MD_FLAG_NUCLEOBASE          = 0x400,
-    MD_FLAG_NUCLEOSIDE          = 0x800,
+
+    // To mark backbone atoms in Polymers
+    MD_FLAG_BACKBONE            = 0x10,
+    MD_FLAG_SIDE_CHAIN          = 0x40,
+
+    // Proteins
+    MD_FLAG_AMINO_ACID		    = 0x20,
+
+    // RNA DNA
+    MD_FLAG_NUCLEOTIDE	        = 0x100,
+    MD_FLAG_NUCLEOBASE          = 0x200,
+    MD_FLAG_NUCLEOSIDE          = 0x400,
+
+    // Common HETERO types
     MD_FLAG_WATER			    = 0x1000,
     MD_FLAG_ION			        = 0x2000,
-    MD_FLAG_BACKBONE            = 0x4000,
+
+    // Chirality
+    MD_FLAG_ISOMER_L            = 0x10000,
+    MD_FLAG_ISOMER_D            = 0x20000,
 
     // Experimental
-    MD_FLAG_SP                  = 0x10000,
-    MD_FLAG_SP2                 = 0x20000,
-    MD_FLAG_SP3                 = 0x40000,
-    MD_FLAG_AROMATIC            = 0x80000,
+    MD_FLAG_SP                  = 0x100000,
+    MD_FLAG_SP2                 = 0x200000,
+    MD_FLAG_SP3                 = 0x400000,
+    MD_FLAG_AROMATIC            = 0x800000,
 };
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.

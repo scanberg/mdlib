@@ -3829,7 +3829,7 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 
 #define MIN_RESIDUE_CHAIN_LEN 2
 
-bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
+bool md_util_residue_infer(md_residue_data_t* out_res, const md_flags_t in_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
     ASSERT(out_res);
     ASSERT(alloc);
 
@@ -3838,10 +3838,12 @@ bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags
         return false;
     }
 
-    md_residue_id_t prev_resid = -1;
+    md_residue_id_t prev_resid = -INT32_MIN;
     str_t prev_resname = STR_LIT("");
+
+    // TODO: Add check for Flag which signifies a break in component / chain
     for (size_t i = 0; i < atom_count; ++i) {
-        const md_residue_id_t resid = atom_resid ? atom_resid[i] : -1;
+        const md_residue_id_t resid = atom_resid ? atom_resid[i] : -INT32_MIN;
         const str_t resname = atom_resname ? atom_resname[i] : STR_LIT("");
 
         if (resid != prev_resid || !str_eq(resname, prev_resname)) {
@@ -3904,8 +3906,10 @@ bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom
             out_res->flags[i] |= MD_FLAG_WATER;
         } else if (md_util_resname_amino_acid(resname)) {
             out_res->flags[i] |= MD_FLAG_AMINO_ACID;
+            MD_LOG_DEBUG("Structure contains amino acid residue names, but it's backbone cannot be mapped from atom labels");
         } else if (md_util_resname_nucleotide(resname)) {
             out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
+            MD_LOG_DEBUG("Structure contains nucleotide residue names, but it's backbone cannot be mapped from atom labels");
         }
     }
 

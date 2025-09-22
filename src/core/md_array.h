@@ -25,6 +25,7 @@ typedef struct md_array_header_t {
 #define md_array_header(a)              ((md_array_header_t*)((uint8_t*)(a) - sizeof(md_array_header_t)))
 #define md_array_size(a)                ((a) ? md_array_header(a)->size : 0)
 #define md_array_bytes(a)               (md_array_size(a) * sizeof(*(a)))
+#define md_array_beg(a)                 (a)
 #define md_array_end(a)                 ((a) ? (a + md_array_size(a)) : NULL)
 #define md_array_last(a)                ((a) ? md_array_end(a) - 1 : NULL)
 #define md_array_back(a)                ((a)[md_array_size(a) - 1])
