@@ -10,6 +10,7 @@
 #include <core/md_os.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
+#include <core/md_hash.h>
 
 #include <string.h>
 
@@ -163,7 +164,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     ASSERT(alloc);
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
@@ -173,12 +173,10 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     md_array_ensure(mol->atom.type_idx, capacity, alloc);
     md_array_ensure(mol->atom.flags, capacity, alloc);
 
-    md_residue_id_t*    residue_ids   = md_vm_arena_push_array(temp_arena, md_residue_id_t, capacity);
-    str_t*              residue_names = md_vm_arena_push_array(temp_arena, str_t, capacity);
-
     mol->atom.type.count = 0;
     md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
+	uint64_t prev_comp_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
@@ -193,6 +191,17 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
         md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_name, atomic_number, mass, radius, alloc);
 
+		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
+        if (comp_key != prev_comp_key) {
+            // New residue
+            md_flags_t res_flags = 0;
+            mol->residue.count += 1;
+            md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
+            md_array_push(mol->residue.name,  make_label(res_name), alloc);
+            md_array_push(mol->residue.id,    res_id, alloc);
+            md_array_push(mol->residue.flags, res_flags, alloc);
+		}
+
         mol->atom.count += 1;
         md_array_push_no_grow(mol->atom.x, x);
         md_array_push_no_grow(mol->atom.y, y);
@@ -200,11 +209,10 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         md_array_push_no_grow(mol->atom.type_idx, type_idx);
         md_array_push_no_grow(mol->atom.flags, 0);
 
-        residue_ids[i] = res_id;
-        residue_names[i] = res_name;
+		prev_comp_key = comp_key;
     }
+	md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);  // Final sentinel
 
-    md_util_residue_infer(&mol->residue, mol->atom.flags, residue_ids, residue_names, mol->atom.count, alloc);
     md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
     float box[3][3];
@@ -217,8 +225,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     }
 
     mol->unit_cell = md_util_unit_cell_from_matrix(box);
-
-    md_vm_arena_destroy(temp_arena);
 
     return true;
 }

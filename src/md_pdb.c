@@ -472,18 +472,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
-    md_array(md_range_t)        chain_ranges = 0;
+	// Need to keep track of the chain ranges in order to resolve transforms later
+    md_array(md_range_t)        chain_atom_ranges = 0;
+    md_array(md_range_t)        chain_res_ranges = 0;
     md_array(char)              chain_ids = 0;
-
-    md_array(str_t)             atom_chain_ids = 0;
-    md_array(str_t)             atom_labels = 0;
-    md_array(str_t)             atom_resnames = 0;
-    md_array(md_residue_id_t)   atom_resids = 0;
-
-    md_array_ensure(atom_labels,    capacity, temp_alloc);
-    md_array_ensure(atom_resnames,  capacity, temp_alloc);
-    md_array_ensure(atom_resids,    capacity, temp_alloc);
-    md_array_ensure(atom_chain_ids, capacity, temp_alloc);
 
     md_array_ensure(mol->atom.x,        capacity, mol_alloc);
     md_array_ensure(mol->atom.y,        capacity, mol_alloc);
@@ -491,11 +483,16 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     md_array_ensure(mol->atom.type_idx, capacity, mol_alloc);
     md_array_ensure(mol->atom.flags,    capacity, mol_alloc);
 
-    char prev_chain_id = -1;
-
+	// Add default unknown atom type at index 0
     md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, mol_alloc);
 
+	uint64_t prev_comp_key = 0;
+	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
+
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
+		char alt_loc = data->atom_coordinates[i].alt_loc;
+		if (alt_loc != ' ' && alt_loc != 'A') continue; // Ignore alt loc entries unless 'A' == first alt loc
+
         float x = data->atom_coordinates[i].x;
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
@@ -520,51 +517,73 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
         md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, mol_alloc);
 
-        if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
-            //flags |= MD_FLAG_CHAIN_END;
-        }
+		uint64_t comp_key = md_hash64_str(res_name, res_id ^ chain_id);
+		bool terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
 
         if (chain_id != ' ') {
-            // Populate chain_ids with empty str
-            while (md_array_size(atom_chain_ids) < mol->atom.count) {
-                md_array_push_no_grow(atom_chain_ids, STR_LIT(" "));
-            }
-            str_t chain_id_str = { &data->atom_coordinates[i].chain_id, 1 };
-            md_array_push_no_grow(atom_chain_ids, chain_id_str);
-
-            if (chain_id != prev_chain_id) {
-                md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
+            if (chain_id != prev_chain_id || terminator) {
+                int a_idx = (int)mol->atom.count;
+                int r_idx = (int)mol->residue.count;
+                md_array_push(chain_atom_ranges, ((md_range_t){a_idx, a_idx}), temp_alloc);
+                md_array_push(chain_res_ranges,  ((md_range_t){r_idx, r_idx}), temp_alloc);
                 md_array_push(chain_ids, chain_id, temp_alloc);
             }
 
-            ASSERT(chain_ranges);
-            md_array_last(chain_ranges)->end += 1;
+            if (chain_atom_ranges) {
+                md_array_last(chain_atom_ranges)->end += 1;
+            }
+
+            if (comp_key != prev_comp_key || terminator) {
+                if (chain_res_ranges) {
+                    md_array_last(chain_res_ranges)->end += 1;
+                }
+			}
+        }
+
+        if (comp_key != prev_comp_key || terminator) {
+            // New residue
+            md_flags_t res_flags = 0;
+
+            mol->residue.count += 1;
+            md_array_push(mol->residue.atom_offset, mol->atom.count, mol_alloc);
+            md_array_push(mol->residue.name,  make_label(res_name), mol_alloc);
+            md_array_push(mol->residue.id,    res_id, mol_alloc);
+            md_array_push(mol->residue.flags, res_flags, mol_alloc);
         }
 
         mol->atom.count += 1;
         md_array_push_no_grow(mol->atom.x, x);
         md_array_push_no_grow(mol->atom.y, y);
+
         md_array_push_no_grow(mol->atom.z, z);
         md_array_push_no_grow(mol->atom.flags, flags);
-
-        md_array_push_no_grow(atom_resids, res_id);
-        md_array_push_no_grow(atom_resnames, res_name);
-
-        //md_array_push_no_grow(atom_elements, element);
-        //md_array_push_no_grow(atom_labels,   atom_type);
-        
         md_array_push_no_grow(mol->atom.type_idx, type_idx);
 
         prev_chain_id = chain_id;
+		prev_comp_key = comp_key;
     }
+    md_array_push(mol->residue.atom_offset, mol->atom.count, mol_alloc);  // Final sentinel
 
-    md_util_residue_infer(&mol->residue, mol->atom.flags, atom_resids, atom_resnames, mol->atom.count, mol_alloc);
+	// Here we need to infer what we can about the residues, such as amino acid or nucleotide type
     md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
 
-    if (atom_chain_ids) {
-        while (md_array_size(atom_chain_ids) < mol->atom.count) {
-            md_array_push(atom_chain_ids, STR_LIT(" "), temp_alloc);
+	// Possibly create chains from provided chain_ids
+	size_t num_chains = md_array_size(chain_res_ranges);
+    for (size_t i = 0; i < num_chains; ++i) {
+        bool add_chain = true;
+        for (int j = chain_res_ranges[i].beg; j < chain_res_ranges[i].end; ++j) {
+            if (mol->residue.flags[j] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE) == 0) {
+				add_chain = false;
+				break;
+            }
         }
+        if (add_chain) {
+            mol->chain.count += 1;
+            md_label_t chain_label = make_label((str_t) {&chain_ids[i], 1});
+            md_array_push(mol->chain.id, chain_label, mol_alloc);
+            md_array_push(mol->chain.res_range,  chain_res_ranges[i],  mol_alloc);
+            md_array_push(mol->chain.atom_range, chain_atom_ranges[i], mol_alloc);
+		}
     }
 
     if (data->num_cryst1 > 0) {
@@ -595,8 +614,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                     break;
                 }
 
+				// Find the chain index
                 int chain_idx = -1;
-                for (size_t i = 0; i < md_array_size(chain_ranges); ++i) {
+                for (size_t i = 0; i < num_chains; ++i) {
                     int chain_id_i = chain_ids[i];
                     if (chain_id_i == chain_id) {
 						chain_idx = (int)i;
@@ -605,17 +625,17 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 }
                 if (chain_idx != -1) {
                     if (instance_range.beg == 0 && instance_range.end == 0) {
-                        instance_range = chain_ranges[chain_idx];
+                        instance_range = chain_atom_ranges[chain_idx];
                     } else {
                         // Append if possible
-                        if (instance_range.end == chain_ranges[chain_idx].beg) {
-                            instance_range.end = chain_ranges[chain_idx].end;
+                        if (instance_range.end == chain_atom_ranges[chain_idx].beg) {
+                            instance_range.end = chain_atom_ranges[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
                             md_array_push(mol->instance.atom_range, instance_range, mol_alloc);
                             md_array_push(mol->instance.label, instance_label, mol_alloc);
                             md_array_push(mol->instance.transform, data->transforms[tidx], mol_alloc);
-                            instance_range = chain_ranges[chain_idx];
+                            instance_range = chain_atom_ranges[chain_idx];
                         }
                     }
                 } else {

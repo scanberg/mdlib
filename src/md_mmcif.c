@@ -791,11 +791,6 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         md_array_ensure(mol->atom.type_idx, reserve_size, alloc);
         md_array_ensure(mol->atom.flags, reserve_size, alloc);
 
-        md_array(str_t) atom_resname = 0;
-        md_array(int)   atom_resid = 0;
-        md_array_ensure(atom_resname, reserve_size, temp_arena);
-        md_array_ensure(atom_resid,   reserve_size, temp_arena);
-
         md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
 
         uint64_t prev_comp_key   = 0;
@@ -803,7 +798,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         int32_t  active_chain_idx = -1;      // Index into mol->chain.* arrays for currently active polymer chain
         uint64_t active_chain_key = 0;       // Key of active chain (auth_asym_id hash)
 
-         for (size_t i = 0; i < num_atoms; ++i) {
+        for (size_t i = 0; i < num_atoms; ++i) {
             // Ignore alt loc entries unless 'A'
             if (atom_entries[i].label_alt_id != '.' &&
                 atom_entries[i].label_alt_id != 'A') continue;
@@ -815,11 +810,11 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 
             mmcif_entity_t* entity = mmcif_entity_find(entities, entity_id);
 
-			uint64_t chain_key = md_hash64_str(auth_asym_id, 0);
+		    uint64_t chain_key = md_hash64_str(auth_asym_id, 0);
 
-            str_t resname = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
+            str_t res_name = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
             int res_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
-            uint64_t comp_key = md_hash64_str(resname, (uint64_t)res_id ^ chain_key);
+            uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id ^ chain_key);
 
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol);
             float mass = md_atomic_mass(atomic_number);
@@ -855,7 +850,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 
                 // Start residue (store atom offset before adding any residue atoms)
                 md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);
-                md_array_push(mol->residue.name,  make_label(resname), alloc);
+                md_array_push(mol->residue.name,  make_label(res_name), alloc);
                 md_array_push(mol->residue.id,    res_id, alloc);
                 md_array_push(mol->residue.flags, res_flags, alloc);
 
@@ -868,7 +863,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                         // Start a new chain
                         md_label_t chain_label = make_label(auth_asym_id);
                         md_range_t res_range   = { (int32_t)(md_array_size(mol->residue.id) - 1),
-                                                   (int32_t)md_array_size(mol->residue.id) };
+                                                    (int32_t)md_array_size(mol->residue.id) };
                         md_range_t atom_range  = { (int32_t)mol->atom.count, (int32_t)mol->atom.count };
                         md_array_push(mol->chain.id,        chain_label, alloc);
                         md_array_push(mol->chain.res_range, res_range,   alloc);
@@ -882,25 +877,22 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                 }
             }
  
-             prev_comp_key  = comp_key;
- 			prev_chain_key = chain_key;
+            prev_comp_key  = comp_key;
+ 		    prev_chain_key = chain_key;
  
-             mol->atom.count += 1;
-             md_array_push_no_grow(mol->atom.x, atom_entries[i].x);
-             md_array_push_no_grow(mol->atom.y, atom_entries[i].y);
-             md_array_push_no_grow(mol->atom.z, atom_entries[i].z);
-             md_array_push_no_grow(mol->atom.type_idx, atom_type_idx);
-             md_array_push_no_grow(mol->atom.flags, flags);
+            mol->atom.count += 1;
+            md_array_push_no_grow(mol->atom.x, atom_entries[i].x);
+            md_array_push_no_grow(mol->atom.y, atom_entries[i].y);
+            md_array_push_no_grow(mol->atom.z, atom_entries[i].z);
+            md_array_push_no_grow(mol->atom.type_idx, atom_type_idx);
+            md_array_push_no_grow(mol->atom.flags, flags);
  
-             md_array_push_no_grow(atom_resname, resname);
-             md_array_push_no_grow(atom_resid, res_id);
- 
-             // Update active chain atom range end (exclusive) as atoms are appended
-             if (active_chain_idx >= 0) {
-                 mol->chain.atom_range[active_chain_idx].end = (int32_t)mol->atom.count;
-             }
-         }
-         md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);  // Final sentinel
+            // Update active chain atom range end (exclusive) as atoms are appended
+            if (active_chain_idx >= 0) {
+                mol->chain.atom_range[active_chain_idx].end = (int32_t)mol->atom.count;
+            }
+        }
+        md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);  // Final sentinel
 
         // Finalize counts
         mol->residue.count = md_array_size(mol->residue.id);

@@ -394,6 +394,21 @@ static inline str_t md_chain_id(const md_chain_data_t* chain, size_t chain_idx) 
     return id;
 }
 
+static inline size_t md_structure_count(const md_index_data_t* structure) {
+    ASSERT(structure);
+    return md_index_data_num_ranges(*structure);
+}
+
+static inline size_t md_structure_atom_count(const md_index_data_t* structure, size_t struct_idx) {
+    ASSERT(structure);
+    return md_index_range_size(*structure, struct_idx);
+}
+
+static inline const md_atom_idx_t* md_structure_atom_indices(const md_index_data_t* structure, size_t struct_idx) {
+    ASSERT(structure);
+    return (const md_atom_idx_t*)md_index_range_beg(*structure, struct_idx);
+}
+
 // Convenience functions to extract atom properties into arrays
 static inline void md_atom_extract_radii(float out_radii[], size_t offset, size_t length, const md_atom_data_t* atom_data) {
     ASSERT(out_radii);
