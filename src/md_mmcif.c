@@ -801,7 +801,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         uint64_t prev_comp_key = 0;
             char prev_asym_id = 0;
         for (size_t i = 0; i < num_atoms; ++i) {
-            // Ignore alt loc entries
+            // Ignore alt loc entries unless 'A'
             if (atom_entries[i].label_alt_id != '.' &&
                 atom_entries[i].label_alt_id != 'A') continue;
 
@@ -823,23 +823,25 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 
             md_flags_t flags = 0;
 
+            bool is_polymer = false;
             if (entity) {
                 if (entity->type == ENTITY_TYPE_POLYMER) {
                     if (entity->poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_L) {
                         flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_L;
+                        is_polymer = true;
                     } else if (entity->poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_D) {
                         flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_D;
+                        is_polymer = true;
                     } else if (entity->poly_type == ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE ||
                         entity->poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE ||
                         entity->poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID) {
                         flags |= MD_FLAG_NUCLEOTIDE;
+                        is_polymer = true;
                     }
                 } else if (entity->type == ENTITY_TYPE_WATER) {
                     flags |= MD_FLAG_WATER;
                 }
             }
-
-            bool is_polymer_chain = flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE);
 
             if (comp_key != prev_comp_key) {
                 const uint32_t res_flag_filter = MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
@@ -850,7 +852,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                 md_array_push(mol->residue.id, res_id, alloc);
                 md_array_push(mol->residue.flags, res_flags, alloc);
 
-                if (is_polymer_chain && atom_entries[i].auth_asym_id != '.' && atom_entries[i].auth_asym_id != prev_asym_id) {
+                if (is_polymer && atom_entries[i].auth_asym_id != '.' && atom_entries[i].auth_asym_id != prev_asym_id) {
                     // New chain
                     md_array_push(mol->chain.id, make_label(auth_asym_id), alloc);
                     md_array_push(mol->chain.res_range, mol->residue.id.count - 1, alloc);
