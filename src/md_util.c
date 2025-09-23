@@ -3609,7 +3609,6 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         const float aabb_pad = 1.5f;
         size_t prev_idx = 0;
         md_range_t prev_range = md_residue_atom_range(res, prev_idx);
-        md_flags_t prev_flags = res->flags[prev_idx];
 
         for (int i = prev_range.beg; i < prev_range.end; ++i) {
             atom_res_idx[i] = prev_idx;
@@ -3636,14 +3635,13 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
                 curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
 
                 // @NOTE: Interresidual bonds
-                if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
+                if (aabb_overlap(prev_aabb, curr_aabb)) {
                     find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
             find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
-            prev_flags = curr_flags;
             prev_idx   = curr_idx;
             prev_aabb  = curr_aabb;
         }
