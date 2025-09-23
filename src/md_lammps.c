@@ -848,13 +848,8 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	md_array_ensure(mol->atom.flags,    capacity, alloc);
 
 	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-	md_array(md_residue_id_t) 		atom_resid = 0;
 
-	bool has_resid = false;
-	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {
-		md_array_ensure(atom_resid, capacity, temp_arena);
-		has_resid = true;
-	}
+	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
 	// Reset atom data and initialize to default value
 	mol->atom.type.count = 0;
@@ -870,7 +865,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		char buf[8];
-		int len = snprintf(buf, sizeof(buf), "Type_%i", data->atom_types[i].id);
+		int len = snprintf(buf, sizeof(buf), "type_%i", data->atom_types[i].id);
 		
 		str_t type_id = {buf, len};
 		float mass   = data->atom_types[i].mass;
@@ -879,6 +874,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		type_map[i] = md_atom_type_find_or_add(&mol->atom.type, type_id, type_z[i], mass, radius, alloc);
 	}
 
+	int prev_resid = -1;
 	for (size_t i = 0; i < data->num_atoms; ++i) {
 		md_atom_type_idx_t type_idx = 0;
 		for (size_t j = 0; j < data->num_atom_types; ++j) {
@@ -886,23 +882,34 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 				type_idx = (md_atom_type_idx_t)type_map[j];
 			}
 		}
-		
-		md_array_push_no_grow(mol->atom.type_idx, type_idx);
 
+		int resid = data->atoms[i].resid;
+		if (has_resid) {
+			if (resid != prev_resid) {
+				char buf[8];
+				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
+				str_t name = {buf, len};
+				md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);
+				md_array_push(mol->residue.id, resid, alloc);
+				md_array_push(mol->residue.name, make_label(name), alloc);
+				md_array_push(mol->residue.flags, 0, alloc);
+				mol->residue.count += 1;
+			}
+		}
+
+		md_array_push_no_grow(mol->atom.type_idx, type_idx);
 		md_array_push_no_grow(mol->atom.x, data->atoms[i].x - data->cell.xlo);
 		md_array_push_no_grow(mol->atom.y, data->atoms[i].y - data->cell.ylo);
 		md_array_push_no_grow(mol->atom.z, data->atoms[i].z - data->cell.zlo);
 		md_array_push_no_grow(mol->atom.flags, 0);
+		mol->atom.count +=1;
 
-		if (has_resid) {
-			md_array_push_no_grow(atom_resid, data->atoms[i].resid);
-		}
+		prev_resid = resid;
 	}
 
-	mol->atom.count = data->num_atoms;
-
 	if (has_resid) {
-		md_util_residue_infer(&mol->residue, mol->atom.flags, atom_resid, NULL, mol->atom.count, alloc);
+		md_array_push(mol->residue.atom_offset, mol->atom.count, alloc); // Final sentinel
+		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
 	//Create unit cell

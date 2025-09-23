@@ -120,7 +120,6 @@ UTEST(mmcif, tokenizer) {
 
         for (size_t i = 0; i < 1000; ++i) {
             ASSERT_TRUE(mmcif_next_token(&tok, &state));
-            printf(STR_FMT "\n", STR_ARG(tok));
         }
 
         md_file_close(file);
@@ -166,11 +165,6 @@ UTEST(mmcif, tokenizer) {
         
         md_file_close(file);
     }
-
-
-
-
-
 
 
     // TODO Test parsing of the above section

@@ -674,44 +674,65 @@ done:
     return success;
 }
 
+enum {
+    CELL_FIELD_ANGLE_ALPHA =  1,
+    CELL_FIELD_ANGLE_BETA  =  2,
+    CELL_FIELD_ANGLE_GAMMA =  4,
+    CELL_FIELD_LENGTH_A    =  8,
+    CELL_FIELD_LENGTH_B    = 16,
+    CELL_FIELD_LENGTH_C    = 32,
+};
+
 static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* reader) {
     ASSERT(cell);
     ASSERT(reader);
     str_t line;
 
+    int field_flags = 0;
+    const int req_field_flags = (CELL_FIELD_ANGLE_ALPHA | CELL_FIELD_ANGLE_BETA | CELL_FIELD_ANGLE_GAMMA | CELL_FIELD_LENGTH_A | CELL_FIELD_LENGTH_B | CELL_FIELD_LENGTH_C);
+
     while (md_buffered_reader_peek_line(&line, reader)) {
         line = str_trim(line);
+        if (line.len == 0) {
+            goto next;
+        }
+        if (line.ptr[0] == '#') {
+            goto next;
+        }
         if (str_eq_cstr_n(line, "_cell.", 6)) {
             str_t tok[2];
             const size_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-            if (num_tokens == 0) {
-                break;
-            }
-            if (str_eq(tok[0], STR_LIT("#"))) {
-                break;
+            if (num_tokens < 2) {
+                goto next;
             }
 
             if (str_eq_cstr(tok[0], "_cell.angle_alpha")) {
                 cell->alpha = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_ANGLE_ALPHA;
             } else if (str_eq_cstr(tok[0], "_cell.angle_beta")) {
                 cell->beta = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_ANGLE_BETA;
             } else if (str_eq_cstr(tok[0], "_cell.angle_gamma")) {
                 cell->gamma = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_ANGLE_GAMMA;
             } else if (str_eq_cstr(tok[0], "_cell.length_a")) {
                 cell->a = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_LENGTH_A;
             } else if (str_eq_cstr(tok[0], "_cell.length_b")) {
                 cell->b = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_LENGTH_B;
             } else if (str_eq_cstr(tok[0], "_cell.length_c")) {
                 cell->c = parse_float(tok[1]);
+                field_flags |= CELL_FIELD_LENGTH_C;
             }
-
-            md_buffered_reader_skip_line(reader);
         } else {
             break;
         }
+    next:
+        md_buffered_reader_skip_line(reader);
     }
 
-    return false;
+    return (field_flags == req_field_flags);
 }
 
 static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_allocator_i* alloc) {

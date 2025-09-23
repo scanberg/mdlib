@@ -775,11 +775,29 @@ static bool graph_equivalent(const graph_t* a, const graph_t* b) {
     return true;
 }
 
-// Confusing function
+// Confusing procedure name
 // Extracts a graph from an atom index range with supplied atom types
 
-static graph_t make_graph(const md_atom_data_t* atom, const md_bond_data_t* bond, const int indices[], size_t count, md_allocator_i* vm_arena) {   
-    ASSERT(bond);
+typedef enum {
+    VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER = 0,
+    VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX = 1,
+} vertex_type_mapping_mode_t;
+
+static inline uint8_t vertex_type_from_atom_idx(const md_atom_data_t* atom, size_t atom_idx, vertex_type_mapping_mode_t vertex_type_mapping) {
+    switch (vertex_type_mapping) {
+    case VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER:
+        return md_atom_atomic_number(atom, atom_idx);
+    case VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX:
+        return md_atom_type_idx(atom, atom_idx);
+    default:
+        ASSERT(false);
+    }
+}
+
+static graph_t extract_graph(const md_atom_data_t* atom, const md_bond_data_t* bond, const int indices[], size_t count, vertex_type_mapping_mode_t vertex_mapping, md_allocator_i* vm_arena) {
+    ASSERT(mol);  
+    ASSERT(indices);
+    ASSERT(vm_arena);
 
     // This is just an upper estimate of the number of edges that could potentially exist
     const size_t edge_data_cap = (count * 4);
@@ -797,13 +815,13 @@ static graph_t make_graph(const md_atom_data_t* atom, const md_bond_data_t* bond
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(vm_arena);
 
     // Map from global indices (which the connectivity info is given in) to local (graph) indices
-    md_hashmap32_t map = { .allocator = vm_arena };
-    md_hashmap_reserve(&map, count);
+    md_hashmap32_t global_to_local = { .allocator = vm_arena };
+    md_hashmap_reserve(&global_to_local, count);
 
     for (int i = 0; i < (int)count; ++i) {
         int idx = indices[i];
-        md_hashmap_add(&map, (uint64_t)idx, i);
-        graph.vertex_type[i] = md_atom_atomic_number(atom, idx);
+        md_hashmap_add(&global_to_local, (uint64_t)idx, i);
+        graph.vertex_type[i] = vertex_type_from_atom_idx(atom, idx, vertex_mapping);
         graph.atom_idx_map[i] = idx;
     }
 
@@ -819,7 +837,7 @@ static graph_t make_graph(const md_atom_data_t* atom, const md_bond_data_t* bond
             uint32_t bond_idx = md_bond_iter_bond_index(it);
             uint32_t atom_idx = md_bond_iter_atom_index(it);
             uint32_t order    = md_bond_iter_bond_order(it);
-            uint32_t* local_idx = md_hashmap_get(&map, atom_idx);
+            uint32_t* local_idx = md_hashmap_get(&global_to_local, atom_idx);
             if (local_idx) {
                 // Only commit the edge if it is referring to a local index within the graph
                 edge_data_arr[length++] = ((uint64_t)bond_idx << 32) | ((uint64_t)order << 24) | (uint32_t)(*local_idx);
@@ -2648,7 +2666,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         graph_t graph = smiles_to_graph(functional_group_patterns[i], 0, temp_arena, temp_arena);
         func_group[i].graph = graph;
         func_group[i].depth = graph_depth(&graph, 0, temp_arena);
-        md_element_t elem = graph.vertex_type[0];
+        md_atomic_number_t elem = graph.vertex_type[0];
         element_min_connectivity[elem] = MIN(element_min_connectivity[elem], (uint8_t)graph_vertex_edge_count(&graph, 0));
         element_max_connectivity[elem] = MAX(element_max_connectivity[elem], (uint8_t)graph_vertex_edge_count(&graph, 0));
 
@@ -2706,7 +2724,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         size_t n_len = extract_neighborhood(n_idx, ARRAY_SIZE(n_idx), bond, i, max_depth);
         ASSERT(n_len > 0);
 
-        graph_t neighborhood = make_graph(atom, bond, n_idx, n_len, temp_arena);
+        graph_t neighborhood = extract_graph(atom, bond, n_idx, n_len, VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER, temp_arena);
 
         uint64_t n_mask = 0;
         for (size_t j = 0; j < neighborhood.vertex_count ; ++j) {
@@ -8912,14 +8930,6 @@ done:
     return count;
 }
 
-enum {
-    VERTEX_TYPE_MAPPING_UNDEFINED = 0,
-    VERTEX_TYPE_MAPPING_ATOM_TYPE = 1,
-    VERTEX_TYPE_MAPPING_ATOMIC_NUMBER = 2,
-};
-
-typedef int vertex_type_mapping_t;
-
 // Create a new reference structure which is pruned of certain atoms (Hydrogen) and loosely connected subcomponents
 // There are simply too many permutations to cover and the result will explode.
 static md_array(int) filter_structure_connectivity(const int* indices, size_t count, const md_index_data_t* connectivity, int min_val, md_allocator_i* alloc) {
@@ -9060,26 +9070,13 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_molec
 }
 
 #define MAX_TYPES 256
-md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_match_mode_t mode, md_util_match_level_t level, vertex_type_mapping_t mapping, const md_molecule_t* mol, md_allocator_i* alloc) {
+md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_match_mode_t mode, md_util_match_level_t level, vertex_type_mapping_mode_t vertex_mapping, const md_molecule_t* mol, md_allocator_i* alloc) {
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
     graph_t ref_graph = {0};
     md_index_data_t result = {.alloc = alloc};
 
-    md_hashmap32_t map_table = { .allocator = temp_arena };
-
-    md_array(uint8_t) atom_type = md_vm_arena_push_array(temp_arena, uint8_t, mol->atom.count);
     md_array(int) structure_idx = md_vm_arena_push_array(temp_arena, int,     mol->atom.count);
-
-    if (mapping == VERTEX_TYPE_MAPPING_ATOMIC_NUMBER) {
-        for (size_t i = 0; i < mol->atom.count; ++i) {
-            atom_type[i] = md_atom_atomic_number(&mol->atom, i);
-        }
-    } else {
-        for (size_t i = 0; i < mol->atom.count; ++i) {
-            atom_type[i] = mol->atom.type_idx[i];
-        }
-    }
 
     for (size_t i = 0; i < md_index_data_num_ranges(mol->structure); ++i) {
         int* beg = md_index_range_beg(mol->structure, i);
@@ -9109,7 +9106,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
 
     const md_util_match_flags_t flags = ref_hydro_present ? 0 : MD_UTIL_MATCH_FLAGS_NO_H;
 
-    ref_graph = make_graph(&mol->atom, &mol->bond, atom_type, ref_idx, ref_len, temp_arena);
+    ref_graph = extract_graph(&mol->atom, &mol->bond, ref_idx, ref_len, vertex_mapping, temp_arena);
 
     int ref_type_count[MAX_TYPES] = {0};
     for (int i = 0; i < ref_len; ++i) {
@@ -9168,7 +9165,8 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
         int s_type_count[MAX_TYPES] = {0};
         for (size_t j = 0; j < s_len; ++j) {
             int idx = s_idx[j];
-            s_type_count[atom_type[idx]]++;
+            uint8_t type = vertex_type_from_atom_idx(&mol->atom, idx, vertex_mapping);
+            s_type_count[type]++;
         }
 
         // Sanity check
@@ -9179,7 +9177,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
             }
         }
 
-        graph_t graph = make_graph(&mol->bond, atom_type, s_idx, s_len, temp_arena);
+        graph_t graph = extract_graph(&mol->atom, &mol->bond, s_idx, s_len, vertex_mapping, temp_arena);
         size_t pre_count = md_index_data_num_ranges(result);
 
         state_t state = {0};
@@ -9211,11 +9209,11 @@ done:
 }
 
 md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_ATOM_TYPE, mol, alloc);
+    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX, mol, alloc);
 }
 
 md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_ATOMIC_NUMBER, mol, alloc);
+    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER, mol, alloc);
 }
 
 size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_molecule_t* mol, md_allocator_i* alloc) {
@@ -9267,6 +9265,9 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         }
     }
 
+    uint8_t* atom_types = md_vm_arena_push(temp_alloc, mol->atom.count);
+    md_atom_extract_atomic_numbers(atom_types, 0, mol->atom.count, &mol->atom);
+
     for (size_t i = 0; i < num_structures; ++i) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_alloc);
         const size_t s_size = md_index_range_size(structures, i);
@@ -9284,7 +9285,7 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
             if (ref_type_count[j] > s_type_count[j]) goto next;
         }
 
-        graph_t s_graph = make_graph(&mol->atom, &mol->bond, s_idx, s_size, temp_alloc);
+        graph_t s_graph = extract_graph(&mol->atom, &mol->bond, s_idx, s_size, VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER, temp_alloc);
 
         if (flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT) {
             if (s_graph.vertex_count != ref_graph.vertex_count) {

@@ -572,7 +572,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     for (size_t i = 0; i < num_chains; ++i) {
         bool add_chain = true;
         for (int j = chain_res_ranges[i].beg; j < chain_res_ranges[i].end; ++j) {
-            if (mol->residue.flags[j] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE) == 0) {
+            if (!(mol->residue.flags[j] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE))) {
 				add_chain = false;
 				break;
             }

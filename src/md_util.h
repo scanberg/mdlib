@@ -58,11 +58,8 @@ static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
-// Initializes residue data from atom data
-bool md_util_residue_infer(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc);
+// Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
 bool md_util_residue_infer_flags(md_residue_data_t* res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
-
-bool md_util_chain_infer(md_chain_data_t* out_chain, const md_residue_data_t* res, md_allocator_i* alloc);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 

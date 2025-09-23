@@ -197,6 +197,12 @@ static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_
     return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
 }
 
+static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    ASSERT(atom_idx < atom->count);
+    return atom->type_idx[atom_idx];
+}
+
 static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     ASSERT(atom_idx < atom->count);
