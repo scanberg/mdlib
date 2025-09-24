@@ -34,8 +34,7 @@ const str_t* md_util_element_names(void);
 const float* md_util_element_vdw_radii(void);
 
 // Element functions (now calling new atomic number API internally)
-md_element_t md_util_element_lookup(str_t element_str);
-md_element_t md_util_element_lookup_ignore_case(str_t element_str);
+md_element_t md_util_element_lookup(str_t element_str, bool ignore_case);
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);
 float md_util_element_vdw_radius(md_element_t element);

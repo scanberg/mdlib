@@ -2136,7 +2136,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const str_t* str = as_string_arr(arg[0]);
 
     for (size_t i = 0; i < num_str; ++i) {
-        md_atomic_number_t z = md_atomic_number_from_symbol(str[i]);
+        md_atomic_number_t z = md_atomic_number_from_symbol(str[i], false);
         if (z)
             md_array_push(query_z, z, ctx->temp_alloc);
         else if (!dst) {

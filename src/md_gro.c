@@ -184,7 +184,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
         md_residue_id_t res_id = data->atom_data[i].res_id;
-        md_atomic_number_t atomic_number = md_atom_infer_atomic_number(atom_name, res_name);
+        md_atomic_number_t atomic_number = md_atomic_number_infer_from_label(atom_name, res_name);
 
         float mass = md_util_element_atomic_mass(atomic_number);
         float radius = md_util_element_vdw_radius(atomic_number);

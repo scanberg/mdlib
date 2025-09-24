@@ -489,6 +489,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
 
+    bool terminator = false;
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
 		char alt_loc = data->atom_coordinates[i].alt_loc;
 		if (alt_loc != ' ' && alt_loc != 'A') continue; // Ignore alt loc entries unless 'A' == first alt loc
@@ -501,24 +502,23 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
         md_residue_id_t res_id = data->atom_coordinates[i].res_seq;
         char chain_id = data->atom_coordinates[i].chain_id;
-        md_flags_t flags = 0;
+        md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
-            atomic_number = md_atomic_number_from_symbol(sym);
+            atomic_number = md_atomic_number_from_symbol(sym, true);
         } else {
-            atomic_number = md_atom_infer_atomic_number(atom_id, res_name);
+            atomic_number = md_atomic_number_infer_from_label(atom_id, res_name);
         }
 
-        float mass = md_atomic_mass(atomic_number);
-        float radius = md_vdw_radius(atomic_number);
+        float mass   = md_atomic_number_mass(atomic_number);
+        float radius = md_atomic_number_vdw_radius(atomic_number);
 
         md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, mol_alloc);
 
 		uint64_t comp_key = md_hash64_str(res_name, res_id ^ chain_id);
-		bool terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
 
         if (chain_id != ' ') {
             if (chain_id != prev_chain_id || terminator) {
@@ -542,10 +542,11 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
         if (comp_key != prev_comp_key || terminator) {
             // New residue
-            md_flags_t res_flags = 0;
+            // Propagate HETERO flag to residue
+            md_flags_t res_flags = flags;
 
             mol->residue.count += 1;
-            md_array_push(mol->residue.atom_offset, mol->atom.count, mol_alloc);
+            md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, mol_alloc);
             md_array_push(mol->residue.name,  make_label(res_name), mol_alloc);
             md_array_push(mol->residue.id,    res_id, mol_alloc);
             md_array_push(mol->residue.flags, res_flags, mol_alloc);
@@ -561,8 +562,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
         prev_chain_id = chain_id;
 		prev_comp_key = comp_key;
+
+        terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(mol->residue.atom_offset, mol->atom.count, mol_alloc);  // Final sentinel
+    md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, mol_alloc);  // Final sentinel
 
 	// Here we need to infer what we can about the residues, such as amino acid or nucleotide type
     md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);

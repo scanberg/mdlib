@@ -43,19 +43,20 @@ enum {
 
     // To mark backbone atoms in Polymers
     MD_FLAG_BACKBONE            = 0x10,
-    MD_FLAG_SIDE_CHAIN          = 0x40,
 
     // Proteins
     MD_FLAG_AMINO_ACID		    = 0x20,
+    MD_FLAG_SIDE_CHAIN          = 0x40,
 
     // RNA DNA
     MD_FLAG_NUCLEOTIDE	        = 0x100,
     MD_FLAG_NUCLEOBASE          = 0x200,
     MD_FLAG_NUCLEOSIDE          = 0x400,
 
-    // Common HETERO types
-    MD_FLAG_WATER			    = 0x1000,
-    MD_FLAG_ION			        = 0x2000,
+    // HETERO types
+    MD_FLAG_HETERO              = 0x1000,
+    MD_FLAG_WATER			    = 0x2000,
+    MD_FLAG_ION			        = 0x4000,
 
     // Chirality
     MD_FLAG_ISOMER_L            = 0x10000,
@@ -292,26 +293,28 @@ typedef struct md_index_data_t {
 
 // OPERATIONS ON THE TYPES
 
-// Element symbol and name lookup functions
-md_atomic_number_t md_atomic_number_from_symbol(str_t sym);
-md_atomic_number_t md_atomic_number_from_symbol_icase(str_t sym);
-str_t md_symbol_from_atomic_number(md_atomic_number_t z);
-str_t md_name_from_atomic_number(md_atomic_number_t z);
-
 // Element property functions
-float md_atomic_mass(md_atomic_number_t z);
-float md_vdw_radius(md_atomic_number_t z);
-float md_covalent_radius(md_atomic_number_t z);
-int   md_max_valence(md_atomic_number_t z);
-uint32_t md_cpk_color(md_atomic_number_t z);
+str_t md_atomic_number_name(md_atomic_number_t z);
+str_t md_atomic_number_symbol(md_atomic_number_t z);
+float md_atomic_number_mass(md_atomic_number_t z);
+float md_atomic_number_vdw_radius(md_atomic_number_t z);
+float md_atomic_number_covalent_radius(md_atomic_number_t z);
+int   md_atomic_number_max_valence(md_atomic_number_t z);
+uint32_t md_atomic_number_cpk_color(md_atomic_number_t z);
 
+// Element symbol and name lookup functions
+md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
+
+// Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
-md_atomic_number_t md_atom_infer_atomic_number(str_t atom_name, str_t res_name);
+md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name);
+md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
 // Batch form wired to molecule structure
 // Returns the number of successfully inferred atomic numbers
 // All of the supplied arrays must have at least 'count' elements
-size_t md_atoms_infer_atomic_numbers(md_atomic_number_t out_z[], const str_t atom_names[], const str_t atom_resnames[], size_t count);
+size_t md_atomic_number_infer_from_label_batch(md_atomic_number_t out_z[], const str_t atom_names[], const str_t atom_resnames[], size_t count);
+size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
 
 // macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}

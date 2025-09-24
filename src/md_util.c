@@ -792,10 +792,12 @@ static inline uint8_t vertex_type_from_atom_idx(const md_atom_data_t* atom, size
     default:
         ASSERT(false);
     }
+    return 0;
 }
 
 static graph_t extract_graph(const md_atom_data_t* atom, const md_bond_data_t* bond, const int indices[], size_t count, vertex_type_mapping_mode_t vertex_mapping, md_allocator_i* vm_arena) {
-    ASSERT(mol);  
+    ASSERT(atom);
+    ASSERT(bond);
     ASSERT(indices);
     ASSERT(vm_arena);
 
@@ -1146,26 +1148,15 @@ static inline bool halogen_element(md_element_t elem) {
     }
 }
 
-md_element_t md_util_element_lookup(str_t str) {
+md_element_t md_util_element_lookup(str_t str, bool ignore_case) {
     if (str.len == 1 || str.len == 2) {
         for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
             str_t sym = element_symbols[i];
-            if (str_eq(str, sym)) return i;
-        }
-    }
-    return 0;
-}
-
-md_element_t md_util_element_lookup_ignore_case(str_t str) {
-    if (str.len == 1 || str.len == 2) {
-        for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
-            str_t sym = element_symbols[i];
-            if (str.len == sym.len) {
-                if (str.len == 1) {
-                    if (to_upper(str.ptr[0]) == to_upper(sym.ptr[0])) return i;
-                } else {
-                    if (to_upper(str.ptr[0]) == to_upper(sym.ptr[0]) && to_upper(str.ptr[1]) == to_upper(sym.ptr[1])) return i;
-                }
+            if (str_len(sym) != str_len(str)) continue;
+            if (ignore_case) {
+                if (str_eq_ignore_case(str, sym)) return i;   
+            } else {
+                if (str_eq(str, sym)) return i;
             }
         }
     }
@@ -3031,8 +3022,8 @@ static inline bool bond_heuristic(float d2, float r_min, float r_max) {
     return (r_min * r_min) < d2 && d2 < (r_max * r_max);
 }
 
-static inline int simd_bond_heuristic(md_256 d2, md_256 r_min, md_256 r_max) {
-    const md_256 mask_d2  = md_mm256_and_ps(md_mm256_cmpgt_ps(d2, md_mm256_mul_ps(r_min, r_min)), md_mm256_cmplt_ps(d2, md_mm256_mul_ps(r_max, r_max)));
+static inline int simd_bond_heuristic(md_256 d2, md_256 r2_min, md_256 r2_max) {
+    const md_256 mask_d2  = md_mm256_and_ps(md_mm256_cmpgt_ps(d2, r2_min), md_mm256_cmplt_ps(d2, r2_max));
     return md_mm256_movemask_ps(mask_d2);
 }
 
@@ -3103,17 +3094,17 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [Li] = { [H]=1.68f, [C]=1.68f, [O]=1.68f, [N]=1.68f },
     [Be] = { [O]=1.42f, [N]=1.42f, [C]=1.42f },
     [B]  = { [H]=0.33f, [C]=0.99f, [N]=0.99f, [O]=0.99f, [F]=0.99f, [Si]=1.21f, [P]=1.21f, [S]=1.32f },
-    [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.79f, [Br]=1.94f, [I]=2.14f, [B]=0.99f },
-    [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f },
-    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.37f, [B]=0.99f },
+    [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.70f, [Br]=1.80f, [I]=2.14f, [B]=0.99f, [W]=2.1f },
+    [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f, [W]=2.0f },
+    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.37f, [B]=0.99f, [W]=1.50f },
     [F]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f },
     [Na] = { [H]=1.89f, [O]=1.89f, [N]=1.89f },
     [Mg] = { [O]=1.99f, [N]=1.99f, [S]=2.04f },
     [Al] = { [H]=1.26f, [C]=1.58f, [N]=1.47f, [O]=1.47f, [Si]=1.47f, [P]=1.68f, [S]=1.84f },
     [Si] = { [H]=0.33f, [C]=1.16f, [O]=1.47f, [Si]=1.22f, [P]=1.63f, [S]=1.84f, [B]=1.21f },
-    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.37f, [S]=1.79f },
-    [S]  = { [H]=0.33f, [C]=0.77f, [O]=1.50f, [P]=1.79f, [S]=1.84f },
-    [Cl] = { [H]=0.33f, [C]=1.79f, [N]=1.63f, [O]=1.53f, [Cl]=0.95f },
+    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.37f, [S]=1.79f, [W]=2.1f },
+    [S]  = { [H]=0.33f, [C]=0.77f, [O]=1.50f, [P]=1.79f, [S]=1.84f, [W]=2.2f },
+    [Cl] = { [H]=0.33f, [C]=1.70f, [N]=1.63f, [O]=1.53f, [Cl]=0.95f },
     [K]  = { [H]=2.24f, [O]=2.24f, [N]=2.24f },
     [Ca] = { [O]=2.04f, [S]=2.14f },
 
@@ -3132,7 +3123,7 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [Ge] = { [O]=1.43f, [C]=1.58f, [Ge]=1.22f },
     [As] = { [H]=0.33f, [C]=1.37f, [O]=1.37f, [S]=1.63f, [P]=1.53f },
     [Se] = { [H]=0.33f, [C]=1.58f, [O]=1.58f, [S]=1.73f },
-    [Br] = { [H]=0.33f, [C]=1.99f, [Cl]=1.99f, [Br]=1.27f },
+    [Br] = { [H]=0.33f, [C]=1.80f, [Cl]=1.99f, [Br]=1.27f },
     [Rb] = { [O]=2.24f },
     [Sr] = { [O]=2.14f },
     [Y]  = { [O]=1.68f },
@@ -3150,6 +3141,7 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [Sb] = { [O]=1.53f },
     [Te] = { [O]=1.53f },
     [I]  = { [H]=0.33f, [C]=2.14f, [Cl]=2.14f, [I]=1.40f },
+    [W]  = { [N]=2.0f, [C]=2.1f, [O]=1.50f, [P]=2.1f, [S]=2.2f},
 
     // Lanthanides
     [La] = { [O]=2.04f, [N]=2.04f },
@@ -3183,16 +3175,16 @@ static const float cov_r_max[Num_Elements][Num_Elements] = {
     [Li] = { [H]=2.151f, [C]=2.251f, [O]=2.151f, [N]=2.151f },
     [Be] = { [O]=1.951f, [N]=1.951f, [C]=1.951f },
     [B]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.851f, [P]=1.851f, [S]=2.051f },
-    [C]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.951f, [P]=2.051f, [S]=1.951f, [Cl]=2.151f, [Br]=2.351f, [I]=2.651f, [B]=1.651f },
-    [N]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [P]=1.951f, [S]=2.051f, [B]=1.651f },
-    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f },
+    [C]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.951f, [P]=2.051f, [S]=1.951f, [Cl]=2.151f, [Br]=2.351f, [I]=2.651f, [B]=1.651f, [W]=2.3f },
+    [N]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [P]=1.951f, [S]=2.051f, [B]=1.651f, [W]=2.3f },
+    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f, [W]=1.95f },
     [F]  = { [H]=1.151f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [F]=1.451f },
     [Na] = { [H]=2.451f, [O]=2.451f, [N]=2.451f },
     [Mg] = { [O]=2.251f, [N]=2.251f, [S]=2.351f },
     [Al] = { [H]=1.651f, [C]=2.151f, [N]=2.051f, [O]=2.051f, [Si]=2.151f, [P]=2.451f, [S]=2.551f },
     [Si] = { [H]=1.651f, [C]=1.951f, [O]=2.151f, [Si]=2.151f, [P]=2.451f, [S]=2.551f, [B]=1.851f },
-    [P]  = { [H]=1.651f, [C]=2.051f, [N]=2.051f, [O]=1.951f, [S]=2.551f },
-    [S]  = { [H]=1.651f, [C]=1.951f, [O]=2.051f, [P]=2.551f, [S]=2.651f },
+    [P]  = { [H]=1.651f, [C]=2.051f, [N]=2.051f, [O]=1.951f, [S]=2.551f, [W]=2.35f },
+    [S]  = { [H]=1.651f, [C]=1.951f, [O]=2.051f, [P]=2.551f, [S]=2.651f, [W]=2.4f },
     [Cl] = { [H]=1.651f, [C]=2.151f, [N]=1.951f, [O]=1.951f, [Cl]=1.951f },
     [K]  = { [O]=2.851f, [H]=2.851f, [N]=2.851f },
     [Ca] = { [O]=2.451f, [S]=2.551f },
@@ -3230,6 +3222,7 @@ static const float cov_r_max[Num_Elements][Num_Elements] = {
     [Sb] = { [O]=2.151f },
     [Te] = { [O]=2.151f },
     [I]  = { [H]=2.151f, [C]=2.651f, [Cl]=2.651f, [I]=2.251f },
+    [W]  = { [N]=2.3f, [C]=2.3f, [O]=1.95f, [P]=2.35f, [S]=2.4f},
 
     // Lanthanides
     [La] = { [O]=2.451f, [N]=2.451f },
@@ -3419,8 +3412,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     md_mm256_set1_ps(z[i]),
                 };
 
-                const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];
+                int ei = element[i];
+
+                const float* table_cov_r_min   = cov_r_min[ei];
+                const float* table_cov_r_max   = cov_r_max[ei];
                 //const float* table_coord_r_min = coord_r_min[element[i]];
                 //const float* table_coord_r_max = coord_r_max[element[i]];
 
@@ -3434,8 +3429,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
                     const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
                     
-                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
-                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                    const md_256 r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
+                    const md_256 r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
+                    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+                    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
                     //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
                     //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
 
@@ -3444,8 +3441,8 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                         md_mm256_sub_ps(ci[1], cj[1]),
                         md_mm256_sub_ps(ci[2], cj[2]),
                     };
-                    const md_256 d2 = simd_distance_squared(dx, cell);
-                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                    const md_256 d2    = simd_distance_squared(dx, cell);
+                    const int cov_mask = simd_bond_heuristic(d2, r2_min_cov, r2_max_cov);
                     //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
 
                     int mask = cov_mask;
@@ -3485,8 +3482,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     md_mm256_set1_ps(z[i]),
                 };
 
-                const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];
+                int ei = element[i];
+
+                const float* table_cov_r_min   = cov_r_min[ei];
+                const float* table_cov_r_max   = cov_r_max[ei];
                 //const float* table_coord_r_min = coord_r_min[element[i]];
                 //const float* table_coord_r_max = coord_r_max[element[i]];
 
@@ -3500,8 +3499,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
                     const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
 
-                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
-                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                    const md_256 r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
+                    const md_256 r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
+                    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+                    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
                     //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
                     //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
 
@@ -3511,7 +3512,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                         md_mm256_sub_ps(ci[2], cj[2]),
                     };
                     const md_256 d2 = simd_distance_squared(dx, cell);
-                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                    int cov_mask    = simd_bond_heuristic(d2, r2_min_cov,   r2_max_cov);
                     //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
 
                     int mask = cov_mask;
@@ -3878,60 +3879,6 @@ bool md_util_residue_infer(md_residue_data_t* out_res, const md_flags_t in_atom_
     return true;
 }
 
-bool md_util_residue_infer_flags(md_residue_data_t* out_res, md_flags_t out_atom_flags[], const md_atom_data_t* atom) {
-    ASSERT(out_res);
-    ASSERT(atom);
-
-    for (size_t i = 0; i < out_res->count; ++i) {
-        str_t resname = LBL_TO_STR(out_res->name[i]);
-        md_range_t range = md_residue_atom_range(out_res, i);
-        size_t len = (size_t)(range.end - range.beg);
-
-        md_protein_backbone_atoms_t prot_atoms = {0};
-        md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, atom, range)) {
-            out_res->flags[i] |= MD_FLAG_AMINO_ACID;
-            if (out_atom_flags) {
-                out_atom_flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
-                out_atom_flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
-                out_atom_flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
-                out_atom_flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
-                if (prot_atoms.hn != -1) {
-                    out_atom_flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
-                }
-                for (int j = range.beg; j < range.end; ++j) {
-                    out_atom_flags[j] |= MD_FLAG_AMINO_ACID;
-                }
-            }
-        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom, range)) {
-            out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-            if (out_atom_flags) {
-                out_atom_flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
-                out_atom_flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
-                out_atom_flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
-                out_atom_flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
-                out_atom_flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
-                out_atom_flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
-                for (int j = range.beg; j < range.end; ++j) {
-                    out_atom_flags[j] |= MD_FLAG_NUCLEOTIDE;
-                }
-            }
-        } else if (((len == 1 || len == 3) && md_util_resname_water(resname)) ||
-                    (len == 1 && md_util_resname_water(md_atom_name(atom, range.beg))))
-        {
-            out_res->flags[i] |= MD_FLAG_WATER;
-        } else if (md_util_resname_amino_acid(resname)) {
-            out_res->flags[i] |= MD_FLAG_AMINO_ACID;
-            MD_LOG_DEBUG("Structure contains amino acid residue names, but it's backbone cannot be mapped from atom labels");
-        } else if (md_util_resname_nucleotide(resname)) {
-            out_res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-            MD_LOG_DEBUG("Structure contains nucleotide residue names, but it's backbone cannot be mapped from atom labels");
-        }
-    }
-
-    return true;
-}
-
 // @TODO: Convert to a table
 static bool monatomic_ion_element(md_element_t elem) {
     switch (elem) {
@@ -3971,6 +3918,62 @@ static bool monatomic_ion_element(md_element_t elem) {
     default:
         return false;
     }
+}
+
+bool md_util_residue_infer_flags(md_residue_data_t* res, md_flags_t atom_flags[], const md_atom_data_t* atom) {
+    ASSERT(res);
+    ASSERT(atom);
+
+    for (size_t i = 0; i < res->count; ++i) {
+        str_t resname = LBL_TO_STR(res->name[i]);
+        md_range_t range = md_residue_atom_range(res, i);
+        size_t len = (size_t)(range.end - range.beg);
+
+        md_protein_backbone_atoms_t prot_atoms = {0};
+        md_nucleic_backbone_atoms_t nucl_atoms = {0};
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, atom, range)) {
+            res->flags[i] |= MD_FLAG_AMINO_ACID;
+            if (atom_flags) {
+                atom_flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
+                atom_flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
+                atom_flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
+                atom_flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
+                if (prot_atoms.hn != -1) {
+                    atom_flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
+                }
+                for (int j = range.beg; j < range.end; ++j) {
+                    atom_flags[j] |= MD_FLAG_AMINO_ACID;
+                }
+            }
+        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom, range)) {
+            res->flags[i] |= MD_FLAG_NUCLEOTIDE;
+            if (atom_flags) {
+                atom_flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
+                atom_flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
+                atom_flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
+                atom_flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
+                atom_flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
+                atom_flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
+                for (int j = range.beg; j < range.end; ++j) {
+                    atom_flags[j] |= MD_FLAG_NUCLEOTIDE;
+                }
+            }
+        } else if (((len == 1 || len == 3) && md_util_resname_water(resname)) ||
+                    (len == 1 && md_util_resname_water(md_atom_name(atom, range.beg))))
+        {
+            res->flags[i] |= MD_FLAG_WATER;
+        } else if (len == 1 && monatomic_ion_element(md_atom_atomic_number(atom, range.beg))) {
+            res->flags[i] |= MD_FLAG_ION;
+        } else if (!(res->flags[i] & MD_FLAG_HETERO) && md_util_resname_amino_acid(resname)) {
+            res->flags[i] |= MD_FLAG_AMINO_ACID;
+            MD_LOG_DEBUG("Structure contains amino acid residue names, but it's backbone cannot be mapped from atom labels");
+        } else if (!(res->flags[i] & MD_FLAG_HETERO) && md_util_resname_nucleotide(resname)) {
+            res->flags[i] |= MD_FLAG_NUCLEOTIDE;
+            MD_LOG_DEBUG("Structure contains nucleotide residue names, but it's backbone cannot be mapped from atom labels");
+        }
+    }
+
+    return true;
 }
 
 bool md_util_set_ion_flags(md_flags_t* out_flags, const md_atom_data_t* atom, const md_bond_data_t* bond) {
@@ -7093,6 +7096,10 @@ md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
         return (md_unit_cell_t) {0};
     }
 
+    if (x == 1.0 && y == 1.0 && z == 1.0) {
+        return (md_unit_cell_t) {0};
+    }
+
     md_unit_cell_t cell = {
         .basis = {
             (float)x, 0, 0,
@@ -8081,23 +8088,27 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 
 			// Pass 3: find consecutive ranges of connected residues
 			md_array(md_range_t) res_ranges = 0;
-            size_t i = 0;
-            while (i < mol->residue.count) {
-                size_t beg = i;
-                size_t j = i + 1;
+            {
+                size_t i = 0;
+                while (i < mol->residue.count) {
+                    size_t beg = i;
+                    size_t j = i + 1;
 
-                // Continue while each step has link to previous residue
-                while (j < mol->residue.count && connected_to_prev[j]) {
-                    ++j;
+                    // Continue while each step has link to previous residue
+                    while (j < mol->residue.count && connected_to_prev[j]) {
+                        ++j;
+                    }
+
+                    md_array_push(res_ranges, ((md_range_t){ (int32_t)beg, (int32_t)j }), temp_arena);
+                    i = j;
                 }
-
-                md_array_push(res_ranges, ((md_range_t){ (int32_t)beg, (int32_t)j }), temp_arena);
-                i = j;
             }
 
 			size_t num_res_ranges = md_array_size(res_ranges);
             for (size_t i = 0; i < num_res_ranges; ++i) {
                 md_range_t range = res_ranges[i];
+
+                if (range.end - range.beg < MIN_RESIDUE_CHAIN_LEN) continue;
 
 				// Ensure that all residues in the range are of polymer type (amino acid or nucleotide)
                 bool add_as_chain = true;
@@ -8234,7 +8245,6 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #endif
         }
     }
-
     if (MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT && 
         (mol->unit_cell.flags != MD_UNIT_CELL_FLAG_NONE) && md_structure_count(&mol->structure) > 0)
     {

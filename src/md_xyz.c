@@ -341,7 +341,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     if (is_alpha(tokens[tok_idx].ptr[0])) {
         size_t len = str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[tok_idx++]);
         str_t symbol = {coord->element_symbol, len};
-        coord->atomic_number = md_util_element_lookup(symbol);
+        coord->atomic_number = md_util_element_lookup(symbol, false);
     } else {
         coord->atomic_number = (int)parse_int(tokens[tok_idx++]);
     }
@@ -750,7 +750,9 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         float z = data->coordinates[i].z;
         str_t atom_symbol = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_symbol, atomic_number, md_atomic_mass(atomic_number), md_vdw_radius(atomic_number), alloc);
+        float mass = md_atomic_number_mass(atomic_number);
+        float radius = md_atomic_number_vdw_radius(atomic_number);
+        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_symbol, atomic_number, mass, radius, alloc);
 
         mol->atom.count += 1;
         md_array_push(mol->atom.x, x, alloc);

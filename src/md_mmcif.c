@@ -174,7 +174,7 @@ typedef struct {
     // perhaps add description field later
 } mmcif_entity_t;
 
-static inline mmcif_entity_t* mmcif_entity_find(const md_array(mmcif_entity_t) entities, str_t id) {
+static inline mmcif_entity_t* mmcif_entity_find(md_array(mmcif_entity_t) entities, str_t id) {
     for (mmcif_entity_t* it = md_array_beg(entities); it != md_array_end(entities); ++it) {
         if (str_eq(it->id, id)) return it;
     }
@@ -596,14 +596,6 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
         }
     }
 
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
-    md_hashmap32_t label_seq_id_map = {.allocator = temp_alloc};
-    md_hashmap32_t auth_seq_id_map = {.allocator = temp_alloc};
-
-    md_hashmap_reserve(&label_seq_id_map, 512);
-    md_hashmap_reserve(&auth_seq_id_map,  512);
-
     // Ensure that we have all the required fields
     size_t max_tok = 0;
 
@@ -837,9 +829,9 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             int res_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
             uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id ^ chain_key);
 
-            md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol);
-            float mass = md_atomic_mass(atomic_number);
-            float radius = md_vdw_radius(atomic_number);
+            md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
+            float mass = md_atomic_number_mass(atomic_number);
+            float radius = md_atomic_number_vdw_radius(atomic_number);
             md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, alloc);
 
             md_flags_t flags = 0;
@@ -861,16 +853,18 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                     }
                 } else if (entity->type == ENTITY_TYPE_WATER) {
                     flags |= MD_FLAG_WATER;
+                } else {
+                    flags |= MD_FLAG_HETERO;
                 }
             }
 
             if (comp_key != prev_comp_key) {
                 // --- New residue boundary ---
-                static const uint32_t res_flag_filter = MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
+                static const uint32_t res_flag_filter = MD_FLAG_HETERO | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
                 md_flags_t res_flags = flags & res_flag_filter;
 
                 // Start residue (store atom offset before adding any residue atoms)
-                md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);
+                md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
                 md_array_push(mol->residue.name,  make_label(res_name), alloc);
                 md_array_push(mol->residue.id,    res_id, alloc);
                 md_array_push(mol->residue.flags, res_flags, alloc);
@@ -913,7 +907,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                 mol->chain.atom_range[active_chain_idx].end = (int32_t)mol->atom.count;
             }
         }
-        md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);  // Final sentinel
+        md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);  // Final sentinel
 
         // Finalize counts
         mol->residue.count = md_array_size(mol->residue.id);

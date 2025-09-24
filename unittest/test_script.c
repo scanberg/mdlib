@@ -29,9 +29,9 @@ static md_atom_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2, 3, 
 #define ATOM_TYPE_COUNT 5
 static md_atomic_number_t atom_type_z[] = {1, 2, 6, 7, 8};
 static md_label_t atom_type_id[] = {
-    MAKE_LABEL("H"),
-    MAKE_LABEL("He"),
-    MAKE_LABEL("C"),
+    MAKE_LABEL("H1"),
+    MAKE_LABEL("HE"),
+    MAKE_LABEL("CA"),
     MAKE_LABEL("N"),
     MAKE_LABEL("O")
 };
@@ -49,26 +49,6 @@ static float atom_type_radius[] = {
     1.55f,
     1.52f
 };
-
-static md_label_t rname[] = {
-    MAKE_LABEL("SOL"),
-    MAKE_LABEL("SOL"),
-    MAKE_LABEL("SOL"),
-    MAKE_LABEL("LYS"),
-    MAKE_LABEL("LYS"),
-    MAKE_LABEL("LYS"),
-    MAKE_LABEL("LYS"),
-    MAKE_LABEL("LYS"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT"),
-    MAKE_LABEL("PFT")
-};
-static md_chain_idx_t c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 #define RES_COUNT 4
 static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
@@ -929,8 +909,9 @@ done:
 UTEST(script, selection) {
     EXPECT_TRUE(test_selection("all",               "1111111111111111"));
     EXPECT_TRUE(test_selection("resname('SOL')",    "1110000000000000"));
+    EXPECT_TRUE(test_selection("resname('LYS')",    "0001111100000000"));
     EXPECT_TRUE(test_selection("element('C')",      "0000101000001010"));
-    EXPECT_TRUE(test_selection("label('CA')",       "0000001000000010"));
+    EXPECT_TRUE(test_selection("label('CA')",       "0000101000001010"));
     EXPECT_TRUE(test_selection("atom(1) in resname('PFT')", "0000000010001000"));
     //TEST_SELECTION("atom(1:2) or element('O') in residue(:)", "1001000010001000");
 }

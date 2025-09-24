@@ -467,6 +467,10 @@ static size_t parse_masses(md_lammps_atom_type_t types[], size_t num_atom_types,
 		}
 
 		types[i].mass = mass;
+		md_atomic_number_t z = md_atomic_number_infer_from_mass(mass);
+		if (z != MD_Z_X) {
+			types[i].radius = md_atomic_number_vdw_radius(z);
+		}
 		count += 1;
 	}
 
@@ -538,7 +542,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_atom_typ
 
 		str_t line;
 		for (size_t i = 0; i < num_atom_types; ++i) {
-			if (!md_buffered_reader_extract_line(&line, reader)) {
+			if (md_buffered_reader_extract_line(&line, reader)) {
 				size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 
 				int type = (int)parse_int(tok[0]);
@@ -564,10 +568,13 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_atom_typ
 					}
 				}
 
-				types[i].radius = (float)estimate_radius(style, params, num_param);
+				if (types[i].radius == 0) {
+					types[i].radius = (float)estimate_radius(style, params, num_param);
+				}
 			}
 		}
 	}
+	return true;
 }
 
 size_t md_lammps_atom_format_count(void) {
@@ -889,7 +896,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 				char buf[8];
 				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
-				md_array_push(mol->residue.atom_offset, mol->atom.count, alloc);
+				md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
 				md_array_push(mol->residue.id, resid, alloc);
 				md_array_push(mol->residue.name, make_label(name), alloc);
 				md_array_push(mol->residue.flags, 0, alloc);
@@ -908,7 +915,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	}
 
 	if (has_resid) {
-		md_array_push(mol->residue.atom_offset, mol->atom.count, alloc); // Final sentinel
+		md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc); // Final sentinel
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 

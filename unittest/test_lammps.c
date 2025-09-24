@@ -61,10 +61,10 @@ UTEST(lammps, water_ethane_cubic) {
     }
 
     const md_lammps_atom_type_t ref_atom_types[] = {
-        {1, 1.008f,    0.31f},
-        {2, 12.011f,   0.25f},
-        {3, 15.9994f,  0.70f},
-        {4, 1.008f,    0.65f},
+        {1, 1.008f,    1.1f},
+        {2, 12.011f,   1.7f},
+        {3, 15.9994f,  1.52f},
+        {4, 1.008f,    1.1f},
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(ref_atom_types); ++i) {
@@ -131,7 +131,8 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
     }
 
-    for (size_t i = 0; i < mol.atom.type.count; ++i) {
+    // Skip first atom type == Unknown
+    for (size_t i = 1; i < mol.atom.type.count; ++i) {
         str_t type_id = md_atom_type_name(&mol.atom.type, i);
         float mass    = md_atom_type_mass(&mol.atom.type, i);
         float radius  = md_atom_type_radius(&mol.atom.type, i);
@@ -140,13 +141,13 @@ UTEST(lammps, water_ethane_cubic) {
         bool found = false;
         for (size_t j = 0; j < data.num_atom_types; ++j) {
             char buf[8];
-            int len = snprintf(buf, sizeof(buf), "Type_%i", data.atom_types[j].id);
+            int len = snprintf(buf, sizeof(buf), "type_%i", data.atom_types[j].id);
             str_t ref_type_id = {buf, len};
-            float ref_mass = data.atom_types[j].mass;
-            float ref_radius = data.atom_types[j].radius;
-            md_atomic_number_t ref_z;
-            md_util_element_from_mass(&ref_z, &ref_mass, 1);
             if (str_eq(type_id, ref_type_id)) {
+                float ref_mass = data.atom_types[j].mass;
+                float ref_radius = data.atom_types[j].radius;
+                md_atomic_number_t ref_z = md_atomic_number_infer_from_mass(ref_mass);
+
                 found = true;
                 EXPECT_NEAR(mass, ref_mass, 1.0e-5f);
                 EXPECT_NEAR(radius, ref_radius, 1.0e-5f);

@@ -287,13 +287,13 @@ static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data
     md_residue_idx_t res_idx = -1;
     if (res->atom_offset) {
         for (size_t i = 0; i < res->count; ++i) {
-            int32_t beg = res->atom_offset[i];
-            int32_t end = res->atom_offset[i + 1];
-            if (beg <= atom_idx && atom_idx < end) {
+            int32_t res_beg = res->atom_offset[i];
+            int32_t res_end = res->atom_offset[i + 1];
+            if (res_beg <= atom_idx && atom_idx < res_end) {
                 res_idx = (md_residue_idx_t)i;
                 break;
             }
-            if (beg < atom_idx) {
+            if (res_beg > atom_idx) {
                 break;
             }
         }
@@ -334,7 +334,7 @@ static inline md_chain_idx_t md_chain_find_by_residue_idx(const md_chain_data_t*
                 chain_idx = (md_chain_idx_t)i;
                 break;
             }
-            if (range.beg < res_idx) {
+            if (range.beg > res_idx) {
                 break;
             }
         }

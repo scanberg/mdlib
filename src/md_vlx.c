@@ -634,7 +634,7 @@ static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_
 				// process atomic orbitals
 				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
                     vec4_t   cgto_xyzr = {x, y, z, FLT_MAX};
-                    uint32_t cgto_offset = out_data->num_pgtos;
+                    uint32_t cgto_offset = (uint32_t)out_data->num_pgtos;
 
 					// process primitives
 					basis_func_t basis_func = basis_funcs[funcidx];
@@ -773,7 +773,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 			MD_LOG_DEBUG("Parsing Basis Set with identifier: '" STR_FMT "'", STR_ARG(tok[1]));
 		}
 		else if (num_tok == 2 && str_eq(tok[0], STR_LIT("@ATOMBASIS"))) {
-			int atomic_number = md_util_element_lookup_ignore_case(tok[1]);
+			int atomic_number = md_atomic_number_from_symbol(tok[1], true);
 			if (atomic_number == 0) {
 				MD_LOG_ERROR("Unrecognized element '" STR_FMT "' in basis set", STR_ARG(tok[1]));
 				return false;
@@ -944,12 +944,12 @@ static bool parse_vlx_geom(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloc
 	md_array_grow(vlx->atom_coordinates, count, alloc);
 
 	for (size_t i = 0; i < count; ++i) {
-		md_element_t elem = md_util_element_lookup_ignore_case(LBL_TO_STR(fields[i].sym));
-		if (elem == 0) {
+		md_atomic_number_t anum = md_atomic_number_from_symbol(LBL_TO_STR(fields[i].sym), false);
+		if (anum == 0) {
 			MD_LOG_ERROR("Unrecognized element '%s' in geometry", fields[i].sym);
 			goto done;
 		}
-		vlx->atomic_numbers[i] = md_util_element_lookup_ignore_case(LBL_TO_STR(fields[i].sym));
+		vlx->atomic_numbers[i] = anum;
 		vlx->atom_coordinates[i] = (dvec3_t){ fields[i].x, fields[i].y, fields[i].z };
 	}
 
@@ -1545,10 +1545,10 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	}
 
 	{
-		size_t dim;
-		if (h5_read_dataset_dims(&dim, 1, handle, "charges_resp")) {
-			md_array_resize(vlx->scf.resp_charges, dim, vlx->arena);
-			if (!h5_read_dataset_data(vlx->scf.resp_charges, &dim, 1, handle, H5T_NATIVE_DOUBLE, "charges_resp")) {
+		size_t charge_resp_dim;
+		if (h5_read_dataset_dims(&charge_resp_dim, 1, handle, "charges_resp")) {
+			md_array_resize(vlx->scf.resp_charges, charge_resp_dim, vlx->arena);
+			if (!h5_read_dataset_data(vlx->scf.resp_charges, &charge_resp_dim, 1, handle, H5T_NATIVE_DOUBLE, "charges_resp")) {
 				MD_LOG_ERROR("Could not read charges_resp");
 				return false;
 			}
@@ -2880,9 +2880,9 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 		mol->atom.z[i] = (float)vlx->atom_coordinates[i].z;
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
-		str_t sym  = md_symbol_from_atomic_number(z);
-        float mass = md_atomic_mass(z);
-		float radius = md_vdw_radius(z);
+		str_t sym  = md_atomic_number_symbol(z);
+        float mass = md_atomic_number_mass(z);
+		float radius = md_atomic_number_vdw_radius(z);
 
 		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, sym, z, mass, radius, alloc);
 	}
