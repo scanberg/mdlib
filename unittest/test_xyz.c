@@ -447,3 +447,52 @@ UTEST(xyz, trajectory_i) {
     md_free(md_get_temp_allocator(), mem_ptr, mem_size);
     md_xyz_trajectory_free(traj);
 }
+
+
+UTEST(xyz, comprehensive_c720) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
+    
+    md_molecule_t mol = {0};
+    bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    ASSERT_TRUE(result);
+    
+    // C720 should have exactly 720 carbon atoms
+    EXPECT_EQ(mol.atom.count, 720);
+    
+    // All atoms should be carbon
+    for (int64_t i = 0; i < mol.atom.count; ++i) {
+        EXPECT_EQ(md_atom_atomic_number(&mol.atom, i), 6); // Carbon atomic number
+    }
+    
+    // Check that coordinates are not all the same (should be a 3D structure)
+    bool has_variation_x = false, has_variation_y = false, has_variation_z = false;
+    float first_x = mol.atom.x[0], first_y = mol.atom.y[0], first_z = mol.atom.z[0];
+    for (int64_t i = 1; i < mol.atom.count; ++i) {
+        if (fabsf(mol.atom.x[i] - first_x) > 0.01f) has_variation_x = true;
+        if (fabsf(mol.atom.y[i] - first_y) > 0.01f) has_variation_y = true;
+        if (fabsf(mol.atom.z[i] - first_z) > 0.01f) has_variation_z = true;
+    }
+    EXPECT_TRUE(has_variation_x);
+    EXPECT_TRUE(has_variation_y);
+    EXPECT_TRUE(has_variation_z);
+    
+    md_molecule_free(&mol, alloc);
+}
+
+UTEST(xyz, error_handling) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    
+    // Test nonexistent file
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
+    md_molecule_t mol = {0};
+    bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    EXPECT_FALSE(result);
+    md_molecule_free(&mol, alloc);
+    
+    // Test empty path
+    str_t empty_path = {0,0};
+    result = md_xyz_molecule_api()->init_from_file(&mol, empty_path, NULL, alloc);
+    EXPECT_FALSE(result);
+    md_molecule_free(&mol, alloc);
+}

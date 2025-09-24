@@ -67,3 +67,34 @@ UTEST(xvg, energy) {
 
     md_xvg_free(&xvg, md_get_heap_allocator());
 }
+
+UTEST(xvg, lj_sr_lig_protein) {
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/LJ-SR_LIG-Protein.xvg");
+    md_xvg_t xvg = {0};
+    bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
+    ASSERT_TRUE(result);
+
+    EXPECT_EQ(2,   xvg.num_fields);
+    EXPECT_EQ(1001, xvg.num_values);
+
+    // Test first data point: 0.000000  -129.218613
+    EXPECT_NEAR(0.000000, xvg.fields[0][0], 1.0e-6f);
+    EXPECT_NEAR(-129.218613, xvg.fields[1][0], 1.0e-6f);
+
+    // Test last data point: 100000.000000  -143.968918
+    EXPECT_NEAR(100000.000000, xvg.fields[0][1000], 1.0e-6f);
+    EXPECT_NEAR(-143.968918, xvg.fields[1][1000], 1.0e-6f);
+
+    // Test some middle data point
+    EXPECT_NEAR(500.000000, xvg.fields[0][5], 1.0e-6f);
+    EXPECT_NEAR(-159.923813, xvg.fields[1][5], 1.0e-6f);
+
+    ASSERT_EQ(1, xvg.header_info.num_legends);
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[0], STR_LIT("LJ-SR:LIG-Protein")));
+
+    EXPECT_TRUE(str_eq(xvg.header_info.title, STR_LIT("GROMACS Energies")));
+    EXPECT_TRUE(str_eq(xvg.header_info.xaxis_label, STR_LIT("Time (ps)")));
+    EXPECT_TRUE(str_eq(xvg.header_info.yaxis_label, STR_LIT("(kJ/mol)")));
+
+    md_xvg_free(&xvg, md_get_heap_allocator());
+}

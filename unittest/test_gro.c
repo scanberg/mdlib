@@ -64,3 +64,35 @@ UTEST(gro, parse_big) {
 
     md_gro_data_free(&gro_data, alloc);
 }
+
+UTEST(gro, parse_small_water) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/water.gro");
+    md_gro_data_t gro_data = {0};
+    bool result = md_gro_data_parse_file(&gro_data, path, alloc);
+    EXPECT_TRUE(result);
+    EXPECT_EQ(gro_data.num_atoms, 12165);
+
+    // Check that atoms have reasonable coordinates (should be in a 5x5x5 box)
+    for (int64_t i = 0; i < 100 && i < gro_data.num_atoms; ++i) { // Test first 100 atoms
+        EXPECT_GT(gro_data.atom_data[i].x, -1.0f);
+        EXPECT_LT(gro_data.atom_data[i].x, 6.0f);
+        EXPECT_GT(gro_data.atom_data[i].y, -1.0f);
+        EXPECT_LT(gro_data.atom_data[i].y, 6.0f);
+        EXPECT_GT(gro_data.atom_data[i].z, -1.0f);
+        EXPECT_LT(gro_data.atom_data[i].z, 6.0f);
+    }
+
+    md_gro_data_free(&gro_data, alloc);
+}
+
+UTEST(gro, nonexistent_file) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro");
+    md_gro_data_t gro_data = {0};
+    bool result = md_gro_data_parse_file(&gro_data, path, alloc);
+    EXPECT_FALSE(result);
+    
+    md_gro_data_free(&gro_data, alloc);
+}
