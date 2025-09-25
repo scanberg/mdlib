@@ -3651,8 +3651,8 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
     vec3_t n = quat_mul_vec3(q, v);
     c = vec3_add(c, vec3_mul_f(n, len + 0.1f));
     char buf[32];
-    angle = RAD_TO_DEG(angle);
-    snprintf(buf, sizeof(buf), (const char*)u8"%.1f°", angle);
+    angle = (float)RAD_TO_DEG(angle);
+    snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", angle);
     push_text(c, buf, vis);
 }
 

@@ -6841,7 +6841,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
             evaluate_node(&data, node, ctx);
             const md_bitfield_t* bf_arr = data.ptr;
             if (ctx->subscript_ranges) {
-                int count = element_count(data);
+                int count = (int)element_count(data);
                 for (size_t i = 0; i < md_array_size(ctx->subscript_ranges); ++i) {
                     irange_t rng = ctx->subscript_ranges[i];
                     for (int j = rng.beg; j < rng.end; ++j) {
