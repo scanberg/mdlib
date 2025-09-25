@@ -1,7 +1,10 @@
 #include "utest.h"
+#include <math.h>
 
 #include <md_edr.h>
 #include <core/md_allocator.h>
+
+#define MAX_VALIDATION_SAMPLES 100
 
 UTEST(edr, pullout) {
 	md_edr_energies_t energies = {0};
@@ -59,7 +62,7 @@ UTEST(edr, comprehensive_validation) {
         EXPECT_GT(energies.num_frames, 0);
         
         // Validate that frame times are reasonable
-        for (int64_t i = 0; i < MIN(100, energies.num_frames); ++i) {
+        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, energies.num_frames); ++i) {
             EXPECT_FALSE(isnan(energies.frame_time[i]));
             EXPECT_FALSE(isinf(energies.frame_time[i]));
             EXPECT_GE(energies.frame_time[i], 0.0);

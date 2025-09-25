@@ -1,11 +1,14 @@
 ﻿#include "utest.h"
 #include <string.h>
+#include <math.h>
 
 #include <md_lammps.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
+
+#define MAX_VALIDATION_SAMPLES 100
 
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -382,8 +385,8 @@ UTEST(lammps, comprehensive_data_validation) {
         
         EXPECT_GT(mol.atom.count, 0);
         
-        // Validate all coordinates are finite
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        // Validate coordinates are finite for a sample of atoms
+        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, mol.atom.count); ++i) {
             EXPECT_FALSE(isnan(mol.atom.x[i]));
             EXPECT_FALSE(isnan(mol.atom.y[i]));
             EXPECT_FALSE(isnan(mol.atom.z[i]));

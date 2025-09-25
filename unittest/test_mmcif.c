@@ -1,9 +1,12 @@
 ﻿#include "utest.h"
+#include <math.h>
 
 #include <md_mmcif.h>
 #include <md_molecule.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+
+#define MAX_VALIDATION_SAMPLES 100
 
 UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
@@ -337,7 +340,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;
-    for (int64_t i = 0; i < mol.atom.count && i < 100; ++i) {
+    for (int64_t i = 0; i < mol.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
         EXPECT_FALSE(isnan(mol.atom.x[i]));
         EXPECT_FALSE(isnan(mol.atom.y[i]));
         EXPECT_FALSE(isnan(mol.atom.z[i]));
