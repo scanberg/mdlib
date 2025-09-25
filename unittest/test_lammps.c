@@ -1,11 +1,14 @@
 ﻿#include "utest.h"
 #include <string.h>
+#include <math.h>
 
 #include <md_lammps.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
+
+#define MAX_VALIDATION_SAMPLES 100
 
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -359,4 +362,39 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     md_free(md_get_temp_allocator(), mem, bytes);
     md_lammps_trajectory_free(traj);
 
+}
+
+
+UTEST(lammps, comprehensive_data_validation) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    
+    // Test both cubic and triclinic data files comprehensively
+    str_t paths[] = {
+        STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"),
+        STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data")
+    };
+    
+    const char** atom_formats = md_lammps_atom_format_strings();
+    const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
+    md_lammps_molecule_loader_arg_t args = md_lammps_molecule_loader_arg(atom_format);
+    
+    for (int p = 0; p < 2; ++p) {
+        md_molecule_t mol = {0};
+        bool result = md_lammps_molecule_api()->init_from_file(&mol, paths[p], &args, alloc);
+        ASSERT_TRUE(result);
+        
+        EXPECT_GT(mol.atom.count, 0);
+        
+        // Validate coordinates are finite for a sample of atoms
+        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, mol.atom.count); ++i) {
+            EXPECT_FALSE(isnan(mol.atom.x[i]));
+            EXPECT_FALSE(isnan(mol.atom.y[i]));
+            EXPECT_FALSE(isnan(mol.atom.z[i]));
+            EXPECT_FALSE(isinf(mol.atom.x[i]));
+            EXPECT_FALSE(isinf(mol.atom.y[i]));
+            EXPECT_FALSE(isinf(mol.atom.z[i]));
+        }
+        
+        md_molecule_free(&mol, alloc);
+    }
 }

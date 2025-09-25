@@ -1,9 +1,12 @@
 ﻿#include "utest.h"
+#include <math.h>
 
 #include <md_mmcif.h>
 #include <md_molecule.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+
+#define MAX_VALIDATION_SAMPLES 100
 
 UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
@@ -320,4 +323,48 @@ UTEST(mmcif, parse_section) {
     }
 
     md_vm_arena_destroy(alloc);
+}
+
+UTEST(mmcif, parse_2or2_comprehensive) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    
+    md_molecule_t mol = {0};
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    ASSERT_TRUE(result);
+    
+    // Check basic structure properties
+    EXPECT_GT(mol.atom.count, 0);
+    EXPECT_GT(mol.residue.count, 0);
+    EXPECT_GT(mol.chain.count, 0);
+    
+    // Check that coordinates are reasonable (not all zeros or infinities)
+    bool has_nonzero_coord = false;
+    for (int64_t i = 0; i < mol.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
+        EXPECT_FALSE(isnan(mol.atom.x[i]));
+        EXPECT_FALSE(isnan(mol.atom.y[i]));
+        EXPECT_FALSE(isnan(mol.atom.z[i]));
+        EXPECT_FALSE(isinf(mol.atom.x[i]));
+        EXPECT_FALSE(isinf(mol.atom.y[i]));
+        EXPECT_FALSE(isinf(mol.atom.z[i]));
+        
+        if (mol.atom.x[i] != 0.0f || mol.atom.y[i] != 0.0f || mol.atom.z[i] != 0.0f) {
+            has_nonzero_coord = true;
+        }
+    }
+    EXPECT_TRUE(has_nonzero_coord);
+    
+    md_molecule_free(&mol, alloc);
+}
+
+UTEST(mmcif, nonexistent_file) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
+    
+    md_molecule_t mol = {0};
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    EXPECT_FALSE(result);
+    
+    // Should be safe to free even when init failed
+    md_molecule_free(&mol, alloc);
 }

@@ -124,3 +124,21 @@ UTEST(cube, serialize_deserialize) {
 	md_cube_free(&cube_a, md_get_heap_allocator());
 	md_cube_free(&cube_b, md_get_heap_allocator());
 }
+
+UTEST(cube, nonexistent_file) {
+	md_cube_t cube = {0};
+	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.cube"), md_get_heap_allocator());
+	EXPECT_FALSE(result);
+	
+	// Should be safe to free even when loading failed
+	md_cube_free(&cube, md_get_heap_allocator());
+}
+
+UTEST(cube, empty_path) {
+	md_cube_t cube = {0};
+	str_t empty_path = {0,0};
+	bool result = md_cube_file_load(&cube, empty_path, md_get_heap_allocator());
+	EXPECT_FALSE(result);
+	
+	md_cube_free(&cube, md_get_heap_allocator());
+}

@@ -806,3 +806,36 @@ UTEST(util, radix_sort) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
 }
+
+
+UTEST(integration, multiple_formats_tryptophan) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    
+    // Load same tryptophan molecule from different formats
+    md_molecule_t mol_pdb = {0};
+    md_molecule_t mol_gro = {0};
+    md_molecule_t mol_xyz = {0};
+    
+    bool result_pdb = md_pdb_molecule_api()->init_from_file(&mol_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
+    bool result_gro = md_gro_molecule_api()->init_from_file(&mol_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
+    bool result_xyz = md_xyz_molecule_api()->init_from_file(&mol_xyz, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
+    
+    ASSERT_TRUE(result_pdb);
+    ASSERT_TRUE(result_gro);
+    ASSERT_TRUE(result_xyz);
+    
+    // Test that all files loaded successfully and have reasonable atom counts
+    EXPECT_EQ(mol_pdb.atom.count, 28);
+    EXPECT_EQ(mol_xyz.atom.count, 27);  // XYZ has 27 atoms (different representation)
+    // GRO might have a different structure (trajectory frame), so we don't compare directly
+    EXPECT_GT(mol_gro.atom.count, 0);
+    
+    // All should have some atoms representing tryptophan
+    EXPECT_GT(mol_pdb.atom.count, 20);
+    EXPECT_GT(mol_xyz.atom.count, 20);
+    EXPECT_GT(mol_gro.atom.count, 20);
+    
+    md_molecule_free(&mol_pdb, alloc);
+    md_molecule_free(&mol_gro, alloc);
+    md_molecule_free(&mol_xyz, alloc);
+}

@@ -139,3 +139,22 @@ UTEST(pdb, create_molecule) {
     */
     md_pdb_data_free(&pdb_data, alloc);
 }
+
+UTEST(pdb, parse_nonexistent_file) {
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb");
+    md_pdb_data_t pdb_data = {0};
+    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    EXPECT_FALSE(result);
+    
+    // Should be safe to free even when parsing failed
+    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+}
+
+UTEST(pdb, parse_empty_path) {
+    str_t path = {0,0};  // Empty string
+    md_pdb_data_t pdb_data = {0};
+    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    EXPECT_FALSE(result);
+    
+    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+}
