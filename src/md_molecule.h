@@ -287,8 +287,8 @@ static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data
     md_residue_idx_t res_idx = -1;
     if (res->atom_offset) {
         for (size_t i = 0; i < res->count; ++i) {
-            int32_t res_beg = res->atom_offset[i];
-            int32_t res_end = res->atom_offset[i + 1];
+            size_t res_beg = res->atom_offset[i];
+            size_t res_end = res->atom_offset[i + 1];
             if (res_beg <= atom_idx && atom_idx < res_end) {
                 res_idx = (md_residue_idx_t)i;
                 break;
@@ -328,13 +328,14 @@ static inline md_chain_idx_t md_chain_find_by_residue_idx(const md_chain_data_t*
 
     md_chain_idx_t chain_idx = -1;
     if (chain->res_range) {
+        int ri = (int)res_idx;
         for (size_t i = 0; i < chain->count; ++i) {
             md_range_t range = chain->res_range[i];
-            if (range.beg <= res_idx && res_idx < range.end) {
+            if (range.beg <= ri && ri < range.end) {
                 chain_idx = (md_chain_idx_t)i;
                 break;
             }
-            if (range.beg > res_idx) {
+            if (range.beg > ri) {
                 break;
             }
         }
@@ -347,13 +348,14 @@ static inline md_chain_idx_t md_chain_find_by_atom_idx(const md_chain_data_t* ch
 
     md_chain_idx_t chain_idx = -1;
     if (chain->atom_range) {
+        int ai = (int)atom_idx;
         for (size_t i = 0; i < chain->count; ++i) {
             md_range_t range = chain->atom_range[i];
-            if (range.beg <= atom_idx && atom_idx < range.end) {
+            if (range.beg <= ai && ai < range.end) {
                 chain_idx = (md_chain_idx_t)i;
                 break;
             }
-            if (range.beg < atom_idx) {
+            if (range.beg > ai) {
                 break;
             }
         }
