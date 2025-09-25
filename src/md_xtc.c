@@ -211,22 +211,26 @@ static const DIV_T denoms_64_2[] = {
 
 // Bitreader
 typedef struct br_t {
-    const uint64_t* stream;
+    uint64_t* stream;  // Changed from const uint64_t* since we may modify during pre-transformation
     uint64_t data;
     uint64_t next;
     uint32_t cache_bits;
     uint32_t stream_size;
 } br_t;
 
-static inline void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
+static inline void br_init(br_t* r, uint64_t* stream, size_t num_qwords) {
     ASSERT(num_qwords >= 2);
+    
+#if __LITTLE_ENDIAN__
+    // Pre-transform the entire stream buffer once for little-endian systems
+    for (size_t i = 0; i < num_qwords; i++) {
+        stream[i] = BSWAP64(stream[i]);
+    }
+#endif
+    
     r->stream = stream + 2;
     r->data   = stream[0];
     r->next   = stream[1];
-#if __LITTLE_ENDIAN__
-    r->data   = BSWAP64(r->data);
-    r->next   = BSWAP64(r->next);
-#endif
     r->cache_bits = 128;
     r->stream_size = (uint32_t)num_qwords - 2;
 }
@@ -237,10 +241,7 @@ static inline void br_load_next(br_t* r) {
     uint64_t data = *r->stream++;
     r->stream_size -= 1;
 
-#if __LITTLE_ENDIAN__
-    data = BSWAP64(data);
-#endif
-
+    // Data is already byte-swapped during br_init for little-endian systems
     // Always perform unified update
     uint64_t value = (r->cache_bits < 64) ? (data >> r->cache_bits) : 0;
     r->data |= value;
