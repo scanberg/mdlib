@@ -132,6 +132,11 @@ extern "C" {
 #endif
 
 // Atom type table helper functions
+static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
+    ASSERT(atom_type);
+    return atom_type->count;
+}
+
 static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
@@ -191,6 +196,11 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
 
 
 // Atom helpers
+
+static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
+    ASSERT(atom_data);
+    return atom_data->count;
+}
 
 static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
     ASSERT(atom_data);
@@ -253,6 +263,13 @@ static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     return STR_LIT("");
 }
 
+// Residue
+
+static inline size_t md_residue_count(const md_residue_data_t* res) {
+    ASSERT(res);
+    return res->count;
+}
+
 static inline str_t md_residue_name(const md_residue_data_t* res, size_t res_idx) {
     ASSERT(res);
     str_t name = STR_LIT("");
@@ -312,6 +329,12 @@ static inline size_t md_residue_atom_count(const md_residue_data_t* res, size_t 
     return count;
 }
 
+// Chain
+
+static inline size_t md_chain_count(const md_chain_data_t* chain) {
+    ASSERT(chain);
+    return chain->count;
+}
 
 static inline md_range_t md_chain_residue_range(const md_chain_data_t* chain, size_t chain_idx) {
     ASSERT(chain);

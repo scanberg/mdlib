@@ -386,7 +386,7 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
 
 void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices) {
     ASSERT(md_bitfield_validate(bf));
-    ASSERT(indices);
+    if (!indices || num_indices == 0) return;
 
     uint64_t min_bit_idx = UINT32_MAX;
     uint64_t max_bit_idx = 0;
