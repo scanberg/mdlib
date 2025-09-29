@@ -293,6 +293,10 @@ typedef struct md_index_data_t {
 
 // OPERATIONS ON THE TYPES
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Element property functions
 str_t md_atomic_number_name(md_atomic_number_t z);
 str_t md_atomic_number_symbol(md_atomic_number_t z);
@@ -315,6 +319,10 @@ md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 // All of the supplied arrays must have at least 'count' elements
 size_t md_atomic_number_infer_from_label_batch(md_atomic_number_t out_z[], const str_t atom_names[], const str_t atom_resnames[], size_t count);
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
+
+#ifdef __cplusplus
+}
+#endif
 
 // macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}

@@ -10,6 +10,55 @@
 #include <string.h>
 #include <ctype.h>
 
+typedef struct {
+    str_t str;
+    md_atomic_number_t z;
+} Mapping;
+
+#define STR(str) {str, sizeof(str)-1}
+
+// Predefined mappings (applies to a combination from res_name:atom_name)
+static const Mapping mappings[] = {
+    // Common ions
+    {STR("NA:NA"), MD_Z_Na},
+    {STR("SOD:SOD"), MD_Z_Na},
+    {STR("SOD:NA"),MD_Z_Na},
+    {STR("K:K"),   MD_Z_K},
+    {STR("POT:K"), MD_Z_K},
+    {STR("CL:CL"), MD_Z_Cl},
+    {STR("CLA:CL"),MD_Z_Cl},
+    {STR("CLA:CLA"),MD_Z_Cl},
+    {STR("CA:CA"), MD_Z_Ca},
+    {STR("CAL:CA"),MD_Z_Ca},
+    {STR("MG:MG"), MD_Z_Mg},
+    {STR("MAG:MG"),MD_Z_Mg},
+    {STR("ZN:ZN"), MD_Z_Zn},
+    {STR("FE:FE"), MD_Z_Fe},
+    {STR("CU:CU"), MD_Z_Cu},
+    {STR("MN:MN"), MD_Z_Mn},
+    {STR("F: F"),  MD_Z_F},
+    {STR("BR:BR"), MD_Z_Br},
+    {STR("I: I"),  MD_Z_I},
+    {STR("IOD:I"), MD_Z_I},
+
+    // Other
+    {STR("POPC:HS"), MD_Z_H},
+    {STR("HOH:O"), MD_Z_O},
+    {STR("WAT:O"), MD_Z_O},
+    {STR("H2O:O"), MD_Z_O},
+    {STR("DOD:O"), MD_Z_O}, // Heavy water
+    {STR("CO3:C"), MD_Z_C}, // Carbonate
+    {STR("CO3:O"), MD_Z_O},
+    {STR("CO2:C"), MD_Z_C}, // Carbon dioxide
+    {STR("CO2:O"), MD_Z_O},
+    {STR("NH4:N"), MD_Z_N}, // Ammonium
+    {STR("NH4:H"), MD_Z_H},
+    {STR("NO3:N"), MD_Z_N}, // Nitrate
+    {STR("NO3:O"), MD_Z_O},
+    {STR("SO4:S"), MD_Z_S}, // Sulfate
+    {STR("SO4:O"), MD_Z_O},
+};
+
 // Core atomic number functions using existing md_util tables
 md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case) {
     return md_util_element_lookup(sym, ignore_case);
@@ -42,55 +91,6 @@ int md_atomic_number_max_valence(md_atomic_number_t z) {
 uint32_t md_atomic_number_cpk_color(md_atomic_number_t z) {
     return md_util_element_cpk_color(z);
 }
-
-typedef struct {
-	str_t str;
-    md_atomic_number_t z;
-} Mapping;
-
-#define STR(str) {str, sizeof(str)-1}
-
-// Predefined mappings (applies to a combination from res_name:atom_name)
-static const Mapping mappings[] = {
-	// Common ions
-	{STR("NA:NA"), MD_Z_Na},
-	{STR("SOD:SOD"), MD_Z_Na},
-	{STR("SOD:NA"),MD_Z_Na},
-	{STR("K:K"),   MD_Z_K},
-	{STR("POT:K"), MD_Z_K},
-	{STR("CL:CL"), MD_Z_Cl},
-	{STR("CLA:CL"),MD_Z_Cl},
-    {STR("CLA:CLA"),MD_Z_Cl},
-	{STR("CA:CA"), MD_Z_Ca},
-	{STR("CAL:CA"),MD_Z_Ca},
-	{STR("MG:MG"), MD_Z_Mg},
-	{STR("MAG:MG"),MD_Z_Mg},
-	{STR("ZN:ZN"), MD_Z_Zn},
-	{STR("FE:FE"), MD_Z_Fe},
-	{STR("CU:CU"), MD_Z_Cu},
-	{STR("MN:MN"), MD_Z_Mn},
-	{STR("F: F"),  MD_Z_F},
-	{STR("BR:BR"), MD_Z_Br},
-	{STR("I: I"),  MD_Z_I},
-	{STR("IOD:I"), MD_Z_I},
-
-    // Other
-    {STR("POPC:HS"), MD_Z_H},
-    {STR("HOH:O"), MD_Z_O},
-    {STR("WAT:O"), MD_Z_O},
-    {STR("H2O:O"), MD_Z_O},
-    {STR("DOD:O"), MD_Z_O}, // Heavy water
-    {STR("CO3:C"), MD_Z_C}, // Carbonate
-    {STR("CO3:O"), MD_Z_O},
-    {STR("CO2:C"), MD_Z_C}, // Carbon dioxide
-    {STR("CO2:O"), MD_Z_O},
-    {STR("NH4:N"), MD_Z_N}, // Ammonium
-    {STR("NH4:H"), MD_Z_H},
-    {STR("NO3:N"), MD_Z_N}, // Nitrate
-    {STR("NO3:O"), MD_Z_O},
-    {STR("SO4:S"), MD_Z_S}, // Sulfate
-    {STR("SO4:O"), MD_Z_O},
-};
 
 static inline md_atomic_number_t find_in_mappings(str_t key, const Mapping* mappings, size_t num_mappings) {
     for (size_t i = 0; i < num_mappings; ++i) {
