@@ -8,10 +8,11 @@
 typedef struct md_atom_type_data_t {
     size_t count;
 
-    md_label_t*   name;
+    md_label_t*     name;
     md_atomic_number_t* z;
-    float*        mass;
-    float*        radius;
+    float*          mass;
+    float*          radius;
+    uint32_t*       color;
 } md_atom_type_data_t;
 
 typedef struct md_atom_data_t {
