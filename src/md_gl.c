@@ -577,15 +577,15 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
 
         if (byte_stride > sizeof(md_bond_pair_t)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
-            gl_bond_t* bond_data = (gl_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (bond_data == NULL) {
+            gl_bond_t* gpu_bonds = (gl_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            if (gpu_bonds == NULL) {
                 MD_LOG_ERROR("Failed to map molecule bond buffer");
                 return;
             }
             for (uint32_t i = offset; i < count; ++i) {
                 const md_bond_pair_t* bond = (const md_bond_pair_t*)((const uint8_t*)bond_data + byte_stride * i);
-                bond_data[i].atom_idx[0] = bond->idx[0];
-                bond_data[i].atom_idx[1] = bond->idx[1];
+                gpu_bonds[i].atom_idx[0] = bond->idx[0];
+                gpu_bonds[i].atom_idx[1] = bond->idx[1];
             }
             glUnmapBuffer(GL_ARRAY_BUFFER);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -913,7 +913,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
         //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->protein_backbone.range.count > 0 && mol->protein_backbone.range.offset && mol->protein_backbone.atoms && mol->protein_backbone.secondary_structure) {
+        if (mol->protein_backbone.range.count > 0 && mol->protein_backbone.range.offset && mol->protein_backbone.segment.atoms && mol->protein_backbone.segment.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
             for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
@@ -945,14 +945,14 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
                     uint32_t beg = mol->protein_backbone.range.offset[i];
                     uint32_t end = mol->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
-                        md_residue_idx_t res_idx = mol->protein_backbone.residue_idx[j];
+                        md_residue_idx_t res_idx = mol->protein_backbone.segment.residue_idx[j];
                         uint32_t res_atom_offset = mol->residue.atom_offset[res_idx];
 
                         backbone_data[idx].bb_seg_idx = j;
                         backbone_data[idx].atom_base_idx = res_atom_offset;
-                        backbone_data[idx].ca_idx = (uint8_t)(mol->protein_backbone.atoms[j].ca - res_atom_offset);
-                        backbone_data[idx].c_idx  = (uint8_t)(mol->protein_backbone.atoms[j].c  - res_atom_offset);
-                        backbone_data[idx].o_idx  = (uint8_t)(mol->protein_backbone.atoms[j].o  - res_atom_offset);
+                        backbone_data[idx].ca_idx = (uint8_t)(mol->protein_backbone.segment.atoms[j].ca - res_atom_offset);
+                        backbone_data[idx].c_idx  = (uint8_t)(mol->protein_backbone.segment.atoms[j].c  - res_atom_offset);
+                        backbone_data[idx].o_idx  = (uint8_t)(mol->protein_backbone.segment.atoms[j].o  - res_atom_offset);
                         backbone_data[idx].flags  = (uint8_t)((j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0));
                         ++idx;
                     }
@@ -968,7 +968,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
                     for (uint32_t j = mol->protein_backbone.range.offset[i]; j < mol->protein_backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = mol->protein_backbone.secondary_structure[j];
+                        secondary_structure[idx++] = mol->protein_backbone.segment.secondary_structure[j];
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);

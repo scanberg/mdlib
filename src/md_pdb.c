@@ -635,9 +635,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                             instance_range.end = chain_atom_ranges[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
-                            md_array_push(mol->instance.atom_range, instance_range, mol_alloc);
-                            md_array_push(mol->instance.label, instance_label, mol_alloc);
-                            md_array_push(mol->instance.transform, data->transforms[tidx], mol_alloc);
+                            md_array_push(mol->assembly.atom_range, instance_range, mol_alloc);
+                            md_array_push(mol->assembly.label,      instance_label, mol_alloc);
+                            md_array_push(mol->assembly.transform,  data->transforms[tidx], mol_alloc);
                             instance_range = chain_atom_ranges[chain_idx];
                         }
                     }
@@ -648,15 +648,15 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 }
             }
 
-            md_array_push(mol->instance.atom_range, instance_range, mol_alloc);
-            md_array_push(mol->instance.label, instance_label, mol_alloc);
-            md_array_push(mol->instance.transform, data->transforms[tidx], mol_alloc);
+            md_array_push(mol->assembly.atom_range, instance_range, mol_alloc);
+            md_array_push(mol->assembly.label, instance_label, mol_alloc);
+            md_array_push(mol->assembly.transform, data->transforms[tidx], mol_alloc);
         }
     }
 
-    mol->instance.count = md_array_size(mol->instance.transform);
-    ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
-    ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count); 
+    mol->assembly.count = md_array_size(mol->assembly.transform);
+    ASSERT(md_array_size(mol->assembly.label) == mol->assembly.count);
+    ASSERT(md_array_size(mol->assembly.atom_range) == mol->assembly.count); 
 
     result = true;
 done:

@@ -23,7 +23,6 @@ typedef struct md_atom_data_t {
     float* y;
     float* z;
 
-    // Atom Type Index (NEW: references into atom_type table)
     md_atom_type_idx_t* type_idx;
     md_flags_t* flags;
 
@@ -45,6 +44,30 @@ typedef struct md_chain_data_t {
     md_range_t* atom_range;
 } md_chain_data_t;
 
+typedef enum md_entity_type_t {
+    MD_ENTITY_TYPE_UNKNOWN = 0,
+    MD_ENTITY_TYPE_POLYMER,
+    MD_ENTITY_TYPE_NONPOLYMER,
+    MD_ENTITY_TYPE_WATER,
+    MD_ENTITY_TYPE_OTHER
+} md_entity_type_t;
+
+typedef struct md_entity_t {
+    md_label_t label;
+    md_entity_type_t type;
+    str_t description;
+
+    // Items can be residues or chains etc depending on entity type
+    size_t item_count;
+    uint32_t* item_idx;
+} md_entity_t;
+
+// Entities are used to describe the types found within a system
+typedef struct md_entity_data_t {
+    size_t count;
+    md_entity_t* entity;
+} md_entity_data_t;
+
 // @TODO: Split this into two or more structures,
 // One for nucleic backbone and one for protein backbone
 typedef struct md_protein_backbone_data_t {
@@ -56,12 +79,14 @@ typedef struct md_protein_backbone_data_t {
     } range;
 
     // These fields share the same length 'count'
-    size_t count;
-    md_protein_backbone_atoms_t* atoms;
-    md_backbone_angles_t* angle;
-    md_secondary_structure_t* secondary_structure;
-    md_ramachandran_type_t* ramachandran_type;
-    md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+    struct {
+        size_t count;
+        md_protein_backbone_atoms_t* atoms;
+        md_backbone_angles_t* angle;
+        md_secondary_structure_t* secondary_structure;
+        md_ramachandran_type_t* ramachandran_type;
+        md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+    } segment;
 } md_protein_backbone_data_t;
 
 typedef struct md_nucleic_backbone_data_t {
@@ -73,19 +98,21 @@ typedef struct md_nucleic_backbone_data_t {
     } range;
 
     // These fields share the same length 'count'
-    size_t count;
-    md_nucleic_backbone_atoms_t* atoms;
-    md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+    struct {
+        size_t count;
+        md_nucleic_backbone_atoms_t* atoms;
+        md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+    } segment;
 } md_nucleic_backbone_data_t;
 
 // This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
-typedef struct md_instance_data_t {
+typedef struct md_assembly_data_t {
     size_t count;
     md_range_t* atom_range;
     md_label_t* label;
     mat4_t* transform;
-} md_instance_data_t;
+} md_assembly_data_t;
 
 // Atom centric representation of bonds
 typedef struct md_conn_data_t {
@@ -117,6 +144,8 @@ typedef struct md_molecule_t {
     md_atom_data_t              atom;
     md_residue_data_t           residue;
     md_chain_data_t             chain;
+    md_entity_data_t            entity;
+
     md_protein_backbone_data_t  protein_backbone;
     md_nucleic_backbone_data_t  nucleic_backbone;
     
@@ -125,7 +154,7 @@ typedef struct md_molecule_t {
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
-    md_instance_data_t          instance;           // Instances of the molecule (duplications of ranges with new transforms)
+    md_assembly_data_t          assembly;           // Instances of the molecule (duplications of ranges with new transforms)
 } md_molecule_t;
 
 #ifdef __cplusplus

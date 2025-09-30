@@ -1,4 +1,4 @@
-#include <md_gfx.h>
+﻿#include <md_gfx.h>
 
 #include <md_molecule.h>
 #include <md_util.h>
@@ -906,7 +906,7 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
 
 md_gfx_handle_t md_gfx_structure_create_from_mol(const md_molecule_t* mol) {
     ASSERT(mol);
-    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->protein_backbone.count, (uint32_t)mol->protein_backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
+    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->protein_backbone.segment.count, (uint32_t)mol->protein_backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->assembly.count);
 }
 
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {

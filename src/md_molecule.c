@@ -46,17 +46,17 @@ extern "C" {
     // Backbone
     if (mol->protein_backbone.range.offset) md_array_free(mol->protein_backbone.range.offset, alloc);
     if (mol->protein_backbone.range.chain_idx) md_array_free(mol->protein_backbone.range.chain_idx, alloc);
-    if (mol->protein_backbone.atoms) md_array_free(mol->protein_backbone.atoms, alloc);
-    if (mol->protein_backbone.angle) md_array_free(mol->protein_backbone.angle, alloc);
-    if (mol->protein_backbone.secondary_structure) md_array_free(mol->protein_backbone.secondary_structure, alloc);
-    if (mol->protein_backbone.ramachandran_type) md_array_free(mol->protein_backbone.ramachandran_type, alloc);
-    if (mol->protein_backbone.residue_idx) md_array_free(mol->protein_backbone.residue_idx, alloc);
+    if (mol->protein_backbone.segment.atoms) md_array_free(mol->protein_backbone.segment.atoms, alloc);
+    if (mol->protein_backbone.segment.angle) md_array_free(mol->protein_backbone.segment.angle, alloc);
+    if (mol->protein_backbone.segment.secondary_structure) md_array_free(mol->protein_backbone.segment.secondary_structure, alloc);
+    if (mol->protein_backbone.segment.ramachandran_type) md_array_free(mol->protein_backbone.segment.ramachandran_type, alloc);
+    if (mol->protein_backbone.segment.residue_idx) md_array_free(mol->protein_backbone.segment.residue_idx, alloc);
 
     // Nucleic Backbone
     if (mol->nucleic_backbone.range.offset) md_array_free(mol->nucleic_backbone.range.offset, alloc);
     if (mol->nucleic_backbone.range.chain_idx) md_array_free(mol->nucleic_backbone.range.chain_idx, alloc);
-    if (mol->nucleic_backbone.atoms) md_array_free(mol->nucleic_backbone.atoms, alloc);
-    if (mol->nucleic_backbone.residue_idx) md_array_free(mol->nucleic_backbone.residue_idx, alloc);
+    if (mol->nucleic_backbone.segment.atoms) md_array_free(mol->nucleic_backbone.segment.atoms, alloc);
+    if (mol->nucleic_backbone.segment.residue_idx) md_array_free(mol->nucleic_backbone.segment.residue_idx, alloc);
 
     // Bonds
     if (mol->bond.pairs) md_array_free(mol->bond.pairs, alloc);
@@ -70,9 +70,9 @@ extern "C" {
     md_index_data_free(&mol->ring);
 
     // Instance
-    if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
-    if (mol->instance.label) md_array_free(mol->instance.label, alloc);
-    if (mol->instance.transform) md_array_free(mol->instance.transform, alloc);
+    if (mol->assembly.atom_range)   md_array_free(mol->assembly.atom_range, alloc);
+    if (mol->assembly.label)        md_array_free(mol->assembly.label, alloc);
+    if (mol->assembly.transform)    md_array_free(mol->assembly.transform, alloc);
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 }
@@ -116,17 +116,17 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, type.mass);
     ARRAY_PUSH(atom, type.radius);
 
-    ARRAY_PUSH(protein_backbone, atoms);
-    ARRAY_PUSH(protein_backbone, angle);
-    ARRAY_PUSH(protein_backbone, secondary_structure);
-    ARRAY_PUSH(protein_backbone, ramachandran_type);
-    ARRAY_PUSH(protein_backbone, residue_idx);
+    ARRAY_PUSH(protein_backbone.segment, atoms);
+    ARRAY_PUSH(protein_backbone.segment, angle);
+    ARRAY_PUSH(protein_backbone.segment, secondary_structure);
+    ARRAY_PUSH(protein_backbone.segment, ramachandran_type);
+    ARRAY_PUSH(protein_backbone.segment, residue_idx);
 
     md_array_push_array(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, src->protein_backbone.range.count, alloc);
     md_array_push_array(dst->protein_backbone.range.chain_idx, src->protein_backbone.range.chain_idx, src->protein_backbone.range.count, alloc);
 
-    ARRAY_PUSH(nucleic_backbone, atoms);
-    ARRAY_PUSH(nucleic_backbone, residue_idx);
+    ARRAY_PUSH(nucleic_backbone.segment, atoms);
+    ARRAY_PUSH(nucleic_backbone.segment, residue_idx);
 
     md_array_push_array(dst->nucleic_backbone.range.offset, src->nucleic_backbone.range.offset, src->nucleic_backbone.range.count, alloc);
     md_array_push_array(dst->nucleic_backbone.range.chain_idx, src->nucleic_backbone.range.chain_idx, src->nucleic_backbone.range.count, alloc);
@@ -148,10 +148,10 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
 
     dst->atom.count           = src->atom.count;
     dst->atom.type.count      = src->atom.type.count;
-    dst->protein_backbone.count       = src->protein_backbone.count;
-    dst->protein_backbone.range.count = src->protein_backbone.range.count;
-    dst->nucleic_backbone.count       = src->nucleic_backbone.count;
-    dst->nucleic_backbone.range.count = src->nucleic_backbone.range.count;
+    dst->protein_backbone.segment.count = src->protein_backbone.segment.count;
+    dst->protein_backbone.range.count   = src->protein_backbone.range.count;
+    dst->nucleic_backbone.segment.count = src->nucleic_backbone.segment.count;
+    dst->nucleic_backbone.range.count   = src->nucleic_backbone.range.count;
     dst->chain.count          = src->chain.count;
     dst->residue.count        = src->residue.count;
     dst->bond.count           = src->bond.count;

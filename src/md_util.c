@@ -1446,12 +1446,12 @@ static inline bool zhang_skolnick_ss(const md_molecule_t* mol, md_range_t bb_ran
     ASSERT(mol->atom.x);
     ASSERT(mol->atom.y);
     ASSERT(mol->atom.z);
-    ASSERT(mol->protein_backbone.atoms);
+    ASSERT(mol->protein_backbone.segment.atoms);
     for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
             if (j + k >= (int)bb_range.end) continue;
-            const int ca_j = mol->protein_backbone.atoms[j].ca;
-            const int ca_k = mol->protein_backbone.atoms[j + k].ca;
+            const int ca_j = mol->protein_backbone.segment.atoms[j].ca;
+            const int ca_k = mol->protein_backbone.segment.atoms[j + k].ca;
             const vec3_t pos_j = {mol->atom.x[ca_j], mol->atom.y[ca_j], mol->atom.z[ca_j]};
             const vec3_t pos_k = {mol->atom.x[ca_k], mol->atom.y[ca_k], mol->atom.z[ca_k]};
             const float d = vec3_distance(pos_j, pos_k);
@@ -1488,7 +1488,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
     if (!mol->atom.x) return false;
     if (!mol->atom.y) return false;
     if (!mol->atom.z) return false;
-    if (!mol->protein_backbone.atoms) return false;
+    if (!mol->protein_backbone.segment.atoms) return false;
     if (!mol->protein_backbone.range.offset) return false;
 
     for (size_t bb_idx = 0; bb_idx < mol->protein_backbone.range.count; ++bb_idx) {
@@ -1780,11 +1780,11 @@ bool dssp(md_secondary_structure_t secondary_structure[], md_backbone_angles_t o
                 const int last = win_size - 1;
                 const int j = range.beg + i + last;
 
-                md_atom_idx_t ca_idx = mol->protein_backbone.atoms[j].ca;
-                md_atom_idx_t n_idx  = mol->protein_backbone.atoms[j].n;
-                md_atom_idx_t c_idx  = mol->protein_backbone.atoms[j].c;
-                md_atom_idx_t o_idx  = mol->protein_backbone.atoms[j].o;
-                md_atom_idx_t hn_idx = mol->protein_backbone.atoms[j].hn;
+                md_atom_idx_t ca_idx = mol->protein_backbone.segment.atoms[j].ca;
+                md_atom_idx_t n_idx  = mol->protein_backbone.segment.atoms[j].n;
+                md_atom_idx_t c_idx  = mol->protein_backbone.segment.atoms[j].c;
+                md_atom_idx_t o_idx  = mol->protein_backbone.segment.atoms[j].o;
+                md_atom_idx_t hn_idx = mol->protein_backbone.segment.atoms[j].hn;
 
                 residues[last].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
                 residues[last].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
@@ -1822,7 +1822,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
     if (!mol->atom.x) return false;
     if (!mol->atom.y) return false;
     if (!mol->atom.z) return false;
-    if (!mol->protein_backbone.atoms) return false;
+    if (!mol->protein_backbone.segment.atoms) return false;
 
     for (size_t bb_idx = 0; bb_idx < mol->protein_backbone.range.count; ++bb_idx) {
         const md_range_t range = {mol->protein_backbone.range.offset[bb_idx], mol->protein_backbone.range.offset[bb_idx + 1]};
@@ -1833,11 +1833,11 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
         }
 
         for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
-            const vec3_t c_prev = { mol->atom.x[mol->protein_backbone.atoms[i-1].c], mol->atom.y[mol->protein_backbone.atoms[i-1].c], mol->atom.z[mol->protein_backbone.atoms[i-1].c] };
-            const vec3_t n      = { mol->atom.x[mol->protein_backbone.atoms[i].n]  , mol->atom.y[mol->protein_backbone.atoms[i].n]  , mol->atom.z[mol->protein_backbone.atoms[i].n]   };
-            const vec3_t ca     = { mol->atom.x[mol->protein_backbone.atoms[i].ca] , mol->atom.y[mol->protein_backbone.atoms[i].ca] , mol->atom.z[mol->protein_backbone.atoms[i].ca]  };
-            const vec3_t c      = { mol->atom.x[mol->protein_backbone.atoms[i].c]  , mol->atom.y[mol->protein_backbone.atoms[i].c]  , mol->atom.z[mol->protein_backbone.atoms[i].c]   };
-            const vec3_t n_next = { mol->atom.x[mol->protein_backbone.atoms[i+1].n], mol->atom.y[mol->protein_backbone.atoms[i+1].n], mol->atom.z[mol->protein_backbone.atoms[i+1].n] };
+            const vec3_t c_prev = { mol->atom.x[mol->protein_backbone.segment.atoms[i-1].c], mol->atom.y[mol->protein_backbone.segment.atoms[i-1].c], mol->atom.z[mol->protein_backbone.segment.atoms[i-1].c] };
+            const vec3_t n      = { mol->atom.x[mol->protein_backbone.segment.atoms[i].n]  , mol->atom.y[mol->protein_backbone.segment.atoms[i].n]  , mol->atom.z[mol->protein_backbone.segment.atoms[i].n]   };
+            const vec3_t ca     = { mol->atom.x[mol->protein_backbone.segment.atoms[i].ca] , mol->atom.y[mol->protein_backbone.segment.atoms[i].ca] , mol->atom.z[mol->protein_backbone.segment.atoms[i].ca]  };
+            const vec3_t c      = { mol->atom.x[mol->protein_backbone.segment.atoms[i].c]  , mol->atom.y[mol->protein_backbone.segment.atoms[i].c]  , mol->atom.z[mol->protein_backbone.segment.atoms[i].c]   };
+            const vec3_t n_next = { mol->atom.x[mol->protein_backbone.segment.atoms[i+1].n], mol->atom.y[mol->protein_backbone.segment.atoms[i+1].n], mol->atom.z[mol->protein_backbone.segment.atoms[i+1].n] };
 
             vec3_t d[4] = {
                 vec3_sub(n, c_prev),
@@ -1861,16 +1861,16 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
     if (capacity == 0) return false;
-    if (mol->protein_backbone.count == 0) return false;
+    if (mol->protein_backbone.segment.count == 0) return false;
     if (mol->residue.count == 0) return false;
 
     ASSERT(mol->residue.name);
-    ASSERT(mol->protein_backbone.residue_idx);
+    ASSERT(mol->protein_backbone.segment.residue_idx);
 
-    size_t size = MIN(capacity, mol->protein_backbone.count);
+    size_t size = MIN(capacity, mol->protein_backbone.segment.count);
 
     for (size_t i = 0; i < size; ++i) {
-        size_t res_idx = mol->protein_backbone.residue_idx[i];
+        size_t res_idx = mol->protein_backbone.segment.residue_idx[i];
         ASSERT(res_idx < mol->residue.count);
 
         str_t resname = LBL_TO_STR(mol->residue.name[res_idx]);
@@ -3087,7 +3087,7 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [B]  = { [H]=0.33f, [C]=0.99f, [N]=0.99f, [O]=0.99f, [F]=0.99f, [Si]=1.21f, [P]=1.21f, [S]=1.32f },
     [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.70f, [Br]=1.80f, [I]=2.14f, [B]=0.99f, [W]=2.1f },
     [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f, [W]=2.0f },
-    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.37f, [B]=0.99f, [W]=1.50f },
+    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.37f, [B]=0.99f, [Fe]=1.90f, [W]=1.50f },
     [F]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f },
     [Na] = { [H]=1.89f, [O]=1.89f, [N]=1.89f },
     [Mg] = { [O]=1.99f, [N]=1.99f, [S]=2.04f },
@@ -3105,7 +3105,7 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [V]  = { [O]=1.63f, [N]=1.73f, [C]=1.84f },
     [Cr] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
     [Mn] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
-    [Fe] = { [O]=1.68f, [N]=1.68f, [C]=1.78f, [S]=1.73f },
+    [Fe] = { [O]=1.90f, [N]=1.68f, [C]=1.78f, [S]=1.73f },
     [Co] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
     [Ni] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
     [Cu] = { [O]=1.43f, [N]=1.43f, [S]=1.53f },
@@ -3168,7 +3168,7 @@ static const float cov_r_max[Num_Elements][Num_Elements] = {
     [B]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.851f, [P]=1.851f, [S]=2.051f },
     [C]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.951f, [P]=2.051f, [S]=1.951f, [Cl]=2.151f, [Br]=2.351f, [I]=2.651f, [B]=1.651f, [W]=2.3f },
     [N]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [P]=1.951f, [S]=2.051f, [B]=1.651f, [W]=2.3f },
-    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f, [W]=1.95f },
+    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f, [Fe]=2.151f, [W]=1.95f },
     [F]  = { [H]=1.151f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [F]=1.451f },
     [Na] = { [H]=2.451f, [O]=2.451f, [N]=2.451f },
     [Mg] = { [O]=2.251f, [N]=2.251f, [S]=2.351f },
@@ -7933,26 +7933,26 @@ static inline bool ranges_overlap(md_range_t a, md_range_t b) {
 }
 
 static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms, size_t bb_length, size_t res_offset, md_chain_idx_t chain_idx, md_molecule_t* mol, md_allocator_i* alloc) {
-    uint32_t offset = (uint32_t)md_array_size(mol->protein_backbone.atoms);
-    md_array_push_array(mol->protein_backbone.atoms, bb_atoms, bb_length, alloc);
+    uint32_t offset = (uint32_t)md_array_size(mol->protein_backbone.segment.atoms);
+    md_array_push_array(mol->protein_backbone.segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(mol->protein_backbone.range.offset, offset, alloc);
     md_array_push(mol->protein_backbone.range.chain_idx, chain_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t res_idx = (int32_t)(res_offset + i);
-        md_array_push(mol->protein_backbone.residue_idx, res_idx, alloc);
+        md_array_push(mol->protein_backbone.segment.residue_idx, res_idx, alloc);
     }
 }
 
 static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms, size_t bb_length, size_t res_offset, md_chain_idx_t chain_idx, md_molecule_t* mol, md_allocator_i* alloc) {
-    uint32_t offset = (uint32_t)md_array_size(mol->nucleic_backbone.atoms);
-    md_array_push_array(mol->nucleic_backbone.atoms, bb_atoms, bb_length, alloc);
+    uint32_t offset = (uint32_t)md_array_size(mol->nucleic_backbone.segment.atoms);
+    md_array_push_array(mol->nucleic_backbone.segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(mol->nucleic_backbone.range.offset, offset, alloc);
     md_array_push(mol->nucleic_backbone.range.chain_idx, chain_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t res_idx = (int32_t)(res_offset + i);
-        md_array_push(mol->nucleic_backbone.residue_idx, res_idx, alloc);
+        md_array_push(mol->nucleic_backbone.segment.residue_idx, res_idx, alloc);
     }
 }
 
@@ -8001,7 +8001,7 @@ static void md_util_compute_backbone_data(md_protein_backbone_data_t* protein_ba
         md_array_resize(protein_backbone->secondary_structure, protein_backbone->count, alloc);
         md_array_resize(protein_backbone->ramachandran_type, protein_backbone->count, alloc);
 
-        if (mol->protein_backbone.count > 0) {
+        if (mol->protein_backbone.segment.count > 0) {
             md_util_backbone_angles_compute(protein_backbone->angle, protein_backbone->count, mol);
             md_util_secondary_structure_compute(protein_backbone->secondary_structure, protein_backbone->count, mol);
             md_util_backbone_ramachandran_classify(protein_backbone->ramachandran_type, protein_backbone->count, mol);
@@ -8175,18 +8175,18 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 mol->protein_backbone.range.count = md_array_size(mol->protein_backbone.range.offset);
                 if (mol->protein_backbone.range.count) {
                     // Add end offset
-                    md_array_push(mol->protein_backbone.range.offset, (uint32_t)md_array_size(mol->protein_backbone.atoms), alloc);
+                    md_array_push(mol->protein_backbone.range.offset, (uint32_t)md_array_size(mol->protein_backbone.segment.atoms), alloc);
                 }
-                mol->protein_backbone.count = md_array_size(mol->protein_backbone.atoms);
+                mol->protein_backbone.segment.count = md_array_size(mol->protein_backbone.segment.atoms);
 
-                md_array_resize(mol->protein_backbone.angle, mol->protein_backbone.count, alloc);
-                md_array_resize(mol->protein_backbone.secondary_structure, mol->protein_backbone.count, alloc);
-                md_array_resize(mol->protein_backbone.ramachandran_type, mol->protein_backbone.count, alloc);
+                md_array_resize(mol->protein_backbone.segment.angle, mol->protein_backbone.segment.count, alloc);
+                md_array_resize(mol->protein_backbone.segment.secondary_structure, mol->protein_backbone.segment.count, alloc);
+                md_array_resize(mol->protein_backbone.segment.ramachandran_type, mol->protein_backbone.segment.count, alloc);
 
-                if (mol->protein_backbone.count > 0) {
-                    md_util_backbone_angles_compute(mol->protein_backbone.angle, mol->protein_backbone.count, mol);
-                    md_util_backbone_secondary_structure_compute(mol->protein_backbone.secondary_structure, mol->protein_backbone.count, mol);
-                    md_util_backbone_ramachandran_classify(mol->protein_backbone.ramachandran_type, mol->protein_backbone.count, mol);
+                if (mol->protein_backbone.segment.count > 0) {
+                    md_util_backbone_angles_compute(mol->protein_backbone.segment.angle, mol->protein_backbone.segment.count, mol);
+                    md_util_backbone_secondary_structure_compute(mol->protein_backbone.segment.secondary_structure, mol->protein_backbone.segment.count, mol);
+                    md_util_backbone_ramachandran_classify(mol->protein_backbone.segment.ramachandran_type, mol->protein_backbone.segment.count, mol);
                 }
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
@@ -8227,9 +8227,9 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 mol->nucleic_backbone.range.count = md_array_size(mol->protein_backbone.range.offset);
                 if (mol->nucleic_backbone.range.count) {
                     // Add end offset
-                    md_array_push(mol->nucleic_backbone.range.offset, (uint32_t)md_array_size(mol->protein_backbone.atoms), alloc);
+                    md_array_push(mol->nucleic_backbone.range.offset, (uint32_t)md_array_size(mol->protein_backbone.segment.atoms), alloc);
                 }
-                mol->nucleic_backbone.count = md_array_size(mol->nucleic_backbone.atoms);
+                mol->nucleic_backbone.segment.count = md_array_size(mol->nucleic_backbone.segment.atoms);
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
 #endif

@@ -18,7 +18,7 @@ typedef struct {
 #define STR(str) {str, sizeof(str)-1}
 
 // Predefined mappings (applies to a combination from res_name:atom_name)
-static const Mapping mappings[] = {
+static const Mapping predefined_mappings[] = {
     // Common ions
     {STR("NA:NA"), MD_Z_Na},
     {STR("SOD:SOD"), MD_Z_Na},
@@ -129,7 +129,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
 		str_t combined_key = { combined_key_buf, (size_t)len };
 
 		// Check predefined mappings first
-        md_atomic_number_t z = find_in_mappings(combined_key, mappings, ARRAY_SIZE(mappings));
+        md_atomic_number_t z = find_in_mappings(combined_key, predefined_mappings, ARRAY_SIZE(predefined_mappings));
         if (z) return z;
         
         // If residue name itself is an element (ions for example)
