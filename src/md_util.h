@@ -58,7 +58,7 @@ static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot
 }
 
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
-bool md_util_residue_infer_flags(md_residue_data_t* res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
+bool md_util_residue_infer_flags(md_comp_data_t* res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
@@ -73,7 +73,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_molecule_t* mol);
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_residue_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_comp_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.

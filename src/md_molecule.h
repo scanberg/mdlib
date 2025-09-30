@@ -29,20 +29,22 @@ typedef struct md_atom_data_t {
     md_atom_type_data_t type;
 } md_atom_data_t;
 
-typedef struct md_residue_data_t {
+// Component data
+typedef struct md_comp_data_t {
     size_t count;
     md_label_t* name;
-    md_residue_id_t* id;
+    md_comp_id_t* seq_id;
     uint32_t* atom_offset;
     md_flags_t* flags;
-} md_residue_data_t;
+} md_comp_data_t;
 
-typedef struct md_chain_data_t {
+typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
-    md_range_t* res_range;
-    md_range_t* atom_range;
-} md_chain_data_t;
+    md_label_t* auth_id;
+    md_entity_idx_t* entity_idx;
+    md_range_t* comp_range;
+} md_instance_data_t;
 
 typedef enum md_entity_type_t {
     MD_ENTITY_TYPE_UNKNOWN = 0,
@@ -52,30 +54,22 @@ typedef enum md_entity_type_t {
     MD_ENTITY_TYPE_OTHER
 } md_entity_type_t;
 
-typedef struct md_entity_t {
-    md_label_t label;
-    md_entity_type_t type;
-    str_t description;
-
-    // Items can be residues or chains etc depending on entity type
-    size_t item_count;
-    uint32_t* item_idx;
-} md_entity_t;
-
 // Entities are used to describe the types found within a system
 typedef struct md_entity_data_t {
     size_t count;
-    md_entity_t* entity;
+    md_label_t* label;
+    md_entity_type_t* type;
+    str_t* description;
 } md_entity_data_t;
 
-// @TODO: Split this into two or more structures,
+// @TODO: Split this into two or more structucomp,
 // One for nucleic backbone and one for protein backbone
 typedef struct md_protein_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     struct {
         size_t count;
-        uint32_t* offset; // Offsets into the backbone fields stored bellow
-        md_chain_idx_t* chain_idx; // Reference to the chain in which the backbone is located
+        uint32_t* offset; // Offsets into the segments
+        md_instance_idx_t* instance_idx; // Reference to the instance in which the backbone is located
     } range;
 
     // These fields share the same length 'count'
@@ -85,7 +79,7 @@ typedef struct md_protein_backbone_data_t {
         md_backbone_angles_t* angle;
         md_secondary_structure_t* secondary_structure;
         md_ramachandran_type_t* ramachandran_type;
-        md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+        md_comp_idx_t* compidue_idx;                  // Index to the compidue which contains the backbone
     } segment;
 } md_protein_backbone_data_t;
 
@@ -101,11 +95,11 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         md_nucleic_backbone_atoms_t* atoms;
-        md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+        md_comp_idx_t* compidue_idx;                  // Index to the compidue which contains the backbone
     } segment;
 } md_nucleic_backbone_data_t;
 
-// This represents symmetries which are instanced, commonly found
+// This repcompents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
 typedef struct md_assembly_data_t {
     size_t count;
@@ -114,7 +108,7 @@ typedef struct md_assembly_data_t {
     mat4_t* transform;
 } md_assembly_data_t;
 
-// Atom centric representation of bonds
+// Atom centric repcompentation of bonds
 typedef struct md_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -125,7 +119,7 @@ typedef struct md_conn_data_t {
     uint32_t* offset;
 } md_conn_data_t;
 
-// Bond centric representation
+// Bond centric repcompentation
 typedef struct md_bond_data_t {
     size_t count;
     md_bond_pair_t* pairs;
@@ -139,11 +133,13 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
-typedef struct md_molecule_t {
+typedef struct md_system_t {
+    str_t description;
+
     md_unit_cell_t              unit_cell;
     md_atom_data_t              atom;
-    md_residue_data_t           residue;
-    md_chain_data_t             chain;
+    md_comp_data_t              comp;
+    md_instance_data_t          instance;
     md_entity_data_t            entity;
 
     md_protein_backbone_data_t  protein_backbone;
@@ -151,11 +147,11 @@ typedef struct md_molecule_t {
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
-    md_index_data_t             ring;               // Ring structures formed by persistent bonds
-    md_index_data_t             structure;          // Isolated structures connected by persistent bonds
+    md_index_data_t             ring;               // Ring structucomp formed by persistent bonds
+    md_index_data_t             structure;          // Isolated structucomp connected by persistent bonds
 
     md_assembly_data_t          assembly;           // Instances of the molecule (duplications of ranges with new transforms)
-} md_molecule_t;
+} md_system_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -293,68 +289,68 @@ static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     return STR_LIT("");
 }
 
-// Residue
+// Component
 
-static inline size_t md_residue_count(const md_residue_data_t* res) {
-    ASSERT(res);
-    return res->count;
+static inline size_t md_comp_count(const md_comp_data_t* comp) {
+    ASSERT(comp);
+    return comp->count;
 }
 
-static inline str_t md_residue_name(const md_residue_data_t* res, size_t res_idx) {
-    ASSERT(res);
+static inline str_t md_comp_name(const md_comp_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
     str_t name = STR_LIT("");
-    if (res->name && res_idx < res->count) {
-        name = LBL_TO_STR(res->name[res_idx]);
+    if (comp->name && comp_idx < comp->count) {
+        name = LBL_TO_STR(comp->name[comp_idx]);
     }
     return name;
 }
 
-static inline md_residue_id_t md_residue_id(const md_residue_data_t* res, size_t res_idx) {
-    ASSERT(res);
-    md_residue_id_t id = 0;
-    if (res->id && res_idx < res->count) {
-        id = res->id[res_idx];
+static inline md_comp_id_t md_comp_seq_id(const md_comp_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
+    md_comp_id_t id = 0;
+    if (comp->id && comp_idx < comp->count) {
+        id = comp->id[comp_idx];
     }
     return id;
 }
 
-static inline md_range_t md_residue_atom_range(const md_residue_data_t* res, size_t res_idx) {
-    ASSERT(res);
+static inline md_range_t md_comp_atom_range(const md_comp_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
 	md_range_t range = {0};
-	if (res->atom_offset && res_idx < res->count) {
-		range.beg = res->atom_offset[res_idx];
-		range.end = res->atom_offset[res_idx + 1];
+	if (comp->atom_offset && comp_idx < comp->count) {
+		range.beg = comp->atom_offset[comp_idx];
+		range.end = comp->atom_offset[comp_idx + 1];
 	}
 	return range;
 }
 
-static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data_t* res, size_t atom_idx) {
-    ASSERT(res);
+static inline md_comp_idx_t md_comp_find_by_atom_idx(const md_comp_data_t* comp, size_t atom_idx) {
+    ASSERT(comp);
 
-    md_residue_idx_t res_idx = -1;
-    if (res->atom_offset) {
-        for (size_t i = 0; i < res->count; ++i) {
-            size_t res_beg = res->atom_offset[i];
-            size_t res_end = res->atom_offset[i + 1];
-            if (res_beg <= atom_idx && atom_idx < res_end) {
-                res_idx = (md_residue_idx_t)i;
+    md_comp_idx_t comp_idx = -1;
+    if (comp->atom_offset) {
+        for (size_t i = 0; i < comp->count; ++i) {
+            size_t comp_beg = comp->atom_offset[i];
+            size_t comp_end = comp->atom_offset[i + 1];
+            if (comp_beg <= atom_idx && atom_idx < comp_end) {
+                comp_idx = (md_comp_idx_t)i;
                 break;
             }
-            if (res_beg > atom_idx) {
+            if (comp_beg > atom_idx) {
                 break;
             }
         }
     }
 
-    return res_idx;
+    return comp_idx;
 }
 
-static inline size_t md_residue_atom_count(const md_residue_data_t* res, size_t res_idx) {
-    ASSERT(res);
+static inline size_t md_comp_atom_count(const md_comp_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
     size_t count = 0;
 
-    if (res->atom_offset && res_idx < res->count) {
-        count = res->atom_offset[res_idx + 1] - res->atom_offset[res_idx];
+    if (comp->atom_offset && comp_idx < comp->count) {
+        count = comp->atom_offset[comp_idx + 1] - comp->atom_offset[comp_idx];
     }
     return count;
 }
@@ -366,24 +362,24 @@ static inline size_t md_chain_count(const md_chain_data_t* chain) {
     return chain->count;
 }
 
-static inline md_range_t md_chain_residue_range(const md_chain_data_t* chain, size_t chain_idx) {
+static inline md_range_t md_chain_comp_range(const md_chain_data_t* chain, size_t chain_idx) {
     ASSERT(chain);
 
     md_range_t range = {0};
-    if (chain->res_range && chain_idx < chain->count) {
-        range = chain->res_range[chain_idx];
+    if (chain->comp_range && chain_idx < chain->count) {
+        range = chain->comp_range[chain_idx];
     }
     return range;
 }
 
-static inline md_chain_idx_t md_chain_find_by_residue_idx(const md_chain_data_t* chain, size_t res_idx) {
+static inline md_chain_idx_t md_chain_find_by_compidue_idx(const md_chain_data_t* chain, size_t comp_idx) {
     ASSERT(chain);
 
     md_chain_idx_t chain_idx = -1;
-    if (chain->res_range) {
-        int ri = (int)res_idx;
+    if (chain->comp_range) {
+        int ri = (int)comp_idx;
         for (size_t i = 0; i < chain->count; ++i) {
-            md_range_t range = chain->res_range[i];
+            md_range_t range = chain->comp_range[i];
             if (range.beg <= ri && ri < range.end) {
                 chain_idx = (md_chain_idx_t)i;
                 break;
@@ -416,12 +412,12 @@ static inline md_chain_idx_t md_chain_find_by_atom_idx(const md_chain_data_t* ch
     return chain_idx;
 }
 
-static inline size_t md_chain_residue_count(const md_chain_data_t* chain, size_t chain_idx) {
+static inline size_t md_chain_compidue_count(const md_chain_data_t* chain, size_t chain_idx) {
     ASSERT(chain);
 
     size_t count = 0;
-    if (chain->res_range && chain_idx < chain->count) {
-        md_range_t range = chain->res_range[chain_idx];
+    if (chain->comp_range && chain_idx < chain->count) {
+        md_range_t range = chain->comp_range[chain_idx];
         count = range.end - range.beg;
     }
     return count;

@@ -199,10 +199,10 @@ enum {
 };
 
 typedef int32_t     md_atom_idx_t;
-typedef int32_t     md_residue_idx_t;
+typedef int32_t     md_comp_idx_t;
 typedef int32_t     md_backbone_idx_t;
-typedef int32_t     md_residue_id_t;
-typedef int32_t     md_chain_idx_t;
+typedef int32_t     md_seq_id_t;
+typedef int32_t     md_instance_idx_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint8_t     md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
@@ -216,10 +216,15 @@ typedef uint8_t     md_order_t;
 typedef uint8_t md_element_t;  // Atomic number (1-118), 0 is unknown
 
 // Open ended range of indices (e.g. range(0,4) -> [0,1,2,3])
-typedef struct md_range_t {
+typedef struct md_irange_t {
     int32_t beg;
     int32_t end;
-} md_range_t;
+} md_irange_t;
+
+typedef struct md_urange_t {
+    uint32_t beg;
+    uint32_t end;
+}
 
 typedef struct md_unit_cell_t {
     mat3_t basis;
@@ -399,12 +404,12 @@ static inline void md_index_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
-static inline size_t md_index_data_num_ranges(md_index_data_t data) {
+static inline size_t md_index_data_num_ranges(const md_index_data_t* data) {
     return data.offsets ? md_array_size(data.offsets) - 1 : 0;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t data, size_t range_idx) {
+static inline int32_t* md_index_range_beg(const md_index_data_t* data, size_t range_idx) {
     ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
     return data.indices + data.offsets[range_idx];
 }
