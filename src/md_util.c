@@ -76,14 +76,6 @@ static const uint8_t element_covalent_radii_u8[] = {
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
-static const float element_covalent_radii_f32[] = {
-       0, 0.31, 0.28, 1.28,  .96,  .84,  .76,  .71,  .66,  .57,  .58, 1.66, 1.41, 1.21, 1.11, 1.07, 1.05, 1.02, 1.06, 2.03, 1.76, 1.70, 1.60, 1.53,
-    1.39, 1.39, 1.32, 1.26, 1.24, 1.32, 1.22, 1.22, 1.20, 1.19, 1.20, 1.20, 1.16, 2.20, 1.95, 1.90, 1.75, 1.64, 1.54, 1.47, 1.46, 1.42, 1.39, 1.45,
-    1.44, 1.42, 1.39, 1.39, 1.38, 1.39, 1.40, 2.44, 2.15, 2.07, 2.04, 2.03, 2.01, 1.99, 1.98, 1.98, 1.96, 1.94, 1.92, 1.92, 1.89, 1.90, 1.87, 1.87,
-    1.75, 1.70, 1.62, 1.51, 1.44, 1.41, 1.36, 1.36, 1.32, 1.45, 1.46, 1.48, 1.40, 1.50, 1.50, 2.60, 2.21, 2.15, 2.06, 2.00, 1.96, 1.90, 1.87, 1.80,
-    1.69, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60
-};
-
 // Covalent radii for elements (single, double, triple) bonds in pikometers
 // https://en.wikipedia.org/wiki/Covalent_radius
 static const uint8_t element_covalent_radii3[][3] = {
@@ -212,6 +204,7 @@ static const uint8_t element_covalent_radii3[][3] = {
     { 165,   0,   0 }, // Ts
     { 157,   0,   0 }, // Og
 };
+
 
 // https://dx.doi.org/10.1021/jp8111556
 static const float element_vdw_radii[] = {
@@ -2418,6 +2411,7 @@ static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp
     return max_depth;
 }
 
+#if 0
 static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data_t* atom, const md_index_data_t* rings) {
     if (!bond || bond->count == 0 || !atom || atom->count == 0) {
         return false;
@@ -2814,7 +2808,6 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             int electron_count = 0;
             for (int *it = atom_beg, j = 0; it != atom_end; ++it, ++j) {
                 int i = *it;
-                md_element_t elem_i = elements[i];
 
                 ring_pattern_t p = {0};
                 p.node_type = elements[i];
@@ -2871,16 +2864,13 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
             // 8a: Try to resolve ambigous cases, by looking at neighbors
             for (int *it = atom_beg, j = 0; it != atom_end; ++it, ++j) {
-                if (*it == 801) {
-                    while(0) {};
-                }
                 int pi = pidx[j];
                 if (pi == 5 || pi == 13) {
                     int prev_pat_idx = (j == 0) ? pidx[ring_size-1] : pidx[j-1];
                     int next_pat_idx = (j == ring_size-1) ? pidx[0] : pidx[j+1];
 
-                    int prev_atom_idx = it == atom_beg   ? atom_end[-1] : it[-1];
-                    int next_atom_idx = it == atom_end-1 ? atom_beg[ 0] : it[ 1];
+                    //int prev_atom_idx = it == atom_beg   ? atom_end[-1] : it[-1];
+                    //int next_atom_idx = it == atom_end-1 ? atom_beg[ 0] : it[ 1];
 
                     // @TODO: test valance of neighbors
                     if (pattern_incident_multi_bond[prev_pat_idx] && pattern_incident_multi_bond[next_pat_idx]) {
@@ -2972,6 +2962,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     
     return true;
 }
+#endif
 
 // Returns the bond-order (0 if no bond is present)
 static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_element_t b) {
@@ -3551,8 +3542,8 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                 const vec4_t ci = {x[i], y[i], z[i], 0};
                 const float* table_cov_r_min   = cov_r_min[element[i]];
                 const float* table_cov_r_max   = cov_r_max[element[i]];
-                const float* table_coord_r_min = coord_r_min[element[i]];
-                const float* table_coord_r_max = coord_r_max[element[i]];
+                //const float* table_coord_r_min = coord_r_min[element[i]];
+                //const float* table_coord_r_max = coord_r_max[element[i]];
 
                 const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
                 for (size_t idx = 0; idx < num_indices; ++idx) {
@@ -3562,8 +3553,8 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
 
                     const float r_min_cov   = table_cov_r_min[element[j]];
                     const float r_max_cov   = table_cov_r_max[element[j]];
-                    const float r_min_coord = table_coord_r_min[element[j]];
-                    const float r_max_coord = table_coord_r_max[element[j]];
+                    //const float r_min_coord = table_coord_r_min[element[j]];
+                    //const float r_max_coord = table_coord_r_max[element[j]];
 
                     const vec4_t cj = {x[j], y[j], z[j], 0};
                     const vec4_t dx = vec4_sub(ci, cj);
@@ -3855,12 +3846,12 @@ bool md_util_residue_infer(md_residue_data_t* out_res, const md_flags_t in_atom_
         return false;
     }
 
-    md_residue_id_t prev_resid = -INT32_MIN;
+    md_residue_id_t prev_resid = INT32_MIN;
     str_t prev_resname = STR_LIT("");
 
     // TODO: Add check for Flag which signifies a break in component / chain
     for (size_t i = 0; i < atom_count; ++i) {
-        const md_residue_id_t resid = atom_resid ? atom_resid[i] : -INT32_MIN;
+        const md_residue_id_t resid = atom_resid ? atom_resid[i] : INT32_MIN;
         const str_t resname = atom_resname ? atom_resname[i] : STR_LIT("");
 
         if (resid != prev_resid || !str_eq(resname, prev_resname)) {
@@ -4003,7 +3994,7 @@ static inline md_label_t md_util_chain_id_from_index(size_t idx) {
     int  len = 0;
 
     size_t n = idx;
-    while (len < ARRAY_SIZE(buf)) {
+    while (len < (int)ARRAY_SIZE(buf)) {
         size_t q = n / 26;
         size_t r = n % 26;
         buf[len++] = (char)('A' + (int)r);
@@ -4046,7 +4037,7 @@ static inline md_label_t md_util_next_chain_id(str_t last) {
     }
 
     // Overflow: prepend 'A' if there's room, otherwise clamp to all 'Z'
-    if (len < ARRAY_SIZE(buf)) {
+    if (len < (int)ARRAY_SIZE(buf)) {
         // shift right and set first to 'A'
         for (int j = len; j > 0; --j) buf[j] = buf[j - 1];
         buf[0] = 'A';
@@ -8227,7 +8218,6 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                     }
                     // Possibly commit remainder of the chain
                     if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
-                        int32_t res_idx = mol->chain.res_range[chain_idx].end - (int32_t)backbone_length;
                         commit_nucleic_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                     }
                     backbone_length = 0;
@@ -8245,7 +8235,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #endif
         }
     }
-    if (MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT && 
+    if ((flags & MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT) && 
         (mol->unit_cell.flags != MD_UNIT_CELL_FLAG_NONE) && md_structure_count(&mol->structure) > 0)
     {
 		size_t num_structures = md_structure_count(&mol->structure);
@@ -8946,7 +8936,7 @@ static md_array(int) filter_structure_connectivity(const int* indices, size_t co
     md_array(int) filt = 0;
     for (size_t i = 0; i < count; ++i) {
         int idx = indices[i];
-        size_t order = md_index_range_size(*connectivity, idx);
+        int order = (int)md_index_range_size(*connectivity, idx);
         if (order >= min_val) {
             md_array_push(filt, idx, alloc);
         }
@@ -9119,7 +9109,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     ref_graph = extract_graph(&mol->atom, &mol->bond, ref_idx, ref_len, vertex_mapping, temp_arena);
 
     int ref_type_count[MAX_TYPES] = {0};
-    for (int i = 0; i < ref_len; ++i) {
+    for (size_t i = 0; i < ref_len; ++i) {
         uint8_t type = (uint8_t)graph_vertex_type(&ref_graph, i);
         ref_type_count[type]++;
     }
@@ -9309,7 +9299,6 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
 
         // Remap indices to global indices in result
         if (idx_data && count > 0) {
-            size_t num_ranges = md_index_data_num_ranges(*idx_data);
             ASSERT(post_count - pre_count == count);
             for (size_t j = pre_count; j < post_count; ++j) {
                 int* beg = md_index_range_beg(*idx_data, j);

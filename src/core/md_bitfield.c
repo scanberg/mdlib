@@ -239,7 +239,6 @@ static inline void fit_to_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
     const uint64_t cur_beg_blk = block_idx(bf->beg_bit);
     const uint64_t cur_end_blk = block_idx(bf->end_bit);
 
-    uint64_t cur_blocks = num_blocks(bf->beg_bit, bf->end_bit);
     uint64_t new_blocks = num_blocks(beg_bit, end_bit);
 
     bf->beg_bit = (uint32_t)beg_bit;
@@ -251,8 +250,6 @@ static inline void fit_to_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
 
     md_array_ensure(bf->bits, new_blocks, bf->alloc);
     md_array_resize(bf->bits, new_blocks, bf->alloc);
-
-    //bf->bits = realloc_blocks(bf->alloc, bf->bits, cur_blocks, new_blocks);
 }
 
 // This ensures that the bits are represented by the bitfield and will grow it if necessary.

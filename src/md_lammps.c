@@ -869,6 +869,9 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		type_masses[i] = data->atom_types[i].mass;
     }
 	size_t num_successfully_mapped_types = md_util_element_from_mass(type_z, type_masses, data->num_atom_types);
+
+	// @TODO: Do something with the variable above to propagate information of possible Coarse-grained system
+	(void)num_successfully_mapped_types;
 	
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		char buf[8];

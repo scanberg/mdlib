@@ -753,12 +753,17 @@ md_thread_t* md_thread_create(md_thread_entry func, void* user_data) {
 #if MD_COMPILER_GCC
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
+#elif MD_COMPILER_CLANG
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-function-type"
 #endif
     pthread_t thread;
     pthread_create(&thread, NULL, (void* (*)(void*))func, user_data);
     return (md_thread_t*)thread;
 #if MD_COMPILER_GCC
 #pragma GCC diagnostic pop
+#elif MD_COMPILER_CLANG
+#pragma clang diagnostic pop
 #endif
 #else
     ASSERT(false);

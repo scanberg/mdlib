@@ -574,8 +574,6 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     bool success = false;
 
-    static size_t size = sizeof(mmcif_atom_site_entry_t);
-
     while (md_buffered_reader_peek_line(&line, reader)) {
         line = str_trim(line);
         if (str_eq_cstr_n(line, "_atom_site.", 11)) {
@@ -807,7 +805,6 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
 
         uint64_t prev_comp_key   = 0;
-        uint64_t prev_chain_key  = 0;
         int32_t  active_chain_idx = -1;      // Index into mol->chain.* arrays for currently active polymer chain
         uint64_t active_chain_key = 0;       // Key of active chain (auth_asym_id hash)
 
@@ -893,7 +890,6 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             }
  
             prev_comp_key  = comp_key;
- 		    prev_chain_key = chain_key;
  
             mol->atom.count += 1;
             md_array_push_no_grow(mol->atom.x, atom_entries[i].x);

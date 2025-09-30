@@ -115,7 +115,7 @@ void	md_vm_commit  (void* ptr, size_t size);
 void	md_vm_decommit(void* ptr, size_t size);
 
 // ### THREAD ###
-typedef void (*md_thread_exit) (void* data);
+typedef void (*md_thread_exit) (void *data);
 typedef void (*md_thread_entry)(void *data);
 typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
