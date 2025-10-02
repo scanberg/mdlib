@@ -50,17 +50,22 @@ static float atom_type_radius[] = {
     1.52f
 };
 
-#define RES_COUNT 4
+#define COMP_COUNT 4
 static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
-static md_residue_id_t r_id[] = {1, 2, 3, 4};
-static uint32_t r_off[] = {0, 3, 8, 12, 16};
+static md_seq_id_t  r_id[] = {1, 2, 3, 4};
+static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 
-#define CHAIN_COUNT 1
-static md_label_t c_id[] = {MAKE_LABEL("A")};
-static md_range_t c_atom_rng[] = {{0,16}};
-static md_range_t c_res_rng [] = {{0,4}};
+#define ENT_COUNT 3
+static md_label_t    e_id[] = {MAKE_LABEL("WAT"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT")};
+static md_flags_t e_flags[] = {MD_FLAG_WATER, MD_FLAG_AMINO_ACID, MD_FLAG_HETERO};
+static str_t       e_desc[] = {MAKE_LABEL("water"), MAKE_LABEL("polypeptide"), MAKE_LABEL("non-polymer")};
 
-md_molecule_t test_mol = {
+#define INST_COUNT 4
+static md_label_t        i_id[] = {MAKE_LABEL("A"), MAKE_LABEL("B"), MAKE_LABEL("C"), MAKE_LABEL("D")};
+static uint32_t         i_off[] = {0, 3, 8, 12, 16};
+static md_entity_idx_t i_eidx[] = {0, 1, 2, 2};
+
+md_system_t test_mol = {
     .atom = {
         .count = ATOM_COUNT,
         .x = mol_x,
@@ -75,30 +80,34 @@ md_molecule_t test_mol = {
             .radius = atom_type_radius,
         },
     },
-    .residue = {
-        .count = RES_COUNT,
+    .comp = {
+        .count = COMP_COUNT,
         .name = r_name,
-        .id = r_id,
+        .seq_id = r_id,
         .atom_offset = r_off
     },
-    .chain = {
-        .count = CHAIN_COUNT,
-        .id = c_id,
-        .atom_range = c_atom_rng,
-        .res_range = c_res_rng,
-    }
+    .inst = {
+        .count = INST_COUNT,
+        .id = i_id,
+        .comp_offset = i_off,
+    },
+    .entity = {
+        .count = ENT_COUNT,
+        .id = e_id,
+        .flags = e_flags
+    },
 };
 
 struct script {
     bool initialized;
     md_allocator_i* arena;
-    md_molecule_t amy;
-    md_molecule_t ala;
+    md_system_t amy;
+    md_system_t ala;
     md_trajectory_i* ala_traj;
 };
 
-static md_molecule_t* amy = 0;
-static md_molecule_t* ala = 0;
+static md_system_t* amy = 0;
+static md_system_t* ala = 0;
 static md_trajectory_i* ala_traj = 0;
 
 UTEST_F_SETUP(script) {
@@ -117,7 +126,7 @@ UTEST_F_TEARDOWN(script) {
     md_vm_arena_destroy(utest_fixture->arena);
 }
 
-static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
+static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_system_t* mol) {
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
@@ -166,7 +175,7 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
 		.alloc = &temp_alloc, \
 	}
 
-ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_allocator_i* arena) {
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_system_t* mol, md_allocator_i* arena) {
     // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
     // Which means that the actual string data is contained within the ir->arena => temp_alloc
     ir->str = str_copy(expr, ir->arena);
@@ -928,7 +937,7 @@ UTEST_F(script, compile_script) {
 
 UTEST_F(script, implicit_conversion) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->amy;
+    md_system_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL, NULL));
@@ -941,7 +950,7 @@ UTEST_F(script, implicit_conversion) {
 
 UTEST_F(script, semantic) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->amy;
+    md_system_t* mol = &utest_fixture->amy;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -975,7 +984,7 @@ UTEST_F(script, semantic) {
 
 UTEST_F(script, selection_big) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->amy;
+    md_system_t* mol = &utest_fixture->amy;
 
     md_bitfield_t bf = md_bitfield_create(alloc);
     EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in chain(:)"), mol));
@@ -985,7 +994,7 @@ UTEST_F(script, selection_big) {
 
 UTEST_F(script, dynamic_length) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->ala;
+    md_system_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1000,7 +1009,7 @@ UTEST_F(script, dynamic_length) {
 
 UTEST_F(script, property_compute) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->ala;
+    md_system_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
 
@@ -1134,7 +1143,7 @@ UTEST_F(script, property_compute) {
 
 typedef struct thread_data_t {
     const md_script_ir_t* ir;
-    const md_molecule_t* mol;
+    const md_system_t* mol;
     const md_trajectory_i* traj;
     const md_script_eval_t* ref_eval;
     md_script_eval_t* eval;
@@ -1163,7 +1172,7 @@ void func(void* user_data) {
 
 UTEST_F(script, parallel_evaluation) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->ala;
+    md_system_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
     const str_t script = STR_LIT("p1 = distance(1,10);");
@@ -1230,7 +1239,7 @@ UTEST_F(script, parallel_evaluation) {
 
 UTEST_F(script, parse_unary_binary) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->ala;
+    md_system_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
@@ -1261,7 +1270,7 @@ UTEST_F(script, parse_unary_binary) {
 
 UTEST_F(script, visualize) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
-    md_molecule_t* mol = &utest_fixture->ala;
+    md_system_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
@@ -1291,7 +1300,7 @@ UTEST_F(script, visualize) {
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        size_t res_atom_count = md_residue_atom_count(&mol->residue, 4);
+        size_t res_atom_count = md_comp_atom_count(&mol->comp, 4);
         size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }

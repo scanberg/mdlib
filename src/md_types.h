@@ -41,8 +41,9 @@ enum {
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
 
-    // To mark backbone atoms in Polymers
-    MD_FLAG_BACKBONE            = 0x10,
+    // Polymers
+    MD_FLAG_POLYMER             = 0x10,     // Flag for connected polymers
+    MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
 
     // Proteins
     MD_FLAG_AMINO_ACID		    = 0x20,
@@ -200,9 +201,10 @@ enum {
 
 typedef int32_t     md_atom_idx_t;
 typedef int32_t     md_comp_idx_t;
+typedef int32_t     md_instance_idx_t;
+typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_seq_id_t;
-typedef int32_t     md_instance_idx_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint8_t     md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
@@ -224,22 +226,13 @@ typedef struct md_irange_t {
 typedef struct md_urange_t {
     uint32_t beg;
     uint32_t end;
-}
+} md_urange_t;
 
 typedef struct md_unit_cell_t {
     mat3_t basis;
     mat3_t inv_basis;
     uint32_t flags;
 } md_unit_cell_t;
-
-/*
-// Single bond between two entities represented by atom indices
-typedef struct md_bond_t {
-    md_atom_idx_t idx[2];
-    uint16_t order;
-    uint16_t flags;
-} md_bond_t;
-*/
 
 typedef struct md_bond_pair_t {
     int32_t idx[2];
@@ -405,23 +398,40 @@ static inline void md_index_data_clear(md_index_data_t* data) {
 }
 
 static inline size_t md_index_data_num_ranges(const md_index_data_t* data) {
-    return data.offsets ? md_array_size(data.offsets) - 1 : 0;
+    ASSERT(data);
+    size_t num_ranges = 0;
+    if (data->offsets) {
+        num_ranges = md_array_size(data->offsets) - 1;
+    }
+    return num_ranges;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(const md_index_data_t* data, size_t range_idx) {
-    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[range_idx];
+static inline int32_t* md_index_range_beg(md_index_data_t* data, size_t range_idx) {
+    ASSERT(data);
+    int32_t* ptr = NULL;
+    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+        ptr = data->indices + data->offsets[range_idx];
+    }
+    return ptr;
 }
 
-static inline int32_t* md_index_range_end(md_index_data_t data, size_t range_idx) {
-    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[range_idx+1];
+static inline int32_t* md_index_range_end(const md_index_data_t* data, size_t range_idx) {
+    ASSERT(data);
+    int32_t* ptr = NULL;
+    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+        ptr = data->indices + data->offsets[range_idx + 1];
+    }
+    return ptr;
 }
 
-static inline size_t md_index_range_size(md_index_data_t data, size_t range_idx) {
-    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
-    return data.offsets[range_idx+1] - data.offsets[range_idx];
+static inline size_t md_index_range_size(const md_index_data_t* data, size_t range_idx) {
+    ASSERT(data);
+    size_t size = 0;
+    if (data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+        size = data->offsets[range_idx+1] - data->offsets[range_idx];
+    }
+    return size;
 }
 
 // Create a vec4 mask which represents the periodic dimensions from a unit cell.

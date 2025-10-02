@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-struct md_molecule_t;
+struct md_system_t;
 struct md_allocator_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
@@ -174,7 +174,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
-bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
+bool md_pdb_molecule_init(struct md_system_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
 struct md_molecule_loader_i* md_pdb_molecule_api(void);
 
 // TRAJECTORY

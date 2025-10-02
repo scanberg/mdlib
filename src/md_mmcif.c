@@ -149,6 +149,7 @@ static const str_t entity_poly_type_str[] = {
     BAKE(""),
     BAKE("cyclic-pseudo-peptide"),
     BAKE("other"),
+    BAKE("peptide nucleic acid"),
     BAKE("polydeoxyribonucleotide"),
     BAKE("polydeoxyribonucleotide/polyribonucleotide hybrid"),
     BAKE("polypeptide(D)"),
@@ -171,7 +172,7 @@ typedef struct {
     str_t id;
     mmcif_entity_type_t type;
     mmcif_entity_poly_type_t poly_type;
-    // perhaps add description field later
+    str_t description;
 } mmcif_entity_t;
 
 static inline mmcif_entity_t* mmcif_entity_find(md_array(mmcif_entity_t) entities, str_t id) {
@@ -487,6 +488,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, md_buffered_r
 
     int id_col   = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.id"));
     int type_col = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.type"));
+    int desc_col = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.pdbx_description"));
 
     if (id_col == -1) {
         MD_LOG_ERROR("Missing entity field 'id'");
@@ -496,6 +498,10 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, md_buffered_r
         MD_LOG_ERROR("Missing entity field 'type'");
         return false;
     }
+    if (desc_col == -1) {
+        MD_LOG_ERROR("Missing entity field 'pdbx_description'");
+        return false;
+    }
 
     for (size_t i = 0; i < sec.num_rows; ++i) {
         str_t id = mmcif_section_value(&sec, i, id_col);
@@ -503,6 +509,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, md_buffered_r
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
             ASSERT(ent);
             ent->type = mmcif_entity_type_from_str(mmcif_section_value(&sec, i, type_col));
+            ent->description = str_copy(mmcif_section_value(&sec, i, desc_col), alloc);
         }
     }
 
@@ -725,7 +732,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* re
     return (field_flags == req_field_flags);
 }
 
-static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_allocator_i* alloc) {
     bool atom_site_parsed = false;
     bool cell_parsed = false;
     bool entity_parsed = false;
@@ -739,7 +746,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
     md_array_ensure(atom_entries, 1024, temp_arena);
     md_array_ensure(entities, 4, temp_arena);
 
-    MEMSET(mol, 0, sizeof(md_molecule_t));
+    MEMSET(sys, 0, sizeof(md_system_t));
 
     mmcif_cell_params_t cell = {0};
 
@@ -791,22 +798,54 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
         loop_ = false;
     }
 
+    if (entity_parsed) {
+        // Add entities first so that we can reference them when adding components
+        size_t num_entities = md_array_size(entities);
+        md_array_ensure(sys->entity.id, num_entities, alloc);
+        md_array_ensure(sys->entity.flags, num_entities, alloc);
+        md_array_ensure(sys->entity.description, num_entities, alloc);
+
+        for (size_t i = 0; i < num_entities; ++i) {
+            md_flags_t flags = 0;
+
+            if (entities[i].type == ENTITY_TYPE_POLYMER) {
+                flags |= MD_FLAG_POLYMER;
+                if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_L) {
+                    flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_L;
+                } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_D) {
+                    flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_D;
+                } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE ||
+                    entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE ||
+                    entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID) {
+                    flags |= MD_FLAG_NUCLEOTIDE;
+                }
+            } else if (entities[i].type == ENTITY_TYPE_WATER) {
+                flags |= MD_FLAG_WATER;
+            } else {
+                flags |= MD_FLAG_HETERO;
+            }
+
+            md_array_push_no_grow(sys->entity.id, make_label(entities[i].id));
+            md_array_push_no_grow(sys->entity.flags, flags);
+            md_array_push_no_grow(sys->entity.description, str_copy(entities[i].description, alloc));
+        }
+    }
+
     // Populate molecule from parsed data
     if (atom_site_parsed) {
         size_t num_atoms = md_array_size(atom_entries);
         size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-        md_array_ensure(mol->atom.x, reserve_size, alloc);
-        md_array_ensure(mol->atom.y, reserve_size, alloc);
-        md_array_ensure(mol->atom.z, reserve_size, alloc);
-        md_array_ensure(mol->atom.type_idx, reserve_size, alloc);
-        md_array_ensure(mol->atom.flags, reserve_size, alloc);
+        md_array_ensure(sys->atom.x, reserve_size, alloc);
+        md_array_ensure(sys->atom.y, reserve_size, alloc);
+        md_array_ensure(sys->atom.z, reserve_size, alloc);
+        md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
+        md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
-        md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
+        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
 
-        uint64_t prev_comp_key   = 0;
-        int32_t  active_chain_idx = -1;      // Index into mol->chain.* arrays for currently active polymer chain
-        uint64_t active_chain_key = 0;       // Key of active chain (auth_asym_id hash)
+        uint64_t prev_comp_key = 0; // Key of active componenent
+        uint64_t prev_inst_key = 0; // Key of active instance
 
         for (size_t i = 0; i < num_atoms; ++i) {
             // Ignore alt loc entries unless 'A'
@@ -817,114 +856,82 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             str_t atom_id = str_from_cstrn(atom_entries[i].label_atom_id, sizeof(atom_entries[i].label_atom_id));
             str_t entity_id = str_from_cstrn(atom_entries[i].label_entity_id, sizeof(atom_entries[i].label_entity_id));
             str_t auth_asym_id = str_from_cstrn(atom_entries[i].auth_asym_id, sizeof(atom_entries[i].auth_asym_id));
+            str_t label_asym_id = str_from_cstrn(atom_entries[i].label_asym_id, sizeof(atom_entries[i].label_asym_id));
 
-            mmcif_entity_t* entity = mmcif_entity_find(entities, entity_id);
+            md_entity_idx_t entity_idx = md_entity_find_by_id(&sys->entity, entity_id);
 
-		    uint64_t chain_key = md_hash64_str(auth_asym_id, 0);
+		    uint64_t inst_key = md_hash64_str(label_asym_id, 0);
 
-            str_t res_name = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
-            int res_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
-            uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id ^ chain_key);
+            str_t comp_id = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
+            int seq_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
+            uint64_t comp_key = md_hash64_str(comp_id, (uint64_t)seq_id ^ inst_key);
 
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
             float mass = md_atomic_number_mass(atomic_number);
             float radius = md_atomic_number_vdw_radius(atomic_number);
-            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, alloc);
+            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
 
-            md_flags_t flags = 0;
-
-            bool is_polymer = false;
-            if (entity) {
-                if (entity->type == ENTITY_TYPE_POLYMER) {
-                    if (entity->poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_L) {
-                        flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_L;
-                        is_polymer = true;
-                    } else if (entity->poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_D) {
-                        flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_D;
-                        is_polymer = true;
-                    } else if (entity->poly_type == ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE ||
-                        entity->poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE ||
-                        entity->poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID) {
-                        flags |= MD_FLAG_NUCLEOTIDE;
-                        is_polymer = true;
-                    }
-                } else if (entity->type == ENTITY_TYPE_WATER) {
-                    flags |= MD_FLAG_WATER;
-                } else {
-                    flags |= MD_FLAG_HETERO;
-                }
-            }
+            md_flags_t flags = md_entity_flags(&sys->entity, entity_idx);
 
             if (comp_key != prev_comp_key) {
                 // --- New residue boundary ---
-                static const uint32_t res_flag_filter = MD_FLAG_HETERO | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
-                md_flags_t res_flags = flags & res_flag_filter;
+                static const uint32_t comp_flag_filter = MD_FLAG_HETERO | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
+                md_flags_t comp_flags = flags & comp_flag_filter;
 
                 // Start residue (store atom offset before adding any residue atoms)
-                md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
-                md_array_push(mol->residue.name,  make_label(res_name), alloc);
-                md_array_push(mol->residue.id,    res_id, alloc);
-                md_array_push(mol->residue.flags, res_flags, alloc);
+                md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
+                md_array_push(sys->comp.name,   make_label(comp_id), alloc);
+                md_array_push(sys->comp.seq_id, seq_id, alloc);
+                md_array_push(sys->comp.flags,  comp_flags, alloc);
 
-                // Polymer chain handling
-                if (is_polymer) {
-                    if (active_chain_idx >= 0 && chain_key == active_chain_key) {
-                        // Extend existing chain's residue range end (exclusive)
-                        mol->chain.res_range[active_chain_idx].end = (int32_t)md_array_size(mol->residue.id);
-                    } else {
-                        // Start a new chain
-                        md_label_t chain_label = make_label(auth_asym_id);
-                        md_range_t res_range   = { (int32_t)(md_array_size(mol->residue.id) - 1),
-                                                    (int32_t)md_array_size(mol->residue.id) };
-                        md_range_t atom_range  = { (int32_t)mol->atom.count, (int32_t)mol->atom.count };
-                        md_array_push(mol->chain.id,        chain_label, alloc);
-                        md_array_push(mol->chain.res_range, res_range,   alloc);
-                        md_array_push(mol->chain.atom_range, atom_range, alloc);
-                        active_chain_idx = (int32_t)md_array_size(mol->chain.id) - 1;
-                        active_chain_key = chain_key;
-                    }
-                } else {
-                    // Non-polymer residue breaks active polymer chain continuation
-                    active_chain_idx = -1;
+                // Instance handling
+                if (inst_key != prev_inst_key) {
+                    // Start a new instance
+                    md_label_t inst_id      = make_label(label_asym_id);
+                    md_label_t inst_auth_id = make_label(auth_asym_id);
+
+                    md_array_push(sys->inst.id, inst_id, alloc);
+                    md_array_push(sys->inst.auth_id, inst_auth_id, alloc);
+                    md_array_push(sys->inst.comp_offset, (uint32_t)sys->comp.count, alloc);
+                    sys->inst.count += 1;
                 }
+                sys->comp.count += 1;
             }
  
-            prev_comp_key  = comp_key;
+            prev_inst_key = inst_key;
+            prev_comp_key = comp_key;
  
-            mol->atom.count += 1;
-            md_array_push_no_grow(mol->atom.x, atom_entries[i].x);
-            md_array_push_no_grow(mol->atom.y, atom_entries[i].y);
-            md_array_push_no_grow(mol->atom.z, atom_entries[i].z);
-            md_array_push_no_grow(mol->atom.type_idx, atom_type_idx);
-            md_array_push_no_grow(mol->atom.flags, flags);
- 
-            // Update active chain atom range end (exclusive) as atoms are appended
-            if (active_chain_idx >= 0) {
-                mol->chain.atom_range[active_chain_idx].end = (int32_t)mol->atom.count;
-            }
+            sys->atom.count += 1;
+            md_array_push_no_grow(sys->atom.x, atom_entries[i].x);
+            md_array_push_no_grow(sys->atom.y, atom_entries[i].y);
+            md_array_push_no_grow(sys->atom.z, atom_entries[i].z);
+            md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
+            md_array_push_no_grow(sys->atom.flags, flags);
         }
-        md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);  // Final sentinel
 
-        // Finalize counts
-        mol->residue.count = md_array_size(mol->residue.id);
-        mol->chain.count   = md_array_size(mol->chain.id);
+        if (sys->comp.atom_offset) {
+            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+        }
+        if (sys->inst.comp_offset) {
+            md_array_push(sys->inst.comp_offset, (uint32_t)sys->comp.count, alloc);  // Final sentinel
+        }
     }
 
     if (cell_parsed) {
-        mol->unit_cell = md_util_unit_cell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    return mol->atom.count > 0;
+    return sys->atom.count > 0;
 }
 
-static bool mmcif_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool mmcif_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    MEMSET(mol, 0, sizeof(md_molecule_t));
-    return mmcif_parse(mol, &reader, alloc);
+    MEMSET(sys, 0, sizeof(md_system_t));
+    return mmcif_parse(sys, &reader, alloc);
 }
 
-static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
@@ -935,8 +942,8 @@ static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, const void*
         void* buf = md_temp_push(cap);
 
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        MEMSET(mol, 0, sizeof(md_molecule_t));
-        result = mmcif_parse(mol, &reader, alloc);
+        MEMSET(sys, 0, sizeof(md_system_t));
+        result = mmcif_parse(sys, &reader, alloc);
 
         md_temp_set_pos_back(pos);
         md_file_close(file);

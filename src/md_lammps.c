@@ -840,27 +840,27 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
-bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, md_allocator_i* alloc) {
-	ASSERT(mol);
+bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_allocator_i* alloc) {
+	ASSERT(sys);
 	ASSERT(data);
 	ASSERT(alloc);
 
-	MEMSET(mol, 0, sizeof(md_molecule_t));
+	MEMSET(sys, 0, sizeof(md_system_t));
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_ensure(mol->atom.x,		capacity, alloc);
-	md_array_ensure(mol->atom.y,		capacity, alloc);
-	md_array_ensure(mol->atom.z,		capacity, alloc);
-	md_array_ensure(mol->atom.type_idx, capacity, alloc);
-	md_array_ensure(mol->atom.flags,    capacity, alloc);
+	md_array_ensure(sys->atom.x,		capacity, alloc);
+	md_array_ensure(sys->atom.y,		capacity, alloc);
+	md_array_ensure(sys->atom.z,		capacity, alloc);
+	md_array_ensure(sys->atom.type_idx, capacity, alloc);
+	md_array_ensure(sys->atom.flags,    capacity, alloc);
 
 	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
 
 	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
 	// Reset atom data and initialize to default value
-	mol->atom.type.count = 0;
-	md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0, 0, alloc);
+	sys->atom.type.count = 0;
+	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, alloc);
 
 	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
     md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
@@ -881,7 +881,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		float mass   = data->atom_types[i].mass;
 		float radius = data->atom_types[i].radius;
 		
-		type_map[i] = md_atom_type_find_or_add(&mol->atom.type, type_id, type_z[i], mass, radius, alloc);
+		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, alloc);
 	}
 
 	int prev_resid = -1;
@@ -899,26 +899,26 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 				char buf[8];
 				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
-				md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
-				md_array_push(mol->residue.id, resid, alloc);
-				md_array_push(mol->residue.name, make_label(name), alloc);
-				md_array_push(mol->residue.flags, 0, alloc);
-				mol->residue.count += 1;
+				md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
+				md_array_push(sys->comp.seq_id, resid, alloc);
+				md_array_push(sys->comp.name, make_label(name), alloc);
+				md_array_push(sys->comp.flags, 0, alloc);
+				sys->comp.count += 1;
 			}
 		}
 
-		md_array_push_no_grow(mol->atom.type_idx, type_idx);
-		md_array_push_no_grow(mol->atom.x, data->atoms[i].x - data->cell.xlo);
-		md_array_push_no_grow(mol->atom.y, data->atoms[i].y - data->cell.ylo);
-		md_array_push_no_grow(mol->atom.z, data->atoms[i].z - data->cell.zlo);
-		md_array_push_no_grow(mol->atom.flags, 0);
-		mol->atom.count +=1;
+		md_array_push_no_grow(sys->atom.type_idx, type_idx);
+		md_array_push_no_grow(sys->atom.x, data->atoms[i].x - data->cell.xlo);
+		md_array_push_no_grow(sys->atom.y, data->atoms[i].y - data->cell.ylo);
+		md_array_push_no_grow(sys->atom.z, data->atoms[i].z - data->cell.zlo);
+		md_array_push_no_grow(sys->atom.flags, 0);
+		sys->atom.count +=1;
 
 		prev_resid = resid;
 	}
 
 	if (has_resid) {
-		md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc); // Final sentinel
+		md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc); // Final sentinel
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
@@ -930,13 +930,13 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	M[1][0] = data->cell.xy;
 	M[2][0] = data->cell.xz;
 	M[2][1] = data->cell.yz;
-	mol->unit_cell = md_util_unit_cell_from_matrix(M);
+	sys->unit_cell = md_util_unit_cell_from_matrix(M);
 
 	md_vm_arena_destroy(temp_arena);
 	return true;
 }
 
-static bool lammps_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool lammps_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
 	if (!arg) {
 		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
 		return false;
@@ -953,14 +953,14 @@ static bool lammps_init_from_str(md_molecule_t* mol, str_t str, const void* arg,
 	md_lammps_data_t data = { 0 };
 	bool success = false;
 	if (md_lammps_data_parse_str(&data, str, format, md_get_heap_allocator())) {
-		success = md_lammps_molecule_init(mol, &data, alloc);
+		success = md_lammps_molecule_init(sys, &data, alloc);
 	}
 	md_lammps_data_free(&data, md_get_heap_allocator());
 
 	return success;
 }
 
-static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
 	if (!arg) {
 		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
 		return false;
@@ -977,7 +977,7 @@ static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, const void
 	md_lammps_data_t data = { 0 };
 	bool success = false;
 	if (md_lammps_data_parse_file(&data, filename, format, md_get_heap_allocator())) {
-		success = md_lammps_molecule_init(mol, &data, alloc);
+		success = md_lammps_molecule_init(sys, &data, alloc);
 	}
 	md_lammps_data_free(&data, md_get_heap_allocator());
 

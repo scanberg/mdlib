@@ -29,36 +29,29 @@ typedef struct md_atom_data_t {
     md_atom_type_data_t type;
 } md_atom_data_t;
 
-// Component data
-typedef struct md_comp_data_t {
+// Component (Residue)
+typedef struct md_component_data_t {
     size_t count;
     md_label_t* name;
-    md_comp_id_t* seq_id;
+    md_seq_id_t* seq_id;
     uint32_t* atom_offset;
     md_flags_t* flags;
-} md_comp_data_t;
+} md_component_data_t;
 
+// Instance (e.g. Chains + other)
 typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
     md_label_t* auth_id;
+    uint32_t* comp_offset;
     md_entity_idx_t* entity_idx;
-    md_range_t* comp_range;
 } md_instance_data_t;
-
-typedef enum md_entity_type_t {
-    MD_ENTITY_TYPE_UNKNOWN = 0,
-    MD_ENTITY_TYPE_POLYMER,
-    MD_ENTITY_TYPE_NONPOLYMER,
-    MD_ENTITY_TYPE_WATER,
-    MD_ENTITY_TYPE_OTHER
-} md_entity_type_t;
 
 // Entities are used to describe the types found within a system
 typedef struct md_entity_data_t {
     size_t count;
-    md_label_t* label;
-    md_entity_type_t* type;
+    md_label_t* id;
+    md_flags_t* flags;
     str_t* description;
 } md_entity_data_t;
 
@@ -69,7 +62,7 @@ typedef struct md_protein_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the segments
-        md_instance_idx_t* instance_idx; // Reference to the instance in which the backbone is located
+        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
     } range;
 
     // These fields share the same length 'count'
@@ -78,8 +71,8 @@ typedef struct md_protein_backbone_data_t {
         md_protein_backbone_atoms_t* atoms;
         md_backbone_angles_t* angle;
         md_secondary_structure_t* secondary_structure;
-        md_ramachandran_type_t* ramachandran_type;
-        md_comp_idx_t* compidue_idx;                  // Index to the compidue which contains the backbone
+        md_ramachandran_type_t* rama_type;
+        md_comp_idx_t* comp_idx;                  // Index to the component which contains the backbone
     } segment;
 } md_protein_backbone_data_t;
 
@@ -88,22 +81,22 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the backbone fields stored bellow
-        md_chain_idx_t* chain_idx; // Reference to the chain in which the backbone is located
+        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
     } range;
 
     // These fields share the same length 'count'
     struct {
         size_t count;
         md_nucleic_backbone_atoms_t* atoms;
-        md_comp_idx_t* compidue_idx;                  // Index to the compidue which contains the backbone
+        md_comp_idx_t* comp_idx;                  // Index to the component which contains the backbone segment
     } segment;
 } md_nucleic_backbone_data_t;
 
-// This repcompents symmetries which are instanced, commonly found
+// This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
 typedef struct md_assembly_data_t {
     size_t count;
-    md_range_t* atom_range;
+    md_urange_t* atom_range;
     md_label_t* label;
     mat4_t* transform;
 } md_assembly_data_t;
@@ -134,12 +127,10 @@ typedef struct md_bond_iter_t {
 } md_bond_iter_t;
 
 typedef struct md_system_t {
-    str_t description;
-
     md_unit_cell_t              unit_cell;
     md_atom_data_t              atom;
-    md_comp_data_t              comp;
-    md_instance_data_t          instance;
+    md_component_data_t         comp;
+    md_instance_data_t          inst;
     md_entity_data_t            entity;
 
     md_protein_backbone_data_t  protein_backbone;
@@ -147,10 +138,12 @@ typedef struct md_system_t {
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
-    md_index_data_t             ring;               // Ring structucomp formed by persistent bonds
-    md_index_data_t             structure;          // Isolated structucomp connected by persistent bonds
+    md_index_data_t             ring;               // Ring structures formed by persistent bonds
+    md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
     md_assembly_data_t          assembly;           // Instances of the molecule (duplications of ranges with new transforms)
+
+    str_t                       description;
 } md_system_t;
 
 #ifdef __cplusplus
@@ -291,12 +284,12 @@ static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
 
 // Component
 
-static inline size_t md_comp_count(const md_comp_data_t* comp) {
+static inline size_t md_comp_count(const md_component_data_t* comp) {
     ASSERT(comp);
     return comp->count;
 }
 
-static inline str_t md_comp_name(const md_comp_data_t* comp, size_t comp_idx) {
+static inline str_t md_comp_name(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
     str_t name = STR_LIT("");
     if (comp->name && comp_idx < comp->count) {
@@ -305,18 +298,18 @@ static inline str_t md_comp_name(const md_comp_data_t* comp, size_t comp_idx) {
     return name;
 }
 
-static inline md_comp_id_t md_comp_seq_id(const md_comp_data_t* comp, size_t comp_idx) {
+static inline md_seq_id_t md_comp_seq_id(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
-    md_comp_id_t id = 0;
-    if (comp->id && comp_idx < comp->count) {
-        id = comp->id[comp_idx];
+    md_seq_id_t id = 0;
+    if (comp->seq_id && comp_idx < comp->count) {
+        id = comp->seq_id[comp_idx];
     }
     return id;
 }
 
-static inline md_range_t md_comp_atom_range(const md_comp_data_t* comp, size_t comp_idx) {
+static inline md_urange_t md_comp_atom_range(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
-	md_range_t range = {0};
+	md_urange_t range = {0};
 	if (comp->atom_offset && comp_idx < comp->count) {
 		range.beg = comp->atom_offset[comp_idx];
 		range.end = comp->atom_offset[comp_idx + 1];
@@ -324,7 +317,16 @@ static inline md_range_t md_comp_atom_range(const md_comp_data_t* comp, size_t c
 	return range;
 }
 
-static inline md_comp_idx_t md_comp_find_by_atom_idx(const md_comp_data_t* comp, size_t atom_idx) {
+static inline md_flags_t md_comp_flags(const md_component_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
+    md_flags_t flags = 0;
+    if (comp->flags && comp_idx < comp->count) {
+        flags = comp->flags[comp_idx];
+    }
+    return flags;
+}
+
+static inline md_comp_idx_t md_comp_find_by_atom_idx(const md_component_data_t* comp, size_t atom_idx) {
     ASSERT(comp);
 
     md_comp_idx_t comp_idx = -1;
@@ -345,7 +347,7 @@ static inline md_comp_idx_t md_comp_find_by_atom_idx(const md_comp_data_t* comp,
     return comp_idx;
 }
 
-static inline size_t md_comp_atom_count(const md_comp_data_t* comp, size_t comp_idx) {
+static inline size_t md_comp_atom_count(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
     size_t count = 0;
 
@@ -355,53 +357,55 @@ static inline size_t md_comp_atom_count(const md_comp_data_t* comp, size_t comp_
     return count;
 }
 
-// Chain
+// Instance
 
-static inline size_t md_chain_count(const md_chain_data_t* chain) {
-    ASSERT(chain);
-    return chain->count;
+static inline size_t md_inst_count(const md_instance_data_t* inst) {
+    ASSERT(inst);
+    return inst->count;
 }
 
-static inline md_range_t md_chain_comp_range(const md_chain_data_t* chain, size_t chain_idx) {
-    ASSERT(chain);
+static inline md_urange_t md_inst_comp_range(const md_instance_data_t* inst, size_t inst_idx) {
+    ASSERT(inst);
 
-    md_range_t range = {0};
-    if (chain->comp_range && chain_idx < chain->count) {
-        range = chain->comp_range[chain_idx];
+    md_urange_t range = {0};
+    if (inst->comp_offset && inst_idx < inst->count) {
+        range.beg = inst->comp_offset[inst_idx];
+        range.end = inst->comp_offset[inst_idx + 1];
     }
     return range;
 }
 
-static inline md_chain_idx_t md_chain_find_by_compidue_idx(const md_chain_data_t* chain, size_t comp_idx) {
-    ASSERT(chain);
+static inline md_instance_idx_t md_inst_find_by_comp_idx(const md_instance_data_t* inst, size_t comp_idx) {
+    ASSERT(inst);
 
-    md_chain_idx_t chain_idx = -1;
-    if (chain->comp_range) {
-        int ri = (int)comp_idx;
-        for (size_t i = 0; i < chain->count; ++i) {
-            md_range_t range = chain->comp_range[i];
-            if (range.beg <= ri && ri < range.end) {
-                chain_idx = (md_chain_idx_t)i;
+    md_instance_idx_t inst_idx = -1;
+    if (inst->comp_offset) {
+        for (size_t i = 0; i < inst->count; ++i) {
+            size_t inst_beg = inst->comp_offset[i];
+            size_t inst_end = inst->comp_offset[i + 1];
+            if (inst_beg <= comp_idx && comp_idx < inst_end) {
+                inst_idx = (md_instance_idx_t)i;
                 break;
             }
-            if (range.beg > ri) {
+            if (inst_beg > i) {
                 break;
             }
         }
     }
-    return chain_idx;
+    return inst_idx;
 }
 
-static inline md_chain_idx_t md_chain_find_by_atom_idx(const md_chain_data_t* chain, size_t atom_idx) {
-    ASSERT(chain);
+/*
+static inline md_instance_idx_t md_inst_find_by_atom_idx(const md_instance_data_t* inst, size_t atom_idx) {
+    ASSERT(inst);
 
-    md_chain_idx_t chain_idx = -1;
-    if (chain->atom_range) {
+    md_instance_idx_t inst_idx = -1;
+    if (inst->atom_range) {
         int ai = (int)atom_idx;
-        for (size_t i = 0; i < chain->count; ++i) {
-            md_range_t range = chain->atom_range[i];
+        for (size_t i = 0; i < inst->count; ++i) {
+            md_range_t range = inst->atom_range[i];
             if (range.beg <= ai && ai < range.end) {
-                chain_idx = (md_chain_idx_t)i;
+                inst_idx = (md_instance_idx_t)i;
                 break;
             }
             if (range.beg > ai) {
@@ -409,61 +413,201 @@ static inline md_chain_idx_t md_chain_find_by_atom_idx(const md_chain_data_t* ch
             }
         }
     }
-    return chain_idx;
+    return inst_idx;
 }
+*/
 
-static inline size_t md_chain_compidue_count(const md_chain_data_t* chain, size_t chain_idx) {
-    ASSERT(chain);
+static inline size_t md_inst_comp_count(const md_instance_data_t* inst, size_t inst_idx) {
+    ASSERT(inst);
 
     size_t count = 0;
-    if (chain->comp_range && chain_idx < chain->count) {
-        md_range_t range = chain->comp_range[chain_idx];
-        count = range.end - range.beg;
+    if (inst->comp_offset && inst_idx < inst->count) {
+        count = inst->comp_offset[inst_idx + 1] - inst->comp_offset[inst_idx];
     }
     return count;
 }
 
-static inline md_range_t md_chain_atom_range(const md_chain_data_t* chain, size_t chain_idx) {
-	ASSERT(chain);
+/*
+static inline md_urange_t md_inst_atom_range(const md_instance_data_t* inst, size_t inst_idx) {
+	ASSERT(inst);
 
     md_range_t range = {0};
-    if (chain->atom_range && chain_idx < chain->count) {
-        range = chain->atom_range[chain_idx];
+    if (inst->comp_range && inst_idx < inst->count) {
+        uint32_t cbeg = inst->comp_range[inst_idx].beg;
+        uint32_t cend = inst->comp_range[inst_idx].end;
+        if (inst->atom_range && cbeg < cend) {
+            range.beg = inst->atom_range[cbeg].beg;
+            range.end = inst->atom_range[cend - 1].end;
+        }
+        range = inst->atom_range[inst_idx];
     }
     return range;
 }
 
-static inline size_t md_chain_atom_count(const md_chain_data_t* chain, size_t chain_idx) {
+static inline size_t md_inst_atom_count(const md_instance_data_t* inst, size_t inst_idx) {
     size_t count = 0;
-    if (chain->atom_range && chain_idx < chain->count) {
-        md_range_t range = chain->atom_range[chain_idx];
+    if (inst->atom_range && inst_idx < inst->count) {
+        md_range_t range = inst->atom_range[inst_idx];
         count = range.end - range.beg;
     }
     return count;
 }
+*/
 
-static inline str_t md_chain_id(const md_chain_data_t* chain, size_t chain_idx) {
-    ASSERT(chain);
+static inline str_t md_inst_id(const md_instance_data_t* inst, size_t inst_idx) {
+    ASSERT(inst);
     str_t id = STR_LIT("");
-    if (chain->id && chain_idx < chain->count) {
-        id = LBL_TO_STR(chain->id[chain_idx]);
+    if (inst->id && inst_idx < inst->count) {
+        id = LBL_TO_STR(inst->id[inst_idx]);
     }
     return id;
 }
 
+static inline str_t md_inst_auth_id(const md_instance_data_t* inst, size_t inst_idx) {
+    ASSERT(inst);
+    str_t auth_id = STR_LIT("");
+    if (inst->auth_id && inst_idx < inst->count) {
+        auth_id = LBL_TO_STR(inst->auth_id[inst_idx]);
+    }
+    return auth_id;
+}
+
+static inline md_entity_idx_t md_entity_find_by_id(const md_entity_data_t* entity, str_t id) {
+    ASSERT(entity);
+    md_entity_idx_t entity_idx = -1;
+    if (entity->id) {
+        for (size_t i = 0; i < entity->count; ++i) {
+            str_t entity_id = LBL_TO_STR(entity->id[i]);
+            if (str_eq(entity_id, id)) {
+                entity_idx = (md_entity_idx_t)i;
+                break;
+            }
+        }
+    }
+    return entity_idx;
+}
+
+static inline str_t md_entity_id(const md_entity_data_t* entity, size_t entity_idx) {
+    ASSERT(entity);
+    str_t label = STR_LIT("");
+    if (entity->id && entity_idx < entity->count) {
+        label = LBL_TO_STR(entity->id[entity_idx]);
+    }
+    return label;
+}
+
+static inline str_t md_entity_description(const md_entity_data_t* entity, size_t entity_idx) {
+    ASSERT(entity);
+    str_t desc = STR_LIT("");
+    if (entity->description && entity_idx < entity->count) {
+        desc = entity->description[entity_idx];
+    }
+    return desc;
+}
+
+static inline md_flags_t md_entity_flags(const md_entity_data_t* entity, size_t entity_idx) {
+    ASSERT(entity);
+    md_flags_t flags = 0;
+    if (entity->flags && entity_idx < entity->count) {
+        flags = entity->flags[entity_idx];
+    }
+    return flags;
+}
+
 static inline size_t md_structure_count(const md_index_data_t* structure) {
     ASSERT(structure);
-    return md_index_data_num_ranges(*structure);
+    return md_index_data_num_ranges(structure);
 }
 
 static inline size_t md_structure_atom_count(const md_index_data_t* structure, size_t struct_idx) {
     ASSERT(structure);
-    return md_index_range_size(*structure, struct_idx);
+    return md_index_range_size(structure, struct_idx);
 }
 
-static inline const md_atom_idx_t* md_structure_atom_indices(const md_index_data_t* structure, size_t struct_idx) {
+static inline md_atom_idx_t* md_structure_atom_indices(md_index_data_t* structure, size_t struct_idx) {
     ASSERT(structure);
-    return (const md_atom_idx_t*)md_index_range_beg(*structure, struct_idx);
+    return md_index_range_beg(structure, struct_idx);
+}
+
+
+// SYSTEM
+// System level convenience accessors
+
+static inline size_t md_system_atom_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return md_atom_count(&sys->atom);
+}
+
+static inline size_t md_system_atom_type_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return md_atom_type_count(&sys->atom.type);
+}
+
+static inline size_t md_system_comp_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return md_comp_count(&sys->comp);
+}
+
+static inline size_t md_system_inst_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return md_inst_count(&sys->inst);
+}
+
+static inline size_t md_system_bond_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->bond.count;
+}
+
+static inline size_t md_system_entity_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->entity.count;
+}
+
+static inline md_flags_t md_system_inst_flags(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    if (sys->inst.entity_idx && inst_idx < sys->inst.count) {
+        return md_entity_flags(&sys->entity, sys->inst.entity_idx[inst_idx]);
+    }
+    return 0;
+}
+
+static inline size_t md_system_inst_comp_count(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return md_inst_comp_count(&sys->inst, inst_idx);
+}
+
+static inline md_urange_t md_system_inst_comp_range(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return md_inst_comp_range(&sys->inst, inst_idx);
+}
+
+static inline md_urange_t md_system_inst_atom_range(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    md_urange_t range = {0};
+    if (inst_idx < sys->inst.count) {
+        md_urange_t comp_range = md_inst_comp_range(&sys->inst, inst_idx);
+        if (comp_range.beg != comp_range.end) {
+            range.beg = md_comp_atom_range(&sys->comp, comp_range.beg).beg;
+            range.end = md_comp_atom_range(&sys->comp, comp_range.end - 1).end;
+        }
+    }
+    return range;
+}
+
+static inline size_t md_system_inst_atom_count(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    md_urange_t atom_range = md_system_inst_atom_range(sys, inst_idx);
+    return atom_range.end - atom_range.beg;
+}
+
+static inline md_urange_t md_system_comp_atom_range(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    return md_comp_atom_range(&sys->comp, comp_idx);
+}
+
+static inline size_t md_system_comp_atom_count(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    return md_comp_atom_count(&sys->comp, comp_idx);
 }
 
 // Convenience functions to extract atom properties into arrays
@@ -510,45 +654,55 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
 #define MD_BOND_FLAG_MASK  0xF0
 #define MD_BOND_ORDER_MASK 0x0F
 
-static inline size_t md_bond_conn_count(md_bond_data_t bond_data, size_t atom_idx) {
-    return bond_data.conn.offset[atom_idx + 1] - bond_data.conn.offset[atom_idx];
+static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
+    ASSERT(bond_data);
+    return bond_data->conn.offset[atom_idx + 1] - bond_data->conn.offset[atom_idx];
 }
 
 static inline void md_bond_order_set(md_bond_data_t* bond_data, md_bond_idx_t bond_idx, uint32_t order) {
+    ASSERT(bond_data);
     uint32_t o = bond_data->order[bond_idx];
     bond_data->order[bond_idx] = (o & MD_BOND_FLAG_MASK) | (order & MD_BOND_ORDER_MASK);
 }
 
-static inline md_atom_idx_t md_bond_conn_atom_idx(md_bond_data_t bond_data, uint32_t atom_conn_idx, uint32_t idx) {
-    return bond_data.conn.atom_idx[atom_conn_idx + idx];
+static inline md_atom_idx_t md_bond_conn_atom_idx(const md_bond_data_t* bond_data, uint32_t atom_conn_idx, uint32_t idx) {
+    ASSERT(bond_data);
+    return bond_data->conn.atom_idx[atom_conn_idx + idx];
 }
 
-static inline md_bond_idx_t md_bond_conn_bond_idx(md_bond_data_t bond_data, uint32_t atom_conn_idx, uint32_t idx) {
-    return bond_data.conn.bond_idx[atom_conn_idx + idx];
+static inline md_bond_idx_t md_bond_conn_bond_idx(const md_bond_data_t* bond_data, uint32_t atom_conn_idx, uint32_t idx) {
+    ASSERT(bond_data);
+    return bond_data->conn.bond_idx[atom_conn_idx + idx];
 }
 
-static inline bool md_bond_iter_has_next(md_bond_iter_t it) {
-    return it.i < it.end_idx;
+static inline bool md_bond_iter_has_next(const md_bond_iter_t* it) {
+    ASSERT(it);
+    return it->i < it->end_idx;
 }
 
 static inline void md_bond_iter_next(md_bond_iter_t* it) {
-    ++it->i;
+    ASSERT(it);
+    it->i += 1;
 }
 
-static inline md_atom_idx_t md_bond_iter_atom_index(md_bond_iter_t it) {
-	return it.data->conn.atom_idx[it.i];
+static inline md_atom_idx_t md_bond_iter_atom_index(const md_bond_iter_t* it) {
+    ASSERT(it);
+	return it->data->conn.atom_idx[it->i];
 }
 
-static inline md_atom_idx_t md_bond_iter_bond_index(md_bond_iter_t it) {
-    return it.data->conn.bond_idx[it.i];
+static inline md_atom_idx_t md_bond_iter_bond_index(const md_bond_iter_t* it) {
+    ASSERT(it);
+    return it->data->conn.bond_idx[it->i];
 }
 
-static inline uint32_t md_bond_iter_bond_order(md_bond_iter_t it) {
-    return it.data->order[it.data->conn.bond_idx[it.i]] & MD_BOND_ORDER_MASK;
+static inline uint32_t md_bond_iter_bond_order(const md_bond_iter_t* it) {
+    ASSERT(it);
+    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_ORDER_MASK;
 }
 
-static inline uint32_t md_bond_iter_bond_flags(md_bond_iter_t it) {
-    return it.data->order[it.data->conn.bond_idx[it.i]] & MD_BOND_FLAG_MASK;
+static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
+    ASSERT(it);
+    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_FLAG_MASK;
 }
 
 static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
@@ -581,8 +735,8 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
     ASSERT(atom_idx < atom_data->count);
     bool found = false;
     md_bond_iter_t it = md_bond_iter(bond_data, atom_idx);
-    while (md_bond_iter_has_next(it) && !found) {
-        md_atom_idx_t other_atom_idx = md_bond_iter_atom_index(it);
+    while (md_bond_iter_has_next(&it) && !found) {
+        md_atom_idx_t other_atom_idx = md_bond_iter_atom_index(&it);
         md_atomic_number_t other_z = md_atom_atomic_number(atom_data, other_atom_idx);
         for (size_t i = 0; i < z_count; ++i) {
             if (other_z == z_list[i]) {
@@ -606,14 +760,14 @@ molecule data only the first part of the file is used.
 */
 
 typedef struct md_molecule_loader_i {
-    bool (*init_from_str) (md_molecule_t* mol, str_t string,   const void* arg, struct md_allocator_i* alloc);
-    bool (*init_from_file)(md_molecule_t* mol, str_t filename, const void* arg, struct md_allocator_i* alloc);
+    bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg, struct md_allocator_i* alloc);
+    bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg, struct md_allocator_i* alloc);
 } md_molecule_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.
-void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc);
-void md_molecule_copy(md_molecule_t* dst_mol, const md_molecule_t* src_mol, struct md_allocator_i* alloc);
+void md_system_free(md_system_t* sys, struct md_allocator_i* alloc);
+void md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

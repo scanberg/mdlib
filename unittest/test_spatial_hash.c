@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -44,7 +44,7 @@ UTEST(spatial_hash, big) {
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
@@ -62,7 +62,7 @@ UTEST(spatial_hash, big) {
 
 struct spatial_hash {
     md_allocator_i* arena;
-    md_molecule_t mol;
+    md_system_t mol;
     vec3_t pbc_ext;
 };
 
@@ -97,7 +97,7 @@ static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* us
 }
 
 UTEST_F(spatial_hash, test_correctness_centered) {
-    md_molecule_t* mol = &utest_fixture->mol;
+    md_system_t* mol = &utest_fixture->mol;
     md_allocator_i* alloc = utest_fixture->arena;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
@@ -147,7 +147,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
-    md_molecule_t mol;
+    md_system_t mol;
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
@@ -195,7 +195,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
-    md_molecule_t mol;
+    md_system_t mol;
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     vec3_t* xyz = md_array_create(vec3_t, mol.atom.count, alloc);
@@ -248,7 +248,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
-    md_molecule_t mol;
+    md_system_t mol;
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, NULL, alloc);
@@ -296,7 +296,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
-    md_molecule_t* mol = &utest_fixture->mol;
+    md_system_t* mol = &utest_fixture->mol;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc);
@@ -344,7 +344,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
-    md_molecule_t mol;
+    md_system_t mol;
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);

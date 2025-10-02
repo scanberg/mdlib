@@ -15,9 +15,8 @@ extern "C" {
 enum {
     MD_UTIL_POSTPROCESS_NONE                = 0,
     MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0010,
+    MD_UTIL_POSTPROCESS_INSTANCE_BIT        = 0x0010,
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
-    //MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0040,
     MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0080,
     //MD_UTIL_POSTPROCESS_ORDER_BIT           = 0x0200,
 	//MD_UTIL_POSTPROCESS_SECONDARY_STRUCTURE_BIT = 0x0400,
@@ -58,43 +57,45 @@ static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot
 }
 
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
-bool md_util_residue_infer_flags(md_comp_data_t* res, md_flags_t out_atom_flags[], const md_atom_data_t* atom_data);
+bool md_util_system_infer_comp_flags(md_system_t* sys);
+
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_atom_auth_asym_id[], struct md_allocator_i* alloc);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
-bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_system_t* sys);
 
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_system_t* sys);
 
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
-bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_comp_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_component_data_t* in_comp, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-static inline void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_molecule_t* mol, struct md_allocator_i* alloc) {
-    md_util_covalent_bonds_compute_exp(out_bonds, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.type_idx, mol->atom.count, &mol->atom.type, &mol->residue, &mol->unit_cell, alloc);
+static inline void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_system_t* sys, struct md_allocator_i* alloc) {
+    md_util_covalent_bonds_compute_exp(out_bonds, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unit_cell, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, size_t extent, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_system_t* sys, size_t extent, const struct md_bitfield_t* viable_mask);
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_system_t* sys, double radius, const struct md_bitfield_t* viable_mask);
 
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
-//bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+//bool md_util_compute_chain_data(md_instance_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
 
 // Compute the valence of atoms given the covalent bonds
 //bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
@@ -106,7 +107,7 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_mol
 //bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
+bool md_util_molecule_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 
 
 // ### UNIT CELL ###
@@ -222,8 +223,8 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 
 typedef enum {
     MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
-    MD_UTIL_MATCH_LEVEL_RESIDUE,        // Match within residues
-    MD_UTIL_MATCH_LEVEL_CHAIN,          // Match within chains
+    MD_UTIL_MATCH_LEVEL_COMPONENT,      // Match within components
+    MD_UTIL_MATCH_LEVEL_INSTANCE,       // Match within assymetric instances
 } md_util_match_level_t;
 
 typedef enum {
@@ -240,20 +241,20 @@ typedef enum {
 } md_util_match_flags_t;
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
-md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
 // The matcing results are stored into supplied idx_data
 // The returned value is the number of matches found
-size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_system_t* sys, md_allocator_i* alloc);
 
 // Computes the maximum common subgraph between two structures
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
-size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

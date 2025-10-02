@@ -2846,7 +2846,7 @@ void md_vlx_destroy(md_vlx_t* vlx) {
 	}
 }
 
-bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_i* alloc) {
+bool md_vlx_molecule_init(md_system_t* mol, const md_vlx_t* vlx, md_allocator_i* alloc) {
 	ASSERT(mol);
 	ASSERT(vlx);
 
@@ -2857,7 +2857,7 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	MEMSET(mol, 0, sizeof(md_molecule_t));
+	MEMSET(mol, 0, sizeof(md_system_t));
 
 	mol->atom.count = vlx->number_of_atoms;
 	md_array_resize(mol->atom.x,		capacity, alloc);
@@ -2890,7 +2890,7 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 	return true;
 }
 
-static bool vlx_mol_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool vlx_mol_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
 	(void)mol;
 	(void)str;
 	(void)arg;
@@ -2899,7 +2899,7 @@ static bool vlx_mol_init_from_str(md_molecule_t* mol, str_t str, const void* arg
 	return false;
 }
 
-static bool vlx_mol_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool vlx_mol_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
 	(void)arg;
 	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 

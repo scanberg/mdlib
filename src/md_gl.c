@@ -205,7 +205,7 @@ typedef struct {
     uint32_t bond_index_base;
 
     uint32_t atom_count;
-    uint32_t residue_count;
+    uint32_t comp_count;
     uint32_t bond_count;
     uint32_t backbone_count;
     uint32_t backbone_control_point_index_count;
@@ -864,12 +864,12 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
     }
 }
 
-md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
+md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     md_gl_mol_t handle = {0};
     size_t temp_pos = md_temp_get_pos();
 
-    if (mol) {
-        if (mol->atom.count == 0) {
+    if (sys) {
+        if (sys->atom.count == 0) {
             MD_LOG_ERROR("The supplied molecule has no atoms.");
             goto done;
         }
@@ -887,46 +887,46 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
 
         gl_mol->bond_index_base = 0x80000000;
 
-        gl_mol->atom_count = (uint32_t)mol->atom.count;
+        gl_mol->atom_count = (uint32_t)sys->atom.count;
         gl_mol->buffer[GL_BUFFER_ATOM_POSITION]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3,   NULL, GL_DYNAMIC_DRAW);
         gl_mol->buffer[GL_BUFFER_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3,   NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_ATOM_VELOCITY]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3,   NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_ATOM_RADIUS]          = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 1,   NULL, GL_STATIC_DRAW);
         gl_mol->buffer[GL_BUFFER_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(uint8_t),     NULL, GL_STATIC_DRAW);
 
-        if (mol->atom.x && mol->atom.y && mol->atom.z) {
-            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, mol->atom.x, mol->atom.y, mol->atom.z, 0);
+        if (sys->atom.x && sys->atom.y && sys->atom.z) {
+            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, sys->atom.x, sys->atom.y, sys->atom.z, 0);
         }
         md_gl_mol_zero_velocity(handle);
 
-        float* radii = md_temp_push(sizeof(float) * mol->atom.count);
-        md_atom_extract_radii(radii, 0, mol->atom.count, &mol->atom);
+        float* radii = md_temp_push(sizeof(float) * sys->atom.count);
+        md_atom_extract_radii(radii, 0, sys->atom.count, &sys->atom);
 
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
-        gl_mol->residue_count = (uint32_t)mol->residue.count;
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
+        gl_mol->comp_count = (uint32_t)sys->comp.count;
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->comp_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->comp_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->comp_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
-        //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
-        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
+        //if (sys->comp.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->comp_count * sizeof(uint32_t) * 2, sys->comp.atom_range);
+        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, sys->comp_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->protein_backbone.range.count > 0 && mol->protein_backbone.range.offset && mol->protein_backbone.segment.atoms && mol->protein_backbone.segment.secondary_structure) {
+        if (sys->protein_backbone.range.count > 0 && sys->protein_backbone.range.offset && sys->protein_backbone.segment.atoms && sys->protein_backbone.segment.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
-                uint32_t res_count = mol->protein_backbone.range.offset[i+1] - mol->protein_backbone.range.offset[i];
+            for (uint32_t i = 0; i < (uint32_t)sys->protein_backbone.range.count; ++i) {
+                uint32_t res_count = sys->protein_backbone.range.offset[i+1] - sys->protein_backbone.range.offset[i];
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; // +1 For the last point
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->protein_backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)sys->protein_backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->protein_backbone.range.count * (1); // Primitive restart between chains
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)sys->protein_backbone.range.count * (1); // Primitive restart between chains
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -941,18 +941,18 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
-                    uint32_t beg = mol->protein_backbone.range.offset[i];
-                    uint32_t end = mol->protein_backbone.range.offset[i+1];
+                for (size_t i = 0; i < sys->protein_backbone.range.count; ++i) {
+                    uint32_t beg = sys->protein_backbone.range.offset[i];
+                    uint32_t end = sys->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
-                        md_residue_idx_t res_idx = mol->protein_backbone.segment.residue_idx[j];
-                        uint32_t res_atom_offset = mol->residue.atom_offset[res_idx];
+                        md_comp_idx_t res_idx = sys->protein_backbone.segment.comp_idx[j];
+                        uint32_t comp_atom_offset = sys->comp.atom_offset[res_idx];
 
                         backbone_data[idx].bb_seg_idx = j;
-                        backbone_data[idx].atom_base_idx = res_atom_offset;
-                        backbone_data[idx].ca_idx = (uint8_t)(mol->protein_backbone.segment.atoms[j].ca - res_atom_offset);
-                        backbone_data[idx].c_idx  = (uint8_t)(mol->protein_backbone.segment.atoms[j].c  - res_atom_offset);
-                        backbone_data[idx].o_idx  = (uint8_t)(mol->protein_backbone.segment.atoms[j].o  - res_atom_offset);
+                        backbone_data[idx].atom_base_idx = comp_atom_offset;
+                        backbone_data[idx].ca_idx = (uint8_t)(sys->protein_backbone.segment.atoms[j].ca - comp_atom_offset);
+                        backbone_data[idx].c_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].c  - comp_atom_offset);
+                        backbone_data[idx].o_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].o  - comp_atom_offset);
                         backbone_data[idx].flags  = (uint8_t)((j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0));
                         ++idx;
                     }
@@ -966,9 +966,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
-                    for (uint32_t j = mol->protein_backbone.range.offset[i]; j < mol->protein_backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = mol->protein_backbone.segment.secondary_structure[j];
+                for (uint32_t i = 0; i < (uint32_t)sys->protein_backbone.range.count; ++i) {
+                    for (uint32_t j = sys->protein_backbone.range.offset[i]; j < sys->protein_backbone.range.offset[i+1]; ++j) {
+                        secondary_structure[idx++] = sys->protein_backbone.segment.secondary_structure[j];
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -980,9 +980,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             uint32_t* control_point_index = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (control_point_index) {
                 uint32_t len = 0;
-                for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
-                    uint32_t bb_beg = mol->protein_backbone.range.offset[i];
-                    uint32_t bb_end = mol->protein_backbone.range.offset[i+1];
+                for (size_t i = 0; i < sys->protein_backbone.range.count; ++i) {
+                    uint32_t bb_beg = sys->protein_backbone.range.offset[i];
+                    uint32_t bb_end = sys->protein_backbone.range.offset[i+1];
                     control_point_index[len++] = bb_beg;
                     for (uint32_t j = bb_beg; j < bb_end; ++j) {
                         control_point_index[len++] = j;
@@ -1001,9 +1001,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                uint32_t range_count = (uint32_t)mol->protein_backbone.range.count;
+                uint32_t range_count = (uint32_t)sys->protein_backbone.range.count;
                 for (uint32_t i = 0; i < range_count; ++i) {
-                    uint32_t res_count = mol->protein_backbone.range.offset[i+1] - mol->protein_backbone.range.offset[i];
+                    uint32_t res_count = sys->protein_backbone.range.offset[i+1] - sys->protein_backbone.range.offset[i];
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; ++j) {
                             spline_index[len++] = idx++;
@@ -1024,11 +1024,11 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             gl_mol->flags |= MOL_FLAG_HAS_BACKBONE;
         }
 
-        gl_mol->bond_count = (uint32_t)mol->bond.count;
+        gl_mol->bond_count = (uint32_t)sys->bond.count;
         gl_mol->buffer[GL_BUFFER_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
-        if (mol->bond.pairs) {
-            md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, mol->bond.pairs, sizeof(md_bond_pair_t));
+        if (sys->bond.pairs) {
+            md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, sys->bond.pairs, sizeof(md_bond_pair_t));
         }
     }
 

@@ -1,8 +1,8 @@
-#pragma once
+﻿#pragma once
 #include <stdint.h>
 #include <stdbool.h>
 
-struct md_molecule_t;
+struct md_system_t;
 struct vec3_t;
 struct mat4_t;
 
@@ -105,7 +105,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t fbo_width, uint32_t
 void md_gfx_shutdown(void);
 
 // STRUCTURE
-md_gfx_handle_t md_gfx_structure_create_from_mol(const struct md_molecule_t* mol);
+md_gfx_handle_t md_gfx_structure_create_from_mol(const struct md_system_t* mol);
 // Explicit initialization of data for a structure
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count);
 bool md_gfx_structure_destroy(md_gfx_handle_t id);

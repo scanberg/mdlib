@@ -716,8 +716,8 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
-bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc) {
-    ASSERT(mol);
+bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md_allocator_i* alloc) {
+    ASSERT(sys);
     ASSERT(data);
     ASSERT(alloc);
 
@@ -731,18 +731,18 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         end_coord_index = data->models[0].end_coord_index;
     }
 
-    MEMSET(mol, 0, sizeof(md_molecule_t));
+    MEMSET(sys, 0, sizeof(md_system_t));
 
     const size_t num_atoms = end_coord_index - beg_coord_index;
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-    md_array_ensure(mol->atom.x, reserve_size, alloc);
-    md_array_ensure(mol->atom.y, reserve_size, alloc);
-    md_array_ensure(mol->atom.z, reserve_size, alloc);
-    md_array_ensure(mol->atom.type_idx, reserve_size, alloc);
+    md_array_ensure(sys->atom.x, reserve_size, alloc);
+    md_array_ensure(sys->atom.y, reserve_size, alloc);
+    md_array_ensure(sys->atom.z, reserve_size, alloc);
+    md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
 
     // Setup atom types including unknown type
-    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
@@ -752,22 +752,22 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
         float mass = md_atomic_number_mass(atomic_number);
         float radius = md_atomic_number_vdw_radius(atomic_number);
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_symbol, atomic_number, mass, radius, alloc);
+        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, alloc);
 
-        mol->atom.count += 1;
-        md_array_push(mol->atom.x, x, alloc);
-        md_array_push(mol->atom.y, y, alloc);
-        md_array_push(mol->atom.z, z, alloc);
-        md_array_push(mol->atom.flags, 0, alloc);
-        md_array_push(mol->atom.type_idx, atom_type_idx, alloc);
+        sys->atom.count += 1;
+        md_array_push(sys->atom.x, x, alloc);
+        md_array_push(sys->atom.y, y, alloc);
+        md_array_push(sys->atom.z, z, alloc);
+        md_array_push(sys->atom.flags, 0, alloc);
+        md_array_push(sys->atom.type_idx, atom_type_idx, alloc);
     }
 
-    mol->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
+    sys->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
 
     return true;
 }
 
-static bool xyz_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool xyz_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
     (void)arg;
 
     md_xyz_data_t data = {0};
@@ -783,7 +783,7 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     return result;
 }
 
-static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_xyz_data_t data = {0};
     

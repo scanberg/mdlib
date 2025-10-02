@@ -1009,23 +1009,23 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     return -1;
 }
 
-static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
-    ASSERT(mol);
+static md_array(int32_t) get_residue_indices_in_context(const md_system_t* sys, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
+    ASSERT(sys);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
 
-    if (mol->residue.count) {
+    if (sys->comp.count) {
         if (bitfield) {
-            for (size_t i = 0; i < mol->residue.count; ++i) {
-                md_range_t res = md_residue_atom_range(&mol->residue, i);
+            for (size_t i = 0; i < sys->comp.count; ++i) {
+                md_urange_t res = md_comp_atom_range(&sys->comp, i);
                 if (md_bitfield_popcount_range(bitfield, res.beg, res.end)) {
                     md_array_push(arr, (int32_t)i, alloc);
                 }
             }
         }
         else {
-            for (int32_t i = 0; i < (int32_t)mol->residue.count; ++i) {
+            for (int32_t i = 0; i < (int32_t)sys->comp.count; ++i) {
                 md_array_push(arr, i, alloc);
             }
         }
@@ -1034,22 +1034,22 @@ static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol
     return arr;
 }
 
-static md_array(int32_t) get_chain_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
-    ASSERT(mol);
+static md_array(int32_t) get_chain_indices_in_context(const md_system_t* sys, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
+    ASSERT(sys);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
-    if (mol->chain.count) {
+    if (sys->inst.count) {
         if (bitfield) {
-            for (size_t i = 0; i < mol->chain.count; ++i) {
-                md_range_t range = md_chain_atom_range(&mol->chain, i);
+            for (size_t i = 0; i < sys->inst.count; ++i) {
+                md_urange_t range = md_system_inst_atom_range(sys, i);
                 if (md_bitfield_popcount_range(bitfield, range.beg, range.end)) {
                     md_array_push(arr, (int32_t)i, alloc);
                 }
             }
         }
         else {
-            for (size_t i = 0; i < mol->chain.count; ++i) {
+            for (size_t i = 0; i < sys->inst.count; ++i) {
                 md_array_push(arr, (int32_t)i, alloc);
             }
         }
@@ -1058,9 +1058,9 @@ static md_array(int32_t) get_chain_indices_in_context(const md_molecule_t* mol, 
     return arr;
 }
 
-static inline irange_t get_atom_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
-    ASSERT(mol);
-    irange_t range = { 0, (int32_t)mol->atom.count };
+static inline irange_t get_atom_range_in_context(const md_system_t* sys, const md_bitfield_t* mol_ctx) {
+    ASSERT(sys);
+    irange_t range = { 0, (int32_t)sys->atom.count };
     if (mol_ctx) {
         range.beg = mol_ctx->beg_bit;
         range.end = mol_ctx->end_bit;
@@ -1068,14 +1068,14 @@ static inline irange_t get_atom_range_in_context(const md_molecule_t* mol, const
     return range;
 }
 
-static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
-    ASSERT(mol);
-    irange_t range = { 0, (int32_t)mol->residue.count };
+static inline irange_t get_residue_range_in_context(const md_system_t* sys, const md_bitfield_t* mol_ctx) {
+    ASSERT(sys);
+    irange_t range = { 0, (int32_t)sys->comp.count };
     if (mol_ctx) {
         range.beg = INT_MAX;
         range.end = 0;
-        for (size_t i = 0; i < mol->residue.count; ++i) {
-            md_range_t res = md_residue_atom_range(&mol->residue, i);
+        for (size_t i = 0; i < sys->comp.count; ++i) {
+            md_urange_t res = md_comp_atom_range(&sys->comp, i);
             if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
                 range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
@@ -1086,14 +1086,14 @@ static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, co
     return range;
 }
 
-static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
-    ASSERT(mol);
-    irange_t range = { 0, (int32_t)mol->chain.count };
+static inline irange_t get_chain_range_in_context(const md_system_t* sys, const md_bitfield_t* mol_ctx) {
+    ASSERT(sys);
+    irange_t range = { 0, (int32_t)sys->inst.count };
     if (mol_ctx) {
         range.beg = INT_MAX;
         range.end = 0;
-        for (size_t i = 0; i < mol->chain.count; ++i) {
-            md_range_t atom_range = md_chain_atom_range(&mol->chain, i);
+        for (size_t i = 0; i < sys->inst.count; ++i) {
+            md_urange_t atom_range = md_system_inst_atom_range(sys, i);
             if (md_bitfield_popcount_range(mol_ctx, atom_range.beg, atom_range.end)) {
                 range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
@@ -2642,14 +2642,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
             md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
             int64_t dst_idx = 0;
             for (size_t i = 0; i < num_rings; ++i) {
                 md_bitfield_t* bf = &bf_arr[dst_idx];
             
                 // Only accept the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2669,11 +2669,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         } else {
             ASSERT(ctx->vis);
-            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 // Only visualize the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2700,11 +2700,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -2717,7 +2717,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_index_data_num_ranges(ctx->mol->ring);
+            return (int)md_index_data_num_ranges(&ctx->mol->ring);
         }
     }
 
@@ -2728,7 +2728,7 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
-    if (!ctx->mol->residue.atom_offset || !ctx->mol->residue.flags) {
+    if (!ctx->mol->comp.atom_offset || !ctx->mol->comp.flags) {
         return 0;
     }
 
@@ -2744,8 +2744,8 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            const md_flags_t flags = ctx->mol->residue.flags[res_idx];
-            const md_range_t range = md_residue_atom_range(&ctx->mol->residue, i);
+            const md_flags_t flags  = ctx->mol->comp.flags[res_idx];
+            const md_urange_t range = md_comp_atom_range(&ctx->mol->comp, i);
             if (flags & MD_FLAG_WATER) {
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
@@ -2757,7 +2757,7 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            const md_flags_t flags = ctx->mol->residue.flags[res_idx];
+            const md_flags_t flags = ctx->mol->comp.flags[res_idx];
             count += (flags & MD_FLAG_WATER) ? 1 : 0;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
@@ -2791,8 +2791,8 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_AMINO_ACID) {
-                const md_range_t range = md_residue_atom_range(&ctx->mol->residue, res_idx);
+            if (ctx->mol->comp.flags[res_idx] & MD_FLAG_AMINO_ACID) {
+                const md_urange_t range = md_comp_atom_range(&ctx->mol->comp, res_idx);
                 ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -2800,7 +2800,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (!ctx->mol->residue.count) {
+        if (!ctx->mol->comp.count) {
             LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
             return -1;
         }
@@ -2808,7 +2808,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_AMINO_ACID) {
+            if (ctx->mol->comp.flags[res_idx] & MD_FLAG_AMINO_ACID) {
                 count += 1;
             }
         }
@@ -2840,8 +2840,8 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
-                const md_range_t range = md_residue_atom_range(&ctx->mol->residue, res_idx);
+            if (ctx->mol->comp.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
+                const md_urange_t range = md_comp_atom_range(&ctx->mol->comp, res_idx);
                 ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -2849,7 +2849,7 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (!ctx->mol->residue.count) {
+        if (!ctx->mol->comp.count) {
             LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
             return -1;
         }
@@ -2857,7 +2857,7 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
-            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
+            if (ctx->mol->comp.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
                 count += 1;
             }
         }
@@ -2934,10 +2934,10 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 range = clamp_range(range, ctx_range);
                 for (int64_t j = range.beg; j < range.end; ++j) {
-                    //const uint64_t offset = ctx->mol->residue.atom_range[j].beg;
-                    //const uint64_t length = ctx->mol->residue.atom_range[j].end - ctx->mol->residue.atom_range[j].beg;
+                    //const uint64_t offset = ctx->mol->comp.atom_range[j].beg;
+                    //const uint64_t length = ctx->mol->comp.atom_range[j].end - ctx->mol->comp.atom_range[j].beg;
                     //bit_set(result.bits, offset, length);
-                    const md_range_t atom_range = md_residue_atom_range(&ctx->mol->residue, j);
+                    const md_urange_t atom_range = md_comp_atom_range(&ctx->mol->comp, j);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -2982,7 +2982,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = STATIC_VALIDATION_ERROR;
-    if (ctx->mol && ctx->mol->residue.atom_offset) {
+    if (ctx->mol && ctx->mol->comp.atom_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int cap = type_info_array_len(dst->type);
@@ -2993,8 +2993,8 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const size_t inc = capacity > 1 ? 1 : 0;
 
             size_t dst_idx = 0;
-            for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
-                const md_range_t range = md_residue_atom_range(&ctx->mol->residue, i);
+            for (size_t i = 0; i < ctx->mol->comp.count; ++i) {
+                const md_urange_t range = md_comp_atom_range(&ctx->mol->comp, i);
                 ASSERT(dst_idx <= capacity);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
@@ -3013,8 +3013,8 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
-                const md_range_t range = md_residue_atom_range(&ctx->mol->residue, i);
+            for (size_t i = 0; i < ctx->mol->comp.count; ++i) {
+                const md_urange_t range = md_comp_atom_range(&ctx->mol->comp, i);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
                     count += 1;
@@ -3051,7 +3051,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = 0;
-    if (ctx->mol && ctx->mol->chain.atom_range) {
+    if (ctx->mol && ctx->mol->inst.comp_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int64_t cap = type_info_array_len(dst->type);
@@ -3059,9 +3059,9 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t inc = cap > 1 ? 1 : 0;
 
             int64_t dst_idx = 0;
-            for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
+            for (size_t i = 0; i < ctx->mol->inst.count; ++i) {
                 ASSERT(dst_idx <= cap);
-                md_range_t range = md_chain_atom_range(&ctx->mol->chain, i);
+                md_urange_t range = md_system_inst_atom_range(ctx->mol, i);
                 if (md_bitfield_popcount_range(src_bf, range.beg, range.end)) {
                     md_bitfield_set_range(&dst_bf[dst_idx], range.beg, range.end);
                     dst_idx += inc;
@@ -3078,8 +3078,8 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
-                md_range_t range = md_chain_atom_range(&ctx->mol->chain, i);
+            for (size_t i = 0; i < ctx->mol->inst.count; ++i) {
+                md_urange_t range = md_system_inst_atom_range(ctx->mol, i);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
                     count += 1;
@@ -3106,7 +3106,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int result = 0;
 
-    if (!ctx->mol->residue.name) {
+    if (!ctx->mol->comp.name) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
         return -1;
     }
@@ -3129,8 +3129,8 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_queries; ++j) {
-                    if (match_query(queries[j], LBL_TO_STR(ctx->mol->residue.name[res_idx]))) {
-                        const md_range_t atom_range = md_residue_atom_range(&ctx->mol->residue, res_idx);
+                    if (match_query(queries[j], LBL_TO_STR(ctx->mol->comp.name[res_idx]))) {
+                        const md_urange_t atom_range = md_comp_atom_range(&ctx->mol->comp, res_idx);
                         ASSERT(dst_idx < cap);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3156,7 +3156,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (match_query(queries[j], LBL_TO_STR(ctx->mol->residue.name[res_idx]))) {
+                if (match_query(queries[j], LBL_TO_STR(ctx->mol->comp.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
@@ -3183,7 +3183,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int result = 0;
 
-    if (!ctx->mol->residue.id) {
+    if (!ctx->mol->comp.seq_id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
         return -1;
     }
@@ -3205,8 +3205,8 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < md_array_size(res_indices); ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_rid; ++j) {
-                    if (idx_in_range((int)ctx->mol->residue.id[res_idx], rid[j])) {
-                        const md_range_t atom_range = md_residue_atom_range(&ctx->mol->residue, res_idx);
+                    if (idx_in_range((int)ctx->mol->comp.seq_id[res_idx], rid[j])) {
+                        const md_urange_t atom_range = md_comp_atom_range(&ctx->mol->comp, res_idx);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
@@ -3227,7 +3227,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (size_t i = 0; i < md_array_size(res_indices); ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (idx_in_range((int)ctx->mol->residue.id[res_idx], rid[j])) {
+                if (idx_in_range((int)ctx->mol->comp.seq_id[res_idx], rid[j])) {
                     count += 1;
                     match = true;
                 }
@@ -3251,15 +3251,15 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    if (ctx->mol->chain.count == 0) {
+    if (ctx->mol->inst.count == 0) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
     int result = 0;
 
-    const size_t num_ranges = element_count(arg[0]);
-    const irange_t* ranges = as_irange_arr(arg[0]);
+    const size_t  num_ranges = element_count(arg[0]);
+    const irange_t*   ranges = as_irange_arr(arg[0]);
     const irange_t ctx_range = get_chain_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
@@ -3273,7 +3273,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_ranges; ++i) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 for (int64_t j = range.beg; j < range.end; ++j) {
-                    const md_range_t atom_range = md_chain_atom_range(&ctx->mol->chain, j);
+                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, j);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3307,7 +3307,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
-    if (ctx->mol->chain.count == 0 || !ctx->mol->chain.id) {
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
@@ -3328,11 +3328,11 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             int64_t dst_idx = 0;
             for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
                 for (size_t j = 0; j < num_str; ++j) {
-                    if (match_query(str[j], LBL_TO_STR(ctx->mol->chain.id[i]))) {
+                    if (match_query(str[j], LBL_TO_STR(ctx->mol->inst.id[i]))) {
                         ASSERT(dst_idx < cap);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-                        const md_range_t atom_range = md_chain_atom_range(&ctx->mol->chain, i);
+                        const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, i);
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                         if (ctx->mol_ctx) {
                             md_bitfield_and_inplace(bf, ctx->mol_ctx);
@@ -3353,7 +3353,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             int pre_count = count;
             for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
-                if (match_query(str[j], LBL_TO_STR(ctx->mol->chain.id[i]))) {
+                if (match_query(str[j], LBL_TO_STR(ctx->mol->inst.id[i]))) {
                     count += 1;
                 }
             }
@@ -4145,7 +4145,7 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (split == RES) {
-        if (ctx->mol->residue.count == 0 || !ctx->mol->atom.res_idx) {
+        if (ctx->mol->comp.count == 0 || !ctx->mol->atom.res_idx) {
             LOG_ERROR(ctx->ir, ctx->op_token, "Missing residue information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
@@ -4199,7 +4199,7 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         switch (split) {
         case RES:
             idx = ctx->mol->atom.res_idx[atom_idx];
-            md_bitfield_iter_skip_to_idx(&it, md_residue_atom_range(ctx->mol->residue, idx).end);
+            md_bitfield_iter_skip_to_idx(&it, md_comp_atom_range(ctx->mol->comp, idx).end);
             break;
         case CHAIN:
             idx = ctx->mol->atom.chain_idx[atom_idx];
@@ -4935,7 +4935,7 @@ typedef enum {
     COUNT_TYPE_UNKNOWN = 0,
     COUNT_TYPE_ATOM = 1,
     COUNT_TYPE_RESIDUE = 2,
-    COUNT_TYPE_CHAIN = 3,
+    COUNT_TYPE_INSTANCE = 3,
     COUNT_TYPE_STRUCTURE = 4,
     COUNT_TYPE_COUNT
 } count_type_t;
@@ -4979,16 +4979,16 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             return md_bitfield_popcount(&bf);
         }
         case COUNT_TYPE_RESIDUE:
-            for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
-                md_range_t range = md_residue_atom_range(&ctx->mol->residue, i);
+            for (size_t i = 0; i < ctx->mol->comp.count; ++i) {
+                md_urange_t range = md_system_comp_atom_range(ctx->mol, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
                     count += 1;
                 }
             }
             break;
-        case COUNT_TYPE_CHAIN: {
-            for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
-                md_range_t range = md_chain_atom_range(&ctx->mol->chain, i);
+        case COUNT_TYPE_INSTANCE: {
+            for (size_t i = 0; i < ctx->mol->inst.count; ++i) {
+                md_urange_t range = md_system_inst_atom_range(ctx->mol, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
                     count += 1;
                 }
@@ -4996,11 +4996,11 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             break;
         }
         case COUNT_TYPE_STRUCTURE: {
-            size_t num_structures = md_index_data_num_ranges(ctx->mol->structure);
+            size_t num_structures = md_index_data_num_ranges(&ctx->mol->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
             for (size_t i = 0; i < num_structures; ++i) {
-                const int32_t* idx = md_index_range_beg(ctx->mol->structure, i);
-                const size_t num_idx = md_index_range_size(ctx->mol->structure, i);
+                const int32_t* idx = md_index_range_beg(&ctx->mol->structure, i);
+                const size_t num_idx = md_index_range_size(&ctx->mol->structure, i);
             
                 md_bitfield_clear(&tmp2);
                 md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
@@ -5066,7 +5066,7 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // In such case we revert to matching Atom labels
 // To resolve this PROPERLY, one needs to determine the topology of each supplied substructure and match it as a graph.
 
-static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_molecule_t* mol) {
+static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_system_t* sys) {
     // Number of bits should match.
     // The atomic element of each set bit should match.
 
@@ -5090,18 +5090,18 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
                 return false;
             }
 
-            if (mol->atom.type_idx[idx] == mol->atom.type_idx[ref_idx]) {
+            if (sys->atom.type_idx[idx] == sys->atom.type_idx[ref_idx]) {
                 continue;
             }
 
-            md_atomic_number_t z_idx = md_atom_atomic_number(&mol->atom, idx);
-            md_atomic_number_t z_ref = md_atom_atomic_number(&mol->atom, ref_idx);
+            md_atomic_number_t z_idx = md_atom_atomic_number(&sys->atom, idx);
+            md_atomic_number_t z_ref = md_atom_atomic_number(&sys->atom, ref_idx);
             if (z_idx != 0 && z_ref != 0 && z_idx != z_ref) {
                 return false;
             } else {
                 // Test the type labels
-                str_t lbl_idx = md_atom_name(&mol->atom, idx);
-                str_t lbl_ref = md_atom_name(&mol->atom, ref_idx);
+                str_t lbl_idx = md_atom_name(&sys->atom, idx);
+                str_t lbl_ref = md_atom_name(&sys->atom, ref_idx);
                 if (!str_eq(lbl_idx, lbl_ref)) {
                     return false;
                 }
@@ -5517,7 +5517,7 @@ static int _cmp_gt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
 
-static int32_t greedy_align(const md_bitfield_t* a, const md_bitfield_t* b, const md_molecule_t* mol) {
+static int32_t greedy_align(const md_bitfield_t* a, const md_bitfield_t* b, const md_system_t* sys) {
     const int64_t a_size = md_bitfield_popcount(a);
     const int64_t b_size = md_bitfield_popcount(b);
     const md_bitfield_t* small;

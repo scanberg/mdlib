@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,7 +10,7 @@
 #include <core/md_array.h>
 
 struct md_bitfield_t;
-struct md_molecule_t;
+struct md_system_t;
 struct md_trajectory_i;
 struct md_allocator_i;
 
@@ -152,7 +152,7 @@ typedef uint32_t md_script_vis_flags_t;
 
 typedef struct md_script_vis_ctx_t {
     const struct md_script_ir_t* ir;
-    const struct md_molecule_t* mol;
+    const struct md_system_t* mol;
     const struct md_trajectory_i* traj;
 } md_script_vis_ctx_t;
 
@@ -176,7 +176,7 @@ bool md_script_ir_add_identifier_bitfield(md_script_ir_t* ir, str_t ident, const
 // Returns true if any expression in the script contains a reference to to an identifier by supplied name
 bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t name);
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const md_script_ir_t* ctx_ir);
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_system_t* mol, const struct md_trajectory_i* traj, const md_script_ir_t* ctx_ir);
 
 size_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir);
@@ -236,7 +236,7 @@ void md_script_eval_clear_data(md_script_eval_t* eval);
 // mol              : molecule
 // traj             : trajectory
 // frame_(beg/end)  : range of frames [beg,end[ to evaluate 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end);
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end);
 
 // Extract property data within in an evaluation
 size_t md_script_eval_property_count(const md_script_eval_t* eval);

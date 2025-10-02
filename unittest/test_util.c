@@ -21,18 +21,18 @@
 
 struct util {
     md_allocator_i* alloc;
-    md_molecule_t mol_ala;
-    md_molecule_t mol_pftaa;
-    md_molecule_t mol_nucleotides;
-    md_molecule_t mol_centered;
-    md_molecule_t mol_dna;
-    md_molecule_t mol_trp;
-    md_molecule_t mol_aspirine;
+    md_system_t mol_ala;
+    md_system_t mol_pftaa;
+    md_system_t mol_nucleotides;
+    md_system_t mol_centered;
+    md_system_t mol_dna;
+    md_system_t mol_trp;
+    md_system_t mol_aspirine;
 
-    md_molecule_t mol_1fez;
-    md_molecule_t mol_2or2;
-    md_molecule_t mol_1k4r;
-    md_molecule_t mol_8g7u;
+    md_system_t mol_1fez;
+    md_system_t mol_2or2;
+    md_system_t mol_1k4r;
+    md_system_t mol_8g7u;
 
     md_trajectory_i* traj_ala;
 };
@@ -89,17 +89,17 @@ UTEST_F(util, bonds) {
 }
 
 UTEST_F(util, chain) {
-    EXPECT_EQ(1,   utest_fixture->mol_ala.chain.count);
-	EXPECT_EQ(0,   utest_fixture->mol_pftaa.chain.count);
-	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.chain.count);
-	EXPECT_EQ(253, utest_fixture->mol_centered.chain.count);
+    EXPECT_EQ(1,   utest_fixture->mol_ala.inst.count);
+	EXPECT_EQ(0,   utest_fixture->mol_pftaa.inst.count);
+	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.inst.count);
+	EXPECT_EQ(253, utest_fixture->mol_centered.inst.count);
 
-    const md_molecule_t* mol = &utest_fixture->mol_centered;
-    if (mol->chain.count == 0) return;
+    const md_system_t* sys = &utest_fixture->mol_centered;
+    ASSERT(sys->inst.count > 253);
 
-    size_t ref_size = md_chain_atom_count(&mol->chain, 0);
-    for (size_t i = 1; i < mol->chain.count; ++i) {
-        size_t size = md_chain_atom_count(&mol->chain, i);
+    size_t ref_size = md_system_inst_atom_count(sys, 0);
+    for (size_t i = 1; i < 253; ++i) {
+        size_t size = md_system_inst_atom_count(sys, i);
         EXPECT_EQ(ref_size, size);
     }
 }
@@ -114,19 +114,19 @@ UTEST_F(util, backbone) {
 }
 
 UTEST_F(util, structure) {
-    size_t num_structures_pftaa = md_index_data_num_ranges(utest_fixture->mol_pftaa.structure);
+    size_t num_structures_pftaa = md_index_data_num_ranges(&utest_fixture->mol_pftaa.structure);
     EXPECT_EQ(1, num_structures_pftaa);
-    size_t num_structures_nucleotides = md_index_data_num_ranges(utest_fixture->mol_nucleotides.structure);
+    size_t num_structures_nucleotides = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.structure);
     EXPECT_EQ(2, num_structures_nucleotides);
-    size_t num_structures_ala = md_index_data_num_ranges(utest_fixture->mol_ala.structure);
+    size_t num_structures_ala = md_index_data_num_ranges(&utest_fixture->mol_ala.structure);
 	EXPECT_EQ(1, num_structures_ala);
-	size_t num_structures_centered = md_index_data_num_ranges(utest_fixture->mol_centered.structure);
+	size_t num_structures_centered = md_index_data_num_ranges(&utest_fixture->mol_centered.structure);
 	EXPECT_EQ(253+61, num_structures_centered);
 }
 
 UTEST_F(util, rmsd) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_molecule_t* mol = &utest_fixture->mol_ala;
+    md_system_t* mol = &utest_fixture->mol_ala;
     md_trajectory_i* traj = utest_fixture->traj_ala;
     ASSERT_TRUE(mol);
     ASSERT_TRUE(traj);
@@ -286,48 +286,48 @@ UTEST(util, com) {
 UTEST_F(util, structures) {
     size_t num_structures = 0;
 
-    num_structures = md_index_data_num_ranges(utest_fixture->mol_nucleotides.structure);
+    num_structures = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.structure);
     EXPECT_EQ(num_structures, 2);
 
-    num_structures = md_index_data_num_ranges(utest_fixture->mol_ala.structure);
+    num_structures = md_index_data_num_ranges(&utest_fixture->mol_ala.structure);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_index_data_num_ranges(utest_fixture->mol_pftaa.structure);
+	num_structures = md_index_data_num_ranges(&utest_fixture->mol_pftaa.structure);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_index_data_num_ranges(utest_fixture->mol_centered.structure);
+	num_structures = md_index_data_num_ranges(&utest_fixture->mol_centered.structure);
     EXPECT_EQ(num_structures, 253 + 61); // Chains + PFTAA
 }
 
 UTEST_F(util, rings_common) {
     int64_t num_rings = 0;
 
-    num_rings = md_index_data_num_ranges(utest_fixture->mol_nucleotides.ring);
+    num_rings = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.ring);
     EXPECT_EQ(num_rings, 4);
     
-    num_rings = md_index_data_num_ranges(utest_fixture->mol_ala.ring);
+    num_rings = md_index_data_num_ranges(&utest_fixture->mol_ala.ring);
     EXPECT_EQ(num_rings, 0);
    
-    num_rings = md_index_data_num_ranges(utest_fixture->mol_pftaa.ring);
+    num_rings = md_index_data_num_ranges(&utest_fixture->mol_pftaa.ring);
     EXPECT_EQ(num_rings, 5);
 
-    num_rings = md_index_data_num_ranges(utest_fixture->mol_centered.ring);
+    num_rings = md_index_data_num_ranges(&utest_fixture->mol_centered.ring);
     EXPECT_EQ(num_rings, 2076);
 }
 
 UTEST(util, rings_c60) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-	md_molecule_t mol = {0};
+	md_system_t mol = {0};
 	md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
 	md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
 	EXPECT_EQ(mol.atom.count, 60);
 	EXPECT_EQ(mol.bond.count, 90);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 32);
 
-    const size_t num_structures = md_index_data_num_ranges(mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -335,17 +335,17 @@ UTEST(util, rings_c60) {
 
 UTEST(util, rings_c720) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     EXPECT_EQ(mol.atom.count, 720);
     EXPECT_EQ(mol.bond.count, 1080);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 362);
 
-    const size_t num_structures = md_index_data_num_ranges(mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -353,11 +353,11 @@ UTEST(util, rings_c720) {
 
 UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 207);
 
     md_vm_arena_destroy(alloc);
@@ -365,14 +365,14 @@ UTEST(util, rings_14kr) {
 
 UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -380,14 +380,14 @@ UTEST(util, rings_trytophan_pdb) {
 
 UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -395,14 +395,14 @@ UTEST(util, rings_trytophan_xyz) {
 
 UTEST(util, rings_full) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
     EXPECT_EQ(num_rings, 195);
 
-    const size_t num_structures = md_index_data_num_ranges(mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -410,30 +410,30 @@ UTEST(util, rings_full) {
 
 UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    const int64_t num_rings = md_index_data_num_ranges(mol.ring);
+    const int64_t num_rings = md_index_data_num_ranges(&mol.ring);
     ASSERT_EQ(num_rings, 4);
-    EXPECT_EQ(md_index_range_size(mol.ring, 0), 3);
-    EXPECT_EQ(md_index_range_size(mol.ring, 1), 6);
-    EXPECT_EQ(md_index_range_size(mol.ring, 2), 6);
-    EXPECT_EQ(md_index_range_size(mol.ring, 3), 6);
+    EXPECT_EQ(md_index_range_size(&mol.ring, 0), 3);
+    EXPECT_EQ(md_index_range_size(&mol.ring, 1), 6);
+    EXPECT_EQ(md_index_range_size(&mol.ring, 2), 6);
+    EXPECT_EQ(md_index_range_size(&mol.ring, 3), 6);
 
     md_vm_arena_destroy(alloc);
 }
 
 UTEST_F(util, structure_matching_amyloid_chain) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_molecule_t* mol = &utest_fixture->mol_centered;
+    md_system_t* mol = &utest_fixture->mol_centered;
 
 #if 1
     {
         // Test for the chains
         const int ref_structure_idx = 0;
-        int*   ref_idx = md_index_range_beg(mol->structure,  ref_structure_idx);
-        size_t ref_len = md_index_range_size(mol->structure, ref_structure_idx);
+        int*   ref_idx = md_index_range_beg(&mol->structure,  ref_structure_idx);
+        size_t ref_len = md_index_range_size(&mol->structure, ref_structure_idx);
 
         // Prune Hydrogen
         if (true) {
@@ -448,10 +448,10 @@ UTEST_F(util, structure_matching_amyloid_chain) {
         }
 
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_CHAIN, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_INSTANCE, mol, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
-        size_t result_count = md_index_data_num_ranges(result);
+        size_t result_count = md_index_data_num_ranges(&result);
         printf("result count: %zu\n", result_count);
         EXPECT_EQ(result_count, 253);
     }
@@ -460,20 +460,20 @@ UTEST_F(util, structure_matching_amyloid_chain) {
 
 UTEST_F(util, structure_matching_PFTAA) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_molecule_t* mol = &utest_fixture->mol_centered;
+    md_system_t* mol = &utest_fixture->mol_centered;
 
 #if 1
     {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
-        const int*   ref_idx  = md_index_range_beg (mol->structure, ref_structure_idx);
-        const size_t ref_size = md_index_range_size(mol->structure, ref_structure_idx);
+        const int*   ref_idx  = md_index_range_beg (&mol->structure, ref_structure_idx);
+        const size_t ref_size = md_index_range_size(&mol->structure, ref_structure_idx);
 
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, mol, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
-        size_t result_count = md_index_data_num_ranges(result);
+        size_t result_count = md_index_data_num_ranges(&result);
         printf("result count: %zu\n", result_count);
         EXPECT_EQ(result_count, 61);
     }
@@ -482,7 +482,7 @@ UTEST_F(util, structure_matching_PFTAA) {
 
 UTEST_F(util, structure_matching_PFTAA_ring) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_molecule_t* mol = &utest_fixture->mol_pftaa;
+    md_system_t* mol = &utest_fixture->mol_pftaa;
     {
 #if 1
         // Rings, represents a ring within the molecule
@@ -490,7 +490,7 @@ UTEST_F(util, structure_matching_PFTAA_ring) {
         const size_t ref_size = ARRAY_SIZE(ref_idx);
 
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
-        const size_t result_count = md_index_data_num_ranges(result);
+        const size_t result_count = md_index_data_num_ranges(&result);
         EXPECT_EQ(result_count, 5);
 #endif
 #if 0
@@ -515,7 +515,7 @@ UTEST_F(util, structure_matching_PFTAA_ring) {
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
-        size_t result_count = md_index_data_num_ranges(result);
+        size_t result_count = md_index_data_num_ranges(&result);
         EXPECT_EQ(result_count, 2);
 
         md_index_data_free(&result);
@@ -586,8 +586,8 @@ UTEST_F(util, structure_matching_smiles) {
 
     typedef struct {
         str_t name;
-        const md_molecule_t* mol;
-    } mol_t;
+        const md_system_t* sys;
+    } test_sys_t;
 
 #define PROT_FLAGS 0
 #define NUCL_FLAGS MD_UTIL_MATCH_FLAGS_NO_CH
@@ -636,7 +636,7 @@ UTEST_F(util, structure_matching_smiles) {
         {STR_LIT("DT"),  {{DT, NUCL_FLAGS}, {DT_alt, NUCL_FLAGS}}},
     };
 
-    mol_t molecules[] = {
+    test_sys_t test_mols[] = {
         {STR_LIT("ALA"), &utest_fixture->mol_ala},
         {STR_LIT("AMYLOID PFTAA"), &utest_fixture->mol_centered},
         {STR_LIT("NUCLEOTIDES"), &utest_fixture->mol_nucleotides},
@@ -646,14 +646,14 @@ UTEST_F(util, structure_matching_smiles) {
     };
 
     md_timestamp_t t0 = md_time_current();
-    for (const mol_t* mol = molecules; mol != molecules + ARRAY_SIZE(molecules); ++mol) {
+    for (const test_sys_t* test = test_mols; test != test_mols + ARRAY_SIZE(test_mols); ++test) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
         for (const res_t* res = residues; res != residues + ARRAY_SIZE(residues); ++res) {
+            const md_system_t* sys = test->sys;
+            md_array(md_comp_idx_t) ref_list = 0;
             
-            md_array(md_residue_idx_t) ref_list = 0;
-            
-            for (size_t i = 0; i < mol->mol->residue.count; ++i) {
-                if (str_eq(LBL_TO_STR(mol->mol->residue.name[i]), res->name)) {
+            for (size_t i = 0; i < sys->comp.count; ++i) {
+                if (str_eq(LBL_TO_STR(sys->comp.name[i]), res->name)) {
                     md_array_push(ref_list, i, alloc);
                 }
             }
@@ -667,16 +667,16 @@ UTEST_F(util, structure_matching_smiles) {
             bool has_ch = false;
 
             for (size_t ref_idx = 0; ref_idx < ref_count; ++ref_idx) {
-                md_range_t atom_range = md_residue_atom_range(&mol->mol->residue, ref_list[ref_idx]);
+                md_urange_t atom_range = md_comp_atom_range(&sys->comp, ref_list[ref_idx]);
                 for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-					md_atomic_number_t z_i = md_atom_atomic_number(&mol->mol->atom, i);
+					md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, i);
                     if (z_i == MD_Z_H) {
                         has_h = true;
                     }
 
                     if (z_i == MD_Z_C) {
 						const md_atomic_number_t z_j[] = { MD_Z_H };
-                        if (md_atom_is_connected_to_atomic_numbers(&mol->mol->atom, &mol->mol->bond, i, z_j, ARRAY_SIZE(z_j))) {
+                        if (md_atom_is_connected_to_atomic_numbers(&sys->atom, &sys->bond, i, z_j, ARRAY_SIZE(z_j))) {
                             has_ch = true;
                             break;
 						}
@@ -705,26 +705,26 @@ UTEST_F(util, structure_matching_smiles) {
                     break;
                 }
 
-                md_util_match_smiles(&match_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, flags, mol->mol, alloc);
+                md_util_match_smiles(&match_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, flags, sys, alloc);
                 
-                size_t tot_count = md_index_data_num_ranges(match_result);
+                size_t tot_count = md_index_data_num_ranges(&match_result);
                 if (tot_count >= ref_count) {
                     break;
                 }
             }
-            size_t match_count = md_index_data_num_ranges(match_result);
+            size_t match_count = md_index_data_num_ranges(&match_result);
 
             EXPECT_EQ(ref_count, match_count);
             if (ref_count != match_count) {
 
                 md_hashset_t match_set = {.allocator = alloc};
                 for (size_t i = 0; i < match_count; ++i) {
-                    int* atom_idx = md_index_range_beg(match_result, i);
-                    md_residue_idx_t res_idx = md_residue_find_by_atom_idx(&mol->mol->residue, atom_idx[0]);
+                    int* atom_idx = md_index_range_beg(&match_result, i);
+                    md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
                     md_hashset_add(&match_set, res_idx);
                 }
                 
-                printf("Mismatch in dataset '" STR_FMT "' for residues with name '" STR_FMT "': resname_count: %zu, match_count: %zu\n", STR_ARG(mol->name), STR_ARG(res->name), ref_count, match_count);
+                printf("Mismatch in dataset '" STR_FMT "' for residues with name '" STR_FMT "': resname_count: %zu, match_count: %zu\n", STR_ARG(test->name), STR_ARG(res->name), ref_count, match_count);
                 printf("The mismatcing residues indices are:\n");
                 for (size_t i = 0; i < ref_count; ++i) {
                     if (!md_hashset_get(&match_set, ref_list[i])) {
@@ -812,9 +812,9 @@ UTEST(integration, multiple_formats_tryptophan) {
     md_allocator_i* alloc = md_get_heap_allocator();
     
     // Load same tryptophan molecule from different formats
-    md_molecule_t mol_pdb = {0};
-    md_molecule_t mol_gro = {0};
-    md_molecule_t mol_xyz = {0};
+    md_system_t mol_pdb = {0};
+    md_system_t mol_gro = {0};
+    md_system_t mol_xyz = {0};
     
     bool result_pdb = md_pdb_molecule_api()->init_from_file(&mol_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
     bool result_gro = md_gro_molecule_api()->init_from_file(&mol_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);

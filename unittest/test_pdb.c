@@ -33,7 +33,7 @@ UTEST(pdb, tryptophan) {
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 28);
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_temp_set_pos_back(temp_pos);
@@ -110,12 +110,12 @@ UTEST(pdb, create_molecule) {
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 
-    EXPECT_EQ(mol.residue.count, 1185);
-    EXPECT_EQ(mol.chain.count, 3);
+    EXPECT_EQ(mol.comp.count, 1185);
+    EXPECT_EQ(mol.inst.count, 3);
 
     for (int64_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], pdb_data.atom_coordinates[i].x);

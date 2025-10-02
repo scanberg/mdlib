@@ -296,7 +296,7 @@ typedef struct static_backchannel_t {
 
 typedef struct eval_context_t {
     md_script_ir_t* ir;
-    const md_molecule_t* mol;
+    const md_system_t* mol;
     const md_bitfield_t* mol_ctx;       // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
     const md_trajectory_i* traj;
 
@@ -5270,7 +5270,7 @@ static bool parse_script(md_script_ir_t* ir) {
     return result;
 }
 
-static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, const md_trajectory_i* traj) {
+static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const md_trajectory_i* traj) {
     ASSERT(ir);
     ASSERT(mol);
 
@@ -5398,7 +5398,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     return true;
 }
 
-static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
+static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
     ASSERT(mol);
 
     SETUP_TEMP_ALLOC(GIGABYTES(4))
@@ -5592,7 +5592,7 @@ static void clear_property_data(md_script_property_data_t* data) {
     data->max_value = -FLT_MAX;
 }
 
-static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
+static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
     ASSERT(mol);
     ASSERT(traj);
@@ -5638,7 +5638,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     float* curr_z = curr_coords + 2 * stride;
 
     // We want a mutable molecule which we can modify the atom coordinate section of
-    md_molecule_t mutable_mol = *mol;
+    md_system_t mutable_mol = *mol;
     mutable_mol.atom.x = curr_x;
     mutable_mol.atom.y = curr_y;
     mutable_mol.atom.z = curr_z;
@@ -6051,7 +6051,7 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     return create_ir(alloc);
 }
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ctx_ir) {
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_system_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("Script Compile: IR is not valid");
         return false;
@@ -6416,7 +6416,7 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
     eval->interrupt = false;
 }
 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end) {
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
 
     if (!ir) {
@@ -6512,7 +6512,7 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
     }
 }
 
-static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
+static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_allocator_i* alloc) {
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     md_script_ir_t* ir = create_ir(temp_alloc);
@@ -6559,7 +6559,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 }
 
 #if DEBUG
-static void parse_type_check_and_print_expression_to_json(str_t expr, const md_molecule_t* mol, str_t filename) {
+static void parse_type_check_and_print_expression_to_json(str_t expr, const md_system_t* mol, str_t filename) {
     SETUP_TEMP_ALLOC(GIGABYTES(4));
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -6589,7 +6589,7 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_m
 }
 #endif
 
-bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
+bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
     ASSERT(mol);
     ASSERT(alloc);
@@ -6680,7 +6680,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     return success;
 }
 
-bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
+bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_system_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
     ASSERT(mol);
 
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {

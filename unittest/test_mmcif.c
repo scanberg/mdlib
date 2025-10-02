@@ -11,7 +11,7 @@
 UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
-    md_molecule_t mol;
+    md_system_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
 
@@ -35,7 +35,7 @@ UTEST(mmcif, 1fez) {
 UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
-    md_molecule_t mol;
+    md_system_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
@@ -60,7 +60,7 @@ UTEST(mmcif, 2or2) {
 UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
-    md_molecule_t mol;
+    md_system_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
@@ -329,14 +329,14 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
     EXPECT_GT(mol.atom.count, 0);
-    EXPECT_GT(mol.residue.count, 0);
-    EXPECT_GT(mol.chain.count, 0);
+    EXPECT_GT(mol.comp.count, 0);
+    EXPECT_GT(mol.inst.count, 0);
     
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;
@@ -361,7 +361,7 @@ UTEST(mmcif, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
     

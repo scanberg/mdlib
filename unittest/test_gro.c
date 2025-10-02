@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <string.h>
 
 #include <md_gro.h>
@@ -16,7 +16,7 @@ UTEST(gro, parse_small) {
     EXPECT_TRUE(result);
     EXPECT_EQ(gro_data.num_atoms, 1336);
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
 
     md_gro_molecule_init(&mol, &gro_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
@@ -45,7 +45,7 @@ UTEST(gro, parse_big) {
     EXPECT_TRUE(result);
     EXPECT_EQ(gro_data.num_atoms, 161742);
 
-    md_molecule_t mol = { 0 };
+    md_system_t mol = { 0 };
 
     md_gro_molecule_init(&mol, &gro_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {

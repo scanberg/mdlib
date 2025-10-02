@@ -158,23 +158,23 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_gro_data_t));
 }
 
-bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, struct md_allocator_i* alloc) {
-    ASSERT(mol);
+bool md_gro_molecule_init(struct md_system_t* sys, const md_gro_data_t* data, struct md_allocator_i* alloc) {
+    ASSERT(sys);
     ASSERT(data);
     ASSERT(alloc);
 
-    MEMSET(mol, 0, sizeof(md_molecule_t));
+    MEMSET(sys, 0, sizeof(md_system_t));
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    md_array_ensure(mol->atom.x, capacity, alloc);
-    md_array_ensure(mol->atom.y, capacity, alloc);
-    md_array_ensure(mol->atom.z, capacity, alloc);
-    md_array_ensure(mol->atom.type_idx, capacity, alloc);
-    md_array_ensure(mol->atom.flags, capacity, alloc);
+    md_array_ensure(sys->atom.x, capacity, alloc);
+    md_array_ensure(sys->atom.y, capacity, alloc);
+    md_array_ensure(sys->atom.z, capacity, alloc);
+    md_array_ensure(sys->atom.type_idx, capacity, alloc);
+    md_array_ensure(sys->atom.flags, capacity, alloc);
 
-    mol->atom.type.count = 0;
-    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    sys->atom.type.count = 0;
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
 
 	uint64_t prev_comp_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
@@ -183,37 +183,37 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
         str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
-        md_residue_id_t res_id = data->atom_data[i].res_id;
+        md_seq_id_t res_id = data->atom_data[i].res_id;
         md_atomic_number_t atomic_number = md_atomic_number_infer_from_label(atom_name, res_name);
 
         float mass = md_util_element_atomic_mass(atomic_number);
         float radius = md_util_element_vdw_radius(atomic_number);
 
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_name, atomic_number, mass, radius, alloc);
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_name, atomic_number, mass, radius, alloc);
 
 		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
         if (comp_key != prev_comp_key) {
             // New residue
             md_flags_t res_flags = 0;
-            mol->residue.count += 1;
-            md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);
-            md_array_push(mol->residue.name,  make_label(res_name), alloc);
-            md_array_push(mol->residue.id,    res_id, alloc);
-            md_array_push(mol->residue.flags, res_flags, alloc);
+            sys->comp.count += 1;
+            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
+            md_array_push(sys->comp.name,  make_label(res_name), alloc);
+            md_array_push(sys->comp.seq_id,    res_id, alloc);
+            md_array_push(sys->comp.flags,  res_flags, alloc);
 		}
 
-        mol->atom.count += 1;
-        md_array_push_no_grow(mol->atom.x, x);
-        md_array_push_no_grow(mol->atom.y, y);
-        md_array_push_no_grow(mol->atom.z, z);
-        md_array_push_no_grow(mol->atom.type_idx, type_idx);
-        md_array_push_no_grow(mol->atom.flags, 0);
+        sys->atom.count += 1;
+        md_array_push_no_grow(sys->atom.x, x);
+        md_array_push_no_grow(sys->atom.y, y);
+        md_array_push_no_grow(sys->atom.z, z);
+        md_array_push_no_grow(sys->atom.type_idx, type_idx);
+        md_array_push_no_grow(sys->atom.flags, 0);
 
 		prev_comp_key = comp_key;
     }
-	md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, alloc);  // Final sentinel
+	md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
-    md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
+    md_util_system_infer_comp_flags(sys);
 
     float box[3][3];
     MEMCPY(&box, data->box, sizeof(mat3_t));
@@ -224,29 +224,29 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         box[i][2] *= 10.0f;
     }
 
-    mol->unit_cell = md_util_unit_cell_from_matrix(box);
+    sys->unit_cell = md_util_unit_cell_from_matrix(box);
 
     return true;
 }
 
-static bool gro_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool gro_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
-        success = md_gro_molecule_init(mol, &data, alloc);
+        success = md_gro_molecule_init(sys, &data, alloc);
     }
     md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
 
-static bool gro_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool gro_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_file(&data, filename, md_get_heap_allocator())) {
-        success = md_gro_molecule_init(mol, &data, alloc);
+        success = md_gro_molecule_init(sys, &data, alloc);
     }
     md_gro_data_free(&data, md_get_heap_allocator());
 

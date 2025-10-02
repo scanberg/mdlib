@@ -442,17 +442,10 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-md_chain_idx_t find_chain_idx(char chain_id, md_molecule_t* mol) {
-    for (md_chain_idx_t i = 0; i < (md_chain_idx_t)mol->chain.count; ++i) {
-        if (mol->chain.id[i].buf[0] == chain_id) return i;
-    }
-    return -1;
-}
-
-bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* mol_alloc) {
-    ASSERT(mol);
+bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
+    ASSERT(sys);
     ASSERT(data);
-    ASSERT(mol_alloc);
+    ASSERT(alloc);
 
     bool result = false;
 
@@ -468,23 +461,21 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         end_atom_index = data->models[0].end_atom_index;
     }
 
-    MEMSET(mol, 0, sizeof(md_molecule_t));
+    MEMSET(sys, 0, sizeof(md_system_t));
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
-	// Need to keep track of the chain ranges in order to resolve transforms later
-    md_array(md_range_t)        chain_atom_ranges = 0;
-    md_array(md_range_t)        chain_res_ranges = 0;
-    md_array(char)              chain_ids = 0;
+    // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
+    md_array(str_t) comp_auth_asym_ids = 0;
 
-    md_array_ensure(mol->atom.x,        capacity, mol_alloc);
-    md_array_ensure(mol->atom.y,        capacity, mol_alloc);
-    md_array_ensure(mol->atom.z,        capacity, mol_alloc);
-    md_array_ensure(mol->atom.type_idx, capacity, mol_alloc);
-    md_array_ensure(mol->atom.flags,    capacity, mol_alloc);
+    md_array_ensure(sys->atom.x,        capacity, alloc);
+    md_array_ensure(sys->atom.y,        capacity, alloc);
+    md_array_ensure(sys->atom.z,        capacity, alloc);
+    md_array_ensure(sys->atom.type_idx, capacity, alloc);
+    md_array_ensure(sys->atom.flags,    capacity, alloc);
 
 	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, mol_alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, alloc);
 
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
@@ -500,7 +491,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         
         str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
         str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
-        md_residue_id_t res_id = data->atom_coordinates[i].res_seq;
+        md_seq_id_t seq_id = data->atom_coordinates[i].res_seq;
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;
@@ -516,85 +507,50 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         float mass   = md_atomic_number_mass(atomic_number);
         float radius = md_atomic_number_vdw_radius(atomic_number);
 
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, atom_id, atomic_number, mass, radius, mol_alloc);
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
 
-		uint64_t comp_key = md_hash64_str(res_name, res_id ^ chain_id);
-
-        if (chain_id != ' ') {
-            if (chain_id != prev_chain_id || terminator) {
-                int a_idx = (int)mol->atom.count;
-                int r_idx = (int)mol->residue.count;
-                md_array_push(chain_atom_ranges, ((md_range_t){a_idx, a_idx}), temp_alloc);
-                md_array_push(chain_res_ranges,  ((md_range_t){r_idx, r_idx}), temp_alloc);
-                md_array_push(chain_ids, chain_id, temp_alloc);
-            }
-
-            if (chain_atom_ranges) {
-                md_array_last(chain_atom_ranges)->end += 1;
-            }
-
-            if (comp_key != prev_comp_key || terminator) {
-                if (chain_res_ranges) {
-                    md_array_last(chain_res_ranges)->end += 1;
-                }
-			}
-        }
+		uint64_t comp_key = md_hash64_str(res_name, seq_id ^ chain_id);
 
         if (comp_key != prev_comp_key || terminator) {
             // New residue
             // Propagate HETERO flag to residue
-            md_flags_t res_flags = flags;
+            md_flags_t comp_flags = flags;
 
-            mol->residue.count += 1;
-            md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, mol_alloc);
-            md_array_push(mol->residue.name,  make_label(res_name), mol_alloc);
-            md_array_push(mol->residue.id,    res_id, mol_alloc);
-            md_array_push(mol->residue.flags, res_flags, mol_alloc);
+            sys->comp.count += 1;
+            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
+            md_array_push(sys->comp.name,   make_label(res_name), alloc);
+            md_array_push(sys->comp.seq_id, seq_id, alloc);
+            md_array_push(sys->comp.flags,  comp_flags, alloc);
+
+            str_t asym_id = str_trim(str_from_cstrn(&chain_id, 1));
+            md_array_push(comp_auth_asym_ids, asym_id, temp_alloc);
         }
 
-        mol->atom.count += 1;
-        md_array_push_no_grow(mol->atom.x, x);
-        md_array_push_no_grow(mol->atom.y, y);
-
-        md_array_push_no_grow(mol->atom.z, z);
-        md_array_push_no_grow(mol->atom.flags, flags);
-        md_array_push_no_grow(mol->atom.type_idx, type_idx);
+        sys->atom.count += 1;
+        md_array_push_no_grow(sys->atom.x, x);
+        md_array_push_no_grow(sys->atom.y, y);
+        md_array_push_no_grow(sys->atom.z, z);
+        md_array_push_no_grow(sys->atom.flags, flags);
+        md_array_push_no_grow(sys->atom.type_idx, type_idx);
 
         prev_chain_id = chain_id;
 		prev_comp_key = comp_key;
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(mol->residue.atom_offset, (uint32_t)mol->atom.count, mol_alloc);  // Final sentinel
+    md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
 	// Here we need to infer what we can about the residues, such as amino acid or nucleotide type
-    md_util_residue_infer_flags(&mol->residue, mol->atom.flags, &mol->atom);
-
-	// Possibly create chains from provided chain_ids
-	size_t num_chains = md_array_size(chain_res_ranges);
-    for (size_t i = 0; i < num_chains; ++i) {
-        bool add_chain = true;
-        for (int j = chain_res_ranges[i].beg; j < chain_res_ranges[i].end; ++j) {
-            if (!(mol->residue.flags[j] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE))) {
-				add_chain = false;
-				break;
-            }
-        }
-        if (add_chain) {
-            mol->chain.count += 1;
-            md_label_t chain_label = make_label((str_t) {&chain_ids[i], 1});
-            md_array_push(mol->chain.id, chain_label, mol_alloc);
-            md_array_push(mol->chain.res_range,  chain_res_ranges[i],  mol_alloc);
-            md_array_push(mol->chain.atom_range, chain_atom_ranges[i], mol_alloc);
-		}
-    }
+    md_util_system_infer_comp_flags(sys);
+    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        mol->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
     };
 
+    /*
     // Create instances from assemblies
     for (size_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
         const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
@@ -607,7 +563,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 // Only add the additional instances
                 continue;
             }
-            md_range_t instance_range = {0,0};
+            md_urange_t instance_range = {0,0};
             for (size_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
                 // A transform can be applied to multiple chains,
                 // We extract the consecutive ranges of the chains and possibly split this into multiple instances with the same label and transform
@@ -657,6 +613,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     mol->assembly.count = md_array_size(mol->assembly.transform);
     ASSERT(md_array_size(mol->assembly.label) == mol->assembly.count);
     ASSERT(md_array_size(mol->assembly.atom_range) == mol->assembly.count); 
+    */
 
     result = true;
 done:
@@ -664,7 +621,7 @@ done:
     return result;
 }
 
-static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_pdb_data_t data = {0};
 
@@ -675,7 +632,7 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     return success;
 }
 
-static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {

@@ -1,10 +1,10 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <string.h>
 
 #include <md_xyz.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
-#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
@@ -401,13 +401,13 @@ UTEST(xyz, extended_xyz_lattice_array) {
 }
 
 UTEST(xyz, create_molecule) {
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
 
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     EXPECT_TRUE(md_xyz_molecule_init(&mol, &data, alloc));
     ASSERT_GT(data.num_models, 0);
     ASSERT_EQ(mol.atom.count, data.models[0].end_coord_index - data.models[0].beg_coord_index);
@@ -453,7 +453,7 @@ UTEST(xyz, comprehensive_c720) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
     
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
     ASSERT_TRUE(result);
     
@@ -485,7 +485,7 @@ UTEST(xyz, error_handling) {
     
     // Test nonexistent file
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
     md_molecule_free(&mol, alloc);

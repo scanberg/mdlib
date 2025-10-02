@@ -7,7 +7,7 @@
 #include <md_util.h>
 #include <md_trajectory.h>
 
-struct md_molecule_t;
+struct md_system_t;
 
 //All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
 
@@ -131,7 +131,7 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
 // Molecule
-bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
+bool md_lammps_molecule_init(struct md_system_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
 
 // Loader API
 

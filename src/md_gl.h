@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 //  MD GL - Molecule Dynamics GL
 //  Copyright 2020 Robin Skånberg
@@ -16,7 +16,7 @@
 #include <md_types.h>
 
 // Forward declarations
-struct md_molecule_t;
+struct md_system_t;
 
 // Predefined Palettes
 enum {
@@ -82,7 +82,7 @@ typedef struct {
     uint32_t id;
 } md_gl_mol_t;
 
-md_gl_mol_t md_gl_mol_create(const struct md_molecule_t* mol);
+md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
 void md_gl_mol_destroy(md_gl_mol_t handle);
 
 // ### Set molecule data fields ###

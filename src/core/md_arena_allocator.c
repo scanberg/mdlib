@@ -1,4 +1,4 @@
-#include <core/md_arena_allocator.h>
+﻿#include <core/md_arena_allocator.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -6,6 +6,7 @@
 
 #define ARENA_MAGIC 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64
+#define MIN_PAGE_SIZE KILOBYTES(4)
 
 #define VM_MAGIC 0x87b716a78ccb2813
 #define VM_COMMIT_SIZE MEGABYTES(1)
@@ -123,7 +124,7 @@ struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing,
     arena->backing = backing;
     arena->base_page = NULL;
     arena->curr_page = NULL;
-    arena->default_page_size = page_size;
+    arena->default_page_size = page_size ? MAX(MIN_PAGE_SIZE, page_size) : MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE;
     arena->magic = ARENA_MAGIC;
 
     md_allocator_i* arena_alloc = (md_allocator_i*)((char*)arena + sizeof(arena_t));

@@ -1,4 +1,4 @@
-#include "ubench.h"
+﻿#include "ubench.h"
 
 #include <md_gro.h>
 #include <md_molecule.h>
@@ -8,7 +8,7 @@
 
 struct spatial_hash {
     md_allocator_i* arena;
-    md_molecule_t mol;
+    md_system_t mol;
     md_spatial_hash_t* pbc_sh;
     vec3_t pbc_ext;
 
@@ -27,7 +27,7 @@ UBENCH_F_SETUP(spatial_hash) {
     ubench_fixture->pbc_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unit_cell, alloc);
     ubench_fixture->reg_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, NULL, alloc);
 
-    md_molecule_t* mol = &ubench_fixture->mol;
+    md_system_t* mol = &ubench_fixture->mol;
 
     ubench_fixture->coords = md_vm_arena_push(alloc, mol->atom.count * sizeof(vec3_t));
     for (size_t i = 0; i < mol->atom.count; ++i) {
@@ -40,7 +40,7 @@ UBENCH_F_TEARDOWN(spatial_hash) {
 }
 
 UBENCH_EX_F(spatial_hash, init_non_periodic) {
-    md_molecule_t* mol = &ubench_fixture->mol;
+    md_system_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = ubench_fixture->arena;
 
     UBENCH_DO_BENCHMARK() {
@@ -51,7 +51,7 @@ UBENCH_EX_F(spatial_hash, init_non_periodic) {
 }
 
 UBENCH_EX_F(spatial_hash, init_periodic) {
-    md_molecule_t* mol = &ubench_fixture->mol;
+    md_system_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = ubench_fixture->arena;
 
     UBENCH_DO_BENCHMARK() {
@@ -111,7 +111,7 @@ UBENCH_EX_F(spatial_hash, query_periodic_batch) {
 }
 
 UBENCH_EX_F(spatial_hash, query_bruteforce) {
-    const md_molecule_t* mol = &ubench_fixture->mol;
+    const md_system_t* mol = &ubench_fixture->mol;
 
     uint32_t count = 0;
     const float RAD2 = RAD * RAD;
@@ -162,7 +162,7 @@ static inline void do_it2(vec4_t* out_xyzw, const float* in_x, const float* in_y
 }
 
 UBENCH_EX_F(spatial_hash, testink_1) {
-    md_molecule_t* mol = &ubench_fixture->mol;
+    md_system_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = &ubench_fixture->alloc;
     vec3_t pbc_ext = ubench_fixture->pbc_ext;
 
@@ -178,7 +178,7 @@ UBENCH_EX_F(spatial_hash, testink_1) {
 }
 
 UBENCH_EX_F(spatial_hash, testink_2) {
-    md_molecule_t* mol = &ubench_fixture->mol;
+    md_system_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = &ubench_fixture->alloc;
     vec3_t pbc_ext = ubench_fixture->pbc_ext;
 

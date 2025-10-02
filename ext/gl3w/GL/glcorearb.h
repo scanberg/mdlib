@@ -1,4 +1,4 @@
-#ifndef __gl_glcorearb_h_
+﻿#ifndef __gl_glcorearb_h_
 #define __gl_glcorearb_h_ 1
 
 #ifdef __cplusplus
@@ -5377,7 +5377,7 @@ GLAPI void APIENTRY glMultiDrawMeshTasksIndirectCountNV (GLintptr indirect, GLin
 #define GL_PATH_FORMAT_SVG_NV             0x9070
 #define GL_PATH_FORMAT_PS_NV              0x9071
 #define GL_STANDARD_FONT_NAME_NV          0x9072
-#define GL_SYSTEM_FONT_NAME_NV            0x9073
+#define gl_molTEM_FONT_NAME_NV            0x9073
 #define GL_FILE_NAME_NV                   0x9074
 #define GL_PATH_STROKE_WIDTH_NV           0x9075
 #define GL_PATH_END_CAPS_NV               0x9076

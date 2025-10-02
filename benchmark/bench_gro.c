@@ -1,4 +1,4 @@
-#include "ubench.h"
+﻿#include "ubench.h"
 
 #include <md_gro.h>
 #include <core/md_allocator.h>
@@ -35,7 +35,7 @@ UBENCH_EX(gro, postprocess) {
     md_allocator_i* alloc = md_linear_allocator_create(buffer, capacity);
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
     md_gro_molecule_api()->init_from_file(&mol, path, 0, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 

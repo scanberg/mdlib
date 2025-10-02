@@ -125,7 +125,7 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_EQ(ref_dihedrals[i].atom_id[3],  data.dihedrals[i].atom_id[3]);
     }
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
 
     md_lammps_molecule_init(&mol, &data, alloc);
     for (size_t i = 0; i < mol.atom.count; ++i) {
@@ -268,7 +268,7 @@ UTEST(lammps, water_ethane_triclinic) {
         EXPECT_EQ(ref_dihedrals[i].atom_id[3],  data.dihedrals[i].atom_id[3]);
     }
 
-    md_molecule_t mol = {0};
+    md_system_t mol = {0};
 
     md_lammps_molecule_init(&mol, &data, alloc);
     for (size_t i = 0; i < mol.atom.count; ++i) {
@@ -379,7 +379,7 @@ UTEST(lammps, comprehensive_data_validation) {
     md_lammps_molecule_loader_arg_t args = md_lammps_molecule_loader_arg(atom_format);
     
     for (int p = 0; p < 2; ++p) {
-        md_molecule_t mol = {0};
+        md_system_t mol = {0};
         bool result = md_lammps_molecule_api()->init_from_file(&mol, paths[p], &args, alloc);
         ASSERT_TRUE(result);
         

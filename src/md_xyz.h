@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 struct md_allocator_i;
-struct md_molecule_t;
+struct md_system_t;
 struct md_molecule_loader_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
@@ -50,7 +50,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
-bool md_xyz_molecule_init(struct md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc);
+bool md_xyz_molecule_init(struct md_system_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc);
 
 struct md_molecule_loader_i* md_xyz_molecule_api(void);
 
