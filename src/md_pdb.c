@@ -522,7 +522,7 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
             md_array_push(sys->comp.seq_id, seq_id, alloc);
             md_array_push(sys->comp.flags,  comp_flags, alloc);
 
-            str_t asym_id = str_trim(str_from_cstrn(&chain_id, 1));
+            str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
             md_array_push(comp_auth_asym_ids, asym_id, temp_alloc);
         }
 

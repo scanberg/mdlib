@@ -121,10 +121,11 @@ UTEST(pdb, create_molecule) {
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 
-    EXPECT_EQ(mol.comp.count, 1185);
-    EXPECT_EQ(mol.inst.count, 3);
+    EXPECT_EQ(1185, mol.comp.count);
+    EXPECT_EQ(3, mol.inst.count);
+    EXPECT_EQ(1, mol.entity.count);
 
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], pdb_data.atom_coordinates[i].x);
         EXPECT_EQ(mol.atom.y[i], pdb_data.atom_coordinates[i].y);
         EXPECT_EQ(mol.atom.z[i], pdb_data.atom_coordinates[i].z);

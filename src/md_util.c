@@ -4213,13 +4213,14 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                 }
 
                 char buf[256];
-                snprintf(buf, sizeof(buf), "%s (gen)", entity_type_str);
+                snprintf(buf, sizeof(buf), "%s (*)", entity_type_str);
 
                 // Create new entity
                 md_array_push(sys->entity.id,    entity_id, alloc);
                 md_array_push(sys->entity.flags, entity_flags, alloc);
                 md_array_push(sys->entity.description, str_copy_cstr(buf, alloc), alloc);
                 md_array_push(entity_keys, entity_key, temp_arena);
+                sys->entity.count += 1;
             }
 
             // Commit range (i,j) as an instance
@@ -4227,6 +4228,8 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             md_array_push(sys->inst.id, md_util_next_unique_inst_id(sys->inst.id, sys->inst.count), alloc);
             md_array_push(sys->inst.auth_id, make_label(STR_LIT("")), alloc);  // No auth id info as its generated
             md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
+            md_array_push(sys->inst.entity_idx, entity_idx, alloc);
+            sys->inst.count += 1;
 
             i = j;
         }
