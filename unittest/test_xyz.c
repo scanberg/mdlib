@@ -418,7 +418,7 @@ UTEST(xyz, create_molecule) {
         EXPECT_EQ(mol.atom.z[i], data.coordinates[i].z);
     }
 
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 
     md_xyz_data_free(&data, alloc);
 }
@@ -477,7 +477,7 @@ UTEST(xyz, comprehensive_c720) {
     EXPECT_TRUE(has_variation_y);
     EXPECT_TRUE(has_variation_z);
     
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 }
 
 UTEST(xyz, error_handling) {
@@ -488,11 +488,11 @@ UTEST(xyz, error_handling) {
     md_system_t mol = {0};
     bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
     
     // Test empty path
     str_t empty_path = {0,0};
     result = md_xyz_molecule_api()->init_from_file(&mol, empty_path, NULL, alloc);
     EXPECT_FALSE(result);
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 }

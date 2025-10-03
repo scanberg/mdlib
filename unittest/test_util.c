@@ -835,7 +835,7 @@ UTEST(integration, multiple_formats_tryptophan) {
     EXPECT_GT(mol_xyz.atom.count, 20);
     EXPECT_GT(mol_gro.atom.count, 20);
     
-    md_molecule_free(&mol_pdb, alloc);
-    md_molecule_free(&mol_gro, alloc);
-    md_molecule_free(&mol_xyz, alloc);
+    md_system_free(&mol_pdb, alloc);
+    md_system_free(&mol_gro, alloc);
+    md_system_free(&mol_xyz, alloc);
 }

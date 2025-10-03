@@ -161,7 +161,7 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_TRUE(found);
     }
 
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 
     md_lammps_data_free(&data, alloc);
 }
@@ -278,7 +278,7 @@ UTEST(lammps, water_ethane_triclinic) {
         EXPECT_NE(mol.atom.type_idx[i], 0);
     }
 
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 
     md_lammps_data_free(&data, alloc);
 }
@@ -395,6 +395,6 @@ UTEST(lammps, comprehensive_data_validation) {
             EXPECT_FALSE(isinf(mol.atom.z[i]));
         }
         
-        md_molecule_free(&mol, alloc);
+        md_system_free(&mol, alloc);
     }
 }

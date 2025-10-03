@@ -4,13 +4,15 @@
 #include <md_pdb.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
-#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
 UTEST(pdb, parse_ordinary) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 9084);
@@ -19,12 +21,12 @@ UTEST(pdb, parse_ordinary) {
     EXPECT_EQ(pdb_data.num_helices, 24);
     EXPECT_EQ(pdb_data.num_sheets, 102);
 
-    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, tryptophan) {
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* alloc = md_get_temp_allocator();
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/tryptophan.pdb");
     md_pdb_data_t pdb_data = {0};
@@ -36,13 +38,14 @@ UTEST(pdb, tryptophan) {
     md_system_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
-    md_temp_set_pos_back(temp_pos);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, unmatched_model_entry) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 14738);
@@ -51,13 +54,15 @@ UTEST(pdb, unmatched_model_entry) {
     EXPECT_EQ(pdb_data.num_helices, 0);
     EXPECT_EQ(pdb_data.num_sheets, 0);
 
-    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, parse_trajectory) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 38);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 5814);
@@ -76,19 +81,21 @@ UTEST(pdb, parse_trajectory) {
     }
     md_file_close(file);
 
-    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, trajectory_i) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    md_trajectory_i* traj = md_pdb_trajectory_create(path, md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(md_trajectory_num_atoms(traj), 153);
     EXPECT_EQ(md_trajectory_num_frames(traj), 38);
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_temp_allocator(), mem_size);
+    void* mem_ptr = md_alloc(alloc, mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -99,12 +106,12 @@ UTEST(pdb, trajectory_i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
-    md_free(md_get_temp_allocator(), mem_ptr, mem_size);
     md_pdb_trajectory_free(traj);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, create_molecule) {
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -123,38 +130,31 @@ UTEST(pdb, create_molecule) {
         EXPECT_EQ(mol.atom.z[i], pdb_data.atom_coordinates[i].z);
     }
 
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
     
-    /*
-    
-    EXPECT_TRUE(md_pdb_molecule_loader()->init_from_file(&mol, path, alloc));
-
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], pdb_data.atom_coordinates[i].x);
-        EXPECT_EQ(mol.atom.y[i], pdb_data.atom_coordinates[i].y);
-        EXPECT_EQ(mol.atom.z[i], pdb_data.atom_coordinates[i].z);
-    }
-
-    EXPECT_TRUE(md_pdb_molecule_loader()->free(&mol, alloc));
-    */
     md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, parse_nonexistent_file) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
+    bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_FALSE(result);
     
     // Should be safe to free even when parsing failed
-    md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST(pdb, parse_empty_path) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = {0,0};  // Empty string
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, md_get_heap_allocator());
     EXPECT_FALSE(result);
     
     md_pdb_data_free(&pdb_data, md_get_heap_allocator());
+    md_arena_allocator_destroy(alloc);
 }

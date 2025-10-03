@@ -29,7 +29,7 @@ UTEST(mmcif, 1fez) {
         EXPECT_NEAR(84.339, mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_get_heap_allocator());
+    md_system_free(&mol, md_get_heap_allocator());
 }
 
 UTEST(mmcif, 2or2) {
@@ -54,7 +54,7 @@ UTEST(mmcif, 2or2) {
         EXPECT_NEAR(80.569, mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_get_heap_allocator());
+    md_system_free(&mol, md_get_heap_allocator());
 }
 
 UTEST(mmcif, 8g7u) {
@@ -79,7 +79,7 @@ UTEST(mmcif, 8g7u) {
         EXPECT_NEAR(80.951,  mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_get_heap_allocator());
+    md_system_free(&mol, md_get_heap_allocator());
 }
 
 #include <md_mmcif.c>
@@ -354,7 +354,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     }
     EXPECT_TRUE(has_nonzero_coord);
     
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 }
 
 UTEST(mmcif, nonexistent_file) {
@@ -366,5 +366,5 @@ UTEST(mmcif, nonexistent_file) {
     EXPECT_FALSE(result);
     
     // Should be safe to free even when init failed
-    md_molecule_free(&mol, alloc);
+    md_system_free(&mol, alloc);
 }
