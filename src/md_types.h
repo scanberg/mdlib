@@ -256,12 +256,12 @@ typedef struct md_backbone_angles_t {
 } md_backbone_angles_t;
 
 typedef struct md_nucleic_backbone_atoms_t {
+    md_atom_idx_t p;
+    md_atom_idx_t o5;
     md_atom_idx_t c5;
     md_atom_idx_t c4;
     md_atom_idx_t c3;
     md_atom_idx_t o3;
-    md_atom_idx_t p;
-    md_atom_idx_t o5;
 } md_nucleic_backbone_atoms_t;
 
 // Miniature string buffer with explicit length

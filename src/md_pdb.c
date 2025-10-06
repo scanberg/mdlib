@@ -540,7 +540,7 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
     }
     md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
-	// Here we need to infer what we can about the residues, such as amino acid or nucleotide type
+	md_util_system_infer_covalent_bonds(sys, alloc);
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
 

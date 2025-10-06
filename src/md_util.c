@@ -1179,27 +1179,30 @@ static inline bool cmp(str_t str, const char* ref, int len) {
     return MEMCMP(str.ptr, ref, len + 1) == 0;
 }
 
-static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
+static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* out_backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
     ASSERT(atom_data);
     int len = atom_range.end - atom_range.beg;
     if (len < 4) return false;
 
-    const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
+    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
     uint32_t bits = 0;
     md_protein_backbone_atoms_t bb = {0};
-    for (int i = atom_range.beg; i < atom_range.end; ++i) {
+    for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
-        if (!(bits & 1)  && cmp(id, "N",  1)) { bb.n  = i; bits |= 1;  continue; }
-        if (!(bits & 16) && cmp(id, "HN", 2)) { bb.hn = i; bits |= 16; continue; }
-        if (!(bits & 2)  && cmp(id, "CA", 2)) { bb.ca = i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp(id, "C",  1)) { bb.c  = i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp(id, "O",  1)) { bb.o  = i; bits |= 8;  continue; }
-
-        if (i == atom_range.end - 1 && (!(bits & 8)) && str_ptr(id)[0] == 'O') {
-            bb.o = i;
-            bits |= 8;
+        if (!(bits & 1)  && cmp(id, "N",  1)) { bb.n  = (md_atom_idx_t)i; bits |= 1;  continue; }
+        if (!(bits & 16) && cmp(id, "HN", 2)) { bb.hn = (md_atom_idx_t)i; bits |= 16; continue; }
+        if (!(bits & 2)  && cmp(id, "CA", 2)) { bb.ca = (md_atom_idx_t)i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp(id, "C",  1)) { bb.c  = (md_atom_idx_t)i; bits |= 4;  continue; }
+        if (!(bits & 8)) {
+            if (cmp(id, "O", 1)     ||
+                cmp(id, "O1", 2)    ||
+                cmp(id, "OT1", 3)   ||
+                cmp(id, "OC1", 3))
+            {
+                bb.o = (md_atom_idx_t)i; bits |= 8; continue;
+            }
         }
 
         // Check if done
@@ -1207,15 +1210,20 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
     }
 
     // HN is optional
-    const uint32_t req_bits = 1 | 2 | 4 | 8;
-    if ((bits & req_bits) == req_bits) {
-        if (backbone_atoms) *backbone_atoms = bb;
-        return true;
-    }
-    return false;
+    static const uint32_t req_bits = 1 | 2 | 4 | 8;
+
+    if (out_backbone_atoms) *out_backbone_atoms = bb;
+    return (bits & req_bits) == req_bits;
 }
 
-static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
+// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3)
+static bool cmp_nuc_atom(str_t id, const char* base, size_t len) {
+    if (!str_eq_cstr_n(id, base, len)) return false;
+    char next = str_ptr(id)[len];
+    return next == 0 || next == '\'' || next == '*';
+}
+
+static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* out_backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
     ASSERT(atom_data);
     int len = atom_range.end - atom_range.beg;
     if (len < 6) return false;
@@ -1224,26 +1232,27 @@ static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* 
 
     uint32_t bits = 0;
     md_nucleic_backbone_atoms_t bb = {0};
-    for (int i = atom_range.beg; i < atom_range.end; ++i) {
+    for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
-        if (!(bits & 1)  && cmp(id, "C5'", 3)) { bb.c5 = i; bits |= 1;  continue; }
-        if (!(bits & 2)  && cmp(id, "C4'", 3)) { bb.c4 = i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp(id, "C3'", 3)) { bb.c3 = i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp(id, "O3'", 3)) { bb.o3 = i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp(id, "P",   1)) { bb.p  = i; bits |= 16; continue; }
-        if (!(bits & 32) && cmp(id, "O5'", 3)) { bb.o5 = i; bits |= 32; continue; }
+        if (!(bits & 1)  && cmp(id, "P",   1))               { bb.p  = i; bits |= 1;  continue; }
+        if (!(bits & 2)  && cmp_nuc_atom(id, "O5", 2))       { bb.o5 = i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp_nuc_atom(id, "C5", 2))       { bb.c5 = i; bits |= 4;  continue; }
+        if (!(bits & 8)  && cmp_nuc_atom(id, "C4", 2))       { bb.c4 = i; bits |= 8;  continue; }
+        if (!(bits & 16) && cmp_nuc_atom(id, "C3", 2))       { bb.c3 = i; bits |= 16; continue; }
+        if (!(bits & 32) && (cmp_nuc_atom(id, "O3", 2) || cmp(id, "O3P", 3))) {
+            bb.o3 = i; bits |= 32; continue;
+        }
 
         // Check if done
         if (bits == all_bits) break;
     }
 
-    if (bits == all_bits) {
-        if (backbone_atoms) *backbone_atoms = bb;
-        return true;
-    }
-    return false;
+    static const uint32_t req_bits = 2 | 4 | 8 | 16 | 32; // No phosphor in first terminal component (starts with O5)
+
+    if (out_backbone_atoms) *out_backbone_atoms = bb;
+    return (bits & req_bits) == req_bits;
 }
 
 size_t md_util_element_from_mass(md_element_t element[], const float mass[], size_t count) {
@@ -3956,12 +3965,14 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             if (md_util_nucleic_backbone_atoms_extract(&nucl_atoms, &sys->atom, range)) {
                 sys->comp.flags[i] |= MD_FLAG_NUCLEOTIDE;
                 if (sys->atom.flags) {
+                    if (nucl_atoms.p != -1) {
+                        sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
+                    }
+                    sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
                     for (int j = range.beg; j < range.end; ++j) {
                         sys->atom.flags[j] |= MD_FLAG_NUCLEOTIDE;
                     }
@@ -4349,19 +4360,25 @@ static void sort_ring(int* arr, int n) {
 // Copyright (c) 2018 mol* contributors, licensed under MIT, See LICENSE file for more info.
 // @author David Sehnal <david.sehnal@gmail.com>
 
-size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* atom, const md_bond_data_t* bond) {
-    ASSERT(out_rings);
-    ASSERT(out_rings->alloc);
+bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
 
-    ASSERT(atom);
-    ASSERT(bond);
+    size_t num_atoms = md_system_atom_count(sys);
+    size_t num_bonds = md_system_bond_count(sys);
 
-    if (atom->count == 0) {
-        return 0;
+    if (num_atoms == 0) {
+        return false;
     }
-    if (bond->count == 0) {
-        return 0;
+    if (num_bonds == 0) {
+        return false;
     }
+
+    if (sys->ring.alloc && sys->ring.alloc != alloc) {
+        md_index_data_free(&sys->ring);
+    }
+    sys->ring.alloc = alloc;
+    md_index_data_clear(&sys->ring);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
@@ -4371,11 +4388,11 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
     typedef uint16_t mark_t;
     typedef  int32_t pred_t;
         
-    color_t* color = md_vm_arena_push_zero_array(temp_arena, color_t, atom->count);
-    depth_t* depth = md_vm_arena_push_zero_array(temp_arena, depth_t, atom->count);
-    mark_t*  mark  = md_vm_arena_push_zero_array(temp_arena, mark_t,  atom->count);
-    pred_t*  pred  = md_vm_arena_push_array     (temp_arena, pred_t,  atom->count);
-    MEMSET(pred, -1, atom->count * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
+    color_t* color = md_vm_arena_push_zero_array(temp_arena, color_t, num_atoms);
+    depth_t* depth = md_vm_arena_push_zero_array(temp_arena, depth_t, num_atoms);
+    mark_t*  mark  = md_vm_arena_push_zero_array(temp_arena, mark_t,  num_atoms);
+    pred_t*  pred  = md_vm_arena_push_array     (temp_arena, pred_t,  num_atoms);
+    MEMSET(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
     // The capacity is arbitrary here, but will be resized if needed.
     fifo_t queue = fifo_create(64, temp_arena);
@@ -4391,8 +4408,8 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
 
     size_t num_rings = 0;
 
-    for (int atom_idx = 0; atom_idx < (int)atom->count; ++atom_idx) {
-        if (atom->flags[atom_idx] & (MD_FLAG_WATER | MD_FLAG_ION)) continue;
+    for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
+        if (sys->atom.flags[atom_idx] & (MD_FLAG_WATER | MD_FLAG_ION)) continue;
 
         // Skip any atom that has already been colored in the previous search
         if (color[atom_idx] == current_color) continue;
@@ -4411,7 +4428,7 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
             processed_ring_elements += 1;
 #endif
 
-            md_bond_iter_t it = md_bond_iter(bond, idx);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
             while (md_bond_iter_has_next(&it)) {
                 int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
@@ -4487,7 +4504,7 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
                         uint64_t key = md_hash64(ring, len * sizeof(*ring), 0);
                         if (!md_hashset_get(&ring_set, key)) {
                             md_hashset_add(&ring_set, key);
-                            md_index_data_push_arr(out_rings, ring, len);
+                            md_index_data_push_arr(&sys->ring, ring, len);
                             num_rings += 1;
                         }
                     }
@@ -4512,7 +4529,7 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
     MD_LOG_DEBUG("Processed ring elements: %llu\n", processed_ring_elements);
 #endif
 
-    return num_rings;
+    return true;
 }
 
 #undef MIN_RING_SIZE
@@ -4520,13 +4537,19 @@ size_t md_util_compute_rings(md_index_data_t* out_rings, const md_atom_data_t* a
 #undef MAX_DEPTH
 
 // Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
-size_t md_util_compute_structures(md_index_data_t* out_structures, const md_bond_data_t* bond) {
-    ASSERT(out_structures);
-    ASSERT(out_structures->alloc);
+bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
+
+    if (sys->structure.alloc && sys->structure.alloc != alloc) {
+        md_index_data_free(&sys->structure);
+    }
+    sys->structure.alloc = alloc;
+    md_index_data_clear(&sys->structure);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
-    const size_t atom_count = bond->conn.offset_count - 1;
+    const size_t atom_count = md_system_atom_count(sys);
 
     // Create a bitfield to keep track of which atoms have been visited
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
@@ -4552,7 +4575,7 @@ size_t md_util_compute_structures(md_index_data_t* out_structures, const md_bond
 
             md_array_push(indices, cur, temp_arena);
             
-            md_bond_iter_t it = md_bond_iter(bond, cur);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, cur);
             while (md_bond_iter_has_next(&it)) {
                 int next = md_bond_iter_atom_index(&it);
                 if (!bitfield_test_bit(visited, next)) {
@@ -4571,13 +4594,13 @@ size_t md_util_compute_structures(md_index_data_t* out_structures, const md_bond
         }
         
         // Here we should have exhausted every atom that is connected to index i.
-        md_index_data_push_arr(out_structures, indices, md_array_size(indices));
+        md_index_data_push_arr(&sys->structure, indices, md_array_size(indices));
         num_structures += 1;
     }
     
     md_vm_arena_destroy(temp_arena);
 
-    return num_structures;
+    return true;
 }
 
 void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, size_t extent, const md_bitfield_t* viable_mask) {
@@ -8199,21 +8222,13 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     }
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
-        md_util_covalent_bonds_compute(&sys->bond, sys, alloc);
+        md_util_system_infer_covalent_bonds(sys, alloc);
     }
 
     if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
         if (sys->bond.count) {
-            if (!sys->structure.alloc) {
-                sys->structure.alloc = alloc;
-            }
-            md_index_data_clear(&sys->structure);
-            md_util_compute_structures(&sys->structure, &sys->bond);
-            if (!sys->ring.alloc) {
-                sys->ring.alloc = alloc;
-            }
-            md_index_data_clear(&sys->ring);
-            md_util_compute_rings(&sys->ring, &sys->atom, &sys->bond);
+            md_util_system_infer_structures(sys, alloc);
+            md_util_system_infer_rings(sys, alloc);
         }
     }
     
@@ -8323,10 +8338,12 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                     for (md_comp_idx_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
                         md_nucleic_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, comp_idx);
-                        if (md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range)) {
-                            backbone_atoms[backbone_length++] = atoms;
-                            if (comp_base == -1) {
-                                comp_base = comp_idx;
+                        if (md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range) ) {
+                            if (backbone_length > 0 && atoms.p != -1) {
+                                backbone_atoms[backbone_length++] = atoms;
+                                if (comp_base == -1) {
+                                    comp_base = comp_idx;
+                                }
                             }
                         } else {
                             if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {

@@ -213,8 +213,6 @@ bool md_gro_molecule_init(struct md_system_t* sys, const md_gro_data_t* data, st
     }
 	md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
-    md_util_system_infer_comp_flags(sys);
-
     float box[3][3];
     MEMCPY(&box, data->box, sizeof(mat3_t));
     // convert from nm to Ångström
@@ -225,6 +223,8 @@ bool md_gro_molecule_init(struct md_system_t* sys, const md_gro_data_t* data, st
     }
 
     sys->unit_cell = md_util_unit_cell_from_matrix(box);
+
+    md_util_system_infer_comp_flags(sys);
 
     return true;
 }

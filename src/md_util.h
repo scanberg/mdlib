@@ -78,8 +78,8 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* 
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-static inline void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_system_t* sys, struct md_allocator_i* alloc) {
-    md_util_covalent_bonds_compute_exp(out_bonds, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unit_cell, alloc);
+static inline void md_util_system_infer_covalent_bonds(md_system_t* sys, struct md_allocator_i* alloc) {
+    md_util_covalent_bonds_compute_exp(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unit_cell, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
@@ -90,21 +90,11 @@ void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_syst
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
 void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_system_t* sys, double radius, const struct md_bitfield_t* viable_mask);
 
-//bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-
-// Computes chains from connected residues
-// The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
-// This means that single residues which are not connected to any other residue will not classify as a chain.
-//bool md_util_compute_chain_data(md_instance_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
-
-// Compute the valence of atoms given the covalent bonds
-//bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
-
-// Compute rings formed by covalent bonds
-//bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+// Infer rings formed by covalent bonds
+bool md_util_system_infer_rings(md_system_t* sys, struct md_allocator_i* alloc);
 
 // Identify isolated structures by covalent bonds
-//bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+bool md_util_system_infer_structures(md_system_t* sys, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_molecule_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
