@@ -201,7 +201,7 @@ enum {
 
 typedef int32_t     md_atom_idx_t;
 typedef int32_t     md_comp_idx_t;
-typedef int32_t     md_instance_idx_t;
+typedef int32_t     md_inst_idx_t;
 typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_seq_id_t;

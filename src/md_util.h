@@ -67,6 +67,8 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_system_t* sys);
 
+bool md_util_system_infer_secondary_structure(md_system_t* sys);
+
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_system_t* sys);
@@ -74,12 +76,12 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_component_data_t* in_comp, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
+void md_util_infer_covalent_bonds(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_component_data_t* in_comp, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 static inline void md_util_system_infer_covalent_bonds(md_system_t* sys, struct md_allocator_i* alloc) {
-    md_util_covalent_bonds_compute_exp(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unit_cell, alloc);
+    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unit_cell, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
@@ -133,10 +135,16 @@ void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unit_cell_
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
+// Applies periodic boundary conditions to all coordinates in a system
+bool md_util_system_pbc(md_system_t* sys);
+
 // Unwraps a structure
 // It implicitly uses the previous coordinate as a reference when deperiodizing
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
+
+// Unwraps all structures in a system
+bool md_util_system_unwrap(md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell);

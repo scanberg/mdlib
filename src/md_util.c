@@ -1514,7 +1514,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
         }
 
         // Classify residues
-        for (int32_t i = range.beg; i < range.end; ++i) {
+        for (uint32_t i = range.beg; i < range.end; ++i) {
             md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
 
             if (is_sheet(sys, range, i)) {
@@ -1528,7 +1528,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
 
         // Set squished isolated structures to the surrounding (only for sheets and helices)
         md_secondary_structure_t* ss = secondary_structure;
-        for (int32_t i = range.beg + 1; i < range.end - 1; ++i) {
+        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
             if (ss[i-1] == ss[i+1] &&
                 ss[i-1] != MD_SECONDARY_STRUCTURE_COIL &&
                 ss[i+1] != MD_SECONDARY_STRUCTURE_COIL)
@@ -1539,7 +1539,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
 
         // Set remaining isolated structures to coil
         if (ss[range.beg] != ss[range.beg + 1]) ss[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
-        for (int32_t i = range.beg + 1; i < range.end - 1; ++i) {
+        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
             if (ss[i] != ss[i-1] &&
                 ss[i] != ss[i+1])
             {
@@ -1821,9 +1821,13 @@ bool dssp(md_secondary_structure_t secondary_structure[], md_backbone_angles_t o
 }
 #endif
 
-bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
     return tm_align(secondary_structure, capacity, sys);
     //return dssp(secondary_structure, capacity, mol);
+}
+
+bool md_util_system_infer_secondary_structure(md_system_t* sys) {
+	return md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys);
 }
 
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_system_t* sys) {
@@ -3479,7 +3483,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                 }
             }
 #else
-            for (int i = range_a.beg; i < range_a.end; ++i) {
+            for (uint32_t i = range_a.beg; i < range_a.end; ++i) {
                 const md_256  ci[3] = {
                     md_mm256_set1_ps(x[i]),
                     md_mm256_set1_ps(y[i]),
@@ -3539,7 +3543,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
         int* indices = md_vm_arena_push(temp_arena, sizeof(int) * capacity);
 
         int size = 0;
-        for (int i = range_b.beg; i < range_b.end; ++i) {
+        for (uint32_t i = range_b.beg; i < range_b.end; ++i) {
             if (element[i] != 0) {
                 indices[size++] = i;
             }
@@ -3600,7 +3604,7 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_component_data_t* comp, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_component_data_t* comp, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(alloc);
 
@@ -7771,6 +7775,21 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* u
     return false;
 }
 
+bool md_util_system_pbc(md_system_t* sys) {
+    ASSERT(sys);
+
+	md_flags_t cell_flags = sys->unit_cell.flags;
+
+    if (cell_flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec3_t ext = mat3_diag(sys->unit_cell.basis);
+        pbc_ortho(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, ext);
+    } else if (cell_flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unit_cell);
+    }
+
+    return true;
+}
+
 static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
     ASSERT(x);
     ASSERT(y);
@@ -7894,6 +7913,32 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell)
 
     // The unit cell is not initialized or is simply not periodic
     return false;
+}
+
+bool md_util_system_unwrap(md_system_t* sys) {
+    ASSERT(sys);
+    size_t num_structures = md_index_data_num_ranges(&sys->structure);
+	float* x = sys->atom.x;
+	float* y = sys->atom.y;
+	float* z = sys->atom.z;
+
+    md_flags_t cell_flags = sys->unit_cell.flags;
+    if (cell_flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec3_t ext = mat3_diag(sys->unit_cell.basis);
+        for (size_t i = 0; i < num_structures; ++i) {
+            const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
+            const size_t   s_len = md_index_range_size(&sys->structure, i);
+            unwrap_ortho(x, y, z, s_idx, s_len, ext);
+        }
+    } else if (cell_flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        for (size_t i = 0; i < num_structures; ++i) {
+            const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
+            const size_t   s_len = md_index_range_size(&sys->structure, i);
+            unwrap_triclinic(x, y, z, s_idx, s_len, &sys->unit_cell);
+        }
+    }
+    
+    return true;
 }
 
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell) {
@@ -8130,7 +8175,7 @@ static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, (md_inst_idx_t)inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t comp_idx = (int32_t)(comp_base_idx + i);
@@ -8142,7 +8187,7 @@ static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, (md_inst_idx_t)inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t comp_idx = (int32_t)(comp_base_idx + i);
@@ -8313,7 +8358,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
                 if (sys->protein_backbone.segment.count > 0) {
                     md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, sys);
-                    md_util_backbone_secondary_structure_compute(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys);
+                    md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys);
                     md_util_backbone_ramachandran_classify(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, sys);
                 }
             }

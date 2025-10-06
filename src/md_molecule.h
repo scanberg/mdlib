@@ -62,7 +62,7 @@ typedef struct md_protein_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the segments
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
+        md_inst_idx_t* inst_idx; // Reference to the instance in which the backbone is located
     } range;
 
     // These fields share the same length 'count'
@@ -81,7 +81,7 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the backbone fields stored bellow
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
+        md_inst_idx_t* inst_idx; // Reference to the instance in which the backbone is located
     } range;
 
     // These fields share the same length 'count'
@@ -375,16 +375,16 @@ static inline md_urange_t md_inst_comp_range(const md_instance_data_t* inst, siz
     return range;
 }
 
-static inline md_instance_idx_t md_inst_find_by_comp_idx(const md_instance_data_t* inst, size_t comp_idx) {
+static inline md_inst_idx_t md_inst_find_by_comp_idx(const md_instance_data_t* inst, size_t comp_idx) {
     ASSERT(inst);
 
-    md_instance_idx_t inst_idx = -1;
+    md_inst_idx_t inst_idx = -1;
     if (inst->comp_offset) {
         for (size_t i = 0; i < inst->count; ++i) {
             size_t inst_beg = inst->comp_offset[i];
             size_t inst_end = inst->comp_offset[i + 1];
             if (inst_beg <= comp_idx && comp_idx < inst_end) {
-                inst_idx = (md_instance_idx_t)i;
+                inst_idx = (md_inst_idx_t)i;
                 break;
             }
             if (inst_beg > i) {
@@ -470,6 +470,20 @@ static inline str_t md_inst_auth_id(const md_instance_data_t* inst, size_t inst_
         auth_id = LBL_TO_STR(inst->auth_id[inst_idx]);
     }
     return auth_id;
+}
+
+static inline md_entity_idx_t md_inst_entity_idx(const md_instance_data_t* inst, size_t inst_idx) {
+    ASSERT(inst);
+    md_entity_idx_t entity_idx = -1;
+    if (inst->entity_idx && inst_idx < inst->count) {
+        entity_idx = inst->entity_idx[inst_idx];
+    }
+    return entity_idx;
+}
+
+static inline size_t md_entity_count(const md_entity_data_t* entity) {
+    ASSERT(entity);
+    return entity->count;
 }
 
 static inline md_entity_idx_t md_entity_find_by_id(const md_entity_data_t* entity, str_t id) {
@@ -608,6 +622,21 @@ static inline md_urange_t md_system_comp_atom_range(const md_system_t* sys, size
 static inline size_t md_system_comp_atom_count(const md_system_t* sys, size_t comp_idx) {
     ASSERT(sys);
     return md_comp_atom_count(&sys->comp, comp_idx);
+}
+
+static inline md_comp_idx_t md_system_comp_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    return md_comp_find_by_atom_idx(&sys->comp, atom_idx);
+}
+
+static inline md_inst_idx_t md_system_inst_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    md_inst_idx_t inst_idx = -1;
+    md_comp_idx_t comp_idx = md_system_comp_find_by_atom_idx(sys, atom_idx);
+    if (comp_idx >= 0) {
+        inst_idx = md_inst_find_by_comp_idx(&sys->inst, comp_idx);
+    }
+    return inst_idx;
 }
 
 // Convenience functions to extract atom properties into arrays

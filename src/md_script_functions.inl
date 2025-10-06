@@ -356,16 +356,19 @@ static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleic (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
-static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
-static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
+static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
+static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
+static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
 
-static int _fill_residue(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
-static int _fill_chain  (data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
+static int _fill_comp(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
+static int _fill_inst(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
 
-// Chain level selectors
-static int _chain_irng  (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
-static int _chain_str   (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
+// Instance level selectors
+static int _inst_irng   (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
+static int _inst_id     (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
+static int _inst_auth_id(data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
+static int _inst_chain_id(data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
+static int _inst_chain(data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
@@ -630,14 +633,20 @@ static procedure_t procedures[] = {
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
     {CSTR("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {CSTR("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
-    {CSTR("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("resid"),     TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _resid,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _residue,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("component"), TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("resid"),     TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp_seq_id,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("component"), TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
-    // Chain level
-    {CSTR("chain"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _chain_str,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("chain"),     TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    // Instance level
+    {CSTR("instance"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_id,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("instance"),     TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _inst_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+	{CSTR("auth_id"),      TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_auth_id,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+	{CSTR("chain_id"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_chain_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_chain_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _inst_chain,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single bitfield, but the number of atoms within is not fixed)
@@ -696,8 +705,8 @@ static procedure_t procedures[] = {
     {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
     //{CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
 
-    {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_inst,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
 };
 
@@ -1007,6 +1016,22 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
         }
     }
     return -1;
+}
+
+// Extracts
+static md_array(md_inst_idx_t) get_chain_instances(const md_system_t* sys, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
+    md_array(int32_t) arr = 0;
+	size_t num_instances = md_inst_count(&sys->inst);
+    for (size_t i = 0; i < num_instances; ++i) {
+		md_entity_idx_t ent_idx = md_inst_entity_idx(&sys->inst, i);
+		md_flags_t flags = md_entity_flags(&sys->entity, ent_idx);
+        if (flags & MD_FLAG_POLYMER) {
+			md_array_push(arr, (int32_t)i, alloc);
+        }
+    }
+    return arr;
 }
 
 static md_array(int32_t) get_residue_indices_in_context(const md_system_t* sys, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
@@ -2910,7 +2935,7 @@ static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
 }
 
-static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
@@ -2967,7 +2992,7 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     const size_t num_bf = element_count(arg[0]);
     const md_bitfield_t* src_bf = as_bitfield(arg[0]);
@@ -3035,7 +3060,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     const int64_t num_bf = element_count(arg[0]);
@@ -3100,7 +3125,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
@@ -3177,7 +3202,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
@@ -3247,7 +3272,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
@@ -3303,9 +3328,82 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        return -1;
+    }
+
+    int result = 0;
+
+    const size_t num_str = element_count(arg[0]);
+    const str_t* str     = arg[0].ptr;
+    int32_t* chain_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        if (dst->ptr) {
+            md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
+
+            int64_t dst_idx = 0;
+            for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
+                for (size_t j = 0; j < num_str; ++j) {
+                    if (match_query(str[j], LBL_TO_STR(ctx->mol->inst.id[i]))) {
+                        ASSERT(dst_idx < cap);
+                        md_bitfield_t* bf = &bf_arr[dst_idx];
+                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
+                        const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, i);
+                        md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
+                        if (ctx->mol_ctx) {
+                            md_bitfield_and_inplace(bf, ctx->mol_ctx);
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    else {
+        int count = 0;
+        for (size_t j = 0; j < num_str; ++j) {
+            if (!validate_query(str[j])) {
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                return -1;
+            }
+            int pre_count = count;
+            for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
+                if (match_query(str[j], LBL_TO_STR(ctx->mol->inst.id[i]))) {
+                    count += 1;
+                }
+            }
+            if (pre_count == count) {
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any chain within the structure", str[j].len, str[j].ptr);
+                return -1;
+            }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        result = count;
+    }
+
+    md_array_free(chain_indices, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _inst_chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+	md_array(md_inst_idx_t) chain_inst = { 0 };
+    get_chain_instances(ctx->mol_ctx, ctx->temp_alloc);
 
     if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
