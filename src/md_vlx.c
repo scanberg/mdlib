@@ -3046,7 +3046,7 @@ bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const md_vlx_t* vlx,
         ASSERT(out_ao_data);
 		for (size_t i = 0; i < vlx->ao_data.num_cgtos; ++i) {
             double cgto_radius = 0.0;
-			uint32_t cgto_offset = out_ao_data->num_cgtos;
+			uint32_t cgto_offset = (uint32_t)out_ao_data->num_cgtos;
 			for (size_t j = vlx->ao_data.cgto_offset[i]; j < vlx->ao_data.cgto_offset[i + 1]; ++j) {
 				double radius = md_gto_compute_radius_of_influence(vlx->ao_data.pgtos[j].i, vlx->ao_data.pgtos[j].j, vlx->ao_data.pgtos[j].k, vlx->ao_data.pgtos[j].coeff, vlx->ao_data.pgtos[j].alpha, cutoff_value);
 				if (radius == 0.0) {
@@ -3054,7 +3054,7 @@ bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const md_vlx_t* vlx,
 				}
 
                 md_pgto_t pgto = vlx->ao_data.pgtos[j];
-				pgto.radius = radius;  // Update the radius of influence
+				pgto.radius = (float)radius;  // Update the radius of influence
 
 				md_array_push(out_ao_data->pgtos, pgto, alloc);
 				out_ao_data->num_pgtos += 1;

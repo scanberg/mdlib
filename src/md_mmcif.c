@@ -804,6 +804,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         md_array_ensure(sys->entity.id, num_entities, alloc);
         md_array_ensure(sys->entity.flags, num_entities, alloc);
         md_array_ensure(sys->entity.description, num_entities, alloc);
+        sys->entity.count = num_entities;
 
         for (size_t i = 0; i < num_entities; ++i) {
             md_flags_t flags = 0;
@@ -893,6 +894,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
                     md_array_push(sys->inst.id, inst_id, alloc);
                     md_array_push(sys->inst.auth_id, inst_auth_id, alloc);
                     md_array_push(sys->inst.comp_offset, (uint32_t)sys->comp.count, alloc);
+                    md_array_push(sys->inst.entity_idx, entity_idx, alloc);
                     sys->inst.count += 1;
                 }
                 sys->comp.count += 1;

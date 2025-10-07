@@ -364,11 +364,12 @@ static int _fill_comp(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> 
 static int _fill_inst(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
 
 // Instance level selectors
-static int _inst_irng   (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
-static int _inst_id     (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
-static int _inst_auth_id(data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
-static int _inst_chain_id(data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
-static int _inst_chain(data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
+static int _inst_irng   (data_t*, data_t[], eval_context_t*);   // (irange[]) -> bitfield
+static int _inst_id     (data_t*, data_t[], eval_context_t*);   // (str[]) -> bitfield
+static int _inst_auth_id(data_t*, data_t[], eval_context_t*);   // (str[]) -> bitfield
+static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) -> bitfield
+static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> bitfield
+static int _chain_auth_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> bitfield
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
@@ -644,9 +645,9 @@ static procedure_t procedures[] = {
     {CSTR("instance"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_id,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {CSTR("instance"),     TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _inst_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 	{CSTR("auth_id"),      TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_auth_id,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-	{CSTR("chain_id"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_chain_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_chain_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _inst_chain,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+	{CSTR("chain_id"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("chain"),        TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single bitfield, but the number of atoms within is not fixed)
@@ -1019,7 +1020,7 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
 }
 
 static inline bool is_instance_chain(const md_system_t* sys, size_t inst_idx) {
-    md_flags_t flags = md_system_inst_flags(&sys, inst_idx);
+    md_flags_t flags = md_system_inst_flags(sys, inst_idx);
     return flags & MD_FLAG_POLYMER;
 }
 
@@ -3312,8 +3313,9 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    if (ctx->mol->inst.count == 0) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    if (inst_indices == NULL) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
@@ -3321,7 +3323,7 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const size_t  num_ranges = element_count(arg[0]);
     const irange_t*   ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_inst_range_in_context(ctx->mol, ctx->mol_ctx);
+    irange_t ctx_range = {0, md_array_size(inst_indices)};
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3334,7 +3336,8 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_ranges; ++i) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 for (int64_t j = range.beg; j < range.end; ++j) {
-                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, j);
+                    md_inst_idx_t inst_idx = inst_indices[j];
+                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, inst_idx);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3349,10 +3352,10 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (size_t i = 0; i < num_ranges; ++i) {
-            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            if (range.beg < 0 || range.end > ctx_range.end) {
                 return STATIC_VALIDATION_ERROR;
             }
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
             count += range.end - range.beg;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
@@ -3378,7 +3381,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const size_t  num_ranges = element_count(arg[0]);
     const irange_t*   ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_chain_range_in_context(ctx->mol, ctx->mol_ctx);
+    irange_t ctx_range = {0, md_array_size(chain_indices)};
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3391,7 +3394,8 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_ranges; ++i) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 for (int64_t j = range.beg; j < range.end; ++j) {
-                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, j);
+                    md_inst_idx_t chain_idx = chain_indices[j];
+                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, chain_idx);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3406,10 +3410,10 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (size_t i = 0; i < num_ranges; ++i) {
-            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            if (range.beg < 0 || range.end > ctx_range.end) {
                 return STATIC_VALIDATION_ERROR;
             }
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
             count += range.end - range.beg;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
@@ -3421,122 +3425,35 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+typedef struct {
+    int32_t idx;
+    str_t   str;
+} idx_str_pair_t;
 
-    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
-        return -1;
-    }
+static int inst_id(md_bitfield_t* out_bf_arr, size_t out_bf_dim, const idx_str_pair_t* inst, size_t num_inst, const str_t* str, size_t num_str, eval_context_t* ctx) {
+    if (out_bf_arr) {
+        if (out_bf_dim == 0) return 0;
 
-    int result = 0;
-
-    const size_t num_str = element_count(arg[0]);
-    const str_t* str     = arg[0].ptr;
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-
-            int64_t dst_idx = 0;
-            for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
-                md_inst_idx_t inst_idx = inst_indices[i];
-                str_t inst_id = md_system_inst_id(ctx->mol, inst_idx);
-                for (size_t j = 0; j < num_str; ++j) {
-                    if (match_query(str[j], inst_id)) {
-                        ASSERT(dst_idx < cap);
-                        md_bitfield_t* bf = &bf_arr[dst_idx];
-                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-                        const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, inst_idx);
-                        md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
-                        if (ctx->mol_ctx) {
-                            md_bitfield_and_inplace(bf, ctx->mol_ctx);
-                        }
-
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    else {
-        int count = 0;
-        for (size_t j = 0; j < num_str; ++j) {
-            if (!validate_query(str[j])) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
-                return -1;
-            }
-            int pre_count = count;
-            for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
-                md_inst_idx_t inst_idx = inst_indices[i];
-                str_t inst_id = md_system_inst_id(ctx->mol, inst_idx);
+        size_t dst_idx = 0;
+        for (size_t i = 0; i < num_inst; ++i) {
+            md_inst_idx_t inst_idx = inst[i].idx;
+            str_t inst_id = inst[i].str;
+            for (size_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], inst_id)) {
-                    count += 1;
-                }
-            }
-            if (pre_count == count) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any instance within the structure", str[j].len, str[j].ptr);
-                return -1;
-            }
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    md_array_free(inst_indices, ctx->temp_alloc);
-
-    return result;
-}
-
-static int _inst_chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-
-    int32_t* chain_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-    if (chain_indices == NULL) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
-        return -1;
-    }
-
-    int result = 0;
-
-    const size_t num_str = element_count(arg[0]);
-    const str_t* str     = arg[0].ptr;
-
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-
-            int64_t dst_idx = 0;
-            for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
-                md_inst_idx_t chain_idx = chain_indices[i];
-                str_t chain_id = md_system_inst_id(ctx->mol, chain_idx);
-                for (size_t j = 0; j < num_str; ++j) {
-                    if (match_query(str[j], chain_id)) {
-                        ASSERT(dst_idx < cap);
-                        md_bitfield_t* bf = &bf_arr[dst_idx];
-                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-                        const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, chain_idx);
-                        md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
-                        if (ctx->mol_ctx) {
-                            md_bitfield_and_inplace(bf, ctx->mol_ctx);
-                        }
-
-                        break;
+                    ASSERT(dst_idx < out_bf_dim);
+                    md_bitfield_t* bf = &out_bf_arr[dst_idx];
+                    dst_idx = (out_bf_dim == 1) ? dst_idx : dst_idx + 1;
+                    const md_urange_t atom_range = md_system_inst_atom_range(ctx->mol, inst_idx);
+                    md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
+                    if (ctx->mol_ctx) {
+                        md_bitfield_and_inplace(bf, ctx->mol_ctx);
                     }
+
+                    break;
                 }
             }
         }
+        return 0;
     }
     else {
         int count = 0;
@@ -3546,10 +3463,9 @@ static int _inst_chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 return -1;
             }
             int pre_count = count;
-            for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
-                md_inst_idx_t chain_idx = chain_indices[i];
-                str_t chain_id = md_system_inst_id(ctx->mol, chain_idx);
-                if (match_query(str[j], chain_id)) {
+            for (size_t i = 0; i < num_inst; ++i) {
+                str_t inst_id = inst[i].str;
+                if (match_query(str[j], inst_id)) {
                     count += 1;
                 }
             }
@@ -3561,10 +3477,130 @@ static int _inst_chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
             count = MIN(1, count);
         }
-        result = count;
+        return count;
+    }
+}
+
+static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        return -1;
     }
 
-    md_array_free(chain_indices, ctx->temp_alloc);
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
+    for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
+        md_inst_idx_t inst_idx = inst_indices[i];
+        str_t inst_id = md_system_inst_id(ctx->mol, inst_idx);
+        idx_str_pair_t pair = {inst_idx, inst_id};
+        inst[i] = pair;
+    }
+
+    size_t num_str = element_count(arg[0]);
+    const str_t* str = arg[0].ptr;
+    md_bitfield_t* out_bf_arr = dst ? (md_bitfield_t*)dst->ptr : NULL;
+    size_t out_bf_dim = dst ? type_info_array_len(dst->type) : 0;
+
+    int result = inst_id(out_bf_arr, out_bf_dim, inst, md_array_size(inst), str, num_str, ctx);
+
+    md_array_free(inst_indices, ctx->temp_alloc);
+    md_array_free(inst, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _inst_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        return -1;
+    }
+
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
+    for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
+        md_inst_idx_t inst_idx = inst_indices[i];
+        str_t inst_id = md_system_inst_auth_id(ctx->mol, inst_idx);
+        idx_str_pair_t pair = {inst_idx, inst_id};
+        inst[i] = pair;
+    }
+
+    size_t num_str = element_count(arg[0]);
+    const str_t* str = arg[0].ptr;
+    md_bitfield_t* out_bf_arr = dst ? (md_bitfield_t*)dst->ptr : NULL;
+    size_t out_bf_dim = dst ? type_info_array_len(dst->type) : 0;
+
+    int result = inst_id(out_bf_arr, out_bf_dim, inst, md_array_size(inst), str, num_str, ctx);
+
+    md_array_free(inst_indices, ctx->temp_alloc);
+    md_array_free(inst, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        return -1;
+    }
+
+    int32_t* inst_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
+    for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
+        md_inst_idx_t inst_idx = inst_indices[i];
+        str_t inst_id = md_system_inst_id(ctx->mol, inst_idx);
+        idx_str_pair_t pair = {inst_idx, inst_id};
+        inst[i] = pair;
+    }
+
+    size_t num_str = element_count(arg[0]);
+    const str_t* str = arg[0].ptr;
+    md_bitfield_t* out_bf_arr = dst ? (md_bitfield_t*)dst->ptr : NULL;
+    size_t out_bf_dim = dst ? type_info_array_len(dst->type) : 0;
+
+    int result = inst_id(out_bf_arr, out_bf_dim, inst, md_array_size(inst), str, num_str, ctx);
+
+    md_array_free(inst_indices, ctx->temp_alloc);
+    md_array_free(inst, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->inst.count == 0 || !ctx->mol->inst.id) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        return -1;
+    }
+
+    int32_t* inst_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
+    for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
+        md_inst_idx_t inst_idx = inst_indices[i];
+        str_t inst_id = md_system_inst_auth_id(ctx->mol, inst_idx);
+        idx_str_pair_t pair = {inst_idx, inst_id};
+        inst[i] = pair;
+    }
+
+    size_t num_str = element_count(arg[0]);
+    const str_t* str = arg[0].ptr;
+    md_bitfield_t* out_bf_arr = dst ? (md_bitfield_t*)dst->ptr : NULL;
+    size_t out_bf_dim = dst ? type_info_array_len(dst->type) : 0;
+
+    int result = inst_id(out_bf_arr, out_bf_dim, inst, md_array_size(inst), str, num_str, ctx);
+
+    md_array_free(inst_indices, ctx->temp_alloc);
+    md_array_free(inst, ctx->temp_alloc);
 
     return result;
 }

@@ -88,11 +88,11 @@ UTEST_F(util, bonds) {
     EXPECT_EQ(163504, utest_fixture->mol_centered.bond.count);
 }
 
-UTEST_F(util, chain) {
+UTEST_F(util, inst) {
     EXPECT_EQ(1,   utest_fixture->mol_ala.inst.count);
-	EXPECT_EQ(0,   utest_fixture->mol_pftaa.inst.count);
-	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.inst.count);
-	EXPECT_EQ(253, utest_fixture->mol_centered.inst.count);
+	EXPECT_EQ(1,   utest_fixture->mol_pftaa.inst.count);
+	EXPECT_EQ(2,   utest_fixture->mol_nucleotides.inst.count);
+	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.inst.count);
 
     const md_system_t* sys = &utest_fixture->mol_centered;
     ASSERT(sys->inst.count > 253);

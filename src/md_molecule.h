@@ -594,6 +594,15 @@ static inline str_t md_system_inst_id(const md_system_t* sys, size_t inst_idx) {
     return id;
 }
 
+static inline str_t md_system_inst_auth_id(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    str_t id = STR_LIT("");
+    if (sys->inst.id && inst_idx < sys->inst.count) {
+        id = md_inst_auth_id(&sys->inst, inst_idx);
+    }
+    return id;
+}
+
 static inline size_t md_system_inst_comp_count(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     return md_inst_comp_count(&sys->inst, inst_idx);

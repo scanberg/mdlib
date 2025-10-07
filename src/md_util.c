@@ -4215,14 +4215,14 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                 const char* entity_type_str = "";
                 if (entity_flags & MD_FLAG_POLYMER) {
                     if (entity_flags & MD_FLAG_AMINO_ACID) {
-                        entity_type_str = "Polypeptide";
+                        entity_type_str = "polypeptide";
                     } else if (entity_flags & MD_FLAG_NUCLEOTIDE) {
-                        entity_type_str = "Nucleic Acid";
+                        entity_type_str = "nucleic acid";
                     } else {
-                        entity_type_str = "Polymer";
+                        entity_type_str = "polymer";
                     }
                 } else if (entity_flags & MD_FLAG_WATER) {
-                    entity_type_str = "Water";
+                    entity_type_str = "water";
                 } else {
                     entity_type_str = comp_name.ptr;
                 }
@@ -4241,13 +4241,14 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             // Commit range (i,j) as an instance
 
             md_array_push(sys->inst.id, md_util_next_unique_inst_id(sys->inst.id, sys->inst.count), alloc);
-            md_array_push(sys->inst.auth_id, make_label(STR_LIT("")), alloc);  // No auth id info as its generated
+            md_array_push(sys->inst.auth_id, make_label(comp_auth_id), alloc);  // No auth id info as its generated
             md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
             md_array_push(sys->inst.entity_idx, entity_idx, alloc);
             sys->inst.count += 1;
 
             i = j;
         }
+        md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
     }
 
     md_vm_arena_destroy(temp_arena);
@@ -8267,7 +8268,9 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     }
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
-        md_util_system_infer_covalent_bonds(sys, alloc);
+        if (sys->bond.count == 0) {
+            md_util_system_infer_covalent_bonds(sys, alloc);
+        }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
