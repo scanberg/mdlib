@@ -2178,7 +2178,7 @@ static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md
     size_t node_cap = str_len(smiles_str);
     md_smiles_node_t* nodes = md_vm_arena_push_array(temp_arena, md_smiles_node_t, node_cap);
     const size_t num_nodes = md_smiles_parse(nodes, node_cap, str_ptr(smiles_str), str_len(smiles_str));
-    vertex_t* verts = md_vm_arena_push(temp_arena, sizeof(vertex_t) * num_nodes * 2);
+    vertex_t* verts = md_vm_arena_push(temp_arena, sizeof(vertex_t) * num_nodes * 4);
     size_t num_verts = 0;
 
     graph_t graph = {0};

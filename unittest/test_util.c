@@ -527,54 +527,108 @@ UTEST_F(util, structure_matching_PFTAA_ring) {
 UTEST_F(util, structure_matching_smiles) {
     md_allocator_i* alloc = utest_fixture->alloc;
     
-    // There are natural variations in residues depending on its environment. (terminal residue etc)
-    // These are two example variations of ALANINE, which is covered by the used pattern
-    //const char ALANINE1[] = "N[C@@H]([CH3])C(=O)"; 
-    //const char ALANINE2[] = "N[C@@H]([CH3])C(-O)(-O)";
+    // These are smiles patterns for the common amino acids and nucleotides
 
-    const str_t ALANINE         = STR_LIT("[NH][C@@H]([CH3])CO");
-    const str_t ALANINE_T1      = STR_LIT("[NH3][C@@H]([CH3])CO");
-    const str_t ALANINE_T2      = STR_LIT("[NH][C@@H]([CH3])C(O)O");
+// These are the common parts of the amino acids (with the exception of Glycine and Proline)
+#define AA_INT "[NH][C@@H](CO)"
+#define AA_NT  "[NH3][C@@H](CO)"
+#define AA_CT  "[NH][C@@H](C(O)O)"
 
-    const str_t ARGININE        = STR_LIT("[NH][C@@H](CO)[CH2][CH2][CH2][NH]C([NH2])[NH2]");
+    const str_t ALANINE         = STR_LIT(AA_INT "[CH3]");
+    const str_t ALANINE_NT      = STR_LIT(AA_NT  "[CH3]");
+    const str_t ALANINE_CT      = STR_LIT(AA_CT  "[CH3]");
+
+    const str_t ARGININE        = STR_LIT(AA_INT "[CH2][CH2][CH2][NH]C([NH2])[NH2]");
+    const str_t ARGININE_NT     = STR_LIT(AA_NT  "[CH2][CH2][CH2][NH]C([NH2])[NH2]");
+    const str_t ARGININE_CT     = STR_LIT(AA_CT  "[CH2][CH2][CH2][NH]C([NH2])[NH2]");
+
     const str_t GLYCINE         = STR_LIT("[NH][CH2]CO");
-    const str_t GLYCINE_TERM    = STR_LIT("[NH][CH2]C(O)O");
-    const str_t ASPARAGINE      = STR_LIT("[NH][C@@H](CO)[CH2]C(O)[NH2]");
-    const str_t ASPARAGINE_T1   = STR_LIT("[NH3][C@@H](CO)[CH2]C(O)[NH2]");
-    const str_t ASPARAGINE_T2   = STR_LIT("[NH][C@@H](C(O)O)[CH2]C(O)[NH2]");
+    const str_t GLYCINE_NT      = STR_LIT("[NH3][CH2]CO");
+    const str_t GLYCINE_CT      = STR_LIT("[NH][CH2]C(O)O");
 
-    const str_t ASPARTATE       = STR_LIT("[NH][C@@H](CO)[CH2]C(O)O");
-    const str_t CYSTEINE        = STR_LIT("[NH][C@@H](CO)[CH2][SH]");
-    const str_t GLUTAMIC_ACID   = STR_LIT("[NH][C@@H](CO)[CH2][CH2]C(O)O");
-    const str_t GLUTAMINE       = STR_LIT("[NH][C@@H](CO)[CH2][CH2]C(O)[NH2]");
-    const str_t HISTIDINE       = STR_LIT("[NH][C@@H](CO)[CH2]C1:N:[CH]:[NH]:[CH]:1");
-    const str_t ISOLEUCINE      = STR_LIT("[NH][C@@H](CO)[CH]([CH3])[CH2][CH3]");
-    const str_t LEUCINE         = STR_LIT("[NH][C@@H](CO)[CH2][CH]([CH3])[CH3]");
-    const str_t LYSINE          = STR_LIT("[NH][C@@H](CO)[CH2][CH2][CH2][CH2][NH3]");
-    const str_t METHIONINE      = STR_LIT("[NH][C@@H](CO)[CH2][CH2]S[CH3]");
-    const str_t PHENYLALANINE   = STR_LIT("[NH][C@@H](CO)[CH2]C1:[CH]:[CH]:[CH]:[CH]:[CH]:1");
+    const str_t ASPARAGINE      = STR_LIT(AA_INT "[CH2]C(O)[NH2]");
+    const str_t ASPARAGINE_NT   = STR_LIT(AA_NT  "[CH2]C(O)[NH2]");
+    const str_t ASPARAGINE_CT   = STR_LIT(AA_CT  "[CH2]C(O)[NH2]");
+
+    const str_t ASPARTATE       = STR_LIT(AA_INT "[CH2]C(O)O");
+    const str_t ASPARTATE_NT    = STR_LIT(AA_NT  "[CH2]C(O)O");
+    const str_t ASPARTATE_CT    = STR_LIT(AA_CT  "[CH2]C(O)O");
+
+    const str_t CYSTEINE        = STR_LIT(AA_INT "[CH2][SH]");
+    const str_t CYSTEINE_NT     = STR_LIT(AA_NT  "[CH2][SH]");
+    const str_t CYSTEINE_CT     = STR_LIT(AA_CT  "[CH2][SH]");
+
+    const str_t GLUTAMIC_ACID    = STR_LIT(AA_INT "[CH2][CH2]C(O)O");
+    const str_t GLUTAMIC_ACID_NT = STR_LIT(AA_NT  "[CH2][CH2]C(O)O");
+    const str_t GLUTAMIC_ACID_CT = STR_LIT(AA_CT  "[CH2][CH2]C(O)O");
+
+    const str_t GLUTAMINE       = STR_LIT(AA_INT "[CH2][CH2]C(O)[NH2]");
+    const str_t GLUTAMINE_NT    = STR_LIT(AA_NT  "[CH2][CH2]C(O)[NH2]");
+    const str_t GLUTAMINE_CT    = STR_LIT(AA_CT  "[CH2][CH2]C(O)[NH2]");
+
+    const str_t HISTIDINE       = STR_LIT(AA_INT "[CH2]C1:N:[CH]:[NH]:[CH]:1");
+    const str_t HISTIDINE_NT    = STR_LIT(AA_NT  "[CH2]C1:N:[CH]:[NH]:[CH]:1");
+    const str_t HISTIDINE_CT    = STR_LIT(AA_CT  "[CH2]C1:N:[CH]:[NH]:[CH]:1");
+
+    const str_t ISOLEUCINE      = STR_LIT(AA_INT "[CH]([CH3])[CH2][CH3]");
+    const str_t ISOLEUCINE_NT   = STR_LIT(AA_NT  "[CH]([CH3])[CH2][CH3]");
+    const str_t ISOLEUCINE_CT   = STR_LIT(AA_CT "[CH]([CH3])[CH2][CH3]");
+
+    const str_t LEUCINE         = STR_LIT(AA_INT "[CH2][CH]([CH3])[CH3]");
+    const str_t LEUCINE_NT      = STR_LIT(AA_NT  "[CH2][CH]([CH3])[CH3]");
+    const str_t LEUCINE_CT      = STR_LIT(AA_CT  "[CH2][CH]([CH3])[CH3]");
+
+    const str_t LYSINE          = STR_LIT(AA_INT "[CH2][CH2][CH2][CH2][NH3]");
+    const str_t METHIONINE      = STR_LIT(AA_INT "[CH2][CH2]S[CH3]");
+    const str_t PHENYLALANINE   = STR_LIT(AA_INT "[CH2]C1:[CH]:[CH]:[CH]:[CH]:[CH]:1");
+
     const str_t PROLINE         = STR_LIT("N1[C@@H](CO)[CH2][CH2][CH2]1");
-    const str_t SERINE          = STR_LIT("[NH][C@@H](CO)[CH2][OH]");
-    const str_t THREONINE       = STR_LIT("[NH][C@@H](CO)[CH]([CH3])[OH]");
-    const str_t TRYPTOPHAN      = STR_LIT("[NH][C@@H](CO)[CH2]C1:[CH]:[NH]:C2:[CH]:[CH]:[CH]:[CH]:C:1:2");
-    const str_t TYROSINE        = STR_LIT("[NH][C@@H](CO)[CH2]C1:[CH]:[CH]:C([OH]):[CH]:[CH]:1");
-    const str_t VALINE          = STR_LIT("[NH][C@@H](CO)[CH]([CH3])[CH3]");
-    
-    const str_t SELENOCYSTEINE  = STR_LIT("[NH][C@@H](CO)[CH2][SeH]");
-    const str_t PYRROLYSINE     = STR_LIT("[NH][C@@H](CO)[CH2][CH2][CH2][CH2][NH]C(=O)C1=N[CH][CH2][CH]1[CH3]");
+    const str_t PROLINE_NT      = STR_LIT("N1[C@H](CO)[CH2][CH2][CH2]1");
+    const str_t PROLINE_CT      = STR_LIT("N1[C@@H](C(O)O)[CH2][CH2][CH2]1");
 
-    const str_t DA              = STR_LIT("P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N2CNC3C(N)NCNC23");
-    const str_t DC              = STR_LIT("P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(N)CC2");
-    const str_t DG              = STR_LIT("P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N2C3NC(N)NC(O)C3NC2");
-    const str_t DT              = STR_LIT("P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(O)C(C2)C");
-    const str_t DU              = STR_LIT("P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(O)CC2");
+    const str_t SERINE          = STR_LIT(AA_INT "[CH2][OH]");
+    const str_t SERINE_NT       = STR_LIT(AA_NT  "[CH2][OH]");
+    const str_t SERINE_CT       = STR_LIT(AA_CT  "[CH2][OH]");
+
+    const str_t THREONINE       = STR_LIT(AA_INT "[CH]([CH3])[OH]");
+    const str_t THREONINE_NT    = STR_LIT(AA_NT  "[CH]([CH3])[OH]");
+    const str_t THREONINE_CT    = STR_LIT(AA_CT  "[CH]([CH3])[OH]");
+
+    const str_t TRYPTOPHAN      = STR_LIT(AA_INT "[CH2]C1:[CH]:[NH]:C2:[CH]:[CH]:[CH]:[CH]:C:1:2");
+    const str_t TRYPTOPHAN_NT   = STR_LIT(AA_NT "[CH2]C1:[CH]:[NH]:C2:[CH]:[CH]:[CH]:[CH]:C:1:2");
+    const str_t TRYPTOPHAN_CT   = STR_LIT(AA_CT "[CH2]C1:[CH]:[NH]:C2:[CH]:[CH]:[CH]:[CH]:C:1:2");
+
+    const str_t TYROSINE        = STR_LIT(AA_INT "[CH2]C1:[CH]:[CH]:C([OH]):[CH]:[CH]:1");
+    const str_t TYROSINE_NT     = STR_LIT(AA_NT  "[CH2]C1:[CH]:[CH]:C([OH]):[CH]:[CH]:1");
+    const str_t TYROSINE_CT     = STR_LIT(AA_CT  "[CH2]C1:[CH]:[CH]:C([OH]):[CH]:[CH]:1");
+
+    const str_t VALINE          = STR_LIT(AA_INT "[CH]([CH3])[CH3]");
+    const str_t VALINE_NT       = STR_LIT(AA_NT "[CH]([CH3])[CH3]");
+    const str_t VALINE_CT       = STR_LIT(AA_CT "[CH]([CH3])[CH3]");
+    
+    const str_t SELENOCYSTEINE    = STR_LIT(AA_INT "[CH2][SeH]");
+    const str_t SELENOCYSTEINE_NT = STR_LIT(AA_NT  "[CH2][SeH]");
+    const str_t SELENOCYSTEINE_CT = STR_LIT(AA_CT  "[CH2][SeH]");
+
+    const str_t PYRROLYSINE     = STR_LIT(AA_INT "[CH2][CH2][CH2][CH2][NH]C(=O)C1=N[CH][CH2][CH]1[CH3]");
+    const str_t PYRROLYSINE_NT  = STR_LIT(AA_NT "[CH2][CH2][CH2][CH2][NH]C(=O)C1=N[CH][CH2][CH]1[CH3]");
+    const str_t PYRROLYSINE_CT  = STR_LIT(AA_CT "[CH2][CH2][CH2][CH2][NH]C(=O)C1=N[CH][CH2][CH]1[CH3]");
+
+#define NUCL_INT "P(O)(O)O[CH2][CH]1[CH](O)[CH2][CH](O1)N"
+#define NUCL_5T  "[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N"
+
+    const str_t DA              = STR_LIT(NUCL_INT "2CNC3C(N)NCNC23");
+    const str_t DC              = STR_LIT(NUCL_INT "2C(O)NC(N)CC2");
+    const str_t DG              = STR_LIT(NUCL_INT "2C3NC(N)NC(O)C3NC2");
+    const str_t DT              = STR_LIT(NUCL_INT "2C(O)NC(O)C(C2)C");
+    const str_t DU              = STR_LIT(NUCL_INT "2C(O)NC(O)CC2");
 
     // Terminal variation of DNA molecules
-    const str_t DA_alt          = STR_LIT("[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N2CNC3C(N)NCNC23");
-    const str_t DC_alt          = STR_LIT("[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(N)CC2");
-    const str_t DG_alt          = STR_LIT("[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N2C3NC(N)NC(O)C3NC2");
-    const str_t DT_alt          = STR_LIT("[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(O)C(C2)C");
-    const str_t DU_alt          = STR_LIT("[OH][CH2][CH]1[CH](O)[CH2][CH](O1)N2C(O)NC(O)CC2");
+    const str_t DA_alt          = STR_LIT(NUCL_5T "2CNC3C(N)NCNC23");
+    const str_t DC_alt          = STR_LIT(NUCL_5T "2C(O)NC(N)CC2");
+    const str_t DG_alt          = STR_LIT(NUCL_5T "2C3NC(N)NC(O)C3NC2");
+    const str_t DT_alt          = STR_LIT(NUCL_5T "2C(O)NC(O)C(C2)C");
+    const str_t DU_alt          = STR_LIT(NUCL_5T "2C(O)NC(O)CC2");
 
     typedef struct {
         str_t name;
@@ -595,27 +649,56 @@ UTEST_F(util, structure_matching_smiles) {
     res_t residues[] = {
         {STR_LIT("ALA"), {
             {ALANINE,                       PROT_FLAGS},
-            {ALANINE_T1,                    PROT_FLAGS},
-            {ALANINE_T2,                    PROT_FLAGS}},
+            {ALANINE_NT,                    PROT_FLAGS},
+            {ALANINE_CT,                    PROT_FLAGS}},
         },
-        {STR_LIT("ARG"), {ARGININE,         PROT_FLAGS}},
+        {STR_LIT("ARG"), {
+            {ARGININE,                      PROT_FLAGS},
+            {ARGININE_NT,                   PROT_FLAGS},
+            {ARGININE_CT,                   PROT_FLAGS}},
+        },
         {STR_LIT("ASN"), {
             {ASPARAGINE,                    PROT_FLAGS},
-            {ASPARAGINE_T1,                 PROT_FLAGS},
-            {ASPARAGINE_T2,                 PROT_FLAGS}}
+            {ASPARAGINE_NT,                 PROT_FLAGS},
+            {ASPARAGINE_CT,                 PROT_FLAGS}},
         },
-        {STR_LIT("ASP"), {ASPARTATE,        PROT_FLAGS}},
-        {STR_LIT("CYS"), {CYSTEINE,         PROT_FLAGS | MD_UTIL_MATCH_FLAGS_NO_H}},
+        {STR_LIT("ASP"), {
+            {ASPARTATE,                     PROT_FLAGS},
+            {ASPARTATE_NT,                  PROT_FLAGS},
+            {ASPARTATE_CT,                  PROT_FLAGS}},
+        },
+        {STR_LIT("CYS"), {
+            {CYSTEINE,                      PROT_FLAGS},
+            {CYSTEINE_NT,                   PROT_FLAGS},
+            {CYSTEINE_CT,                   PROT_FLAGS}},
+        },
         // Glycine is a b*tch. It has no sidechain. Therefore it will essentially match against every amino acid pattern
         // Thus, it has to be handled with extra care to avoid false positives.
         {STR_LIT("GLY"), {
             {GLYCINE,                       PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT},
-            {GLYCINE_TERM,                  PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT}}
+            {GLYCINE_NT,                    PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT},
+            {GLYCINE_CT,                    PROT_FLAGS | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT}}
         },
-        {STR_LIT("GLU"), {GLUTAMIC_ACID,    PROT_FLAGS}},
-        {STR_LIT("GLN"), {GLUTAMINE,        PROT_FLAGS}},
-        {STR_LIT("HIS"), {HISTIDINE,        PROT_FLAGS}},
-        {STR_LIT("ILE"), {ISOLEUCINE,       PROT_FLAGS}},
+        {STR_LIT("GLU"), {
+            {GLUTAMIC_ACID,                 PROT_FLAGS},
+            {GLUTAMIC_ACID_NT,              PROT_FLAGS},
+            {GLUTAMIC_ACID_CT,              PROT_FLAGS}},
+        },
+        {STR_LIT("GLN"), {
+            {GLUTAMINE,                     PROT_FLAGS},
+            {GLUTAMINE_NT,                  PROT_FLAGS},
+            {GLUTAMINE_CT,                  PROT_FLAGS}},
+        },
+        {STR_LIT("HIS"), {
+            {HISTIDINE,                     PROT_FLAGS},
+            {HISTIDINE_NT,                  PROT_FLAGS},
+            {HISTIDINE_CT,                  PROT_FLAGS}},
+        },
+        {STR_LIT("ILE"), {
+            {ISOLEUCINE,                    PROT_FLAGS},
+            {ISOLEUCINE_NT,                 PROT_FLAGS},
+            {ISOLEUCINE_CT,                 PROT_FLAGS}},
+        },
         {STR_LIT("LEU"), {LEUCINE,          PROT_FLAGS}},
         {STR_LIT("LYS"), {LYSINE,           PROT_FLAGS}},
         {STR_LIT("MET"), {METHIONINE,       PROT_FLAGS}},
@@ -642,6 +725,9 @@ UTEST_F(util, structure_matching_smiles) {
         {STR_LIT("NUCLEOTIDES"), &utest_fixture->mol_nucleotides},
         {STR_LIT("DNA"), &utest_fixture->mol_dna},
         {STR_LIT("TRP"), &utest_fixture->mol_trp},
+        {STR_LIT("1K4R"), &utest_fixture->mol_1k4r},
+        {STR_LIT("2OR2"), &utest_fixture->mol_2or2},
+        {STR_LIT("1FEZ"), &utest_fixture->mol_1fez},
         //{STR_LIT("ASPIRINE"), &utest_fixture->mol_aspirine},
     };
 
