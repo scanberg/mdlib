@@ -42,11 +42,12 @@ typedef void (*md_spatial_acc_query_callback)(uint32_t i_idx, const uint32_t* j_
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
 void md_spatial_acc_free(md_spatial_acc_t* acc);
 
-// Query all against all (i vs j)
-void md_spatial_acc_query_N2(const md_spatial_acc_t* acc, double radius, md_spatial_acc_query_callback callback);
+// Perform full N^2 test of points within the spatial acceleration structure for a supplied radius
+// It is recommended that the radius < cell_ext, then a fast-path will be chosen
+void md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_query_callback callback);
 
-// Query all particles within the spatial acceleration structure against a list of supplied points
-void md_spatial_acc_query(const md_spatial_acc_t* acc, const float* xyz, size_t xyz_stride, size_t count, double radius, md_spatial_acc_query_callback callback);
+// Query all points within the spatial acceleration structure against a supplied list of points + radius
+void md_spatial_acc_query(const md_spatial_acc_t* acc, const float* xyz, size_t xyz_stride, size_t count, double cutoff, md_spatial_acc_query_callback callback);
 
 #ifdef __cplusplus
 }

@@ -1805,10 +1805,10 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     const float min_bond_energy = -9.9f;
 
     const vec4_t d2 = {
-        vec4_distance_squared(don->N, acc->O),
+        vec4_distance_squared(don->H, acc->O),
         vec4_distance_squared(don->H, acc->C),
         vec4_distance_squared(don->N, acc->C),
-        vec4_distance_squared(don->O, acc->H),
+        vec4_distance_squared(don->N, acc->O),
     };
     
     const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
@@ -1816,7 +1816,7 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
         result = min_bond_energy;
     } else {
         const vec4_t v = vec4_rsqrt(d2);
-        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, 1.0f, -1.0f, -1.0f)));
+        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, -1.0f, 1.0f, -1.0f)));
     }
 
     result = MAX(result, min_bond_energy);
@@ -1879,8 +1879,7 @@ enum {
     SS_FLAG_BRIDGE = 64,
 };
 
-void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, const float* y, const float* z,
-    const struct md_protein_backbone_atoms_t* backbone_atoms, size_t backbone_count, const uint32_t* backbone_range_offsets, size_t backbone_range_count) {
+void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, const float* y, const float* z, const md_residue_data_t* const md_protein_backbone_data_t* bb) {
     ASSERT(out_secondary_structure);
 
     md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
