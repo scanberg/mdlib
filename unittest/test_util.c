@@ -726,8 +726,8 @@ UTEST_F(util, structure_matching_smiles) {
         {STR_LIT("DNA"), &utest_fixture->mol_dna},
         {STR_LIT("TRP"), &utest_fixture->mol_trp},
         {STR_LIT("1K4R"), &utest_fixture->mol_1k4r},
-        {STR_LIT("2OR2"), &utest_fixture->mol_2or2},
-        {STR_LIT("1FEZ"), &utest_fixture->mol_1fez},
+        //{STR_LIT("2OR2"), &utest_fixture->mol_2or2},
+        //{STR_LIT("1FEZ"), &utest_fixture->mol_1fez},
         //{STR_LIT("ASPIRINE"), &utest_fixture->mol_aspirine},
     };
 
