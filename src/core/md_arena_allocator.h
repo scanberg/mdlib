@@ -26,14 +26,12 @@ void* md_arena_allocator_push(struct md_allocator_i* arena, size_t size);
 void* md_arena_allocator_push_zero(struct md_allocator_i* arena, size_t size);
 void* md_arena_allocator_push_aligned(struct md_allocator_i* arena, size_t size, size_t alignment);
 
-// Pop does not take into consideration the alignment of the allocation
-// So there may be some bytes that are not fully recovered
-void md_arena_allocator_pop(struct md_allocator_i* arena, size_t size);
-
 void md_arena_allocator_reset(struct md_allocator_i* arena);
 
 // Get the backing allocator for the arena
 struct md_allocator_i* md_arena_allocator_backing(struct md_allocator_i* arena);
+
+
 
 // Specialized arena allocator which uses resorts to the os virtual memory allocator
 // Should be prefered whenever possible over the very generic version above
@@ -53,8 +51,6 @@ void  md_vm_arena_reset(struct md_allocator_i* vm_arena);
 
 void   md_vm_arena_set_pos_back(struct md_allocator_i* vm_arena, size_t pos);
 size_t md_vm_arena_get_pos(struct md_allocator_i* vm_arena);
-
-//struct md_allocator_i md_vm_arena_create_interface(md_vm_arena_t* arena);
 
 // Convenience functions for storing the position upon begin and resetting to that position upon end
 md_vm_arena_temp_t md_vm_arena_temp_begin(struct md_allocator_i* vm_arena);

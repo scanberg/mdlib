@@ -81,6 +81,25 @@ UTEST_F_TEARDOWN(util) {
     md_vm_arena_destroy(utest_fixture->alloc);
 }
 
+UTEST(util, hbonds) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {0};
+    md_gro_molecule_api()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, arena);
+    md_util_molecule_postprocess(&sys, arena, MD_UTIL_POSTPROCESS_ALL);
+
+    md_hydrogen_bond_data_t hbond_data = {0};
+    md_util_hydrogen_bond_init(&hbond_data, &sys, arena);
+
+    EXPECT_LT(0, hbond_data.candidate.num_donors);
+    EXPECT_LT(0, hbond_data.candidate.num_acceptors);
+
+    md_util_hydrogen_bond_infer(&hbond_data, sys.atom.x, sys.atom.y, sys.atom.z, &sys.unitcell, 3.0, 150.0);
+    EXPECT_LT(0, hbond_data.num_bonds);
+
+    md_vm_arena_destroy(arena);
+} 
+
 UTEST_F(util, bonds) {
     EXPECT_EQ(152,    utest_fixture->mol_ala.bond.count);
     EXPECT_EQ(55,     utest_fixture->mol_pftaa.bond.count);
@@ -198,7 +217,7 @@ UTEST(util, com) {
         Bai, Linge, and David Breen. "Calculating center of mass in an unbounded 2D environment." Journal of Graphics Tools 13.4 (2008): 53-60.
     */
     vec3_t pbc_ext = {5,0,0};
-    md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(5,0,0);
+    md_unitcell_t cell = md_unitcell_from_extent(5,0,0);
     {
         const vec4_t xyzw[] = {
             {1,0,0,1},
@@ -207,7 +226,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -219,7 +238,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
 		com = vec3_deperiodize_ortho(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -238,7 +257,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
         com = vec3_deperiodize_ortho(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -269,9 +288,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &unit_cell);
-        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &unit_cell);
-        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &unit_cell);
+        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &cell);
+        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &cell);
+        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &cell);
 
         com0 = vec3_deperiodize_ortho(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize_ortho(com1, (vec3_t){ 0,0,0 }, pbc_ext);
@@ -884,13 +903,47 @@ UTEST(util, parse_smiles) {
 }
 
 UTEST(util, radix_sort) {
-    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 12, 7 };
+    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 14, 7 };
     size_t len = ARRAY_SIZE(arr);
+
+    uint32_t idx[16];
+    uint32_t tmp[16];
+
+    md_util_sort_radix_uint32(idx, arr, len, tmp);
+    for (size_t i = 0; i < len - 1; ++i) {
+        EXPECT_LE(arr[idx[i]], arr[idx[i+1]]);
+    }
+
     md_util_sort_radix_inplace_uint32(arr, len);
 
     for (size_t i = 0; i < len - 1; ++i) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    size_t N = 10000000;
+    uint32_t* values  = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* indices = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* temp    = md_vm_arena_push(arena, N * sizeof(uint32_t));
+
+    for (size_t i = 0; i < N; ++i) {
+        values[i] = (uint32_t)rand() * rand();
+    }
+
+    md_timestamp_t t0, t1;
+
+    t0 = md_time_current();
+    md_util_sort_radix_uint32(indices, values, N, temp);
+    t1 = md_time_current();
+
+    printf("Time for radix index sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
+
+    t0 = md_time_current();
+    md_util_sort_radix_inplace_uint32(values, N);
+    t1 = md_time_current();
+
+    printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }
 
 

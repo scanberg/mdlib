@@ -115,7 +115,7 @@ typedef struct md_conn_data_t {
 // Bond centric repcompentation
 typedef struct md_bond_data_t {
     size_t count;
-    md_bond_pair_t* pairs;
+    md_atom_pair_t* pairs;
     md_order_t*     order;
     md_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
@@ -126,8 +126,39 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
+typedef struct md_hydrogen_bond_donor_t {
+    md_atom_idx_t d_idx; // donor
+    md_atom_idx_t h_idx; // hydrogen
+} md_hydrogen_bond_donor_t;
+
+typedef struct md_hydrogen_bond_acceptor_t {
+    md_atom_idx_t idx;
+    int num_of_lone_pairs;
+} md_hydrogen_bond_acceptor_t;
+
+typedef struct md_hydrogen_bond_candidates_t {
+    size_t num_acceptors;
+    md_hydrogen_bond_acceptor_t* acceptors;
+   
+    size_t num_donors;
+    md_hydrogen_bond_donor_t* donors;
+} md_hydrogen_bond_candidates_t;
+
+typedef struct md_hydrogen_bond_pair_t {
+	uint32_t donor_idx;    // Index into donors array
+	uint32_t acceptor_idx; // Index into acceptors array
+} md_hydrogen_bond_pair_t;
+
+typedef struct md_hydrogen_bond_data_t {
+    md_hydrogen_bond_candidates_t candidate;
+
+    size_t num_bonds;
+    md_hydrogen_bond_pair_t* bonds; // index[0] = donor atom idx, index[1] = acceptor atom idx
+} md_hydrogen_bond_data_t;
+
 typedef struct md_system_t {
-    md_unit_cell_t              unit_cell;
+    md_unitcell_t               unitcell;
+
     md_atom_data_t              atom;
     md_component_data_t         comp;
     md_instance_data_t          inst;
@@ -137,6 +168,7 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     
     md_bond_data_t              bond;               // Persistent covalent bonds
+    md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
@@ -794,6 +826,30 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
         md_bond_iter_next(&it);
     }
     return found;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
+	ASSERT(hbond_cand);
+    if (donor_idx < hbond_cand->num_donors) {
+        return hbond_cand->donors[donor_idx].d_idx;
+	}
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
+    ASSERT(hbond_cand);
+    if (donor_idx < hbond_cand->num_donors) {
+        return hbond_cand->donors[donor_idx].h_idx;
+    }
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_acceptor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acceptor_idx) {
+    ASSERT(hbond_cand);
+    if (acceptor_idx < hbond_cand->num_acceptors) {
+        return hbond_cand->acceptors[acceptor_idx].idx;
+    }
+    return -1;
 }
 
 /*

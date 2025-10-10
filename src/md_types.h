@@ -12,10 +12,15 @@
 #endif
 
 enum {
-    MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
-    MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
-    MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
+    MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
+    MD_SECONDARY_STRUCTURE_COIL,
+    MD_SECONDARY_STRUCTURE_TURN,
+    MD_SECONDARY_STRUCTURE_BEND,
+    MD_SECONDARY_STRUCTURE_HELIX_310,
+    MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+    MD_SECONDARY_STRUCTURE_HELIX_PI,
+    MD_SECONDARY_STRUCTURE_BETA_SHEET,
+    MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
 };
 
 enum {
@@ -28,19 +33,18 @@ enum {
 
 // Cell information
 enum {
-    MD_UNIT_CELL_FLAG_NONE          = 0,
-    MD_UNIT_CELL_FLAG_ORTHO         = 1,
-    MD_UNIT_CELL_FLAG_TRICLINIC     = 2,
-    MD_UNIT_CELL_FLAG_PBC_X         = 4,
-    MD_UNIT_CELL_FLAG_PBC_Y         = 8,
-    MD_UNIT_CELL_FLAG_PBC_Z         = 16,
-    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
+    MD_UNITCELL_NONE          = 0,
+    MD_UNITCELL_ORTHO         = 1,
+    MD_UNITCELL_TRICLINIC     = 2,
+    MD_UNITCELL_PBC_X         = 4,
+    MD_UNITCELL_PBC_Y         = 8,
+    MD_UNITCELL_PBC_Z         = 16,
+    MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-
     // Polymers
     MD_FLAG_POLYMER             = 0x10,     // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
@@ -68,6 +72,9 @@ enum {
     MD_FLAG_SP2                 = 0x200000,
     MD_FLAG_SP3                 = 0x400000,
     MD_FLAG_AROMATIC            = 0x800000,
+
+//    MD_FLAG_HBOND_DONOR         = 0x1000000,
+//    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
 };
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
@@ -228,15 +235,171 @@ typedef struct md_urange_t {
     uint32_t end;
 } md_urange_t;
 
-typedef struct md_unit_cell_t {
-    mat3_t basis;
-    mat3_t inv_basis;
+typedef struct md_unitcell_t {
+    double x, xy, xz;
+    double y, yz;
+    double z;
     uint32_t flags;
-} md_unit_cell_t;
+} md_unitcell_t;
 
-typedef struct md_bond_pair_t {
-    int32_t idx[2];
-} md_bond_pair_t;
+// constructors for unitcell
+
+static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {
+    uint32_t flags = 0;
+    flags |= (xy == 0.0 && xz == 0.0 && yz == 0.0) ? MD_UNITCELL_ORTHO : MD_UNITCELL_TRICLINIC;
+    if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
+    if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
+    if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
+
+    md_unitcell_t cell = {.x = x, .xy = xy, .xz = xz, .y = y, .yz = yz, .z = z, .flags = flags};
+    return cell;
+}
+
+static inline md_unitcell_t md_unitcell_from_extent(double x, double y, double z) {
+    return md_unitcell_from_basis_parameters(x, y, z, 0, 0, 0);    
+}
+
+// From here: https://www.arianarab.com/post/crystal-structure-software
+// Assumes that all input angles (alpha, beta, gamma) are given in degrees
+static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
+    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
+        return md_unitcell_from_basis_parameters(a, b, c, 0, 0, 0);
+    }
+
+    alpha = DEG_TO_RAD(alpha);
+    beta  = DEG_TO_RAD(beta);
+    gamma = DEG_TO_RAD(gamma);
+
+    const double cb = cos(beta);
+    const double cg = cos(gamma);
+    const double sg = sin(gamma);
+    const double x = (cos(alpha) - cb * cg) / sg;
+
+    return md_unitcell_from_basis_parameters(a, b * sg, sqrt(1.0 - cb * cb - x * x), b * cg, c * cb, c * x);
+}
+
+static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+}
+
+static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3]) {
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+}
+
+// Getters and helper functionality
+static inline uint32_t md_unitcell_flags(const md_unitcell_t* cell) {
+    if (cell) return cell->flags;
+    return 0;
+}
+
+static inline bool md_unitcell_is_triclinic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_TRICLINIC; }
+static inline bool md_unitcell_is_orthorhombic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_ORTHO; }
+
+static inline vec3_t md_unitcell_diag_vec3(const md_unitcell_t* cell) {
+    if (cell) return vec3_set(cell->x, cell->y, cell->z);
+    return vec3_zero();
+}
+
+static inline vec4_t md_unitcell_diag_vec4(const md_unitcell_t* cell) {
+    if (cell) return vec4_set(cell->x, cell->y, cell->z, 0);
+    return vec4_zero();
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat3_t md_unitcell_basis_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        mat3_t A = {cell->x, 0, 0, cell->xy, cell->y, 0, cell->xz, cell->yz, cell->z};
+        return A;
+    }
+    return mat3_ident();
+}
+
+static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
+    if (cell) {
+        out_A[0][0] = cell->x;
+        out_A[0][1] = 0;
+        out_A[0][2] = 0;
+        out_A[1][0] = cell->xy;
+        out_A[1][1] = cell->y;
+        out_A[1][2] = 0;
+        out_A[2][0] = cell->xz;
+        out_A[2][1] = cell->yz;
+        out_A[2][2] = cell->z;
+    }
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        const double i11 = 1.0 / cell->x;
+        const double i22 = 1.0 / cell->y;
+        const double i33 = 1.0 / cell->z;
+        const double i12 = -cell->xy / (cell->x * cell->y);
+        const double i13 = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        const double i23 = -cell->yz / (cell->y * cell->z);
+        mat3_t Ai = {i11, 0, 0, i12, i22, 0, i13, i23, i33};
+        return Ai;
+    }
+    return mat3_ident();
+}
+
+static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_unitcell_t* cell) {
+    if (cell) {
+        out_Ai[0][0] = 1.0 / cell->x;
+        out_Ai[0][1] = 0;
+        out_Ai[0][2] = 0;
+        out_Ai[1][0] = -cell->xy / (cell->x * cell->y);
+        out_Ai[1][1] = 1.0 / cell->y;
+        out_Ai[1][2] = 0;
+        out_Ai[2][0] = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        out_Ai[2][1] = -cell->yz / (cell->y * cell->z);
+        out_Ai[2][2] = 1.0 / cell->z;
+    }
+}
+
+// returns the unitcell metric tensor G=(A^T)A
+static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        const double g11 = cell->x * cell->x;
+        const double g22 = cell->xy * cell->xy + cell->y * cell->y;
+        const double g33 = cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z;
+        const double g12 = cell->x * cell->xy;
+        const double g13 = cell->x * cell->xz;
+        const double g23 = cell->xy * cell->xz + cell->y * cell->yz;
+        mat3_t G = {g11, g12, g13, g12, g22, g23, g13, g23, g33};
+        return G;
+    }
+    return mat3_ident();
+}
+
+static inline void md_unitcell_extract_cell_parameters(double* a, double* b, double* c, double* alpha, double* beta, double* gamma, const md_unitcell_t* cell) {
+    ASSERT(cell);
+
+    // lengths
+    *a = fabs(cell->x);
+    *b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
+    *c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
+
+    // angles (radians)
+    *alpha = acos((cell->xy * cell->xz + cell->y * cell->yz) / (*b * *c));
+    *beta  = acos((cell->x * cell->xz) / (*a * *c));
+    *gamma = acos((cell->x * cell->xy) / (*a * *b));
+}
+
+// Create a vec4 mask which represents the periodic dimensions from a unit cell.
+// I.e. [0,1,1,0] -> periodic in y and z, but not x
+static inline vec4_t md_unitcell_pbc_mask_vec4(const md_unitcell_t* unit_cell) {
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    return vec4_set((unit_cell->flags & MD_UNITCELL_PBC_X) ? val : 0, (unit_cell->flags & MD_UNITCELL_PBC_Y) ? val : 0,
+                    (unit_cell->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
+}
+
+static inline uint32_t md_unit_cell_flags(const md_unitcell_t* unit_cell) { return unit_cell->flags; }
+
+typedef struct md_atom_pair_t {
+    md_atom_idx_t idx[2];
+} md_atom_pair_t;
 
 typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t n;
@@ -432,22 +595,4 @@ static inline size_t md_index_range_size(const md_index_data_t* data, size_t ran
         size = data->offsets[range_idx+1] - data->offsets[range_idx];
     }
     return size;
-}
-
-// Create a vec4 mask which represents the periodic dimensions from a unit cell.
-// I.e. [0,1,1,0] -> periodic in y and z, but not x
-static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
-    float val;
-    MEMSET(&val, 0xFF, sizeof(val));
-    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
-}
-
-static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
-#if DEBUG
-    ASSERT(unit_cell);
-    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
-    }
-#endif
-    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
 }

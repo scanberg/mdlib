@@ -17,7 +17,7 @@
 typedef struct thread_data_t {
     md_frame_cache_t* cache;
     float* ref_coords;
-    md_unit_cell_t ref_cell;
+    md_unitcell_t ref_cell;
     int corrupt_count;
     int thread_rank;
 } thread_data_t;
@@ -36,7 +36,7 @@ void thread_func(void* user_data) {
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
 
-    md_unit_cell_t cell;
+    md_unitcell_t cell;
 
     // Load frame by frame and memcmp to reference
     // Offset the frame_index 'randomly' so we really stress the cache
@@ -82,7 +82,7 @@ UTEST(frame_cache, parallel_workload) {
 
     const int64_t frame_stride = num_atoms * 3;
     float* ref_coords = md_alloc(alloc, num_frames * num_atoms * 3 * sizeof(float));
-    md_unit_cell_t* ref_cells = md_alloc(alloc, num_frames * sizeof(md_unit_cell_t));
+    md_unitcell_t* ref_cells = md_alloc(alloc, num_frames * sizeof(md_unitcell_t));
 
     for (int64_t i = 0; i < num_frames; ++i) {
         float* ref_x = ref_coords + frame_stride * i + num_atoms * 0;

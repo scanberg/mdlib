@@ -671,22 +671,12 @@ done:
     return success;
 }
 
-enum {
-    CELL_FIELD_ANGLE_ALPHA =  1,
-    CELL_FIELD_ANGLE_BETA  =  2,
-    CELL_FIELD_ANGLE_GAMMA =  4,
-    CELL_FIELD_LENGTH_A    =  8,
-    CELL_FIELD_LENGTH_B    = 16,
-    CELL_FIELD_LENGTH_C    = 32,
-};
-
 static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* reader) {
     ASSERT(cell);
     ASSERT(reader);
     str_t line;
 
     int field_flags = 0;
-    const int req_field_flags = (CELL_FIELD_ANGLE_ALPHA | CELL_FIELD_ANGLE_BETA | CELL_FIELD_ANGLE_GAMMA | CELL_FIELD_LENGTH_A | CELL_FIELD_LENGTH_B | CELL_FIELD_LENGTH_C);
 
     while (md_buffered_reader_peek_line(&line, reader)) {
         line = str_trim(line);
@@ -705,22 +695,22 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* re
 
             if (str_eq_cstr(tok[0], "_cell.angle_alpha")) {
                 cell->alpha = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_ALPHA;
+                field_flags |= 1;
             } else if (str_eq_cstr(tok[0], "_cell.angle_beta")) {
                 cell->beta = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_BETA;
+                field_flags |= 2;
             } else if (str_eq_cstr(tok[0], "_cell.angle_gamma")) {
                 cell->gamma = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_GAMMA;
+                field_flags |= 4;
             } else if (str_eq_cstr(tok[0], "_cell.length_a")) {
                 cell->a = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_A;
+                field_flags |= 8;
             } else if (str_eq_cstr(tok[0], "_cell.length_b")) {
                 cell->b = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_B;
+                field_flags |= 16;
             } else if (str_eq_cstr(tok[0], "_cell.length_c")) {
                 cell->c = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_C;
+                field_flags |= 32;
             }
         } else {
             break;
@@ -729,7 +719,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* re
         md_buffered_reader_skip_line(reader);
     }
 
-    return (field_flags == req_field_flags);
+    return (field_flags == (1 | 2 | 4 | 8 | 16 | 32));
 }
 
 static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_allocator_i* alloc) {
@@ -920,7 +910,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     }
 
     if (cell_parsed) {
-        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+        sys->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
     return sys->atom.count > 0;

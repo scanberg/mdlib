@@ -852,7 +852,7 @@ static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t*
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;
-            header->unit_cell = md_util_unit_cell_from_matrix(box);
+            header->unitcell = md_unitcell_from_matrix_float(box);
         }
 
         if (x && y && z) {

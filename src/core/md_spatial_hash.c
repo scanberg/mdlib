@@ -1,4 +1,4 @@
-#include <core/md_spatial_hash.h>
+﻿#include <core/md_spatial_hash.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -31,7 +31,7 @@ typedef struct md_spatial_hash_t {
     int32_t cell_min[3];
     int32_t cell_dim[3];
     md_allocator_i* alloc;
-    md_unit_cell_t unit_cell;
+    md_unitcell_t unit_cell;
 } md_spatial_hash_t;
 
 static inline vec4_t vec4_from_elem(elem_t elem) {
@@ -512,7 +512,7 @@ bool md_spatial_acc_iter_next(md_spatial_acc_iter_t* iter) {
 }
 */
 
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const md_unitcell_t* unit_cell, md_allocator_i* alloc) {
     if (!in_xyz) {
         MD_LOG_ERROR("Missing required input");
         return NULL;
@@ -539,8 +539,9 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int3
     vec4_t ext = {0};
     vec4_t ref = {0};
 
-    if (unit_cell && !mat3_equal(unit_cell->basis, mat3_ident())) {
-        ext = vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0);
+    if (unit_cell) {
+        mat3_t A = md_unitcell_basis_mat3(unit_cell);
+        ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
         ref = vec4_mul_f(ext, 0.5f);
     }
 
@@ -588,7 +589,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int3
     hash->alloc = alloc;
 
     if (unit_cell) {
-        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unit_cell_t));
+        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unitcell_t));
     }
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
@@ -632,7 +633,7 @@ done:
 }
 
 
-md_spatial_hash_t* md_spatial_hash_create_soa2(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+md_spatial_hash_t* md_spatial_hash_create_soa2(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const md_unitcell_t* unit_cell, md_allocator_i* alloc) {
     ASSERT(alloc);
     if (count == 0) return NULL;
 
@@ -651,9 +652,9 @@ md_spatial_hash_t* md_spatial_hash_create_soa2(const float in_x[], const float i
     vec4_t min_coord = vec4_set1(FLT_MAX);
     vec4_t max_coord = vec4_set1(-FLT_MAX);
     if (unit_cell) {
-        const vec4_t mask = md_unit_cell_pbc_mask(unit_cell);
-        mat4x3_t I = mat4x3_from_mat3(unit_cell->inv_basis);
-        mat4x3_t M = mat4x3_from_mat3(unit_cell->basis);
+        const vec4_t mask = md_unitcell_pbc_mask_vec4(unit_cell);
+        mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(unit_cell));
+        mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(unit_cell));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
@@ -742,7 +743,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa2(const float in_x[], const float i
     hash->alloc = alloc;
 
     if (unit_cell) {
-        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unit_cell_t));
+        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unitcell_t));
     }
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
@@ -787,7 +788,7 @@ done:
     return hash;
 }
 
-md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const md_unitcell_t* unit_cell, md_allocator_i* alloc) {
     if (!in_x || !in_y || !in_z) {
         MD_LOG_ERROR("Missing input data");
         return NULL;
@@ -814,8 +815,10 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
     vec4_t ext = {0};
     vec4_t ref = {0};
 
-    if (unit_cell && !mat3_equal(unit_cell->basis, mat3_ident())) {
-        ext = vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0);
+
+    if (unit_cell) {
+        mat3_t A = md_unitcell_basis_mat3(unit_cell);
+        ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
         ref = vec4_mul_f(ext, 0.5f);
     }
 
@@ -864,7 +867,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
     hash->alloc = alloc;
 
     if (unit_cell) {
-        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unit_cell_t));
+        MEMCPY(&hash->unit_cell, unit_cell, sizeof(md_unitcell_t));
     }
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
@@ -1071,8 +1074,13 @@ static void query_batch(const md_spatial_hash_t* hash, const vec3_t coords[], si
     const int32_t cd_0  = cell_dim[0];
     const int32_t cd_01 = cell_dim[0] * cell_dim[1];
 
+    const md_256 r2 = md_mm256_set1_ps(rad2);
+
     for (size_t i = 0; i < count; ++i) {
         const vec4_t pos = vec4_from_vec3(coords[i], 0);
+        const md_256 x = md_mm256_set1_ps(pos.x);
+        const md_256 y = md_mm256_set1_ps(pos.y);
+        const md_256 z = md_mm256_set1_ps(pos.z);
 
         const vec4_t cell_pos_min = vec4_floor(vec4_mul_f(vec4_sub_f(pos, rad), INV_CELL_EXT));
         const vec4_t cell_pos_max = vec4_ceil (vec4_mul_f(vec4_add_f(pos, rad), INV_CELL_EXT));
@@ -1108,11 +1116,11 @@ static void query_batch(const md_spatial_hash_t* hash, const vec3_t coords[], si
                     while (len > 0) {
                         md_256 vx, vy, vz;
                         md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
-                        md_256 dx = md_mm256_sub_ps(vx, md_mm256_set1_ps(pos.x));
-                        md_256 dy = md_mm256_sub_ps(vy, md_mm256_set1_ps(pos.y));
-                        md_256 dz = md_mm256_sub_ps(vz, md_mm256_set1_ps(pos.z));
-                        md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-                        md_256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
+                        md_256 dx = md_mm256_sub_ps(vx, x);
+                        md_256 dy = md_mm256_sub_ps(vy, y);
+                        md_256 dz = md_mm256_sub_ps(vz, z);
+                        md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+                        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
 
                         const int step = MIN(len, 8);
                         const int lane_mask = (1 << step) - 1;
@@ -1155,7 +1163,8 @@ static void query_periodic(const md_spatial_hash_t* hash, const vec3_t coords[],
     ASSERT(hash);
     ASSERT(iter);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(hash->unit_cell.basis), 0);
+    mat3_t A = md_unitcell_basis_mat3(&hash->unit_cell);
+    const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(A), 0);
     const vec4_t ref = vec4_mul_f(pbc_ext, 0.5f);
     float rad2 = rad * rad;
 
@@ -1273,7 +1282,8 @@ static void query_periodic_batch(const md_spatial_hash_t* hash, const vec3_t coo
     ASSERT(hash);
     ASSERT(iter);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(hash->unit_cell.basis), 0);
+    mat3_t A = md_unitcell_basis_mat3(&hash->unit_cell);
+    const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(A), 0);
     const vec4_t ref = vec4_mul_f(pbc_ext, 0.5f);
     float rad2 = rad * rad;
 
@@ -1355,6 +1365,7 @@ static void query_periodic_batch(const md_spatial_hash_t* hash, const vec3_t coo
         const md_256 rx = md_mm256_set1_ps(pos.x);
         const md_256 ry = md_mm256_set1_ps(pos.y);
         const md_256 rz = md_mm256_set1_ps(pos.z);
+        const md_256 r2 = md_mm256_set1_ps(rad2);
 
         for (int cz = cell_beg[2]; cz < cell_end[2]; inc_cell2(&cz, cell_max[2], cell_jmp[2])) {
             const int ciz = (cz % cell_pbc[2]) - cell_min[2];
@@ -1379,14 +1390,14 @@ static void query_periodic_batch(const md_spatial_hash_t* hash, const vec3_t coo
                     const elem_t* elem = elems + beg;
 
                     while (len > 0) {
-                        md_256 vx,vy,vz;
+                        md_256 vx, vy, vz;
                         md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
 
                         md_256 dx = md_mm256_minimage_ps(md_mm256_sub_ps(vx, rx), px, rpx);
                         md_256 dy = md_mm256_minimage_ps(md_mm256_sub_ps(vy, ry), py, rpy);
                         md_256 dz = md_mm256_minimage_ps(md_mm256_sub_ps(vz, rz), pz, rpz);
-                        md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-                        md_256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
+                        md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+                        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
 
                         const int step = mini(len, 8);
                         const int lane_mask = (1 << step) - 1;
@@ -1398,6 +1409,263 @@ static void query_periodic_batch(const md_spatial_hash_t* hash, const vec3_t coo
                         len  -= 8;
                         elem += 8;
                     };
+                }
+            }
+        }
+    }
+}
+
+static const int8_t FWD_NBRS[13][3] = {
+    {1, 0, 0},  {-1, 1, 0}, {0, 1, 0}, {1, 1, 0},  {-1, -1, 1}, {0, -1, 1}, {1, -1, 1},
+    {-1, 0, 1}, {0, 0, 1},  {1, 0, 1}, {-1, 1, 1}, {0, 1, 1},   {1, 1, 1},
+};
+
+static inline bool test_elem(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len, uint32_t i, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
+    while (len > 0) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
+        md_256 dx = md_mm256_sub_ps(vx, x);
+        md_256 dy = md_mm256_sub_ps(vy, y);
+        md_256 dz = md_mm256_sub_ps(vz, z);
+        md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+        md_256 vmask = md_mm256_cmple_ps(d2, r2);
+
+        const int step = mini(len, 8);
+        const int lane_mask = (1 << step) - 1;
+        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        if (!iter(elem, d2, mask, i, user_param)) {
+            return false;
+        }
+        len -= 8;
+        elem += 8;
+    };
+    return true;
+}
+
+static inline bool test_elem_periodic(md_256 x, md_256 y, md_256 z, md_256 r2, md_256 px, md_256 py, md_256 pz, md_256 rpx, md_256 rpy, md_256 rpz,
+                      const elem_t* elem, int len, uint32_t i, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
+    while (len > 0) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
+        md_256 dx = md_mm256_minimage_ps(md_mm256_sub_ps(vx, x), px, rpx);
+        md_256 dy = md_mm256_minimage_ps(md_mm256_sub_ps(vy, y), py, rpy);
+        md_256 dz = md_mm256_minimage_ps(md_mm256_sub_ps(vz, z), pz, rpz);
+        md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+        md_256 vmask = md_mm256_cmple_ps(d2, r2);
+
+        const int step = mini(len, 8);
+        const int lane_mask = (1 << step) - 1;
+        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        if (!iter(elem, d2, mask, i, user_param)) {
+            return false;
+        }
+        len -= 8;
+        elem += 8;
+    };
+    return true;
+}
+
+static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
+    ASSERT(hash);
+    ASSERT(iter);
+
+    const md_256 r2 = md_mm256_set1_ps(rad * rad);
+
+    const int* cell_min = hash->cell_min;
+    const int* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->elements;
+    const uint32_t* cell_offsets = hash->cell_offsets;
+
+    const int cell_max[3] = {
+        cell_min[0] + cell_dim[0],
+        cell_min[1] + cell_dim[1],
+        cell_min[2] + cell_dim[2],
+    };
+
+    const int cd_0 = cell_dim[0];
+    const int cd_01 = cell_dim[0] * cell_dim[1];
+
+    for (int cz = 0; cz < cell_dim[2]; cz += 1) {
+        const int idx_z = cz * cd_01;
+        for (int cy = 0; cy < cell_dim[1]; cy += 1) {
+            const int idx_yz = idx_z + cy * cd_0;
+            for (int cx = 0; cx < cell_dim[0]; cx += 1) {
+                const uint32_t ci = idx_yz + cx;
+                const uint32_t off_i = cell_offsets[ci];
+                const uint32_t len_i = cell_offsets[ci + 1] - off_i;
+
+                if (len_i == 0) {
+                    continue;
+                }
+
+                const elem_t* elem_i = elems + off_i;
+
+                // Test current cell
+                for (int a = 0; a < len_i; ++a) {
+                    const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
+                    const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
+                    const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
+                    if (!test_elem(x, y, z, r2, elem_i + (a + 1), len_i - (a + 1), elem_i[a].idx, iter, user_param)) {
+                        return;
+                    }
+                }
+
+                // Test neighbors
+                for (int j = 0; j < 13; ++j) {
+                    const int8_t* nbr = FWD_NBRS[j];
+                    int ccx = cx + nbr[0];
+                    int ccy = cy + nbr[1];
+                    int ccz = cz + nbr[2];
+
+                    if (ccx < 0 || ccx >= cell_dim[0]) {
+                        continue;
+                    }
+                    if (ccy < 0 || ccy >= cell_dim[1]) {
+                        continue;
+                    }
+                    if (ccz < 0 || ccz >= cell_dim[2]) {
+                        continue;
+                    }
+
+                    const uint32_t cj = ccz * cd_01 + ccy * cd_0 + ccx;
+                    const uint32_t off_j = cell_offsets[cj];
+                    const uint32_t len_j = cell_offsets[cj + 1] - off_j;
+                    if (len_j == 0) {
+                        continue;
+                    }
+                    const elem_t* elem_j = elems + off_j;
+                    for (int a = 0; a < len_i; ++a) {
+                        const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
+                        const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
+                        const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
+                        if (!test_elem(x, y, z, r2, elem_j, len_j, elem_i[a].idx, iter, user_param)) {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+static inline int wrap_coord(int c, int min, int max, int pbc) {
+    int abs = (min + c + pbc) % pbc;
+    if (abs < min || abs >= max) {
+        return -1;
+    }
+    return abs - min;
+}
+
+static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
+    ASSERT(hash);
+    ASSERT(iter);
+
+    mat3_t A = md_unitcell_basis_mat3(&hash->unit_cell);
+    const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(A), 0);
+    const vec4_t ref = vec4_mul_f(pbc_ext, 0.5f);
+    float rad2 = rad * rad;
+
+    const md_256 r2 = md_mm256_set1_ps(rad2);
+    const md_256 px = md_mm256_set1_ps(pbc_ext.x);
+    const md_256 py = md_mm256_set1_ps(pbc_ext.y);
+    const md_256 pz = md_mm256_set1_ps(pbc_ext.z);
+
+    const md_256 rpx = pbc_ext.x ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), px) : md_mm256_setzero_ps();
+    const md_256 rpy = pbc_ext.y ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), py) : md_mm256_setzero_ps();
+    const md_256 rpz = pbc_ext.z ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), pz) : md_mm256_setzero_ps();
+
+    const int* cell_min = hash->cell_min;
+    const int* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->elements;
+    const uint32_t* cell_offsets = hash->cell_offsets;
+
+    const int cell_max[3] = {
+        cell_min[0] + cell_dim[0],
+        cell_min[1] + cell_dim[1],
+        cell_min[2] + cell_dim[2],
+    };
+
+    const int cell_pbc[3] = {
+        MAX((int)ceilf(pbc_ext.x * INV_CELL_EXT), 1),
+        MAX((int)ceilf(pbc_ext.y * INV_CELL_EXT), 1),
+        MAX((int)ceilf(pbc_ext.z * INV_CELL_EXT), 1),
+    };
+
+    const int cd_0 = cell_dim[0];
+    const int cd_01 = cell_dim[0] * cell_dim[1];
+
+    const int do_pbc_jump[3] = {
+        cell_pbc[0] > cell_dim[0],
+        cell_pbc[1] > cell_dim[1],
+        cell_pbc[2] > cell_dim[2],
+    };
+
+    for (int cz = 0; cz < cell_dim[2]; cz += 1) {
+        const int idx_z = cz * cd_01;
+        for (int cy = 0; cy < cell_dim[1]; cy += 1) {
+            const int idx_yz = idx_z + cy * cd_0;
+            for (int cx = 0; cx < cell_dim[0]; cx += 1) {
+                const uint32_t ci = idx_yz + cx;
+                const uint32_t off_i = cell_offsets[ci];
+                const uint32_t len_i = cell_offsets[ci + 1] - off_i;
+
+                if (len_i == 0) {
+                    continue;
+                }
+
+                const elem_t* elem_i = elems + off_i;
+
+                // Test current cell
+                for (int a = 0; a < len_i; ++a) {
+                    const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
+                    const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
+                    const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
+                    if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_i + (a + 1), len_i - (a + 1), elem_i[a].idx, iter, user_param)) {
+                        return;
+                    }
+                }
+
+                // Test neighbors
+                for (int j = 0; j < 13; ++j) {
+                    const int8_t* nbr = FWD_NBRS[j];
+
+                    int ccx = wrap_coord(cx + nbr[0], cell_min[0], cell_max[0], cell_pbc[0]);
+                    int ccy = wrap_coord(cy + nbr[1], cell_min[1], cell_max[1], cell_pbc[1]);
+                    int ccz = wrap_coord(cz + nbr[2], cell_min[2], cell_max[2], cell_pbc[2]);
+
+                    if (ccx < 0 || ccy < 0 || ccz < 0) {
+                        continue;  // neighbor lies outside stored window
+                    }
+
+                    const uint32_t cj = ccz * cd_01 + ccy * cd_0 + ccx;
+                    const uint32_t off_j = cell_offsets[cj];
+                    const uint32_t len_j = cell_offsets[cj + 1] - off_j;
+                    if (len_j == 0) {
+                        continue;
+                    }
+
+                    if (cx == 0 || cx == cell_dim[0] - 1 ||
+                        cy == 0 || cy == cell_dim[1] - 1 ||
+                        cz == cell_dim[2] - 1)
+                    {
+                        while(0){};
+                    }
+
+                    const elem_t* elem_j = elems + off_j;
+                    for (int a = 0; a < len_i; ++a) {
+
+                        if (elem_i[a].idx == 53) {
+                            while(0) {};
+                        }
+
+                        const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
+                        const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
+                        const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
+                        if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_j, len_j, elem_i[a].idx, iter, user_param)) {
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1427,7 +1695,7 @@ void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, fl
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (md_unitcell_flags(&spatial_hash->unit_cell) & MD_UNITCELL_PBC_ALL) {
         query_periodic(spatial_hash, &pos, 1, radius, iter, user_param);
     } else {
         query(spatial_hash, &pos, 1, radius, iter, user_param);
@@ -1441,7 +1709,7 @@ void md_spatial_hash_query_multi(const md_spatial_hash_t* spatial_hash, const ve
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (md_unitcell_flags(&spatial_hash->unit_cell) & MD_UNITCELL_PBC_ALL) {
         query_periodic(spatial_hash, pos, count, radius, iter, user_param);
     } else {
         query(spatial_hash, pos, count, radius, iter, user_param);
@@ -1455,7 +1723,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (md_unitcell_flags(&spatial_hash->unit_cell) & MD_UNITCELL_PBC_ALL) {
         query_periodic_batch(spatial_hash, &pos, 1, radius, iter, user_param);
     } else {
         query_batch(spatial_hash, &pos, 1, radius, iter, user_param);
@@ -1470,10 +1738,25 @@ void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, co
     }
 
     // This is for non periodic lookup
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (md_unitcell_flags(&spatial_hash->unit_cell) & MD_UNITCELL_PBC_ALL) {
         query_periodic_batch(spatial_hash, pos, count, radius, iter, user_param);
     } else {
         query_batch(spatial_hash, pos, count, radius, iter, user_param);
+    }
+}
+
+void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* spatial_hash, float radius, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
+    ASSERT(iter);
+
+    if (!validate_spatial_hash(spatial_hash)) {
+        return;
+    }
+
+    // This is for non periodic lookup
+    if (md_unitcell_flags(&spatial_hash->unit_cell) & MD_UNITCELL_PBC_ALL) {
+        query_n2_periodic_batch(spatial_hash, radius, iter, user_param);
+    } else {
+        query_n2_batch(spatial_hash, radius, iter, user_param);
     }
 }
 

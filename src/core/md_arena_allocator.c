@@ -22,25 +22,23 @@ typedef struct page_t {
     void* mem;
     size_t size;
     size_t curr; // current offset
-    struct page_t* next;
+    struct page_t* prev;
 } page_t;
 
 typedef struct arena_t {
     struct md_allocator_i* backing;
-    page_t *base_page;
     page_t *curr_page;
     size_t default_page_size;
     uint64_t magic;
 } arena_t;
 
 static inline void arena_reset(arena_t* arena) {
-    page_t* p = arena->base_page;
+    page_t* p = arena->curr_page;
     while (p) {
-        page_t* next = p->next;
+        page_t* prev = p->prev;
         md_free(arena->backing, p, sizeof(page_t) + p->size); // @NOTE: we free the page + its memory
-        p = next;
+        p = prev;
     }
-    arena->base_page = NULL;
     arena->curr_page = NULL;
 }
 
@@ -50,17 +48,8 @@ static inline page_t* arena_new_page(arena_t* arena, size_t size) {
     page->mem = (char*)page + sizeof(page_t);
     page->size = size;
     page->curr = 0;
-    page->next = NULL;
-    
-    if (arena->curr_page) {
-        arena->curr_page->next = page;
-    }
+    page->prev = arena->curr_page;
     arena->curr_page = page;
-    
-    if (!arena->base_page) {
-        arena->base_page = page;
-    }
-
     return page;
 }
 
@@ -77,12 +66,6 @@ static inline void* arena_push(arena_t* arena, size_t size, size_t alignment) {
 
     p->curr = aligned_curr + size;
     return (char*)p->mem + aligned_curr;
-}
-
-static inline void arena_pop(arena_t* arena, size_t size) {
-    // We cheat a bit, we only shrink within the current page and not beyond that.
-    page_t* p = arena->curr_page;
-    p->curr = size > p->curr ? 0 : p->curr - size;
 }
 
 static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
@@ -122,7 +105,6 @@ struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing,
     ASSERT(backing);
     arena_t* arena = (arena_t*)md_alloc(backing, sizeof(arena_t) + sizeof(md_allocator_i));
     arena->backing = backing;
-    arena->base_page = NULL;
     arena->curr_page = NULL;
     arena->default_page_size = page_size ? MAX(MIN_PAGE_SIZE, page_size) : MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE;
     arena->magic = ARENA_MAGIC;
@@ -169,12 +151,6 @@ void* md_arena_allocator_push_aligned(struct md_allocator_i* alloc, size_t size,
     ASSERT(IS_POW2(alignment));
     return arena_push(arena, size, alignment);
 }
-
-void md_arena_allocator_pop(struct md_allocator_i* alloc, size_t size) {
-    VALIDATE_AND_EXTRACT_ARENA(alloc);
-    arena_pop(arena, size);
-}
-
 
 // VM
 #define VALIDATE_AND_EXTRACT_VM_ARENA(alloc) \

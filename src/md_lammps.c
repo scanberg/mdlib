@@ -923,14 +923,13 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	}
 
 	//Create unit cell
-	float M[3][3] = {0};
-	M[0][0] = data->cell.xhi - data->cell.xlo;
-	M[1][1] = data->cell.yhi - data->cell.ylo;
-	M[2][2] = data->cell.zhi - data->cell.zlo;
-	M[1][0] = data->cell.xy;
-	M[2][0] = data->cell.xz;
-	M[2][1] = data->cell.yz;
-	sys->unit_cell = md_util_unit_cell_from_matrix(M);
+	double x = data->cell.xhi - data->cell.xlo;
+	double y = data->cell.yhi - data->cell.ylo;
+	double z = data->cell.zhi - data->cell.zlo;
+	double xy = data->cell.xy;
+	double xz = data->cell.xz;
+	double yz = data->cell.yz;
+    sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 
 	md_vm_arena_destroy(temp_arena);
 	return true;
@@ -1264,7 +1263,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	str_t tokens[32];
 	int64_t timestep = 0;
 	int64_t frame_idx = ((int64_t*)data_ptr)[0];
-	md_unit_cell_t unit_cell = {0};
+	md_unitcell_t cell = {0};
 
 	bool output_header = out_frame_header != NULL;
 	bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
@@ -1304,13 +1303,13 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	double ylen = yhi - ylo;
 	double zlen = zhi - zlo;
 
-	unit_cell = md_util_unit_cell_from_triclinic(xlen, ylen, zlen, xy, xz, yz);
+	cell = md_unitcell_from_basis_parameters(xlen, ylen, zlen, xy, xz, yz);
 
 	// transform matrix to apply
 	mat4_t M = mat4_translate(-(float)xlo, -(float)ylo, -(float)zlo);
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
-		M = mat4_from_mat3(unit_cell.basis);
+		M = mat4_from_mat3(md_unitcell_basis_mat3(&cell));
 	}
 
 	if (output_coords) {
@@ -1371,7 +1370,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 		out_frame_header->num_atoms = header.num_atoms;
 		out_frame_header->index = frame_idx;
 		out_frame_header->timestamp = (double)timestep;
-		out_frame_header->unit_cell = unit_cell;
+		out_frame_header->unitcell = cell;
 	}
 
 	return true;

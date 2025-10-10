@@ -222,7 +222,7 @@ bool md_gro_molecule_init(struct md_system_t* sys, const md_gro_data_t* data, st
         box[i][2] *= 10.0f;
     }
 
-    sys->unit_cell = md_util_unit_cell_from_matrix(box);
+    sys->unitcell = md_unitcell_from_matrix_float(box);
 
     md_util_system_infer_comp_flags(sys);
 

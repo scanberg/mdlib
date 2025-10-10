@@ -150,7 +150,7 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     dst->bond.count           = src->bond.count;
     dst->bond.conn.count      = src->bond.conn.count;
     dst->bond.conn.offset_count = src->bond.conn.offset_count;
-    dst->unit_cell            = src->unit_cell;
+    dst->unitcell             = src->unitcell;
 }
 
 #undef ARRAY_PUSH

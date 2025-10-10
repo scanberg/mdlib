@@ -2,7 +2,6 @@
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_pool_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_virtual_allocator.h>
 #include <core/md_linear_allocator.h>
@@ -62,43 +61,6 @@ UTEST(allocator, linear_generic) {
 UTEST(allocator, ring_generic) {
     md_allocator_i* alloc = md_ring_allocator_create(buf, sizeof(buf));
     COMMON_ALLOCATOR_TEST_BODY
-}
-
-// @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
-UTEST(allocator, pool) {
-    md_allocator_i* pool = md_pool_allocator_create(md_get_heap_allocator(), sizeof(uint64_t));
-    md_allocator_i* heap = md_get_heap_allocator();
-
-    md_array(uint64_t*) items = {0};
-
-    for (int
-        j = 0; j < 1000; ++j) {
-        for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = md_alloc(pool, sizeof(uint64_t));
-            md_array_push(items, item, heap);
-            *item = i;
-        }
-
-        for (int i = 100; i < 1000; ++i) {
-            md_free(pool, items[i], sizeof(uint64_t));
-        }
-        md_array_shrink(items, 100);
-
-        int indices[10] = {1, 2, 5, 6, 70, 90, 18, 16, 12, 10};
-
-        for (int i = 0; i < (int)ARRAY_SIZE(indices); ++i) {
-            const int idx = indices[i];
-            md_free(pool, items[idx], sizeof(uint64_t));
-        }
-
-        for (int i = 0; i < (int)ARRAY_SIZE(indices); ++i) {
-            const int idx = indices[i];
-            items[idx] = md_alloc(pool, sizeof(uint64_t));
-        }
-    }
-
-    md_array_free(items, heap);
-    md_pool_allocator_destroy(pool);
 }
 
 UTEST(allocator, arena_extended) {

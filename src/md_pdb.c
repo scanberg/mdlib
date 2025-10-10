@@ -33,7 +33,7 @@ typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
     int64_t* frame_offsets;
-    md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
+    md_unitcell_t unitcell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
@@ -267,7 +267,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        header->unit_cell = pdb->unit_cell;
+        header->unitcell = pdb->unitcell;
     }
 
     return true;
@@ -547,7 +547,12 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
     if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        if (cryst->a == 1 && cryst->b == 1 && cryst->c == 1 && cryst->alpha == 90 && cryst->beta == 90 && cryst->gamma == 90) {
+            // This is a special case:
+            // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
+        } else {
+            sys->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        }
     };
 
     /*
@@ -695,7 +700,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
 typedef struct pdb_cache_t {
     md_trajectory_cache_header_t header;
-    md_unit_cell_t cell;
+    md_unitcell_t cell;
     int64_t* frame_offsets;
 } pdb_cache_t;
 
@@ -851,7 +856,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
                 md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
             }
             // If it is in fact a box, that will be handled as well
-            cache.cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
+            cache.cell = md_unitcell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
         if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
@@ -900,7 +905,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .time_unit = {0},
         .frame_times = frame_times,
     };
-    pdb->unit_cell = cache.cell;
+    pdb->unitcell = cache.cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;

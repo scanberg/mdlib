@@ -473,56 +473,144 @@ static void sort_arr_masked64(int64_t* arr, size_t n, int64_t mask) {
 
 static inline void radix_pass_8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
     int bitoff = pass * 8;
-
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = (src[i] >> bitoff) & 255;
         dst[hist[id][pass]++] = src[i];
     }
 }
 
-static void sort_radix_inplace_uint32(uint32_t* data, size_t count, md_allocator_i* temp_arena) {
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
-    uint32_t* scratch = md_vm_arena_push_array(temp_arena,uint32_t, count);
+static void sort_radix_inplace_uint32(uint32_t* data, size_t count, uint32_t* temp) {
+    // Histograms for each pass
+    uint32_t hist[256][4] = {0};
 
-    typedef union {
-        uint32_t u32[256][4];
-        md_128i  vec[256];
-    } hist_t;
-
-    hist_t hist = {0};
+    // Populate histogram
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = data[i];
-        hist.u32[(id >> 0)  & 255][0]++;
-        hist.u32[(id >> 8)  & 255][1]++;
-        hist.u32[(id >> 16) & 255][2]++;
-        hist.u32[(id >> 24) & 255][3]++;
+        hist[(id >> 0)  & 255][0]++;
+        hist[(id >> 8)  & 255][1]++;
+        hist[(id >> 16) & 255][2]++;
+        hist[(id >> 24) & 255][3]++;
     }
 
     // Prefix sum
-    //uint32_t sum[4] = {0};
     md_128i sum = md_mm_setzero_si128();
-    for (size_t i = 0; i < ARRAY_SIZE(hist.u32); ++i) {
-        md_128i val = hist.vec[i];
-        // uint32_t val[4] = { hist.u32[i][0], hist.u32[i][1], hist.u32[i][2], hist.u32[i][3] };
-        hist.vec[i] = sum;
-        // hist.u32[i][0] = sum[0];
-        // hist.u32[i][1] = sum[1];
-        // hist.u32[i][2] = sum[2];
-        // hist.u32[i][3] = sum[3];
+    for (size_t i = 0; i < 256; ++i) {
+        md_128i val = md_mm_loadu_si128(hist[i]);
+        md_mm_storeu_si128(hist[i], sum);
         sum = md_mm_add_epi32(sum, val);
-        // sum[0] += val[0];
-        // sum[1] += val[1];
-        // sum[2] += val[2];
-        // sum[3] += val[3];
     }
 
-    // 4-pass 8-bit radix sort computes the resulting order into scratch
-    radix_pass_8(scratch, data, count, hist.u32, 0);
-    radix_pass_8(data, scratch, count, hist.u32, 1);
-    radix_pass_8(scratch, data, count, hist.u32, 2);
-    radix_pass_8(data, scratch, count, hist.u32, 3);
+    // 4-pass 8-bit radix sort
+    radix_pass_8(temp, data, count, hist, 0);
+    radix_pass_8(data, temp, count, hist, 1);
+    radix_pass_8(temp, data, count, hist, 2);
+    radix_pass_8(data, temp, count, hist, 3);
+}
 
-    md_vm_arena_temp_end(temp);
+static inline void radix_pass_idx_8(uint32_t* dst, const uint32_t* src, const uint32_t* keys, size_t count, const uint32_t hist[256], int pass) {
+    int bitoff = pass * 8;
+
+    // Make a working copy of the counts for prefix sums
+    uint32_t offsets[256];
+    MEMCPY(offsets, hist, sizeof(uint32_t) * 256);
+
+    // Prefix sum on offsets
+    uint32_t sum = 0;
+    for (int i = 0; i < 256; ++i) {
+        uint32_t v = offsets[i];
+        offsets[i] = sum;
+        sum += v;
+    }
+
+    // Scatter indices to dst using offsets
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t idx = src[i];
+        uint32_t key = keys[idx];
+        uint32_t id  = (key >> bitoff) & 255;
+        dst[offsets[id]++] = idx;
+    }
+}
+
+static void sort_radix_uint32(uint32_t* out_indices, const uint32_t* keys, size_t count, uint32_t* tmp_indices) {
+    // Initialize indices
+    for (size_t i = 0; i < count; ++i) {
+        out_indices[i] = (uint32_t)i;
+    }
+
+    // Precompute histograms for each pass (counts only)
+    uint32_t hist[4][256] = {0};
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t key = keys[i];
+        hist[0][(key >> 0)  & 255]++;
+        hist[1][(key >> 8)  & 255]++;
+        hist[2][(key >> 16) & 255]++;
+        hist[3][(key >> 24) & 255]++;
+    }
+
+    // 4-pass radix sort using precomputed counts
+    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[0], 0);
+    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[1], 1);
+    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[2], 2);
+    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[3], 3);
+}
+
+
+static inline void radix_pass_indices_8(uint32_t* dst_indices, const uint32_t* keys, const uint32_t* src_indices, size_t count, uint32_t hist[256],
+                                        int pass) {
+    int bitoff = pass * 8;
+    uint32_t pos[256];
+    memcpy(pos, hist, sizeof(uint32_t) * 256);
+
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t key = (keys[src_indices[i]] >> bitoff) & 0xFF;
+        dst_indices[pos[key]++] = src_indices[i];
+    }
+}
+
+void radix_sort_indices_uint32(const uint32_t* keys,    // array of keys (e.g., min_x of AABBs)
+                               uint32_t* indices,       // output: sorted indices
+                               uint32_t* temp_indices,  // scratch array of size 'count'
+                               size_t count) {
+    uint32_t hist[256];
+
+    // Initialize indices
+    for (size_t i = 0; i < count; ++i) indices[i] = (uint32_t)i;
+
+    uint32_t* src = indices;
+    uint32_t* dst = temp_indices;
+
+    // 4 passes of 8-bit radix
+    for (int pass = 0; pass < 4; ++pass) {
+        MEMSET(hist, 0, sizeof(hist));
+
+        // Compute histogram for this pass
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t key = (keys[src[i]] >> (pass * 8)) & 0xFF;
+            hist[key]++;
+        }
+
+        // Prefix sum
+        uint32_t sum = 0;
+        for (int i = 0; i < 256; ++i) {
+            uint32_t tmp = hist[i];
+            hist[i] = sum;
+            sum += tmp;
+        }
+
+        // Sort pass
+        radix_pass_indices_8(dst, keys, src, count, hist, pass);
+
+        // Swap src and dst for next pass
+        uint32_t* tmp = src;
+        src = dst;
+        dst = tmp;
+    }
+
+    // After even number of passes, result is in 'indices' already
+    // If odd, copy back from temp
+    if (src != indices) {
+        MEMCPY(indices, src, count * sizeof(uint32_t));
+    }
 }
 
 typedef struct fifo_t {
@@ -1186,7 +1274,8 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
 
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
     uint32_t bits = 0;
-    md_protein_backbone_atoms_t bb = {0};
+    md_protein_backbone_atoms_t bb;
+    MEMSET(&bb, -1, sizeof(bb));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
@@ -1518,10 +1607,10 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
             md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
 
             if (is_sheet(sys, range, i)) {
-                ss = MD_SECONDARY_STRUCTURE_SHEET;
+                ss = MD_SECONDARY_STRUCTURE_BETA_SHEET;
             }
             else if (is_helical(sys, range, i)) {
-                ss = MD_SECONDARY_STRUCTURE_HELIX;
+                ss = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
             }
             secondary_structure[i] = ss;
         }
@@ -1558,20 +1647,19 @@ typedef struct dssp_hbond_t {
 } dssp_hbond_t;
 
 typedef struct dssp_res_coords_t {
-    vec3_t N;
-    vec3_t O;
-    vec3_t C;
-    vec3_t H;
-    vec3_t CA;
-    float _pad;
+    vec4_t N;
+    vec4_t O;
+    vec4_t C;
+    vec4_t H;
+    vec4_t CA;
 } dssp_res_coords_t;
 
 typedef struct dssp_res_hbonds_t {
-    dssp_hbond_t acceptor[2];
-    dssp_hbond_t donor[2];
+    dssp_hbond_t acc[2];
+    dssp_hbond_t don[2];
 } dssp_res_hbonds_t;
 
-static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], uint32_t don_idx, uint32_t acc_idx) {
+static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t don_idx, size_t acc_idx) {
     /*
     float d_NO = vec3_distance(donor->N, acceptor->O);
     float d_HC = vec3_distance(donor->H, acceptor->C);
@@ -1589,10 +1677,10 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     const float min_bond_energy = -9.9f;
 
     const vec4_t d2 = {
-        vec3_distance_squared(don->N, acc->O),
-        vec3_distance_squared(don->H, acc->C),
-        vec3_distance_squared(don->N, acc->C),
-        vec3_distance_squared(don->O, acc->H),
+        vec4_distance_squared(don->H, acc->O),
+        vec4_distance_squared(don->H, acc->C),
+        vec4_distance_squared(don->N, acc->C),
+        vec4_distance_squared(don->N, acc->O),
     };
     
     const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
@@ -1600,7 +1688,7 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
         result = min_bond_energy;
     } else {
         const vec4_t v = vec4_rsqrt(d2);
-        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, 1.0f, -1.0f, -1.0f)));
+        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, -1.0f, 1.0f, -1.0f)));
     }
 
     result = MAX(result, min_bond_energy);
@@ -1608,222 +1696,233 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
     dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
 
-    if (result < don_hbonds->acceptor[0].energy) {
-        don_hbonds->acceptor[1] = don_hbonds->acceptor[0];
-        don_hbonds->acceptor[0].res_idx = acc_idx;
-        don_hbonds->acceptor[0].energy  = result;
-    } else if (result < don_hbonds->acceptor[1].energy) {
-        don_hbonds->acceptor[1].res_idx = acc_idx;
-        don_hbonds->acceptor[1].energy  = result;
+    if (result < don_hbonds->acc[0].energy) {
+        don_hbonds->acc[1] = don_hbonds->acc[0];
+        don_hbonds->acc[0].res_idx = (uint32_t)acc_idx;
+        don_hbonds->acc[0].energy  = result;
+    } else if (result < don_hbonds->acc[1].energy) {
+        don_hbonds->acc[1].res_idx = (uint32_t)acc_idx;
+        don_hbonds->acc[1].energy  = result;
     }
 
-    if (result < acc_hbonds->donor[0].energy) {
-        acc_hbonds->donor[1] = acc_hbonds->donor[0];
-        acc_hbonds->donor[0].res_idx = don_idx;
-        acc_hbonds->donor[0].energy  = result;
-    } else if (result < acc_hbonds->donor[1].energy) {
-        acc_hbonds->donor[1].res_idx = don_idx;
-        acc_hbonds->donor[1].energy  = result;
+    if (result < acc_hbonds->don[0].energy) {
+        acc_hbonds->don[1] = acc_hbonds->don[0];
+        acc_hbonds->don[0].res_idx = (uint32_t)don_idx;
+        acc_hbonds->don[0].energy  = result;
+    } else if (result < acc_hbonds->don[1].energy) {
+        acc_hbonds->don[1].res_idx = (uint32_t)don_idx;
+        acc_hbonds->don[1].energy  = result;
     }
 
     return result;
 }
 
-void assign_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t count) {
-    if (count == 0) return;
+static inline vec4_t estimate_HN(vec4_t N, vec4_t CA, vec4_t C_prev) {
+    const float NH_dist = 1.01f;
+    vec4_t U = vec4_normalize(vec4_sub(N, CA));
+    vec4_t V = vec4_normalize(vec4_sub(N, C_prev));
+    return vec4_add(N, vec4_mul_f(vec4_normalize(vec4_add(U, V)), NH_dist));
+}
 
-    const float min_ca_dist_sq = (9.0f * 9.0f);
-    for (uint32_t i = 0; i < (uint32_t)count - 1; ++i) {
-        for (uint32_t j = i + 1; j < (uint32_t)count; ++j) {
-            if (vec3_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist_sq) {
+static inline vec4_t estimate_terminal_HN(vec4_t N, vec4_t CA, vec4_t C) {
+    // i == range.beg (N-terminus): estimate previous C by extrapolation
+    // C_prev_est = N + (CA - C)
+    vec4_t CA_minus_C = vec4_sub(CA, C);
+    vec4_t Cprev_est  = vec4_add(N, CA_minus_C);
+
+    // Try to construct H using the standard estimator
+    return estimate_HN(N, CA, Cprev_est);
+}
+
+static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], size_t res_a, size_t res_b) {
+    const float max_hbond_energy = -0.5f;
+    return (res_hbonds[res_a].acc[0].res_idx == res_b && res_hbonds[res_a].acc[0].energy < max_hbond_energy) ||
+           (res_hbonds[res_a].acc[1].res_idx == res_b && res_hbonds[res_a].acc[1].energy < max_hbond_energy);
+}
+
+enum {
+    SS_FLAG_NONE = 0,
+    SS_FLAG_TURN = 1,
+    SS_FLAG_BEND = 2,
+    SS_FLAG_HELIX_310 = 4,
+    SS_FLAG_HELIX_ALPHA = 8,
+    SS_FLAG_HELIX_PI = 16,
+    SS_FLAG_SHEET = 32,
+    SS_FLAG_BRIDGE = 64,
+};
+
+void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, const float* y, const float* z, const md_system_t* sys) {
+    ASSERT(out_secondary_structure);
+
+    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
+
+    size_t backbone_segment_count = sys->protein_backbone.segment.count;
+    size_t backbone_range_count   = sys->protein_backbone.range.count;
+    const uint32_t* backbone_range_offsets = sys->protein_backbone.range.offset;
+    const md_protein_backbone_atoms_t* backbone_atoms = sys->protein_backbone.segment.atoms;
+
+    dssp_res_coords_t* res_coords = md_vm_arena_push(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
+    dssp_res_hbonds_t* res_hbonds = md_vm_arena_push(temp_alloc, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+    uint32_t* ss_flags = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
+
+    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
+        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
+
+        for (int i = range.beg; i < range.end; ++i) {
+            md_atom_idx_t ca_idx = backbone_atoms[i].ca;
+            md_atom_idx_t n_idx  = backbone_atoms[i].n;
+            md_atom_idx_t c_idx  = backbone_atoms[i].c;
+            md_atom_idx_t o_idx  = backbone_atoms[i].o;
+            md_atom_idx_t hn_idx = backbone_atoms[i].hn;
+
+            res_coords[i].CA = vec4_set(x[ca_idx], y[ca_idx], z[ca_idx], 0);
+            res_coords[i].N  = vec4_set(x[n_idx],  y[n_idx],  z[n_idx],  0);
+            res_coords[i].C  = vec4_set(x[c_idx],  y[c_idx],  z[c_idx],  0);
+            res_coords[i].O  = vec4_set(x[o_idx],  y[o_idx],  z[o_idx],  0);
+
+            if (hn_idx > 0) {
+                res_coords[i].H = vec4_set(x[hn_idx], y[hn_idx], z[hn_idx], 0);
+            } else {
+                if (i > 0)
+                    res_coords[i].H = estimate_HN(res_coords[i].N, res_coords[i].CA, res_coords[i - 1].C);
+                else
+                    res_coords[i].H = estimate_terminal_HN(res_coords[i].N, res_coords[i].CA, res_coords[i].C);
+            }
+        }
+    }
+
+    // Do N^2 bond energy calculations
+    MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+    const float min_ca_dist2 = (9.0f * 9.0f);
+    for (size_t i = 0; i + 1 < backbone_segment_count; ++i) {
+        for (size_t j = i + 1; j < backbone_segment_count; ++j) {
+            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
                 continue;
             }
 
             calc_hbond_energy(res_hbonds, res_coords, i, j);
             if (j != i + 1) {
                 calc_hbond_energy(res_hbonds, res_coords, j, i);
-            } 
-        }
-    }
-}
-
-static inline vec3_t estimate_HN(vec3_t N, vec3_t CA, vec3_t C_prev) {
-    const float NH_dist = 1.01f;
-    vec3_t U = vec3_normalize(vec3_sub(N, CA));
-    vec3_t V = vec3_normalize(vec3_sub(N, C_prev));
-    return vec3_add(N, vec3_mul_f(vec3_normalize(vec3_add(U, V)), NH_dist));
-}
-
-static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], uint32_t res_a, uint32_t res_b) {
-    const float max_hbond_energy = -0.5f;
-    return (res_hbonds[res_a].acceptor[0].res_idx == res_b && res_hbonds[res_a].acceptor[0].energy < max_hbond_energy) ||
-           (res_hbonds[res_a].acceptor[1].res_idx == res_b && res_hbonds[res_a].acceptor[1].energy < max_hbond_energy);
-}
-
-typedef enum {
-    SECONDARY_STRUCTURE_COIL = 0,
-    SECONDARY_STRUCTURE_ALPHA_HELIX,
-    SECONDARY_STRUCTURE_BETA_SHEET,
-    SECONDARY_STRUCTURE_BETA_BRIDGE,
-    SECONDARY_STRUCTURE_TURN,
-    SECONDARY_STRUCTURE_BEND,
-    SECONDARY_STRUCTURE_HELIX_310,
-    SECONDARY_STRUCTURE_PI_HELIX,
-} dssp_secondary_structure_type_t;
-
-static inline void dssp_classify_beta_sheet(md_secondary_structure_t out_ss[], const dssp_res_hbonds_t res_hbonds[], size_t count) {
-
-}
-
-static inline void dssp_classify_helix(md_secondary_structure_t out_ss[], const dssp_res_hbonds_t res_hbonds[], size_t count) {
-
-}
-
-#if 0
-static inline dssp_secondary_structure_type_t dssp_classify(md_backbone_angles_t res_bb_angles[], int n) {
-    // Check phi and psi angles for α-helix (range: φ ≈ -60°, ψ ≈ -45°)
-    if (residues[0].phi < -50 && residues[0].phi > -70 && residues[0].psi < -30 && residues[0].psi > -60) {
-        if (4 < n && has_hbond(&residues[0], &residues[4])) {
-            return SECONDARY_STRUCTURE_ALPHA_HELIX;
-        }
-    }
-    // Detect 310 helix: hydrogen bond between i and i+3
-    else if (3 < n && has_hbond(&residues[0], &residues[3])) {
-        return SECONDARY_STRUCTURE_HELIX_310;
-    }
-    // Detect π-helix: hydrogen bond between i and i+5
-    else if (5 < n && has_hbond(&residues[0], &residues[5])) {
-        return SECONDARY_STRUCTURE_PI_HELIX;
-    }
-    // Detect β-sheet based on H-bonds and torsion angles for sheets (φ ≈ -120°, ψ ≈ 120°)
-    else if (2 < n && has_hbond(&residues[0], &residues[2])) {
-        if (residues[0].phi < -110 && residues[0].psi > 100) {
-            return SECONDARY_STRUCTURE_BETA_SHEET;
-        } else {
-            return SECONDARY_STRUCTURE_BETA_BRIDGE;
-        }
-    }
-    // Detect turns (specific torsion angles between φ ≈ -60° and ψ ≈ -90°)
-    else if (residues[0].phi < -40 && residues[0].phi > -80 && residues[0].psi < -70 && residues[0].psi > -110) {
-        return SECONDARY_STRUCTURE_TURN;
-    }
-    // Detect bends (sharp changes in φ/ψ angles)
-    else if (fabs(residues[0].phi - residues[-1].phi) > 70 || fabs(residues[0].psi - residues[-1].psi) > 70) {
-        return SECONDARY_STRUCTURE_BEND;
-    }
-    return SECONDARY_STRUCTURE_COIL;
-}
-
-bool dssp(md_secondary_structure_t secondary_structure[], md_backbone_angles_t opt_bb_angles[], size_t capacity, const struct md_protein_backbone_data_t* backbone) {
-    ASSERT(secondary_structure);
-    ASSERT(backbone);
-
-    if (capacity < backbone->count) {
-        MD_LOG_ERROR("Insufficient capacity in secondary structures passed to DSSP");
-        return false;
-    }
-
-    md_backbone_angles_t* bb_angles = opt_bb_angles ? opt_bb_angles : md_temp_push(backbone->count * sizeof(md_backbone_angles_t));
-    mol->p
-
-    for (size_t chain_idx = 0; chain_idx < mol->protein_backbone.range.count; ++chain_idx) {
-        const md_range_t range = {mol->protein_backbone.range.offset[chain_idx], mol->protein_backbone.range.offset[chain_idx + 1]};
-        ASSERT(range.end <= (int)capacity);
-
-        const int bb_len = range.end - range.beg;
-
-        if (bb_len < 4) {
-            MEMSET(secondary_structure + range.beg, MD_SECONDARY_STRUCTURE_COIL, bb_len * sizeof(md_secondary_structure_t));
-            continue;
-        }
-
-        // The residues represent a sliding window of residues over the backbone range, where residue 1 is the evaluated residue within dssp classify
-        dssp_res_t residues[8] = {0};
-        const int win_size = ARRAY_SIZE(residues);
-
-        for (int i = 0; i < MIN(bb_len, win_size); ++i) {
-            md_atom_idx_t ca_idx = backbone->atoms[range.beg + i].ca;
-            md_atom_idx_t n_idx  = backbone->atoms[range.beg + i].n;
-            md_atom_idx_t c_idx  = backbone->atoms[range.beg + i].c;
-            md_atom_idx_t o_idx  = backbone->atoms[range.beg + i].o;
-            md_atom_idx_t hn_idx = backbone->atoms[range.beg + i].hn;
-
-            residues[i].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
-            residues[i].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
-            residues[i].C  = vec3_set(mol->atom.x[c_idx],  mol->atom.y[c_idx],  mol->atom.z[c_idx]);
-            residues[i].O  = vec3_set(mol->atom.x[o_idx],  mol->atom.y[o_idx],  mol->atom.z[o_idx]);
-
-            if (hn_idx > 0) {
-                residues[i].H = vec3_set(mol->atom.x[hn_idx], mol->atom.y[hn_idx], mol->atom.z[hn_idx]);
-            } else if (i > 0) {
-                residues[i].H = estimate_HN(residues[i].N, residues[i].CA, residues[i-1].C);
             }
+        }
+    }
 
-            if (i > 0) {
-                residues[i].phi = RAD_TO_DEG(dihedral_angle(residues[i-1].C, residues[i].N, residues[i].CA, residues[i].C));
+    // Classify secondary structure
+    MEMSET(out_secondary_structure, MD_SECONDARY_STRUCTURE_COIL, sizeof(md_secondary_structure_t) * backbone_segment_count);
+
+    // ---- Per-range passes: helices, turns, bends (set flags only) ----
+    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
+        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
+
+        // Helices (i -> i+3, i+4, i+5)
+        for (size_t i = range.beg; i < range.end; ++i) {
+            if (i + 3 < range.end && dssp_test_bond(res_hbonds, i, i + 3)) {
+                ss_flags[i] |= SS_FLAG_HELIX_310;
+            }
+            if (i + 4 < range.end && dssp_test_bond(res_hbonds, i, i + 4)) {
+                ss_flags[i] |= SS_FLAG_HELIX_ALPHA;
+            }
+            if (i + 5 < range.end && dssp_test_bond(res_hbonds, i, i + 5)) {
+                ss_flags[i] |= SS_FLAG_HELIX_PI;
             }
         }
 
-        for (int i = 0; i < MIN(bb_len, win_size) - 1; ++i) {
-            residues[i].psi = RAD_TO_DEG(dihedral_angle(residues[i].N, residues[i].CA, residues[i].C, residues[i+1].N));
-        }
-
-        secondary_structure[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
-        for (int i = range.beg + 1; i < range.end; ++i) {
-            int n = MIN(range.end - i, win_size);
-            dssp_secondary_structure_t ss = dssp_classify(residues + 1, n);
-
-            switch (ss) {
-            case SECONDARY_STRUCTURE_ALPHA_HELIX:
-            case SECONDARY_STRUCTURE_HELIX_310:
-            case SECONDARY_STRUCTURE_PI_HELIX:
-                secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX;
-                break;
-            case SECONDARY_STRUCTURE_BETA_SHEET:
-            case SECONDARY_STRUCTURE_BETA_BRIDGE:
-                secondary_structure[i] = MD_SECONDARY_STRUCTURE_SHEET;
-                break;
-            default:
-                secondary_structure[i] = MD_SECONDARY_STRUCTURE_COIL;
-                break;
-            }
-
-            MEMMOVE(residues, residues + 1, sizeof(dssp_res_t) * (win_size - 1));
-
-            if (n == win_size) {
-                const int last = win_size - 1;
-                const int j = range.beg + i + last;
-
-                md_atom_idx_t ca_idx = mol->protein_backbone.segment.atoms[j].ca;
-                md_atom_idx_t n_idx  = mol->protein_backbone.segment.atoms[j].n;
-                md_atom_idx_t c_idx  = mol->protein_backbone.segment.atoms[j].c;
-                md_atom_idx_t o_idx  = mol->protein_backbone.segment.atoms[j].o;
-                md_atom_idx_t hn_idx = mol->protein_backbone.segment.atoms[j].hn;
-
-                residues[last].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
-                residues[last].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
-                residues[last].C  = vec3_set(mol->atom.x[c_idx],  mol->atom.y[c_idx],  mol->atom.z[c_idx]);
-                residues[last].O  = vec3_set(mol->atom.x[o_idx],  mol->atom.y[o_idx],  mol->atom.z[o_idx]);
-
-                if (hn_idx > 0) {
-                    residues[last].H = vec3_set(mol->atom.x[hn_idx], mol->atom.y[hn_idx], mol->atom.z[hn_idx]);
-                } else if (i > 0) {
-                    residues[last].H = estimate_HN(residues[last].N, residues[last].CA, residues[last-1].C);
+        // Turns: 4-residue H-bonded turn i->i+3 (only set if coil-ish)
+        for (size_t i = range.beg; i + 3 < range.end; ++i) {
+            if (dssp_test_bond(res_hbonds, i, i + 3)) {
+                // mark the 4 residues as turn candidates (don't override helix flags)
+                for (size_t k = 0; k < 4; ++k) {
+                    ss_flags[i + k] |= SS_FLAG_TURN;
                 }
+            }
+        }
 
-                residues[last-1].phi = RAD_TO_DEG(dihedral_angle(residues[last-2].C, residues[last-1].N, residues[last-1].CA, residues[last-1].C));
-                residues[last-1].psi = RAD_TO_DEG(dihedral_angle(residues[last-1].N, residues[last-1].CA, residues[last-1].C, residues[last].N));
+        // Bends: geometric Cα pseudo-angle around i (i-2 .. i+2)
+        for (size_t i = range.beg + 2; i + 2 < range.end; ++i) {
+            vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
+            vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
+            float angle = vec4_angle(v1, v2);  // radians
+            if (RAD_TO_DEG(angle) < 70.0f) {
+                ss_flags[i] |= SS_FLAG_BEND;
             }
         }
     }
 
-    return true;
+    // ---- Global pass: sheets / bridges (non-local, can cross ranges) ----
+    const float min_ca_dist2_sheet = 5.5f * 5.5f;  // slightly relaxed CA cutoff
+    for (size_t i = 0; i < backbone_segment_count; ++i) {
+        // We will track how many partner hbonds found and whether ladders exist.
+        int partner_count = 0;
+
+        for (size_t j = 0; j < backbone_segment_count; ++j) {
+            if (i == j) continue;
+            if (abs((int)i - (int)j) <= 2) continue;  // skip sequence neighbors
+            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2_sheet) continue;
+
+            bool ij = dssp_test_bond(res_hbonds, i, j);
+            bool ji = dssp_test_bond(res_hbonds, j, i);
+            if (!(ij || ji)) continue;
+
+            // Check ladder-style partners to prefer sheets over isolated bridges:
+            bool ladder = false;
+            // antiparallel: i bonds j  AND (i-1 binds j+1 OR i+1 binds j-1)
+            if (i > 0 && j + 1 < backbone_segment_count) {
+                if (dssp_test_bond(res_hbonds, i - 1, j + 1) || dssp_test_bond(res_hbonds, j + 1, i - 1)) ladder = true;
+            }
+            if (i + 1 < backbone_segment_count && j > 0) {
+                if (dssp_test_bond(res_hbonds, i + 1, j - 1) || dssp_test_bond(res_hbonds, j - 1, i + 1)) ladder = true;
+            }
+            // parallel ladder: i+1 binds j+1 or i-1 binds j-1 also OK
+            if (i + 1 < backbone_segment_count && j + 1 < backbone_segment_count) {
+                if (dssp_test_bond(res_hbonds, i + 1, j + 1) || dssp_test_bond(res_hbonds, j + 1, i + 1)) ladder = true;
+            }
+            if (i > 0 && j > 0) {
+                if (dssp_test_bond(res_hbonds, i - 1, j - 1) || dssp_test_bond(res_hbonds, j - 1, i - 1)) ladder = true;
+            }
+
+            if (ladder) {
+                ss_flags[i] |= SS_FLAG_SHEET;
+                ss_flags[j] |= SS_FLAG_SHEET;
+            } else {
+                // isolated single H-bond — candidate bridge
+                ss_flags[i] |= SS_FLAG_BRIDGE;
+                ss_flags[j] |= SS_FLAG_BRIDGE;
+            }
+            partner_count++;
+        }
+    }
+
+    // ---- Final resolution: convert flags to enum with priority ----
+    // Priority: HELIX (alpha > 310 > pi) > SHEET > BRIDGE > TURN > BEND > COIL
+    for (size_t i = 0; i < backbone_segment_count; ++i) {
+        uint8_t f = ss_flags[i];
+
+        // prefer alpha helix, but allow other helix flags if alpha not present
+        if (f & SS_FLAG_HELIX_ALPHA) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
+        } else if (f & SS_FLAG_HELIX_310) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_310;
+        } else if (f & SS_FLAG_HELIX_PI) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_PI;
+        } else if (f & SS_FLAG_SHEET) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BETA_SHEET;
+        } else if (f & SS_FLAG_BRIDGE) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BETA_BRIDGE;
+        } else if (f & SS_FLAG_TURN) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_TURN;
+        } else if (f & SS_FLAG_BEND) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BEND;
+        } else {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_COIL;
+        }
+    }
+
+    md_vm_arena_destroy(temp_alloc);
 }
-#endif
 
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
     return tm_align(secondary_structure, capacity, sys);
-    //return dssp(secondary_structure, capacity, mol);
+    //return dssp(secondary_structure, capacity, sys);
 }
 
 bool md_util_system_infer_secondary_structure(md_system_t* sys) {
@@ -1864,7 +1963,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
                 vec3_sub(n_next, c),
             };
 
-            md_util_min_image_vec3(d, ARRAY_SIZE(d), &sys->unit_cell);
+            md_util_min_image_vec3(d, ARRAY_SIZE(d), &sys->unitcell);
 
             backbone_angles[i].phi = vec3_dihedral_angle(d[0], d[1], d[2]);
             backbone_angles[i].psi = vec3_dihedral_angle(d[1], d[2], d[3]);
@@ -1904,7 +2003,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static void compute_connectivity(md_conn_data_t* out_conn, const md_bond_pair_t* bond_pairs, size_t bond_count, size_t atom_count, md_allocator_i* alloc, md_allocator_i* temp_arena) {    
+static void compute_connectivity(md_conn_data_t* out_conn, const md_atom_pair_t* bond_pairs, size_t bond_count, size_t atom_count, md_allocator_i* alloc, md_allocator_i* temp_arena) {    
     ASSERT(out_conn);
     ASSERT(alloc);
 
@@ -1945,7 +2044,7 @@ static void compute_connectivity(md_conn_data_t* out_conn, const md_bond_pair_t*
 
     // Write edge indices to correct location
     for (size_t i = 0; i < bond_count; ++i) {
-        const md_bond_pair_t p = bond_pairs[i];
+        const md_atom_pair_t p = bond_pairs[i];
         const int atom_a = p.idx[0];
         const int atom_b = p.idx[1];
         const int local_a = (int)local_offset[i].off[0];
@@ -2875,10 +2974,6 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             int dbl_bond_targets[4];
             int dbl_bond_target_count = 0;
 
-            if (ring_idx == 15) {
-                while(0) {};
-            }
-
             // 8a: Try to resolve ambigous cases, by looking at neighbors
             for (int *it = atom_beg, j = 0; it != atom_end; ++it, ++j) {
                 int pi = pidx[j];
@@ -3051,40 +3146,42 @@ static inline int simd_covalent_bond_heuristic(md_256 d2, md_256 cov_rad_a, md_2
     return md_mm256_movemask_ps(md_mm256_and_ps(mask_d2, mask_rad));
 }
 
-static inline float distance_squared(vec4_t dx, const md_unit_cell_t* cell) {
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t p  = vec4_from_vec3(mat3_diag(cell->basis), 0);
-        const vec4_t rp = vec4_from_vec3(mat3_diag(cell->inv_basis), 0);
+static inline float distance_squared(vec4_t dx, const md_unitcell_t* cell) {
+    if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t p  = md_unitcell_diag_vec4(cell);
+        const vec4_t rp = vec4_set(p.x != 0.0f ? 1.0f / p.x : 0.0f, p.y != 0.0f ? 1.0f / p.y : 0.0f, p.z != 0.0f ? 1.0f / p.z : 0.0f, 0.0f);
         const vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_mul(dx, rp)), p));
         dx = vec4_blend(d, dx, vec4_cmp_eq(p, vec4_zero()));
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        minimum_image_triclinic(dx.elem, cell->basis.elem);
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t basis = md_unitcell_basis_mat3(cell);
+        minimum_image_triclinic(dx.elem, basis.elem);
     }
     return vec4_length_squared(dx);
 }
 
-static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unit_cell_t* cell) {
+static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unitcell_t* cell) {
     md_256 d[3] = {
         dx[0],
         dx[1],
         dx[2],
     };
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+    mat3_t basis = md_unitcell_basis_mat3(cell);
+    if (cell->flags & MD_UNITCELL_ORTHO) {
         md_256 p[3] = {
-            md_mm256_set1_ps(cell->basis.elem[0][0]),
-            md_mm256_set1_ps(cell->basis.elem[1][1]),
-            md_mm256_set1_ps(cell->basis.elem[2][2]),
+            md_mm256_set1_ps(basis.elem[0][0]),
+            md_mm256_set1_ps(basis.elem[1][1]),
+            md_mm256_set1_ps(basis.elem[2][2]),
         };
         md_256 rp[3] = {
-            md_mm256_set1_ps(cell->inv_basis.elem[0][0]),
-            md_mm256_set1_ps(cell->inv_basis.elem[1][1]),
-            md_mm256_set1_ps(cell->inv_basis.elem[2][2]),
+            md_mm256_set1_ps(basis.elem[0][0] ? 1.0f / basis.elem[0][0] : 0.0f),
+            md_mm256_set1_ps(basis.elem[1][1] ? 1.0f / basis.elem[1][1] : 0.0f),
+            md_mm256_set1_ps(basis.elem[2][2] ? 1.0f / basis.elem[2][2] : 0.0f),
         };
         d[0] = md_mm256_minimage_ps(d[0], p[0], rp[0]);
         d[1] = md_mm256_minimage_ps(d[1], p[1], rp[1]);
         d[2] = md_mm256_minimage_ps(d[2], p[2], rp[2]);
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        simd_minimum_image_triclinic(d, cell->basis.elem);
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        simd_minimum_image_triclinic(d, basis.elem);
     }
     return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
 }
@@ -3363,15 +3460,8 @@ static const float coord_r_max[Num_Elements][Num_Elements] = {
     [U]  = { [O]=3.00f, [N]=3.00f },
 };
 
-static float fudge_factor(float r1, float r2) {
-    const float min_fudge = 0.05f;    // Minimum fudge factor (Å)
-    const float scale = 0.1f;         // Fraction of average radius to add
 
-    float avg_radius = 0.5f * (r1 + r2);
-    return MAX(min_fudge, scale * avg_radius);
-}
-
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, md_urange_t range_a, md_urange_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
+static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unitcell_t* cell, md_urange_t range_a, md_urange_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(x);
     ASSERT(y);
@@ -3389,152 +3479,47 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     }
     if (N < 20000) {
         // Brute force
-        if (range_a.beg == range_b.beg && range_a.end == range_b.end) {
-#if 0
-            for (int i = range_a.beg; i < range_a.end - 1; ++i) {
-                const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float  ri = elem_cov_radii[element[i]];
-                const bool   mi = is_metal(element[i]);
-                for (int j = i + 1; j < range_a.end; ++j) {
-                    const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const float  rj = elem_cov_radii[element[j]];
-                    const bool   mj = is_metal(element[j]);
+        for (int i = range_a.beg; i < range_a.end; ++i) {
+            const md_256  ci[3] = {
+                md_mm256_set1_ps(x[i]),
+                md_mm256_set1_ps(y[i]),
+                md_mm256_set1_ps(z[i]),
+            };
 
-                    // Do not consider potential metal - metal as covalent bonds
-                    if (mi && mj) continue;
+            const float* table_cov_r_min   = cov_r_min[element[i]];
+            const float* table_cov_r_max   = cov_r_max[element[i]];
+            //const float* table_coord_r_min = coord_r_min[element[i]];
+            //const float* table_coord_r_max = coord_r_max[element[i]];
 
-                    const vec4_t dx = vec4_sub(ci, cj);
-                    const float  d2 = distance_squared(dx, cell);
-                    if (covalent_bond_heuristic(d2, ri, rj)) {
-                        md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                        md_array_push(bond->order, bond_order, alloc);
-                        bond->count += 1;
-                    }
-                }
-            }
-#else
-            for (unsigned i = range_a.beg; i < range_a.end - 1; ++i) {
-                const md_256  ci[3] = {
-                    md_mm256_set1_ps(x[i]),
-                    md_mm256_set1_ps(y[i]),
-                    md_mm256_set1_ps(z[i]),
+            for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
+                const md_256  cj[3] = {
+                    md_mm256_loadu_ps(x + j),
+                    md_mm256_loadu_ps(y + j),
+                    md_mm256_loadu_ps(z + j),
                 };
+                const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
+                const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
+                const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
 
-                int ei = element[i];
+                const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
+                const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
 
-                const float* table_cov_r_min   = cov_r_min[ei];
-                const float* table_cov_r_max   = cov_r_max[ei];
-                //const float* table_coord_r_min = coord_r_min[element[i]];
-                //const float* table_coord_r_max = coord_r_max[element[i]];
-
-                for (unsigned j = i + 1; j < range_a.end; j += 8) {
-                    const md_256 cj[3] = {
-                        md_mm256_loadu_ps(x + j),
-                        md_mm256_loadu_ps(y + j),
-                        md_mm256_loadu_ps(z + j),
-                    };
-                    const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-                    
-                    const md_256 r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
-                    const md_256 r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
-                    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-                    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
-                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
-                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
-
-                    const md_256 dx[3] = {
-                        md_mm256_sub_ps(ci[0], cj[0]),
-                        md_mm256_sub_ps(ci[1], cj[1]),
-                        md_mm256_sub_ps(ci[2], cj[2]),
-                    };
-                    const md_256 d2    = simd_distance_squared(dx, cell);
-                    const int cov_mask = simd_bond_heuristic(d2, r2_min_cov, r2_max_cov);
-                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
-
-                    int mask = cov_mask;
-
-                    md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
-                    while (mask) {
-                        const int idx = ctz32(mask);
-                        mask = mask & ~(1 << idx);
-                        md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
-                        bond->count += 1;
-                    }
-                }
-            }
-#endif
-        } else {
-#if 0
-            for (int i = range_a.beg; i < range_a.end; ++i) {
-                const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float  ri = elem_cov_radii[element[i]];
-                const bool   mi = is_metal(element[i]);
-                // @NOTE: Only store monotonic bond connections
-                for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
-                    const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const float  rj = elem_cov_radii[element[j]];
-                    const vec4_t dx = vec4_sub(ci, cj);
-                    if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
-                        md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                        bond->count += 1;
-                    }
-                }
-            }
-#else
-            for (uint32_t i = range_a.beg; i < range_a.end; ++i) {
-                const md_256  ci[3] = {
-                    md_mm256_set1_ps(x[i]),
-                    md_mm256_set1_ps(y[i]),
-                    md_mm256_set1_ps(z[i]),
+                const md_256 dx[3] = {
+                    md_mm256_sub_ps(ci[0], cj[0]),
+                    md_mm256_sub_ps(ci[1], cj[1]),
+                    md_mm256_sub_ps(ci[2], cj[2]),
                 };
+                const md_256 d2 = simd_distance_squared(dx, cell);
+                int mask        = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
 
-                int ei = element[i];
-
-                const float* table_cov_r_min   = cov_r_min[ei];
-                const float* table_cov_r_max   = cov_r_max[ei];
-                //const float* table_coord_r_min = coord_r_min[element[i]];
-                //const float* table_coord_r_max = coord_r_max[element[i]];
-
-                for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
-                    const md_256  cj[3] = {
-                        md_mm256_loadu_ps(x + j),
-                        md_mm256_loadu_ps(y + j),
-                        md_mm256_loadu_ps(z + j),
-                    };
-                    const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-
-                    const md_256 r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
-                    const md_256 r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
-                    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-                    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
-                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
-                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
-
-                    const md_256 dx[3] = {
-                        md_mm256_sub_ps(ci[0], cj[0]),
-                        md_mm256_sub_ps(ci[1], cj[1]),
-                        md_mm256_sub_ps(ci[2], cj[2]),
-                    };
-                    const md_256 d2 = simd_distance_squared(dx, cell);
-                    int cov_mask    = simd_bond_heuristic(d2, r2_min_cov,   r2_max_cov);
-                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
-
-                    int mask = cov_mask;
-
-                    md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
-                    while (mask) {
-                        const int idx = ctz32(mask);
-                        mask = mask & ~(1 << idx);
-                        md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
-                        bond->count += 1;
-                    }
+                md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
+                while (mask) {
+                    const int idx = ctz32(mask);
+                    mask = mask & ~(1 << idx);
+                    md_array_push_no_grow(bond->pairs, ((md_atom_pair_t){i, j + idx}));
+                    bond->count += 1;
                 }
             }
-#endif
         }
     }
     else {
@@ -3579,7 +3564,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
 
                     if (bond_heuristic(d2, r_min_cov,   r_max_cov))
                     {
-                        md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
+                        md_array_push(bond->pairs, ((md_atom_pair_t){i, j}), alloc);
                         bond->count += 1;
                     }
                 }
@@ -3590,6 +3575,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     }
 
     return bond->count - pre_count;
+}
+
+static inline void find_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, size_t count, const md_unitcell_t* cell) {
+
 }
 
 typedef struct aabb_t {
@@ -3604,7 +3593,7 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_component_data_t* comp, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_component_data_t* comp, const md_unitcell_t* cell, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(alloc);
 
@@ -3781,71 +3770,6 @@ done:
     md_vm_arena_destroy(temp_arena);
 }
 
-// Compute the prerequisite fields to enable hydrogen bond determination
-// ported from molstar
-// https://github.com/molstar/molstar/blob/master/src/mol-model-props/computed/chemistry/valence-model.ts
-
-/*
-md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_system_t* mol, md_index_data_t connectivity, md_allocator_i* alloc) {
-    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, md_get_temp_allocator());
-    memset(atom_valence, 0, md_array_bytes(atom_valence));
-
-    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, md_get_temp_allocator());
-    memset(atom_hcount, 0, md_array_bytes(atom_hcount));
-
-    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, sys->comp.name, md_get_temp_allocator());
-
-    for (int64_t i = 0; i < md_array_size(mol->bonds); ++i) {
-        const md_atom_idx_t *idx = mol->bonds[i].idx;
-        atom_valence[idx[0]] += order[i];
-        atom_valence[idx[1]] += order[i];
-
-        if (mol->atom.element[idx[0]] == H) atom_hcount[idx[1]] += 1;
-        if (mol->atom.element[idx[1]] == H) atom_hcount[idx[0]] += 1;
-    }
-
-    for (int64_t i = 0; i < mol->atom.count; ++i) {
-        md_element_t elem = mol->atom.element[i];
-        int charge  = 0;
-        int implicit_hcount = 0;
-        int degree  = (int)md_index_range_size(connectivity, i);
-        int valence = atom_valence[i];
-        int geom    = 0;
-
-        bool multi_bond = (valence - degree) > 0;
-
-        switch (elem)
-        {
-        case H:
-            if (degree == 0) {
-                charge = 1;
-                geom = 0;
-            } else if (degree == 1) {
-                charge = 0;
-                geom = 1;
-            }
-            break;
-        case C:
-            charge = 0;
-            implicit_hcount = MAX(0, 4 - valence + MAX(0, -charge));
-            geom = degree + implicit_hcount + MAX(0, -charge);
-            break;
-        case N:
-            // @TODO: Complete this
-            break;
-        default:
-            break;
-        }
-    }
-}
-
-md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_system_t* mol, md_allocator_i* alloc) {
-    for (int64_t i = 0; i < mol->atom.count; ++i) {
-
-    }
-}
-*/
-
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
@@ -3853,41 +3777,6 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_system_t* mol, md_al
 #define MAX_NUC_LEN 35
 
 #define MIN_POLYMER_COMP_LEN 2
-
-/*
-bool md_util_residue_infer(md_residue_data_t* out_res, const md_flags_t in_atom_flags[], const int32_t atom_resid[], const str_t atom_resname[], size_t atom_count, md_allocator_i* alloc) {
-    ASSERT(out_res);
-    ASSERT(alloc);
-
-    if (!atom_resid && !atom_resname) {
-        MD_LOG_ERROR("Missing residue information (resid/resname)");
-        return false;
-    }
-
-    md_residue_id_t prev_resid = INT32_MIN;
-    str_t prev_resname = STR_LIT("");
-
-    // TODO: Add check for Flag which signifies a break in component / chain
-    for (size_t i = 0; i < atom_count; ++i) {
-        const md_residue_id_t resid = atom_resid ? atom_resid[i] : INT32_MIN;
-        const str_t resname = atom_resname ? atom_resname[i] : STR_LIT("");
-
-        if (resid != prev_resid || !str_eq(resname, prev_resname)) {
-            md_array_push(out_res->id, resid, alloc);
-            md_array_push(out_res->name, make_label(resname), alloc);
-            md_array_push(out_res->atom_offset, (uint32_t)i, alloc);
-            md_array_push(out_res->flags, 0, alloc);
-            out_res->count += 1;
-        }
-
-        prev_resname = resname;
-        prev_resid = resid;
-    }
-    md_array_push(out_res->atom_offset, (uint32_t)atom_count, alloc);
-
-    return true;
-}
-*/
 
 // @TODO: Convert to a table
 static bool monatomic_ion_element(md_element_t elem) {
@@ -4017,6 +3906,175 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
     return true;
 }
 
+void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_system_t* sys, md_allocator_i* alloc) {
+    ASSERT(hbond_data);
+    ASSERT(sys);
+    ASSERT(alloc);
+
+    if (sys->bond.count == 0) {
+        return;
+    }
+
+    hbond_data->candidate.num_donors = 0;
+    md_array_shrink(hbond_data->candidate.donors, 0);
+
+    hbond_data->candidate.num_acceptors = 0;
+    md_array_shrink(hbond_data->candidate.acceptors, 0);
+
+    size_t num_atoms = md_system_atom_count(sys);
+
+    // Identify donors and acceptors
+    for (size_t i = 0; i < num_atoms; ++i) {
+        int max_conn = 0;
+        int num_of_lone_pairs = 2;
+        md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, i);
+        switch (z_i) {
+        case MD_Z_N:
+        case MD_Z_S:
+            max_conn = 3;
+            break;
+        case MD_Z_O:
+            max_conn = 2;
+            break;
+        default:
+            continue;
+        }
+        
+        md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+        while (md_bond_iter_has_next(&it)) {
+            md_atom_idx_t j = md_bond_iter_atom_index(&it);
+            md_atomic_number_t z_j = md_atom_atomic_number(&sys->atom, j);
+            if (z_j== MD_Z_H) {
+                md_hydrogen_bond_donor_t donor = {(md_atom_idx_t)i, j};
+                md_array_push(sys->hydrogen_bond.candidate.donors, donor, alloc);
+                hbond_data->candidate.num_donors += 1;
+            }
+            md_bond_iter_next(&it);
+        }
+        
+        size_t num_conn = md_bond_conn_count(&sys->bond, i);
+        if (num_conn <= max_conn) {
+            if (z_i == MD_Z_S) {
+                num_of_lone_pairs = 4 - num_conn;
+            }
+
+            md_hydrogen_bond_acceptor_t acceptor = {(md_atom_idx_t)i, num_of_lone_pairs};
+            md_array_push(sys->hydrogen_bond.candidate.acceptors, acceptor, alloc);
+            hbond_data->candidate.num_acceptors += 1;
+        }
+    }
+
+    md_array_ensure(sys->hydrogen_bond.bonds, 2 * sys->hydrogen_bond.candidate.num_donors, alloc);
+}
+
+typedef struct hbond_candidate_t {
+    float score;
+    int acc_idx;
+} hbond_candidate_t;
+
+typedef struct hbond_payload_t {
+    vec4_t don;
+    vec4_t hyd;
+    hbond_candidate_t candidates[16];
+    size_t num_candidates;
+    float min_angle_in_radians;
+} hbond_payload_t;
+
+static bool hbond_iter(const md_spatial_hash_elem_t* elem, void* param) {
+    hbond_payload_t* data = (hbond_payload_t*)param;
+    if (data->num_candidates == ARRAY_SIZE(data->candidates)) {
+        return false;
+    }
+
+    vec4_t acc = vec4_from_vec3(elem->xyz, 0);
+    float angle = vec4_angle(vec4_sub(data->don, data->hyd), vec4_sub(acc, data->hyd));
+    float dist  = vec4_length(vec4_sub(data->don, acc));
+    if (angle > data->min_angle_in_radians) {
+        float h_dist = vec4_length(vec4_sub(data->hyd, acc));
+        float score = cosf(PI - angle) / h_dist;
+        hbond_candidate_t candidate = {
+            .score = score,
+            .acc_idx = elem->idx,
+        };
+        data->candidates[data->num_candidates++] = candidate;
+    }
+
+    return true;
+}
+
+void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
+                                 const md_unitcell_t* unitcell, double max_dist, double min_angle) {
+    ASSERT(hbond_data);
+    ASSERT(atom_x);
+    ASSERT(atom_y);
+    ASSERT(atom_z);
+
+    hbond_data->num_bonds = 0;
+    md_array_shrink(hbond_data->bonds, 0);
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    // Clamp to some form of reasonable value range
+    max_dist = CLAMP(max_dist, 1.0, 7.0);
+    min_angle = CLAMP(min_angle, 100.0, 180.0);
+
+    vec3_t*  acc_pos = md_vm_arena_push_array(arena, vec3_t,  hbond_data->candidate.num_acceptors);
+    uint8_t* acc_cap = md_vm_arena_push_array(arena, uint8_t, hbond_data->candidate.num_acceptors);
+
+    for (size_t i = 0; i < hbond_data->candidate.num_acceptors; ++i) {
+        int atom_idx = hbond_data->candidate.acceptors[i].idx;
+        acc_pos[i] = vec3_set(atom_x[atom_idx], atom_y[atom_idx], atom_z[atom_idx]);
+        acc_cap[i] = (uint8_t)hbond_data->candidate.acceptors[i].num_of_lone_pairs;
+    }
+
+    hbond_payload_t payload = {0};
+    payload.min_angle_in_radians = DEG_TO_RAD(min_angle);
+    const float radius = max_dist;
+    
+    md_spatial_hash_t* sh = md_spatial_hash_create_vec3(acc_pos, NULL, hbond_data->candidate.num_acceptors, unitcell, arena);
+
+    for (size_t i = 0; i < hbond_data->candidate.num_donors; ++i) {
+        int d_idx = hbond_data->candidate.donors[i].d_idx;
+        int h_idx = hbond_data->candidate.donors[i].h_idx;
+        payload.don = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
+        payload.hyd = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
+        payload.num_candidates = 0;
+
+        md_spatial_hash_query(sh, vec3_from_vec4(payload.don), radius, hbond_iter, &payload);
+
+        // Pick top candidates
+        if (payload.num_candidates > 0) {
+            hbond_candidate_t* arr = payload.candidates;
+            // Sort them (insertion sort)
+            int n = payload.num_candidates;
+            for (int j = 1; j < n; j++) {
+                int k = j - 1;
+
+                // descending order
+                while (k >= 0 && arr[k].score < arr[j].score) {
+                    arr[k + 1] = arr[k];
+                    k--;
+                }
+                arr[k + 1] = arr[j];
+            }
+
+            // Try to form bonds
+            for (int j = 0; j < n ; ++j) {
+                uint32_t a_idx = (uint32_t)arr[j].acc_idx;
+                if (acc_cap[a_idx] > 0) {
+                    md_hydrogen_bond_pair_t bond = { (uint32_t)i, a_idx };
+                    md_array_push_no_grow(hbond_data->bonds, bond);
+                    hbond_data->num_bonds += 1;
+                    acc_cap[a_idx] -= 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    md_vm_arena_destroy(arena);
+}
+
 // Excel-style chain-id generator: A..Z, AA..ZZ, AAA..
 // Notes:
 // - Uses only upper-case A-Z to avoid format-specific surprises.
@@ -4043,6 +4101,14 @@ static inline md_label_t md_util_chain_id_from_index(size_t idx) {
     }
 
     return make_label((str_t){ buf, (size_t)len });
+}
+
+// @NOTE(Robin): This could certainly be improved to incorporate more characters
+// Perhaps first A-Z, then [A-Z]0-9, then AA-ZZ etc.
+static inline md_label_t generate_chain_id_from_index(size_t idx) {
+    char c = 'A' + (idx % 26);
+    str_t str = {&c, 1};
+    return make_label(str);
 }
 
 static inline md_label_t md_util_next_inst_id(str_t last) {
@@ -4132,7 +4198,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
         // Pass 2: find connected residues
         for (size_t i = 0; i < sys->bond.count; ++i) {
-            md_bond_pair_t pair = sys->bond.pairs[i];
+            md_atom_pair_t pair = sys->bond.pairs[i];
             md_comp_idx_t res_a = atom_comp_idx[pair.idx[0]];
             md_comp_idx_t res_b = atom_comp_idx[pair.idx[1]];
             if (abs(res_a - res_b) == 1) {
@@ -4593,9 +4659,10 @@ bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
         // Sort the indices within the structure for more coherent memory access
         size_t size = md_array_size(indices);
         if (size < 128) {
-            sort_arr(indices, (int)md_array_size(indices));
+            sort_arr(indices, (int)size);
         } else {
-            sort_radix_inplace_uint32((uint32_t*)indices, md_array_size(indices), temp_arena);
+            uint32_t* temp = md_vm_arena_push(temp_arena, size * sizeof(uint32_t));
+            sort_radix_inplace_uint32((uint32_t*)indices, size, temp);
         }
         
         // Here we should have exhausted every atom that is connected to index i.
@@ -4694,8 +4761,8 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         count = md_bitfield_iter_extract_indices(indices, num_atoms, md_bitfield_iter_create(&tmp_bf));
     }
 
-    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, count, &sys->unit_cell, arena);
-    
+    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, count, &sys->unitcell, arena);
+
     md_bitfield_t old_mask = md_bitfield_create(arena);
     md_bitfield_copy(&old_mask, mask);
 
@@ -4864,7 +4931,7 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 }
 
 
-void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_basis);
     ASSERT(out_ext_min);
     ASSERT(out_ext_max);
@@ -4875,8 +4942,8 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     double cov[3][3] = {0};
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
-        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        if (cell->flags & MD_UNITCELL_ORTHO) {
+            vec4_t ext = md_unitcell_diag_vec4(cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -4892,11 +4959,12 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
                 cov[2][1] += c.z * c.y;
                 cov[2][2] += c.z * c.z;
             }
-        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t basis = md_unitcell_basis_mat3(cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
-                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -4944,7 +5012,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
 }
 
-void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_basis);
     ASSERT(out_ext_min);
     ASSERT(out_ext_max);
@@ -4955,8 +5023,8 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
     double cov[3][3] = {0};
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
-        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        if (cell->flags & MD_UNITCELL_ORTHO) {
+            vec4_t ext = md_unitcell_diag_vec4(cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -4972,11 +5040,12 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
                 cov[2][1] += c.z * c.y;
                 cov[2][2] += c.z * c.z;
             }
-        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t basis = md_unitcell_basis_mat3(cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = in_xyzr[idx];
-                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -7073,12 +7142,15 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
 }
 
 // This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+static void com_pbc(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+
+    mat3_t A  = md_unitcell_basis_mat3(cell);
+    mat3_t Ai = md_unitcell_inv_basis_mat3(cell);
 
     // Should transform cartesian coordinates to fractional coordinates and scale by 2 pi
-    mat3_t M = mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), unit_cell->inv_basis);
+    mat3_t M = mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai);
     // Inverse transform
-    mat3_t I = mat3_mul(unit_cell->basis, mat3_scale(1.0/TWO_PI, 1.0/TWO_PI, 1.0/TWO_PI));
+    mat3_t I = mat3_mul(A, mat3_scale(1.0/TWO_PI, 1.0/TWO_PI, 1.0/TWO_PI));
 
     // Here we select the correct internal version based on the available inputs
     if (in_w) {
@@ -7111,17 +7183,18 @@ static void com_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_id
     MEMCPY(out_com, &acc, sizeof(float) * 3);
 }
 
-static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_com);
     ASSERT(in_xyzw);
-    ASSERT(unit_cell);
+    ASSERT(cell);
 
     vec4_t acc_c = {0};
     vec4_t acc_s = {0};
     vec4_t acc_xyzw = {0};
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        const vec3_t ext = md_unitcell_diag_vec3(cell);
         const vec4_t scl = vec4_div(vec4_set1(TWO_PI), vec4_from_vec3(ext, TWO_PI));
 
         if (in_idx) {
@@ -7161,16 +7234,19 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             out_com[i] = (float)((theta_prim / TWO_PI) * ext.elem[i]);
         }
     } else {
-        ASSERT(unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC);
-        const mat4_t M = mat4_mul(mat4_scale(TWO_PI, TWO_PI, TWO_PI), mat4_from_mat3(unit_cell->inv_basis));
-        const mat4_t I = mat4_mul(mat4_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), mat4_from_mat3(unit_cell->basis));
+        ASSERT(flags & MD_UNITCELL_TRICLINIC);
+        const mat3_t A  = md_unitcell_inv_basis_mat3(cell);
+        const mat3_t Ai = md_unitcell_basis_mat3(cell);
+
+        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai));
+        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), A));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
                 vec4_t xyzw  = in_xyzw[idx];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4_mul_vec4(M, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -7181,7 +7257,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4_mul_vec4(I, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(I, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -7203,7 +7279,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
     }
 }
 
-vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -7213,12 +7289,12 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     }
 
     vec3_t xyz = {0};
-    if (!unit_cell || unit_cell->flags == MD_UNIT_CELL_FLAG_NONE) {
+    if (!unit_cell || unit_cell->flags == MD_UNITCELL_NONE) {
         com(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count);
         return xyz;
     }
 
-    if (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC)) {
+    if (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) {
         com_pbc(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count, unit_cell);
         return xyz;
     }
@@ -7228,7 +7304,7 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     return xyz;
 }
 
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     ASSERT(in_xyzw);
 
     if (count == 0) {
@@ -7236,7 +7312,7 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
     }
 
     vec3_t xyz = {0};
-    if (unit_cell && (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC))) {
+    if (unit_cell && (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC))) {
         com_pbc_vec4(xyz.elem, in_xyzw, in_idx, count, unit_cell);
     } else {
         com_vec4(xyz.elem, in_xyzw, in_idx, count);
@@ -7250,145 +7326,7 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 #   pragma warning( disable : 4244 )
 #endif
 
-// From here: https://www.arianarab.com/post/crystal-structure-software
-mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
-
-    const double cb = cos(beta);
-    const double x = (cos(alpha) - cb * cos(gamma)) / sin(gamma);
-    mat3_t M = {
-        .col = {
-            {(float)a, 0, 0},
-            {(float)(b * cos(gamma)), (float)(b * sin(gamma)), 0},
-            {(float)(c * cb), (float)(c * x), (float)(c * sqrt(1 - cb * cb - x * x))},
-        },
-    };
-    return M;
-}
-
-//Triclinic
-mat3_t md_util_compute_triclinic_unit_cell_basis(double x, double y, double z, double xy, double xz, double yz) {
-    mat3_t M = {
-        .col = {
-            {x, 0, 0},
-            {xy, y, 0},
-            {xz, yz, z},
-        },
-    };
-    return M;
-}
-
-md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz) {
-    mat3_t matrix = md_util_compute_triclinic_unit_cell_basis(x, y, z, xy, xz, yz);
-    return md_util_unit_cell_from_matrix(matrix.elem);
-}
-
-md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
-    if (x == 0.0 && y == 0.0 && z == 0.0) {
-        return (md_unit_cell_t) {0};
-    }
-
-    if (x == 1.0 && y == 1.0 && z == 1.0) {
-        return (md_unit_cell_t) {0};
-    }
-
-    md_unit_cell_t cell = {
-        .basis = {
-            (float)x, 0, 0,
-            0, (float)y, 0,
-            0, 0, (float)z,
-        },
-        .inv_basis = {
-            x != 0.0 ? 1.0/x : 0, 0, 0,
-            0, y != 0.0 ? 1.0/y : 0, 0,
-            0, 0, z != 0.0 ? 1.0/z : 0,
-        },
-        .flags = MD_UNIT_CELL_FLAG_ORTHO | (x != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (y != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (z != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-    };
-    return cell;
-}
-
-md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
-    if (a == 0 && b == 0 && c == 0) {
-        return (md_unit_cell_t) {0};
-    }
-
-    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
-        return md_util_unit_cell_from_extent(a,b,c);
-    }
-
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
-
-    const double cosa = cos(alpha);
-    const double cosb = cos(beta);
-    const double cosg = cos(gamma);
-    const double sing = sin(gamma);
-    const double x = (cosa - cosb * cosg) / sing;
-
-    // Values for basis. Keep in double precision for inverse
-    const double M[9] = {
-               a,        0,                             0,
-        b * cosg, b * sing,                             0,
-        c * cosb,    c * x, c * sqrt(1 - cosb*cosb - x*x),
-    };
-
-    // Inverse of M
-    const double I[9] = {
-                                        1.0/M[0],                 0,        0,
-                               -M[3]/(M[0]*M[4]),          1.0/M[4],        0,
-        (M[3]*M[7]/(M[0]*M[4]) - M[6]/M[0])/M[8], -M[7]/(M[4]*M[8]), 1.0/M[8],
-    };
-    
-    md_unit_cell_t cell = {
-        .basis = {
-            M[0], M[1], M[2], M[3], M[4], M[5], M[6], M[7], M[8],
-        },
-        .inv_basis = {
-            I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
-        },
-        .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-    };
-
-    return cell;
-}
-
-md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]) {
-    if (M[0][1] == 0 && M[0][2] == 0 && M[1][0] == 0 && M[1][2] == 0 && M[2][0] == 0 && M[2][1] == 0) {
-        return md_util_unit_cell_from_extent(M[0][0], M[1][1], M[2][2]);
-    } else {
-        const float* N = &M[0][0];
-        
-        // Inverse of M
-        const double I[9] = {
-            1.0/(double)N[0], 0, 0,
-            -(double)N[3]/((double)N[0]*(double)N[4]), 1.0/(double)N[4], 0,
-            ((double)N[3]*(double)N[7]/((double)N[0]*(double)N[4]) - (double)N[6]/(double)N[0])/(double)N[8], -(double)N[7]/((double)N[4]*(double)N[8]), 1.0/(double)N[8],
-        };
-        
-
-        const float a = M[0][0]*M[0][0] + M[0][1]*M[0][1] + M[0][2]*M[0][2];
-        const float b = M[1][0]*M[1][0] + M[1][1]*M[1][1] + M[1][2]*M[1][2];
-        const float c = M[2][0]*M[2][0] + M[2][1]*M[2][1] + M[2][2]*M[2][2];
-        
-        
-        mat3_t basis;
-        MEMCPY(basis.elem, M, sizeof(basis));
-        md_unit_cell_t cell = {
-            .basis = basis,
-            .inv_basis = {
-                I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
-            },
-            .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-        };
-        return cell;
-    }
-}
-
-void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     if (cell->flags == 0) {
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
@@ -7396,8 +7334,8 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7405,19 +7343,20 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
                 out_dist[i * num_b + j] = vec4_periodic_distance(a, b, box);
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 out_dist[i * num_b + j] = vec3_length(dx);
             }
         }
     }
 }
 
-float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t min_i = 0;
     int64_t min_j = 0;
     float min_dist = FLT_MAX;
@@ -7434,8 +7373,8 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7448,12 +7387,13 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        const mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 const float d = vec3_length(dx);
                 if (d < min_dist) {
                     min_dist = d;
@@ -7470,7 +7410,7 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
     return min_dist;
 }
 
-float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t max_i = 0;
     int64_t max_j = 0;
     float max_dist = 0;
@@ -7487,8 +7427,8 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7501,12 +7441,13 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        const mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 const float d = vec3_length(dx);
                 if (d > max_dist) {
                     max_dist = d;
@@ -7607,33 +7548,37 @@ static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3])
     }
 }
 
-void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
-    if (unit_cell) {
-        vec3_t diag = mat3_diag(unit_cell->basis);
+void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
+    if (cell) {
+        vec3_t diag = md_unitcell_diag_vec3(cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        uint32_t flags = md_unitcell_flags(cell);
+        if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t A = md_unitcell_basis_mat3(cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
         }
     }
 }
 
-void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
-    if (unit_cell) {
-        vec3_t diag = mat3_diag(unit_cell->basis);
+void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell) {
+    if (cell) {
+        vec3_t diag = md_unitcell_diag_vec3(cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        uint32_t flags = md_unitcell_flags(cell);
+        if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t A = md_unitcell_basis_mat3(cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
         }
     }
@@ -7675,14 +7620,14 @@ static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     }
 }
 
-static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
-
-    const vec4_t mask = md_unit_cell_pbc_mask(cell);
-    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+    
+    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
+    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
+    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
 
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
@@ -7712,10 +7657,10 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     }
 }
 
-static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
-    const vec4_t mask = md_unit_cell_pbc_mask(cell);
-    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
+    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
+    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = xyzw[i];
@@ -7726,23 +7671,24 @@ static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t*
     }
 }
 
-bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* unit_cell) {
+bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
     }
 
-    if (!unit_cell) {
-        MD_LOG_ERROR("Missing unit cell");
+    if (!cell) {
+        MD_LOG_ERROR("Missing unitcell");
         return false;
     }
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         pbc_ortho(x, y, z, indices, count, ext);
         return true;
-    } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        pbc_triclinic(x, y, z, indices, count, unit_cell);
+    } else if (flags & MD_UNITCELL_TRICLINIC) {
+        pbc_triclinic(x, y, z, indices, count, cell);
         return true;
     }
 
@@ -7751,23 +7697,24 @@ bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t co
     return false;
 }
 
-bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell) {
+bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell) {
     if (!in_out_xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
     }
 
-    if (!unit_cell) {
+    if (!cell) {
         MD_LOG_ERROR("Missing unit cell");
         return false;
     }
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         pbc_ortho_vec4(in_out_xyzw, count, ext);
         return true;
-    } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        pbc_triclinic_vec4(in_out_xyzw, count, unit_cell);
+    } else if (flags & MD_UNITCELL_TRICLINIC) {
+        pbc_triclinic_vec4(in_out_xyzw, count, cell);
         return true;
     }
 
@@ -7779,13 +7726,13 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* u
 bool md_util_system_pbc(md_system_t* sys) {
     ASSERT(sys);
 
-	md_flags_t cell_flags = sys->unit_cell.flags;
+	md_flags_t cell_flags = sys->unitcell.flags;
 
-    if (cell_flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(sys->unit_cell.basis);
+    if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
+        vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
         pbc_ortho(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, ext);
-    } else if (cell_flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unit_cell);
+    } else if (md_unitcell_is_triclinic(&sys->unitcell)) {
+		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unitcell);
     }
 
     return true;
@@ -7831,14 +7778,15 @@ static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     }
 }
 
-static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    mat3_t A = md_unitcell_basis_mat3(cell);
     if (indices) {
         int idx = indices[0];
         vec3_t ref_pos = {x[idx], y[idx], z[idx]};
         for (size_t i = 1; i < count; ++i) {
             idx = indices[i];
             vec3_t pos = {x[idx], y[idx], z[idx]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
             x[idx] = pos.x;
             y[idx] = pos.y;
             z[idx] = pos.z;
@@ -7848,7 +7796,7 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
         vec3_t ref_pos = {x[0], y[0], z[0]};
         for (size_t i = 1; i < count; ++i) {
             vec3_t pos = {x[i], y[i], z[i]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
             x[i] = pos.x;
             y[i] = pos.y;
             z[i] = pos.z;
@@ -7857,18 +7805,19 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
     }
 }
 
-static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    mat3_t A = md_unitcell_basis_mat3(cell);
     vec4_t ref_pos = xyzw[0];
     for (size_t i = 1; i < count; ++i) {
         vec4_t pos = xyzw[i];
-        deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+        deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
         xyzw[i] = pos;
         ref_pos = pos;
     }
 
 }
 
-bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -7879,11 +7828,11 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(cell->basis);
+    if (cell->flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         unwrap_ortho(x, y, z, indices, count, ext);
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
         unwrap_triclinic(x, y, z, indices, count, cell);
         return true;
     }
@@ -7892,7 +7841,7 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
     return false;
 }
 
-bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -7903,11 +7852,11 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell)
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(cell->basis);
+    if (md_unitcell_is_orthorhombic(cell)) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         unwrap_ortho_vec4(xyzw, count, ext);
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (md_unitcell_is_triclinic(cell)) {
         unwrap_triclinic_vec4(xyzw, count, cell);
         return true;
     }
@@ -7923,26 +7872,26 @@ bool md_util_system_unwrap(md_system_t* sys) {
 	float* y = sys->atom.y;
 	float* z = sys->atom.z;
 
-    md_flags_t cell_flags = sys->unit_cell.flags;
-    if (cell_flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(sys->unit_cell.basis);
+    md_flags_t cell_flags = sys->unitcell.flags;
+    if (cell_flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
         for (size_t i = 0; i < num_structures; ++i) {
             const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
             const size_t   s_len = md_index_range_size(&sys->structure, i);
             unwrap_ortho(x, y, z, s_idx, s_len, ext);
         }
-    } else if (cell_flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell_flags & MD_UNITCELL_TRICLINIC) {
         for (size_t i = 0; i < num_structures; ++i) {
             const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
             const size_t   s_len = md_index_range_size(&sys->structure, i);
-            unwrap_triclinic(x, y, z, s_idx, s_len, &sys->unit_cell);
+            unwrap_triclinic(x, y, z, s_idx, s_len, &sys->unitcell);
         }
     }
     
     return true;
 }
 
-bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell) {
+bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -7953,18 +7902,19 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+    if (cell->flags & MD_UNITCELL_ORTHO) {
         vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
-        vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        vec4_t ext = md_unitcell_diag_vec4(cell);
         for (size_t i = 0; i < count; ++i) {
             const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
             xyzw[i] = pos;
         }
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         for (size_t i = 1; i < count; ++i) {
             vec4_t pos = xyzw[i];
-            deperiodize_triclinic(pos.elem, ref_xyz.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
             xyzw[i] = pos;
         }
         return true;
@@ -8044,7 +7994,7 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
     return weights;
 }
 
-bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unit_cell_t* unit_cell, float t) {
+bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unitcell_t* cell, float t) {
     ASSERT(out_x);
     ASSERT(out_y);
     ASSERT(out_z);
@@ -8054,7 +8004,11 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
 
     t = CLAMP(t, 0.0f, 1.0f);
 
-    if (unit_cell && unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC)) {
+    bool ortho = md_unitcell_is_orthorhombic(cell);
+    bool tricl = md_unitcell_is_triclinic(cell);
+    
+    if (ortho | tricl) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         for (size_t i = 0; i < count; i += 8) {
             md_256 x0[3] = {
                 md_mm256_loadu_ps(in_x[0] + i),
@@ -8068,12 +8022,12 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
                 md_mm256_loadu_ps(in_z[1] + i)
             };
 
-            if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-                simd_deperiodize_triclinic(x1, x0, unit_cell->basis.elem);
+            if (ortho) {
+                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(A.elem[0][0]));
+                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(A.elem[1][1]));
+                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(A.elem[2][2]));
+            } else if (tricl) {
+                simd_deperiodize_triclinic(x1, x0, A.elem);
             }
 
             md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
@@ -8108,7 +8062,7 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
     return true;
 }
 
-bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unit_cell_t* unit_cell, float t, float s) {
+bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unitcell_t* cell, float t, float s) {
     ASSERT(out_x);
     ASSERT(out_y);
     ASSERT(out_z);
@@ -8118,6 +8072,11 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
     
     t = CLAMP(t, 0.0f, 1.0f);
     s = CLAMP(s, 0.0f, 1.0f);
+
+    bool ortho = md_unitcell_is_orthorhombic(cell);
+    bool tricl = md_unitcell_is_triclinic(cell);
+    mat3_t A   = md_unitcell_basis_mat3(cell);
+    mat3_t Ai  = md_unitcell_inv_basis_mat3(cell);
 
     for (size_t i = 0; i < count; i += 8) {
         md_256 x0[3] = {
@@ -8144,20 +8103,20 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
             md_mm256_loadu_ps(in_z[3] + i),
         };
 
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-            simd_deperiodize_triclinic(x0, x1, unit_cell->basis.elem);
-            simd_deperiodize_triclinic(x2, x1, unit_cell->basis.elem);
-            simd_deperiodize_triclinic(x3, x2, unit_cell->basis.elem);
+        if (ortho) {
+            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+        } else if (tricl) {
+            simd_deperiodize_triclinic(x0, x1, A.elem);
+            simd_deperiodize_triclinic(x2, x1, A.elem);
+            simd_deperiodize_triclinic(x3, x2, A.elem);
         }
 
         const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
@@ -8286,13 +8245,18 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     }
 #endif
 
-#if 1
     if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
         if (sys->inst.count == 0 && sys->comp.count > 0 && sys->bond.pairs) {
             md_util_system_infer_entity_and_instance(sys, NULL, alloc);
         }
     }
-#endif
+
+    if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
+        if (sys->atom.count > 0 && sys->bond.count > 0) {
+            md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
+            md_util_hydrogen_bond_infer(&sys->hydrogen_bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, 3.0, 150.0);
+        }
+    }
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
         if (sys->inst.count && sys->atom.type_idx) {
@@ -8312,7 +8276,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 md_protein_backbone_atoms_t* backbone_atoms = md_vm_arena_push(temp_arena, MAX_BACKBONE_LENGTH * sizeof(md_protein_backbone_atoms_t));
                 size_t backbone_length = 0;
                 md_comp_idx_t comp_base = -1;
-        
+
                 for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
                     md_flags_t inst_flags = md_system_inst_flags(sys, inst_idx);
                     
@@ -8421,15 +8385,11 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 #endif
         }
     }
+
     if ((flags & MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT) && 
-        (sys->unit_cell.flags != MD_UNIT_CELL_FLAG_NONE) && md_structure_count(&sys->structure) > 0)
+        (sys->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
     {
-		size_t num_structures = md_structure_count(&sys->structure);
-        for (size_t i = 0; i < num_structures; ++i) {
-			size_t num_atoms = md_structure_atom_count(&sys->structure, i);
-			const int32_t* atom_indices = md_structure_atom_indices(&sys->structure, i);
-            md_util_unwrap(sys->atom.x, sys->atom.y, sys->atom.z, atom_indices, num_atoms, &sys->unit_cell);
-        }
+        md_util_system_unwrap(sys);
     }
 
 	md_vm_arena_destroy(temp_arena);
@@ -8587,14 +8547,18 @@ void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count
 void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
     if (!data || count <= 0) return;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-    sort_radix_inplace_uint32(data, count, temp_arena);
-    md_vm_arena_destroy(temp_arena);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    uint32_t* temp = md_vm_arena_push(arena, count * sizeof(uint32_t));
+    sort_radix_inplace_uint32(data, count, temp);
+    md_vm_arena_destroy(arena);
 }
 
-// Non inplace version of radix sort which should fill in the source indices which represents the sorted order
-//void md_util_sort_radix_uint32(uint32_t* source_indices, const uint32_t* data, size_t count) {
-//}
+void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, size_t count, uint32_t* tmp_indices) {
+    ASSERT(in_keys);
+    ASSERT(out_indices);
+    ASSERT(tmp_indices);
+    sort_radix_uint32(out_indices, in_keys, count, tmp_indices);
+}
 
 #define DEBUG_PRINT 0
 
