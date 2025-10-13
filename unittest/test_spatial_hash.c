@@ -173,8 +173,6 @@ static inline void test_elem_frac_ortho_simd2(md_256 x, md_256 y, md_256 z, md_2
                                               uint32_t i, dist_pair_t* out_pairs, size_t* count) {
     size_t off = 0;
     while (len > 0) {
-        //md_256 vx, vy, vz;
-        //md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
         md_256 vx = md_mm256_loadu_ps(elem_x + off);
         md_256 vy = md_mm256_loadu_ps(elem_y + off);
         md_256 vz = md_mm256_loadu_ps(elem_z + off);

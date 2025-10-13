@@ -51,7 +51,7 @@ typedef struct vec2_t {
 typedef struct vec3_t {
     union {
         struct {
-            float x, y, z;  
+            float x, y, z;
         };
         float elem[3];
     };
@@ -1138,6 +1138,47 @@ MD_VEC_INLINE bool vec4_equal(vec4_t a, vec4_t b) {
     return r;
 }
 
+MD_VEC_INLINE vec4_t vec4_and(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_and_ps(a.m128, b.m128);
+#else
+    uint32_t a_u32[4], b_u32[4];
+	MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
+	MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+
+    uint32_t r_u32[4] = {
+        a_u32[0] & b_u32[0],
+        a_u32[1] & b_u32[1],
+        a_u32[2] & b_u32[2],
+        a_u32[3] & b_u32[3],
+    };
+
+	MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+#endif
+}
+
+MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_or_ps(a.m128, b.m128);
+#else
+    uint32_t a_u32[4], b_u32[4];
+    MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
+    MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+
+    uint32_t r_u32[4] = {
+        a_u32[0] | b_u32[0],
+        a_u32[1] | b_u32[1],
+        a_u32[2] | b_u32[2],
+        a_u32[3] | b_u32[3],
+    };
+
+    MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+#endif
+}
+
+
 MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
@@ -1153,7 +1194,7 @@ MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
 
 #if MD_VEC_MATH_USE_SIMD
 // We cannot invoke the SIMD version of this function directly, because the mask is not a constant expression when passed as a function argument.
-#   ifdef _cplusplus
+#   ifdef __cplusplus
 #       define vec4_blend_mask(a, b, mask) (vec4_t {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
 #   else
 #       define vec4_blend_mask(a, b, mask) ((vec4_t) {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
