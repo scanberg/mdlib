@@ -11,7 +11,7 @@
 #include <core/md_handle.h>
 #include <core/md_gl_util.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 
 #include <stdbool.h>
 #include <string.h>

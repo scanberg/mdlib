@@ -7,7 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
 #include <md_util.h>
-#include <md_molecule.h>
+#include <md_system.h>
 
 #define BAKE(str) {str, sizeof(str)-1}
 
@@ -943,11 +943,11 @@ static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* a
     return result;
 }
 
-static md_molecule_loader_i api = {
+static md_system_loader_i api = {
     .init_from_str = mmcif_init_from_str,
     .init_from_file = mmcif_init_from_file,
 };
 
-struct md_molecule_loader_i* md_mmcif_molecule_api(void) {
+struct md_system_loader_i* md_mmcif_system_loader(void) {
     return &api;
 }

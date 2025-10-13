@@ -27,7 +27,7 @@
 
 #include <md_script.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_filter.h>
 #include <md_util.h>

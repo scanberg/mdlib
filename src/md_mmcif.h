@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 
 // Utils for reading PDBX/mmCIF files
 // https://mmcif.wwpdb.org/
@@ -11,7 +11,7 @@ struct md_molecule_loader_i;
 extern "C" {
 #endif
 
-struct md_molecule_loader_i* md_mmcif_molecule_api(void);
+struct md_system_loader_i* md_mmcif_system_loader(void);
 
 #ifdef __cplusplus
 }

@@ -4,7 +4,7 @@
 
 #include <md_lammps.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 
@@ -380,7 +380,7 @@ UTEST(lammps, comprehensive_data_validation) {
     
     for (int p = 0; p < 2; ++p) {
         md_system_t mol = {0};
-        bool result = md_lammps_molecule_api()->init_from_file(&mol, paths[p], &args, alloc);
+        bool result = md_lammps_system_loader()->init_from_file(&mol, paths[p], &args, alloc);
         ASSERT_TRUE(result);
         
         EXPECT_GT(mol.atom.count, 0);

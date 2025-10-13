@@ -2,7 +2,7 @@
 #include <math.h>
 
 #include <md_mmcif.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
 
@@ -12,7 +12,7 @@ UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
 
     if (result) {
@@ -36,7 +36,7 @@ UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
@@ -61,7 +61,7 @@ UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
@@ -330,7 +330,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t mol = {0};
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
@@ -362,7 +362,7 @@ UTEST(mmcif, nonexistent_file) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t mol = {0};
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
     
     // Should be safe to free even when init failed

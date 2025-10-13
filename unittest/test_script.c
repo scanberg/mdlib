@@ -12,7 +12,7 @@
 #include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_gro.h>
 #include <md_pdb.h>
@@ -113,8 +113,8 @@ static md_trajectory_i* ala_traj = 0;
 UTEST_F_SETUP(script) {
     utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, utest_fixture->arena));
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, utest_fixture->arena));
+    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, utest_fixture->arena));
+    ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, utest_fixture->arena));
 
     md_util_molecule_postprocess(&utest_fixture->amy, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
     md_util_molecule_postprocess(&utest_fixture->ala, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);

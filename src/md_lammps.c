@@ -990,12 +990,12 @@ md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_f
 	return arg;
 }
 
-static md_molecule_loader_i lammps_api = {
+static md_system_loader_i lammps_api = {
 	lammps_init_from_str,
 	lammps_init_from_file,
 };
 
-md_molecule_loader_i* md_lammps_molecule_api(void) {
+md_system_loader_i* md_lammps_system_loader(void) {
 	return &lammps_api;
 }
 

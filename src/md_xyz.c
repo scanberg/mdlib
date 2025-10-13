@@ -1,6 +1,6 @@
 ﻿#include <md_xyz.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_util.h>
 
@@ -808,12 +808,12 @@ static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg
     return result;
 }
 
-static md_molecule_loader_i xyz_molecule_api = {
+static md_system_loader_i xyz_molecule_api = {
     xyz_init_from_str,
     xyz_init_from_file,
 };
 
-md_molecule_loader_i* md_xyz_molecule_api(void) {
+md_system_loader_i* md_xyz_system_loader(void) {
     return &xyz_molecule_api;
 }
 

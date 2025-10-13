@@ -1,7 +1,7 @@
 ﻿#include "ubench.h"
 
 #include <md_gro.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_intrinsics.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_arena_allocator.h>
@@ -23,7 +23,7 @@ UBENCH_F_SETUP(spatial_hash) {
 
     md_gro_data_t gro_data = {0};
     md_gro_data_parse_file(&gro_data, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), alloc);
-    md_gro_molecule_init(&ubench_fixture->mol, &gro_data, alloc);
+    md_gro_system_init(&ubench_fixture->mol, &gro_data, alloc);
     ubench_fixture->pbc_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unitcell, alloc);
     ubench_fixture->reg_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, NULL, alloc);
 

@@ -3,7 +3,7 @@
 
 #include <md_gro.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
 
@@ -18,7 +18,7 @@ UTEST(gro, parse_small) {
 
     md_system_t mol = {0};
 
-    md_gro_molecule_init(&mol, &gro_data, alloc);
+    md_gro_system_init(&mol, &gro_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
@@ -26,7 +26,7 @@ UTEST(gro, parse_small) {
     }
     md_system_free(&mol, alloc);
 
-    EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, NULL, alloc));
+    EXPECT_TRUE(md_gro_system_loader()->init_from_file(&mol, path, NULL, alloc));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
@@ -47,16 +47,16 @@ UTEST(gro, parse_big) {
 
     md_system_t mol = { 0 };
 
-    md_gro_molecule_init(&mol, &gro_data, alloc);
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    md_gro_system_init(&mol, &gro_data, alloc);
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
     md_system_free(&mol, alloc);
 
-    EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, NULL, alloc));
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    EXPECT_TRUE(md_gro_system_loader()->init_from_file(&mol, path, NULL, alloc));
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
@@ -75,7 +75,7 @@ UTEST(gro, parse_small_water) {
     EXPECT_EQ(gro_data.num_atoms, 12165);
 
     // Check that atoms have reasonable coordinates (should be in a 5x5x5 box)
-    for (int64_t i = 0; i < 100 && i < gro_data.num_atoms; ++i) { // Test first 100 atoms
+    for (size_t i = 0; i < 100 && i < gro_data.num_atoms; ++i) { // Test first 100 atoms
         EXPECT_GT(gro_data.atom_data[i].x, -1.0f);
         EXPECT_LT(gro_data.atom_data[i].x, 6.0f);
         EXPECT_GT(gro_data.atom_data[i].y, -1.0f);

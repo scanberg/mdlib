@@ -144,7 +144,7 @@ typedef struct md_lammps_molecule_loader_arg_t {
 // Use this to create a valid arg object which can be passed to the loader api
 md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_format_str);
 
-struct md_molecule_loader_i* md_lammps_molecule_api(void);
+struct md_system_loader_i* md_lammps_system_loader(void);
 
 //Trajectory
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);

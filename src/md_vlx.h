@@ -14,7 +14,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 
 typedef enum {
 	MD_VLX_MO_TYPE_ALPHA = 0,
@@ -156,9 +156,9 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
 size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
 
 // MOLECULE
-bool md_vlx_molecule_init(struct md_system_t* mol, const md_vlx_t* vlx, struct md_allocator_i* alloc);
+bool md_vlx_system_init(struct md_system_t* sys, const md_vlx_t* vlx, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_vlx_molecule_api(void);
+struct md_system_loader_i* md_vlx_system_loader(void);
 
 
 #ifdef __cplusplus

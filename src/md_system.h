@@ -862,10 +862,10 @@ molecule data only the first part of the file is used.
 
 */
 
-typedef struct md_molecule_loader_i {
+typedef struct md_system_loader_i {
     bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg, struct md_allocator_i* alloc);
     bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg, struct md_allocator_i* alloc);
-} md_molecule_loader_i;
+} md_system_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.

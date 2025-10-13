@@ -1503,7 +1503,7 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
                 const elem_t* elem_i = elems + off_i;
 
                 // Test current cell
-                for (int a = 0; a < len_i; ++a) {
+                for (int a = 0; a < (int)len_i; ++a) {
                     const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                     const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                     const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
@@ -1536,7 +1536,7 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
                         continue;
                     }
                     const elem_t* elem_j = elems + off_j;
-                    for (int a = 0; a < len_i; ++a) {
+                    for (int a = 0; a < (int)len_i; ++a) {
                         const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                         const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                         const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);

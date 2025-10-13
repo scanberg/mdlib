@@ -158,7 +158,7 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_gro_data_t));
 }
 
-bool md_gro_molecule_init(struct md_system_t* sys, const md_gro_data_t* data, struct md_allocator_i* alloc) {
+bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(data);
     ASSERT(alloc);
@@ -234,7 +234,7 @@ static bool gro_init_from_str(md_system_t* sys, str_t str, const void* arg, md_a
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
-        success = md_gro_molecule_init(sys, &data, alloc);
+        success = md_gro_system_init(sys, &data, alloc);
     }
     md_gro_data_free(&data, md_get_heap_allocator());
 
@@ -246,18 +246,18 @@ static bool gro_init_from_file(md_system_t* sys, str_t filename, const void* arg
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_file(&data, filename, md_get_heap_allocator())) {
-        success = md_gro_molecule_init(sys, &data, alloc);
+        success = md_gro_system_init(sys, &data, alloc);
     }
     md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
 
-static md_molecule_loader_i gro_api = {
+static md_system_loader_i gro_api = {
     gro_init_from_str,
     gro_init_from_file,
 };
 
-md_molecule_loader_i* md_gro_molecule_api(void) {
+md_system_loader_i* md_gro_system_loader(void) {
     return &gro_api;
 }

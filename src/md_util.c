@@ -1,6 +1,6 @@
 ﻿#include <md_util.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_smiles.h>
 
 #include <core/md_compiler.h>
@@ -1895,7 +1895,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
     // ---- Final resolution: convert flags to enum with priority ----
     // Priority: HELIX (alpha > 310 > pi) > SHEET > BRIDGE > TURN > BEND > COIL
     for (size_t i = 0; i < backbone_segment_count; ++i) {
-        uint8_t f = ss_flags[i];
+        uint32_t f = ss_flags[i];
 
         // prefer alpha helix, but allow other helix flags if alpha not present
         if (f & SS_FLAG_HELIX_ALPHA) {
@@ -3201,13 +3201,13 @@ static const float cov_r_min[Num_Elements][Num_Elements] = {
     [B]  = { [H]=0.33f, [C]=0.99f, [N]=0.99f, [O]=0.99f, [F]=0.99f, [Si]=1.21f, [P]=1.21f, [S]=1.32f },
     [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.70f, [Br]=1.80f, [I]=2.14f, [B]=0.99f, [W]=2.1f },
     [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f, [W]=2.0f },
-    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.37f, [B]=0.99f, [Fe]=1.90f, [W]=1.50f },
+    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.32f, [B]=0.99f, [Fe]=1.90f, [W]=1.50f },
     [F]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f },
     [Na] = { [H]=1.89f, [O]=1.89f, [N]=1.89f },
     [Mg] = { [O]=1.99f, [N]=1.99f, [S]=2.04f },
     [Al] = { [H]=1.26f, [C]=1.58f, [N]=1.47f, [O]=1.47f, [Si]=1.47f, [P]=1.68f, [S]=1.84f },
     [Si] = { [H]=0.33f, [C]=1.16f, [O]=1.47f, [Si]=1.22f, [P]=1.63f, [S]=1.84f, [B]=1.21f },
-    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.37f, [S]=1.79f, [W]=2.1f },
+    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.32f, [S]=1.79f, [W]=2.1f },
     [S]  = { [H]=0.33f, [C]=0.77f, [O]=1.50f, [P]=1.79f, [S]=1.84f, [W]=2.2f },
     [Cl] = { [H]=0.33f, [C]=1.70f, [N]=1.63f, [O]=1.53f, [Cl]=0.95f },
     [K]  = { [H]=2.24f, [O]=2.24f, [N]=2.24f },
@@ -3486,10 +3486,8 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                 md_mm256_set1_ps(z[i]),
             };
 
-            const float* table_cov_r_min   = cov_r_min[element[i]];
-            const float* table_cov_r_max   = cov_r_max[element[i]];
-            //const float* table_coord_r_min = coord_r_min[element[i]];
-            //const float* table_coord_r_max = coord_r_max[element[i]];
+            const float* table_cov_r_min = cov_r_min[element[i]];
+            const float* table_cov_r_max = cov_r_max[element[i]];
 
             for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
                 const md_256  cj[3] = {
@@ -3501,8 +3499,11 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                 const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
                 const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
 
-                const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
-                const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                const md_256  r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
+                const md_256  r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
+
+                const md_256  r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+                const md_256  r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
 
                 const md_256 dx[3] = {
                     md_mm256_sub_ps(ci[0], cj[0]),
@@ -3510,7 +3511,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     md_mm256_sub_ps(ci[2], cj[2]),
                 };
                 const md_256 d2 = simd_distance_squared(dx, cell);
-                int mask        = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                int mask        = simd_bond_heuristic(d2, r2_min_cov, r2_max_cov);
 
                 md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
                 while (mask) {
@@ -3543,9 +3544,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
             if (element[i] != 0) {
                 const vec4_t ci = {x[i], y[i], z[i], 0};
                 const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];
-                //const float* table_coord_r_min = coord_r_min[element[i]];
-                //const float* table_coord_r_max = coord_r_max[element[i]];
+                const float* table_cov_r_max   = cov_r_max[element[i]];;
 
                 const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
                 for (size_t idx = 0; idx < num_indices; ++idx) {
@@ -3553,16 +3552,14 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     // Only store monotonic bond connections
                     if (j < i) continue;
 
-                    const float r_min_cov   = table_cov_r_min[element[j]];
-                    const float r_max_cov   = table_cov_r_max[element[j]];
-                    //const float r_min_coord = table_coord_r_min[element[j]];
-                    //const float r_max_coord = table_coord_r_max[element[j]];
+                    const float r_min_cov = table_cov_r_min[element[j]];
+                    const float r_max_cov = table_cov_r_max[element[j]];
 
                     const vec4_t cj = {x[j], y[j], z[j], 0};
                     const vec4_t dx = vec4_sub(ci, cj);
                     const float d2 = distance_squared(dx, cell);
 
-                    if (bond_heuristic(d2, r_min_cov,   r_max_cov))
+                    if (bond_heuristic(d2, r_min_cov, r_max_cov))
                     {
                         md_array_push(bond->pairs, ((md_atom_pair_t){i, j}), alloc);
                         bond->count += 1;
@@ -3946,7 +3943,7 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
             md_atomic_number_t z_j = md_atom_atomic_number(&sys->atom, j);
             if (z_j== MD_Z_H) {
                 md_hydrogen_bond_donor_t donor = {(md_atom_idx_t)i, j};
-                md_array_push(sys->hydrogen_bond.candidate.donors, donor, alloc);
+                md_array_push(hbond_data->candidate.donors, donor, alloc);
                 hbond_data->candidate.num_donors += 1;
             }
             md_bond_iter_next(&it);
@@ -3959,12 +3956,12 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
             }
 
             md_hydrogen_bond_acceptor_t acceptor = {(md_atom_idx_t)i, num_of_lone_pairs};
-            md_array_push(sys->hydrogen_bond.candidate.acceptors, acceptor, alloc);
+            md_array_push(hbond_data->candidate.acceptors, acceptor, alloc);
             hbond_data->candidate.num_acceptors += 1;
         }
     }
 
-    md_array_ensure(sys->hydrogen_bond.bonds, 2 * sys->hydrogen_bond.candidate.num_donors, alloc);
+    md_array_ensure(hbond_data->bonds, 2 * hbond_data->candidate.num_donors, alloc);
 }
 
 typedef struct hbond_candidate_t {

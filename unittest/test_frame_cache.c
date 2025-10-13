@@ -2,7 +2,7 @@
 #include <string.h>
 
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_frame_cache.h>
 #include <md_xtc.h>
 #include <md_gro.h>
@@ -72,7 +72,7 @@ UTEST(frame_cache, parallel_workload) {
     md_trajectory_i* traj = md_xtc_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
 
     ASSERT_TRUE(md_gro_data_parse_file(&gro, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), alloc));
-    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro, alloc));
+    ASSERT_TRUE(md_gro_system_init(&mol, &gro, alloc));
     ASSERT_TRUE(traj);
 
     const int64_t num_atoms = md_trajectory_num_atoms(traj);

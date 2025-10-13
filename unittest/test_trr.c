@@ -1,8 +1,8 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #include <md_trr.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>

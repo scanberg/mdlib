@@ -12,7 +12,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
 
@@ -52,7 +52,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 // MOLECULE
 bool md_xyz_molecule_init(struct md_system_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_xyz_molecule_api(void);
+struct md_system_loader_i* md_xyz_system_loader(void);
 
 // TRAJECTORY
 struct md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);

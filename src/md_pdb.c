@@ -1,6 +1,6 @@
 ﻿#include <md_pdb.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_util.h>
 
@@ -442,7 +442,7 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
+bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(data);
     ASSERT(alloc);
@@ -631,7 +631,7 @@ static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg, md_a
     md_pdb_data_t data = {0};
 
     md_pdb_data_parse_str(&data, str, md_get_heap_allocator());
-    bool success = md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
+    bool success = md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
     md_pdb_data_free(&data, md_get_heap_allocator());
     
     return success;
@@ -648,7 +648,7 @@ static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg
         
         md_pdb_data_t data = {0};
         bool parse   = pdb_parse(&data, &reader, md_get_heap_allocator(), true);
-        bool success = parse && md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
+        bool success = parse && md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
         
         md_pdb_data_free(&data, md_get_heap_allocator());
         md_free(md_get_heap_allocator(), buf, cap);
@@ -659,12 +659,12 @@ static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg
     return false;
 }
 
-static md_molecule_loader_i pdb_molecule_api = {
+static md_system_loader_i pdb_molecule_api = {
     pdb_init_from_str,
     pdb_init_from_file,
 };
 
-md_molecule_loader_i* md_pdb_molecule_api(void) {
+md_system_loader_i* md_pdb_system_loader(void) {
     return &pdb_molecule_api;
 }
 

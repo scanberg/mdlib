@@ -270,12 +270,15 @@ static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double 
     beta  = DEG_TO_RAD(beta);
     gamma = DEG_TO_RAD(gamma);
 
-    const double cb = cos(beta);
-    const double cg = cos(gamma);
-    const double sg = sin(gamma);
-    const double x = (cos(alpha) - cb * cg) / sg;
+    // https://docs.lammps.org/Howto_triclinic.html
+    double x = a;
+    double xy = b * cos(gamma);
+    double xz = c * cos(beta);
+    double y = b * sin(gamma);
+    double yz = (b * c * cos(alpha) - xy * xz) / y;
+    double z = sqrt(c * c - xz * xz - yz * yz);
 
-    return md_unitcell_from_basis_parameters(a, b * sg, sqrt(1.0 - cb * cb - x * x), b * cg, c * cb, c * x);
+    return md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 }
 
 static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
@@ -296,22 +299,36 @@ static inline bool md_unitcell_is_triclinic(const md_unitcell_t* cell) { return 
 static inline bool md_unitcell_is_orthorhombic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_ORTHO; }
 
 static inline vec3_t md_unitcell_diag_vec3(const md_unitcell_t* cell) {
-    if (cell) return vec3_set(cell->x, cell->y, cell->z);
+    if (cell) return vec3_set((float)cell->x, (float)cell->y, (float)cell->z);
     return vec3_zero();
 }
 
 static inline vec4_t md_unitcell_diag_vec4(const md_unitcell_t* cell) {
-    if (cell) return vec4_set(cell->x, cell->y, cell->z, 0);
+    if (cell) return vec4_set((float)cell->x, (float)cell->y, (float)cell->z, 0);
     return vec4_zero();
 }
 
 // returns the unit_cell basis matrix (A)
 static inline mat3_t md_unitcell_basis_mat3(const md_unitcell_t* cell) {
     if (cell) {
-        mat3_t A = {cell->x, 0, 0, cell->xy, cell->y, 0, cell->xz, cell->yz, cell->z};
+        mat3_t A = {(float)cell->x, 0, 0, (float)cell->xy, (float)cell->y, 0, (float)cell->xz, (float)cell->yz, (float)cell->z};
         return A;
     }
     return mat3_ident();
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
+    if (cell) {
+        mat4_t A = {
+            (float)cell->x, 0, 0, 0,
+            (float)cell->xy, (float)cell->y, 0, 0,
+            (float)cell->xz, (float)cell->yz, (float)cell->z, 0,
+            0, 0, 0, 0
+        };
+        return A;
+    }
+    return mat4_ident();
 }
 
 static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
@@ -337,7 +354,7 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
         const double i12 = -cell->xy / (cell->x * cell->y);
         const double i13 = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
         const double i23 = -cell->yz / (cell->y * cell->z);
-        mat3_t Ai = {i11, 0, 0, i12, i22, 0, i13, i23, i33};
+        mat3_t Ai = {(float)i11, 0, 0, (float)i12, (float)i22, 0, (float)i13, (float)i23, (float)i33};
         return Ai;
     }
     return mat3_ident();
@@ -366,7 +383,7 @@ static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
         const double g12 = cell->x * cell->xy;
         const double g13 = cell->x * cell->xz;
         const double g23 = cell->xy * cell->xz + cell->y * cell->yz;
-        mat3_t G = {g11, g12, g13, g12, g22, g23, g13, g23, g33};
+        mat3_t G = {(float)g11, (float)g12, (float)g13, (float)g12, (float)g22, (float)g23, (float)g13, (float)g23, (float)g33};
         return G;
     }
     return mat3_ident();
