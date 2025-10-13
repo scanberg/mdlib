@@ -4,6 +4,12 @@
 #include <md_util.h>
 #include <md_types.h>
 
+static inline float float_from_bits(uint32_t bits) {
+    float f;
+    MEMCPY(&f, &bits, sizeof(f));
+    return f;
+}
+
 typedef md_128i ivec4_t;
 
 static inline ivec4_t ivec4_set(int x, int y, int z, int w) {
@@ -59,7 +65,6 @@ void md_spatial_acc_free(md_spatial_acc_t* acc) {
         if (acc->elem_y)   md_free(a, acc->elem_y,   acc->num_elems * sizeof(float));
         if (acc->elem_z)   md_free(a, acc->elem_z,   acc->num_elems * sizeof(float));
         if (acc->elem_idx) md_free(a, acc->elem_idx, acc->num_elems * sizeof(uint32_t));
-
         if (acc->cell_off) md_free(a, acc->cell_off, (acc->num_cells + 1) * sizeof(uint32_t));
     }
     MEMSET(acc, 0, sizeof(md_spatial_acc_t));
@@ -68,10 +73,8 @@ void md_spatial_acc_free(md_spatial_acc_t* acc) {
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const md_unitcell_t* unitcell) {
     ASSERT(acc);
     if (!acc->alloc) {
-        MD_LOG_ERROR("Must specify allocator within spatial acc");
+        MD_LOG_ERROR("Must have allocator set within spatial acc");
     }
-
-    md_allocator_i* alloc = acc->alloc;
 
     double A[3][3]  = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double Ai[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -169,22 +172,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     ivec4_t cell_max = ivec4_set1(INT32_MIN);
 
     mat4_t Ai4 = {
-        (float)Ai[0][0],
-        (float)Ai[0][1],
-        (float)Ai[0][2],
-        0,
-        (float)Ai[1][0],
-        (float)Ai[1][1],
-        (float)Ai[1][2],
-        0,
-        (float)Ai[2][0],
-        (float)Ai[2][1],
-        (float)Ai[2][2],
-        0,
-        0,
-        0,
-        0,
-        0,
+        (float)Ai[0][0], (float)Ai[0][1], (float)Ai[0][2], 0,
+        (float)Ai[1][0], (float)Ai[1][1], (float)Ai[1][2], 0,
+        (float)Ai[2][0], (float)Ai[2][1], (float)Ai[2][2], 0,
+        0, 0, 0, 0,
     };
 
     float val;
@@ -193,9 +184,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
     for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = i;
-
-        vec4_t r = {in_x[idx], in_y[idx], in_z[idx], 0};
+        vec4_t r = {in_x[i], in_y[i], in_z[i], 0};
         r = vec4_add(r, coord_offset);
 
         // Fractional coordinates

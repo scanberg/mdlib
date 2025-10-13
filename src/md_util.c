@@ -4235,10 +4235,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
                 // If auth asym id is available, use it to group components into instances
                 while (j < sys->comp.count && str_eq(comp_auth_id, comp_auth_asym_id[j])) {
-                    entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
                     md_flags_t flags = md_comp_flags(&sys->comp, j);
-                    if (!(flags & (MD_FLAG_AMINO_ACID))) entity_flags &= ~MD_FLAG_AMINO_ACID;
-                    if (!(flags & (MD_FLAG_NUCLEOTIDE))) entity_flags &= ~MD_FLAG_NUCLEOTIDE;
+                    if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
+                    entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
                     ++j;
                 }
 

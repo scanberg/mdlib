@@ -1,8 +1,5 @@
 ﻿#pragma once
 
-#include <core/md_vec_math.h>
-#include <core/md_hash.h>
-
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -26,8 +23,6 @@ typedef struct md_spatial_acc_t {
     float H01, H02, H12;
 
     uint32_t flags;
-
-    md_hashmap32_t cells;
 
     struct md_allocator_i* alloc;
 } md_spatial_acc_t;
