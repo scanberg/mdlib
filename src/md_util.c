@@ -3590,7 +3590,7 @@ static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256
 
     // Create mask for valid j indices (compare against FLT_MAX)
     const md_256i mask_j = md_mm256_cvtps_epi32(md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(FLT_MAX)));
-    const md_256i j_z = _mm256_mask_i32gather_epi32(md_mm256_setzero_si256(), data->atomic_nr, md_mm256_loadu_epi32(j_idx), mask_j, 4);
+    const md_256i j_z = simde_mm256_mask_i32gather_epi32(md_mm256_setzero_si256(), data->atomic_nr, md_mm256_loadu_epi32(j_idx), mask_j, 4);
 
     const md_256  r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, j_z, 4);
     const md_256  r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, j_z, 4);
