@@ -1156,6 +1156,7 @@ MD_VEC_INLINE vec4_t vec4_and(vec4_t a, vec4_t b) {
 
 	MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
 #endif
+    return r;
 }
 
 MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
@@ -1176,6 +1177,7 @@ MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
 
     MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
 #endif
+    return r;
 }
 
 
@@ -1184,10 +1186,10 @@ MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_blendv_ps(a.m128, b.m128, mask.m128);
 #else
-    r.x = (mask.x != 0.0f) ? a.x : b.x;
-    r.y = (mask.y != 0.0f) ? a.y : b.y;
-    r.z = (mask.z != 0.0f) ? a.z : b.z;
-    r.w = (mask.w != 0.0f) ? a.w : b.w;
+    r.x = (mask.x != 0) ? a.x : b.x;
+    r.y = (mask.y != 0) ? a.y : b.y;
+    r.z = (mask.z != 0) ? a.z : b.z;
+    r.w = (mask.w != 0) ? a.w : b.w;
 #endif
     return r;
 }

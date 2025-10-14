@@ -1,7 +1,10 @@
 ﻿#pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
+
+#include <core/md_simd.h>
 
 struct md_allocator_i;
 struct md_unitcell_t;
@@ -31,7 +34,7 @@ typedef struct md_spatial_acc_t {
 extern "C" {
 #endif
 
-typedef void (*md_spatial_acc_callback)(uint32_t i_idx, const uint32_t* j_idx, size_t j_len, const float* ij_dist2, void* user_param);
+typedef void (*md_spatial_acc_callback)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
 
 // It is recommended to use a cell extent that is equal to the maximum search radius
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
