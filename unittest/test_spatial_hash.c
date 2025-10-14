@@ -415,7 +415,7 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                                                H02, H12, i, out_pairs, &count);
                 }
 
-#if 0
+#if 1
                 // Forward neighbors
                 for (int n = 0; n < 13; ++n) {
                     int nx = (int)cx + FWD_NBRS[n][0];

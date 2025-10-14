@@ -13,6 +13,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_hash.h>
+#include <core/md_spatial_acc.h>
 #include <core/md_bitfield.h>
 #include <core/md_str_builder.h>
 #include <core/md_os.h>
@@ -3574,24 +3575,43 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     return bond->count - pre_count;
 }
 
-static inline void find_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, size_t count, const md_unitcell_t* cell) {
+typedef struct {
+    const int* atomic_nr;
+    md_bond_data_t* bond;
+    md_allocator_i* alloc;
+} cov_bond_callback_param_t;
 
+static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param) {
+    cov_bond_callback_param_t* data = (cov_bond_callback_param_t*)user_param;
+
+    size_t i_z = data->atomic_nr[i_idx];
+    const float* table_cov_r_min = cov_r_min[i_z];
+    const float* table_cov_r_max = cov_r_max[i_z];
+
+    // Create mask for valid j indices (compare against FLT_MAX)
+    const md_256i mask_j = md_mm256_cvtps_epi32(md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(FLT_MAX)));
+    const md_256i j_z = _mm256_mask_i32gather_epi32(md_mm256_setzero_si256(), data->atomic_nr, md_mm256_loadu_epi32(j_idx), mask_j, 4);
+
+    const md_256  r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, j_z, 4);
+    const md_256  r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, j_z, 4);
+
+    const md_256  r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+    const md_256  r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
+
+    int mask = simd_bond_heuristic(ij_dist2, r2_min_cov, r2_max_cov);
+
+    md_array_ensure(data->bond->pairs, md_array_size(data->bond->pairs) + popcnt32(mask), data->alloc);
+    while (mask) {
+        const int idx = ctz32(mask);
+        mask = mask & ~(1 << idx);
+        md_array_push_no_grow(data->bond->pairs, ((md_atom_pair_t){i_idx, j_idx[idx]}));
+        data->bond->count += 1;
+    }
 }
 
-typedef struct aabb_t {
-    vec3_t min_box;
-    vec3_t max_box;
-} aabb_t;
-
-static inline bool aabb_overlap(aabb_t a, aabb_t b) {
-    return
-        (a.min_box.x <= b.max_box.x && a.max_box.x >= b.min_box.x) &&
-        (a.min_box.y <= b.max_box.y && a.max_box.y >= b.min_box.y) &&
-        (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
-}
-
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_atom_type_idx_t* idx, size_t atom_count, const md_atom_type_data_t* atom_type_data, const md_component_data_t* comp, const md_unitcell_t* cell, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
+    ASSERT(sys);
     ASSERT(alloc);
 
     md_bond_data_clear(bond);
@@ -3603,16 +3623,13 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         goto done;
     }
 
-    if (!atom_type_data) {
-        MD_LOG_ERROR("Missing atomic number field");
-        goto done;
+    size_t num_atoms = sys->atom.count;
+    int* atomic_nr = md_vm_arena_push_array(temp_arena, int, num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        atomic_nr[i] = md_atom_atomic_number(&sys->atom, i);
     }
 
-    md_atomic_number_t* atomic_nr = md_vm_arena_push(temp_arena, sizeof(md_atomic_number_t) * atom_count);
-    for (size_t i = 0; i < atom_count; ++i) {
-        atomic_nr[i] = md_atom_type_atomic_number(atom_type_data, idx[i]);
-    }
-
+    /*
     int* atom_res_idx = 0;
        
     if (comp && comp->count > 0) {
@@ -3663,9 +3680,21 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         md_urange_t range = {0, (int)atom_count};
         find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, range, range, alloc, temp_arena);
     }
+    */
+
+    // Find connections for all atoms
+    cov_bond_callback_param_t param = {
+        .atomic_nr = atomic_nr,
+        .bond      = bond,
+        .alloc     = alloc,
+    };
+
+    md_spatial_acc_t acc = {.alloc = temp_arena};
+    md_spatial_acc_init(&acc, x, y, z, num_atoms, 3.0, cell);
+    md_spatial_acc_for_each_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
 
     // Compute connectivity count
-    uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom_count);
+    uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
     for (size_t i = 0; i < bond->count; ++i) {
         c_count[bond->pairs[i].idx[0]] += 1;
         c_count[bond->pairs[i].idx[1]] += 1;
@@ -3673,7 +3702,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     // This is allocated in temp until we know that all connections are final
     md_conn_data_t conn = {0};
-    compute_connectivity(&conn, bond->pairs, bond->count, atom_count, temp_arena, temp_arena);
+    compute_connectivity(&conn, bond->pairs, bond->count, num_atoms, temp_arena, temp_arena);
 
     if (conn.count == 0) {
         goto done;
@@ -3691,7 +3720,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     md_array(uint64_t) checked_bonds = make_bitfield(bond->count, temp_arena);
 
     // Prune over-connected atoms by removing longest bonds
-    for (size_t i = 0; i < atom_count; ++i) {
+    for (size_t i = 0; i < num_atoms; ++i) {
         md_element_t e = atomic_nr[i];
         const int max_con = max_neighbors_element(e);
 
@@ -3738,7 +3767,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         bond->count -= count;
 
         // Recompute connectivity information (since we removed bonds)
-        compute_connectivity(&bond->conn, bond->pairs, bond->count, atom_count, alloc, temp_arena);
+        compute_connectivity(&bond->conn, bond->pairs, bond->count, num_atoms, alloc, temp_arena);
     } else {
         // Commit the connectivity to molecule
         md_array_push_array(bond->conn.offset,   conn.offset,   conn.offset_count, alloc);
@@ -3750,14 +3779,24 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     md_array_resize(bond->order, bond->count, alloc);
 
-    if (comp && comp->count > 0) {
+    size_t num_comp = md_system_comp_count(sys);
+    if (num_comp > 0) {
+        // Create map from atom to component index
+        md_comp_idx_t* atom_comp_idx = md_vm_arena_push(temp_arena, sizeof(md_comp_idx_t) * num_atoms);
+        for (size_t i = 0; i < num_comp; ++i) {
+            md_urange_t range = md_system_comp_atom_range(sys, i);
+            for (uint32_t j = range.beg; j < range.end; ++j) {
+                atom_comp_idx[j] = (md_comp_idx_t)i;
+            }
+        }
+
         // Mark interresidual bonds
         for (size_t i = 0; i < bond->count; ++i) {
-            md_comp_idx_t res_idx[2] = {
-                atom_res_idx[bond->pairs[i].idx[0]],
-                atom_res_idx[bond->pairs[i].idx[1]],
+            md_comp_idx_t comp_idx[2] = {
+                atom_comp_idx[bond->pairs[i].idx[0]],
+                atom_comp_idx[bond->pairs[i].idx[1]],
             };
-            bond->order[i] = (res_idx[0] == res_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
+            bond->order[i] = (comp_idx[0] == comp_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
         }
     } else {
         MEMSET(bond->order, 1, md_array_bytes(bond->order));

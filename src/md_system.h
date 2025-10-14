@@ -101,7 +101,7 @@ typedef struct md_assembly_data_t {
     mat4_t* transform;
 } md_assembly_data_t;
 
-// Atom centric repcompentation of bonds
+// Atom centric representation of bonds
 typedef struct md_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -112,7 +112,7 @@ typedef struct md_conn_data_t {
     uint32_t* offset;
 } md_conn_data_t;
 
-// Bond centric repcompentation
+// Bond centric representation
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t* pairs;

@@ -77,12 +77,12 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
-void md_util_infer_covalent_bonds(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_atom_type_idx_t* in_type_idx, size_t atom_count, const md_atom_type_data_t* in_atom_type_data, const md_component_data_t* in_comp, const md_unitcell_t* in_cell, struct md_allocator_i* alloc);
+void md_util_infer_covalent_bonds(md_bond_data_t* out_bonds, const float* in_x, const float* in_y, const float* in_z, const md_unitcell_t* cell, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 static inline void md_util_system_infer_covalent_bonds(md_system_t* sys, struct md_allocator_i* alloc) {
-    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, sys->atom.type_idx, sys->atom.count, &sys->atom.type, &sys->comp, &sys->unitcell, alloc);
+    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
