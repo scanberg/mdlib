@@ -357,7 +357,7 @@ static const char* acidic[] = { "ASP", "GLU" };
 static const char* basic[] = { "ARG", "HIS", "LYS" };
 
 static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET", "TRP", "ASX", "GLX", "PCA", "HYP" };
-static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "W", "DOD", "D30" };
+static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "TIP5", "W", "DOD", "D30", "SPC" };
 static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
 
 // Taken from here
@@ -1013,7 +1013,7 @@ bool md_util_resname_dna(str_t str) {
     return find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
-bool md_util_resname_nucleic_acid(str_t str) {
+bool md_util_resname_nucleotide(str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
@@ -1240,143 +1240,8 @@ static inline bool is_organic(char c) {
 }
 
 bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol) {
-    ASSERT(capacity > 0);
-    ASSERT(mol);
-    ASSERT(mol->atom.count > 0);
-
-    md_hashmap32_t map = { .allocator = md_get_temp_allocator() };
-    md_hashmap_reserve(&map, 256);
-
-    // Just for pure elements which have not been salted with resname
-    md_hashmap32_t elem_map = { .allocator = md_get_temp_allocator() };
-    md_hashmap_reserve(&elem_map, 256);
-
-    typedef struct {
-        str_t name;
-        md_element_t elem;
-    } entry_t;
-    
-    // Extra table for predefined atom types
-    entry_t entries[] = {
-        {STR_LIT("SOD"), Na},
-        {STR_LIT("OW"),  O},
-        {STR_LIT("HW"),  H},
-    };
-
-    for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
-        md_hashmap_add(&elem_map, md_hash64(entries[i].name.ptr, entries[i].name.len, 0), entries[i].elem);
-    }
-
-    const size_t count = MIN(capacity, mol->atom.count);
-    for (size_t i = 0; i < count; ++i) {
-        if (element[i] != 0) continue;
-
-        str_t original = LBL_TO_STR(mol->atom.type[i]);
-
-        // Trim whitespace, digits and 'X's
-        str_t name = trim_label(original);
-
-        if (name.len > 0) {
-            md_element_t elem = 0;
-
-            str_t resname = STR_LIT("");
-            uint64_t res_key = 0;
-            if (mol->atom.resname) {
-                resname = LBL_TO_STR(mol->atom.resname[i]);
-                res_key = md_hash64_str(resname, 0);
-            }
-            uint64_t key = md_hash64_str(name, res_key);
-            uint32_t* ptr = md_hashmap_get(&map, key);
-            if (ptr) {
-                element[i] = (md_element_t)*ptr;
-                continue;
-            } else {
-                uint64_t elem_key = md_hash64(name.ptr, name.len, 0);
-                ptr = md_hashmap_get(&elem_map, elem_key);
-                if (ptr) {
-                    elem = (md_element_t)*ptr;
-                    goto done;
-                }
-            }
-
-            if ((elem = md_util_element_lookup(name)) != 0) goto done;
-
-            // If amino acid, try to deduce the element from that
-            if (mol->atom.flags) {
-                if (mol->atom.flags[i] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) {
-                    // Try to match against the first character
-                    name.len = 1;
-                    elem = md_util_element_lookup_ignore_case(name);
-                    goto done;
-                }
-            }
-
-            // This is the same logic as above but more general, for the natural organic elements
-            if (is_organic(name.ptr[0]) && name.len > 1) {
-                if (name.ptr[1] - 'A' < 5) {
-                    if (mol->residue.count > 0 && mol->atom.res_idx) {
-                        int32_t res_idx = mol->atom.res_idx[i];
-                        uint32_t res_beg = mol->residue.atom_offset[res_idx];
-                        uint32_t res_end = mol->residue.atom_offset[res_idx+1];
-                        uint32_t res_len = res_end - res_beg;
-                        if (res_len > 3) {
-                            name.len = 1;
-                            elem = md_util_element_lookup_ignore_case(name);
-                            goto done;
-                        }
-                    }
-                }
-            }
-
-            // Heuristic cases
-
-            // This can be fishy...
-            if (str_eq_cstr(name, "HOH")) {
-                elem = H;
-                goto done;
-            }
-            if (str_eq_cstr(name, "HS")) {
-                elem = H;
-                goto done;
-            }
-
-            size_t num_alpha = 0;
-            while (num_alpha < str_len(original) && is_alpha(original.ptr[num_alpha])) ++num_alpha;
-            
-            size_t num_digits = 0;
-            str_t digits = str_substr(original, num_alpha, SIZE_MAX);
-            while (num_digits < str_len(digits) && is_digit(digits.ptr[num_digits])) ++num_digits;
-
-            // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
-            if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
-                name.len = 1;
-                elem = md_util_element_lookup_ignore_case(name);
-                goto done;
-            }
-
-            // Try to match against several characters but ignore the case
-            if (name.len > 1) {
-                name.len = 2;
-                elem = md_util_element_lookup_ignore_case(name);
-            }
-
-            // Last resort, try to match against single first character
-            if (elem == 0) {
-                name.len = 1;
-                elem = md_util_element_lookup_ignore_case(name);
-            }
-
-        done:
-            element[i] = elem;
-            if (elem != 0) {
-                md_hashmap_add(&map, key, elem);
-            }
-        }
-    }
-
-    md_hashmap_free(&map);
-
-    return true;
+    // Delegate to the new hash-backed atomic number inference system
+    return md_atoms_infer_atomic_numbers(element, capacity, mol);
 }
 
 bool md_util_element_from_mass(md_element_t element[], const float mass[], size_t count) {
@@ -1422,6 +1287,138 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
         MD_LOG_ERROR("%zu masses had no matching element", failed_matches);
         return false;
     }
+}
+
+bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count) {
+    if (!out_element) {
+        MD_LOG_ERROR("out_element is null");
+        return false;
+    }
+    if (count > 0 && !in_mass) {
+        MD_LOG_ERROR("in_mass is null");
+        return false;
+    }
+    if (count == 0) {
+        return true;
+    }
+
+    // Initialize output to zero (unknown element)
+    for (size_t i = 0; i < count; ++i) {
+        out_element[i] = 0;
+    }
+
+    // Standard atomic masses for common elements used in all-atom simulations
+    typedef struct {
+        md_element_t element;
+        float mass;
+        float tolerance;
+    } element_mass_entry_t;
+
+    static const element_mass_entry_t standard_masses[] = {
+        {H,  1.008f,  0.2f},   // Hydrogen: Z <= 10, tolerance 0.2 amu
+        {C,  12.011f, 0.2f},   // Carbon
+        {N,  14.007f, 0.2f},   // Nitrogen  
+        {O,  15.999f, 0.2f},   // Oxygen
+        {F,  18.998f, 0.2f},   // Fluorine
+        {Na, 22.990f, 0.3f},   // Sodium: Z > 10, <= 20, tolerance 0.3 amu
+        {Mg, 24.305f, 0.3f},   // Magnesium
+        {P,  30.974f, 0.3f},   // Phosphorus
+        {S,  32.06f,  0.3f},   // Sulfur
+        {Cl, 35.45f,  0.3f},   // Chlorine
+        {K,  39.098f, 0.3f},   // Potassium
+        {Ca, 40.078f, 0.3f},   // Calcium
+        {Fe, 55.845f, 0.5f},   // Iron: Z > 20, tolerance 0.5 amu
+        {Zn, 65.38f,  0.5f},   // Zinc
+        {Br, 79.904f, 0.5f},   // Bromine
+        {I,  126.904f, 0.5f},  // Iodine
+    };
+    static const size_t num_standard_masses = sizeof(standard_masses) / sizeof(standard_masses[0]);
+
+    // CG/reduced-units detection heuristics
+    
+    // Count how many unique masses we have
+    float unique_masses[256];
+    size_t unique_count = 0;
+    
+    for (size_t i = 0; i < count; ++i) {
+        const float mass = in_mass[i];
+        if (mass <= 0.0f) continue; // Skip invalid masses
+        
+        // Check if this mass is already in our unique list
+        bool found = false;
+        for (size_t j = 0; j < unique_count; ++j) {
+            if (fabsf(mass - unique_masses[j]) < 1e-6f) {
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found && unique_count < sizeof(unique_masses)/sizeof(unique_masses[0])) {
+            unique_masses[unique_count++] = mass;
+        }
+    }
+    
+    // Heuristic 1: Too few unique masses for the number of atoms suggests CG
+    if (unique_count < 3 && count > 10) {
+        return false; // Likely CG, skip mapping
+    }
+    
+    // Heuristic 2: Check for CG-like mass values (e.g., 72.0, 1.0, etc.)
+    for (size_t i = 0; i < unique_count; ++i) {
+        const float mass = unique_masses[i];
+        // Check for typical CG mass values - be careful not to catch legitimate hydrogen masses
+        if (fabsf(mass - 72.0f) < 0.001f ||   // Common CG mass
+            fabsf(mass - 36.0f) < 0.001f ||   // Common CG mass
+            mass > 200.0f) {                   // Unrealistically heavy for typical atoms
+            return false; // Likely CG/reduced units, skip mapping
+        }
+        // Check for reduced units (exactly 1.0, not hydrogen mass around 1.008)
+        if (fabsf(mass - 1.0f) < 1e-6f) {  // Much stricter tolerance for exactly 1.0
+            return false; // Likely reduced units
+        }
+    }
+
+    // Perform conservative mass→element mapping
+    size_t successful_mappings = 0;
+    
+    for (size_t i = 0; i < count; ++i) {
+        const float mass = in_mass[i];
+        if (mass <= 0.0f) continue;
+        
+        md_element_t best_element = 0;
+        float best_diff = FLT_MAX;
+        size_t num_candidates = 0;
+        
+        // Find the best matching element
+        for (size_t j = 0; j < num_standard_masses; ++j) {
+            const float diff = fabsf(mass - standard_masses[j].mass);
+            if (diff <= standard_masses[j].tolerance) {
+                num_candidates++;
+                if (diff < best_diff) {
+                    best_diff = diff;
+                    best_element = standard_masses[j].element;
+                }
+            }
+        }
+        
+        // Only assign if we have exactly one candidate (no ambiguity)
+        if (num_candidates == 1) {
+            out_element[i] = best_element;
+            successful_mappings++;
+        }
+        // If multiple elements match within tolerance, leave as 0 (ambiguous)
+    }
+    
+    // If we couldn't map a reasonable fraction, might be CG
+    if (successful_mappings == 0 || successful_mappings < (count + 2) / 3) { // At least 33% success rate
+        // Reset all to 0 and return false
+        for (size_t i = 0; i < count; ++i) {
+            out_element[i] = 0;
+        }
+        return false;
+    }
+    
+    return true;
 }
 
 const str_t* md_util_element_symbols(void) {
@@ -8213,20 +8210,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         }
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_ELEMENT_BIT) {
-#ifdef PROFILE
-        md_timestamp_t t0 = md_time_current();
-#endif
-        if (!mol->atom.element) {
-            md_array_resize(mol->atom.element, mol->atom.count, alloc);
-            MEMSET(mol->atom.element, 0, md_array_bytes(mol->atom.element));
-        }
-        md_util_element_guess(mol->atom.element, mol->atom.count, mol);
-#ifdef PROFILE
-        md_timestamp_t t1 = md_time_current();
-        MD_LOG_DEBUG("Postprocess: guess elements %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-    }
+    // Element inference is now handled within each parser during parsing, not in postprocessing
+    // This ensures atom type table is populated correctly and eliminates dependency on per-atom element field
 
     if (flags & MD_UTIL_POSTPROCESS_RADIUS_BIT) {
 #ifdef PROFILE

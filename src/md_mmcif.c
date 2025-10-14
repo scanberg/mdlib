@@ -148,8 +148,13 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
             int32_t entity_id = -1;
             
             str_t sym = tok[table[ATOM_SITE_TYPE_SYMBOL]];
-            uint32_t* entry = md_hashmap_get(&elem_map, md_hash64(sym.ptr, sym.len, 0));
-            md_element_t elem = entry ? (md_element_t)*entry : 0;
+            md_element_t elem = 0;
+            
+            // Prefer _atom_site.type_symbol if not '.'
+            if (sym.len > 0 && sym.ptr[0] != '.') {
+                uint32_t* entry = md_hashmap_get(&elem_map, md_hash64(sym.ptr, sym.len, 0));
+                elem = entry ? (md_element_t)*entry : 0;
+            }
 
             md_label_t type = make_label(tok[table[ATOM_SITE_LABEL_ATOM_ID]]);
 
@@ -204,6 +209,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
             md_array_push(atom->resid,	 res_id,   alloc);
             md_array_push(atom->resname, resname,  alloc);
             md_array_push(atom->chainid, chain_id, alloc);
+            md_array_push(atom->type_idx, -1, alloc); // Initialize to -1, will be set after populating atom type table
 
             num_atoms += 1;
             next:
@@ -217,6 +223,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         size_t capacity = ROUND_UP(num_atoms, 16);
         md_array_ensure(atom->element,  capacity, alloc);
         md_array_ensure(atom->type,     capacity, alloc);
+        md_array_ensure(atom->type_idx, capacity, alloc);
         md_array_ensure(atom->x,        capacity, alloc);
         md_array_ensure(atom->y,        capacity, alloc);
         md_array_ensure(atom->z,        capacity, alloc);
@@ -225,6 +232,8 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         md_array_ensure(atom->resname,  capacity, alloc);
         md_array_ensure(atom->chainid,  capacity, alloc);
     }
+
+
 
     atom->count = num_atoms;
 done:
@@ -299,14 +308,62 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                     return false;
                 }
                 atom_site_found = true;
+                // Sub-parser already consumed its lines, continue without skipping
+                continue;
             } else if (str_eq_cstr_n(line, "_cell.", 6)) {
                 if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
                     MD_LOG_ERROR("Failed to parse _cell");
                     return false;
                 }
+                // Sub-parser already consumed its lines, continue without skipping
+                continue;
             }
         }
         md_buffered_reader_skip_line(reader);
+    }
+
+    // Fill in missing elements using hash-backed inference if atoms were found
+    if (atom_site_found && mol->atom.count > 0) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
+            if (mol->atom.element[i] == 0) {
+                // Use hash-backed inference for missing elements
+                str_t atom_label = LBL_TO_STR(mol->atom.type[i]);
+                
+                // Try direct element lookup first
+                md_element_t elem = md_util_element_lookup_ignore_case(atom_label);
+                
+                // If that fails, use the hash-backed inference from md_util_element_guess
+                if (elem == 0) {
+                    // Create a temporary molecule structure for the single atom to use element_guess
+                    md_molecule_t temp_mol = {0};
+                    temp_mol.atom.count = 1;
+                    temp_mol.atom.type = &mol->atom.type[i];
+                    temp_mol.atom.resname = &mol->atom.resname[i];
+                    temp_mol.atom.flags = mol->atom.flags ? &mol->atom.flags[i] : NULL;
+                    
+                    md_element_t temp_element = 0;
+                    if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
+                        elem = temp_element;
+                    }
+                }
+                
+                mol->atom.element[i] = elem;
+            }
+        }
+    }
+
+    // Populate atom type table and assign type indices if atoms were found
+    if (atom_site_found && mol->atom.count > 0) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
+            md_label_t type_name = mol->atom.type[i];
+            md_element_t element = mol->atom.element[i];
+            float mass = md_util_element_atomic_mass(element);
+            float radius = md_util_element_vdw_radius(element);
+            
+            // Find or add the atom type
+            md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+            mol->atom.type_idx[i] = type_idx;
+        }
     }
 
     return atom_site_found;

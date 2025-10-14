@@ -1,6 +1,7 @@
-#pragma once
+﻿#pragma once
 
 #include <md_molecule.h>
+#include <core/md_atomic.h>
 
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
@@ -31,20 +32,16 @@ enum {
 
 typedef uint32_t md_util_postprocess_flags_t;
 
-// This assumes the string exactly matches the value within the look up table
-// The match is case sensitive and expects elements to be formatted with Big first letter and small second letter:
-// E.g. H, He, Fe, Na, C
-md_element_t md_util_element_lookup(str_t element_str);
-md_element_t md_util_element_lookup_ignore_case(str_t element_str);
-
-// Access to the static arrays
+// Access to the static arrays (preserved for direct access)
 const str_t* md_util_element_symbols(void);
 const str_t* md_util_element_names(void);
 const float* md_util_element_vdw_radii(void);
 
+// Element functions (now calling new atomic number API internally)
+md_element_t md_util_element_lookup(str_t element_str);
+md_element_t md_util_element_lookup_ignore_case(str_t element_str);
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);
-
 float md_util_element_vdw_radius(md_element_t element);
 float md_util_element_covalent_radius(md_element_t element);
 float md_util_element_atomic_mass(md_element_t element);
@@ -52,23 +49,27 @@ int   md_util_element_max_valence(md_element_t element);
 uint32_t md_util_element_cpk_color(md_element_t element);
 
 bool md_util_resname_dna(str_t str);
+bool md_util_resname_rna(str_t str);
 bool md_util_resname_acidic(str_t str);
 bool md_util_resname_basic(str_t str);
 bool md_util_resname_neutral(str_t str);
 bool md_util_resname_water(str_t str);
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
+bool md_util_resname_nucleotide(str_t str);
 
 static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
-// This operation tries to deduce the element from the atom type/name which usually contains alot of cruft.
-// It also tries resolve some ambiguities: Such as CA, is that Carbon Alpha or is it calcium?
-// We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
+// Element guess function - now delegates to the new inference system
 bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol);
 
 bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
+
+// Conservative mass→element mapping for LAMMPS with CG/reduced-units detection
+// Returns false if data appears to be CG or reduced-units (skips mapping)
+bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count

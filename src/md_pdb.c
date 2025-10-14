@@ -479,6 +479,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     md_array_ensure(mol->atom.z,       capacity, alloc);
     md_array_ensure(mol->atom.element, capacity, alloc);
     md_array_ensure(mol->atom.type,    capacity, alloc);
+    md_array_ensure(mol->atom.type_idx, capacity, alloc);
     md_array_ensure(mol->atom.resid,   capacity, alloc);
     md_array_ensure(mol->atom.resname, capacity, alloc);
     md_array_ensure(mol->atom.flags,   capacity, alloc);
@@ -550,6 +551,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         md_array_push_no_grow(mol->atom.flags, flags);
         md_array_push_no_grow(mol->atom.resname, make_label(res_name));
         md_array_push_no_grow(mol->atom.resid, res_id);
+        
+        // Set type_idx to -1 initially, will be updated after populating atom type table
+        md_array_push_no_grow(mol->atom.type_idx, -1);
     }
 
     if (chain_ids) {
@@ -665,6 +669,47 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     mol->instance.count = md_array_size(mol->instance.transform);
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
     ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count);
+
+    // Fill in missing elements using hash-backed inference
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        if (mol->atom.element[i] == 0) {
+            // Use hash-backed inference for missing elements
+            str_t atom_name = LBL_TO_STR(mol->atom.type[i]);
+            
+            // Try direct element lookup first
+            md_element_t elem = md_util_element_lookup_ignore_case(atom_name);
+            
+            // If that fails, use the hash-backed inference from md_util_element_guess
+            // This handles cases like CA (carbon alpha vs calcium) using residue context
+            if (elem == 0) {
+                // Create a temporary molecule structure for the single atom to use element_guess
+                md_molecule_t temp_mol = {0};
+                temp_mol.atom.count = 1;
+                temp_mol.atom.type = &mol->atom.type[i];
+                temp_mol.atom.resname = &mol->atom.resname[i];
+                temp_mol.atom.flags = mol->atom.flags ? &mol->atom.flags[i] : NULL;
+                
+                md_element_t temp_element = 0;
+                if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
+                    elem = temp_element;
+                }
+            }
+            
+            mol->atom.element[i] = elem;
+        }
+    }
+
+    // Now populate the atom type table and assign type indices
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        md_label_t type_name = mol->atom.type[i];
+        md_element_t element = mol->atom.element[i];
+        float mass = md_util_element_atomic_mass(element);
+        float radius = md_util_element_vdw_radius(element);
+        
+        // Find or add the atom type
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+        mol->atom.type_idx[i] = type_idx;
+    }
 
     result = true;
 done:

@@ -739,6 +739,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
     md_array_ensure(mol->atom.y, num_atoms, alloc);
     md_array_ensure(mol->atom.z, num_atoms, alloc);
     md_array_ensure(mol->atom.element, num_atoms, alloc);
+    md_array_ensure(mol->atom.type_idx, num_atoms, alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
@@ -754,6 +755,19 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.element, element, alloc);
         md_array_push(mol->atom.type, make_label(atom_type), alloc);
         md_array_push(mol->atom.flags, 0, alloc);
+        md_array_push(mol->atom.type_idx, -1, alloc); // Will be set after populating atom type table
+    }
+
+    // Populate atom type table and assign type indices
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        md_label_t type_name = mol->atom.type[i];
+        md_element_t element = mol->atom.element[i];
+        float mass = md_util_element_atomic_mass(element);
+        float radius = md_util_element_vdw_radius(element);
+        
+        // Find or add the atom type
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+        mol->atom.type_idx[i] = type_idx;
     }
 
     mol->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);

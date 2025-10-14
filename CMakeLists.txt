@@ -39,6 +39,7 @@ file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
 set(SRC_FILES
+    src/md_atomic_infer.c
     src/md_csv.c
     src/md_csv.h
     src/md_cube.c

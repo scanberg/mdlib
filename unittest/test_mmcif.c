@@ -78,3 +78,43 @@ UTEST(mmcif, 8g7u) {
 
     md_molecule_free(&mol, md_get_heap_allocator());
 }
+
+// Comprehensive test for all CIF files in test_data
+UTEST(mmcif, all_cif_files) {
+    const char* cif_files[] = {
+        MD_UNITTEST_DATA_DIR"/1fez.cif",
+        MD_UNITTEST_DATA_DIR"/2or2.cif",
+        MD_UNITTEST_DATA_DIR"/8g7u.cif",
+    };
+    const size_t expected_atom_counts[] = {
+        4097,   // 1fez.cif
+        5382,   // 2or2.cif
+        14229,  // 8g7u.cif
+    };
+    const size_t num_files = sizeof(cif_files) / sizeof(cif_files[0]);
+
+    for (size_t i = 0; i < num_files; ++i) {
+        str_t path = str_from_cstr(cif_files[i]);
+        md_molecule_t mol;
+        bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+        
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(expected_atom_counts[i], mol.atom.count);
+            
+            // Verify all atoms have valid elements
+            size_t zero_element_count = 0;
+            for (size_t j = 0; j < mol.atom.count; ++j) {
+                if (mol.atom.element[j] == 0) {
+                    zero_element_count++;
+                }
+            }
+            
+            // Allow some missing elements but ensure most are filled
+            double missing_ratio = (double)zero_element_count / (double)mol.atom.count;
+            EXPECT_LT(missing_ratio, 0.15); // Less than 15% missing
+            
+            md_molecule_free(&mol, md_get_heap_allocator());
+        }
+    }
+}
