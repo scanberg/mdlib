@@ -308,11 +308,15 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                     return false;
                 }
                 atom_site_found = true;
+                // Sub-parser already consumed its lines, continue without skipping
+                continue;
             } else if (str_eq_cstr_n(line, "_cell.", 6)) {
                 if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
                     MD_LOG_ERROR("Failed to parse _cell");
                     return false;
                 }
+                // Sub-parser already consumed its lines, continue without skipping
+                continue;
             }
         }
         md_buffered_reader_skip_line(reader);
