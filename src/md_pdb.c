@@ -540,10 +540,6 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
     }
     md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
-	md_util_system_infer_covalent_bonds(sys, alloc);
-    md_util_system_infer_comp_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
-
     if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
@@ -554,6 +550,11 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             sys->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
         }
     };
+
+	md_util_system_infer_covalent_bonds(sys, alloc);
+    md_util_system_infer_comp_flags(sys);
+    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
+
 
     /*
     // Create instances from assemblies

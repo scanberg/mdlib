@@ -116,6 +116,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     ASSERT(acc);
     if (!acc->alloc) {
         MD_LOG_ERROR("Must have allocator set within spatial acc");
+        return;
     }
 
     double A[3][3]  = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -313,9 +314,7 @@ static inline md_128 distance_squared_tric_sse(md_128 dx, md_128 dy, md_128 dz, 
 
     md_128 acc   = md_mm_fmadd_ps(G00, dx2, md_mm_fmadd_ps(G11, dy2, md_mm_mul_ps(G22, dz2)));
     md_128 cross = md_mm_fmadd_ps(H01, dxy, md_mm_fmadd_ps(H02, dxz, md_mm_mul_ps(H12, dyz)));
-    md_128 d2 = md_mm_add_ps(acc, cross);
-    
-    return md_mm_add_ps(md_mm_add_ps(dx2, dy2), dz2);
+    return md_mm_add_ps(acc, cross);
 }
 
 static inline md_256 distance_squared_tric_avx(md_256 dx, md_256 dy, md_256 dz, md_256 G00, md_256 G11, md_256 G22, md_256 H01, md_256 H02, md_256 H12) {
@@ -329,9 +328,7 @@ static inline md_256 distance_squared_tric_avx(md_256 dx, md_256 dy, md_256 dz, 
 
     md_256 acc   = md_mm256_fmadd_ps(G00, dx2, md_mm256_fmadd_ps(G11, dy2, md_mm256_mul_ps(G22, dz2)));
     md_256 cross = md_mm256_fmadd_ps(H01, dxy, md_mm256_fmadd_ps(H02, dxz, md_mm256_mul_ps(H12, dyz)));
-    md_256 d2 = md_mm256_add_ps(acc, cross);
-
-	return md_mm256_add_ps(md_mm256_add_ps(dx2, dy2), dz2);
+    return md_mm256_add_ps(acc, cross);
 }
 
 static inline md_128 distance_squared_ortho_sse(md_128 dx, md_128 dy, md_128 dz, md_128 G00, md_128 G11, md_128 G22) {
@@ -513,7 +510,7 @@ static size_t for_each_in_neighboring_cells_triclinic(const md_spatial_acc_t* ac
                         int mask = md_mm256_movemask_ps(md_mm256_cmplt_ps(d2_masked, md_mm256_set1_ps(25.0f)));
                         count += popcnt32(mask);
 #else
-                        callback(idx, elem_i_idx + j, d2_masked, user_param);
+                        callback(idx, elem_j_idx + j, d2_masked, user_param);
 #endif
 
                             v_j = md_mm256_add_epi32(v_j, add8);
@@ -683,7 +680,7 @@ static size_t for_each_in_neighboring_cells_ortho(const md_spatial_acc_t* acc, m
                         int mask = md_mm256_movemask_ps(md_mm256_cmplt_ps(d2_masked, md_mm256_set1_ps(25.0f)));
                         count += popcnt32(mask);
 #else
-                        callback(idx, elem_i_idx + j, d2_masked, user_param);
+                        callback(idx, elem_j_idx + j, d2_masked, user_param);
 #endif
 
                             v_j = md_mm256_add_epi32(v_j, add8);

@@ -244,9 +244,20 @@ typedef struct md_unitcell_t {
 
 // constructors for unitcell
 
+static inline md_unitcell_t md_unitcell_none(void) {
+    md_unitcell_t cell = {0};
+    return cell;
+}
+
 static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {
     uint32_t flags = 0;
-    flags |= (xy == 0.0 && xz == 0.0 && yz == 0.0) ? MD_UNITCELL_ORTHO : MD_UNITCELL_TRICLINIC;
+
+    if (xy == 0.0 && xz == 0.0 && yz == 0.0) {
+        flags |= MD_UNITCELL_ORTHO;
+    } else {
+        flags |= MD_UNITCELL_TRICLINIC;
+    }
+
     if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
     if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
     if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
@@ -348,6 +359,10 @@ static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitce
 // returns the unit_cell basis matrix (A)
 static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
     if (cell) {
+        if (!cell->flags) {
+            mat3_t zero = {0};
+            return zero;
+        }
         const double i11 = 1.0 / cell->x;
         const double i22 = 1.0 / cell->y;
         const double i33 = 1.0 / cell->z;
@@ -362,6 +377,10 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
 
 static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_unitcell_t* cell) {
     if (cell) {
+        if (!cell->flags) {
+            MEMSET(out_Ai, 0, sizeof(double) * 9);
+            return;
+        }
         out_Ai[0][0] = 1.0 / cell->x;
         out_Ai[0][1] = 0;
         out_Ai[0][2] = 0;

@@ -69,6 +69,7 @@ static const str_t element_names[] = {
 };
 
 // http://dx.doi.org/10.1039/b801115j
+// Covalent radii (in Å ×100) — Cordero et al., Dalton Trans., 2008, 2832–2838
 static const uint8_t element_covalent_radii_u8[] = {
       0,  31,  28, 128,  96,  84,  76,  71,  66,  57,  58, 166, 141, 121, 111, 107, 105, 102, 106, 203, 176, 170, 160, 153,
     139, 139, 132, 126, 124, 132, 122, 122, 120, 119, 120, 120, 116, 220, 195, 190, 175, 164, 154, 147, 146, 142, 139, 145,
@@ -289,6 +290,11 @@ static const uint64_t element_aromatic_ring[2] = {
     0x0000000000080000,
 };
 
+static const uint64_t element_covalent_mask[2] = {
+    0x003E0000001FC7E6ULL, // atomic numbers 1–63
+    0x0000000000000000ULL, // atomic numbers 64–127 (unused)
+};
+
 // This is a macro to generate test functions of the bitmasks above
 // This seems to generate decent assembly across Clang, GCC and MSVC
 // If this is a static inline function, it fails to represent the raw values of the mask in assembly
@@ -310,6 +316,68 @@ GENERATE_MASK_FUNC(is_metal, element_metal_mask)
 GENERATE_MASK_FUNC(is_halogen, element_halogen_mask)
 
 GENERATE_MASK_FUNC(is_aromatic, element_aromatic_ring)
+
+static inline bool can_form_covalent_bond(size_t atomic_nr) {
+    // 1, 2, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 32, 33, 34, 35, 36, 51, 52, 53, 54
+    switch (atomic_nr) {
+        // Nonmetals
+        case H:
+        case C:
+        case N:
+        case O:
+        case F:
+        case P:
+        case S:
+        case Cl:
+        case Se:
+        case Br:
+        case I:
+
+        // Noble gases
+        case He:
+        case Ne:
+        case Ar:
+        case Kr:
+        case Xe:
+
+        // Metalloids
+        case B:
+        case Si:
+        case Ge:
+        case As:
+        case Sb:
+        case Te:
+
+        // Transition metals
+        case Ti:
+        case V:
+        case Cr:
+        case Mn:
+        case Fe:
+        case Co:
+        case Ni:
+        case Cu:
+        case Zn:
+        case Nb:
+        case Mo:
+        case Tc:
+        case Ru:
+        case Rh:
+        case Pd:
+        case Ag:
+        case Ta:
+        case W:
+        case Re:
+        case Os:
+        case Ir:
+        case Pt:
+        case Au:
+
+            return true;
+        default:
+            return false;
+    }
+}
 
 // Some from here https://daylight.com/meetings/mug01/Sayle/m4xbondage.html
 // Some from molstar (github.com/molstar)
@@ -3576,8 +3644,17 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
 }
 
 typedef struct {
+    int atom_i;
+    int atom_j;
+    float dist;
+} candidate_pair_t;
+
+typedef struct {
     const int* atomic_nr;
-    md_bond_data_t* bond;
+    const float* cov_radius; // Covalent radius for elements
+    float k_min;
+    float k_max;
+    md_array(candidate_pair_t)* candidates;
     md_allocator_i* alloc;
 } cov_bond_callback_param_t;
 
@@ -3585,27 +3662,39 @@ static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256
     cov_bond_callback_param_t* data = (cov_bond_callback_param_t*)user_param;
 
     size_t i_z = data->atomic_nr[i_idx];
-    const float* table_cov_r_min = cov_r_min[i_z];
-    const float* table_cov_r_max = cov_r_max[i_z];
 
     // Create mask for valid j indices (compare against FLT_MAX)
     const md_256i mask_j = md_mm256_cvtps_epi32(md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(FLT_MAX)));
     const md_256i j_z = simde_mm256_mask_i32gather_epi32(md_mm256_setzero_si256(), data->atomic_nr, md_mm256_loadu_epi32(j_idx), mask_j, 4);
 
-    const md_256  r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, j_z, 4);
-    const md_256  r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, j_z, 4);
+    const md_256 cov_rad_i = md_mm256_set1_ps(data->cov_radius[i_z]);
+    const md_256 cov_rad_j = md_mm256_i32gather_ps(data->cov_radius, j_z, 4);
 
-    const md_256  r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-    const md_256  r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
+    const md_256 cov_rad_sum = md_mm256_add_ps(cov_rad_i, cov_rad_j);
+    const md_256 r_min_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_min), cov_rad_sum);
+    const md_256 r_max_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_max), cov_rad_sum);
 
-    int mask = simd_bond_heuristic(ij_dist2, r2_min_cov, r2_max_cov);
+    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
 
-    md_array_ensure(data->bond->pairs, md_array_size(data->bond->pairs) + popcnt32(mask), data->alloc);
+    const md_256 cmp_min = md_mm256_cmpgt_ps(ij_dist2, r2_min_cov);
+    const md_256 cmp_max = md_mm256_cmplt_ps(ij_dist2, r2_max_cov);
+    int mask = md_mm256_movemask_ps(md_mm256_and_ps(cmp_min, cmp_max));
+    if (!mask) return;
+
+    float dist[8];
+    md_mm256_storeu_ps(dist, md_mm256_sqrt_ps(ij_dist2));
+
+    md_array_ensure(*data->candidates, md_array_size(*data->candidates) + popcnt32(mask), data->alloc);
     while (mask) {
         const int idx = ctz32(mask);
         mask = mask & ~(1 << idx);
-        md_array_push_no_grow(data->bond->pairs, ((md_atom_pair_t){i_idx, j_idx[idx]}));
-        data->bond->count += 1;
+        candidate_pair_t cp = {
+            .atom_i = i_idx,
+            .atom_j = j_idx[idx],
+            .dist   = dist[idx],
+        };
+        md_array_push_no_grow(*data->candidates, cp);
     }
 }
 
@@ -3629,75 +3718,58 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         atomic_nr[i] = md_atom_atomic_number(&sys->atom, i);
     }
 
-    /*
-    int* atom_res_idx = 0;
-       
-    if (comp && comp->count > 0) {
-        atom_res_idx = md_vm_arena_push(temp_arena, atom_count * sizeof(int));
-
-        // The padding applied to residue AABBs in order to determine potential overlap
-        const float aabb_pad = 1.5f;
-        size_t prev_idx = 0;
-        md_urange_t prev_range = md_comp_atom_range(comp, prev_idx);
-
-        for (int i = prev_range.beg; i < prev_range.end; ++i) {
-            atom_res_idx[i] = prev_idx;
-        }
-
-        aabb_t prev_aabb = {0};
-        md_util_aabb_compute(prev_aabb.min_box.elem, prev_aabb.max_box.elem, x + prev_range.beg, y + prev_range.beg, z + prev_range.beg, 0, 0, prev_range.end - prev_range.beg);
-        prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
-        prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
-
-        find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, prev_range, alloc, temp_arena);
-        for (size_t curr_idx = 1; curr_idx < comp->count; ++curr_idx) {
-            md_urange_t curr_range = md_comp_atom_range(comp, curr_idx);
-            md_flags_t  curr_flags = md_comp_flags(comp, curr_idx);
-
-            for (int i = curr_range.beg; i < curr_range.end; ++i) {
-                atom_res_idx[i] = curr_idx;
-            }
-
-            aabb_t curr_aabb = {0};
-            if (!(curr_flags & (MD_FLAG_WATER | MD_FLAG_ION))) {
-                md_util_aabb_compute(curr_aabb.min_box.elem, curr_aabb.max_box.elem, x + curr_range.beg, y + curr_range.beg, z + curr_range.beg, 0, 0, curr_range.end - curr_range.beg);
-                curr_aabb.min_box = vec3_sub_f(curr_aabb.min_box, aabb_pad);
-                curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
-
-                // @NOTE: Interresidual bonds
-                if (aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, prev_range, curr_range, alloc, temp_arena);
-                    // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
-                }
-            }
-            find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, curr_range, curr_range, alloc, temp_arena);
-            prev_range = curr_range;
-            prev_idx   = curr_idx;
-            prev_aabb  = curr_aabb;
-        }
+    float* cov_radius = md_vm_arena_push_array(temp_arena, float, Num_Elements);
+    for (int i = 0; i < Num_Elements; ++i) {
+        cov_radius[i] = element_covalent_radius(i);
     }
-    else {
-        md_urange_t range = {0, (int)atom_count};
-        find_bonds_in_ranges(bond, x, y, z, atomic_nr, cell, range, range, alloc, temp_arena);
+
+    md_array(candidate_pair_t) candidates = 0;
+
+    {
+        // Find connections for all atoms
+        cov_bond_callback_param_t param = {
+            .atomic_nr  = atomic_nr,
+            .cov_radius = cov_radius,
+            .k_min = 0.75f,
+            .k_max = 1.35f,  // This is very generous to account for various environments
+            .candidates = &candidates,
+            .alloc      = temp_arena,
+        };
+
+        // Build candidate list
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
+        md_spatial_acc_t acc = {.alloc = temp_arena};
+        md_spatial_acc_init(&acc, x, y, z, num_atoms, 3.0, cell);
+        md_spatial_acc_for_each_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
+        md_vm_arena_temp_end(temp);
     }
-    */
-
-    // Find connections for all atoms
-    cov_bond_callback_param_t param = {
-        .atomic_nr = atomic_nr,
-        .bond      = bond,
-        .alloc     = alloc,
-    };
-
-    md_spatial_acc_t acc = {.alloc = temp_arena};
-    md_spatial_acc_init(&acc, x, y, z, num_atoms, 3.0, cell);
-    md_spatial_acc_for_each_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
 
     // Compute connectivity count
     uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
     for (size_t i = 0; i < bond->count; ++i) {
         c_count[bond->pairs[i].idx[0]] += 1;
         c_count[bond->pairs[i].idx[1]] += 1;
+    }
+
+    static const k_cov   = 1.10f;
+    static const k_tight = 1.05f;
+    static const k_coord = 1.35f;
+
+    size_t num_candidates = md_array_size(candidates);
+    for (size_t i = 0; i < num_candidates; ++i) {
+        int ai = candidates[i].atom_i;
+        int aj = candidates[i].atom_j;
+        float d = candidates[i].dist;
+        int ei = atomic_nr[ai];
+        int ej = atomic_nr[aj];
+        int mi = is_metal(ei);
+        int mj = is_metal(ej);
+        float sum_r = cov_radius[ei] + cov_radius[ej];
+
+        if (!mi && !mj) {
+            // Both non-metals, check against k_cov
+
+        }
     }
 
     // This is allocated in temp until we know that all connections are final
