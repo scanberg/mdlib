@@ -3145,6 +3145,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 }
 #endif
 
+#if 0
 // Returns the bond-order (0 if no bond is present)
 static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_element_t b) {
     const uint8_t va = element_max_valence[a];
@@ -3642,19 +3643,20 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
 
     return bond->count - pre_count;
 }
+#endif
 
 typedef struct {
     int atom_i;
     int atom_j;
     float dist;
-} candidate_pair_t;
+} bond_pair_t;
 
 typedef struct {
     const int* atomic_nr;
     const float* cov_radius; // Covalent radius for elements
     float k_min;
     float k_max;
-    md_array(candidate_pair_t)* candidates;
+    md_array(bond_pair_t)* candidates;
     md_allocator_i* alloc;
 } cov_bond_callback_param_t;
 
@@ -3662,6 +3664,8 @@ static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256
     cov_bond_callback_param_t* data = (cov_bond_callback_param_t*)user_param;
 
     size_t i_z = data->atomic_nr[i_idx];
+
+    const md_256 ij_dist = md_mm256_sqrt_ps(ij_dist2);
 
     // Create mask for valid j indices (compare against FLT_MAX)
     const md_256i mask_j = md_mm256_cvtps_epi32(md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(FLT_MAX)));
@@ -3674,27 +3678,24 @@ static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256
     const md_256 r_min_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_min), cov_rad_sum);
     const md_256 r_max_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_max), cov_rad_sum);
 
-    const md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-    const md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
+    const md_256 cmp_min = md_mm256_cmpgt_ps(ij_dist, r_min_cov);
+    const md_256 cmp_max = md_mm256_cmplt_ps(ij_dist, r_max_cov);
 
-    const md_256 cmp_min = md_mm256_cmpgt_ps(ij_dist2, r2_min_cov);
-    const md_256 cmp_max = md_mm256_cmplt_ps(ij_dist2, r2_max_cov);
     int mask = md_mm256_movemask_ps(md_mm256_and_ps(cmp_min, cmp_max));
     if (!mask) return;
 
     float dist[8];
-    md_mm256_storeu_ps(dist, md_mm256_sqrt_ps(ij_dist2));
+    md_mm256_storeu_ps(dist, ij_dist);
 
-    md_array_ensure(*data->candidates, md_array_size(*data->candidates) + popcnt32(mask), data->alloc);
     while (mask) {
         const int idx = ctz32(mask);
         mask = mask & ~(1 << idx);
-        candidate_pair_t cp = {
+        bond_pair_t cp = {
             .atom_i = i_idx,
             .atom_j = j_idx[idx],
             .dist   = dist[idx],
         };
-        md_array_push_no_grow(*data->candidates, cp);
+        md_array_push(*data->candidates, cp, data->alloc);
     }
 }
 
@@ -3712,50 +3713,61 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         goto done;
     }
 
+    // Covalent radius sum factors
+    static const float k_min   = 0.75f;
+    static const float k_cov   = 1.10f;
+    static const float k_tight = 1.05f;
+    static const float k_coord = 1.35f;
+
+    double max_cov_rad = 0.0;
     size_t num_atoms = sys->atom.count;
-    int* atomic_nr = md_vm_arena_push_array(temp_arena, int, num_atoms);
-    for (size_t i = 0; i < num_atoms; ++i) {
-        atomic_nr[i] = md_atom_atomic_number(&sys->atom, i);
-    }
 
     float* cov_radius = md_vm_arena_push_array(temp_arena, float, Num_Elements);
     for (int i = 0; i < Num_Elements; ++i) {
         cov_radius[i] = element_covalent_radius(i);
     }
 
-    md_array(candidate_pair_t) candidates = 0;
+    int* atomic_nr = md_vm_arena_push_array(temp_arena, int, num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        int anr = md_atom_atomic_number(&sys->atom, i);
+        atomic_nr[i] = anr;
+        max_cov_rad = MAX(max_cov_rad, cov_radius[anr]);
+    }
+
+    md_array(bond_pair_t) candidates = 0;
 
     {
         // Find connections for all atoms
         cov_bond_callback_param_t param = {
             .atomic_nr  = atomic_nr,
             .cov_radius = cov_radius,
-            .k_min = 0.75f,
-            .k_max = 1.35f,  // This is very generous to account for various environments
+            .k_min = k_min,
+            .k_max = k_coord,
             .candidates = &candidates,
             .alloc      = temp_arena,
         };
 
+        // Compute a cell size based on the max cov radius within the set
+        const double cell_ext = 2.0 * max_cov_rad * k_coord;
+
+        MD_LOG_DEBUG("Constructing acceleration structure for bond candidate list with cell size of %f", cell_ext);
+
         // Build candidate list
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
         md_spatial_acc_t acc = {.alloc = temp_arena};
-        md_spatial_acc_init(&acc, x, y, z, num_atoms, 3.0, cell);
+        md_spatial_acc_init(&acc, x, y, z, num_atoms, cell_ext, cell);
         md_spatial_acc_for_each_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
-        md_vm_arena_temp_end(temp);
     }
-
-    // Compute connectivity count
-    uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
-    for (size_t i = 0; i < bond->count; ++i) {
-        c_count[bond->pairs[i].idx[0]] += 1;
-        c_count[bond->pairs[i].idx[1]] += 1;
-    }
-
-    static const k_cov   = 1.10f;
-    static const k_tight = 1.05f;
-    static const k_coord = 1.35f;
 
     size_t num_candidates = md_array_size(candidates);
+
+    MD_LOG_DEBUG("Found %zu candidates", num_candidates);
+
+    md_array(bond_pair_t) cov_list = 0;
+    md_array(bond_pair_t) mtl_list = 0;
+
+    md_array_ensure(cov_list, 3 * num_candidates / 4, temp_arena);
+    md_array_ensure(cov_list, 1 * num_candidates / 4, temp_arena);
+
     for (size_t i = 0; i < num_candidates; ++i) {
         int ai = candidates[i].atom_i;
         int aj = candidates[i].atom_j;
@@ -3768,8 +3780,23 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
         if (!mi && !mj) {
             // Both non-metals, check against k_cov
-
+            if (d < sum_r * k_cov) {
+                md_atom_pair_t pair = {ai, aj};
+                md_array_push(bond->pairs, pair, alloc);
+                bond->count += 1;
+            }
         }
+    }
+
+
+
+/*
+    // Compute connectivity count
+    uint8_t* atom_cov_conn_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
+    size_t num_cov = md_array_size(cov_list);
+    for (size_t i = 0; i < num_cov; ++i) {
+        cov_count[cov_list[i].atom_i] += 1;
+        cov_count[cov_list[i].atom_j] += 1;
     }
 
     // This is allocated in temp until we know that all connections are final
@@ -3848,6 +3875,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         bond->conn.count = conn.count;
         bond->conn.offset_count = conn.offset_count;
     }
+    */
+
+    compute_connectivity(&bond->conn, bond->pairs, bond->count, num_atoms, alloc, temp_arena);
 
     md_array_resize(bond->order, bond->count, alloc);
 

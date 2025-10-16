@@ -258,9 +258,14 @@ static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y
         flags |= MD_UNITCELL_TRICLINIC;
     }
 
-    if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
-    if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
-    if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
+    if ((flags & MD_UNITCELL_ORTHO) && x == 1.0 && y == 1.0 && z == 1.0) {
+        // Special case for 'dummy' box
+        flags = 0;
+    } else {
+        if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
+        if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
+        if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
+    }
 
     md_unitcell_t cell = {.x = x, .xy = xy, .xz = xz, .y = y, .yz = yz, .z = z, .flags = flags};
     return cell;
