@@ -253,15 +253,14 @@ static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y
     uint32_t flags = 0;
 
     if (xy == 0.0 && xz == 0.0 && yz == 0.0) {
-        flags |= MD_UNITCELL_ORTHO;
+        if (!(x == 0.0 && y == 0.0 && z == 0.0) && !(x == 1.0 && y == 1.0 && z == 1.0)) {
+            flags |= MD_UNITCELL_ORTHO;
+        }
     } else {
         flags |= MD_UNITCELL_TRICLINIC;
     }
 
-    if ((flags & MD_UNITCELL_ORTHO) && x == 1.0 && y == 1.0 && z == 1.0) {
-        // Special case for 'dummy' box
-        flags = 0;
-    } else {
+    if (flags) {
         if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
         if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
         if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
@@ -278,6 +277,10 @@ static inline md_unitcell_t md_unitcell_from_extent(double x, double y, double z
 // From here: https://www.arianarab.com/post/crystal-structure-software
 // Assumes that all input angles (alpha, beta, gamma) are given in degrees
 static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
+    if (a == 0 && b == 0 && c == 0 && alpha == 0 && beta == 0 && gamma == 0) {
+        return md_unitcell_none();
+    }
+
     if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
         return md_unitcell_from_basis_parameters(a, b, c, 0, 0, 0);
     }

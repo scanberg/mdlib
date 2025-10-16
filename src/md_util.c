@@ -4372,9 +4372,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                     ++j;
                 }
             } else if (group_by_auth_id) {
+                // If auth asym id is available, use it to group components into instances
                 entity_flags |= (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
 
-                // If auth asym id is available, use it to group components into instances
                 while (j < sys->comp.count && str_eq(comp_auth_id, comp_auth_asym_id[j])) {
                     md_flags_t flags = md_comp_flags(&sys->comp, j);
                     if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
@@ -8410,8 +8410,8 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
             {
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID;
-                md_protein_backbone_atoms_t* backbone_atoms = md_vm_arena_push(temp_arena, MAX_BACKBONE_LENGTH * sizeof(md_protein_backbone_atoms_t));
-                size_t backbone_length = 0;
+                md_array(md_protein_backbone_atoms_t) backbone_atoms = 0;
+                md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_comp_idx_t comp_base = -1;
 
                 for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
@@ -8428,24 +8428,26 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                         md_protein_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, res_idx);
                         if (md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range)) {
-                            backbone_atoms[backbone_length++] = atoms;
+                            md_array_push(backbone_atoms, atoms, temp_arena);
                             if (comp_base == -1) {
                                 comp_base = res_idx;
                             }
                         } else {
+							size_t backbone_length = md_array_size(backbone_atoms);
                             if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
                                 // Commit the backbone
                                 commit_protein_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->protein_backbone, alloc);
                             }
-                            backbone_length = 0;
+							md_array_shrink(backbone_atoms, 0);
                             comp_base = -1;
                         }
                     }
                     // Possibly commit remainder of the chain
+                    size_t backbone_length = md_array_size(backbone_atoms);
                     if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
                         commit_protein_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->protein_backbone, alloc);
                     }
-                    backbone_length = 0;
+                    md_array_shrink(backbone_atoms, 0);
                     comp_base = -1;
                 }
 
@@ -8471,8 +8473,8 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 #if 1
             {
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEOTIDE;
-                md_nucleic_backbone_atoms_t* backbone_atoms = md_vm_arena_push(temp_arena, MAX_BACKBONE_LENGTH * sizeof(md_nucleic_backbone_atoms_t));
-                size_t backbone_length = 0;
+                md_array(md_nucleic_backbone_atoms_t) backbone_atoms = 0;
+                md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_comp_idx_t comp_base = -1;
 
                 for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
@@ -8488,26 +8490,29 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                         md_nucleic_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, comp_idx);
                         if (md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range) ) {
+                            size_t backbone_length = md_array_size(backbone_atoms);
                             if (backbone_length > 0 && atoms.p != -1) {
-                                backbone_atoms[backbone_length++] = atoms;
+                                md_array_push(backbone_atoms, atoms, temp_arena);
                                 if (comp_base == -1) {
                                     comp_base = comp_idx;
                                 }
                             }
                         } else {
+							size_t backbone_length = md_array_size(backbone_atoms);
                             if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
                                 // Commit the backbone
                                 commit_nucleic_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->nucleic_backbone, alloc);
                             }
-                            backbone_length = 0;
+                            md_array_shrink(backbone_atoms, 0);
                             comp_base = -1;
                         }
                     }
                     // Possibly commit remainder of the chain
+					size_t backbone_length = md_array_size(backbone_atoms);
                     if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
                         commit_nucleic_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->nucleic_backbone, alloc);
                     }
-                    backbone_length = 0;
+					md_array_shrink(backbone_atoms, 0);
                     comp_base = -1;
                 }
 
