@@ -2547,7 +2547,7 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
     //md_atom_idx_t na = map[0];
     for (uint32_t i = p_edge_beg; i < p_edge_end; ++i) {
         md_flags_t flags = (md_flags_t)graph_edge_type(data->pattern, i);
-        if (order > 1) {
+        if (flags) {
             md_atom_idx_t nb = map[graph_edge_vertex_idx(data->pattern, i)];
             uint32_t n_edge_beg = data->neighborhood->edge_offset[0];
             uint32_t n_edge_end = data->neighborhood->edge_offset[1];
@@ -3783,7 +3783,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             if (d < sum_r * k_cov) {
                 md_atom_pair_t pair = {ai, aj};
                 md_array_push(bond->pairs, pair, alloc);
-                md_array_push(bond->flags, 0,    alloc);
+                md_array_push(bond->flags, MD_BOND_FLAG_COVALENT,    alloc);
                 bond->count += 1;
             }
         } else if (mi ^ mj) { // XOR here (either is metal, but not both)
@@ -3791,7 +3791,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
                 // OXO, Covalent
                 md_atom_pair_t pair = {ai, aj};
                 md_array_push(bond->pairs, pair, alloc);
-                md_array_push(bond->flags, 0,    alloc);
+                md_array_push(bond->flags, MD_BOND_FLAG_COVALENT,    alloc);
                 bond->count += 1;
             } else {
                 // Coordination bond (@TODO validate by geometrical matching)
@@ -3894,7 +3894,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     compute_connectivity(&bond->conn, bond->pairs, bond->count, num_atoms, alloc, temp_arena);
 
-    md_array_resize(bond->order, bond->count, alloc);
+    if (md_array_size(bond->flags) < bond->count) {
+        md_array_resize(bond->flags, bond->count, alloc);
+        MEMSET(bond->flags, 0, md_array_bytes(bond->flags));
+    }
 
     size_t num_comp = md_system_comp_count(sys);
     if (num_comp > 0) {
@@ -3913,10 +3916,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
                 atom_comp_idx[bond->pairs[i].idx[0]],
                 atom_comp_idx[bond->pairs[i].idx[1]],
             };
-            bond->order[i] = (comp_idx[0] == comp_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
+            if (comp_idx[0] != comp_idx[1]) {
+                bond->flags[i] |= MD_BOND_FLAG_INTER;
+            }
         }
-    } else {
-        MEMSET(bond->order, 1, md_array_bytes(bond->order));
     }
     
 done:

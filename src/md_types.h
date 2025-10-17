@@ -79,6 +79,7 @@ enum {
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
 enum {
+    MD_BOND_FLAG_COVALENT       = 0x1,
     MD_BOND_FLAG_DOUBLE         = 0x2,
     MD_BOND_FLAG_TRIPLE         = 0x4,
     MD_BOND_FLAG_QUADRUPLE      = 0x8,
