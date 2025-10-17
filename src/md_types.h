@@ -79,8 +79,12 @@ enum {
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
 enum {
+    MD_BOND_FLAG_DOUBLE         = 0x2,
+    MD_BOND_FLAG_TRIPLE         = 0x4,
+    MD_BOND_FLAG_QUADRUPLE      = 0x8,
     MD_BOND_FLAG_AROMATIC       = 0x10,
-    MD_BOND_FLAG_INTER          = 0x20,
+    MD_BOND_FLAG_INTER          = 0x20, // Inter residue / component
+    MD_BOND_FLAG_COORDINATE     = 0x40  // Coordinate / Dative
 };
 
 // Atomic number constants for all elements (Z values)

@@ -989,11 +989,11 @@ static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t
         while (md_bond_iter_has_next(&it)) {
             uint32_t bond_idx = md_bond_iter_bond_index(&it);
             uint32_t atom_idx = md_bond_iter_atom_index(&it);
-            uint32_t order    = md_bond_iter_bond_order(&it);
+            uint32_t flags    = md_bond_iter_bond_flags(&it);
             uint32_t* local_idx = md_hashmap_get(&global_to_local, atom_idx);
             if (local_idx) {
                 // Only commit the edge if it is referring to a local index within the graph
-                edge_data_arr[length++] = ((uint64_t)bond_idx << 32) | ((uint64_t)order << 24) | (uint32_t)(*local_idx);
+                edge_data_arr[length++] = ((uint64_t)bond_idx << 32) | ((uint64_t)flags << 24) | (uint32_t)(*local_idx);
             }
             md_bond_iter_next(&it);
         }
@@ -2510,9 +2510,9 @@ static inline bool element_is_aromatic(md_element_t elem) {
 static inline uint64_t compute_key(const md_bond_data_t* bond, const md_element_t* atom_element, uint32_t conn_beg, uint32_t conn_end) {
     uint64_t key = 0;
     for (uint32_t i = conn_beg; i < conn_end; ++i) {
-        md_element_t elem = atom_element[bond->conn.atom_idx[i]];
-        md_order_t  order = bond->order[bond->conn.bond_idx[i]];
-        key += elem * order;
+        uint64_t elem  = atom_element[bond->conn.atom_idx[i]];
+        uint64_t flags = bond->flags[bond->conn.bond_idx[i]];
+        key += elem * flags;
     }
     return key;
 }
@@ -2546,15 +2546,15 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
 
     //md_atom_idx_t na = map[0];
     for (uint32_t i = p_edge_beg; i < p_edge_end; ++i) {
-        md_order_t order = (md_order_t)graph_edge_type(data->pattern, i);
+        md_flags_t flags = (md_flags_t)graph_edge_type(data->pattern, i);
         if (order > 1) {
             md_atom_idx_t nb = map[graph_edge_vertex_idx(data->pattern, i)];
             uint32_t n_edge_beg = data->neighborhood->edge_offset[0];
             uint32_t n_edge_end = data->neighborhood->edge_offset[1];
             for (uint32_t j = n_edge_beg; j < n_edge_end; ++j) {
                 if (graph_edge_vertex_idx(data->neighborhood, j) == nb) {
-                    md_bond_idx_t bidx = data->neighborhood->bond_idx_map[j];
-                    md_bond_order_set(data->bond, bidx, order);
+                    md_bond_idx_t b_idx = data->neighborhood->bond_idx_map[j];
+                    md_bond_flags_set(data->bond, b_idx, flags);
                     break;
                 }
             }
@@ -3783,6 +3783,21 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             if (d < sum_r * k_cov) {
                 md_atom_pair_t pair = {ai, aj};
                 md_array_push(bond->pairs, pair, alloc);
+                md_array_push(bond->flags, 0,    alloc);
+                bond->count += 1;
+            }
+        } else if (mi ^ mj) { // XOR here (either is metal, but not both)
+            if (d < sum_r * k_tight) {
+                // OXO, Covalent
+                md_atom_pair_t pair = {ai, aj};
+                md_array_push(bond->pairs, pair, alloc);
+                md_array_push(bond->flags, 0,    alloc);
+                bond->count += 1;
+            } else {
+                // Coordination bond (@TODO validate by geometrical matching)
+                md_atom_pair_t pair = {ai, aj};
+                md_array_push(bond->pairs, pair, alloc);
+                md_array_push(bond->flags, MD_BOND_FLAG_COORDINATE, alloc);
                 bond->count += 1;
             }
         }

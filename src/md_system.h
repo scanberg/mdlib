@@ -116,7 +116,7 @@ typedef struct md_conn_data_t {
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t* pairs;
-    md_order_t*     order;
+    md_flags_t*     flags;
     md_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
 
@@ -730,18 +730,9 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-#define MD_BOND_FLAG_MASK  0xF0
-#define MD_BOND_ORDER_MASK 0x0F
-
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     ASSERT(bond_data);
     return bond_data->conn.offset[atom_idx + 1] - bond_data->conn.offset[atom_idx];
-}
-
-static inline void md_bond_order_set(md_bond_data_t* bond_data, md_bond_idx_t bond_idx, uint32_t order) {
-    ASSERT(bond_data);
-    uint32_t o = bond_data->order[bond_idx];
-    bond_data->order[bond_idx] = (o & MD_BOND_FLAG_MASK) | (order & MD_BOND_ORDER_MASK);
 }
 
 static inline md_atom_idx_t md_bond_conn_atom_idx(const md_bond_data_t* bond_data, uint32_t atom_conn_idx, uint32_t idx) {
@@ -774,14 +765,9 @@ static inline md_atom_idx_t md_bond_iter_bond_index(const md_bond_iter_t* it) {
     return it->data->conn.bond_idx[it->i];
 }
 
-static inline uint32_t md_bond_iter_bond_order(const md_bond_iter_t* it) {
-    ASSERT(it);
-    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_ORDER_MASK;
-}
-
 static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     ASSERT(it);
-    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_FLAG_MASK;
+    return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
 static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
@@ -799,7 +785,7 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
 
     bond_data->count = 0;
     md_array_shrink(bond_data->pairs, 0);
-    md_array_shrink(bond_data->order, 0);
+    md_array_shrink(bond_data->flags, 0);
     
     bond_data->conn.count = 0;
     md_array_shrink(bond_data->conn.atom_idx, 0);
