@@ -4373,49 +4373,39 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             size_t j = i + 1;
 
             str_t  comp_name = md_comp_name(&sys->comp, i);
+            md_seq_id_t comp_seq_id = md_comp_seq_id(&sys->comp, i);
             size_t comp_size = md_comp_atom_count(&sys->comp, i);
             md_flags_t comp_flags = md_comp_flags(&sys->comp, i);
             uint64_t entity_key = md_hash64_str(comp_name, 0);
             str_t  comp_auth_id = comp_auth_asym_id ? comp_auth_asym_id[i] : STR_LIT("");
 
-            bool group_by_auth_id = !str_empty(comp_auth_id);
-            bool group_by_comp_name = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
-            bool group_by_bonds = connected_to_prev[j];
+            md_flags_t entity_flags = comp_flags;
 
-            md_flags_t entity_flags = 0;
-            
-            if (group_by_comp_name) {
-                // Search for next component which has a different name
-                while (j < sys->comp.count && str_eq(comp_name, LBL_TO_STR(sys->comp.name[j]))) {
-                    ++j;
-                }
-            } else if (group_by_auth_id) {
-                // If auth asym id is available, use it to group components into instances
-                entity_flags |= (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
+            bool is_amino_or_nucleotide = (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) != 0;
 
-                while (j < sys->comp.count && str_eq(comp_auth_id, comp_auth_asym_id[j])) {
+            bool test_comp_name   = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
+            bool test_comp_seq_id = (comp_flags & MD_FLAG_HETERO) && comp_size > MAX_GROUPED_COMP_SIZE;
+            bool test_auth_id     = comp_auth_asym_id && !str_empty(comp_auth_id);
+            bool test_bond        = !test_auth_id && is_amino_or_nucleotide && connected_to_prev[j];
+
+            if (is_amino_or_nucleotide) {
+                entity_flags |= MD_FLAG_POLYMER;
+            }
+
+            if (test_comp_name || test_comp_seq_id || test_bond || test_auth_id) {
+                while (j < sys->comp.count) {
+                    if (test_comp_name && !str_eq(comp_name, md_comp_name(&sys->comp, j))) break;
+                    if (test_comp_seq_id && comp_seq_id != md_comp_seq_id(&sys->comp, j)) break;
+                    if (test_bond && !connected_to_prev[j]) break;
+                    if (test_auth_id && !str_eq(comp_auth_id, comp_auth_asym_id[j])) break;
+
                     md_flags_t flags = md_comp_flags(&sys->comp, j);
                     if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
-                    entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
+                    if (!test_comp_name) {
+                        entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
+                    }
                     ++j;
                 }
-
-                if (entity_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) {
-                    entity_flags |= MD_FLAG_POLYMER;
-                }
-            } else if (group_by_bonds) {
-                entity_flags |= MD_FLAG_POLYMER | (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
-
-                // Search for next component which is not connected to previous
-                while (j < sys->comp.count && connected_to_prev[j]) {
-                    entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
-                    md_flags_t flags = md_comp_flags(&sys->comp, j);
-                    if (!(flags & (MD_FLAG_AMINO_ACID))) entity_flags &= ~MD_FLAG_AMINO_ACID;
-                    if (!(flags & (MD_FLAG_NUCLEOTIDE))) entity_flags &= ~MD_FLAG_NUCLEOTIDE;
-                    ++j;
-                }
-            } else {
-                // Single component instance
             }
 
             entity_key = md_hash64(&entity_flags, sizeof(md_flags_t), entity_key);
