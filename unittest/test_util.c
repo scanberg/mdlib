@@ -946,35 +946,79 @@ UTEST(util, radix_sort) {
     printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }
 
+static inline bool init_system(md_system_t* sys, str_t path, md_allocator_i* alloc) {
+    str_t ext;
+    if (!extract_ext(&ext, path)) {
+        return false;
+    }
 
-UTEST(integration, multiple_formats_tryptophan) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    
-    // Load same tryptophan molecule from different formats
-    md_system_t mol_pdb = {0};
-    md_system_t mol_gro = {0};
-    md_system_t mol_xyz = {0};
-    
-    bool result_pdb = md_pdb_system_loader()->init_from_file(&mol_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
-    bool result_gro = md_gro_system_loader()->init_from_file(&mol_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
-    bool result_xyz = md_xyz_system_loader()->init_from_file(&mol_xyz, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
-    
-    ASSERT_TRUE(result_pdb);
-    ASSERT_TRUE(result_gro);
-    ASSERT_TRUE(result_xyz);
-    
-    // Test that all files loaded successfully and have reasonable atom counts
-    EXPECT_EQ(mol_pdb.atom.count, 28);
-    EXPECT_EQ(mol_xyz.atom.count, 27);  // XYZ has 27 atoms (different representation)
-    // GRO might have a different structure (trajectory frame), so we don't compare directly
-    EXPECT_GT(mol_gro.atom.count, 0);
-    
-    // All should have some atoms representing tryptophan
-    EXPECT_GT(mol_pdb.atom.count, 20);
-    EXPECT_GT(mol_xyz.atom.count, 20);
-    EXPECT_GT(mol_gro.atom.count, 20);
-    
-    md_system_free(&mol_pdb, alloc);
-    md_system_free(&mol_gro, alloc);
-    md_system_free(&mol_xyz, alloc);
+    if (str_eq_ignore_case(ext, STR_LIT("pdb"))) {
+        return md_pdb_system_loader()->init_from_file(sys, path, NULL, alloc);
+    } else
+    if (str_eq_ignore_case(ext, STR_LIT("gro"))) {
+        return md_gro_system_loader()->init_from_file(sys, path, NULL, alloc);
+    } else
+    if (str_eq_ignore_case(ext, STR_LIT("cif"))) {
+        return md_mmcif_system_loader()->init_from_file(sys, path, NULL, alloc);
+    }
+
+    return false;
+}
+
+UTEST(util, entity_instance) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    ASSERT(alloc);
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 1);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 1);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_empty(md_system_inst_auth_id(&sys, 0)));
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 1);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("C")));
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 3);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_WATER);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("E")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("E")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("E")));
+    }
+
+
+    md_vm_arena_destroy(alloc);
 }

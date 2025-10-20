@@ -2554,7 +2554,7 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
             for (uint32_t j = n_edge_beg; j < n_edge_end; ++j) {
                 if (graph_edge_vertex_idx(data->neighborhood, j) == nb) {
                     md_bond_idx_t b_idx = data->neighborhood->bond_idx_map[j];
-                    md_bond_flags_set(data->bond, b_idx, flags);
+                    data->bond->flags[b_idx] = flags;
                     break;
                 }
             }
@@ -4383,25 +4383,31 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
             bool is_amino_or_nucleotide = (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) != 0;
 
-            bool test_comp_name   = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
-            bool test_comp_seq_id = (comp_flags & MD_FLAG_HETERO) && comp_size > MAX_GROUPED_COMP_SIZE;
-            bool test_auth_id     = comp_auth_asym_id && !str_empty(comp_auth_id);
-            bool test_bond        = !test_auth_id && is_amino_or_nucleotide && connected_to_prev[j];
+            bool test_name      = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
+            bool test_seq_id    = (comp_flags & MD_FLAG_HETERO) && comp_size > MAX_GROUPED_COMP_SIZE;
+            bool test_auth_id   = comp_auth_asym_id && !str_empty(comp_auth_id);
+            bool test_bond      = !test_auth_id && is_amino_or_nucleotide && connected_to_prev[j];
+
+            MD_LOG_DEBUG("Identifying new instance");
+            MD_LOG_DEBUG("\t test_name: %i",    (int)test_name);
+            MD_LOG_DEBUG("\t test_seq_id: %i",  (int)test_seq_id);
+            MD_LOG_DEBUG("\t test_auth_id: %i", (int)test_auth_id);
+            MD_LOG_DEBUG("\t test_bond: %i",    (int)test_bond);
 
             if (is_amino_or_nucleotide) {
                 entity_flags |= MD_FLAG_POLYMER;
             }
 
-            if (test_comp_name || test_comp_seq_id || test_bond || test_auth_id) {
+            if (test_name || test_seq_id || test_bond || test_auth_id) {
                 while (j < sys->comp.count) {
-                    if (test_comp_name && !str_eq(comp_name, md_comp_name(&sys->comp, j))) break;
-                    if (test_comp_seq_id && comp_seq_id != md_comp_seq_id(&sys->comp, j)) break;
+                    if (test_name && !str_eq(comp_name, md_comp_name(&sys->comp, j))) break;
+                    if (test_seq_id && comp_seq_id != md_comp_seq_id(&sys->comp, j)) break;
                     if (test_bond && !connected_to_prev[j]) break;
                     if (test_auth_id && !str_eq(comp_auth_id, comp_auth_asym_id[j])) break;
 
                     md_flags_t flags = md_comp_flags(&sys->comp, j);
                     if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
-                    if (!test_comp_name) {
+                    if (!test_name) {
                         entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
                     }
                     ++j;

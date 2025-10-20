@@ -609,6 +609,11 @@ static inline size_t md_system_entity_count(const md_system_t* sys) {
     return sys->entity.count;
 }
 
+static inline md_flags_t md_system_entity_flags(const md_system_t* sys, size_t ent_idx) {
+    ASSERT(sys);
+    return md_entity_flags(&sys->entity, ent_idx);
+}
+
 static inline md_flags_t md_system_inst_flags(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     if (sys->inst.entity_idx && inst_idx < sys->inst.count) {
