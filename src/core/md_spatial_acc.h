@@ -21,6 +21,7 @@ typedef struct md_spatial_acc_t {
     uint32_t  cell_min[3];
     uint32_t  cell_max[3];
     uint32_t  cell_dim[3];
+	float     cell_ext[3];
 
     float G00, G11, G22;
     float H01, H02, H12;
@@ -34,24 +35,23 @@ typedef struct md_spatial_acc_t {
 extern "C" {
 #endif
 
-typedef void (*md_spatial_acc_callback)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
+typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
+
+typedef void (*md_spatial_acc_callback_t)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
 
 // It is recommended to use a cell extent that is equal to the maximum search radius
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
 void md_spatial_acc_free(md_spatial_acc_t* acc);
 
-#if 0
+#if 1
 // Perform full N^2 test of points within the spatial acceleration structure for a supplied radius
 // It is recommended that the radius < cell_ext, then a fast-path will be chosen
-void md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_callback callback);
-
-// Query all points within the spatial acceleration structure against a supplied list of points + radius
-void md_spatial_acc_query(const md_spatial_acc_t* acc, const float* xyz, size_t xyz_stride, size_t count, double cutoff, md_spatial_acc_callback callback);
+void md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
 #endif
 
 // Iterate over each point within the spatial acceleration structure within a 1-cell neighborhood (periodic if applicable)
-void md_spatial_acc_for_each_in_neighboring_cells(const md_spatial_acc_t* acc, md_spatial_acc_callback callback, void* user_param);
+void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* acc, md_spatial_acc_callback_t callback, void* user_param);
 
 // Helper functions for partial functionality
 static inline bool md_spatial_acc_cell_range(uint32_t* cell_beg, uint32_t* cell_end, const md_spatial_acc_t* acc, size_t cell_idx) {
