@@ -1006,7 +1006,7 @@ UTEST(util, entity_instance) {
         ASSERT_EQ(md_system_entity_count(&sys), 3);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
         EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
-        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_WATER);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER);
         
         ASSERT_EQ(md_system_inst_count(&sys), 3);
         EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
@@ -1019,6 +1019,66 @@ UTEST(util, entity_instance) {
         EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("E")));
     }
 
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+
+        ASSERT_EQ(md_system_entity_count(&sys), 8);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 3), MD_FLAG_HETERO | MD_FLAG_ION);
+        EXPECT_EQ(md_system_entity_flags(&sys, 4), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 5), MD_FLAG_HETERO | MD_FLAG_WATER);
+        EXPECT_EQ(md_system_entity_flags(&sys, 6), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 7), MD_FLAG_HETERO);
+
+        ASSERT_EQ(md_system_inst_count(&sys), 11);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0),      STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 0),       0);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1),      STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 1),       1);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2),      STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 2),       2);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 3),      STR_LIT("D")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 3), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 3),       3);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 4),      STR_LIT("E")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 4), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 4),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 5),      STR_LIT("F")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 5), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 5),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 6),      STR_LIT("G")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 6), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 6),       5);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 7),      STR_LIT("H")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 7), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 7),       6);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 8),      STR_LIT("I")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 8), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 8),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 9),      STR_LIT("J")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 9), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 9),       5);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 10),      STR_LIT("K")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 10), STR_LIT("C")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 10),       7);
+    }
 
     md_vm_arena_destroy(alloc);
 }

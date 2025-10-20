@@ -669,6 +669,12 @@ static inline size_t md_system_inst_atom_count(const md_system_t* sys, size_t in
     return atom_range.end - atom_range.beg;
 }
 
+static inline size_t md_system_inst_entity_idx(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return md_inst_entity_idx(&sys->inst, inst_idx);
+}
+
+
 static inline md_urange_t md_system_comp_atom_range(const md_system_t* sys, size_t comp_idx) {
     ASSERT(sys);
     return md_comp_atom_range(&sys->comp, comp_idx);
