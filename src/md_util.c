@@ -3755,7 +3755,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         // Build candidate list
         md_spatial_acc_t acc = {.alloc = temp_arena};
         md_spatial_acc_init(&acc, x, y, z, num_atoms, cell_ext, cell);
-        md_spatial_acc_for_each_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
+        md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
     }
 
     size_t num_candidates = md_array_size(candidates);

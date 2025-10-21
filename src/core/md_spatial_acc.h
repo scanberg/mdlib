@@ -46,7 +46,7 @@ void md_spatial_acc_free(md_spatial_acc_t* acc);
 #if 1
 // Perform full N^2 test of points within the spatial acceleration structure for a supplied radius
 // It is recommended that the radius < cell_ext, then a fast-path will be chosen
-void md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
+bool md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
 #endif
 

@@ -30,7 +30,8 @@ static void spatial_acc_callback(uint32_t i_idx, const uint32_t* j_idx, md_256 i
 }
 
 static void spatial_acc_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
-    
+    uint32_t* count = (uint32_t*)user_param;
+    *count += (uint32_t)num_pairs;
 }
 
 static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
@@ -228,21 +229,21 @@ UTEST(spatial_hash, n2) {
         float y[test_count];
         float z[test_count];
 
-        const double ext = 103.0;
+        const double ext[3]  = {103.0, 103.0, 103.0};
 	    const double min_rad = 3.0;
 		const double max_rad = 6.0;
 
         srand(0);
         for (size_t i = 0; i < test_count; ++i) {
-            x[i] = rnd_rng(0.0, ext * 0.6);
-            y[i] = rnd_rng(0.0, ext * 0.9);
-            z[i] = rnd_rng(0.0, ext * 1.2);
+            x[i] = rnd_rng(0.0, ext[0]);
+            y[i] = rnd_rng(0.0, ext[1]);
+            z[i] = rnd_rng(0.0, ext[2]);
         }
 
         dist_pair_t bf_pairs[4096];
         dist_pair_t sa_pairs[4096];
 
-        md_unitcell_t test_cell = md_unitcell_from_extent(ext, ext, ext);
+        md_unitcell_t test_cell = md_unitcell_from_extent(ext[0], ext[1], ext[2]);
 
         md_spatial_acc_t sa = { .alloc = alloc };
 		md_spatial_acc_init(&sa, x, y, z, test_count, max_rad, &test_cell);
@@ -250,7 +251,12 @@ UTEST(spatial_hash, n2) {
         for (double rad = 3.0; rad <= 6.0; rad += 0.5) {
             size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
 
-            md_spatial_acc_for_each_pair_within_cutoff()
+            uint32_t sa_count = 0;
+            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_pair_callback, &sa_count);
+
+            if (bf_count != sa_count) {
+                printf("wierd expected: %zu, but got: %zu\n", bf_count, sa_count);
+            }
 #if 0
             if (bf_count != sh_count) {
                 qsort(bf_pairs, bf_count, sizeof(dist_pair_t), compare_dist_pair);
@@ -306,7 +312,10 @@ UTEST(spatial_hash, n2) {
         expected_count = 3701958;
     }
 
+    md_timestamp_t start, end;
+
     // Custom implementation of pairwise periodic N^2
+#if 0
     dist_pair_t* pairs = md_alloc(alloc, sizeof(dist_pair_t) * 10000000);
     md_timestamp_t start = md_time_current();
     //size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell);
@@ -317,6 +326,7 @@ UTEST(spatial_hash, n2) {
     if (custom_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, custom_count);
     }
+    #endif
     
     uint32_t count = 0;
 
@@ -339,7 +349,7 @@ UTEST(spatial_hash, n2) {
     start = md_time_current();
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, &cell);
-    md_spatial_acc_for_each_in_neighboring_cells(&acc, spatial_acc_callback, &count);
+    md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, spatial_acc_callback, &count);
     size_t sa_count = count;
     end = md_time_current();
     printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));

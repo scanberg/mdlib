@@ -980,6 +980,8 @@ static bool for_each_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, d
                             simde_mm256_storeu_si256(buf_i  + count,  i_perm);
                             simde_mm256_storeu_si256(buf_j  + count,  j_perm);
                             simde_mm256_storeu_ps   (buf_d2 + count, d2_perm);
+
+                            count += popcnt32(mask);
                         }
 
                         v_j = md_mm256_add_epi32(v_j, add8);
@@ -1080,6 +1082,8 @@ static bool for_each_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, d
                                 simde_mm256_storeu_si256(buf_i  + count,  i_perm);
                                 simde_mm256_storeu_si256(buf_j  + count,  j_perm);
                                 simde_mm256_storeu_ps   (buf_d2 + count, d2_perm);
+
+                                count += popcnt32(mask);
                             }
 
                             v_j = md_mm256_add_epi32(v_j, add8);
@@ -1116,6 +1120,8 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
     int neighbors[64][4];
 
     size_t num_neighbors = generate_forward_neighbors4(ncell, neighbors);
+
+    MD_LOG_DEBUG("Generated %zu forward neighbors", num_neighbors);
 
 	// Allocate intermediate buffers for passing to callback
     uint32_t buf_i[BUFLEN];
@@ -1164,7 +1170,7 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
                 const float* elem_i_z      = element_z + off_i;
                 const uint32_t* elem_i_idx = element_i + off_i;
 
-                const md_256i v_i_max = md_mm256_set1_epi32(len_i - 1);
+                const md_256i v_len_i = md_mm256_set1_epi32(len_i);
 
 				// Possibly invoke callback to flush buffers
 				const size_t max_cell_pairs = (len_i * (len_i - 1)) / 2;
@@ -1181,40 +1187,41 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
                     const float zi = elem_i_z[i];
                     const uint32_t idxi = elem_i_idx[i];
 
-                    const md_256 x = md_mm256_set1_ps(xi);
-                    const md_256 y = md_mm256_set1_ps(yi);
-                    const md_256 z = md_mm256_set1_ps(zi);
+                    const md_256 x = md_mm256_set1_ps(elem_i_x[i]);
+                    const md_256 y = md_mm256_set1_ps(elem_i_y[i]);
+                    const md_256 z = md_mm256_set1_ps(elem_i_z[i]);
 
                     md_256i v_j = md_mm256_add_epi32(md_mm256_set1_epi32(i + 1), inc);
 
 					const md_256i v_idxi = md_mm256_set1_epi32(idxi);
 
                     for (uint32_t j = i + 1; j < len_i; j += 8) {
-                        const md_256i cmp_mask_i = md_mm256_cmpgt_epi32(v_j, v_i_max);
-                        const md_256 invalid_mask = md_mm256_castsi256_ps(cmp_mask_i);
+                        const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len_i));
 
                         const md_256 dx = md_mm256_sub_ps(x, md_mm256_loadu_ps(elem_i_x + j));
                         const md_256 dy = md_mm256_sub_ps(y, md_mm256_loadu_ps(elem_i_y + j));
                         const md_256 dz = md_mm256_sub_ps(z, md_mm256_loadu_ps(elem_i_z + j));
-                        const md_256 d2 = distance_squared_ortho_avx(dx, dy, dz, G00, G11, G22);
-						const md_256 d2_masked = md_mm256_andnot_ps(invalid_mask, d2);
+                        md_256 d2 = distance_squared_ortho_avx(dx, dy, dz, G00, G11, G22);
+
+                        const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(d2, r2), j_mask);
 
 						// Fill buffers with results
-						int mask = md_mm256_movemask_ps(d2_masked);
+						int mask = md_mm256_movemask_ps(v_mask);
 
                         if (mask) {
-						    const md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
+						  md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
 
                             uint64_t key = avx_compress_lut[mask];
                             md_256i perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
 
-						    md_256i  j_perm = simde_mm256_permutevar8x32_epi32(v_idxi,  perm_mask);
-						    md_256i  i_perm = simde_mm256_permutevar8x32_epi32(v_idxj,  perm_mask);
-						    md_256  d2_perm = simde_mm256_permutevar8x32_ps(d2_masked,  perm_mask);
+						    v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj,  perm_mask);
+						    d2     = simde_mm256_permutevar8x32_ps(d2,         perm_mask);
 
-						    simde_mm256_storeu_si256(buf_i  + count,  i_perm);
-						    simde_mm256_storeu_si256(buf_j  + count,  j_perm);
-						    simde_mm256_storeu_ps   (buf_d2 + count, d2_perm);
+						    simde_mm256_storeu_si256(buf_i  + count,  v_idxi);
+						    simde_mm256_storeu_si256(buf_j  + count,  v_idxj);
+						    simde_mm256_storeu_ps   (buf_d2 + count,  d2);
+
+                            count += popcnt32(mask);
                         }
 
                         v_j = md_mm256_add_epi32(v_j, add8);
@@ -1260,7 +1267,7 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
                     const md_256 shift_y = md_mm256_set1_ps(shift_yf);
                     const md_256 shift_z = md_mm256_set1_ps(shift_zf);
 
-                    const md_256i v_j_max = md_mm256_set1_epi32(len_j - 1);
+                    const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
                     const float* elem_j_x = element_x + off_j;
                     const float* elem_j_y = element_y + off_j;
@@ -1288,33 +1295,33 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
 						const md_256i v_idxi = md_mm256_set1_epi32(idx);
 
                         md_256i v_j = inc;
-
                         for (uint32_t j = 0; j < len_j; j += 8) {
-                            const md_256i cmp_mask_i = md_mm256_cmpgt_epi32(v_j, v_j_max);
-                            const md_256 invalid_mask = md_mm256_castsi256_ps(cmp_mask_i);
+                            const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len_j));
 
                             const md_256 dx = md_mm256_sub_ps(x, md_mm256_loadu_ps(elem_j_x + j));
                             const md_256 dy = md_mm256_sub_ps(y, md_mm256_loadu_ps(elem_j_y + j));
                             const md_256 dz = md_mm256_sub_ps(z, md_mm256_loadu_ps(elem_j_z + j));
-                            const md_256 d2 = distance_squared_ortho_avx(dx, dy, dz, G00, G11, G22);
-                            const md_256 d2_masked = md_mm256_andnot_ps(invalid_mask, d2);
+                            md_256 d2 = distance_squared_ortho_avx(dx, dy, dz, G00, G11, G22);
+
+                            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(d2, r2), j_mask);
 
                             // Fill buffers with results
-                            int mask = md_mm256_movemask_ps(d2_masked);
+                            int mask = md_mm256_movemask_ps(v_mask);
 
                             if (mask) {
-                                const md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
+                                md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
 
                                 uint64_t key = avx_compress_lut[mask];
                                 md_256i perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
 
-                                md_256i  j_perm = simde_mm256_permutevar8x32_epi32(v_idxi,  perm_mask);
-                                md_256i  i_perm = simde_mm256_permutevar8x32_epi32(v_idxj,  perm_mask);
-                                md_256  d2_perm = simde_mm256_permutevar8x32_ps(d2_masked,  perm_mask);
+                                v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj,  perm_mask);
+                                d2     = simde_mm256_permutevar8x32_ps(d2,         perm_mask);
 
-                                simde_mm256_storeu_si256(buf_i  + count,  i_perm);
-                                simde_mm256_storeu_si256(buf_j  + count,  j_perm);
-                                simde_mm256_storeu_ps   (buf_d2 + count, d2_perm);
+                                simde_mm256_storeu_si256(buf_i  + count,  v_idxi);
+                                simde_mm256_storeu_si256(buf_j  + count,  v_idxj);
+                                simde_mm256_storeu_ps   (buf_d2 + count,  d2);
+
+                                count += popcnt32(mask);
                             }
 
                             v_j = md_mm256_add_epi32(v_j, add8);
@@ -1325,7 +1332,12 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
         }
     }
 
-    return count;
+    if (count) {
+        // Callback and flush
+        callback(buf_i, buf_j, buf_d2, count, user_param);
+    }
+
+    return true;
 }
 
 #undef BUFLEN
@@ -1353,13 +1365,13 @@ void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* a
     }
 }
 
-void md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
+bool md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
     ASSERT(acc);
     ASSERT(callback);
 
     if (acc->flags & MD_UNITCELL_TRICLINIC) {
-        for_each_pair_within_cutoff_triclinic(acc, cutoff, callback, user_param);
+        return for_each_pair_within_cutoff_triclinic(acc, cutoff, callback, user_param);
     } else {
-        for_each_pair_within_cutoff_ortho(acc, cutoff, callback, user_param);
+        return for_each_pair_within_cutoff_ortho(acc, cutoff, callback, user_param);
 	}
 }

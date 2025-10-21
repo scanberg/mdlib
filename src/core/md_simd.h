@@ -385,6 +385,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
 #define md_mm_cmplt_epi64 simde_mm_cmplt_epi64
 
+#define md_mm256_cmplt_epi8(a,b)  simde_mm256_cmpgt_epi8(b,a)
+#define md_mm256_cmplt_epi16(a,b) simde_mm256_cmpgt_epi16(b,a)
+#define md_mm256_cmplt_epi32(a,b) simde_mm256_cmpgt_epi32(b,a)
+#define md_mm256_cmplt_epi64(a,b) simde_mm256_cmpgt_epi64(b,a)
+
 #define md_mm_movemask_epi8 simde_mm_movemask_epi8
 #define md_mm256_movemask_epi8 simde_mm256_movemask_epi8
 
