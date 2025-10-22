@@ -24,11 +24,12 @@ layout (std140) uniform ubo {
 };
 
 in Fragment {
-    flat uint picking_idx[2];
-    flat vec4 color[2];
     flat vec3  capsule_pa;
     flat vec3  capsule_pb;
     flat float capsule_ra;
+    flat vec4  color[2];
+    flat uint  atom_picking_idx[2];
+    flat uint  bond_picking_idx;
     smooth vec3 view_vel;
     smooth vec3 view_pos;
 } in_frag;
@@ -112,7 +113,7 @@ void main() {
 
     vec4 color = in_frag.color[side];
     vec3 view_velocity = in_frag.view_vel;
-    uint atom_index = in_frag.picking_idx[side];
+    uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
 
-    write_fragment(view_coord, view_velocity, view_normal, color, atom_index);
+    write_fragment(view_coord, view_velocity, view_normal, color, picking_index);
 }

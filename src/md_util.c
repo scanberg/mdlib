@@ -3746,6 +3746,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     static const float k_cov   = 1.15f;
     static const float k_tight = 1.05f;
     static const float k_coord = 1.35f;
+    static const float k_metal = 0.90f;
 
     double max_cov_rad = 0.0;
     size_t num_atoms = sys->atom.count;
@@ -3753,9 +3754,6 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     float* cov_radius = md_vm_arena_push_array(temp_arena, float, num_atoms);
     md_atomic_number_t* atomic_nr = md_vm_arena_push_array(temp_arena, md_atomic_number_t, num_atoms);
     for (size_t i = 0; i < num_atoms; ++i) {
-        if (i == 1178028) {
-            DEBUG_BREAK();
-        }
         atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
         cov_radius[i] = element_covalent_radius(atomic_nr[i]);
         max_cov_rad = MAX(max_cov_rad, cov_radius[i]);
@@ -3809,32 +3807,27 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         int mj = is_metal(ej);
         float sum_r = cov_radius[ai] + cov_radius[aj];
 
-        if (ai == 2318 && aj == 5747) {
-            DEBUG_BREAK();
-        }
-
         if (!mi && !mj) {
             // Both non-metals, check against k_cov
-            if (d < sum_r * k_cov) {
+            if (d < k_cov * sum_r) {
                 md_array_push(temp_bond_pairs, candidates[i], temp_arena);
                 md_array_push(temp_bond_flags, MD_BOND_FLAG_COVALENT, temp_arena);
                 temp_bond_count += 1;
             }
         } else if (mi ^ mj) { // XOR here (either is metal, but not both)
-            // One metal, one non-metal
-            // get non-metal element
-            int e_non_metal = mi ? ej : ei;            
-
-            if (d < 0.9 * sum_r) {
-                // OXO, Covalent
+            int non_metal_e = mi ? ej : ei;
+            if (is_metal_donor(non_metal_e) && d < k_coord * sum_r) {
                 md_array_push(temp_bond_pairs, candidates[i], temp_arena);
-                md_array_push(temp_bond_flags, MD_BOND_FLAG_COVALENT, temp_arena);
+                md_array_push(temp_bond_flags, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
                 temp_bond_count += 1;
-            } else if (is_metal_donor(e_non_metal)) {
                 // Potentially strong / partially covalent if d < ~1.2
                 // Coordination bond (@TODO validate by geometrical matching)
-                md_array_push(temp_bond_pairs, candidates[i], alloc);
-                md_array_push(temp_bond_flags, MD_BOND_FLAG_COORDINATE, temp_arena);
+            }
+        } else {
+            // Both metals
+            if (d < k_metal * sum_r) {
+                md_array_push(temp_bond_pairs, candidates[i], temp_arena);
+                md_array_push(temp_bond_flags, MD_BOND_FLAG_METAL, temp_arena);
                 temp_bond_count += 1;
             }
         }
