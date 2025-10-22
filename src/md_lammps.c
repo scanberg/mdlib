@@ -922,7 +922,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
-	//Create unit cell
+	// Create unit cell
 	double x = data->cell.xhi - data->cell.xlo;
 	double y = data->cell.yhi - data->cell.ylo;
 	double z = data->cell.zhi - data->cell.zlo;
@@ -930,6 +930,29 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	double xz = data->cell.xz;
 	double yz = data->cell.yz;
     sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+
+	// Create bonds
+	if (data->num_bonds > 0) {
+		md_array_ensure(sys->bond.pairs, data->num_bonds, alloc);
+		md_array_ensure(sys->bond.flags, data->num_bonds, alloc);
+
+		for (size_t i = 0; i < data->num_bonds; ++i) {
+			int32_t atom_id0 = data->bonds[i].atom_id[0];
+			int32_t atom_id1 = data->bonds[i].atom_id[1];
+			// LAMMPS atom ids are 1-based
+			ASSERT(atom_id0 >= 1 && atom_id0 <= (int32_t)sys->atom.count);
+			ASSERT(atom_id1 >= 1 && atom_id1 <= (int32_t)sys->atom.count);
+			md_atom_pair_t pair = {
+				(uint32_t)(MIN(atom_id0, atom_id1) - 1),
+				(uint32_t)(MAX(atom_id0, atom_id1) - 1),
+			};
+			md_flags_t flag = 0;
+            md_array_push_no_grow(sys->bond.pairs, pair);
+            md_array_push_no_grow(sys->bond.flags, flag);
+
+			sys->bond.count += 1;
+		}
+    }
 
 	md_vm_arena_destroy(temp_arena);
 	return true;

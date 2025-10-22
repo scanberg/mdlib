@@ -85,7 +85,8 @@ enum {
     MD_BOND_FLAG_QUADRUPLE      = 0x8,
     MD_BOND_FLAG_AROMATIC       = 0x10,
     MD_BOND_FLAG_INTER          = 0x20, // Inter residue / component
-    MD_BOND_FLAG_COORDINATE     = 0x40  // Coordinate / Dative
+    MD_BOND_FLAG_COORDINATE     = 0x40, // Coordinate / Dative
+    MD_BOND_FLAG_METAL          = 0x80, // Involves a metal atom
 };
 
 // Atomic number constants for all elements (Z values)
@@ -218,7 +219,7 @@ typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_seq_id_t;
 typedef int32_t     md_bond_idx_t;
-typedef uint8_t     md_atom_type_idx_t;
+typedef uint16_t    md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
 typedef uint32_t    md_flags_t;
 typedef uint8_t     md_atomic_number_t;

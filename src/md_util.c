@@ -379,6 +379,20 @@ static inline bool can_form_covalent_bond(size_t atomic_nr) {
     }
 }
 
+static inline bool is_metal_donor(size_t atomic_nr) {
+    switch(atomic_nr) {
+    case O:
+    case N:
+    case S:
+    case Cl:
+    case Br:
+    case F:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Some from here https://daylight.com/meetings/mug01/Sayle/m4xbondage.html
 // Some from molstar (github.com/molstar)
 static const char* amino_acids[] = {
@@ -2281,8 +2295,9 @@ static const int max_valence_bonds[] = {
 };
 
 static inline int max_neighbors_element(md_element_t elem) {
-    const int idx = MIN(elem, ARRAY_SIZE(max_valence_bonds)-1);
-    return max_valence_bonds[idx];
+    if (elem < Num_Elements)
+        return max_valence_bonds[elem];
+    return 0;
 }
 
 static inline float angle(vec3_t a, vec3_t b, vec3_t c) {
@@ -3652,50 +3667,63 @@ typedef struct {
 } bond_pair_t;
 
 typedef struct {
-    const int* atomic_nr;
-    const float* cov_radius; // Covalent radius for elements
+    const float* cov_radius; // Covalent radius for atoms
     float k_min;
     float k_max;
     md_array(bond_pair_t)* candidates;
     md_allocator_i* alloc;
 } cov_bond_callback_param_t;
 
-static void test_cov_bond_callback(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param) {
+static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     cov_bond_callback_param_t* data = (cov_bond_callback_param_t*)user_param;
 
-    size_t i_z = data->atomic_nr[i_idx];
+    const md_256  v0   = md_mm256_setzero_ps();
+    const md_256i v8   = md_mm256_set1_epi32(8);
+    const md_256i vlen = md_mm256_set1_epi32((int)num_pairs);
 
-    const md_256 ij_dist = md_mm256_sqrt_ps(ij_dist2);
+    const md_256 vk_min = md_mm256_set1_ps(data->k_min);
+    const md_256 vk_max = md_mm256_set1_ps(data->k_max);
 
-    // Create mask for valid j indices (compare against FLT_MAX)
-    const md_256i mask_j = md_mm256_cvtps_epi32(md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(FLT_MAX)));
-    const md_256i j_z = simde_mm256_mask_i32gather_epi32(md_mm256_setzero_si256(), data->atomic_nr, md_mm256_loadu_epi32(j_idx), mask_j, 4);
+    md_256i vi = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+    for (size_t i = 0; i < num_pairs; i += 8) {
+        md_256 vmask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(vi, vlen));
 
-    const md_256 cov_rad_i = md_mm256_set1_ps(data->cov_radius[i_z]);
-    const md_256 cov_rad_j = md_mm256_i32gather_ps(data->cov_radius, j_z, 4);
+        md_256i vi_idx = md_mm256_loadu_epi32(i_idx + i);
+        md_256i vj_idx = md_mm256_loadu_epi32(j_idx + i);
+        md_256 v_dist2 = md_mm256_loadu_ps(ij_dist2 + i);
+        //md_256 v_dist  = md_mm256_sqrt_ps(v_dist2);  // There are alot of gathers here, so we can afford latency of sqrt
 
-    const md_256 cov_rad_sum = md_mm256_add_ps(cov_rad_i, cov_rad_j);
-    const md_256 r_min_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_min), cov_rad_sum);
-    const md_256 r_max_cov = md_mm256_mul_ps(md_mm256_set1_ps(data->k_max), cov_rad_sum);
+        md_256 cov_rad_i   = md_mm256_mask_i32gather_ps(v0, data->cov_radius, vi_idx, vmask, 4);
+        md_256 cov_rad_j   = md_mm256_mask_i32gather_ps(v0, data->cov_radius, vj_idx, vmask, 4);
+        md_256 cov_rad_sum = md_mm256_add_ps(cov_rad_i, cov_rad_j);
 
-    const md_256 cmp_min = md_mm256_cmpgt_ps(ij_dist, r_min_cov);
-    const md_256 cmp_max = md_mm256_cmplt_ps(ij_dist, r_max_cov);
+        md_256 r_min_cov = md_mm256_mul_ps(vk_min, cov_rad_sum);
+        md_256 r_max_cov = md_mm256_mul_ps(vk_max, cov_rad_sum);
 
-    int mask = md_mm256_movemask_ps(md_mm256_and_ps(cmp_min, cmp_max));
-    if (!mask) return;
+        md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
+        md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
 
-    float dist[8];
-    md_mm256_storeu_ps(dist, ij_dist);
+        md_256 cmp_min = md_mm256_cmpgt_ps(v_dist2, r2_min_cov);
+        md_256 cmp_max = md_mm256_cmplt_ps(v_dist2, r2_max_cov);
 
-    while (mask) {
-        const int idx = ctz32(mask);
-        mask = mask & ~(1 << idx);
-        bond_pair_t cp = {
-            .atom_i = i_idx,
-            .atom_j = j_idx[idx],
-            .dist   = dist[idx],
-        };
-        md_array_push(*data->candidates, cp, data->alloc);
+        int mask = md_mm256_movemask_ps(md_mm256_and_ps(cmp_min, cmp_max));
+        if (mask) {
+            size_t new_size = md_array_size(*data->candidates) + popcnt32(mask);
+            md_array_ensure(*data->candidates, new_size, data->alloc);
+
+            while (mask) {
+                const int bit_idx = ctz32(mask);
+                mask = mask & ~(1 << bit_idx);
+                const int idx = i + bit_idx;
+                bond_pair_t cp = {
+                    .atom_i = i_idx[idx],
+                    .atom_j = j_idx[idx],
+                    .dist   = sqrtf(ij_dist2[idx]),
+                };
+                md_array_push_no_grow(*data->candidates, cp);
+            }
+        }
+        vi = md_mm256_add_epi32(vi, v8);
     }
 }
 
@@ -3715,31 +3743,30 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     // Covalent radius sum factors
     static const float k_min   = 0.75f;
-    static const float k_cov   = 1.10f;
+    static const float k_cov   = 1.15f;
     static const float k_tight = 1.05f;
     static const float k_coord = 1.35f;
 
     double max_cov_rad = 0.0;
     size_t num_atoms = sys->atom.count;
 
-    float* cov_radius = md_vm_arena_push_array(temp_arena, float, Num_Elements);
-    for (int i = 0; i < Num_Elements; ++i) {
-        cov_radius[i] = element_covalent_radius(i);
-    }
-
-    int* atomic_nr = md_vm_arena_push_array(temp_arena, int, num_atoms);
+    float* cov_radius = md_vm_arena_push_array(temp_arena, float, num_atoms);
+    md_atomic_number_t* atomic_nr = md_vm_arena_push_array(temp_arena, md_atomic_number_t, num_atoms);
     for (size_t i = 0; i < num_atoms; ++i) {
-        int anr = md_atom_atomic_number(&sys->atom, i);
-        atomic_nr[i] = anr;
-        max_cov_rad = MAX(max_cov_rad, cov_radius[anr]);
+        if (i == 1178028) {
+            DEBUG_BREAK();
+        }
+        atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
+        cov_radius[i] = element_covalent_radius(atomic_nr[i]);
+        max_cov_rad = MAX(max_cov_rad, cov_radius[i]);
     }
 
     md_array(bond_pair_t) candidates = 0;
+    md_array_ensure(candidates, num_atoms, temp_arena);
 
     {
         // Find connections for all atoms
         cov_bond_callback_param_t param = {
-            .atomic_nr  = atomic_nr,
             .cov_radius = cov_radius,
             .k_min = k_min,
             .k_max = k_coord,
@@ -3750,153 +3777,166 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         // Compute a cell size based on the max cov radius within the set
         const double cell_ext = 2.0 * max_cov_rad * k_coord;
 
-        MD_LOG_DEBUG("Constructing acceleration structure for bond candidate list with cell size of %f", cell_ext);
-
         // Build candidate list
+        md_timestamp_t ts_start = md_time_current();
         md_spatial_acc_t acc = {.alloc = temp_arena};
         md_spatial_acc_init(&acc, x, y, z, num_atoms, cell_ext, cell);
-        md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_callback, &param);
+        //md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_pair_callback, &param);
+        md_spatial_acc_for_each_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
+        md_timestamp_t ts_end = md_time_current();
+
+        double dt_ms = md_time_as_milliseconds(ts_end - ts_start);
+        MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
     }
 
     size_t num_candidates = md_array_size(candidates);
 
     MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
-    md_array(bond_pair_t) cov_list = 0;
-    md_array(bond_pair_t) mtl_list = 0;
-
-    md_array_ensure(cov_list, 3 * num_candidates / 4, temp_arena);
-    md_array_ensure(cov_list, 1 * num_candidates / 4, temp_arena);
+    bond_pair_t* temp_bond_pairs = 0;
+    md_flags_t*  temp_bond_flags = 0;
+    md_array_ensure(temp_bond_pairs, num_candidates, temp_arena);
+    md_array_ensure(temp_bond_flags, num_candidates, temp_arena);
+    size_t temp_bond_count = 0;
 
     for (size_t i = 0; i < num_candidates; ++i) {
         int ai = candidates[i].atom_i;
         int aj = candidates[i].atom_j;
         float d = candidates[i].dist;
         int ei = atomic_nr[ai];
-        int ej = atomic_nr[aj];
+        int ej = atomic_nr[aj]; 
         int mi = is_metal(ei);
         int mj = is_metal(ej);
-        float sum_r = cov_radius[ei] + cov_radius[ej];
+        float sum_r = cov_radius[ai] + cov_radius[aj];
+
+        if (ai == 2318 && aj == 5747) {
+            DEBUG_BREAK();
+        }
 
         if (!mi && !mj) {
             // Both non-metals, check against k_cov
             if (d < sum_r * k_cov) {
-                md_atom_pair_t pair = {ai, aj};
-                md_array_push(bond->pairs, pair, alloc);
-                md_array_push(bond->flags, MD_BOND_FLAG_COVALENT,    alloc);
-                bond->count += 1;
+                md_array_push(temp_bond_pairs, candidates[i], temp_arena);
+                md_array_push(temp_bond_flags, MD_BOND_FLAG_COVALENT, temp_arena);
+                temp_bond_count += 1;
             }
         } else if (mi ^ mj) { // XOR here (either is metal, but not both)
-            if (d < sum_r * k_tight) {
+            // One metal, one non-metal
+            // get non-metal element
+            int e_non_metal = mi ? ej : ei;            
+
+            if (d < 0.9 * sum_r) {
                 // OXO, Covalent
-                md_atom_pair_t pair = {ai, aj};
-                md_array_push(bond->pairs, pair, alloc);
-                md_array_push(bond->flags, MD_BOND_FLAG_COVALENT,    alloc);
-                bond->count += 1;
-            } else {
+                md_array_push(temp_bond_pairs, candidates[i], temp_arena);
+                md_array_push(temp_bond_flags, MD_BOND_FLAG_COVALENT, temp_arena);
+                temp_bond_count += 1;
+            } else if (is_metal_donor(e_non_metal)) {
+                // Potentially strong / partially covalent if d < ~1.2
                 // Coordination bond (@TODO validate by geometrical matching)
-                md_atom_pair_t pair = {ai, aj};
-                md_array_push(bond->pairs, pair, alloc);
-                md_array_push(bond->flags, MD_BOND_FLAG_COORDINATE, alloc);
-                bond->count += 1;
+                md_array_push(temp_bond_pairs, candidates[i], alloc);
+                md_array_push(temp_bond_flags, MD_BOND_FLAG_COORDINATE, temp_arena);
+                temp_bond_count += 1;
             }
         }
     }
 
-
-
 /*
-    // Compute connectivity count
-    uint8_t* atom_cov_conn_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
-    size_t num_cov = md_array_size(cov_list);
-    for (size_t i = 0; i < num_cov; ++i) {
-        cov_count[cov_list[i].atom_i] += 1;
-        cov_count[cov_list[i].atom_j] += 1;
+
+    // Construct covalent connectivity
+    uint32_t* atom_cov_bond_offset = md_vm_arena_push_zero_array(temp_arena, uint32_t, num_atoms + 1);
+    for (size_t i = 0; i < temp_bond_count; ++i) {
+        if (temp_bond_flags[i] & MD_BOND_FLAG_COVALENT) {
+            atom_cov_bond_offset[temp_bond_pairs[i].atom_i] += 1;
+            atom_cov_bond_offset[temp_bond_pairs[i].atom_j] += 1;
+        }
     }
 
-    // This is allocated in temp until we know that all connections are final
-    md_conn_data_t conn = {0};
-    compute_connectivity(&conn, bond->pairs, bond->count, num_atoms, temp_arena, temp_arena);
-
-    if (conn.count == 0) {
-        goto done;
+    // Exclusive prefix sum
+    uint32_t sum = 0;
+    for (size_t i = 1; i <= num_atoms; ++i) {
+        uint32_t len = atom_cov_bond_offset[i];
+        atom_cov_bond_offset[i] = sum;
+        sum += len;
     }
 
-    // We cannot remove bonds inplace as they will mess up the indexing
-    md_array(uint32_t) bond_indices_to_remove = 0;
+    uint8_t*     atom_cov_conn_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, num_atoms);
+    md_bond_idx_t* atom_cov_bond_idx = md_vm_arena_push_zero_array(temp_arena, md_bond_idx_t, atom_cov_bond_offset[num_atoms]);
 
-    typedef struct {
-        float len2;
-        int   idx;
-    } bond_t;
+    // Fill connectivity data
+    for (size_t i = 0; i < temp_bond_count; ++i) {
+        if (temp_bond_flags[i] & MD_BOND_FLAG_COVALENT) {
+            atom_cov_bond_offset[temp_bond_pairs[i].atom_i] += 1;
+            atom_cov_bond_offset[temp_bond_pairs[i].atom_j] += 1;
 
-    md_array(bond_t) bond_buf = 0;
-    md_array(uint64_t) checked_bonds = make_bitfield(bond->count, temp_arena);
+            int atom_i = temp_bond_pairs[i].atom_i;
+            int atom_j = temp_bond_pairs[i].atom_j;
+
+            uint32_t pos_i = atom_cov_bond_offset[atom_i] + atom_cov_conn_count[atom_i]++;
+            uint32_t pos_j = atom_cov_bond_offset[atom_j] + atom_cov_conn_count[atom_j]++;
+
+            atom_cov_bond_idx[pos_i] = (md_bond_idx_t)i;
+            atom_cov_bond_idx[pos_j] = (md_bond_idx_t)i;
+        }
+    }
 
     // Prune over-connected atoms by removing longest bonds
     for (size_t i = 0; i < num_atoms; ++i) {
         md_element_t e = atomic_nr[i];
         const int max_con = max_neighbors_element(e);
 
-        if ((int)c_count[i] > max_con) {
-            const vec3_t xi = {x[i], y[i], z[i]};
-            const uint32_t conn_beg = conn.offset[i];
-            const uint32_t conn_end = conn.offset[i+1];
-            md_array_shrink(bond_buf, 0);
+        if ((int)atom_cov_conn_count[i] > max_con) {
+            typedef struct {
+                uint32_t bidx;
+                float    blen;
+            } entry_t;
+
+            entry_t  buf[32];
+            size_t   len = 0;
+
+            // Collect bonds and push to buffer
+            const uint32_t conn_beg = atom_cov_bond_offset[i];
+            const uint32_t conn_end = atom_cov_bond_offset[i + 1];
 
             for (uint32_t conn_idx = conn_beg; conn_idx < conn_end; ++conn_idx) {
-                md_bond_idx_t bij = conn.bond_idx[conn_idx];
-                if (bitfield_test_bit(checked_bonds, bij)) continue;
-
-                bitfield_set_bit(checked_bonds, bij);
-                md_atom_idx_t j = conn.atom_idx[conn_idx];
-                const vec3_t xj = {x[j], y[j], z[j]};
-                bond_t b = {
-                    .len2 = vec3_distance_squared(xi, xj),
-                    .idx  = bij,
-                };
-                md_array_push(bond_buf, b, temp_arena);
+                uint32_t bij = atom_cov_bond_idx[conn_idx];
+                bond_pair_t b = temp_bond_pairs[bij];
+                ASSERT(b.atom_i == (int)i || b.atom_j == (int)i);
+                buf[len++] = (entry_t){bij, b.dist};
             }
 
-            while ((int)md_array_size(bond_buf) > max_con) {
+            // Remove longest bonds until we are within limits
+            while ((int)len > max_con) {
                 size_t max_k = 0;
-                for (size_t k = 1; k < md_array_size(bond_buf); ++k) {
-                    if (bond_buf[k].len2 > bond_buf[max_k].len2) {
+                for (size_t k = 1; k < len; ++k) {
+                    if (buf[k].blen > buf[max_k].blen) {
                         max_k = k;
                     }
                 }
-                md_array_push(bond_indices_to_remove, bond_buf[max_k].idx, temp_arena);
-                md_array_swap_back_and_pop(bond_buf, max_k);
+
+                // Clear flag
+                temp_bond_flags[buf[max_k].bidx] = 0;
+
+                // Swap back and pop
+                buf[max_k] = buf[--len];
             }
         }
     }
 
-    if (bond_indices_to_remove) {
-        size_t count = md_array_size(bond_indices_to_remove);
-        for (size_t i = 0; i < count; ++i) {
-            uint32_t bond_idx = md_array_back(bond_indices_to_remove);
-            md_array_pop(bond_indices_to_remove);
-            md_array_swap_back_and_pop(bond->pairs, bond_idx);
-        }
-        bond->count -= count;
-
-        // Recompute connectivity information (since we removed bonds)
-        compute_connectivity(&bond->conn, bond->pairs, bond->count, num_atoms, alloc, temp_arena);
-    } else {
-        // Commit the connectivity to molecule
-        md_array_push_array(bond->conn.offset,   conn.offset,   conn.offset_count, alloc);
-        md_array_push_array(bond->conn.atom_idx, conn.atom_idx, conn.count, alloc);
-        md_array_push_array(bond->conn.bond_idx, conn.bond_idx, conn.count, alloc);
-        bond->conn.count = conn.count;
-        bond->conn.offset_count = conn.offset_count;
-    }
     */
 
-    compute_connectivity(&bond->conn, bond->pairs, bond->count, num_atoms, alloc, temp_arena);
+    // Populate real bond data
+    md_array_ensure(bond->pairs, temp_bond_count, alloc);
+    md_array_ensure(bond->flags, temp_bond_count, alloc);
+    for (size_t i = 0; i < temp_bond_count; ++i) {
+        if (temp_bond_flags[i] == 0) continue;
 
-    if (md_array_size(bond->flags) < bond->count) {
-        md_array_resize(bond->flags, bond->count, alloc);
-        MEMSET(bond->flags, 0, md_array_bytes(bond->flags));
+        md_atom_pair_t pair = {
+            temp_bond_pairs[i].atom_i,
+            temp_bond_pairs[i].atom_j,
+        };
+        md_array_push_no_grow(bond->pairs, pair);
+        md_array_push_no_grow(bond->flags, temp_bond_flags[i]);
+        bond->count += 1;
     }
 
     size_t num_comp = md_system_comp_count(sys);
@@ -4388,11 +4428,13 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             bool test_auth_id   = comp_auth_asym_id && !str_empty(comp_auth_id);
             bool test_bond      = !test_auth_id && is_amino_or_nucleotide && connected_to_prev[j];
 
+#if 0
             MD_LOG_DEBUG("Identifying new instance");
             MD_LOG_DEBUG("\t test_name: %i",    (int)test_name);
             MD_LOG_DEBUG("\t test_seq_id: %i",  (int)test_seq_id);
             MD_LOG_DEBUG("\t test_auth_id: %i", (int)test_auth_id);
             MD_LOG_DEBUG("\t test_bond: %i",    (int)test_bond);
+#endif
 
             if (is_amino_or_nucleotide) {
                 entity_flags |= MD_FLAG_POLYMER;
@@ -8380,6 +8422,9 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
         if (sys->bond.count == 0) {
             md_util_system_infer_covalent_bonds(sys, alloc);
+        }
+        if (sys->bond.conn.count == 0) {
+            compute_connectivity(&sys->bond.conn, sys->bond.pairs, sys->bond.count, sys->atom.count, alloc, temp_arena);
         }
     }
 

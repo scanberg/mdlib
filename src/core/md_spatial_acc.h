@@ -37,7 +37,7 @@ extern "C" {
 
 typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 
-typedef void (*md_spatial_acc_callback_t)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
+//typedef void (*md_spatial_acc_callback_t)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
 
 // It is recommended to use a cell extent that is equal to the maximum search radius
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
@@ -51,7 +51,7 @@ bool md_spatial_acc_for_each_pair_within_cutoff(const md_spatial_acc_t* acc, dou
 #endif
 
 // Iterate over each point within the spatial acceleration structure within a 1-cell neighborhood (periodic if applicable)
-void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* acc, md_spatial_acc_callback_t callback, void* user_param);
+void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* acc, md_spatial_acc_pair_callback_t callback, void* user_param);
 
 // Helper functions for partial functionality
 static inline bool md_spatial_acc_cell_range(uint32_t* cell_beg, uint32_t* cell_end, const md_spatial_acc_t* acc, size_t cell_idx) {

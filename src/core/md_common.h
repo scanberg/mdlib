@@ -263,6 +263,20 @@ extern "C" {
 
 #endif
 
+#if MD_COMPILER_MSVC
+    #define DEBUG_BREAK() __debugbreak()
+#elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+    #if defined(__x86_64__) || defined(__i386__)
+        #define DEBUG_BREAK() __asm__ volatile("int3")
+    #elif defined(__aarch64__)
+        #define DEBUG_BREAK() __builtin_trap()
+    #else
+        #define DEBUG_BREAK() __builtin_trap()
+    #endif
+#else
+    #define DEBUG_BREAK() ((void)0)
+#endif
+
 #ifdef  __cplusplus
 
 #ifndef defer

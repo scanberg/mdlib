@@ -23,13 +23,26 @@ typedef struct {
     uint32_t count;
 } spatial_acc_data_t;
 
-static void spatial_acc_callback(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param) {
+static void spatial_acc_neighbor_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     uint32_t* count = (uint32_t*)user_param;
-    md_256 mask = md_mm256_cmplt_ps(ij_dist2, md_mm256_set1_ps(25.0f));
-    *count += popcnt32(md_mm256_movemask_ps(mask));
+
+    const md_256i v_len = md_mm256_set1_epi32((int)num_pairs);
+    const md_256i v_8 = md_mm256_set1_epi32(8);
+    const md_256 v_r2 = md_mm256_set1_ps(25.0f);  // 5.0^2
+    md_256i v_k = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+
+    for (size_t k = 0; k < num_pairs; k += 8) {
+        md_256i k_mask = md_mm256_cmplt_epi32(v_k, v_len);
+        md_256 v_d2 = md_mm256_loadu_ps(ij_dist2 + k);
+        md_256 d2_mask = md_mm256_cmplt_ps(v_d2, v_r2);
+        md_256 v_mask = md_mm256_and_ps(md_mm256_castsi256_ps(k_mask), d2_mask);
+
+        *count += popcnt32(md_mm256_movemask_ps(v_mask));
+        v_k = md_mm256_add_epi32(v_k, v_8);
+    }
 }
 
-static void spatial_acc_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+static void spatial_acc_cutoff_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_pairs;
 }
@@ -252,10 +265,11 @@ UTEST(spatial_hash, n2) {
             size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
 
             uint32_t sa_count = 0;
-            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_pair_callback, &sa_count);
+            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &sa_count);
 
+            EXPECT_EQ(bf_count, sa_count);
             if (bf_count != sa_count) {
-                printf("wierd expected: %zu, but got: %zu\n", bf_count, sa_count);
+                printf("wierd expected: %zu, but got: %u\n", bf_count, sa_count);
             }
 #if 0
             if (bf_count != sh_count) {
@@ -349,9 +363,11 @@ UTEST(spatial_hash, n2) {
     start = md_time_current();
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, &cell);
-    md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, spatial_acc_callback, &count);
-    size_t sa_count = count;
+    //md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0f, spatial_acc_pair_callback, &count);
+    md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
     end = md_time_current();
+    size_t sa_count = count;
+    //end = md_time_current();
     printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, sa_count);
     if (sa_count != expected_count) {

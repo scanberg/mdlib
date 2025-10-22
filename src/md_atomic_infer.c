@@ -57,6 +57,24 @@ static const Mapping predefined_mappings[] = {
     {STR("NO3:O"), MD_Z_O},
     {STR("SO4:S"), MD_Z_S}, // Sulfate
     {STR("SO4:O"), MD_Z_O},
+
+    // Hem
+    {STR("HEM:FE"), MD_Z_Fe},
+};
+
+static const str_t resname_fallback_to_single_character[] = {
+    STR("ALA"), STR("ARG"),
+    STR("ASN"), STR("ASP"), STR("CYS"), STR("GLN"),
+    STR("GLU"), STR("GLY"), STR("HIS"), STR("ILE"), STR("LEU"), STR("LYS"), STR("MET"), STR("PHE"), STR("PRO"), STR("SER"), STR("THR"), STR("TRP"), STR("TYR"), STR("VAL"),
+    STR("DA"),  STR("DC"),  STR("DG"),  STR("DT"),  STR("A"),   STR("C"),   STR("G"),   STR("U"),
+    STR("HOH"), STR("H2O"), STR("DOD"), STR("WAT"),
+    
+    STR("HEM"), STR("HEME"),
+    STR("ADP"), STR("ATP"), STR("GDP"), STR("GTP"),
+
+    STR("POPC"), STR("DPPC"), STR("DMPC"), STR("DOPC"), STR("POPE"), STR("DOPE"),
+
+    STR("CHOL"),  // Cholesterol
 };
 
 // Core atomic number functions using existing md_util tables
@@ -101,6 +119,15 @@ static inline md_atomic_number_t find_in_mappings(str_t key, const Mapping* mapp
     return MD_Z_X;
 }
 
+static inline bool resname_in_fallback_list(str_t res_name) {
+    for (size_t i = 0; i < ARRAY_SIZE(resname_fallback_to_single_character); ++i) {
+        if (str_eq_ignore_case(res_name, resname_fallback_to_single_character[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Inference functions
 md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name) {    
 
@@ -116,7 +143,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
     if (atom_name.len == 0) return MD_Z_X;
     
     // First try residue+atom combination
-    if (res_name.len > 0) {       
+    if (res_name.len > 0) {
         // Special case: if water, amino acid or nucleotide: Match against first character only
         if (md_util_resname_water(res_name) || md_util_resname_amino_acid(res_name) || md_util_resname_nucleotide(res_name)) {
             str_t first_char = str_substr(atom_name, 0, 1);
@@ -128,9 +155,18 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
 		int len = snprintf(combined_key_buf, sizeof(combined_key_buf), STR_FMT ":" STR_FMT, STR_ARG(res_name), STR_ARG(atom_name));
 		str_t combined_key = { combined_key_buf, (size_t)len };
 
-		// Check predefined mappings first
+		// Check predefined resname : atomlabel mappings first
+        {
         md_atomic_number_t z = find_in_mappings(combined_key, predefined_mappings, ARRAY_SIZE(predefined_mappings));
-        if (z) return z;
+            if (z != MD_Z_X) return z;
+        }
+
+        // Check if we should fallback to single-character atom name
+        if (resname_in_fallback_list(res_name)) {
+            str_t first_char = str_substr(atom_name, 0, 1);
+            md_atomic_number_t z = md_atomic_number_from_symbol(first_char, true);
+            if (z != MD_Z_X) return z;
+        }
         
         // If residue name itself is an element (ions for example)
         md_atomic_number_t res_element = md_atomic_number_from_symbol(res_name, true);
