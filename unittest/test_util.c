@@ -591,7 +591,7 @@ UTEST_F(util, structure_matching_smiles) {
 
     const str_t ISOLEUCINE      = STR_LIT(AA_INT "[CH]([CH3])[CH2][CH3]");
     const str_t ISOLEUCINE_NT   = STR_LIT(AA_NT  "[CH]([CH3])[CH2][CH3]");
-    const str_t ISOLEUCINE_CT   = STR_LIT(AA_CT "[CH]([CH3])[CH2][CH3]");
+    const str_t ISOLEUCINE_CT   = STR_LIT(AA_CT  "[CH]([CH3])[CH2][CH3]");
 
     const str_t LEUCINE         = STR_LIT(AA_INT "[CH2][CH]([CH3])[CH3]");
     const str_t LEUCINE_NT      = STR_LIT(AA_NT  "[CH2][CH]([CH3])[CH3]");
@@ -783,7 +783,6 @@ UTEST_F(util, structure_matching_smiles) {
 						const md_atomic_number_t z_j[] = { MD_Z_H };
                         if (md_atom_is_connected_to_atomic_numbers(&sys->atom, &sys->bond, i, z_j, ARRAY_SIZE(z_j))) {
                             has_ch = true;
-                            break;
 						}
                     }
                 }
@@ -800,7 +799,8 @@ UTEST_F(util, structure_matching_smiles) {
                 extra_flags |= MD_UTIL_MATCH_FLAGS_NO_CH | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT;
             }
 
-            md_index_data_t match_result = { .alloc = alloc };
+			// Store all matching components in here, use a set to avoid duplicates
+            md_hashset_t match_set = {.allocator = alloc};
 
             for (size_t p_idx = 0; p_idx < ARRAY_SIZE(res->pattern); ++p_idx) {
                 str_t smiles = res->pattern[p_idx].smiles;
@@ -810,33 +810,28 @@ UTEST_F(util, structure_matching_smiles) {
                     break;
                 }
 
-                md_util_match_smiles(&match_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, flags, sys, alloc);
-                
-                size_t tot_count = md_index_data_num_ranges(&match_result);
-                if (tot_count >= ref_count) {
-                    break;
+				md_index_data_t pattern_result = { .alloc = alloc };
+                size_t matches = md_util_match_smiles(&pattern_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, flags, sys, alloc);
+
+				size_t num_pattern_matches = md_index_data_num_ranges(&pattern_result);
+                for (size_t i = 0; i < num_pattern_matches; ++i) {
+					const int* atom_idx = md_index_range_beg(&pattern_result, i);
+					md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
+					md_hashset_add(&match_set, res_idx);
                 }
             }
-            size_t match_count = md_index_data_num_ranges(&match_result);
+            size_t match_count = match_set.num_used;
 
             EXPECT_EQ(ref_count, match_count);
             if (ref_count != match_count) {
-
-                md_hashset_t match_set = {.allocator = alloc};
-                for (size_t i = 0; i < match_count; ++i) {
-                    int* atom_idx = md_index_range_beg(&match_result, i);
-                    md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
-                    md_hashset_add(&match_set, res_idx);
-                }
                 
                 printf("Mismatch in dataset '" STR_FMT "' for residues with name '" STR_FMT "': resname_count: %zu, match_count: %zu\n", STR_ARG(test->name), STR_ARG(res->name), ref_count, match_count);
-                printf("The mismatcing residues indices are:\n");
+                printf("Residues missed:\n");
                 for (size_t i = 0; i < ref_count; ++i) {
                     if (!md_hashset_get(&match_set, ref_list[i])) {
                         printf("%i ", ref_list[i] + 1);
                     }
                 }
-                printf("\n");
             }
         }
         md_vm_arena_temp_end(temp);

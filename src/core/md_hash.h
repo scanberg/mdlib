@@ -138,6 +138,7 @@ typedef struct {
 //     ....
 // }
 // ~~~
+#define md_hashset_skip_index(h, index) ((h)->keys[index] >= MD_HASH_TOMBSTONE)
 #define md_hashmap_skip_index(h, index) ((h)->keys[index] >= MD_HASH_TOMBSTONE)
 
 // The opposite of [[md_hashmap_skip_index()]].

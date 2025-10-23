@@ -3742,7 +3742,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     }
 
     // Covalent radius sum factors
-    static const float k_min   = 0.75f;
+    static const float k_min   = 0.65f;
     static const float k_cov   = 1.15f;
     static const float k_tight = 1.05f;
     static const float k_coord = 1.35f;
@@ -3784,12 +3784,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         md_timestamp_t ts_end = md_time_current();
 
         double dt_ms = md_time_as_milliseconds(ts_end - ts_start);
-        MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
+        //MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
     }
 
     size_t num_candidates = md_array_size(candidates);
 
-    MD_LOG_DEBUG("Found %zu candidates", num_candidates);
+    //MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
     bond_pair_t* temp_bond_pairs = 0;
     md_flags_t*  temp_bond_flags = 0;

@@ -420,6 +420,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_cvtps_epi32 simde_mm_cvtps_epi32
 #define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
+#define md_mm_cvtepu8_epi32 simde_mm_cvtepu8_epi32
+#define md_mm_cvtsi64_si128 simde_mm_cvtsi64_si128
+
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
 #define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
 #define md_mm256_cvtepu8_epi32 simde_mm256_cvtepu8_epi32
@@ -428,6 +431,10 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
 #define md_mm256_cvtss_f32 simde_mm256_cvtss_f32
 #define md_mm256_cvtsd_f64 simde_mm256_cvtsd_f64
+
+// PERMUTE
+#define md_mm256_permutevar8x32_epi32 simde_mm256_permutevar8x32_epi32
+#define md_mm256_permutevar8x32_ps simde_mm256_permutevar8x32_ps
 
 // HIGH LEVEL OPERATIONS
 

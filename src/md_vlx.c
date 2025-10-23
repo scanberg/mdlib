@@ -2859,7 +2859,6 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 
 	MEMSET(sys, 0, sizeof(md_system_t));
 
-	sys->atom.count = vlx->number_of_atoms;
 	md_array_resize(sys->atom.x,		capacity, alloc);
 	md_array_resize(sys->atom.y,		capacity, alloc);
 	md_array_resize(sys->atom.z,		capacity, alloc);
@@ -2885,7 +2884,10 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 		float radius = md_atomic_number_vdw_radius(z);
 
 		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, alloc);
+		sys->atom.type_idx[i] = type_idx;
 	}
+
+	sys->atom.count = vlx->number_of_atoms;
 
 	return true;
 }

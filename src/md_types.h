@@ -651,3 +651,25 @@ static inline size_t md_index_range_size(const md_index_data_t* data, size_t ran
     }
     return size;
 }
+
+static inline void md_index_data_merge(md_index_data_t* dest, const md_index_data_t* src) {
+    ASSERT(dest);
+    ASSERT(src);
+    ASSERT(dest->alloc == src->alloc);
+    size_t dest_num_indices = md_array_size(dest->indices);
+    size_t src_num_ranges = md_index_data_num_ranges(src);
+    for (size_t i = 0; i < src_num_ranges; ++i) {
+        uint32_t beg_offset = src->offsets[i];
+        uint32_t end_offset = src->offsets[i + 1];
+        size_t range_size = end_offset - beg_offset;
+        // Push adjusted offsets
+        uint32_t new_offset = (uint32_t)(dest_num_indices + range_size);
+        md_array_push(dest->offsets, new_offset, dest->alloc);
+        // Push indices
+        for (uint32_t j = beg_offset; j < end_offset; ++j) {
+            int32_t idx = src->indices[j];
+            md_array_push(dest->indices, idx, dest->alloc);
+        }
+        dest_num_indices += range_size;
+    }
+}
