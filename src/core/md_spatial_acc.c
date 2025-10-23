@@ -210,7 +210,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 	// Reset acc, but to not free memory
     md_spatial_acc_reset(acc);
 
-    double A[3][3]  = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double I[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     uint32_t flags = 0;
 
@@ -223,6 +223,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     vec4_t coord_offset = vec4_zero();
 
     if ((flags & MD_UNITCELL_PBC_ALL) != MD_UNITCELL_PBC_ALL) {
+        ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
         // Unit cell either missing or not periodic along one or more axis
         vec4_t aabb_min = {0}, aabb_max = {0};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, in_x, in_y, in_z, NULL, NULL, count);
@@ -233,21 +234,21 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         if ((flags & MD_UNITCELL_PBC_X) == 0) {
             coord_offset.x = -aabb_min.x;
             if (aabb_ext.x > 0.0f) {
-                A[0][0]  = aabb_ext.x;
+                A[0][0] = aabb_ext.x;
                 I[0][0] = 1.0 / aabb_ext.x;
             }
         }
         if ((flags & MD_UNITCELL_PBC_Y) == 0) {
             coord_offset.y = -aabb_min.y;
             if (aabb_ext.y > 0.0f) {
-                A[1][1]  = aabb_ext.y;
+                A[1][1] = aabb_ext.y;
                 I[1][1] = 1.0 / aabb_ext.y;
             }
         }
         if ((flags & MD_UNITCELL_PBC_Z) == 0) {
             coord_offset.z = -aabb_min.z;
             if (aabb_ext.z > 0.0f) {
-                A[2][2]  = aabb_ext.z;
+                A[2][2] = aabb_ext.z;
                 I[2][2] = 1.0 / aabb_ext.z;
             }
         }
@@ -868,9 +869,9 @@ static void for_each_in_neighboring_cells_ortho(const md_spatial_acc_t* acc, md_
 
 static bool for_each_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
     int ncell[3] = {
-        (int)ceil(cutoff / (double)acc->cell_ext[0]),
-        (int)ceil(cutoff / (double)acc->cell_ext[1]),
-        (int)ceil(cutoff / (double)acc->cell_ext[2]),
+        acc->cell_ext[0] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[0]) : 0,
+        acc->cell_ext[1] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[1]) : 0,
+        acc->cell_ext[2] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[2]) : 0,
     };
 
     if (ncell[0] > 2 || ncell[1] > 2 || ncell[2] > 2) {
@@ -1084,11 +1085,10 @@ static bool for_each_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, d
 }
 
 static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
-
     int ncell[3] = {
-        (int)ceil(cutoff / (double)acc->cell_ext[0]),
-        (int)ceil(cutoff / (double)acc->cell_ext[1]),
-        (int)ceil(cutoff / (double)acc->cell_ext[2]),
+        acc->cell_ext[0] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[0]) : 0,
+        acc->cell_ext[1] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[1]) : 0,
+        acc->cell_ext[2] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[2]) : 0,
     };
 
     if (ncell[0] > 2 || ncell[1] > 2 || ncell[2] > 2) {
@@ -1107,7 +1107,7 @@ static bool for_each_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, doubl
 
     size_t num_neighbors = generate_forward_neighbors4(ncell, neighbors);
 
-    MD_LOG_DEBUG("Generated %zu forward neighbors", num_neighbors);
+    //MD_LOG_DEBUG("Generated %zu forward neighbors", num_neighbors);
 
 	// Allocate intermediate buffers for passing to callback
     uint32_t buf_i[SPATIAL_ACC_BUFLEN];

@@ -248,6 +248,11 @@ typedef struct md_unitcell_t {
     uint32_t flags;
 } md_unitcell_t;
 
+static inline size_t md_unitcell_print(char* out_buf, size_t buf_cap, const md_unitcell_t* cell) {
+    int len = snprintf(out_buf, buf_cap, "x: %f, y: %f, z: %f \nxy: %f, xz: %f, yz: %f \nflags: %i", cell->x, cell->y, cell->z, cell->xy, cell->xz, cell->yz, cell->flags);
+    return len;
+}
+
 // constructors for unitcell
 
 static inline md_unitcell_t md_unitcell_none(void) {
