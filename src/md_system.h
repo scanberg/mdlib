@@ -13,6 +13,7 @@ typedef struct md_atom_type_data_t {
     float*          mass;
     float*          radius;
     uint32_t*       color;
+    uint32_t*       flags;
 } md_atom_type_data_t;
 
 typedef struct md_atom_data_t {
@@ -188,7 +189,7 @@ static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
     return atom_type->count;
 }
 
-static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, struct md_allocator_i* alloc) {
+static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, md_flags_t flags, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
     
@@ -198,7 +199,8 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
         if (str_eq(atom_type_name, name) && 
             atom_type->z[i] == z &&
             atom_type->mass[i] == mass &&
-            atom_type->radius[i] == radius) {
+            atom_type->radius[i] == radius &&
+            atom_type->flags[i] == flags) {
             return (md_atom_type_idx_t)i;
         }
     }
@@ -208,6 +210,7 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     md_array_push(atom_type->z, z, alloc);
     md_array_push(atom_type->mass, mass, alloc);
     md_array_push(atom_type->radius, radius, alloc);
+    md_array_push(atom_type->flags, flags, alloc);
     atom_type->count++;
     
     return (md_atom_type_idx_t)(atom_type->count - 1);

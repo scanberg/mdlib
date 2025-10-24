@@ -165,6 +165,10 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
     MEMSET(sys, 0, sizeof(md_system_t));
 
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    md_array(str_t) atom_names = 0;
+    md_array_ensure(atom_names, data->num_atoms, temp_arena);
+
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
     md_array_ensure(sys->atom.x, capacity, alloc);
@@ -184,12 +188,6 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
         str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
         md_seq_id_t res_id = data->atom_data[i].res_id;
-        md_atomic_number_t atomic_number = md_atomic_number_infer_from_label(atom_name, res_name);
-
-        float mass = md_util_element_atomic_mass(atomic_number);
-        float radius = md_util_element_vdw_radius(atomic_number);
-
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_name, atomic_number, mass, radius, alloc);
 
 		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
         if (comp_key != prev_comp_key) {
@@ -203,10 +201,11 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 		}
 
         sys->atom.count += 1;
+        md_array_push_no_grow(atom_names, atom_name);
         md_array_push_no_grow(sys->atom.x, x);
         md_array_push_no_grow(sys->atom.y, y);
         md_array_push_no_grow(sys->atom.z, z);
-        md_array_push_no_grow(sys->atom.type_idx, type_idx);
+        md_array_push_no_grow(sys->atom.type_idx, 0);
         md_array_push_no_grow(sys->atom.flags, 0);
 
 		prev_comp_key = comp_key;
@@ -224,7 +223,10 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
     sys->unitcell = md_unitcell_from_matrix_float(box);
 
+    md_util_system_infer_atom_types(sys, atom_names, alloc);
     md_util_system_infer_comp_flags(sys);
+
+    md_vm_arena_destroy(temp_arena);
 
     return true;
 }

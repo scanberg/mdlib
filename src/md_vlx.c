@@ -650,13 +650,13 @@ static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
 							struct md_pgto_t pgto = {
-								.coeff = coef1 * fcarts[icomp],
-								.alpha = alpha,
+								.coeff = (float)(coef1 * fcarts[icomp]),
+								.alpha = (float)alpha,
 								.radius = FLT_MAX,
-								.i = lx[icomp],
-								.j = ly[icomp],
-								.k = lz[icomp],
-								.l = angl,
+								.i = (uint8_t)lx[icomp],
+								.j = (uint8_t)ly[icomp],
+								.k = (uint8_t)lz[icomp],
+								.l = (uint8_t)angl,
 							};
 
 							md_array_push(out_data->pgtos, pgto, alloc);
@@ -2375,7 +2375,7 @@ static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, con
 			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
 			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
 			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
-			out_gtos[count].coeff = mo_coeffs[i] * ao_data->pgtos[j].coeff;
+			out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgtos[j].coeff);
 			out_gtos[count].alpha = ao_data->pgtos[j].alpha;
 			out_gtos[count].cutoff = (float)radius;
 			out_gtos[count].i = ao_data->pgtos[j].i;
@@ -2456,9 +2456,9 @@ static inline vec3_t closest_point_in_aabb(vec3_t p, vec3_t aabb_min, vec3_t aab
 
 static inline float monomial_bound(vec3_t center, int powers[3], vec3_t aabb_min, vec3_t aabb_max) {
     vec3_t bounds = {0};
-    bounds.x = MAX(fabs(powf(aabb_min.x - center.x, powers[0])), fabs(powf(aabb_max.x - center.x, powers[0])));
-    bounds.y = MAX(fabs(powf(aabb_min.y - center.y, powers[1])), fabs(powf(aabb_max.y - center.y, powers[1])));
-    bounds.z = MAX(fabs(powf(aabb_min.z - center.z, powers[2])), fabs(powf(aabb_max.z - center.z, powers[2])));
+    bounds.x = MAX(fabsf(powf(aabb_min.x - center.x, (float)powers[0])), fabsf(powf(aabb_max.x - center.x, (float)powers[0])));
+    bounds.y = MAX(fabsf(powf(aabb_min.y - center.y, (float)powers[1])), fabsf(powf(aabb_max.y - center.y, (float)powers[1])));
+    bounds.z = MAX(fabsf(powf(aabb_min.z - center.z, (float)powers[2])), fabsf(powf(aabb_max.z - center.z, (float)powers[2])));
     return bounds.x * bounds.y * bounds.z;
 }
 

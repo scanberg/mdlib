@@ -4016,8 +4016,8 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
 
     size_t temp_pos = md_temp_get_pos();
     md_allocator_i* temp_alloc = md_get_temp_allocator();
-    md_array(int) unsafe_amino_acid_indices = 0;
-    md_array(int) unsafe_nucleotide_indices = 0;
+    md_array(int) ambigous_amino_acid_indices = 0;
+    md_array(int) ambigous_nucleotide_indices = 0;
 
     for (size_t i = 0; i < sys->comp.count; ++i) {
         str_t resname = md_comp_name(&sys->comp, i);
@@ -4036,12 +4036,9 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
                 if (prot_atoms.hn != -1) {
                     sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
                 }
-                for (unsigned j = range.beg; j < range.end; ++j) {
-                    sys->atom.flags[j] |= MD_FLAG_AMINO_ACID;
-                }
             } else if (md_util_resname_amino_acid(resname)) {
                 sys->comp.flags[i] |= MD_FLAG_AMINO_ACID;
-                md_array_push(unsafe_amino_acid_indices, (int)i, temp_alloc);
+                md_array_push(ambigous_amino_acid_indices, (int)i, temp_alloc);
             }
         } else if (!(sys->comp.flags[i] & MD_FLAG_HETERO) && MIN_NUC_LEN <= len && len <= MAX_NUC_LEN) {
             if (md_util_nucleic_backbone_atoms_extract(&nucl_atoms, &sys->atom, range)) {
@@ -4055,39 +4052,49 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
                     sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
                     sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
-                    for (int j = range.beg; j < range.end; ++j) {
-                        sys->atom.flags[j] |= MD_FLAG_NUCLEOTIDE;
-                    }
                 }
             } else if (md_util_resname_nucleotide(resname)) {
                 sys->comp.flags[i] |= MD_FLAG_NUCLEOTIDE;
-                md_array_push(unsafe_nucleotide_indices, (int)i, temp_alloc);
+                md_array_push(ambigous_nucleotide_indices, (int)i, temp_alloc);
             }
         } else if (((len == 1 || len == 3) && md_util_resname_water(resname)) ||
                     (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, range.beg))))
         {
             sys->comp.flags[i] |= MD_FLAG_WATER;
-        } else if (len == 1 && (md_util_resname_ion(resname) || (md_atom_atomic_number(&sys->atom, range.beg)))) {
+        } else if (len == 1 && (md_util_resname_ion(resname) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, range.beg)))) {
             sys->comp.flags[i] |= MD_FLAG_ION;
         }
-    }
-    
-    // Print warnings about unsafe assignments
-    size_t num_unsafe_amino_acids = md_array_size(unsafe_amino_acid_indices);
-    if (num_unsafe_amino_acids > 0) {
-        MD_LOG_DEBUG("Structure contains %zu amino acid residue names, but their backbone cannot be mapped from atom labels:", num_unsafe_amino_acids);
-        for (size_t i = 0; i < num_unsafe_amino_acids; ++i) {
-            int res_idx = unsafe_amino_acid_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_comp_name(&sys->comp, res_idx)), md_comp_seq_id(&sys->comp, res_idx));
+
+        // Propagate flags to atoms
+        for (unsigned j = range.beg; j < range.end; ++j) {
+            sys->atom.flags[j] |= sys->comp.flags[i];
         }
     }
 
-    size_t num_unsafe_nucleotides = md_array_size(unsafe_nucleotide_indices);
-    if (num_unsafe_nucleotides > 0) {
-        MD_LOG_DEBUG("Structure contains %zu nucleotide residue names, but their backbone cannot be mapped from atom labels:", num_unsafe_nucleotides);
-        for (size_t i = 0; i < num_unsafe_nucleotides; ++i) {
-            int res_idx = unsafe_nucleotide_indices[i];
+    const size_t max_warnings = 10;
+    
+    // Print warnings about unsafe assignments
+    size_t num_ambigous_amino_acids = md_array_size(ambigous_amino_acid_indices);
+    if (num_ambigous_amino_acids > 0) {
+        MD_LOG_DEBUG("Structure contains %zu amino acid residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_amino_acids);
+        for (size_t i = 0; i < MIN(num_ambigous_amino_acids, max_warnings); ++i) {
+            int res_idx = ambigous_amino_acid_indices[i];
             MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_comp_name(&sys->comp, res_idx)), md_comp_seq_id(&sys->comp, res_idx));
+        }
+        if (num_ambigous_amino_acids > max_warnings) {
+            MD_LOG_DEBUG(" - And %zu more...", num_ambigous_amino_acids - max_warnings);
+        }
+    }
+
+    size_t num_ambigous_nucleotides = md_array_size(ambigous_nucleotide_indices);
+    if (num_ambigous_nucleotides > 0) {
+        MD_LOG_DEBUG("Structure contains %zu nucleotide residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_nucleotides);
+        for (size_t i = 0; i < MIN(num_ambigous_nucleotides, max_warnings); ++i) {
+            int res_idx = ambigous_nucleotide_indices[i];
+            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_comp_name(&sys->comp, res_idx)), md_comp_seq_id(&sys->comp, res_idx));
+        }
+        if (num_ambigous_nucleotides > max_warnings) {
+            MD_LOG_DEBUG(" - And %zu more...", num_ambigous_nucleotides - max_warnings);
         }
     }
     
@@ -4859,6 +4866,235 @@ bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
     md_vm_arena_destroy(temp_arena);
 
     return true;
+}
+
+typedef struct {
+    str_t comp_name;
+    str_t atom_name;
+
+    float mass;
+    float radius;
+    md_flags_t flags;
+} atom_type_t;
+
+BAKE
+
+// Predefined atom types (This include coarse grained types)
+static const atom_type_t predefined_atom_types[] = {
+    // Martini CG types (BB) + (SC*)
+    {BAKE("ALA"), BAKE("BB"),    89.09f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ARG"), BAKE("BB"),   174.20f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ARG"), BAKE("SC1"),  101.19f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ARG"), BAKE("SC2"),   70.09f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ASN"), BAKE("BB"),   132.12f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ASN"), BAKE("SC1"),   87.09f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ASP"), BAKE("BB"),   133.10f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ASP"), BAKE("SC1"),   96.06f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("CYS"), BAKE("BB"),   121.16f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("CYS"), BAKE("SC1"),  122.17f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("GLN"), BAKE("BB"),   146.15f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("GLN"), BAKE("SC1"),  111.14f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("GLU"), BAKE("BB"),   147.13f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("GLU"), BAKE("SC1"),  109.12f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("GLY"), BAKE("BB"),    75.07f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("HIS"), BAKE("BB"),   155.16f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("HIS"), BAKE("SC1"),  110.14f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("HIS"), BAKE("SC2"),   82.11f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("HIS"), BAKE("SC3"),   40.04f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ILE"), BAKE("BB"),   131.18f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("ILE"), BAKE("SC1"),  113.16f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("LEU"), BAKE("BB"),   131.18f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("LEU"), BAKE("SC1"),  113.16f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("LYS"), BAKE("BB"),   146.19f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("LYS"), BAKE("SC1"),  128.17f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("LYS"), BAKE("SC2"),   84.11f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("MET"), BAKE("BB"),   149.21f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("MET"), BAKE("SC1"),  149.21f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("PHE"), BAKE("BB"),   165.19f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("PHE"), BAKE("SC1"),  135.18f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("PHE"), BAKE("SC2"),   77.15f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("PHE"), BAKE("SC3"),   39.04f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("PRO"), BAKE("BB"),   115.13f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("SER"), BAKE("BB"),   105.09f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("SER"), BAKE("SC1"),   73.06f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("THR"), BAKE("BB"),   119.12f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("THR"), BAKE("SC1"),   87.09f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("TRP"), BAKE("BB"),   204.23f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("TRP"), BAKE("SC1"),  162.20f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("TRP"), BAKE("SC2"),   77.15f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("TRP"), BAKE("SC3"),   44.07f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("TRP"), BAKE("SC4"),   15.04f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("TYR"), BAKE("BB"),   181.19f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("TYR"), BAKE("SC1"),  136.17f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("TYR"), BAKE("SC2"),   91.11f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("TYR"), BAKE("SC3"),   33.04f,    1.92f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("VAL"), BAKE("BB"),   117.15f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("VAL"), BAKE("SC1"),   99.13f,    1.92f, MD_FLAG_COARSE_GRAINED},
+
+    /*
+	* // Example of lipid coarse grained mapping (Martini 2.2)
+     6775 POPE   PO4 25503
+     6775 POPE   GL1 25504
+     6775 POPE   GL2 25505
+     6775 POPE   C1A 25506
+     6775 POPE   D2A 25507
+     6775 POPE   C3A 25508
+     6775 POPE   C4A 25509
+     6775 POPE   C1B 25510
+     6775 POPE   C2B 25511
+     6775 POPE   C3B 25512
+     6775 POPE   C4B 25513
+    */
+	{BAKE("POPE"), BAKE("PO4"),  95.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("GL1"),  55.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("GL2"),  55.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C1A"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("D2A"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C3A"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C4A"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C1B"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C2B"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C3B"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+	{BAKE("POPE"), BAKE("C4B"),  72.00f,    1.92f, MD_FLAG_COARSE_GRAINED},
+
+    /*
+    6774 RAMP   PO1 25431
+    6774 RAMP   GM1 25432
+    6774 RAMP   GM2 25433
+    6774 RAMP   GM3 25434
+    6774 RAMP   GM4 25435
+    6774 RAMP   GM5 25436
+    6774 RAMP   GM6 25437
+    6774 RAMP   PO2 25438
+    6774 RAMP   GL1 25439
+    6774 RAMP   GL2 25440
+    6774 RAMP   C1A 25441
+    6774 RAMP   C2A 25442
+    6774 RAMP   C3A 25443
+    6774 RAMP   C1B 25444
+    6774 RAMP   C2B 25445
+    6774 RAMP   C3B 25446
+    6774 RAMP   GL3 25447
+    6774 RAMP   GL4 25448
+    6774 RAMP   C1C 25449
+    6774 RAMP   C2C 25450
+    6774 RAMP   C3C 25451
+    6774 RAMP   C1D 25452
+    6774 RAMP   C2D 25453
+    6774 RAMP   C3D 25454
+    6774 RAMP   GL5 25455
+    6774 RAMP   GL6 25456
+    6774 RAMP   C1E 25457
+    6774 RAMP   C2E 25458
+    6774 RAMP   GL7 25459
+    6774 RAMP   GL8 25460
+    6774 RAMP   C1F 25461
+    6774 RAMP   C2F 25462
+    6774 RAMP   S01 25463
+    6774 RAMP   S02 25464
+    6774 RAMP   S03 25465
+    6774 RAMP   S04 25466
+    6774 RAMP   S05 25467
+    6774 RAMP   S06 25468
+    6774 RAMP   S07 25469
+    6774 RAMP   S08 25470
+    6774 RAMP   S09 25471
+    6774 RAMP   S10 25472
+    6774 RAMP   S11 25473
+    6774 RAMP   S12 25474
+    6774 RAMP   S13 25475
+    6774 RAMP   S14 25476
+    6774 RAMP   S15 25477
+    6774 RAMP   S16 25478
+    6774 RAMP   S17 25479
+    6774 RAMP   S18 25480
+    6774 RAMP   S19 25481
+    6774 RAMP   S20 25482
+    6774 RAMP   S21 25483
+    6774 RAMP   S22 25484
+    6774 RAMP   S23 25485
+    6774 RAMP   S24 25486
+    6774 RAMP   S25 25487
+    6774 RAMP   S26 25488
+    6774 RAMP   S27 25489
+    6774 RAMP   S28 25490
+    6774 RAMP   S29 25491
+    6774 RAMP   S30 25492
+    6774 RAMP   S31 25493
+    6774 RAMP   S32 25494
+    6774 RAMP   S33 25495
+    6774 RAMP   S34 25496
+    6774 RAMP   S35 25497
+    6774 RAMP   S36 25498
+    6774 RAMP   S37 25499
+    6774 RAMP   S38 25500
+    6774 RAMP   S39 25501
+    */
+
+    
+};
+
+void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], md_allocator_i* alloc) {
+    if (!sys) {
+        MD_LOG_ERROR("system was null");
+        return;
+    }
+    if (!atom_labels) {
+        MD_LOG_ERROR("Must provide atom_labels");
+        return;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    md_hashmap32_t cache = {.allocator = md_get_temp_allocator() };
+    md_hashmap_reserve(&cache, 256);
+    
+    size_t num_success = 0;
+
+    if (sys->comp.count > 0) {
+        for (size_t comp_idx = 0; comp_idx < sys->comp.count; ++comp_idx) {
+            str_t comp_name        = md_comp_name(&sys->comp, comp_idx);
+            md_urange_t comp_range = md_comp_atom_range(&sys->comp, comp_idx);
+            size_t comp_size       = comp_range.end - comp_range.beg;
+
+            for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
+                if (sys->atom.type_idx[i] != 0) continue;
+
+                uint64_t key = md_hash64_str(atom_labels[i], md_hash64_str(comp_name, comp_size));
+                uint32_t* cached_type = md_hashmap_get(&cache, key);
+                if (cached_type) {
+                    sys->atom.type_idx[i] = *cached_type;
+                } else {
+                    md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], comp_name, comp_size);
+                    float mass = md_atomic_number_mass(z);
+                    float radius = md_atomic_number_vdw_radius(z);
+                    md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, alloc);
+                    sys->atom.type_idx[i] = type;
+                    md_hashmap_add(&cache, key, (uint32_t)type);
+                }
+            }
+        }
+    } else {
+        for (size_t i = 0; i < sys->atom.count; ++i) {
+            if (sys->atom.type_idx[i] != 0) continue;
+
+            uint64_t key = md_hash64_str(atom_labels[i], 0);
+            uint32_t* cached_type = md_hashmap_get(&cache, key);
+            if (cached_type) {
+                sys->atom.type_idx[i] = *cached_type;
+            } else {
+                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], (str_t){0}, 0);
+                float mass   = md_atomic_number_mass(z);
+                float radius = md_atomic_number_vdw_radius(z);
+                md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, alloc);
+                sys->atom.type_idx[i] = type;
+                md_hashmap_add(&cache, key, (uint32_t)type);
+            }
+        }
+    }
+
+    // @TODO: Try to automate the identification of coarse grained systems here and if so, remove the
+    
+    md_temp_set_pos_back(temp_pos);
 }
 
 void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, size_t extent, const md_bitfield_t* viable_mask) {

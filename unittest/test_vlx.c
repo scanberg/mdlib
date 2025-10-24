@@ -162,7 +162,7 @@ UTEST(vlx, correctness) {
     for (int iz = 0; iz < grid.dim[2]; ++iz) {
         for (int iy = 0; iy < grid.dim[1]; ++iy) {
             for (int ix = 0; ix < grid.dim[0]; ++ix) {
-                vec4_t pos = mat4_mul_vec4(index_to_world, vec4_set(ix, iy, iz, 1.0));
+                vec4_t pos = mat4_mul_vec4(index_to_world, vec4_set((float)ix, (float)iy, (float)iz, 1.0));
                 pos = vec4_mul_f(pos, BOHR_TO_ANGSTROM);
 
                 size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, pos.x, pos.y, pos.z);

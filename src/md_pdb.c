@@ -465,6 +465,8 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
+    md_array(str_t) atom_name = 0;
+    md_array_ensure(atom_name, capacity, temp_alloc);
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
@@ -479,6 +481,8 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
 
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
+
+    size_t num_unassigned_atom_types = 0;
 
     bool terminator = false;
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
@@ -495,19 +499,18 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;
+        md_atom_type_idx_t atom_type_idx = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             atomic_number = md_atomic_number_from_symbol(sym, true);
+            float mass   = md_atomic_number_mass(atomic_number);
+            float radius = md_atomic_number_vdw_radius(atomic_number);
+            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
         } else {
-            atomic_number = md_atomic_number_infer_from_label(atom_id, res_name);
+            num_unassigned_atom_types += 1;
         }
-
-        float mass   = md_atomic_number_mass(atomic_number);
-        float radius = md_atomic_number_vdw_radius(atomic_number);
-
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
 
 		uint64_t comp_key = md_hash64_str(res_name, seq_id ^ chain_id);
 
@@ -527,11 +530,12 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         }
 
         sys->atom.count += 1;
+        md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(sys->atom.x, x);
         md_array_push_no_grow(sys->atom.y, y);
         md_array_push_no_grow(sys->atom.z, z);
         md_array_push_no_grow(sys->atom.flags, flags);
-        md_array_push_no_grow(sys->atom.type_idx, type_idx);
+        md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
 
         prev_chain_id = chain_id;
 		prev_comp_key = comp_key;
@@ -551,6 +555,9 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         }
     };
 
+    if (num_unassigned_atom_types > 0) {
+        md_util_system_infer_atom_types(sys, atom_name, alloc);
+    }
 	md_util_system_infer_covalent_bonds(sys, alloc);
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);

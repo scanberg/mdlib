@@ -109,6 +109,9 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, con
 // Identify isolated structures by covalent bonds
 bool md_util_system_infer_structures(md_system_t* sys, struct md_allocator_i* alloc);
 
+// Identify atom types within the system
+void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], struct md_allocator_i* alloc);
+
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_molecule_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 

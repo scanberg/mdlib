@@ -45,6 +45,8 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
+    MD_FLAG_COARSE_GRAINED      = 0x1,  // Coarse grained representation
+
     // Polymers
     MD_FLAG_POLYMER             = 0x10,     // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
@@ -527,13 +529,14 @@ md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
 
 // Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
-md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name);
+// res_name is the name of the component of the atom [optional]
+// res_size is the size of the component of the atom [optional]
+md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name, size_t res_size);
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
 // Batch form wired to molecule structure
 // Returns the number of successfully inferred atomic numbers
 // All of the supplied arrays must have at least 'count' elements
-size_t md_atomic_number_infer_from_label_batch(md_atomic_number_t out_z[], const str_t atom_names[], const str_t atom_resnames[], size_t count);
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
 
 #ifdef __cplusplus

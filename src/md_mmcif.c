@@ -851,7 +851,13 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         sys->entity.count = num_entities;
 
         for (size_t i = 0; i < num_entities; ++i) {
+            // Determine entity flags
             md_flags_t flags = 0;
+
+            str_t desc = entities[i].description;
+            bool ion = str_find_str(NULL, desc, STR_LIT("ion")) ||
+                       str_find_str(NULL, desc, STR_LIT("ION")) ||
+                       str_find_str(NULL, desc, STR_LIT("Ion"));
 
             if (entities[i].type == ENTITY_TYPE_POLYMER) {
                 flags |= MD_FLAG_POLYMER;
@@ -866,6 +872,8 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
                 }
             } else if (entities[i].type == ENTITY_TYPE_WATER) {
                 flags |= MD_FLAG_WATER;
+            } else if (ion) {
+                flags |= MD_FLAG_ION;
             } else {
                 flags |= MD_FLAG_HETERO;
             }
