@@ -1075,5 +1075,22 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_inst_entity_idx(&sys, 10),       7);
     }
 
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+
+        ASSERT_EQ(md_system_entity_count(&sys), 2);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), 0);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_WATER);
+
+        ASSERT_EQ(md_system_inst_count(&sys), 65);
+        for (size_t i = 0; i < 64; ++i) {
+            EXPECT_EQ(md_system_inst_entity_idx(&sys, i), 0);
+        }
+
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 64), 1);
+    }
+
     md_vm_arena_destroy(alloc);
 }

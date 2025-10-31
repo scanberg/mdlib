@@ -178,7 +178,7 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
     md_array_ensure(sys->atom.flags, capacity, alloc);
 
     sys->atom.type.count = 0;
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
 
 	uint64_t prev_comp_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {

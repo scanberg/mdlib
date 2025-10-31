@@ -895,7 +895,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
+        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, alloc);  // Ensure that index 0 is always unknown
 
         uint64_t prev_comp_key = 0; // Key of active componenent
         uint64_t prev_inst_key = 0; // Key of active instance
@@ -922,7 +922,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
             float mass = md_atomic_number_mass(atomic_number);
             float radius = md_atomic_number_vdw_radius(atomic_number);
-            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
+            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, 0, alloc);
 
             md_flags_t flags = md_entity_flags(&sys->entity, entity_idx);
 

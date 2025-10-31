@@ -289,6 +289,8 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const size_t num_cells = (size_t)cell_dim[0] * cell_dim[1] * cell_dim[2];
 
+    MD_LOG_DEBUG("cell_dim: %i %i %i", cell_dim[0], cell_dim[1], cell_dim[2]);
+
     // Temporary arrays
     const size_t temp_arena_page_size = MEGABYTES(4);
     md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), temp_arena_page_size);
@@ -394,6 +396,18 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     acc->H02 = (float)H02;
     acc->H12 = (float)H12;
 
+    acc->I[0][0] = (float)I[0][0];
+    acc->I[0][1] = (float)I[0][1];
+    acc->I[0][2] = (float)I[0][2];
+
+    acc->I[1][0] = (float)I[1][0];
+    acc->I[1][1] = (float)I[1][1];
+    acc->I[1][2] = (float)I[1][2];
+
+    acc->I[2][0] = (float)I[2][0];
+    acc->I[2][1] = (float)I[2][1];
+    acc->I[2][2] = (float)I[2][2];
+
     acc->flags = flags;
 
     md_arena_allocator_destroy(temp_arena);
@@ -410,7 +424,7 @@ static const int FWD_NBRS[13][4] = {
 // - out: user-provided array of size at least (ncell*2+1)^3 - 1
 // - Each element in out is int[3] representing offset {dx, dy, dz}
 // Returns the number of neighbors written
-static inline size_t generate_forward_neighbors3(int ncell[3], int out[][3]) {
+static inline size_t generate_forward_neighbors3(const int ncell[3], int out[][3]) {
     size_t count = 0;
 
     for (int dz = 0; dz <= ncell[2]; ++dz) {        // memory order: z-major
@@ -429,16 +443,15 @@ static inline size_t generate_forward_neighbors3(int ncell[3], int out[][3]) {
             }
         }
     }
-
     return count;
 }
 
 // Generate forward neighbor offsets for a 3D grid cell
 // - ncell: number of cells in the neighborhood (1 → 1-cell, 2 → 2-cell, etc.)
 // - out: user-provided array of size at least (ncell*2+1)^3 - 1
-// - Each element in out is int[3] representing offset {dx, dy, dz}
+// - Each element in out is int[4] representing offset {dx, dy, dz, 0}
 // Returns the number of neighbors written
-static inline size_t generate_forward_neighbors4(int ncell[3], int out[][4]) {
+static inline size_t generate_forward_neighbors4(const int ncell[3], int out[][4]) {
     size_t count = 0;
 
     for (int dz = 0; dz <= ncell[2]; ++dz) {        // memory order: z-major
@@ -458,7 +471,6 @@ static inline size_t generate_forward_neighbors4(int ncell[3], int out[][4]) {
             }
         }
     }
-
     return count;
 }
 

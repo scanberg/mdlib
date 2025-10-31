@@ -26,6 +26,8 @@ typedef struct md_spatial_acc_t {
     float G00, G11, G22;
     float H01, H02, H12;
 
+    float I[3][3];
+
     uint32_t flags;
 
     struct md_allocator_i* alloc;
@@ -56,7 +58,7 @@ void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* a
 
 #if 0
 // Iterate over external points against points within the spatial acceleration structure for a supplied cutoff
-// The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices where the internal points are the 'j' indices
+// The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices
 bool md_spatial_acc_for_each_external_point_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)

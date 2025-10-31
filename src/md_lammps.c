@@ -854,13 +854,13 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	md_array_ensure(sys->atom.type_idx, capacity, alloc);
 	md_array_ensure(sys->atom.flags,    capacity, alloc);
 
-	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
 	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, alloc);
+	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, alloc);
 
 	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
     md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
@@ -881,7 +881,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		float mass   = data->atom_types[i].mass;
 		float radius = data->atom_types[i].radius;
 		
-		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, alloc);
+		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, 0, alloc);
 	}
 
 	int prev_resid = -1;
