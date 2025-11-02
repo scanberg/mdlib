@@ -61,18 +61,37 @@ static inline char extract_char(str_t line, size_t idx) {
     return line.ptr[idx - 1];
 }
 
+// Parse atom serial or residue sequence number, which can be "*****" for missing values
+static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
+	size_t len = end - beg + 1;
+    str_t str = str_trim(str_substr(line, beg - 1, len));
+    if (str_eq_n(str, STR_LIT("*****"), len)) {
+        return INT_MAX;
+    }
+    bool all_digits = true;
+    for (size_t i = 0; i < str.len; ++i) {
+        if (!is_digit(str.ptr[i])) {
+            all_digits = false;
+        }
+    }
+    if (all_digits)
+	    return parse_int(str);
+    else
+		return parse_hex(str);
+}
+
 static inline md_pdb_coordinate_t extract_coord(str_t line) {
     char chain_id = extract_char(line, 22);
     if (!is_alpha(chain_id)) {
 		chain_id = ' ';
 	}
     md_pdb_coordinate_t coord = {
-        .atom_serial = extract_int(line, 7, 11),
+        .atom_serial = parse_id(line, 7, 11),
         .atom_name = {0},
         .alt_loc = extract_char(line, 17),
         .res_name = {0},
         .chain_id = chain_id,
-        .res_seq = extract_int(line, 23, 26),
+        .res_seq = parse_id(line, 23, 26),
         .icode = extract_char(line, 27),
         .x = extract_float(line, 31, 38),
         .y = extract_float(line, 39, 46),
@@ -496,6 +515,10 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
         str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
         md_seq_id_t seq_id = data->atom_coordinates[i].res_seq;
+        if (seq_id == INT_MAX) {
+			// Missing residue sequence id, assign one based on previous residue
+			seq_id = sys->comp.seq_id ? sys->comp.seq_id[sys->comp.count - 1] + 1 : 1;
+		}
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;

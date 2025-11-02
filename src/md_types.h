@@ -52,8 +52,8 @@ enum {
     MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
 
     // Proteins
-    MD_FLAG_AMINO_ACID		    = 0x20,
-    MD_FLAG_SIDE_CHAIN          = 0x40,
+    MD_FLAG_AMINO_ACID		    = 0x40,
+    MD_FLAG_SIDE_CHAIN          = 0x80,
 
     // RNA DNA
     MD_FLAG_NUCLEOTIDE	        = 0x100,
