@@ -4605,12 +4605,14 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 			// Create unique instance id
             {
 				str_t last = sys->inst.count > 0 ? md_system_inst_id(sys, sys->inst.count - 1) : STR_LIT("");
-                md_label_t id = md_util_next_inst_id(last);
-				uint64_t key = md_hash64_str(LBL_TO_STR(id), 0);
+                inst_id = md_util_next_inst_id(last);
+                str_t id_str = LBL_TO_STR(inst_id);
+				uint64_t key = md_hash64_str(id_str, 0);
 
                 while (md_hashset_get(&inst_id_set, key)) {
-                    id = md_util_next_inst_id(LBL_TO_STR(id));
-					key = md_hash64_str(LBL_TO_STR(id), 0);
+                    inst_id = md_util_next_inst_id(id_str);
+                    id_str = LBL_TO_STR(inst_id);
+					key = md_hash64_str(id_str, 0);
                 }
             }
             md_array_push(sys->inst.id, inst_id, alloc);
