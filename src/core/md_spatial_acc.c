@@ -10,6 +10,7 @@
 #include <math.h>
 
 #define SPATIAL_ACC_BUFLEN 1024
+#define SPATIAL_ACC_MAX_NEIGHBOR_CELLS 7
 
 typedef md_128i ivec4_t;
 
@@ -198,6 +199,7 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     MEMSET(acc->cell_max, 0, sizeof(acc->cell_max));
 
 	acc->flags = 0;
+    acc->origin[0] = acc->origin[1] = acc->origin[2] = 0.0f;
 }
 
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double in_cell_ext, const md_unitcell_t* unitcell) {
@@ -408,6 +410,11 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     acc->I[2][1] = (float)I[2][1];
     acc->I[2][2] = (float)I[2][2];
 
+    // Persist origin offset used to construct fractional frame
+    acc->origin[0] = coord_offset.x;
+    acc->origin[1] = coord_offset.y;
+    acc->origin[2] = coord_offset.z;
+
     acc->flags = flags;
 
     md_arena_allocator_destroy(temp_arena);
@@ -468,6 +475,37 @@ static inline size_t generate_forward_neighbors4(const int ncell[3], int out[][4
 					out[count][3] = 0;
                     count++;
                 }
+            }
+        }
+    }
+    return count;
+}
+
+// Generate ALL neighboring cell coordinates (not only forward) overlapping a sphere of radius 'cutoff'
+// around an external point expressed in FRACTIONAL coordinates (u,v,w in [0,1) for periodic axes).
+// Returns the number of neighbors written into out[][4] as absolute integer cell coordinates {cx,cy,cz,0}.
+static inline size_t generate_neighbors4(const md_spatial_acc_t* acc, float fx, float fy, float fz, double cutoff, int out[][4]) {
+    // Determine the base cell index of the external point
+    const int cx = (int)floorf(fx * (float)acc->cell_dim[0]);
+    const int cy = (int)floorf(fy * (float)acc->cell_dim[1]);
+    const int cz = (int)floorf(fz * (float)acc->cell_dim[2]);
+
+    // Number of cells to cover the cutoff in each dimension
+    int ncell[3] = {
+        acc->cell_ext[0] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[0]) : 0,
+        acc->cell_ext[1] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[1]) : 0,
+        acc->cell_ext[2] > 0 ? (int)ceil(cutoff / (double)acc->cell_ext[2]) : 0,
+    };
+
+    size_t count = 0;
+    for (int dz = -ncell[2]; dz <= ncell[2]; ++dz) {
+        for (int dy = -ncell[1]; dy <= ncell[1]; ++dy) {
+            for (int dx = -ncell[0]; dx <= ncell[0]; ++dx) {
+                out[count][0] = cx + dx;
+                out[count][1] = cy + dy;
+                out[count][2] = cz + dz;
+                out[count][3] = 0;
+                ++count;
             }
         }
     }
@@ -1313,9 +1351,11 @@ static bool for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     return true;
 }
 
+#if 1
 static bool for_each_external_point_within_cutoff_triclinic(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
-	// Iterate over external points and test against internal points in the spatial acceleration structure
-
+    (void)acc; (void)ext_x; (void)ext_y; (void)ext_z; (void)ext_count; (void)cutoff; (void)callback; (void)user_param;
+    MD_LOG_ERROR("for_each_external_point_within_cutoff_triclinic: not implemented");
+    return false;
 }
 
 static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
@@ -1326,10 +1366,14 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
     const md_256 v_r2 = md_mm256_set1_ps((float)(cutoff * cutoff));
 
-    // For storing potential neighbors 
-    int neighbors[125][4];
+    // For storing neighbor cell coordinates around a single external point
+    int neighbors[(SPATIAL_ACC_MAX_NEIGHBOR_CELLS*2+1) * (SPATIAL_ACC_MAX_NEIGHBOR_CELLS*2+1) * (SPATIAL_ACC_MAX_NEIGHBOR_CELLS*2+1)][4];
 
-    // @TODO: Perform crude check that the cutoff will not violate the size of our neighborhood capacity
+    const double min_ext = MIN(acc->cell_ext[0], MIN(acc->cell_ext[1], acc->cell_ext[2]));
+    if (min_ext > 0.0 && (cutoff * 1.0 / min_ext) > (double)SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
+        MD_LOG_ERROR("Cutoff radius results in a neighborhood which cannot fit into temporary buffers");
+        return false;
+    }
 
     // Allocate intermediate buffers for passing to callback
     uint32_t buf_i[SPATIAL_ACC_BUFLEN];
@@ -1362,21 +1406,25 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
         (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
         0);
 
-    for (size_t i = 0; i < ext_count; ++i) {
-        float ix = ext_x[i];
-        float iy = ext_y[i];
-        float iz = ext_z[i];
+    for (size_t ei = 0; ei < ext_count; ++ei) {
+        // Real coordinates
+        float rx = ext_x[ei] + acc->origin[0];
+        float ry = ext_y[ei] + acc->origin[1];
+        float rz = ext_z[ei] + acc->origin[2];
 
-        // Convert to fractional coordinates (either periodic or not)
+        // Fractional coordinates c = I * r; wrap periodic axes into [0,1)
+        float fx = acc->I[0][0]*rx + acc->I[0][1]*ry + acc->I[0][2]*rz;
+        float fy = acc->I[1][0]*rx + acc->I[1][1]*ry + acc->I[1][2]*rz;
+        float fz = acc->I[2][0]*rx + acc->I[2][1]*ry + acc->I[2][2]*rz;
 
-        const md_256 v_xi    = md_mm256_set1_ps(ix);
-        const md_256 v_yi    = md_mm256_set1_ps(iy);
-        const md_256 v_zi    = md_mm256_set1_ps(iz);
-        const md_256i v_idxi = md_mm256_set1_epi32((uint32_t)i);
+        if (acc->flags & MD_UNITCELL_PBC_X) fx = fx - floorf(fx);
+        if (acc->flags & MD_UNITCELL_PBC_Y) fy = fy - floorf(fy);
+        if (acc->flags & MD_UNITCELL_PBC_Z) fz = fz - floorf(fz);
 
-        // Get overlapping cells of external point and cutoff
-        
+        const md_256i v_idxi = md_mm256_set1_epi32((uint32_t)ei);
 
+        // Get cells overlapping external point and cutoff
+        size_t num_neighbors = generate_neighbors4(acc, fx, fy, fz, cutoff, neighbors);
         for (uint32_t n = 0; n < num_neighbors; ++n) {
             ivec4_t n_v = ivec4_load(neighbors[n]);
 
@@ -1394,7 +1442,7 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
             int n_arr[4];
             ivec4_store(n_arr, n_v);
 
-            const uint32_t cj    = CELL_INDEX(n_arr[0], n_arr[1], n_arr[2]);
+            const uint32_t cj    = CELL_INDEX((uint32_t)n_arr[0], (uint32_t)n_arr[1], (uint32_t)n_arr[2]);
             const uint32_t off_j = CELL_OFFSET(cj);
             const uint32_t len_j = CELL_LENGTH(cj);
             if (len_j == 0) continue;
@@ -1414,18 +1462,20 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
 
             const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
+            // Shift external point by periodic image offset
+            const md_256 v_xi = md_mm256_add_ps(md_mm256_set1_ps(fx), shift_x);
+            const md_256 v_yi = md_mm256_add_ps(md_mm256_set1_ps(fy), shift_y);
+            const md_256 v_zi = md_mm256_add_ps(md_mm256_set1_ps(fz), shift_z);
+
             const float* elem_j_x = element_x + off_j;
             const float* elem_j_y = element_y + off_j;
             const float* elem_j_z = element_z + off_j;
             const uint32_t* elem_j_idx = element_i + off_j;
 
-            for (uint32_t i = 0; i < len_i; ++i) {
-                POSSIBLY_INVOKE_CALLBACK(ALIGN_TO(len_j, 8));
+            POSSIBLY_INVOKE_CALLBACK(ALIGN_TO(len_j, 8));
 
-
-
-                md_256i v_j = inc;
-                for (uint32_t j = 0; j < len_j; j += 8) {
+            md_256i v_j = inc;
+            for (uint32_t j = 0; j < len_j; j += 8) {
                     const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len_j));
 
                     const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
@@ -1457,7 +1507,6 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
                     }
 
                     v_j = md_mm256_add_epi32(v_j, add8);
-                }
             }
         }
     }
@@ -1466,6 +1515,7 @@ static bool for_each_external_point_within_cutoff_ortho(const md_spatial_acc_t* 
 
     return true;
 }
+#endif
 
 #undef SPATIAL_ACC_BUFLEN
 #undef CELL_INDEX
@@ -1504,14 +1554,17 @@ bool md_spatial_acc_for_each_external_point_within_cutoff(const md_spatial_acc_t
     ASSERT(callback);
 
     if (acc->flags & MD_UNITCELL_TRICLINIC) {
-
-    }
-    else {
-
+        MD_LOG_ERROR("for_each_external_point_within_cutoff: triclinic not implemented");
+        return false;
+    } else {
+        return for_each_external_point_within_cutoff_ortho(acc, ext_x, ext_y, ext_z, ext_count, cutoff, callback, user_param);
     }
 }
 
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
 bool md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, md_spatial_acc_pair_callback_t callback, void* user_param) {
-
+    // Fallback: use cutoff equal to smallest cell extent to approximate 1-cell neighborhood
+    const double min_ext = MIN(acc->cell_ext[0], MIN(acc->cell_ext[1], acc->cell_ext[2]));
+    if (min_ext == 0.0) return false;
+    return md_spatial_acc_for_each_external_point_within_cutoff(acc, ext_x, ext_y, ext_z, ext_count, min_ext, callback, user_param);
 }

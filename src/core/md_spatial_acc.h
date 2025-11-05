@@ -27,6 +27,8 @@ typedef struct md_spatial_acc_t {
     float H01, H02, H12;
 
     float I[3][3];
+    // Origin offset (added to input coords before multiplying with I) to maintain same fractional frame as build
+    float origin[3];
 
     uint32_t flags;
 
