@@ -2721,6 +2721,26 @@ const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
 	return NULL;
 }
 
+size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			return vlx->rsp.nto[nto_idx].coefficients.size[0];
+		}
+	}
+	return 0;
+}
+
+const double* md_vlx_rsp_nto_ao_coefficients(const md_vlx_t* vlx, size_t nto_idx, md_vlx_nto_type_t type) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
+			// We return the data pointer to the LUMO orbital index
+			return orb->coefficients.data + vlx->scf.lumo_idx[0] * orb->coefficients.size[0];
+		}
+	}
+	return NULL;
+}
+
 size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->vib.number_of_normal_modes;
@@ -3080,6 +3100,21 @@ static inline size_t get_matrix_index(size_t row, size_t col) {
 	size_t i = MAX(row, col);
 	size_t j = MIN(row, col);
 	return (i * (i + 1)) / 2 + j;
+}
+
+// The overlap matrix is a square, symmetric matrix [N][N], this returns the length N
+size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.S.size[0];
+	}
+	return 0;
+}
+
+const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.S.data;
+	}
+	return NULL;
 }
 
 // Returns the size of the density matrix in number of elements.

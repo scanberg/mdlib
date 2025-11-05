@@ -73,6 +73,10 @@ const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t 
 // Atomic orbital data
 bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
 
+// The overlap matrix (S) is a square, symmetric matrix [N][N], this returns the length N
+size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx);
+
 // Get the required element size of a compact upper triangular matrix representation
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
 
@@ -106,6 +110,10 @@ const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
+
+// returns the AO coefficients for the given NTO
+size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx);
+const double* md_vlx_rsp_nto_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx, md_vlx_nto_type_t type);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)
