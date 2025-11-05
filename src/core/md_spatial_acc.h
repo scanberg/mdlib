@@ -44,7 +44,7 @@ typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint
 //typedef void (*md_spatial_acc_callback_t)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
 
 // It is recommended to use a cell extent that is equal to the maximum search radius
-void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
+void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
 void md_spatial_acc_free(md_spatial_acc_t* acc);
 
 // --- INTERNAL PAIR TESTS ---
@@ -58,11 +58,11 @@ void md_spatial_acc_for_each_pair_in_neighboring_cells(const md_spatial_acc_t* a
 
 // --- EXTERNAL PAIR TESTS ---
 
-#if 0
 // Iterate over external points against points within the spatial acceleration structure for a supplied cutoff
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices
-bool md_spatial_acc_for_each_external_point_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
+bool md_spatial_acc_for_each_external_point_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
+#if 0
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
 bool md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, md_spatial_acc_pair_callback_t callback, void* user_param);
 #endif

@@ -259,7 +259,7 @@ UTEST(spatial_hash, n2) {
         md_unitcell_t test_cell = md_unitcell_from_extent(ext[0], ext[1], ext[2]);
 
         md_spatial_acc_t sa = { .alloc = alloc };
-		md_spatial_acc_init(&sa, x, y, z, test_count, max_rad, &test_cell);
+		md_spatial_acc_init(&sa, x, y, z, NULL, test_count, max_rad, &test_cell);
 
         for (double rad = 3.0; rad <= 6.0; rad += 0.5) {
             size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
@@ -351,7 +351,7 @@ UTEST(spatial_hash, n2) {
     // Spatial acc implementation
     start = md_time_current();
     md_spatial_acc_t acc = {.alloc = alloc};
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, &cell);
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, &cell);
     md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
     end = md_time_current();
@@ -362,6 +362,17 @@ UTEST(spatial_hash, n2) {
     if (sa_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, sa_count);
     }
+
+    start = md_time_current();
+    count = 0;
+    md_spatial_acc_for_each_external_point_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, spatial_acc_neighbor_callback, &count);
+	end = md_time_current();
+    sa_count = count;
+	printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
+	size_t ext_expected_count = expected_count * 2 + sys.atom.count;
+	if (sa_count != ext_expected_count) {
+		printf("Count mismatch: expected %zu, got %zu\n", ext_expected_count, sa_count);
+	}
 
     // Brute force
     start = md_time_current();

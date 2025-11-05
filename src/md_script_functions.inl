@@ -314,7 +314,7 @@ static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
 static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
-//static int _split_bf                    (data_t*, data_t[], eval_context_t*);
+static int _split_bf_int                (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
@@ -393,6 +393,9 @@ static int _density_y(data_t*, data_t[], eval_context_t*);
 static int _density_z(data_t*, data_t[], eval_context_t*);
 
 static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
+
+// Misc
+static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> int
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
@@ -686,6 +689,7 @@ static procedure_t procedures[] = {
     {CSTR("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
     {CSTR("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
+    {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     // --- GEOMETRICAL OPERATIONS ---
     {CSTR("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
@@ -702,9 +706,10 @@ static procedure_t procedures[] = {
     {CSTR("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
-    {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-    {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-    //{CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
+    {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+
+    {CSTR("split"),     TI_BITFIELD_ARR, 2,  {TI_BITFIELD, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
     {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_inst,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -2680,6 +2685,92 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+typedef struct contact_count_callback_data_t {
+    const md_bitfield_t* bf;
+    size_t count;
+} contact_count_callback_data_t;
+
+void contact_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+	contact_count_callback_data_t* data = (contact_count_callback_data_t*)user_param;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        size_t test = md_bitfield_test_bit(data->bf, j_idx[k]) ? 0 : 1;
+        data->count += test;
+	}
+}
+
+static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    const float cutoff = as_float(arg[2]);
+
+    const md_bitfield_t* bf_a = as_bitfield(arg[0]);
+    const md_bitfield_t* bf_b = as_bitfield(arg[1]);
+	int dim_a = element_count(arg[0]);
+	int dim_b = element_count(arg[1]);
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+
+        size_t dst_len = type_info_array_len(dst->type);
+        if (dst_len != dim_a) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Mismatching size in dst array");
+            return -1;
+        } 
+
+		float* out_counts = (float*)dst->ptr;
+
+		md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_alloc);
+        md_bitfield_t tmp_bf = md_bitfield_create(ctx->temp_alloc);
+
+        if (dim_b > 1) {
+			for (int i = 0; i < dim_b; ++i) {
+				md_bitfield_or_inplace(&tmp_bf, &bf_b[i]);
+            }
+			bf_b = &tmp_bf;
+        }
+
+        size_t num_indices = md_bitfield_popcount(&tmp_bf);
+		int32_t* indices = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_indices);
+
+		md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
+		md_bitfield_iter_extract_indices(indices, num_indices, it);
+
+        size_t count = 0;
+		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
+		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, ctx->mol->atom.count, cutoff, &ctx->mol->unitcell);
+
+		md_array(int32_t) a_indices = 0;
+
+        for (size_t i = 0; i < dim_a; ++i) {
+			const md_bitfield_t* bf = &bf_a[i];
+			size_t a_length = md_bitfield_popcount(bf);
+			md_array_ensure(a_indices, a_length, ctx->temp_alloc);
+			md_bitfield_iter_extract_indices(a_indices, a_length, md_bitfield_iter_create(bf));
+
+            		// Iterate over atoms in set A and exclude those potential contact points
+            contact_count_callback_data_t data = {
+                .bf = bf,
+                .count = 0
+		    };
+
+			md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_callback, &data);
+			out_counts[i] = (float)data.count;
+		}
+
+		md_vm_arena_temp_end(tmp);
+    } else {
+        // Validation
+        if (cutoff <= 0) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The cutoff distance must be positive.");
+            return -1;
+        }
+        return dim_a;
+    }
+    return 0;
+}
+
 static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol);
@@ -4410,6 +4501,56 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     return 0;
+}
+
+// Split a bitfield into an array of bitfields given a criterion (residue, chain, structure or integer > 0)
+static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    // Implement integer split for now
+	(void)ctx;
+
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_INT));
+
+	int N = as_int(arg[1]);
+
+    if (dst) {
+        if (N <= 0) {
+            return 0;
+        }
+
+		md_bitfield_t* dst_bf_arr = as_bitfield(*dst);
+		const md_bitfield_t* src_bf = (md_bitfield_t*)arg[0].ptr;
+
+		// Modify bitfield if we have a context
+		if (ctx->mol_ctx) {
+			md_bitfield_t tmp_bf = { 0 };
+			md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+			md_bitfield_and(&tmp_bf, src_bf, ctx->mol_ctx);
+			src_bf = &tmp_bf;
+        }
+
+        uint64_t src_beg_bit = md_bitfield_beg_bit(src_bf);
+		uint64_t src_end_bit = md_bitfield_end_bit(src_bf);
+		uint64_t src_size = src_end_bit - src_beg_bit;
+
+		// Split bitfield into N bitfields
+        for (uint64_t i = 0; i < (uint64_t)N; ++i) {
+			uint64_t range_beg = (src_size * i) / N;
+			uint64_t range_end = (i == N - 1) ? src_size : (src_size * (i + 1)) / N;
+
+			md_bitfield_t* bf = &dst_bf_arr[i];
+			md_bitfield_set_range(bf, src_beg_bit + range_beg, src_beg_bit + range_end);
+			md_bitfield_and_inplace(bf, src_bf);
+		}
+        return 0;
+    } else {
+        // Static check, return number of bitfields returned
+        if (N <= 0) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Split count must be greater than zero");
+            return STATIC_VALIDATION_ERROR;
+		}
+		return N;
+    }
 }
 
 #if 0

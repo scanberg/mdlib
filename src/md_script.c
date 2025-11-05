@@ -47,6 +47,7 @@
 #include <core/md_os.h>
 #include <core/md_unit.h>
 #include <core/md_spatial_hash.h>
+#include <core/md_spatial_acc.h>
 #include <core/md_vec_math.h>
 #include <core/md_str_builder.h>
 #include <core/md_hash.h>
@@ -2388,16 +2389,17 @@ ast_node_t* parse_value(parse_context_t* ctx) {
                 if (is_number(end_tok.type)) {
                     end = parse_float(tokenizer_consume_next(ctx->tokenizer).str);
                     node->token = concat_tokens(node->token, end_tok);
-                    // Only integer stride is supported
-                    if (mid_is_float) {
-                        // If stride is float, fall back to error later in static check by marking as float range
-                        is_float = true; // Force FRANGE to trigger error or ignore stride
-                    } else {
-                        step = (int)mid;
-                    }
                 } else {
                     // Missing end, treat as open range
                     end = FLT_MAX;
+                }
+
+                // Only integer stride is supported
+                if (mid_is_float) {
+                    // If stride is float, fall back to error later in static check by marking as float range
+                    is_float = true; // Force FRANGE to trigger error or ignore stride
+                } else {
+                    step = (int)mid;
                 }
             } else {
                 // No second colon -> simple range beg:end (mid is end)
@@ -5166,11 +5168,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;
                     node->data.type = node->lhs_context_types[0];
                     if (node->data.type.base_type == TYPE_BITFIELD) {
-                        node->data.type.dim[0] *= (int)arr_len;
                         // This is a flattening of the dimensions
-                        int len = dim_size(node->data.type.dim);
                         MEMSET(node->data.type.dim, 0, sizeof(node->data.type.dim));
-                        node->data.type.dim[0] = len;
+                        node->data.type.dim[0] = (int)arr_len;
                     } else {
                         node->data.type.dim[0] = (int)arr_len;
                     }
