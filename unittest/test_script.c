@@ -165,6 +165,38 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
     }
 }
 
+static bool compare_selection(const char* exprA, const char* exprB) {
+    bool result = false;
+    md_bitfield_t a = {0};
+    md_bitfield_t b = {0};
+    md_bitfield_init(&a, md_get_temp_allocator());
+    md_bitfield_init(&b, md_get_temp_allocator());
+
+    if (!eval_selection(&a, str_from_cstr(exprA), &test_mol)) {
+        printf("Failed evaluation of expression: '%s'\n", exprA);
+        goto done;
+    }
+    if (!eval_selection(&b, str_from_cstr(exprB), &test_mol)) {
+        printf("Failed evaluation of expression: '%s'\n", exprB);
+        goto done;
+    }
+
+    bool cmp_res = bit_cmp((uint64_t*)a.bits, (uint64_t*)b.bits, 0, ATOM_COUNT);
+    if (!cmp_res) {
+        printf("Got (A):\n");
+        print_bits((uint64_t*)a.bits, ATOM_COUNT);
+        printf("\nExpected (B)\n");
+        print_bits((uint64_t*)b.bits, ATOM_COUNT);
+        printf("\n");
+        goto done;
+    }
+    result = true;
+done:
+    md_bitfield_free(&a);
+    md_bitfield_free(&b);
+    return result;
+}
+
 #define SETUP_EVAL_CTX(ir, mol, arena) \
 	md_allocator_i temp_alloc = md_vm_arena_create_interface(&arena); \
 	eval_context_t ctx = { \
@@ -548,6 +580,60 @@ UTEST(script, array) {
     }
 
     {
+        // Stride on selection ranges: residue(1:2:3) -> residues {1,3}
+        str_t src = STR_LIT(
+            "s = residue(1:2:3);"
+        );
+
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* s = get_identifier(ir, STR_LIT("s"));
+        EXPECT_TRUE(s);
+        if (s) {
+            EXPECT_EQ(s->data->type.base_type, TYPE_BITFIELD);
+            EXPECT_EQ(s->data->type.dim[0], 2);
+        }
+    }
+
+    {
+        // Stride on index ranges for coordinate selection: coord(1:2:5) -> atoms {1,3,5}
+        str_t src = STR_LIT(
+            "c = coord(1:2:5);"
+        );
+
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* c  = get_identifier(ir, STR_LIT("c"));
+        EXPECT_TRUE(c);
+        if (c) {
+            EXPECT_EQ(c->data->type.base_type,  TYPE_FLOAT);
+            EXPECT_EQ(c->data->type.dim[0], 3);
+            EXPECT_EQ(c->data->type.dim[1], 3);
+
+            // Evaluate and verify values match mol_x/y/z at indices 0,2,4
+            eval_context_t ctx = {
+                .ir = ir,
+                .mol = &test_mol,
+                .temp_alloc = arena,
+                .alloc = arena,
+            };
+            data_t data = {0};
+            allocate_data(&data, c->data->type, arena);
+            evaluate_node(&data, c->node, &ctx);
+            const float* coords = (const float*)data.ptr;
+            for (int i = 0; i < 3; ++i) {
+                const int idx = i * 3;
+                const int src_idx = i * 2; // 0,2,4
+                EXPECT_NEAR(mol_x[src_idx], coords[idx + 0], 1.0e-6f);
+                EXPECT_NEAR(mol_y[src_idx], coords[idx + 1], 1.0e-6f);
+                EXPECT_NEAR(mol_z[src_idx], coords[idx + 2], 1.0e-6f);
+            }
+        }
+    }
+
+    {
         md_script_ir_clear(ir);
         ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
@@ -760,6 +846,41 @@ UTEST(script, array_subscript) {
         }
     }
 
+    {
+        // Strided subscript over first dimension: pick x-component for atoms {1,3,5,7}
+        str_t src = STR_LIT(
+            "xyz = coord(1:8);"
+            "xs  = xyz[1:2:7,1];"
+        );
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = &test_mol,
+            .temp_alloc = arena,
+            .alloc = arena,
+        };
+
+        identifier_t* xs = get_identifier(ir, STR_LIT("xs"));
+        EXPECT_TRUE(xs);
+        if (xs) {
+            EXPECT_TRUE(xs->data);
+            EXPECT_EQ(4, xs->data->type.dim[0]);
+            EXPECT_EQ(0, xs->data->type.dim[1]);
+
+            data_t data = {0};
+            allocate_data(&data, xs->data->type, arena);
+            evaluate_node(&data, xs->node, &ctx);
+            const float* x = (const float*)data.ptr;
+            EXPECT_NEAR(mol_x[0], x[0], 1.0e-6f);
+            EXPECT_NEAR(mol_x[2], x[1], 1.0e-6f);
+            EXPECT_NEAR(mol_x[4], x[2], 1.0e-6f);
+            EXPECT_NEAR(mol_x[6], x[3], 1.0e-6f);
+        }
+    }
+
     md_vm_arena_destroy(arena);
 }
 
@@ -923,6 +1044,23 @@ UTEST(script, selection) {
     EXPECT_TRUE(test_selection("label('CA')",       "0000101000001010"));
     EXPECT_TRUE(test_selection("atom(1) in resname('PFT')", "0000000010001000"));
     //TEST_SELECTION("atom(1:2) or element('O') in residue(:)", "1001000010001000");
+}
+
+UTEST(script, stride_procedures_selectors) {
+    // Stride over residues (components) equals explicit union of picks
+    EXPECT_TRUE(compare_selection("residue(1:2:4)", "residue(1) or residue(3)"));
+
+    // Stride over instances equals explicit union
+    EXPECT_TRUE(compare_selection("instance(1:2:4)", "instance(1) or instance(3)"));
+
+    // Note: test dataset has a single chain; skip chain stride validation here.
+
+    // Stride over atoms
+    EXPECT_TRUE(test_selection("atom(1:2:8)", "1010101000000000"));
+    EXPECT_TRUE(test_selection("atom(2:3:16)", "0100100100100100"));
+
+    // Stride over elements by atomic number ranges (odd Z up to 10 -> H(1), N(7))
+    EXPECT_TRUE(test_selection("element(1:2:10)", "1010000010100100"));
 }
 
 UTEST_F(script, compile_script) {
@@ -1094,6 +1232,13 @@ UTEST_F(script, property_compute) {
     }
 
     {
+        // Strided integer range constant in an expression
+        md_script_ir_clear(ir);
+        md_script_ir_compile_from_source(ir, STR_LIT("d2 = 1:2:5 in residue(1:3);"), mol, traj, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+    }
+
+    {
         md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 2;"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
@@ -1137,6 +1282,23 @@ UTEST_F(script, property_compute) {
     }
 
     md_arena_allocator_destroy(alloc);
+}
+
+UTEST(script, stride_invalid_ranges) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+
+    // Step zero should fail static check
+    md_script_ir_clear(ir);
+    ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = residue(1:0:5)"), ir, &test_mol, arena);
+    EXPECT_FALSE(node);
+
+    // Descending range with positive step should fail (only ascending ranges supported)
+    md_script_ir_clear(ir);
+    node = parse_and_type_check_expression(STR_LIT("x = residue(5:2:1)"), ir, &test_mol, arena);
+    EXPECT_FALSE(node);
+
+    md_vm_arena_destroy(arena);
 }
 
 #define NUM_THREADS 8

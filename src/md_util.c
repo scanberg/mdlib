@@ -4444,28 +4444,6 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
     }
 }
 
-static inline bool has_id(const md_label_t* ids, size_t id_count, md_label_t id) {
-    str_t s = LBL_TO_STR(id);
-    for (size_t i = 0; i < id_count; ++i) {
-        if (str_eq(s, LBL_TO_STR(ids[i]))) return true;
-    }
-    return false;
-}
-
-// Generate the next unique chain id, skipping ones present in 'existing'.
-// If 'existing_count'==0, this is equivalent to md_util_next_chain_id(last).
-static inline md_label_t md_util_next_unique_inst_id(const md_label_t* existing, size_t existing_count) {
-    str_t last = (existing && existing_count > 0) ? LBL_TO_STR(existing[existing_count - 1]) : STR_LIT("");
-    md_label_t id = md_util_next_inst_id(last);
-
-    if (existing) {
-        while (has_id(existing, existing_count, id)) {
-            id = md_util_next_inst_id(LBL_TO_STR(id));
-        }
-    }
-    return id;
-}
-
 // Define what size of components we group into same instances
 #define MAX_GROUPED_COMP_SIZE 4
 
