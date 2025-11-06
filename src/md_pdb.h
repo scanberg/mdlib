@@ -13,7 +13,7 @@ struct md_system_t;
 struct md_allocator_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 struct md_mat4_t;
 
 enum {
@@ -174,8 +174,8 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
-bool md_pdb_molecule_init(struct md_system_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
-struct md_molecule_loader_i* md_pdb_molecule_api(void);
+bool md_pdb_system_init(struct md_system_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
+struct md_system_loader_i* md_pdb_system_loader(void);
 
 // TRAJECTORY
 struct md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);

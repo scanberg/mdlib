@@ -2,7 +2,7 @@
 #include <math.h>
 
 #include <md_mmcif.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
 
@@ -12,7 +12,7 @@ UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
 
     if (result) {
@@ -36,7 +36,7 @@ UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
@@ -61,7 +61,7 @@ UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_system_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
     md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
@@ -208,7 +208,7 @@ UTEST(mmcif, parse_section) {
         };
 
         mmcif_section_t sec = {0};
-        ASSERT_TRUE(mmcif_parse_section(&sec, &state, false, alloc));
+        ASSERT_TRUE(mmcif_parse_section(&sec, &state, alloc));
         EXPECT_EQ(8, sec.num_fields);
         EXPECT_EQ(1, sec.num_rows);
 
@@ -247,7 +247,7 @@ UTEST(mmcif, parse_section) {
         EXPECT_STREQ("?", str_ptr(sec.values[7]));
     }
 
-    str_t section_looped = STR_LIT(
+    str_t item_looped = STR_LIT(
         "_entity.id \n"
         "_entity.type \n"
         "_entity.src_method \n"
@@ -267,14 +267,15 @@ UTEST(mmcif, parse_section) {
     );
 
     {
-        md_buffered_reader_t reader = md_buffered_reader_from_str(section_looped);
+        md_buffered_reader_t reader = md_buffered_reader_from_str(item_looped);
         mmcif_parse_state_t state = {
             .reader = &reader,
             .sb = md_strb_create(alloc),
+            .in_loop = true,
         };
 
         mmcif_section_t sec = {0};
-        ASSERT_TRUE(mmcif_parse_section(&sec, &state, true, alloc));
+        ASSERT_TRUE(mmcif_parse_section(&sec, &state, alloc));
 
         EXPECT_EQ(10, sec.num_fields);
         EXPECT_EQ(5, sec.num_rows);
@@ -330,7 +331,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t mol = {0};
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
@@ -362,9 +363,47 @@ UTEST(mmcif, nonexistent_file) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t mol = {0};
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
     
     // Should be safe to free even when init failed
     md_system_free(&mol, alloc);
+}
+
+UTEST(mmcif, advance_to_next_control) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+
+    mmcif_parse_state_t state = {
+        .reader = &reader,
+        .sb = md_strb_create(alloc),
+    };
+
+    str_t tok;
+
+    EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
+    EXPECT_TRUE(mmcif_next_token(&tok, &state));
+    EXPECT_TRUE(str_eq(tok, STR_LIT("data_XXXX")));
+
+    EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
+    EXPECT_TRUE(mmcif_next_token(&tok, &state));
+    EXPECT_TRUE(str_eq(tok, STR_LIT("loop_")));
+
+    EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
+    EXPECT_TRUE(mmcif_next_token(&tok, &state));
+    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.name")));
+
+    EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
+    EXPECT_TRUE(mmcif_next_token(&tok, &state));
+    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.pdbx_ordinal")));
+
+    EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
+    EXPECT_TRUE(mmcif_next_token(&tok, &state));
+    EXPECT_TRUE(str_eq(tok, STR_LIT("_struct.entry_id")));
+
+    md_vm_arena_destroy(alloc);
 }

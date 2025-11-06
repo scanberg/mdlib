@@ -12,10 +12,15 @@
 #endif
 
 enum {
-    MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
-    MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
-    MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
+    MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
+    MD_SECONDARY_STRUCTURE_COIL,
+    MD_SECONDARY_STRUCTURE_TURN,
+    MD_SECONDARY_STRUCTURE_BEND,
+    MD_SECONDARY_STRUCTURE_HELIX_310,
+    MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+    MD_SECONDARY_STRUCTURE_HELIX_PI,
+    MD_SECONDARY_STRUCTURE_BETA_SHEET,
+    MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
 };
 
 enum {
@@ -28,26 +33,27 @@ enum {
 
 // Cell information
 enum {
-    MD_UNIT_CELL_FLAG_NONE          = 0,
-    MD_UNIT_CELL_FLAG_ORTHO         = 1,
-    MD_UNIT_CELL_FLAG_TRICLINIC     = 2,
-    MD_UNIT_CELL_FLAG_PBC_X         = 4,
-    MD_UNIT_CELL_FLAG_PBC_Y         = 8,
-    MD_UNIT_CELL_FLAG_PBC_Z         = 16,
-    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
+    MD_UNITCELL_NONE          = 0,
+    MD_UNITCELL_ORTHO         = 1,
+    MD_UNITCELL_TRICLINIC     = 2,
+    MD_UNITCELL_PBC_X         = 4,
+    MD_UNITCELL_PBC_Y         = 8,
+    MD_UNITCELL_PBC_Z         = 16,
+    MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
+    MD_FLAG_COARSE_GRAINED      = 0x1,  // Coarse grained representation
 
     // Polymers
     MD_FLAG_POLYMER             = 0x10,     // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
 
     // Proteins
-    MD_FLAG_AMINO_ACID		    = 0x20,
-    MD_FLAG_SIDE_CHAIN          = 0x40,
+    MD_FLAG_AMINO_ACID		    = 0x40,
+    MD_FLAG_SIDE_CHAIN          = 0x80,
 
     // RNA DNA
     MD_FLAG_NUCLEOTIDE	        = 0x100,
@@ -68,12 +74,21 @@ enum {
     MD_FLAG_SP2                 = 0x200000,
     MD_FLAG_SP3                 = 0x400000,
     MD_FLAG_AROMATIC            = 0x800000,
+
+//    MD_FLAG_HBOND_DONOR         = 0x1000000,
+//    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
 };
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
 enum {
+    MD_BOND_FLAG_COVALENT       = 0x1,
+    MD_BOND_FLAG_DOUBLE         = 0x2,
+    MD_BOND_FLAG_TRIPLE         = 0x4,
+    MD_BOND_FLAG_QUADRUPLE      = 0x8,
     MD_BOND_FLAG_AROMATIC       = 0x10,
-    MD_BOND_FLAG_INTER          = 0x20,
+    MD_BOND_FLAG_INTER          = 0x20, // Inter residue / component
+    MD_BOND_FLAG_COORDINATE     = 0x40, // Coordinate / Dative
+    MD_BOND_FLAG_METAL          = 0x80, // Involves a metal atom
 };
 
 // Atomic number constants for all elements (Z values)
@@ -206,7 +221,7 @@ typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_seq_id_t;
 typedef int32_t     md_bond_idx_t;
-typedef uint8_t     md_atom_type_idx_t;
+typedef uint16_t    md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
 typedef uint32_t    md_flags_t;
 typedef uint8_t     md_atomic_number_t;
@@ -228,15 +243,220 @@ typedef struct md_urange_t {
     uint32_t end;
 } md_urange_t;
 
-typedef struct md_unit_cell_t {
-    mat3_t basis;
-    mat3_t inv_basis;
+typedef struct md_unitcell_t {
+    double x, xy, xz;
+    double y, yz;
+    double z;
     uint32_t flags;
-} md_unit_cell_t;
+} md_unitcell_t;
 
-typedef struct md_bond_pair_t {
-    int32_t idx[2];
-} md_bond_pair_t;
+static inline size_t md_unitcell_print(char* out_buf, size_t buf_cap, const md_unitcell_t* cell) {
+    int len = snprintf(out_buf, buf_cap, "x: %f, y: %f, z: %f \nxy: %f, xz: %f, yz: %f \nflags: %i", cell->x, cell->y, cell->z, cell->xy, cell->xz, cell->yz, cell->flags);
+    return len;
+}
+
+// constructors for unitcell
+
+static inline md_unitcell_t md_unitcell_none(void) {
+    md_unitcell_t cell = {0};
+    return cell;
+}
+
+static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {
+    uint32_t flags = 0;
+
+    if (xy == 0.0 && xz == 0.0 && yz == 0.0) {
+        if (!(x == 0.0 && y == 0.0 && z == 0.0) && !(x == 1.0 && y == 1.0 && z == 1.0)) {
+            flags |= MD_UNITCELL_ORTHO;
+        }
+    } else {
+        flags |= MD_UNITCELL_TRICLINIC;
+    }
+
+    if (flags) {
+        if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
+        if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
+        if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
+    }
+
+    md_unitcell_t cell = {.x = x, .xy = xy, .xz = xz, .y = y, .yz = yz, .z = z, .flags = flags};
+    return cell;
+}
+
+static inline md_unitcell_t md_unitcell_from_extent(double x, double y, double z) {
+    return md_unitcell_from_basis_parameters(x, y, z, 0, 0, 0);    
+}
+
+// From here: https://www.arianarab.com/post/crystal-structure-software
+// Assumes that all input angles (alpha, beta, gamma) are given in degrees
+static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
+    if (a == 0 && b == 0 && c == 0 && alpha == 0 && beta == 0 && gamma == 0) {
+        return md_unitcell_none();
+    }
+
+    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
+        return md_unitcell_from_basis_parameters(a, b, c, 0, 0, 0);
+    }
+
+    alpha = DEG_TO_RAD(alpha);
+    beta  = DEG_TO_RAD(beta);
+    gamma = DEG_TO_RAD(gamma);
+
+    // https://docs.lammps.org/Howto_triclinic.html
+    double x = a;
+    double xy = b * cos(gamma);
+    double xz = c * cos(beta);
+    double y = b * sin(gamma);
+    double yz = (b * c * cos(alpha) - xy * xz) / y;
+    double z = sqrt(c * c - xz * xz - yz * yz);
+
+    return md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+}
+
+static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+}
+
+static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3]) {
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+}
+
+// Getters and helper functionality
+static inline uint32_t md_unitcell_flags(const md_unitcell_t* cell) {
+    if (cell) return cell->flags;
+    return 0;
+}
+
+static inline bool md_unitcell_is_triclinic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_TRICLINIC; }
+static inline bool md_unitcell_is_orthorhombic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_ORTHO; }
+
+static inline vec3_t md_unitcell_diag_vec3(const md_unitcell_t* cell) {
+    if (cell) return vec3_set((float)cell->x, (float)cell->y, (float)cell->z);
+    return vec3_zero();
+}
+
+static inline vec4_t md_unitcell_diag_vec4(const md_unitcell_t* cell) {
+    if (cell) return vec4_set((float)cell->x, (float)cell->y, (float)cell->z, 0);
+    return vec4_zero();
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat3_t md_unitcell_basis_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        mat3_t A = {(float)cell->x, 0, 0, (float)cell->xy, (float)cell->y, 0, (float)cell->xz, (float)cell->yz, (float)cell->z};
+        return A;
+    }
+    return mat3_ident();
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
+    if (cell) {
+        mat4_t A = {
+            (float)cell->x, 0, 0, 0,
+            (float)cell->xy, (float)cell->y, 0, 0,
+            (float)cell->xz, (float)cell->yz, (float)cell->z, 0,
+            0, 0, 0, 0
+        };
+        return A;
+    }
+    return mat4_ident();
+}
+
+static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
+    if (cell) {
+        out_A[0][0] = cell->x;
+        out_A[0][1] = 0;
+        out_A[0][2] = 0;
+        out_A[1][0] = cell->xy;
+        out_A[1][1] = cell->y;
+        out_A[1][2] = 0;
+        out_A[2][0] = cell->xz;
+        out_A[2][1] = cell->yz;
+        out_A[2][2] = cell->z;
+    }
+}
+
+// returns the unit_cell basis matrix (A)
+static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        if (!cell->flags) {
+            mat3_t zero = {0};
+            return zero;
+        }
+        const double i11 = 1.0 / cell->x;
+        const double i22 = 1.0 / cell->y;
+        const double i33 = 1.0 / cell->z;
+        const double i12 = -cell->xy / (cell->x * cell->y);
+        const double i13 = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        const double i23 = -cell->yz / (cell->y * cell->z);
+        mat3_t Ai = {(float)i11, 0, 0, (float)i12, (float)i22, 0, (float)i13, (float)i23, (float)i33};
+        return Ai;
+    }
+    return mat3_ident();
+}
+
+static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_unitcell_t* cell) {
+    if (cell) {
+        if (!cell->flags) {
+            MEMSET(out_Ai, 0, sizeof(double) * 9);
+            return;
+        }
+        out_Ai[0][0] = 1.0 / cell->x;
+        out_Ai[0][1] = 0;
+        out_Ai[0][2] = 0;
+        out_Ai[1][0] = -cell->xy / (cell->x * cell->y);
+        out_Ai[1][1] = 1.0 / cell->y;
+        out_Ai[1][2] = 0;
+        out_Ai[2][0] = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        out_Ai[2][1] = -cell->yz / (cell->y * cell->z);
+        out_Ai[2][2] = 1.0 / cell->z;
+    }
+}
+
+// returns the unitcell metric tensor G=(A^T)A
+static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
+    if (cell) {
+        const double g11 = cell->x * cell->x;
+        const double g22 = cell->xy * cell->xy + cell->y * cell->y;
+        const double g33 = cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z;
+        const double g12 = cell->x * cell->xy;
+        const double g13 = cell->x * cell->xz;
+        const double g23 = cell->xy * cell->xz + cell->y * cell->yz;
+        mat3_t G = {(float)g11, (float)g12, (float)g13, (float)g12, (float)g22, (float)g23, (float)g13, (float)g23, (float)g33};
+        return G;
+    }
+    return mat3_ident();
+}
+
+static inline void md_unitcell_extract_cell_parameters(double* a, double* b, double* c, double* alpha, double* beta, double* gamma, const md_unitcell_t* cell) {
+    ASSERT(cell);
+
+    // lengths
+    *a = fabs(cell->x);
+    *b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
+    *c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
+
+    // angles (radians)
+    *alpha = acos((cell->xy * cell->xz + cell->y * cell->yz) / (*b * *c));
+    *beta  = acos((cell->x * cell->xz) / (*a * *c));
+    *gamma = acos((cell->x * cell->xy) / (*a * *b));
+}
+
+// Create a vec4 mask which represents the periodic dimensions from a unit cell.
+// I.e. [0,1,1,0] -> periodic in y and z, but not x
+static inline vec4_t md_unitcell_pbc_mask_vec4(const md_unitcell_t* unit_cell) {
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    return vec4_set((unit_cell->flags & MD_UNITCELL_PBC_X) ? val : 0, (unit_cell->flags & MD_UNITCELL_PBC_Y) ? val : 0,
+                    (unit_cell->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
+}
+
+static inline uint32_t md_unit_cell_flags(const md_unitcell_t* unit_cell) { return unit_cell->flags; }
+
+typedef struct md_atom_pair_t {
+    md_atom_idx_t idx[2];
+} md_atom_pair_t;
 
 typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t n;
@@ -309,13 +529,14 @@ md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
 
 // Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
-md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name);
+// res_name is the name of the component of the atom [optional]
+// res_size is the size of the component of the atom [optional]
+md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name, size_t res_size);
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
 // Batch form wired to molecule structure
 // Returns the number of successfully inferred atomic numbers
 // All of the supplied arrays must have at least 'count' elements
-size_t md_atomic_number_infer_from_label_batch(md_atomic_number_t out_z[], const str_t atom_names[], const str_t atom_resnames[], size_t count);
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
 
 #ifdef __cplusplus
@@ -434,20 +655,24 @@ static inline size_t md_index_range_size(const md_index_data_t* data, size_t ran
     return size;
 }
 
-// Create a vec4 mask which represents the periodic dimensions from a unit cell.
-// I.e. [0,1,1,0] -> periodic in y and z, but not x
-static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
-    float val;
-    MEMSET(&val, 0xFF, sizeof(val));
-    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
-}
-
-static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
-#if DEBUG
-    ASSERT(unit_cell);
-    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
+static inline void md_index_data_merge(md_index_data_t* dest, const md_index_data_t* src) {
+    ASSERT(dest);
+    ASSERT(src);
+    ASSERT(dest->alloc == src->alloc);
+    size_t dest_num_indices = md_array_size(dest->indices);
+    size_t src_num_ranges = md_index_data_num_ranges(src);
+    for (size_t i = 0; i < src_num_ranges; ++i) {
+        uint32_t beg_offset = src->offsets[i];
+        uint32_t end_offset = src->offsets[i + 1];
+        size_t range_size = end_offset - beg_offset;
+        // Push adjusted offsets
+        uint32_t new_offset = (uint32_t)(dest_num_indices + range_size);
+        md_array_push(dest->offsets, new_offset, dest->alloc);
+        // Push indices
+        for (uint32_t j = beg_offset; j < end_offset; ++j) {
+            int32_t idx = src->indices[j];
+            md_array_push(dest->indices, idx, dest->alloc);
+        }
+        dest_num_indices += range_size;
     }
-#endif
-    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
 }

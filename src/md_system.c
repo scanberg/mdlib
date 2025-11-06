@@ -1,4 +1,4 @@
-﻿#include <md_molecule.h>
+﻿#include <md_system.h>
 
 #include <core/md_array.h>
 #include <core/md_allocator.h>
@@ -62,7 +62,7 @@ void md_system_free(md_system_t* mol, struct md_allocator_i* alloc) {
 
     // Bonds
     SAFE_FREE(mol->bond.pairs);
-    SAFE_FREE(mol->bond.order);
+    SAFE_FREE(mol->bond.flags);
     
     SAFE_FREE(mol->bond.conn.atom_idx);
     SAFE_FREE(mol->bond.conn.bond_idx);
@@ -129,7 +129,7 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     ARRAY_PUSH(inst, comp_offset);
 
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
-    md_array_push_array(dst->bond.order, src->bond.order, src->bond.count, alloc);
+    md_array_push_array(dst->bond.flags, src->bond.flags, src->bond.count, alloc);
     md_array_push_array(dst->bond.conn.atom_idx, src->bond.conn.atom_idx, src->bond.conn.count, alloc);
     md_array_push_array(dst->bond.conn.bond_idx, src->bond.conn.bond_idx, src->bond.conn.count, alloc);
     md_array_push_array(dst->bond.conn.offset, src->bond.conn.offset, src->bond.conn.offset_count, alloc);
@@ -150,7 +150,7 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     dst->bond.count           = src->bond.count;
     dst->bond.conn.count      = src->bond.conn.count;
     dst->bond.conn.offset_count = src->bond.conn.offset_count;
-    dst->unit_cell            = src->unit_cell;
+    dst->unitcell             = src->unitcell;
 }
 
 #undef ARRAY_PUSH

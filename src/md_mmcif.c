@@ -7,12 +7,13 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
 #include <md_util.h>
-#include <md_molecule.h>
+#include <md_system.h>
 
 #define BAKE(str) {str, sizeof(str)-1}
 
 // Enumerate fields in _atom_site
 enum {
+    ATOM_SITE_GROUP_PDB,
     ATOM_SITE_ID,
     ATOM_SITE_TYPE_SYMBOL,
     ATOM_SITE_LABEL_ATOM_ID,
@@ -37,6 +38,7 @@ enum {
 };
 
 static const str_t atom_site_labels[] = {
+    BAKE("group_PDB"),
     BAKE("id"),
     BAKE("type_symbol"),
     BAKE("label_atom_id"),
@@ -206,15 +208,21 @@ typedef struct {
     str_t line;
     str_t peek;
     bool has_peek;
+    bool line_start;
+    bool in_loop;
 } mmcif_parse_state_t;
 
 // Returns true if token was extracted,
 // False if EOF / stream
 static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
     str_t tok = {0};
+    s->line_start = false;
     while (true) {
-        if (str_empty(s->line) && !md_buffered_reader_extract_line(&s->line, s->reader)) {
-            return false;
+        if (str_empty(s->line)) {
+            if (!md_buffered_reader_extract_line(&s->line, s->reader)) {
+                return false;
+            }
+            s->line_start = true;
         }
         if (!extract_token(&tok, &s->line) || str_len(tok) == 0 || (tok.len > 0 && tok.ptr[0] == '#')) {
             s->line = (str_t){0};
@@ -243,17 +251,17 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
             md_strb_push_str(&s->sb, str_substr(tok, 1, SIZE_MAX));
             md_strb_push_str(&s->sb, s->line);
 
-            bool closed = false;
+            bool term = false;
             while (md_buffered_reader_extract_line(&s->line, s->reader)) {
                 if (s->line.len > 0 && s->line.ptr[0] == ';') {
-                    closed = true;
+                    term = true;
                     s->line = (str_t) {0};
                     break;
                 }
                 md_strb_push_char(&s->sb, '\n');
                 md_strb_push_str (&s->sb, s->line);
             }
-            if (!closed) {
+            if (!term) {
                 MD_LOG_ERROR("Unterminated multiline string");
                 return false;
             }
@@ -292,6 +300,51 @@ static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
     return true;
 }
 
+// This is a bit wierd, since were mixing lines and token semantics.
+// But will return the current line within the state that is about to be tokenized
+static inline str_t mmcif_cur_line(mmcif_parse_state_t* s) {
+    ASSERT(s);     
+    return s->line;
+}
+
+// Advances to the next line, which is not part of a multiline string token
+static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
+    ASSERT(s);
+    str_t tok = {0};
+    while (mmcif_peek_token(&tok, s)) {
+        if (s->line_start) return true;
+        mmcif_next_token(&tok, s);
+    }
+    return false; // EOF
+}
+
+// Advances to a new line which starts with a valid control or item token
+static inline bool mmcif_advance_to_next_control_token(mmcif_parse_state_t* s) {
+    ASSERT(s);
+
+    str_t tok = {0};
+    while (mmcif_peek_token(&tok, s)) {
+        if (tok.len > 0 && s->line_start) {
+            const char c0 = tok.ptr[0];
+
+            // Category and control keywords:
+            if (c0 == '_' || 
+                str_eq(tok, STR_LIT("loop_")) ||
+                str_eq_cstr_n(tok, "data_", 5) ||
+                str_eq_cstr_n(tok, "save_", 5)) 
+            {
+                return true;
+            }
+        }
+
+        mmcif_next_token(&tok, s);
+    }
+
+    return false; // EOF
+}
+
+
+
 typedef struct {
     size_t num_fields;
     size_t num_rows;
@@ -313,10 +366,10 @@ static inline str_t mmcif_section_value(const mmcif_section_t* sec, size_t row, 
 static inline bool mmcif_is_item(str_t t) { return t.len && t.ptr[0] == '_'; }
 static inline bool mmcif_is_control(str_t t) {
     return (t.len >= 5 &&
-        (str_eq_cstr_n(t,"loop_",5) ||
-            str_eq_cstr_n(t,"data_",5) ||
-            str_eq_cstr_n(t,"save_",5) ||
-            str_eq_cstr_n(t,"stop_",5)));
+        (str_eq(t,STR_LIT("loop_")) ||
+         str_eq(t,STR_LIT("data_")) ||
+         str_eq(t,STR_LIT("save_")) ||
+         str_eq(t,STR_LIT("stop_"))));
 }
 
 static str_t mmcif_category(str_t item) {
@@ -328,13 +381,13 @@ static str_t mmcif_category(str_t item) {
 }
 
 // This is an internal procedure, we do not care about cleaning anything up
-static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state, bool loop_, md_allocator_i* alloc) {
+static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(sec);
     ASSERT(state);
     ASSERT(alloc);
     MEMSET(sec, 0, sizeof(*sec));
 
-    if (loop_) {
+    if (state->in_loop) {
         // --------------- Collect headers ---------------
         str_t t;
         while (mmcif_peek_token(&t, state) && mmcif_is_item(t)) {
@@ -465,23 +518,18 @@ static inline int mmcif_section_find_col_idx(const mmcif_section_t* sec, str_t f
     return -1;
 }
 
-static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, md_buffered_reader_t* reader, bool loop_, md_allocator_i* alloc) {
+static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(entities);
-    ASSERT(reader);
+    ASSERT(state);
     ASSERT(alloc);
 
     md_allocator_i* temp_alloc = md_get_temp_allocator();
     size_t temp_pos = md_temp_get_pos();
 
-    mmcif_parse_state_t state = {
-        .reader = reader,
-        .sb = md_strb_create(temp_alloc),
-    };
-
     bool success = false;
     
     mmcif_section_t sec = {0};
-    if (!mmcif_parse_section(&sec, &state, loop_, temp_alloc)) {
+    if (!mmcif_parse_section(&sec, state, temp_alloc)) {
         MD_LOG_ERROR("Failed to parse _entity section");
         goto done;
     }
@@ -520,23 +568,18 @@ done:
 }
 
 // We only populate the entity_poly type within the given entities
-static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, md_buffered_reader_t* reader, bool loop_, md_allocator_i* alloc) {
+static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(entities);
-    ASSERT(reader);
+    ASSERT(state);
     ASSERT(alloc);
+
+    bool success = false;
 
     md_allocator_i* temp_alloc = md_get_temp_allocator();
     size_t temp_pos = md_temp_get_pos();
 
-    mmcif_parse_state_t state = {
-        .reader = reader,
-        .sb = md_strb_create(temp_alloc),
-    };
-
-    bool success = false;
-
     mmcif_section_t sec = {0};
-    if (!mmcif_parse_section(&sec, &state, loop_, temp_alloc)) {
+    if (!mmcif_parse_section(&sec, state, temp_alloc)) {
         MD_LOG_ERROR("Failed to parse _entity_poly section");
         goto done;
     }
@@ -568,168 +611,165 @@ done:
     return success;
 }
 
-static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(atom_entries);
-    ASSERT(reader);
-
-    str_t line;
-    str_t tok[32];
+    ASSERT(state);
+    ASSERT(state->in_loop == true);
 
     int table[ATOM_SITE_COUNT];
     MEMSET(table, -1, sizeof(table));
-    int num_cols = 0;
+    size_t num_cols = 0;
 
     bool success = false;
 
-    while (md_buffered_reader_peek_line(&line, reader)) {
-        line = str_trim(line);
-        if (str_eq_cstr_n(line, "_atom_site.", 11)) {
-            str_t field = str_substr(line, 11, SIZE_MAX);
-            for (int i = 0; i < (int)ARRAY_SIZE(atom_site_labels); ++i) {
-                if (table[i] != -1) {
-                    continue;
-                }
-                if (str_eq(field, atom_site_labels[i])) {
-                    table[i] = num_cols;
-                    break;
-                }
-            }
-            num_cols += 1;
-            md_buffered_reader_skip_line(reader);
-        } else {
-            break;
+    // Read category headers
+    str_t item;
+    while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && str_eq_cstr_n(item, "_atom_site.", 11)) {
+        if (!mmcif_next_token(&item, state)) {
+            MD_LOG_ERROR("Unexpected tokenizer failure while reading _atom_site headers");
+            return false;
         }
+        str_t field = str_substr(item, 11, SIZE_MAX);
+        for (size_t i = 0; i < ARRAY_SIZE(atom_site_labels); ++i) {
+            if (table[i] != -1) {
+                continue;
+            }
+            if (str_eq(field, atom_site_labels[i])) {
+                table[i] = (int)num_cols;
+                break;
+            }
+        }
+        num_cols += 1;
     }
-
-    // Ensure that we have all the required fields
-    size_t max_tok = 0;
-
-    // Optional fields that we will use if present
-    if (table[ATOM_SITE_AUTH_SEQ_ID] >= 0)  max_tok = MAX(max_tok, (size_t)table[ATOM_SITE_AUTH_SEQ_ID] + 1);
-    if (table[ATOM_SITE_AUTH_ASYM_ID] >= 0) max_tok = MAX(max_tok, (size_t)table[ATOM_SITE_AUTH_ASYM_ID] + 1);
 
     for (size_t i = 0; i < ARRAY_SIZE(required_atom_site_fields); ++i) {
         if (table[required_atom_site_fields[i]] == -1) {
             MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[required_atom_site_fields[i]]));
-            goto done;
+            return false;
         }
-        max_tok = MAX(max_tok, (size_t)table[required_atom_site_fields[i]] + 1);
     }
 
-    bool have_auth_seq_id = table[ATOM_SITE_AUTH_SEQ_ID] != -1;
+    bool have_auth_seq_id  = table[ATOM_SITE_AUTH_SEQ_ID]  != -1;
     bool have_auth_asym_id = table[ATOM_SITE_AUTH_ASYM_ID] != -1;
 
-    while (md_buffered_reader_peek_line(&line, reader)) {
-        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            const size_t num_tokens = extract_tokens(tok, max_tok, &line);
-            if (num_tokens < max_tok) {
-                MD_LOG_ERROR("Too few tokens in line: "STR_FMT, STR_ARG(line));
-                goto done;
-            }
-            
-            str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
-            str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
-            str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
-            str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
-            str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
-            str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
-            str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
-            str_t auth_seq_id     = have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (str_t){0};
-            str_t auth_asym_id    = have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (str_t){0};
-            str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
-            str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
-            str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
-
-            const int default_value = INT32_MIN;
-
-            mmcif_atom_site_entry_t entry = {
-                .x = (float)parse_float(cartn_x),
-                .y = (float)parse_float(cartn_y),
-                .z = (float)parse_float(cartn_z),
-                .label_seq_id = parse_int_with_default(label_seq_id, default_value),
-                .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
-                .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
-            };
-
-            str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
-            str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
-            str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
-            str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
-            str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
-            str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
-
-            md_array_push(*atom_entries, entry, alloc);
-
-            md_buffered_reader_skip_line(reader);
-        } else {
+    str_t tok[64] = {0};
+    while (mmcif_advance_to_next_line(state)) {
+        str_t peek;
+        if (!mmcif_peek_token(&peek, state)) {
+            MD_LOG_ERROR("Unexpected EOF while reading _atom_site entries");
+        }
+        if (str_empty(peek) || mmcif_is_item(peek) || mmcif_is_control(peek)) {
+            // End of _atom_site section
             break;
         }
+
+        for (size_t i = 0; i < num_cols; ++i) {
+            if (!mmcif_next_token(&tok[i], state)) {
+                MD_LOG_ERROR("Unexpected EOF while reading _atom_site entry");
+                return false;
+            }
+        }
+         
+        str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
+        str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
+        str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
+        str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
+        str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
+        str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
+        str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
+        str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
+        str_t auth_seq_id     = have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (str_t){0};
+        str_t auth_asym_id    = have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (str_t){0};
+        str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
+        str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
+        str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
+
+        const int default_value = INT32_MIN;
+
+        mmcif_atom_site_entry_t entry = {
+            .x = (float)parse_float(cartn_x),
+            .y = (float)parse_float(cartn_y),
+            .z = (float)parse_float(cartn_z),
+            .label_seq_id = parse_int_with_default(label_seq_id, default_value),
+            .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
+            .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
+        };
+
+        str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
+        str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
+        str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
+        str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
+        str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
+        str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
+
+        md_array_push(*atom_entries, entry, alloc);
     }
 
-    success = true;
-done:
-    return success;
+    return true;
 }
 
 enum {
-    CELL_FIELD_ANGLE_ALPHA =  1,
-    CELL_FIELD_ANGLE_BETA  =  2,
-    CELL_FIELD_ANGLE_GAMMA =  4,
-    CELL_FIELD_LENGTH_A    =  8,
-    CELL_FIELD_LENGTH_B    = 16,
-    CELL_FIELD_LENGTH_C    = 32,
+    CELL_FIELD_A = 1,
+    CELL_FIELD_B = 2,
+    CELL_FIELD_C = 4,
+    CELL_FIELD_ALPHA = 8,
+    CELL_FIELD_BETA = 16,
+    CELL_FIELD_GAMMA = 32,
 };
 
-static bool mmcif_parse_cell(mmcif_cell_params_t* cell, md_buffered_reader_t* reader) {
+static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* state) {
     ASSERT(cell);
-    ASSERT(reader);
-    str_t line;
+    ASSERT(state);
+    ASSERT(state->in_loop == false);
 
-    int field_flags = 0;
-    const int req_field_flags = (CELL_FIELD_ANGLE_ALPHA | CELL_FIELD_ANGLE_BETA | CELL_FIELD_ANGLE_GAMMA | CELL_FIELD_LENGTH_A | CELL_FIELD_LENGTH_B | CELL_FIELD_LENGTH_C);
+    uint32_t field_flags = 0;
 
-    while (md_buffered_reader_peek_line(&line, reader)) {
-        line = str_trim(line);
-        if (line.len == 0) {
-            goto next;
+    while (mmcif_advance_to_next_control_token(state)) {
+        str_t tok;
+        if (!mmcif_peek_token(&tok, state)) {
+            MD_LOG_ERROR("Unexpected EOF");
+            return false;
         }
-        if (line.ptr[0] == '#') {
-            goto next;
-        }
-        if (str_eq_cstr_n(line, "_cell.", 6)) {
-            str_t tok[2];
-            const size_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-            if (num_tokens < 2) {
-                goto next;
+
+        if (str_eq_cstr_n(tok, "_cell.", 6)) {
+            if (!mmcif_next_token(&tok, state)) {
+                MD_LOG_ERROR("Unexpected tokenizer failure consuming _cell token");
+                return false;
             }
 
-            if (str_eq_cstr(tok[0], "_cell.angle_alpha")) {
-                cell->alpha = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_ALPHA;
-            } else if (str_eq_cstr(tok[0], "_cell.angle_beta")) {
-                cell->beta = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_BETA;
-            } else if (str_eq_cstr(tok[0], "_cell.angle_gamma")) {
-                cell->gamma = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_ANGLE_GAMMA;
-            } else if (str_eq_cstr(tok[0], "_cell.length_a")) {
-                cell->a = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_A;
-            } else if (str_eq_cstr(tok[0], "_cell.length_b")) {
-                cell->b = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_B;
-            } else if (str_eq_cstr(tok[0], "_cell.length_c")) {
-                cell->c = parse_float(tok[1]);
-                field_flags |= CELL_FIELD_LENGTH_C;
+            str_t val_tok;
+            if (!mmcif_next_token(&val_tok, state)) {
+                MD_LOG_ERROR("Unexpected EOF consuming _cell value");
+                return false;
+            }
+
+            double val = parse_float(val_tok);
+
+            if (str_eq_cstr(tok, "_cell.angle_alpha")) {
+                cell->alpha = val;
+                field_flags |= CELL_FIELD_ALPHA;
+            } else if (str_eq_cstr(tok, "_cell.angle_beta")) {
+                cell->beta = val;
+                field_flags |= CELL_FIELD_BETA;
+            } else if (str_eq_cstr(tok, "_cell.angle_gamma")) {
+                cell->gamma = val;
+                field_flags |= CELL_FIELD_GAMMA;
+            } else if (str_eq_cstr(tok, "_cell.length_a")) {
+                cell->a = val;
+                field_flags |= CELL_FIELD_A;
+            } else if (str_eq_cstr(tok, "_cell.length_b")) {
+                cell->b = val;
+                field_flags |= CELL_FIELD_B;
+            } else if (str_eq_cstr(tok, "_cell.length_c")) {
+                cell->c = val;
+                field_flags |= CELL_FIELD_C;
             }
         } else {
             break;
         }
-    next:
-        md_buffered_reader_skip_line(reader);
     }
 
-    return (field_flags == req_field_flags);
+    return (field_flags == (CELL_FIELD_A | CELL_FIELD_B | CELL_FIELD_C | CELL_FIELD_ALPHA | CELL_FIELD_BETA | CELL_FIELD_GAMMA));
 }
 
 static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_allocator_i* alloc) {
@@ -749,53 +789,57 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     MEMSET(sys, 0, sizeof(md_system_t));
 
     mmcif_cell_params_t cell = {0};
+    mmcif_parse_state_t state = {
+        .reader = reader,
+        .sb = md_strb_create(temp_arena),
+    };
 
-    bool loop_ = false;
-    str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
-        if (line.len > 0) {
-            if (str_eq_cstr_n(line, "loop_", 5)) {
-                loop_ = true;
-                md_buffered_reader_skip_line(reader);
-                if (!md_buffered_reader_peek_line(&line, reader)) {
-                    MD_LOG_ERROR("Unexpected EOF after loop_, expected section");
-                    return false;
-                }
-            }
-            line = str_trim(line);
-            if (str_eq_cstr_n(line, "_atom_site.", 11)) {
-                if (!mmcif_parse_atom_site(&atom_entries, reader, temp_arena)) {
-                    MD_LOG_ERROR("Failed to parse _atom_site section");
-                    return false;
-                }
-                atom_site_parsed = true;
-            } else if (str_eq_cstr_n(line, "_cell.", 6)) {
-                if (!mmcif_parse_cell(&cell, reader)) {
-                    MD_LOG_ERROR("Failed to parse _cell section");
-                    return false;
-                }
-                cell_parsed = true;
-            } else if (str_eq_cstr_n(line, "_entity.", 8)) {
-                if (!mmcif_parse_entity(&entities, reader, loop_, temp_arena)) {
-                    MD_LOG_ERROR("Failed to parse _entity section");
-                    return false;
-                }
-                entity_parsed = true;
-            } else if (str_eq_cstr_n(line, "_entity_poly.", 13)) {
-                if (!mmcif_parse_entity_poly(&entities, reader, loop_, temp_arena)) {
-                    MD_LOG_ERROR("Failed to parse _entity_poly section");
-                    return false;
-                }
-                entity_poly_parsed = true;
-            }
-
-            if (atom_site_parsed && cell_parsed && entity_parsed && entity_poly_parsed) {
-                break;
-            }
+    while (mmcif_advance_to_next_control_token(&state)) {
+        str_t tok;
+        if (!mmcif_peek_token(&tok, &state)) {
+            MD_LOG_ERROR("Unexpected EOF");
+            return false;
         }
 
-        md_buffered_reader_skip_line(reader);
-        loop_ = false;
+        if (str_eq(tok, STR_LIT("loop_"))) {
+            state.in_loop = true;
+            mmcif_next_token(&tok, &state);
+            continue;
+        }
+
+        if (str_eq_cstr_n(tok, "_atom_site.", 11)) {
+            if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _atom_site section");
+                return false;
+            }
+            atom_site_parsed = true;
+        } else if (str_eq_cstr_n(tok, "_cell.", 6)) {
+            if (!mmcif_parse_cell(&cell, &state)) {
+                MD_LOG_ERROR("Failed to parse _cell section");
+                return false;
+            }
+            cell_parsed = true;
+        } else if (str_eq_cstr_n(tok, "_entity.", 8)) {
+            if (!mmcif_parse_entity(&entities, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _entity section");
+                return false;
+            }
+            entity_parsed = true;
+        } else if (str_eq_cstr_n(tok, "_entity_poly.", 13)) {
+            if (!mmcif_parse_entity_poly(&entities, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _entity_poly section");
+                return false;
+            }
+            entity_poly_parsed = true;
+        } else {
+            mmcif_next_token(&tok, &state);
+        }
+
+        if (atom_site_parsed && cell_parsed && entity_parsed && entity_poly_parsed) {
+            break;
+        }
+
+        state.in_loop = false;
     }
 
     if (entity_parsed) {
@@ -807,7 +851,13 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         sys->entity.count = num_entities;
 
         for (size_t i = 0; i < num_entities; ++i) {
+            // Determine entity flags
             md_flags_t flags = 0;
+
+            str_t desc = entities[i].description;
+            bool ion = str_find_str(NULL, desc, STR_LIT("ion")) ||
+                       str_find_str(NULL, desc, STR_LIT("ION")) ||
+                       str_find_str(NULL, desc, STR_LIT("Ion"));
 
             if (entities[i].type == ENTITY_TYPE_POLYMER) {
                 flags |= MD_FLAG_POLYMER;
@@ -822,6 +872,8 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
                 }
             } else if (entities[i].type == ENTITY_TYPE_WATER) {
                 flags |= MD_FLAG_WATER;
+            } else if (ion) {
+                flags |= MD_FLAG_ION;
             } else {
                 flags |= MD_FLAG_HETERO;
             }
@@ -843,7 +895,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, alloc);  // Ensure that index 0 is always unknown
+        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, alloc);  // Ensure that index 0 is always unknown
 
         uint64_t prev_comp_key = 0; // Key of active componenent
         uint64_t prev_inst_key = 0; // Key of active instance
@@ -870,7 +922,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
             float mass = md_atomic_number_mass(atomic_number);
             float radius = md_atomic_number_vdw_radius(atomic_number);
-            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
+            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, 0, alloc);
 
             md_flags_t flags = md_entity_flags(&sys->entity, entity_idx);
 
@@ -920,7 +972,9 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     }
 
     if (cell_parsed) {
-        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+        sys->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+    } else {
+        sys->unitcell = md_unitcell_none();
     }
 
     return sys->atom.count > 0;
@@ -953,11 +1007,11 @@ static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* a
     return result;
 }
 
-static md_molecule_loader_i api = {
+static md_system_loader_i api = {
     .init_from_str = mmcif_init_from_str,
     .init_from_file = mmcif_init_from_file,
 };
 
-struct md_molecule_loader_i* md_mmcif_molecule_api(void) {
+struct md_system_loader_i* md_mmcif_system_loader(void) {
     return &api;
 }

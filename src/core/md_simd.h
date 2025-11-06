@@ -385,6 +385,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
 #define md_mm_cmplt_epi64 simde_mm_cmplt_epi64
 
+#define md_mm256_cmplt_epi8(a,b)  simde_mm256_cmpgt_epi8(b,a)
+#define md_mm256_cmplt_epi16(a,b) simde_mm256_cmpgt_epi16(b,a)
+#define md_mm256_cmplt_epi32(a,b) simde_mm256_cmpgt_epi32(b,a)
+#define md_mm256_cmplt_epi64(a,b) simde_mm256_cmpgt_epi64(b,a)
+
 #define md_mm_movemask_epi8 simde_mm_movemask_epi8
 #define md_mm256_movemask_epi8 simde_mm256_movemask_epi8
 
@@ -415,6 +420,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_cvtps_epi32 simde_mm_cvtps_epi32
 #define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
+#define md_mm_cvtepu8_epi32 simde_mm_cvtepu8_epi32
+#define md_mm_cvtsi64_si128 simde_mm_cvtsi64_si128
+
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
 #define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
 #define md_mm256_cvtepu8_epi32 simde_mm256_cvtepu8_epi32
@@ -423,6 +431,10 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
 #define md_mm256_cvtss_f32 simde_mm256_cvtss_f32
 #define md_mm256_cvtsd_f64 simde_mm256_cvtsd_f64
+
+// PERMUTE
+#define md_mm256_permutevar8x32_epi32 simde_mm256_permutevar8x32_epi32
+#define md_mm256_permutevar8x32_ps simde_mm256_permutevar8x32_ps
 
 // HIGH LEVEL OPERATIONS
 
@@ -447,6 +459,26 @@ MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* ou
     *out_z = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
+MD_SIMD_INLINE void md_mm_unpack_xyzw_ps(md_128* out_x, md_128* out_y, md_128* out_z, md_128* out_w, const float* in_xyzw, size_t stride_in_bytes) {
+    md_128 r0, r1, r2, r3;
+    md_128 t0, t1, t2, t3;
+
+    r0 = MD_LOAD_STRIDED_128(in_xyzw, 0, stride_in_bytes);
+    r1 = MD_LOAD_STRIDED_128(in_xyzw, 1, stride_in_bytes);
+    r2 = MD_LOAD_STRIDED_128(in_xyzw, 2, stride_in_bytes);
+    r3 = MD_LOAD_STRIDED_128(in_xyzw, 3, stride_in_bytes);
+
+    t0 = simde_mm_unpacklo_ps(r0, r1);  // xxyy xxyy
+    t1 = simde_mm_unpackhi_ps(r0, r1);  // zzww zzww
+    t2 = simde_mm_unpacklo_ps(r2, r3);  // xxyy xxyy
+    t3 = simde_mm_unpackhi_ps(r2, r3);  // zzww zzww
+
+    *out_x = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // xxxx xxxx
+    *out_y = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // yyyy yyyy
+    *out_z = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // zzzz zzzz
+    *out_w = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // wwww wwww
+}
+
 MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256* out_z, const float* in_xyz, size_t stride_in_bytes) {
     md_256 r0, r1, r2, r3;
     md_256 t0, t1, t2, t3;
@@ -466,6 +498,32 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
     *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
     *out_z = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+}
+
+MD_SIMD_INLINE void md_mm256_unpack_xyzw_ps(md_256* out_x, md_256* out_y, md_256* out_z, md_256* out_w, const float* in_xyzw, size_t stride_in_bytes) {
+    md_256 r0, r1, r2, r3;
+    md_256 t0, t1, t2, t3;
+
+    // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
+    // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
+    r0 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 0, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 4, stride_in_bytes), 1);
+    r1 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 1, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 5, stride_in_bytes), 1);
+    r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 2, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 6, stride_in_bytes), 1);
+    r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 3, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 7, stride_in_bytes), 1);
+
+    t0 = simde_mm256_unpacklo_ps(r0, r1);  // xxyy xxyy
+    t1 = simde_mm256_unpackhi_ps(r0, r1);  // zzww zzww
+    t2 = simde_mm256_unpacklo_ps(r2, r3);  // xxyy xxyy
+    t3 = simde_mm256_unpackhi_ps(r2, r3);  // zzww zzww
+
+    *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // xxxx xxxx
+    *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // yyyy yyyy
+    *out_z = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // zzzz zzzz
+    *out_w = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // wwww wwww
 }
 
 #undef MD_LOAD_STRIDED_128
@@ -490,6 +548,12 @@ MD_SIMD_INLINE md_128  md_mm_sign_ps(md_128 a)  { return simde_mm_xor_ps(   simd
 MD_SIMD_INLINE md_128d md_mm_sign_pd(md_128d a) { return simde_mm_xor_pd(   simde_mm_and_pd(a,  simde_mm_set1_pd(-0.0)),    simde_mm_set1_pd(1.0));     }
 MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(simde_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
 MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(simde_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
+
+MD_SIMD_INLINE md_128   md_mm_neg_ps(md_128 a) { return simde_mm_or_ps(a, simde_mm_set1_ps(-0.0)); }
+MD_SIMD_INLINE md_128d  md_mm_neg_pd(md_128d a) { return simde_mm_or_pd(a, simde_mm_set1_pd(-0.0)); }
+MD_SIMD_INLINE md_256   md_mm256_neg_ps(md_256 a) { return simde_mm256_or_ps(a, simde_mm256_set1_ps(-0.0)); }
+MD_SIMD_INLINE md_256d  md_mm256_neg_pd(md_256d a) { return simde_mm256_or_pd(a, simde_mm256_set1_pd(-0.0)); }
+
 
 MD_SIMD_INLINE float md_mm_reduce_min_ps(md_128 x) {
     md_128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));

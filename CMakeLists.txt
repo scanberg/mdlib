@@ -29,11 +29,6 @@ if (${MD_ENABLE_VLX})
     set(MD_ENABLE_HDF5 TRUE)
 endif()
 
-if (APPLE)
-    # Remove once we have proper support for Apple Silicon?
-    # set(CMAKE_OSX_ARCHITECTURES "x86_64")
-endif()
-
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
@@ -61,8 +56,8 @@ set(SRC_FILES
     src/md_lammps.h
     src/md_mmcif.c
     src/md_mmcif.h
-    src/md_molecule.c
-    src/md_molecule.h
+    src/md_system.c
+    src/md_system.h
     src/md_pdb.c
     src/md_pdb.h
     src/md_script.c

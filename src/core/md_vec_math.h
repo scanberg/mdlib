@@ -51,7 +51,7 @@ typedef struct vec2_t {
 typedef struct vec3_t {
     union {
         struct {
-            float x, y, z;  
+            float x, y, z;
         };
         float elem[3];
     };
@@ -854,6 +854,32 @@ MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
     return v;
 }
 
+MD_VEC_INLINE vec4_t vec4_cross(vec4_t a, vec4_t b) {
+    vec4_t res = {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0};
+    return res;
+}
+
+MD_VEC_INLINE float vec4_dihedral_angle(vec4_t d1, vec4_t d2, vec4_t d3) {
+    vec4_t v1 = vec4_cross(d1, d2);
+    vec4_t v2 = vec4_cross(d2, d3);
+
+    // normalize for stability
+    v1 = vec4_normalize(v1);
+    v2 = vec4_normalize(v2);
+
+    float x = vec4_dot(v1, v2);
+    float y = vec4_dot(vec4_cross(v1, v2), vec4_normalize(d2));
+
+    return atan2f(y, x);
+}
+
+MD_VEC_INLINE float vec4_angle(vec4_t v1, vec4_t v2) {
+    vec4_t w = vec4_cross(v1, v2);
+    float wl = vec4_length(w);
+    float s = vec4_dot(v1, v2);
+    return atan2f(wl, s);
+}
+
 MD_VEC_INLINE vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
     return vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
 }
@@ -975,6 +1001,19 @@ MD_VEC_INLINE vec4_t vec4_sign(vec4_t v) {
     return r;
 }
 
+MD_VEC_INLINE vec4_t vec4_neg(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_neg_ps(v.m128);
+#else
+    r.x = -v.x;
+    r.y = -v.y;
+    r.z = -v.z;
+    r.w = -v.w;
+#endif
+    return r;
+}
+
 MD_VEC_INLINE vec4_t vec4_round(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
@@ -993,10 +1032,10 @@ MD_VEC_INLINE vec4_t vec4_floor(vec4_t v) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_floor_ps(v.m128);
 #else
-    r.x = roundf(v.x);
-    r.y = roundf(v.y);
-    r.z = roundf(v.z);
-    r.w = roundf(v.w);
+    r.x = floorf(v.x);
+    r.y = floorf(v.y);
+    r.z = floorf(v.z);
+    r.w = floorf(v.w);
 #endif
     return r;
 }
@@ -1006,10 +1045,10 @@ MD_VEC_INLINE vec4_t vec4_ceil(vec4_t v) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_ceil_ps(v.m128);
 #else
-    r.x = roundf(v.x);
-    r.y = roundf(v.y);
-    r.z = roundf(v.z);
-    r.w = roundf(v.w);
+    r.x = ceilf(v.x);
+    r.y = ceilf(v.y);
+    r.z = ceilf(v.z);
+    r.w = ceilf(v.w);
 #endif
     return r;
 }
@@ -1099,22 +1138,65 @@ MD_VEC_INLINE bool vec4_equal(vec4_t a, vec4_t b) {
     return r;
 }
 
+MD_VEC_INLINE vec4_t vec4_and(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_and_ps(a.m128, b.m128);
+#else
+    uint32_t a_u32[4], b_u32[4];
+	MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
+	MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+
+    uint32_t r_u32[4] = {
+        a_u32[0] & b_u32[0],
+        a_u32[1] & b_u32[1],
+        a_u32[2] & b_u32[2],
+        a_u32[3] & b_u32[3],
+    };
+
+	MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_or_ps(a.m128, b.m128);
+#else
+    uint32_t a_u32[4], b_u32[4];
+    MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
+    MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+
+    uint32_t r_u32[4] = {
+        a_u32[0] | b_u32[0],
+        a_u32[1] | b_u32[1],
+        a_u32[2] | b_u32[2],
+        a_u32[3] | b_u32[3],
+    };
+
+    MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+#endif
+    return r;
+}
+
+
 MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_blendv_ps(a.m128, b.m128, mask.m128);
 #else
-    r.x = (mask.x != 0.0f) ? a.x : b.x;
-    r.y = (mask.y != 0.0f) ? a.y : b.y;
-    r.z = (mask.z != 0.0f) ? a.z : b.z;
-    r.w = (mask.w != 0.0f) ? a.w : b.w;
+    r.x = (mask.x != 0) ? a.x : b.x;
+    r.y = (mask.y != 0) ? a.y : b.y;
+    r.z = (mask.z != 0) ? a.z : b.z;
+    r.w = (mask.w != 0) ? a.w : b.w;
 #endif
     return r;
 }
 
 #if MD_VEC_MATH_USE_SIMD
 // We cannot invoke the SIMD version of this function directly, because the mask is not a constant expression when passed as a function argument.
-#   ifdef _cplusplus
+#   ifdef __cplusplus
 #       define vec4_blend_mask(a, b, mask) (vec4_t {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
 #   else
 #       define vec4_blend_mask(a, b, mask) ((vec4_t) {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
@@ -1148,6 +1230,12 @@ MD_VEC_INLINE vec4_t vec4_min_image(vec4_t dx, vec4_t ext, vec4_t inv_ext) {
 MD_VEC_INLINE vec4_t vec4_deperiodize_ortho(vec4_t x, vec4_t r, vec4_t ext) {
     const vec4_t inv_ext = vec4_div(vec4_set1(1.0f), ext);
     const vec4_t dx     = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
+    const vec4_t x_prim = vec4_add(r, dx);
+    return vec4_blend(x_prim, x, vec4_cmp_eq(ext, vec4_zero()));
+}
+
+MD_VEC_INLINE vec4_t vec4_deperiodize_ortho2(vec4_t x, vec4_t r, vec4_t ext, vec4_t inv_ext) {
+    const vec4_t dx = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
     const vec4_t x_prim = vec4_add(r, dx);
     return vec4_blend(x_prim, x, vec4_cmp_eq(ext, vec4_zero()));
 }
@@ -2067,7 +2155,7 @@ MD_VEC_INLINE mat4x3_t mat4x3_from_mat3(mat3_t M) {
 }
 
 MD_VEC_INLINE vec4_t mat4x3_mul_vec4(mat4x3_t M, vec4_t v) {
-    vec4_t r;
+    vec4_t r = {0};
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = linear_combine_3(v.m128, &M.col[0].m128);
 #else

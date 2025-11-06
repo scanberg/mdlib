@@ -1,6 +1,6 @@
 ﻿#include <md_pdb.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_util.h>
 
@@ -33,7 +33,7 @@ typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
     int64_t* frame_offsets;
-    md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
+    md_unitcell_t unitcell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
@@ -61,18 +61,37 @@ static inline char extract_char(str_t line, size_t idx) {
     return line.ptr[idx - 1];
 }
 
+// Parse atom serial or residue sequence number, which can be "*****" for missing values
+static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
+	size_t len = end - beg + 1;
+    str_t str = str_trim(str_substr(line, beg - 1, len));
+    if (str_eq_n(str, STR_LIT("*****"), len)) {
+        return INT_MAX;
+    }
+    bool all_digits = true;
+    for (size_t i = 0; i < str.len; ++i) {
+        if (!is_digit(str.ptr[i])) {
+            all_digits = false;
+        }
+    }
+    if (all_digits)
+	    return parse_int(str);
+    else
+		return parse_hex(str);
+}
+
 static inline md_pdb_coordinate_t extract_coord(str_t line) {
     char chain_id = extract_char(line, 22);
     if (!is_alpha(chain_id)) {
 		chain_id = ' ';
 	}
     md_pdb_coordinate_t coord = {
-        .atom_serial = extract_int(line, 7, 11),
+        .atom_serial = parse_id(line, 7, 11),
         .atom_name = {0},
         .alt_loc = extract_char(line, 17),
         .res_name = {0},
         .chain_id = chain_id,
-        .res_seq = extract_int(line, 23, 26),
+        .res_seq = parse_id(line, 23, 26),
         .icode = extract_char(line, 27),
         .x = extract_float(line, 31, 38),
         .y = extract_float(line, 39, 46),
@@ -267,7 +286,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        header->unit_cell = pdb->unit_cell;
+        header->unitcell = pdb->unitcell;
     }
 
     return true;
@@ -442,7 +461,7 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
+bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(data);
     ASSERT(alloc);
@@ -465,6 +484,8 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
+    md_array(str_t) atom_name = 0;
+    md_array_ensure(atom_name, capacity, temp_alloc);
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
@@ -475,10 +496,12 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
     md_array_ensure(sys->atom.flags,    capacity, alloc);
 
 	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, alloc);
 
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
+
+    size_t num_unassigned_atom_types = 0;
 
     bool terminator = false;
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
@@ -492,24 +515,27 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
         str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
         str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
         md_seq_id_t seq_id = data->atom_coordinates[i].res_seq;
+        if (seq_id == INT_MAX) {
+			// Missing residue sequence id, assign one based on previous residue
+			seq_id = sys->comp.seq_id ? sys->comp.seq_id[sys->comp.count - 1] + 1 : 1;
+		}
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;
+        md_atom_type_idx_t atom_type_idx = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             atomic_number = md_atomic_number_from_symbol(sym, true);
+            float mass   = md_atomic_number_mass(atomic_number);
+            float radius = md_atomic_number_vdw_radius(atomic_number);
+            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, 0, alloc);
         } else {
-            atomic_number = md_atomic_number_infer_from_label(atom_id, res_name);
+            num_unassigned_atom_types += 1;
         }
 
-        float mass   = md_atomic_number_mass(atomic_number);
-        float radius = md_atomic_number_vdw_radius(atomic_number);
-
-        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, alloc);
-
-		uint64_t comp_key = md_hash64_str(res_name, seq_id ^ chain_id);
+		uint64_t comp_key = md_hash64_str(res_name, md_hash64(&seq_id, sizeof(seq_id), chain_id));
 
         if (comp_key != prev_comp_key || terminator) {
             // New residue
@@ -527,11 +553,12 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
         }
 
         sys->atom.count += 1;
+        md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(sys->atom.x, x);
         md_array_push_no_grow(sys->atom.y, y);
         md_array_push_no_grow(sys->atom.z, z);
         md_array_push_no_grow(sys->atom.flags, flags);
-        md_array_push_no_grow(sys->atom.type_idx, type_idx);
+        md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
 
         prev_chain_id = chain_id;
 		prev_comp_key = comp_key;
@@ -540,15 +567,24 @@ bool md_pdb_molecule_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_op
     }
     md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
+    if (data->num_cryst1 > 0) {
+        // Use first crystal
+        const md_pdb_cryst1_t* cryst = &data->cryst1[0];
+        if (cryst->a == 1 && cryst->b == 1 && cryst->c == 1 && cryst->alpha == 90 && cryst->beta == 90 && cryst->gamma == 90) {
+            // This is a special case:
+            // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
+        } else {
+            sys->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        }
+    };
+
+    if (num_unassigned_atom_types > 0) {
+        md_util_system_infer_atom_types(sys, atom_name, alloc);
+    }
 	md_util_system_infer_covalent_bonds(sys, alloc);
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
 
-    if (data->num_cryst1 > 0) {
-        // Use first crystal
-        const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        sys->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
-    };
 
     /*
     // Create instances from assemblies
@@ -626,7 +662,7 @@ static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg, md_a
     md_pdb_data_t data = {0};
 
     md_pdb_data_parse_str(&data, str, md_get_heap_allocator());
-    bool success = md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
+    bool success = md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
     md_pdb_data_free(&data, md_get_heap_allocator());
     
     return success;
@@ -643,7 +679,7 @@ static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg
         
         md_pdb_data_t data = {0};
         bool parse   = pdb_parse(&data, &reader, md_get_heap_allocator(), true);
-        bool success = parse && md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
+        bool success = parse && md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
         
         md_pdb_data_free(&data, md_get_heap_allocator());
         md_free(md_get_heap_allocator(), buf, cap);
@@ -654,12 +690,12 @@ static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg
     return false;
 }
 
-static md_molecule_loader_i pdb_molecule_api = {
+static md_system_loader_i pdb_molecule_api = {
     pdb_init_from_str,
     pdb_init_from_file,
 };
 
-md_molecule_loader_i* md_pdb_molecule_api(void) {
+md_system_loader_i* md_pdb_system_loader(void) {
     return &pdb_molecule_api;
 }
 
@@ -695,7 +731,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
 typedef struct pdb_cache_t {
     md_trajectory_cache_header_t header;
-    md_unit_cell_t cell;
+    md_unitcell_t cell;
     int64_t* frame_offsets;
 } pdb_cache_t;
 
@@ -851,7 +887,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
                 md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
             }
             // If it is in fact a box, that will be handled as well
-            cache.cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
+            cache.cell = md_unitcell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
         if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
@@ -900,7 +936,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .time_unit = {0},
         .frame_times = frame_times,
     };
-    pdb->unit_cell = cache.cell;
+    pdb->unitcell = cache.cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;

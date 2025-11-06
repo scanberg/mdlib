@@ -3,7 +3,7 @@
 
 #include <md_pdb.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
@@ -36,7 +36,7 @@ UTEST(pdb, tryptophan) {
     EXPECT_EQ(pdb_data.num_atom_coordinates, 28);
 
     md_system_t mol = {0};
-    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
+    EXPECT_TRUE(md_pdb_system_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -110,7 +110,7 @@ UTEST(pdb, trajectory_i) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(pdb, create_molecule) {
+UTEST(pdb, create_system) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
@@ -118,7 +118,7 @@ UTEST(pdb, create_molecule) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));
 
     md_system_t mol = {0};
-    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
+    EXPECT_TRUE(md_pdb_system_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 
     EXPECT_EQ(1185, mol.comp.count);

@@ -340,6 +340,29 @@ static inline int64_t parse_int(str_t str) {
     return neg ? -val : val;
 }
 
+static inline int64_t parse_hex(str_t str) {
+    if (str.len <= 0) return 0;
+    int64_t val = 0;
+    const char* c   = str.ptr;
+    const char* end = str.ptr + str.len;
+    // Skip space
+    while (c < end && is_whitespace(*c)) ++c;
+    while (c < end) {
+        val = val << 4;
+        if ('0' <= *c && *c <= '9') {
+            val += (int64_t)(*c - '0');
+        } else if ('a' <= *c && *c <= 'f') {
+            val += (int64_t)(*c - 'a' + 10);
+        } else if ('A' <= *c && *c <= 'F') {
+            val += (int64_t)(*c - 'A' + 10);
+        } else {
+            break;
+        }
+        ++c;
+    }
+    return val;
+}
+
 #if 0
 static inline md_128i mask(size_t n) {
     return md_mm_cmpgt_epi8(md_mm_set1_epi8((char)n), md_mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));

@@ -3,7 +3,7 @@
 
 #include <md_xyz.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_str.h>
@@ -454,7 +454,7 @@ UTEST(xyz, comprehensive_c720) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
     
     md_system_t mol = {0};
-    bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_xyz_system_loader()->init_from_file(&mol, path, NULL, alloc);
     ASSERT_TRUE(result);
     
     // C720 should have exactly 720 carbon atoms
@@ -486,13 +486,13 @@ UTEST(xyz, error_handling) {
     // Test nonexistent file
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
     md_system_t mol = {0};
-    bool result = md_xyz_molecule_api()->init_from_file(&mol, path, NULL, alloc);
+    bool result = md_xyz_system_loader()->init_from_file(&mol, path, NULL, alloc);
     EXPECT_FALSE(result);
     md_system_free(&mol, alloc);
     
     // Test empty path
     str_t empty_path = {0,0};
-    result = md_xyz_molecule_api()->init_from_file(&mol, empty_path, NULL, alloc);
+    result = md_xyz_system_loader()->init_from_file(&mol, empty_path, NULL, alloc);
     EXPECT_FALSE(result);
     md_system_free(&mol, alloc);
 }

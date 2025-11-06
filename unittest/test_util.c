@@ -6,7 +6,7 @@
 #include <md_xyz.h>
 #include <md_mmcif.h>
 #include <md_trajectory.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_util.h>
 #include <md_smiles.h>
 
@@ -41,37 +41,37 @@ UTEST_F_SETUP(util) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     utest_fixture->alloc = alloc;
 
-    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
+    md_pdb_system_loader()->init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_ala, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_pftaa, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_nucleotides, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_dna, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_dna, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_dna, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_trp, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_trp, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_trp, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_aspirine, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL, alloc);
+    md_gro_system_loader()->init_from_file(&utest_fixture->mol_aspirine, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_aspirine, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_molecule_api()->init_from_file(&utest_fixture->mol_1fez, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL, alloc);
+    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_1fez, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_1fez, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_molecule_api()->init_from_file(&utest_fixture->mol_2or2, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL, alloc);
+    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_2or2, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_2or2, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_1k4r, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
+    md_pdb_system_loader()->init_from_file(&utest_fixture->mol_1k4r, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_1k4r, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_molecule_api()->init_from_file(&utest_fixture->mol_8g7u, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL, alloc);
+    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_8g7u, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_8g7u, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
@@ -81,17 +81,36 @@ UTEST_F_TEARDOWN(util) {
     md_vm_arena_destroy(utest_fixture->alloc);
 }
 
+UTEST(util, hbonds) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {0};
+    md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, arena);
+    md_util_molecule_postprocess(&sys, arena, MD_UTIL_POSTPROCESS_ALL);
+
+    md_hydrogen_bond_data_t hbond_data = {0};
+    md_util_hydrogen_bond_init(&hbond_data, &sys, arena);
+
+    EXPECT_LT(0, hbond_data.candidate.num_donors);
+    EXPECT_LT(0, hbond_data.candidate.num_acceptors);
+
+    md_util_hydrogen_bond_infer(&hbond_data, sys.atom.x, sys.atom.y, sys.atom.z, &sys.unitcell, 3.0, 150.0);
+    EXPECT_LT(0, hbond_data.num_bonds);
+
+    md_vm_arena_destroy(arena);
+} 
+
 UTEST_F(util, bonds) {
-    EXPECT_EQ(152,    utest_fixture->mol_ala.bond.count);
-    EXPECT_EQ(55,     utest_fixture->mol_pftaa.bond.count);
-    EXPECT_EQ(40,     utest_fixture->mol_nucleotides.bond.count);
-    EXPECT_EQ(163504, utest_fixture->mol_centered.bond.count);
+    EXPECT_EQ(152,      utest_fixture->mol_ala.bond.count);
+    EXPECT_EQ(55,       utest_fixture->mol_pftaa.bond.count);
+    EXPECT_EQ(40,       utest_fixture->mol_nucleotides.bond.count);
+    EXPECT_EQ(163504,   utest_fixture->mol_centered.bond.count);
 }
 
 UTEST_F(util, inst) {
-    EXPECT_EQ(1,   utest_fixture->mol_ala.inst.count);
-	EXPECT_EQ(1,   utest_fixture->mol_pftaa.inst.count);
-	EXPECT_EQ(2,   utest_fixture->mol_nucleotides.inst.count);
+    EXPECT_EQ(1,        utest_fixture->mol_ala.inst.count);
+	EXPECT_EQ(1,        utest_fixture->mol_pftaa.inst.count);
+	EXPECT_EQ(2,        utest_fixture->mol_nucleotides.inst.count);
 	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.inst.count);
 
     const md_system_t* sys = &utest_fixture->mol_centered;
@@ -198,7 +217,7 @@ UTEST(util, com) {
         Bai, Linge, and David Breen. "Calculating center of mass in an unbounded 2D environment." Journal of Graphics Tools 13.4 (2008): 53-60.
     */
     vec3_t pbc_ext = {5,0,0};
-    md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(5,0,0);
+    md_unitcell_t cell = md_unitcell_from_extent(5,0,0);
     {
         const vec4_t xyzw[] = {
             {1,0,0,1},
@@ -207,7 +226,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -219,7 +238,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
 		com = vec3_deperiodize_ortho(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -238,7 +257,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
         com = vec3_deperiodize_ortho(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -269,9 +288,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &unit_cell);
-        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &unit_cell);
-        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &unit_cell);
+        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &cell);
+        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &cell);
+        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &cell);
 
         com0 = vec3_deperiodize_ortho(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize_ortho(com1, (vec3_t){ 0,0,0 }, pbc_ext);
@@ -318,7 +337,7 @@ UTEST_F(util, rings_common) {
 UTEST(util, rings_c60) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 	md_system_t mol = {0};
-	md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
+	md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
 	md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
 	EXPECT_EQ(mol.atom.count, 60);
@@ -336,7 +355,7 @@ UTEST(util, rings_c60) {
 UTEST(util, rings_c720) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL, alloc);
+    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     EXPECT_EQ(mol.atom.count, 720);
@@ -354,7 +373,7 @@ UTEST(util, rings_c720) {
 UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
+    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const size_t num_rings = md_index_data_num_ranges(&mol.ring);
@@ -366,7 +385,7 @@ UTEST(util, rings_14kr) {
 UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
+    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const size_t num_rings = md_index_data_num_ranges(&mol.ring);
@@ -381,7 +400,7 @@ UTEST(util, rings_trytophan_pdb) {
 UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
+    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const size_t num_rings = md_index_data_num_ranges(&mol.ring);
@@ -396,7 +415,7 @@ UTEST(util, rings_trytophan_xyz) {
 UTEST(util, rings_full) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
+    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const size_t num_rings = md_index_data_num_ranges(&mol.ring);
@@ -411,7 +430,7 @@ UTEST(util, rings_full) {
 UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
+    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_num_ranges(&mol.ring);
@@ -572,7 +591,7 @@ UTEST_F(util, structure_matching_smiles) {
 
     const str_t ISOLEUCINE      = STR_LIT(AA_INT "[CH]([CH3])[CH2][CH3]");
     const str_t ISOLEUCINE_NT   = STR_LIT(AA_NT  "[CH]([CH3])[CH2][CH3]");
-    const str_t ISOLEUCINE_CT   = STR_LIT(AA_CT "[CH]([CH3])[CH2][CH3]");
+    const str_t ISOLEUCINE_CT   = STR_LIT(AA_CT  "[CH]([CH3])[CH2][CH3]");
 
     const str_t LEUCINE         = STR_LIT(AA_INT "[CH2][CH]([CH3])[CH3]");
     const str_t LEUCINE_NT      = STR_LIT(AA_NT  "[CH2][CH]([CH3])[CH3]");
@@ -764,7 +783,6 @@ UTEST_F(util, structure_matching_smiles) {
 						const md_atomic_number_t z_j[] = { MD_Z_H };
                         if (md_atom_is_connected_to_atomic_numbers(&sys->atom, &sys->bond, i, z_j, ARRAY_SIZE(z_j))) {
                             has_ch = true;
-                            break;
 						}
                     }
                 }
@@ -781,7 +799,8 @@ UTEST_F(util, structure_matching_smiles) {
                 extra_flags |= MD_UTIL_MATCH_FLAGS_NO_CH | MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT;
             }
 
-            md_index_data_t match_result = { .alloc = alloc };
+			// Store all matching components in here, use a set to avoid duplicates
+            md_hashset_t match_set = {.allocator = alloc};
 
             for (size_t p_idx = 0; p_idx < ARRAY_SIZE(res->pattern); ++p_idx) {
                 str_t smiles = res->pattern[p_idx].smiles;
@@ -791,33 +810,28 @@ UTEST_F(util, structure_matching_smiles) {
                     break;
                 }
 
-                md_util_match_smiles(&match_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, flags, sys, alloc);
-                
-                size_t tot_count = md_index_data_num_ranges(&match_result);
-                if (tot_count >= ref_count) {
-                    break;
+				md_index_data_t pattern_result = { .alloc = alloc };
+                size_t matches = md_util_match_smiles(&pattern_result, smiles, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, flags, sys, alloc);
+
+				size_t num_pattern_matches = md_index_data_num_ranges(&pattern_result);
+                for (size_t i = 0; i < num_pattern_matches; ++i) {
+					const int* atom_idx = md_index_range_beg(&pattern_result, i);
+					md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
+					md_hashset_add(&match_set, res_idx);
                 }
             }
-            size_t match_count = md_index_data_num_ranges(&match_result);
+            size_t match_count = match_set.num_used;
 
             EXPECT_EQ(ref_count, match_count);
             if (ref_count != match_count) {
-
-                md_hashset_t match_set = {.allocator = alloc};
-                for (size_t i = 0; i < match_count; ++i) {
-                    int* atom_idx = md_index_range_beg(&match_result, i);
-                    md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
-                    md_hashset_add(&match_set, res_idx);
-                }
                 
                 printf("Mismatch in dataset '" STR_FMT "' for residues with name '" STR_FMT "': resname_count: %zu, match_count: %zu\n", STR_ARG(test->name), STR_ARG(res->name), ref_count, match_count);
-                printf("The mismatcing residues indices are:\n");
+                printf("Residues missed:\n");
                 for (size_t i = 0; i < ref_count; ++i) {
                     if (!md_hashset_get(&match_set, ref_list[i])) {
                         printf("%i ", ref_list[i] + 1);
                     }
                 }
-                printf("\n");
             }
         }
         md_vm_arena_temp_end(temp);
@@ -884,44 +898,199 @@ UTEST(util, parse_smiles) {
 }
 
 UTEST(util, radix_sort) {
-    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 12, 7 };
+    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 14, 7 };
     size_t len = ARRAY_SIZE(arr);
+
+    uint32_t idx[16];
+    uint32_t tmp[16];
+
+    md_util_sort_radix_uint32(idx, arr, len, tmp);
+    for (size_t i = 0; i < len - 1; ++i) {
+        EXPECT_LE(arr[idx[i]], arr[idx[i+1]]);
+    }
+
     md_util_sort_radix_inplace_uint32(arr, len);
 
     for (size_t i = 0; i < len - 1; ++i) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    size_t N = 10000000;
+    uint32_t* values  = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* indices = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* temp    = md_vm_arena_push(arena, N * sizeof(uint32_t));
+
+    for (size_t i = 0; i < N; ++i) {
+        values[i] = (uint32_t)rand() * rand();
+    }
+
+    md_timestamp_t t0, t1;
+
+    t0 = md_time_current();
+    md_util_sort_radix_uint32(indices, values, N, temp);
+    t1 = md_time_current();
+
+    printf("Time for radix index sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
+
+    t0 = md_time_current();
+    md_util_sort_radix_inplace_uint32(values, N);
+    t1 = md_time_current();
+
+    printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }
 
+static inline bool init_system(md_system_t* sys, str_t path, md_allocator_i* alloc) {
+    str_t ext;
+    if (!extract_ext(&ext, path)) {
+        return false;
+    }
 
-UTEST(integration, multiple_formats_tryptophan) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    
-    // Load same tryptophan molecule from different formats
-    md_system_t mol_pdb = {0};
-    md_system_t mol_gro = {0};
-    md_system_t mol_xyz = {0};
-    
-    bool result_pdb = md_pdb_molecule_api()->init_from_file(&mol_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
-    bool result_gro = md_gro_molecule_api()->init_from_file(&mol_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
-    bool result_xyz = md_xyz_molecule_api()->init_from_file(&mol_xyz, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
-    
-    ASSERT_TRUE(result_pdb);
-    ASSERT_TRUE(result_gro);
-    ASSERT_TRUE(result_xyz);
-    
-    // Test that all files loaded successfully and have reasonable atom counts
-    EXPECT_EQ(mol_pdb.atom.count, 28);
-    EXPECT_EQ(mol_xyz.atom.count, 27);  // XYZ has 27 atoms (different representation)
-    // GRO might have a different structure (trajectory frame), so we don't compare directly
-    EXPECT_GT(mol_gro.atom.count, 0);
-    
-    // All should have some atoms representing tryptophan
-    EXPECT_GT(mol_pdb.atom.count, 20);
-    EXPECT_GT(mol_xyz.atom.count, 20);
-    EXPECT_GT(mol_gro.atom.count, 20);
-    
-    md_system_free(&mol_pdb, alloc);
-    md_system_free(&mol_gro, alloc);
-    md_system_free(&mol_xyz, alloc);
+    if (str_eq_ignore_case(ext, STR_LIT("pdb"))) {
+        return md_pdb_system_loader()->init_from_file(sys, path, NULL, alloc);
+    } else
+    if (str_eq_ignore_case(ext, STR_LIT("gro"))) {
+        return md_gro_system_loader()->init_from_file(sys, path, NULL, alloc);
+    } else
+    if (str_eq_ignore_case(ext, STR_LIT("cif"))) {
+        return md_mmcif_system_loader()->init_from_file(sys, path, NULL, alloc);
+    }
+
+    return false;
+}
+
+UTEST(util, entity_instance) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    ASSERT(alloc);
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 1);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 1);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_empty(md_system_inst_auth_id(&sys, 0)));
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 1);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("C")));
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+        ASSERT_EQ(md_system_entity_count(&sys), 3);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER);
+        
+        ASSERT_EQ(md_system_inst_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("E")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("E")));
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("E")));
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+
+        ASSERT_EQ(md_system_entity_count(&sys), 8);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 3), MD_FLAG_HETERO | MD_FLAG_ION);
+        EXPECT_EQ(md_system_entity_flags(&sys, 4), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 5), MD_FLAG_HETERO | MD_FLAG_WATER);
+        EXPECT_EQ(md_system_entity_flags(&sys, 6), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 7), MD_FLAG_HETERO);
+
+        ASSERT_EQ(md_system_inst_count(&sys), 11);
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0),      STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 0),       0);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1),      STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 1),       1);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2),      STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 2),       2);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 3),      STR_LIT("D")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 3), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 3),       3);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 4),      STR_LIT("E")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 4), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 4),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 5),      STR_LIT("F")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 5), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 5),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 6),      STR_LIT("G")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 6), STR_LIT("A")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 6),       5);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 7),      STR_LIT("H")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 7), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 7),       6);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 8),      STR_LIT("I")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 8), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 8),       4);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 9),      STR_LIT("J")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 9), STR_LIT("B")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 9),       5);
+
+        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 10),      STR_LIT("K")));
+        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 10), STR_LIT("C")));
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 10),       7);
+    }
+
+    {
+        md_system_t sys = {0};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), alloc));
+        EXPECT_GT(md_system_atom_count(&sys),   0);
+
+        ASSERT_EQ(md_system_entity_count(&sys), 2);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), 0);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_WATER);
+
+        ASSERT_EQ(md_system_inst_count(&sys), 65);
+        for (size_t i = 0; i < 64; ++i) {
+            EXPECT_EQ(md_system_inst_entity_idx(&sys, i), 0);
+        }
+
+        EXPECT_EQ(md_system_inst_entity_idx(&sys, 64), 1);
+    }
+
+    md_vm_arena_destroy(alloc);
 }

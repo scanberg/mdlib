@@ -4,7 +4,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 #include <core/md_bitfield.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_gro.h>
 #include <md_util.h>
 
@@ -17,7 +17,7 @@ UTEST(filter, centered) {
     const str_t gro_file = STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro");
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, gro_file, NULL, alloc));
+    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&mol, gro_file, NULL, alloc));
     ASSERT_TRUE(md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL));
     
     md_bitfield_t bf = md_bitfield_create(alloc);

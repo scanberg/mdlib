@@ -854,13 +854,13 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	md_array_ensure(sys->atom.type_idx, capacity, alloc);
 	md_array_ensure(sys->atom.flags,    capacity, alloc);
 
-	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
 	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, alloc);
+	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, alloc);
 
 	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
     md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
@@ -881,7 +881,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		float mass   = data->atom_types[i].mass;
 		float radius = data->atom_types[i].radius;
 		
-		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, alloc);
+		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, 0, alloc);
 	}
 
 	int prev_resid = -1;
@@ -922,15 +922,37 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
-	//Create unit cell
-	float M[3][3] = {0};
-	M[0][0] = data->cell.xhi - data->cell.xlo;
-	M[1][1] = data->cell.yhi - data->cell.ylo;
-	M[2][2] = data->cell.zhi - data->cell.zlo;
-	M[1][0] = data->cell.xy;
-	M[2][0] = data->cell.xz;
-	M[2][1] = data->cell.yz;
-	sys->unit_cell = md_util_unit_cell_from_matrix(M);
+	// Create unit cell
+	double x = data->cell.xhi - data->cell.xlo;
+	double y = data->cell.yhi - data->cell.ylo;
+	double z = data->cell.zhi - data->cell.zlo;
+	double xy = data->cell.xy;
+	double xz = data->cell.xz;
+	double yz = data->cell.yz;
+    sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+
+	// Create bonds
+	if (data->num_bonds > 0) {
+		md_array_ensure(sys->bond.pairs, data->num_bonds, alloc);
+		md_array_ensure(sys->bond.flags, data->num_bonds, alloc);
+
+		for (size_t i = 0; i < data->num_bonds; ++i) {
+			int32_t atom_id0 = data->bonds[i].atom_id[0];
+			int32_t atom_id1 = data->bonds[i].atom_id[1];
+			// LAMMPS atom ids are 1-based
+			ASSERT(atom_id0 >= 1 && atom_id0 <= (int32_t)sys->atom.count);
+			ASSERT(atom_id1 >= 1 && atom_id1 <= (int32_t)sys->atom.count);
+			md_atom_pair_t pair = {
+				(uint32_t)(MIN(atom_id0, atom_id1) - 1),
+				(uint32_t)(MAX(atom_id0, atom_id1) - 1),
+			};
+			md_flags_t flag = 0;
+            md_array_push_no_grow(sys->bond.pairs, pair);
+            md_array_push_no_grow(sys->bond.flags, flag);
+
+			sys->bond.count += 1;
+		}
+    }
 
 	md_vm_arena_destroy(temp_arena);
 	return true;
@@ -991,12 +1013,12 @@ md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_f
 	return arg;
 }
 
-static md_molecule_loader_i lammps_api = {
+static md_system_loader_i lammps_api = {
 	lammps_init_from_str,
 	lammps_init_from_file,
 };
 
-md_molecule_loader_i* md_lammps_molecule_api(void) {
+md_system_loader_i* md_lammps_system_loader(void) {
 	return &lammps_api;
 }
 
@@ -1264,7 +1286,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	str_t tokens[32];
 	int64_t timestep = 0;
 	int64_t frame_idx = ((int64_t*)data_ptr)[0];
-	md_unit_cell_t unit_cell = {0};
+	md_unitcell_t cell = {0};
 
 	bool output_header = out_frame_header != NULL;
 	bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
@@ -1304,13 +1326,13 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	double ylen = yhi - ylo;
 	double zlen = zhi - zlo;
 
-	unit_cell = md_util_unit_cell_from_triclinic(xlen, ylen, zlen, xy, xz, yz);
+	cell = md_unitcell_from_basis_parameters(xlen, ylen, zlen, xy, xz, yz);
 
 	// transform matrix to apply
 	mat4_t M = mat4_translate(-(float)xlo, -(float)ylo, -(float)zlo);
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
-		M = mat4_from_mat3(unit_cell.basis);
+		M = mat4_from_mat3(md_unitcell_basis_mat3(&cell));
 	}
 
 	if (output_coords) {
@@ -1371,7 +1393,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 		out_frame_header->num_atoms = header.num_atoms;
 		out_frame_header->index = frame_idx;
 		out_frame_header->timestamp = (double)timestep;
-		out_frame_header->unit_cell = unit_cell;
+		out_frame_header->unitcell = cell;
 	}
 
 	return true;

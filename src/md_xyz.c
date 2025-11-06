@@ -1,6 +1,6 @@
 ﻿#include <md_xyz.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_util.h>
 
@@ -445,8 +445,9 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         angle[1] = (float)parse_float(tokens[4]);
         angle[2] = (float)parse_float(tokens[5]);
 
-        md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
-        MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
+        md_unitcell_t cell = md_unitcell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
+        mat3_t A = md_unitcell_basis_mat3(&cell);
+        MEMCPY(model->cell, A.elem, sizeof(model->cell));
     } else if (flags & XYZ_EXTENDED) {
         // Extract cell data from line
         if (!extract_extxyz_cell(model->cell, line)) {
@@ -604,7 +605,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, s
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
         //header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
-        header->unit_cell = md_util_unit_cell_from_matrix(model.cell);
+        header->unitcell = md_unitcell_from_matrix_float(model.cell);
     }
 
     return true;
@@ -742,7 +743,7 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
     md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
 
     // Setup atom types including unknown type
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
@@ -752,7 +753,7 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
         float mass = md_atomic_number_mass(atomic_number);
         float radius = md_atomic_number_vdw_radius(atomic_number);
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, alloc);
+        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, 0, alloc);
 
         sys->atom.count += 1;
         md_array_push(sys->atom.x, x, alloc);
@@ -762,7 +763,7 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
         md_array_push(sys->atom.type_idx, atom_type_idx, alloc);
     }
 
-    sys->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
+    sys->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
 
     return true;
 }
@@ -807,12 +808,12 @@ static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg
     return result;
 }
 
-static md_molecule_loader_i xyz_molecule_api = {
+static md_system_loader_i xyz_molecule_api = {
     xyz_init_from_str,
     xyz_init_from_file,
 };
 
-md_molecule_loader_i* md_xyz_molecule_api(void) {
+md_system_loader_i* md_xyz_system_loader(void) {
     return &xyz_molecule_api;
 }
 

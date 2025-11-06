@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_vec_math.h>
 
@@ -21,7 +21,7 @@
 
 struct md_allocator_i;
 struct md_bitfield_t;
-struct md_unit_cell_t;
+struct md_unitcell_t;
 
 typedef struct md_spatial_hash_t md_spatial_hash_t;
 
@@ -38,6 +38,8 @@ typedef bool (*md_spatial_hash_iterator_fn)(const md_spatial_hash_elem_t* elem, 
 // elem_mask contains the set bits of elements which passed the test for the query.
 // To iterate over the elem_array, just find the set bits and clear them. Or just do a popcount for example if counting occurrences.
 typedef bool (*md_spatial_hash_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, int elem_mask, void* user_param);
+
+typedef bool (*md_spatial_hash_n2_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, md_256 d2, int elem_mask, size_t i, void* user_param);
 
 #ifdef __cplusplus
 extern "C" {
@@ -92,8 +94,8 @@ static inline vec3_t md_spatial_acc_iter_pos(const md_spatial_acc_iter_t* iter) 
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
-md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const struct md_unitcell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const struct md_unitcell_t* unit_cell, struct md_allocator_i* alloc);
 
 void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 
@@ -107,6 +109,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
 
 void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, const vec3_t pos[], size_t count, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
 
+void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* hash, float radius, md_spatial_hash_n2_batch_iter_fn iter, void* user_param);
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.

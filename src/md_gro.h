@@ -12,7 +12,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 
 typedef struct md_gro_atom_t {
     int32_t res_id;
@@ -38,9 +38,9 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
 
 // Molecule
-bool md_gro_molecule_init(struct md_system_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
+bool md_gro_system_init(struct md_system_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_gro_molecule_api(void);
+struct md_system_loader_i* md_gro_system_loader(void);
 
 #ifdef __cplusplus
 }

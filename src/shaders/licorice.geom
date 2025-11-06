@@ -29,10 +29,12 @@ in Vertex {
 } in_vert[];
 
 out Fragment {
-    flat uint picking_idx[2];
-    flat vec4 color[2];
-    flat vec4 capsule_center_radius;
-    flat vec4 capsule_axis_length;
+    flat vec3  capsule_pa;
+    flat vec3  capsule_pb;
+    flat float capsule_ra;
+    flat vec4  color[2];
+    flat uint  atom_picking_idx[2];
+    flat uint  bond_picking_idx;
     smooth vec3 view_vel;
     smooth vec3 view_pos;
 } out_frag;
@@ -84,18 +86,18 @@ void main() {
 
     // Compute orientation vectors for the two connecting faces:
     float r = u_radius;
-    float l = sqrt(d2);
-    vec3 a = d / l;
-    vec3 c = (p0 + p1) * 0.5;
+    vec3  a = normalize(d);
 
     out_frag.color[0] = in_vert[0].color;
     out_frag.color[1] = in_vert[1].color;
 
-    out_frag.picking_idx[0] = u_bond_base_index + uint(gl_PrimitiveIDIn);//in_vert[0].picking_idx;
-    out_frag.picking_idx[1] = u_bond_base_index + uint(gl_PrimitiveIDIn);//in_vert[1].picking_idx;
+    out_frag.atom_picking_idx[0] = u_atom_base_index + in_vert[0].picking_idx;
+    out_frag.atom_picking_idx[1] = u_atom_base_index + in_vert[1].picking_idx;
+    out_frag.bond_picking_idx    = u_bond_base_index + uint(gl_PrimitiveIDIn);
 
-    out_frag.capsule_center_radius = vec4(c, r);
-    out_frag.capsule_axis_length = vec4(a, l);
+    out_frag.capsule_pa = p0;
+    out_frag.capsule_pb = p1;
+    out_frag.capsule_ra = r;
 
     // Extend end points to properly fit the sphere caps
     p0 -= a * r;

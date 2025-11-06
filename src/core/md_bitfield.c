@@ -514,6 +514,9 @@ void md_bitfield_and_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
         return;
     }
 
+    a->beg_bit = beg_bit;
+    a->end_bit = end_bit;
+
     if (a->bits) {
         for (uint64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
             set_block(a, i, block_and(get_block(a, i), get_block(b, i)));

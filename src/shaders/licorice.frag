@@ -24,53 +24,57 @@ layout (std140) uniform ubo {
 };
 
 in Fragment {
-    flat uint picking_idx[2];
-    flat vec4 color[2];
-    flat vec4 capsule_center_radius;
-    flat vec4 capsule_axis_length;
+    flat vec3  capsule_pa;
+    flat vec3  capsule_pb;
+    flat float capsule_ra;
+    flat vec4  color[2];
+    flat uint  atom_picking_idx[2];
+    flat uint  bond_picking_idx;
     smooth vec3 view_vel;
     smooth vec3 view_pos;
 } in_frag;
 
 // Source from Ingo Quilez (https://www.shadertoy.com/view/Xt3SzX)
-float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr,
-                      float ch, out vec3 normal, out float seg_t)  // cc center, ca orientation axis, cr radius, ch height
+// Returns the ray scalar 't'
+float capIntersect( in vec3 ro, in vec3 rd, in vec3 pa, in vec3 pb, in float r )
 {
-    vec3 oc = ro - cc;
-    ch *= 0.5;
+    vec3  ba = pb - pa;
+    vec3  oa = ro - pa;
 
-    float card = dot(ca, rd);
-    float caoc = dot(ca, oc);
+    float baba = dot(ba,ba);
+    float bard = dot(ba,rd);
+    float baoa = dot(ba,oa);
+    float rdoa = dot(rd,oa);
+    float oaoa = dot(oa,oa);
 
-    float a = 1.0 - card * card;
-    float b = dot(oc, rd) - caoc * card;
-    float c = dot(oc, oc) - caoc * caoc - cr * cr;
-    float h = b * b - a * c;
-    if (h < 0.0) return -1.0;
-    float t = (-b - sqrt(h)) / a;
-
-    float y = caoc + t * card;
-    seg_t = clamp(y * 0.5 + 0.5, 0.0, 1.0);
-
-    // body
-    if (abs(y) < ch) {
-        normal = normalize(oc + t * rd - ca * y);
-        return t;
+    float a = baba      - bard*bard;
+    float b = baba*rdoa - baoa*bard;
+    float c = baba*oaoa - baoa*baoa - r*r*baba;
+    float h = b*b - a*c;
+    if( h>=0.0 )
+    {
+        float t = (-b-sqrt(h))/a;
+        float y = baoa + t*bard;
+        // body
+        if( y>0.0 && y<baba ) return t;
+        // caps
+        vec3 oc = (y<=0.0) ? oa : ro - pb;
+        b = dot(rd,oc);
+        c = dot(oc,oc) - r*r;
+        h = b*b - c;
+        if( h>0.0 ) return -b - sqrt(h);
     }
-
-    // caps
-    float sy = sign(y);
-    oc = ro - (cc + sy * ca * ch);
-    b = dot(rd, oc);
-    c = dot(oc, oc) - cr * cr;
-    h = b * b - c;
-    if (h > 0.0) {
-        t = -b - sqrt(h);
-        normal = normalize(oc + rd * t);
-        return t;
-    }
-
     return -1.0;
+}
+
+// compute normal and segment t value (how far along the)
+vec4 capNormalAndSeg( in vec3 pos, in vec3 a, in vec3 b, in float r )
+{
+    vec3  ba = b - a;
+    vec3  pa = pos - a;
+    float h = clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);
+    vec3  n = (pa - h*ba)/r;
+    return vec4(n, h);
 }
 
 #ifdef GL_EXT_conservative_depth
@@ -87,18 +91,20 @@ void main() {
     vec3 ro = vec3(0);
     vec3 rd = normalize(in_frag.view_pos);
 #endif
-    vec3  cc = in_frag.capsule_center_radius.xyz;
-    float cr = in_frag.capsule_center_radius.w;
-    vec3  ca = in_frag.capsule_axis_length.xyz;
-    float ch = in_frag.capsule_axis_length.w;
+    vec3  pa = in_frag.capsule_pa;
+    vec3  pb = in_frag.capsule_pb;
+    float r  = in_frag.capsule_ra;
 
-    vec3 view_normal;
-    float seg_t;
-    float t = intersect_capsule(ro, rd, cc, ca, cr, ch, view_normal, seg_t);
+    float t = capIntersect(ro, rd, pa, pb, r);
     if (t < 0.0) {
         discard;
         return;
     }
+    vec3 pos = ro + rd * t;
+    vec4 normal_seg = capNormalAndSeg(pos, pa, pb, r);
+
+    vec3 view_normal = normal_seg.xyz;
+    float seg_t = normal_seg.w;
 
     int side = int(seg_t + 0.5);
     vec3 view_coord = rd * t;
@@ -107,7 +113,7 @@ void main() {
 
     vec4 color = in_frag.color[side];
     vec3 view_velocity = in_frag.view_vel;
-    uint atom_index = in_frag.picking_idx[side];
+    uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
 
-    write_fragment(view_coord, view_velocity, view_normal, color, atom_index);
+    write_fragment(view_coord, view_velocity, view_normal, color, picking_index);
 }

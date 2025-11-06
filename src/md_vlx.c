@@ -7,7 +7,7 @@
 #include <core/md_str_builder.h>
 
 #include <md_util.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_gto.h>
 
 #include <hdf5.h>
@@ -167,6 +167,8 @@ typedef struct md_vlx_t {
 	// Arrays (length = number_of_atoms)
 	dvec3_t* atom_coordinates;
 	md_element_t* atomic_numbers;
+
+	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
 
 	// Data blocks
 	md_vlx_scf_t scf;
@@ -500,6 +502,37 @@ static size_t vlx_pgto_count(const md_vlx_t* vlx) {
 	return count;
 }
 
+static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	size_t count = 0;
+
+    basis_func_t basis_funcs[128];
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			int	ncomp = spherical_momentum_num_factors(angl, isph);
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				int idelem = atomic_numbers[atomidx];
+				size_t num_ao = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+
+				for (size_t iao = 0; iao < num_ao; iao++) {
+					out_ao_to_atom[count] = atomidx;
+					count += 1;
+				}
+			}
+		}
+	}
+	return count;
+}
+
 static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, const double* mo_coeffs) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
@@ -650,13 +683,13 @@ static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
 							struct md_pgto_t pgto = {
-								.coeff = coef1 * fcarts[icomp],
-								.alpha = alpha,
+								.coeff = (float)(coef1 * fcarts[icomp]),
+								.alpha = (float)alpha,
 								.radius = FLT_MAX,
-								.i = lx[icomp],
-								.j = ly[icomp],
-								.k = lz[icomp],
-								.l = angl,
+								.i = (uint8_t)lx[icomp],
+								.j = (uint8_t)ly[icomp],
+								.k = (uint8_t)lz[icomp],
+								.l = (uint8_t)angl,
 							};
 
 							md_array_push(out_data->pgtos, pgto, alloc);
@@ -2026,7 +2059,7 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 	if (flags & VLX_FLAG_SCF) {
 		// Attempt to read scf data
 		md_strb_reset(&sb);
-		md_strb_fmt(&sb, STR_FMT ".scf.h5", STR_ARG(base_file));
+		md_strb_fmt(&sb, STR_FMT ".scf.results.h5", STR_ARG(base_file));
 		if (md_path_is_valid(md_strb_to_str(sb))) {
 			// Open an existing file
 			hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
@@ -2034,59 +2067,73 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 				MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
 				goto done;
 			}
-			size_t dim[2];
-			if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
+			if (!h5_read_scf_data(vlx, file_id)) {
 				goto done;
 			}
-
-			md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
-			MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
-
-			md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
-			vlx->scf.alpha.energy.size = dim[1];
-
-			md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
-			vlx->scf.alpha.occupancy.size = dim[1];
-
-			if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
-				goto done;
-			}
-			if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_energies")) {
-				goto done;
-			}
-			if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
-				goto done;
-			}
-
-			if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-				md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
-				MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
-
-				md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
-				vlx->scf.beta.energy.size = dim[1];
-
-				md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
-				vlx->scf.beta.occupancy.size = dim[1];
-
-				// Extract beta data
-				if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "beta_orbitals")) {
+		} else {
+			md_strb_reset(&sb);
+			md_strb_fmt(&sb, STR_FMT ".scf.h5", STR_ARG(base_file));
+			if (md_path_is_valid(md_strb_to_str(sb))) {
+				// Open an existing file
+				hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
+				if (file_id == H5I_INVALID_HID) {
+					MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
 					goto done;
 				}
-				if (!h5_read_dataset_data(vlx->scf.beta.energy.data, &vlx->scf.beta.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_energies")) {
+				size_t dim[2];
+				if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
 					goto done;
 				}
-				if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
-					goto done;
-				}
-			} else {
-				// Shallow copy fields from Alpha
-				MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
 
-				if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
-					vlx->scf.beta.occupancy.data = 0;
-					md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
+				md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
+				MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
+
+				md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
+				vlx->scf.alpha.energy.size = dim[1];
+
+				md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
+				vlx->scf.alpha.occupancy.size = dim[1];
+
+				if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
+					goto done;
+				}
+				if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_energies")) {
+					goto done;
+				}
+				if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
+					goto done;
+				}
+
+				if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+					md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
+					MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+
+					md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
+					vlx->scf.beta.energy.size = dim[1];
+
+					md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
+					vlx->scf.beta.occupancy.size = dim[1];
+
+					// Extract beta data
+					if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "beta_orbitals")) {
+						goto done;
+					}
+					if (!h5_read_dataset_data(vlx->scf.beta.energy.data, &vlx->scf.beta.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_energies")) {
+						goto done;
+					}
 					if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
 						goto done;
+					}
+				} else {
+					// Shallow copy fields from Alpha
+					MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
+
+					if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+						vlx->scf.beta.occupancy.data = 0;
+						md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
+						if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
+							goto done;
+						}
 					}
 				}
 			}
@@ -2290,7 +2337,14 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
-	if (vlx->number_of_atoms > 0) {
+	if (vlx->number_of_atoms > 0 && vlx->scf.type != MD_VLX_SCF_TYPE_UNKNOWN) {
+		// Extract ao_to_atom_idx map
+		size_t N = md_vlx_scf_number_of_atomic_orbitals(vlx);
+		if (N > 0) {
+			md_array_resize(vlx->ao_to_atom_idx, N, vlx->arena);
+			extract_ao_to_atom_idx(vlx->ao_to_atom_idx, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+		}
+
 		extract_ao_data(&vlx->ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
 	}
 
@@ -2375,7 +2429,7 @@ static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, con
 			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
 			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
 			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
-			out_gtos[count].coeff = mo_coeffs[i] * ao_data->pgtos[j].coeff;
+			out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgtos[j].coeff);
 			out_gtos[count].alpha = ao_data->pgtos[j].alpha;
 			out_gtos[count].cutoff = (float)radius;
 			out_gtos[count].i = ao_data->pgtos[j].i;
@@ -2456,9 +2510,9 @@ static inline vec3_t closest_point_in_aabb(vec3_t p, vec3_t aabb_min, vec3_t aab
 
 static inline float monomial_bound(vec3_t center, int powers[3], vec3_t aabb_min, vec3_t aabb_max) {
     vec3_t bounds = {0};
-    bounds.x = MAX(fabs(powf(aabb_min.x - center.x, powers[0])), fabs(powf(aabb_max.x - center.x, powers[0])));
-    bounds.y = MAX(fabs(powf(aabb_min.y - center.y, powers[1])), fabs(powf(aabb_max.y - center.y, powers[1])));
-    bounds.z = MAX(fabs(powf(aabb_min.z - center.z, powers[2])), fabs(powf(aabb_max.z - center.z, powers[2])));
+    bounds.x = MAX(fabsf(powf(aabb_min.x - center.x, (float)powers[0])), fabsf(powf(aabb_max.x - center.x, (float)powers[0])));
+    bounds.y = MAX(fabsf(powf(aabb_min.y - center.y, (float)powers[1])), fabsf(powf(aabb_max.y - center.y, (float)powers[1])));
+    bounds.z = MAX(fabsf(powf(aabb_min.z - center.z, (float)powers[2])), fabsf(powf(aabb_max.z - center.z, (float)powers[2])));
     return bounds.x * bounds.y * bounds.z;
 }
 
@@ -2721,6 +2775,42 @@ const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
 	return NULL;
 }
 
+size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			return vlx->rsp.nto[nto_idx].coefficients.size[0];
+		}
+	}
+	return 0;
+}
+
+const double* md_vlx_rsp_nto_lambda_ao_coefficients(const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
+			// We return the data pointer to the LUMO orbital index
+
+			int64_t mo_idx = 0;
+			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+				mo_idx = (int64_t)vlx->scf.lumo_idx[0] + (int64_t)lambda_idx;
+			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
+				mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
+			} else {
+				MD_LOG_ERROR("Invalid NTO type!");
+				return NULL;
+			}
+
+			if (mo_idx < 0 || mo_idx >= md_vlx_scf_number_of_molecular_orbitals(vlx)) {
+				MD_LOG_ERROR("lambda_idx out of bounds");
+				return NULL;
+			}
+
+			return orb->coefficients.data + mo_idx * orb->coefficients.size[0];
+		}
+	}
+	return NULL;
+}
+
 size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->vib.number_of_normal_modes;
@@ -2846,8 +2936,8 @@ void md_vlx_destroy(md_vlx_t* vlx) {
 	}
 }
 
-bool md_vlx_molecule_init(md_system_t* mol, const md_vlx_t* vlx, md_allocator_i* alloc) {
-	ASSERT(mol);
+bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* alloc) {
+	ASSERT(sys);
 	ASSERT(vlx);
 
 	if (vlx->number_of_atoms == 0) {
@@ -2857,40 +2947,42 @@ bool md_vlx_molecule_init(md_system_t* mol, const md_vlx_t* vlx, md_allocator_i*
 
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	MEMSET(mol, 0, sizeof(md_system_t));
+	MEMSET(sys, 0, sizeof(md_system_t));
 
-	mol->atom.count = vlx->number_of_atoms;
-	md_array_resize(mol->atom.x,		capacity, alloc);
-	md_array_resize(mol->atom.y,		capacity, alloc);
-	md_array_resize(mol->atom.z,		capacity, alloc);
-    md_array_resize(mol->atom.type_idx, capacity, alloc);
-    md_array_resize(mol->atom.flags,    capacity, alloc);
+	md_array_resize(sys->atom.x,		capacity, alloc);
+	md_array_resize(sys->atom.y,		capacity, alloc);
+	md_array_resize(sys->atom.z,		capacity, alloc);
+    md_array_resize(sys->atom.type_idx, capacity, alloc);
+    md_array_resize(sys->atom.flags,    capacity, alloc);
 
-	MEMSET(mol->atom.x,			0, md_array_bytes(mol->atom.x));
-	MEMSET(mol->atom.y,			0, md_array_bytes(mol->atom.y));
-	MEMSET(mol->atom.z,			0, md_array_bytes(mol->atom.z));
-	MEMSET(mol->atom.type_idx,  0, md_array_bytes(mol->atom.type_idx));
-    MEMSET(mol->atom.flags,		0, md_array_bytes(mol->atom.flags));
+	MEMSET(sys->atom.x,			0, md_array_bytes(sys->atom.x));
+	MEMSET(sys->atom.y,			0, md_array_bytes(sys->atom.y));
+	MEMSET(sys->atom.z,			0, md_array_bytes(sys->atom.z));
+	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
+    MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
-    md_atom_type_find_or_add(&mol->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		mol->atom.x[i] = (float)vlx->atom_coordinates[i].x;
-		mol->atom.y[i] = (float)vlx->atom_coordinates[i].y;
-		mol->atom.z[i] = (float)vlx->atom_coordinates[i].z;
+		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
+		sys->atom.y[i] = (float)vlx->atom_coordinates[i].y;
+		sys->atom.z[i] = (float)vlx->atom_coordinates[i].z;
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		str_t sym  = md_atomic_number_symbol(z);
         float mass = md_atomic_number_mass(z);
 		float radius = md_atomic_number_vdw_radius(z);
 
-		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom.type, sym, z, mass, radius, alloc);
+		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, 0, alloc);
+		sys->atom.type_idx[i] = type_idx;
 	}
+
+	sys->atom.count = vlx->number_of_atoms;
 
 	return true;
 }
 
-static bool vlx_mol_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool vlx_sys_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
 	(void)mol;
 	(void)str;
 	(void)arg;
@@ -2899,27 +2991,27 @@ static bool vlx_mol_init_from_str(md_system_t* mol, str_t str, const void* arg, 
 	return false;
 }
 
-static bool vlx_mol_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool vlx_sys_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
 	(void)arg;
 	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
 	bool success = false;
 	if (vlx_parse_file(vlx, filename, VLX_FLAG_CORE)) {
-		success = md_vlx_molecule_init(mol, vlx, alloc);
+		success = md_vlx_system_init(mol, vlx, alloc);
 	}
 
 	md_vlx_destroy(vlx);
 	return success;
 }
 
-static md_molecule_loader_i vlx_loader = {
-	vlx_mol_init_from_str,
-	vlx_mol_init_from_file
+static md_system_loader_i vlx_loader = {
+	vlx_sys_init_from_str,
+	vlx_sys_init_from_file
 };
 
 // Externally visible procedures
 
-md_molecule_loader_i* md_vlx_molecule_api(void) {
+md_system_loader_i* md_vlx_system_loader(void) {
 	return &vlx_loader;
 }
 
@@ -2978,6 +3070,11 @@ const uint8_t* md_vlx_atomic_numbers(const md_vlx_t* vlx) {
 	return NULL;
 }
 
+const int* md_vlx_ao_to_atom_idx(const md_vlx_t* vlx) {
+	if (vlx) return vlx->ao_to_atom_idx;
+	return NULL;
+}
+
 md_vlx_scf_type_t md_vlx_scf_type(const md_vlx_t* vlx) {
 	if (vlx) return vlx->scf.type;
 	return MD_VLX_SCF_TYPE_UNKNOWN;
@@ -3006,6 +3103,13 @@ size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
 			return vlx->scf.lumo_idx[1];
 		}
+	}
+	return 0;
+}
+
+size_t md_vlx_scf_number_of_atomic_orbitals(const md_vlx_t* vlx) {
+	if (vlx) {
+		return number_of_atomic_orbitals(&vlx->scf.alpha);
 	}
 	return 0;
 }
@@ -3078,6 +3182,21 @@ static inline size_t get_matrix_index(size_t row, size_t col) {
 	size_t i = MAX(row, col);
 	size_t j = MIN(row, col);
 	return (i * (i + 1)) / 2 + j;
+}
+
+// The overlap matrix is a square, symmetric matrix [N][N], this returns the length N
+size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.S.size[0];
+	}
+	return 0;
+}
+
+const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.S.data;
+	}
+	return NULL;
 }
 
 // Returns the size of the density matrix in number of elements.

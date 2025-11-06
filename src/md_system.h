@@ -13,6 +13,7 @@ typedef struct md_atom_type_data_t {
     float*          mass;
     float*          radius;
     uint32_t*       color;
+    uint32_t*       flags;
 } md_atom_type_data_t;
 
 typedef struct md_atom_data_t {
@@ -101,7 +102,7 @@ typedef struct md_assembly_data_t {
     mat4_t* transform;
 } md_assembly_data_t;
 
-// Atom centric repcompentation of bonds
+// Atom centric representation of bonds
 typedef struct md_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -112,11 +113,11 @@ typedef struct md_conn_data_t {
     uint32_t* offset;
 } md_conn_data_t;
 
-// Bond centric repcompentation
+// Bond centric representation
 typedef struct md_bond_data_t {
     size_t count;
-    md_bond_pair_t* pairs;
-    md_order_t*     order;
+    md_atom_pair_t* pairs;
+    md_flags_t*     flags;
     md_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
 
@@ -126,8 +127,39 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
+typedef struct md_hydrogen_bond_donor_t {
+    md_atom_idx_t d_idx; // donor
+    md_atom_idx_t h_idx; // hydrogen
+} md_hydrogen_bond_donor_t;
+
+typedef struct md_hydrogen_bond_acceptor_t {
+    md_atom_idx_t idx;
+    int num_of_lone_pairs;
+} md_hydrogen_bond_acceptor_t;
+
+typedef struct md_hydrogen_bond_candidates_t {
+    size_t num_acceptors;
+    md_hydrogen_bond_acceptor_t* acceptors;
+   
+    size_t num_donors;
+    md_hydrogen_bond_donor_t* donors;
+} md_hydrogen_bond_candidates_t;
+
+typedef struct md_hydrogen_bond_pair_t {
+	uint32_t donor_idx;    // Index into donors array
+	uint32_t acceptor_idx; // Index into acceptors array
+} md_hydrogen_bond_pair_t;
+
+typedef struct md_hydrogen_bond_data_t {
+    md_hydrogen_bond_candidates_t candidate;
+
+    size_t num_bonds;
+    md_hydrogen_bond_pair_t* bonds; // index[0] = donor atom idx, index[1] = acceptor atom idx
+} md_hydrogen_bond_data_t;
+
 typedef struct md_system_t {
-    md_unit_cell_t              unit_cell;
+    md_unitcell_t               unitcell;
+
     md_atom_data_t              atom;
     md_component_data_t         comp;
     md_instance_data_t          inst;
@@ -137,6 +169,7 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     
     md_bond_data_t              bond;               // Persistent covalent bonds
+    md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
@@ -156,7 +189,7 @@ static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
     return atom_type->count;
 }
 
-static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, struct md_allocator_i* alloc) {
+static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, md_flags_t flags, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
     
@@ -166,7 +199,8 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
         if (str_eq(atom_type_name, name) && 
             atom_type->z[i] == z &&
             atom_type->mass[i] == mass &&
-            atom_type->radius[i] == radius) {
+            atom_type->radius[i] == radius &&
+            atom_type->flags[i] == flags) {
             return (md_atom_type_idx_t)i;
         }
     }
@@ -176,6 +210,7 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     md_array_push(atom_type->z, z, alloc);
     md_array_push(atom_type->mass, mass, alloc);
     md_array_push(atom_type->radius, radius, alloc);
+    md_array_push(atom_type->flags, flags, alloc);
     atom_type->count++;
     
     return (md_atom_type_idx_t)(atom_type->count - 1);
@@ -193,6 +228,14 @@ static inline float md_atom_type_mass(const md_atom_type_data_t* type_data, size
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->mass[type_idx];
+    }
+    return 0;
+}
+
+static inline md_flags_t md_atom_type_flags(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_idx < type_data->count) {
+        return type_data->flags[type_idx];
     }
     return 0;
 }
@@ -228,13 +271,14 @@ static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_
 
 static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-    ASSERT(atom_idx < atom->count);
-    return atom->type_idx[atom_idx];
+    if (atom->type_idx && atom_idx < atom->count) {
+        return atom->type_idx[atom_idx];
+	}
+    return 0;
 }
 
 static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-    ASSERT(atom_idx < atom->count);
     
     // Try atom type table first if type_idx is available
     if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
@@ -247,12 +291,9 @@ static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* ato
 
 static inline float md_atom_mass(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-    ASSERT(atom_idx < atom->count);
     
-    // Try atom type table first if type_idx is available
-    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
-        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
-        return atom->type.mass[atom->type_idx[atom_idx]];
+    if (atom_idx < atom->count) {
+		return md_atom_type_mass(&atom->type, atom->type_idx[atom_idx]);
     }
     
     return 0.0f;
@@ -260,11 +301,9 @@ static inline float md_atom_mass(const md_atom_data_t* atom, size_t atom_idx) {
 
 static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-    ASSERT(atom_idx < atom->count);
     
-    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
-        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
-        return atom->type.radius[atom->type_idx[atom_idx]];
+    if (atom_idx < atom->count) {
+		return md_atom_type_radius(&atom->type, atom->type_idx[atom_idx]);
     }
     
     return 0.0f;
@@ -272,14 +311,20 @@ static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) 
 
 static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-    ASSERT(atom_idx < atom->count);
 
-    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
-        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
-        return LBL_TO_STR(atom->type.name[atom->type_idx[atom_idx]]);
+    if (atom_idx < atom->count) {
+		return md_atom_type_name(&atom->type, atom->type_idx[atom_idx]);
     }
 
     return STR_LIT("");
+}
+
+static inline md_flags_t md_atom_flags(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    if (atom_idx < atom->count && atom->flags) {
+        return atom->flags[atom_idx];
+	}
+    return 0;
 }
 
 // Component
@@ -577,6 +622,11 @@ static inline size_t md_system_entity_count(const md_system_t* sys) {
     return sys->entity.count;
 }
 
+static inline md_flags_t md_system_entity_flags(const md_system_t* sys, size_t ent_idx) {
+    ASSERT(sys);
+    return md_entity_flags(&sys->entity, ent_idx);
+}
+
 static inline md_flags_t md_system_inst_flags(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     if (sys->inst.entity_idx && inst_idx < sys->inst.count) {
@@ -631,6 +681,12 @@ static inline size_t md_system_inst_atom_count(const md_system_t* sys, size_t in
     md_urange_t atom_range = md_system_inst_atom_range(sys, inst_idx);
     return atom_range.end - atom_range.beg;
 }
+
+static inline size_t md_system_inst_entity_idx(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return md_inst_entity_idx(&sys->inst, inst_idx);
+}
+
 
 static inline md_urange_t md_system_comp_atom_range(const md_system_t* sys, size_t comp_idx) {
     ASSERT(sys);
@@ -698,18 +754,9 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-#define MD_BOND_FLAG_MASK  0xF0
-#define MD_BOND_ORDER_MASK 0x0F
-
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     ASSERT(bond_data);
     return bond_data->conn.offset[atom_idx + 1] - bond_data->conn.offset[atom_idx];
-}
-
-static inline void md_bond_order_set(md_bond_data_t* bond_data, md_bond_idx_t bond_idx, uint32_t order) {
-    ASSERT(bond_data);
-    uint32_t o = bond_data->order[bond_idx];
-    bond_data->order[bond_idx] = (o & MD_BOND_FLAG_MASK) | (order & MD_BOND_ORDER_MASK);
 }
 
 static inline md_atom_idx_t md_bond_conn_atom_idx(const md_bond_data_t* bond_data, uint32_t atom_conn_idx, uint32_t idx) {
@@ -742,14 +789,9 @@ static inline md_atom_idx_t md_bond_iter_bond_index(const md_bond_iter_t* it) {
     return it->data->conn.bond_idx[it->i];
 }
 
-static inline uint32_t md_bond_iter_bond_order(const md_bond_iter_t* it) {
-    ASSERT(it);
-    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_ORDER_MASK;
-}
-
 static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     ASSERT(it);
-    return it->data->order[it->data->conn.bond_idx[it->i]] & MD_BOND_FLAG_MASK;
+    return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
 static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
@@ -767,7 +809,7 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
 
     bond_data->count = 0;
     md_array_shrink(bond_data->pairs, 0);
-    md_array_shrink(bond_data->order, 0);
+    md_array_shrink(bond_data->flags, 0);
     
     bond_data->conn.count = 0;
     md_array_shrink(bond_data->conn.atom_idx, 0);
@@ -796,6 +838,30 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
     return found;
 }
 
+static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
+	ASSERT(hbond_cand);
+    if (donor_idx < hbond_cand->num_donors) {
+        return hbond_cand->donors[donor_idx].d_idx;
+	}
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
+    ASSERT(hbond_cand);
+    if (donor_idx < hbond_cand->num_donors) {
+        return hbond_cand->donors[donor_idx].h_idx;
+    }
+    return -1;
+}
+
+static inline md_atom_idx_t md_hydrogen_bond_acceptor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acceptor_idx) {
+    ASSERT(hbond_cand);
+    if (acceptor_idx < hbond_cand->num_acceptors) {
+        return hbond_cand->acceptors[acceptor_idx].idx;
+    }
+    return -1;
+}
+
 /*
 
 The molecule loader interface is just a convenience interface for abstracing the functionality of initializing molecule data
@@ -806,10 +872,10 @@ molecule data only the first part of the file is used.
 
 */
 
-typedef struct md_molecule_loader_i {
+typedef struct md_system_loader_i {
     bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg, struct md_allocator_i* alloc);
     bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg, struct md_allocator_i* alloc);
-} md_molecule_loader_i;
+} md_system_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.

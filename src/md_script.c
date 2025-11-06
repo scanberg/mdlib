@@ -27,7 +27,7 @@
 
 #include <md_script.h>
 
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_filter.h>
 #include <md_util.h>
@@ -47,6 +47,7 @@
 #include <core/md_os.h>
 #include <core/md_unit.h>
 #include <core/md_spatial_hash.h>
+#include <core/md_spatial_acc.h>
 #include <core/md_vec_math.h>
 #include <core/md_str_builder.h>
 #include <core/md_hash.h>
@@ -241,6 +242,7 @@ struct frange_t {
 struct irange_t {
     int beg;
     int end;
+    int step; // Optional stride (>=1). Defaults to 1. Interpreted as [beg, end) with indices beg, beg+step, ... < end after 0-based transform
 };
 
 struct type_info_t {
@@ -910,8 +912,9 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
     data->unit[1] = md_unit_none();
 
     if (type.base_type == TYPE_BITFIELD) {
-        md_bitfield_t* bf = data->ptr;
-        for (int64_t i = 0; i < array_len; ++i) {
+        md_bitfield_t* bf = (md_bitfield_t*)data->ptr;
+        const int64_t total_elems = (int64_t)type_info_total_element_count(type);
+        for (int64_t i = 0; i < total_elems; ++i) {
             md_bitfield_init(&bf[i], alloc);
         }
     }
@@ -949,10 +952,14 @@ static void copy_data(data_t* dst, const data_t* src) {
     if (dst->type.base_type == TYPE_BITFIELD) {
         const uint64_t num_elem = element_count(*dst);
 
-        md_bitfield_t* dst_bf = dst->ptr;
-        const md_bitfield_t* src_bf = src->ptr;
-        // Set bit pointers into destination memory
+        md_bitfield_t* dst_bf = (md_bitfield_t*)dst->ptr;
+        const md_bitfield_t* src_bf = (const md_bitfield_t*)src->ptr;
         for (uint64_t i = 0; i < num_elem; ++i) {
+            if (!md_bitfield_validate(&dst_bf[i])) {
+                MD_LOG_DEBUG("copy_data: invalid dst bitfield at index %llu (num_elem=%llu), dst_size=%llu, src_size=%llu", (unsigned long long)i, (unsigned long long)num_elem, (unsigned long long)dst->size, (unsigned long long)src->size);
+            }
+            ASSERT(md_bitfield_validate(&dst_bf[i]));
+            ASSERT(md_bitfield_validate(&src_bf[i]));
             md_bitfield_copy(&dst_bf[i], &src_bf[i]);
         }
     } else {
@@ -1772,7 +1779,11 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
                     PRINT("int_min");
                 else
                     PRINT("%i", rng.beg);
-                PRINT(":");
+                if (rng.step > 1) {
+                    PRINT(":%i:", rng.step);
+                } else {
+                    PRINT(":");
+                }
                 if (rng.end == INT32_MAX)
                     PRINT("int_max");
                 else
@@ -1865,7 +1876,10 @@ static void print_data_value(FILE* file, data_t data) {
                     fprintf(file, "int_min");
                 else
                     fprintf(file, "%i", rng.beg);
-                fprintf(file, ":");
+                if (rng.step > 1)
+                    fprintf(file, ":%i:", rng.step);
+                else
+                    fprintf(file, ":");
                 if (rng.end == INT32_MAX)
                     fprintf(file, "int_max");
                 else
@@ -2344,9 +2358,10 @@ ast_node_t* parse_value(parse_context_t* ctx) {
         // RANGE
         // ... ugh! alot to parse!
         // Parse everything as double for now and convert to integer in the end if this bool is not set.
-        bool is_float = (token.type == TOKEN_FLOAT);
-        double beg = 0;
-        double end = 0;
+    bool is_float = (token.type == TOKEN_FLOAT);
+    double beg = 0;
+    double end = 0;
+    int    step = 1;
 
         if (is_number(token.type)) {
             beg = parse_float(token.str);
@@ -2358,12 +2373,39 @@ ast_node_t* parse_value(parse_context_t* ctx) {
         next = tokenizer_peek_next(ctx->tokenizer);
         if (is_number(next.type)) {
             token = tokenizer_consume_next(ctx->tokenizer);
-            end = parse_float(token.str);
-            is_float |= (token.type == TOKEN_FLOAT);
-            // Expand the nodes marker to contain the number
-            //node->token.col_end = next.col_end;
+            double mid = parse_float(token.str);
+            bool mid_is_float = (token.type == TOKEN_FLOAT);
+            // Expand token span
             node->token = concat_tokens(node->token, next);
 
+            // Peek to see if we have a second ':' indicating stride syntax start:step:end
+            token_t maybe_colon = tokenizer_peek_next(ctx->tokenizer);
+            if (maybe_colon.type == ':') {
+                // Consume ':'
+                (void)tokenizer_consume_next(ctx->tokenizer);
+                node->token = concat_tokens(node->token, maybe_colon);
+                // Next must be a number (end)
+                token_t end_tok = tokenizer_peek_next(ctx->tokenizer);
+                if (is_number(end_tok.type)) {
+                    end = parse_float(tokenizer_consume_next(ctx->tokenizer).str);
+                    node->token = concat_tokens(node->token, end_tok);
+                } else {
+                    // Missing end, treat as open range
+                    end = FLT_MAX;
+                }
+
+                // Only integer stride is supported
+                if (mid_is_float) {
+                    // If stride is float, fall back to error later in static check by marking as float range
+                    is_float = true; // Force FRANGE to trigger error or ignore stride
+                } else {
+                    step = (int)mid;
+                }
+            } else {
+                // No second colon -> simple range beg:end (mid is end)
+                end = mid;
+                is_float |= mid_is_float;
+            }
         } else {
             end = FLT_MAX;
         }
@@ -2374,8 +2416,10 @@ ast_node_t* parse_value(parse_context_t* ctx) {
             node->value._frange.end = (float)end;
         } else {
             node->data.type = (type_info_t)TI_IRANGE;
-            node->value._irange.beg = (beg == -FLT_MAX) ?  INT32_MIN : (int32_t)beg;
-            node->value._irange.end = (end ==  FLT_MAX) ?  INT32_MAX : (int32_t)end;
+            node->value._irange.beg  = (beg == -FLT_MAX) ?  INT32_MIN : (int32_t)beg;
+            node->value._irange.end  = (end ==  FLT_MAX) ?  INT32_MAX : (int32_t)end;
+            // Preserve explicit stride as parsed; validation (step > 0) is handled in static_check_constant_value
+            node->value._irange.step = step;
         }
     }
     else if (token.type == TOKEN_FLOAT) {
@@ -3096,7 +3140,9 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
 }
 
 static bool index_in_range(int idx, irange_t range) {
-    return range.beg <= idx && idx < range.end;
+    if (!(range.beg <= idx && idx < range.end)) return false;
+    int st = range.step > 0 ? range.step : 1;
+    return ((idx - range.beg) % st) == 0;
 }
 
 static md_array(irange_t) extract_subscript_ranges(const data_t data, md_allocator_i* alloc) {
@@ -3224,53 +3270,121 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
         ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
 
-        const size_t elem_size = base_type_element_byte_size(arr_data.type.base_type);
+    const base_type_t base_type = arr_data.type.base_type;
+        const size_t base_size = base_type_element_byte_size(base_type);
+    md_allocator_i* dst_alloc = ctx->ir ? ctx->ir->arena : ctx->temp_alloc;
         size_t write_offset = 0;
         const irange_t* src_rng = node->subscript_ranges;
         const int* src_dim = arr_data.type.dim;
 
         switch (node->subscript_dim) {
             case 1: {
-                const size_t slice_size = (src_rng[0].end - src_rng[0].beg) * elem_size;
-                const size_t read_offset = src_rng[0].beg * elem_size;
-                data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
-                const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
-                copy_data(&dst_slice, &src_slice);
+                size_t block_elems = 1;
+                for (int d = 1; d < MAX_NUM_DIMS; ++d) {
+                    if (src_dim[d] <= 0) break;
+                    block_elems *= (size_t)src_dim[d];
+                }
+                const size_t block_bytes = block_elems * base_size;
+                for (int i = src_rng[0].beg; i < src_rng[0].end; i += MAX(src_rng[0].step,1)) {
+                    const size_t read_offset = (size_t)i * block_bytes;
+                    if (base_type == TYPE_BITFIELD) {
+                        md_bitfield_t* dst_bf = (md_bitfield_t*)((char*)dst->ptr + write_offset);
+                        const md_bitfield_t* src_bf = (const md_bitfield_t*)((char*)arr_data.ptr + read_offset);
+                        for (size_t k = 0; k < block_elems; ++k) {
+                            if (!md_bitfield_validate(&dst_bf[k])) md_bitfield_init(&dst_bf[k], dst_alloc);
+                            md_bitfield_copy(&dst_bf[k], &src_bf[k]);
+                        }
+                    } else {
+                        MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                    }
+                    write_offset += block_bytes;
+                }
             } break;
             case 2:
-                for (int i = src_rng[0].beg; i < src_rng[0].end; ++i) {
-                    const size_t slice_size = (src_rng[1].end - src_rng[1].beg) * elem_size;
-                    const size_t read_offset = (i * src_dim[1] + src_rng[1].beg) * elem_size;
-                    data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
-                    const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
-                    copy_data(&dst_slice, &src_slice);
-                    write_offset += slice_size;
+                {
+                    size_t block_elems = 1;
+                    for (int d = 2; d < MAX_NUM_DIMS; ++d) {
+                        if (src_dim[d] <= 0) break;
+                        block_elems *= (size_t)src_dim[d];
+                    }
+                    const size_t block_bytes = block_elems * base_size;
+                    for (int i = src_rng[0].beg; i < src_rng[0].end; i += MAX(src_rng[0].step,1)) {
+                        for (int j = src_rng[1].beg; j < src_rng[1].end; j += MAX(src_rng[1].step,1)) {
+                            const size_t lin = (size_t)i * (size_t)src_dim[1] + (size_t)j;
+                            const size_t read_offset = lin * block_bytes;
+                            if (base_type == TYPE_BITFIELD) {
+                                md_bitfield_t* dst_bf = (md_bitfield_t*)((char*)dst->ptr + write_offset);
+                                const md_bitfield_t* src_bf = (const md_bitfield_t*)((char*)arr_data.ptr + read_offset);
+                                for (size_t k = 0; k < block_elems; ++k) {
+                                    if (!md_bitfield_validate(&dst_bf[k])) md_bitfield_init(&dst_bf[k], dst_alloc);
+                                    md_bitfield_copy(&dst_bf[k], &src_bf[k]);
+                                }
+                            } else {
+                                MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                            }
+                            write_offset += block_bytes;
+                        }
+                    }
                 }
                 break;
             case 3:
                 // @NOTE: TO BE TESTED
-                for (int j = src_rng[0].beg; j < src_rng[0].end; ++j) {
-                    for (int i = src_rng[1].beg; i < src_rng[1].end; ++i) {
-                        const size_t slice_size = (src_rng[2].end - src_rng[2].beg) * elem_size;
-                        const size_t read_offset = (j * src_dim[1] * src_dim[2] + i * src_dim[2] + src_rng[2].beg) * elem_size;
-                        data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
-                        const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
-                        copy_data(&dst_slice, &src_slice);
-                        write_offset += slice_size;
+                {
+                    size_t block_elems = 1;
+                    for (int d = 3; d < MAX_NUM_DIMS; ++d) {
+                        if (src_dim[d] <= 0) break;
+                        block_elems *= (size_t)src_dim[d];
+                    }
+                    const size_t block_bytes = block_elems * base_size;
+                    for (int k = src_rng[0].beg; k < src_rng[0].end; k += MAX(src_rng[0].step,1)) {
+                        for (int j = src_rng[1].beg; j < src_rng[1].end; j += MAX(src_rng[1].step,1)) {
+                            for (int i = src_rng[2].beg; i < src_rng[2].end; i += MAX(src_rng[2].step,1)) {
+                                const size_t lin = ((size_t)k * (size_t)src_dim[1] + (size_t)j) * (size_t)src_dim[2] + (size_t)i;
+                                const size_t read_offset = lin * block_bytes;
+                                if (base_type == TYPE_BITFIELD) {
+                                    md_bitfield_t* dst_bf = (md_bitfield_t*)((char*)dst->ptr + write_offset);
+                                    const md_bitfield_t* src_bf = (const md_bitfield_t*)((char*)arr_data.ptr + read_offset);
+                                    for (size_t m = 0; m < block_elems; ++m) {
+                                        if (!md_bitfield_validate(&dst_bf[m])) md_bitfield_init(&dst_bf[m], dst_alloc);
+                                        md_bitfield_copy(&dst_bf[m], &src_bf[m]);
+                                    }
+                                } else {
+                                    MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                                }
+                                write_offset += block_bytes;
+                            }
+                        }
                     }
                 }
                 break;
             case 4:
                 // @NOTE: TO BE TESTED
-                for (int k = src_rng[0].beg; k < src_rng[0].end; ++k) {
-                    for (int j = src_rng[1].beg; j < src_rng[1].end; ++j) {
-                        for (int i = src_rng[2].beg; i < src_rng[2].end; ++i) {
-                            const size_t slice_size = (src_rng[3].end - src_rng[3].beg) * elem_size;
-                            const size_t read_offset = (k * src_dim[1] * src_dim[2] * src_dim[3] + j * src_dim[2] * src_dim[3] + i * src_dim[3] + src_rng[3].beg) * elem_size;
-                            data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
-                            const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
-                            copy_data(&dst_slice, &src_slice);
-                            write_offset += slice_size;
+                {
+                    size_t block_elems = 1;
+                    for (int d = 4; d < MAX_NUM_DIMS; ++d) {
+                        if (src_dim[d] <= 0) break;
+                        block_elems *= (size_t)src_dim[d];
+                    }
+                    const size_t block_bytes = block_elems * base_size;
+                    for (int l = src_rng[0].beg; l < src_rng[0].end; l += MAX(src_rng[0].step,1)) {
+                        for (int k = src_rng[1].beg; k < src_rng[1].end; k += MAX(src_rng[1].step,1)) {
+                            for (int j = src_rng[2].beg; j < src_rng[2].end; j += MAX(src_rng[2].step,1)) {
+                                for (int i = src_rng[3].beg; i < src_rng[3].end; i += MAX(src_rng[3].step,1)) {
+                                    const size_t lin = (((size_t)l * (size_t)src_dim[1] + (size_t)k) * (size_t)src_dim[2] + (size_t)j) * (size_t)src_dim[3] + (size_t)i;
+                                    const size_t read_offset = lin * block_bytes;
+                                    if (base_type == TYPE_BITFIELD) {
+                                        md_bitfield_t* dst_bf = (md_bitfield_t*)((char*)dst->ptr + write_offset);
+                                        const md_bitfield_t* src_bf = (const md_bitfield_t*)((char*)arr_data.ptr + read_offset);
+                                        for (size_t n = 0; n < block_elems; ++n) {
+                                            if (!md_bitfield_validate(&dst_bf[n])) md_bitfield_init(&dst_bf[n], dst_alloc);
+                                            md_bitfield_copy(&dst_bf[n], &src_bf[n]);
+                                        }
+                                    } else {
+                                        MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                                    }
+                                    write_offset += block_bytes;
+                                }
+                            }
                         }
                     }
                 }
@@ -3278,6 +3392,8 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
             default:
                 ASSERT(false);
         }
+        ASSERT(write_offset <= dst->size);
+        ASSERT(write_offset == dst->size);
     }
 
     return true;
@@ -3347,7 +3463,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             const size_t elem_size = type_info_element_byte_stride(dst->type);
             data.type = lhs_types[i];
             data.ptr = (char*)dst->ptr + elem_size * dst_idx;
-            data.size = type_info_total_byte_size(lhs_types[i]);;
+            data.size = type_info_total_byte_size(lhs_types[i]);
 
             int64_t offset = type_info_array_len(lhs_types[i]);
             dst_idx += offset;
@@ -4452,6 +4568,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
+            MD_LOG_DEBUG("Static validating procedure: '"STR_FMT"'", STR_ARG(node->ident));
             static_backchannel_t* prev_channel = ctx->backchannel;
             static_backchannel_t channel = {0};
             ctx->backchannel = &channel;
@@ -4474,10 +4591,14 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(is_scalar(node->data.type));
 
     if (node->data.type.base_type == TYPE_IRANGE) {
-        // Make sure the range is given in an ascending format, lo:hi
+        // Validate ascending format and positive step
         irange_t rng = node->value._irange;
         if (rng.beg > rng.end) {
             LOG_ERROR(ctx->ir, node->token, "The range is invalid, a range must have an ascending format, did you mean '%i:%i'?", rng.end, rng.beg);
+            return false;
+        }
+        if (rng.step <= 0) {
+            LOG_ERROR(ctx->ir, node->token, "The stride in a range must be a positive integer, got %i", rng.step);
             return false;
         }
     }
@@ -4692,6 +4813,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                 if (arg->data.type.base_type == TYPE_INT) {
                     range.beg = arg->value._int;
                     range.end = arg->value._int;
+                    range.step = 1;
                 } else {
                     range = arg->value._irange;
                     if (range.beg == INT32_MIN) {
@@ -4702,10 +4824,18 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                         range.end = lhs_dim;
                         arg->value._irange.end = range.end;
                     }
+                    if (range.step <= 0) range.step = 1;
                 }
                 if (range.beg <= range.end && 1 <= range.beg && range.end <= lhs_dim) {
-                    node->subscript_ranges[i] = (irange_t){range.beg - 1, range.end};
-                    result_type.dim[i] = range.end - range.beg + 1;
+                    // Convert to 0-based half-open interval [beg0, end0)
+                    irange_t sr = {0};
+                    sr.beg  = range.beg - 1;
+                    sr.end  = range.end;
+                    sr.step = range.step;
+                    node->subscript_ranges[i] = sr;
+                    // Compute resulting length with stride: floor((end-beg)/step)+1
+                    int cnt = (range.end - range.beg) / MAX(range.step,1) + 1;
+                    result_type.dim[i] = cnt;
                 } else {
                     LOG_ERROR(ctx->ir, arg->token, "Invalid Array subscript range");
                     return false;
@@ -5038,11 +5168,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;
                     node->data.type = node->lhs_context_types[0];
                     if (node->data.type.base_type == TYPE_BITFIELD) {
-                        node->data.type.dim[0] *= (int)arr_len;
                         // This is a flattening of the dimensions
-                        int len = dim_size(node->data.type.dim);
                         MEMSET(node->data.type.dim, 0, sizeof(node->data.type.dim));
-                        node->data.type.dim[0] = len;
+                        node->data.type.dim[0] = (int)arr_len;
                     } else {
                         node->data.type.dim[0] = (int)arr_len;
                     }
@@ -5678,7 +5806,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
             goto done;
         }
 
-        MEMCPY(&mutable_mol.unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
+        MEMCPY(&mutable_mol.unitcell, &curr_header.unitcell, sizeof(md_unitcell_t));
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = 0;
