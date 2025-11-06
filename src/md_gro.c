@@ -81,18 +81,22 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
             MD_LOG_ERROR("Failed to extract atom line");
             return false;
         }
+        md_gro_atom_t* atom = &data->atom_data[i];
+
         const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
         if (num_tokens < 3) {
-            MD_LOG_ERROR("Failed to parse atom coordinates, expected at least 3 tokens, got %i", (int)num_tokens);
-            return false;
+            MD_LOG_DEBUG("Failed to tokenize atom coordinates in line: \"" STR_FMT "", STR_ARG(line));
+            // Fallback to fixed width format
+			atom->x = (float)parse_float((str_t) { line.ptr + 20, 8 });
+            atom->y = (float)parse_float((str_t) { line.ptr + 28, 8 });
+            atom->z = (float)parse_float((str_t) { line.ptr + 36, 8 });
+        } else {
+            atom->x = (float)parse_float_wide(tokens[0].ptr, tokens[0].len);
+            atom->y = (float)parse_float_wide(tokens[1].ptr, tokens[1].len);
+            atom->z = (float)parse_float_wide(tokens[2].ptr, tokens[2].len);
         }
         
-        md_gro_atom_t* atom = &data->atom_data[i];
-        
         atom->res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
-        atom->x = (float)parse_float_wide(tokens[0].ptr, tokens[0].len);
-        atom->y = (float)parse_float_wide(tokens[1].ptr, tokens[1].len);
-        atom->z = (float)parse_float_wide(tokens[2].ptr, tokens[2].len);
         
         str_copy_to_char_buf(atom->res_name,  sizeof(atom->res_name),  str_trim(str_substr(line,  5, 5)));
         str_copy_to_char_buf(atom->atom_name, sizeof(atom->atom_name), str_trim(str_substr(line, 10, 5)));
