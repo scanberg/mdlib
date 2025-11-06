@@ -2686,16 +2686,34 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 typedef struct contact_count_callback_data_t {
-    const md_bitfield_t* bf;
+    const md_bitfield_t* exclusion_bf;
     size_t count;
+    eval_context_t* ctx;
 } contact_count_callback_data_t;
 
 void contact_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
 	contact_count_callback_data_t* data = (contact_count_callback_data_t*)user_param;
     for (size_t k = 0; k < num_pairs; ++k) {
-        size_t test = md_bitfield_test_bit(data->bf, j_idx[k]) ? 0 : 1;
+        size_t test = md_bitfield_test_bit(data->exclusion_bf, j_idx[k]) ? 0 : 1;
         data->count += test;
 	}
+}
+
+void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+	contact_count_callback_data_t* data = (contact_count_callback_data_t*)user_param;
+    eval_context_t* ctx = data->ctx;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        uint32_t i = i_idx[k];
+        uint32_t j = j_idx[k];
+        if (md_bitfield_test_bit(data->exclusion_bf, j)) continue;
+        const vec3_t pos_i = md_atom_coord(&ctx->mol->atom, i);
+        const vec3_t pos_j = md_atom_coord(&ctx->mol->atom, j);
+        md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 128));
+        md_script_vis_vertex_t v2 = vertex(pos_j, COLOR_U32(0, 0, 0, 128));
+        push_line(v1, v2, ctx->vis);
+        visualize_atom_index(i, ctx);
+        visualize_atom_index(j, ctx);
+    }
 }
 
 static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -2710,53 +2728,90 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 	int dim_a = element_count(arg[0]);
 	int dim_b = element_count(arg[1]);
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-
-        size_t dst_len = type_info_array_len(dst->type);
-        if (dst_len != dim_a) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Mismatching size in dst array");
-            return -1;
-        } 
-
-		float* out_counts = (float*)dst->ptr;
+    if (dst || ctx->vis) {
+        float* out_counts = NULL;
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            int dst_len = type_info_array_len(dst->type);
+            if (dst_len != dim_a) {
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Mismatching size in dst array");
+                return -1;
+            } 
+            out_counts = (float*)dst->ptr;
+        }
 
 		md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_alloc);
-        md_bitfield_t tmp_bf = md_bitfield_create(ctx->temp_alloc);
+        md_bitfield_t tmp_bf = {0};
 
         if (dim_b > 1) {
-			for (int i = 0; i < dim_b; ++i) {
-				md_bitfield_or_inplace(&tmp_bf, &bf_b[i]);
-            }
+            tmp_bf = _internal_flatten_bf(bf_b, dim_b, ctx->temp_alloc);
 			bf_b = &tmp_bf;
         }
 
-        size_t num_indices = md_bitfield_popcount(&tmp_bf);
+        size_t num_indices = md_bitfield_popcount(bf_b);
 		int32_t* indices = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_indices);
 
-		md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
+		md_bitfield_iter_t it = md_bitfield_iter_create(bf_b);
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
-        size_t count = 0;
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
 		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, ctx->mol->atom.count, cutoff, &ctx->mol->unitcell);
 
 		md_array(int32_t) a_indices = 0;
 
-        for (size_t i = 0; i < dim_a; ++i) {
+        // We must maintain an exclusion bitfield to avoid counting atoms within the same set
+        // Also we want to avoid counting contacts between bonded atoms
+        // How to achieve this efficiently:
+        // 1. For each atom in set A, we create an exclusion bitfield that includes all atoms in set A
+        // 2. We then add all bonded atoms to the exclusion bitfield
+        // 3. When counting contacts from atom in set A to atoms in set B, we skip those in the exclusion bitfield
+
+        md_bitfield_t exclusion_bf = md_bitfield_create(ctx->temp_alloc);
+
+        contact_count_callback_data_t data = {
+            .exclusion_bf = &exclusion_bf,
+            .count = 0,
+            .ctx = ctx,
+        };
+
+        int beg = 0;
+        int end = dim_a;
+        if (ctx->vis && ctx->subscript_ranges) {
+            // We only care about the first dimension here
+            beg = ctx->subscript_ranges[0].beg;
+            end = ctx->subscript_ranges[0].end;
+        }
+
+        for (int i = beg; i < end; ++i) {
 			const md_bitfield_t* bf = &bf_a[i];
 			size_t a_length = md_bitfield_popcount(bf);
 			md_array_ensure(a_indices, a_length, ctx->temp_alloc);
 			md_bitfield_iter_extract_indices(a_indices, a_length, md_bitfield_iter_create(bf));
 
-            		// Iterate over atoms in set A and exclude those potential contact points
-            contact_count_callback_data_t data = {
-                .bf = bf,
-                .count = 0
-		    };
+            md_bitfield_clear(&exclusion_bf);
+            md_bitfield_copy(&exclusion_bf, bf);
 
-			md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_callback, &data);
-			out_counts[i] = (float)data.count;
+            for (size_t j = 0; j < a_length; ++j) {
+                const int32_t atom_idx = a_indices[j];
+                // Add bonded atoms to exclusion set
+                md_bond_iter_t bond_it = md_bond_iter(&ctx->mol->bond, atom_idx);
+                while (md_bond_iter_has_next(&bond_it)) {
+                    uint32_t bond_flags = md_bond_iter_bond_flags(&bond_it); // Preload flags
+                    if (bond_flags & MD_BOND_FLAG_INTER) {
+                        md_atom_idx_t bonded_atom = md_bond_iter_atom_index(&bond_it);
+                        md_bitfield_set_bit(&exclusion_bf, bonded_atom);
+                    }
+                    md_bond_iter_next(&bond_it);
+                }
+            }
+
+            // Iterate over atoms in set A and exclude those potential contact points
+            if (ctx->vis) {
+                md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_vis_callback, &data);
+            } else {
+                md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_callback, &data);
+                out_counts[i] = (float)data.count;
+            }
 		}
 
 		md_vm_arena_temp_end(tmp);
