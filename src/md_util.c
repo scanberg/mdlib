@@ -5157,10 +5157,10 @@ static const atom_type_t predefined_atom_types[] = {
     {BAKE("MSC_OC"), 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
     {BAKE("MSC_CC"), 0, 3885.336f,   8.0f, MD_FLAG_COARSE_GRAINED},
 
-    {BAKE("P10_X1"), 0, 3.31E6f,   10.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("P20_X2"), 0, 2.65E7f,   20.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("P30_X3"), 0, 8.93E7f,   30.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("P40_X4"), 0, 2.12E8f,   40.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("P10_X1"), 0, 3.31E6f,   50.0f,  MD_FLAG_COARSE_GRAINED},
+    {BAKE("P20_X2"), 0, 2.65E7f,   100.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("P30_X3"), 0, 8.93E7f,   150.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("P40_X4"), 0, 2.12E8f,   200.0f, MD_FLAG_COARSE_GRAINED},
 };
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
