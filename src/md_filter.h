@@ -16,12 +16,12 @@ struct md_script_ir_t;
 #endif
 
 // This is more advanced and ugly
-bool md_filter_evaluate(md_array(struct md_bitfield_t)* bitfields, str_t expression, const struct md_system_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, struct md_allocator_i* alloc);
+bool md_filter_evaluate(md_array(struct md_bitfield_t)* bitfields, str_t expression, const struct md_system_t* sys, const float* x, const float* y, const float* z, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, struct md_allocator_i* alloc);
 
 // Simpler version, it evaluates a filter expression for a given molecule and concatenates the result down into a single expression.
 // ctx_ir is an optional evaluation context (which contains additional symbols and stuff it shold be aware of from some other script compilation)
 // err_buf and err_cap are optional and are pointer + length to a string buffer where it can write any evaluation errors of the expression
-bool md_filter(struct md_bitfield_t* bf, str_t expression, const struct md_system_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap);
+bool md_filter(struct md_bitfield_t* bf, str_t expression, const struct md_system_t* sys, const float* x, const float* y, const float* z, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap);
 
 #ifdef __cplusplus
 }

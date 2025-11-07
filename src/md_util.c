@@ -5153,9 +5153,9 @@ static const atom_type_t predefined_atom_types[] = {
     { BAKE("ION_CA"),  20, 40.08f,     2.7f, MD_FLAG_ION },
 	{ BAKE("ION_MG"),  12, 24.31f,     2.0f, MD_FLAG_ION },
 
-    {BAKE("MSC_IC"), 0, 3237.780f,   10.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("MSC_OC"), 0, 3237.780f,   10.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("MSC_CC"), 0, 3885.336f,   10.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("MSC_IC"), 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("MSC_OC"), 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {BAKE("MSC_CC"), 0, 3885.336f,   8.0f, MD_FLAG_COARSE_GRAINED},
 
     {BAKE("P10_X1"), 0, 3.31E6f,   10.0f, MD_FLAG_COARSE_GRAINED},
     {BAKE("P20_X2"), 0, 2.65E7f,   20.0f, MD_FLAG_COARSE_GRAINED},

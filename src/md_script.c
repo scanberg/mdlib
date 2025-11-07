@@ -4568,7 +4568,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
-            MD_LOG_DEBUG("Static validating procedure: '"STR_FMT"'", STR_ARG(node->ident));
+            //MD_LOG_DEBUG("Static validating procedure: '"STR_FMT"'", STR_ARG(node->ident));
             static_backchannel_t* prev_channel = ctx->backchannel;
             static_backchannel_t channel = {0};
             ctx->backchannel = &channel;
@@ -6717,9 +6717,9 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
 }
 #endif
 
-bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
+bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* sys, const float* x, const float* y, const float* z, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
-    ASSERT(mol);
+    ASSERT(sys);
     ASSERT(alloc);
 
     bool success = false;
@@ -6750,13 +6750,13 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .mol = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
             .initial_configuration = {
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
+                .x = x,
+                .y = y,
+                .z = z,
             },
             .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
@@ -6808,20 +6808,20 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     return success;
 }
 
-bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_system_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
-    ASSERT(mol);
+bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const float* x, const float* y, const float* z, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
+    ASSERT(sys);
 
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {
         MD_LOG_ERROR("md_filter: Passed in bitfield was NULL or not valid.");
         return false;
     }
 
-    if (!mol) {
-        MD_LOG_ERROR("md_filter: Passed in molecule was NULL");
+    if (!sys) {
+        MD_LOG_ERROR("md_filter: Passed in system was NULL");
         return false;
     }
 
-    if (mol->atom.count == 0) {
+    if (sys->atom.count == 0) {
         MD_LOG_ERROR("md_filter: Passed in molecule was empty");
         return false;
     }
@@ -6856,13 +6856,13 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_system_t* mol,
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .mol = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
             .initial_configuration = {
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
+                .x = x,
+                .y = y,
+                .z = z,
             },
             .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
         };

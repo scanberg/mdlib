@@ -10,7 +10,7 @@
 
 #include <md_filter.h>
 
-#define TEST(str) md_filter(&bf, STR_LIT(str), &mol, NULL, &is_dynamic, err, sizeof(err))
+#define TEST(str) md_filter(&bf, STR_LIT(str), &mol, mol.atom.x, mol.atom.y, mol.atom.z, NULL, &is_dynamic, err, sizeof(err))
 
 UTEST(filter, centered) {
     md_system_t mol = {0};
