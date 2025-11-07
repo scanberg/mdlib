@@ -2708,8 +2708,8 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
         if (data->exclusion_bf && md_bitfield_test_bit(data->exclusion_bf, j)) continue;
         const vec3_t pos_i = md_atom_coord(&ctx->mol->atom, i);
         const vec3_t pos_j = md_atom_coord(&ctx->mol->atom, j);
-        md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 128));
-        md_script_vis_vertex_t v2 = vertex(pos_j, COLOR_U32(0, 0, 0, 128));
+        md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 255));
+        md_script_vis_vertex_t v2 = vertex(pos_j, COLOR_U32(0, 0, 0, 0));
         push_line(v1, v2, ctx->vis);
         visualize_atom_index(i, ctx);
         visualize_atom_index(j, ctx);
