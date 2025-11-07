@@ -287,6 +287,33 @@ static inline md_unitcell_t md_unitcell_from_extent(double x, double y, double z
     return md_unitcell_from_basis_parameters(x, y, z, 0, 0, 0);    
 }
 
+static inline void md_unitcell_extract_extent_angles(double* out_a, double* out_b, double* out_c, double* out_alpha, double* out_beta, double* out_gamma, const md_unitcell_t* cell) {
+    if (!cell) {
+        if (out_a) *out_a = 0;
+        if (out_b) *out_b = 0;
+        if (out_c) *out_c = 0;
+        if (out_alpha) *out_alpha = 0;
+        if (out_beta) *out_beta = 0;
+        if (out_gamma) *out_gamma = 0;
+        return;
+    }
+
+    double a = cell->x;
+    double b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
+    double c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
+
+    double alpha = RAD_TO_DEG(acos((cell->yz * cell->xy - cell->y * cell->xz) / (b * c)));
+    double beta  = RAD_TO_DEG(acos((cell->xz) / c));
+    double gamma = RAD_TO_DEG(acos((cell->xy) / b));
+
+    if (out_a) *out_a = a;
+    if (out_b) *out_b = b;
+    if (out_c) *out_c = c;
+    if (out_alpha) *out_alpha = alpha;
+    if (out_beta) *out_beta = beta;
+    if (out_gamma) *out_gamma = gamma;
+}
+
 // From here: https://www.arianarab.com/post/crystal-structure-software
 // Assumes that all input angles (alpha, beta, gamma) are given in degrees
 static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
