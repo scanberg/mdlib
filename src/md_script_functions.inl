@@ -2694,8 +2694,8 @@ typedef struct contact_count_callback_data_t {
 void contact_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
 	contact_count_callback_data_t* data = (contact_count_callback_data_t*)user_param;
     for (size_t k = 0; k < num_pairs; ++k) {
-        size_t test = md_bitfield_test_bit(data->exclusion_bf, j_idx[k]) ? 0 : 1;
-        data->count += test;
+        if (data->exclusion_bf && md_bitfield_test_bit(data->exclusion_bf, j_idx[k])) continue;
+        data->count += 1;
 	}
 }
 
@@ -2705,7 +2705,7 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
     for (size_t k = 0; k < num_pairs; ++k) {
         uint32_t i = i_idx[k];
         uint32_t j = j_idx[k];
-        if (md_bitfield_test_bit(data->exclusion_bf, j)) continue;
+        if (data->exclusion_bf && md_bitfield_test_bit(data->exclusion_bf, j)) continue;
         const vec3_t pos_i = md_atom_coord(&ctx->mol->atom, i);
         const vec3_t pos_j = md_atom_coord(&ctx->mol->atom, j);
         md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 128));
@@ -2722,6 +2722,15 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
     const float cutoff = as_float(arg[2]);
+	int path_length = 4; // Default minimum path length
+
+    if (is_type_directly_compatible(arg[3].type, (type_info_t)TI_INT)) {
+		path_length = as_int(arg[3]);
+        if (path_length < 0) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[3], "The minimum path length cannot be negative");
+            return STATIC_VALIDATION_ERROR;
+		}
+    }
 
     const md_bitfield_t* bf_a = as_bitfield(arg[0]);
     const md_bitfield_t* bf_b = as_bitfield(arg[1]);
@@ -2755,7 +2764,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, ctx->mol->atom.count, cutoff, &ctx->mol->unitcell);
+		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, num_indices, cutoff, &ctx->mol->unitcell);
 
 		md_array(int32_t) a_indices = 0;
 
@@ -2765,6 +2774,9 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // 1. For each atom in set A, we create an exclusion bitfield that includes all atoms in set A
         // 2. We then add all bonded atoms to the exclusion bitfield
         // 3. When counting contacts from atom in set A to atoms in set B, we skip those in the exclusion bitfield
+
+		// What if set A and set B overlap?
+        // 
 
         md_bitfield_t exclusion_bf = md_bitfield_create(ctx->temp_alloc);
 
@@ -2789,21 +2801,8 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_bitfield_iter_extract_indices(a_indices, a_length, md_bitfield_iter_create(bf));
 
             md_bitfield_clear(&exclusion_bf);
-            md_bitfield_copy(&exclusion_bf, bf);
-
-            for (size_t j = 0; j < a_length; ++j) {
-                const int32_t atom_idx = a_indices[j];
-                // Add bonded atoms to exclusion set
-                md_bond_iter_t bond_it = md_bond_iter(&ctx->mol->bond, atom_idx);
-                while (md_bond_iter_has_next(&bond_it)) {
-                    uint32_t bond_flags = md_bond_iter_bond_flags(&bond_it); // Preload flags
-                    if (bond_flags & MD_BOND_FLAG_INTER) {
-                        md_atom_idx_t bonded_atom = md_bond_iter_atom_index(&bond_it);
-                        md_bitfield_set_bit(&exclusion_bf, bonded_atom);
-                    }
-                    md_bond_iter_next(&bond_it);
-                }
-            }
+            md_bitfield_and(&exclusion_bf, bf, bf_b); // Start with overlap
+			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->mol, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
             if (ctx->vis) {
