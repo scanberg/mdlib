@@ -396,6 +396,7 @@ static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield
 
 // Misc
 static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> int
+static int _void_ratio   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
@@ -688,6 +689,8 @@ static procedure_t procedures[] = {
 
     {CSTR("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
     {CSTR("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+
+    {CSTR("void_ratio"), TI_FLOAT,  1,   {TI_BITFIELD_ARR},   _void_ratio, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
 
     {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
@@ -5892,6 +5895,107 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     return result;
+}
+
+// Construct a ratio of void space vs occupied space within a set of coordinates
+static int _void_ratio(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+
+    if (dst) {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_alloc);
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+
+        const md_bitfield_t* bf = as_bitfield(arg[0]);
+        size_t bf_dim = element_count(arg[0]);
+
+        md_bitfield_t tmp = {0};
+        if (bf_dim > 1) {
+            tmp = _internal_flatten_bf(bf, bf_dim, ctx->temp_alloc);
+            bf = &tmp;
+        }
+
+        size_t count = md_bitfield_popcount(bf);
+        int*   idx = md_vm_arena_push_array(ctx->temp_alloc, int, count);
+        md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
+
+        // Allocate a bitfield for counting occupancy that is 512^3 bits
+        const size_t dim = 512;
+        const size_t num_bits = dim * dim * dim;
+        const size_t num_u64 = (num_bits + 63) / 64;
+        uint64_t* vol_bits = md_vm_arena_push_zero_array(ctx->temp_alloc, uint64_t, num_u64);
+
+        // Calculate cell extents from unitcell dimensions and voxel dimensions
+        double a, b, c;
+        md_unitcell_extract_extent_angles(&a, &b, &c, NULL, NULL, NULL, &ctx->mol->unitcell);
+
+        double voxel_dx = a / (double)dim;
+        double voxel_dy = b / (double)dim;
+        double voxel_dz = c / (double)dim;
+
+        // Fill occupancy volume
+        for (size_t i = 0; i < count; ++i) {
+            const int atom_idx = idx[i];
+            const float x = ctx->mol->atom.x[atom_idx];
+            const float y = ctx->mol->atom.y[atom_idx];
+            const float z = ctx->mol->atom.z[atom_idx];
+            const float r = md_atom_radius(&ctx->mol->atom, atom_idx);
+
+            // Find minimum and maximum integer coordinates within the volume
+            int min_coords[3] = {
+                (int)floorf((x - r) / (float)voxel_dx + 0.5f),
+                (int)floorf((y - r) / (float)voxel_dy + 0.5f),
+                (int)floorf((z - r) / (float)voxel_dz + 0.5f)
+            };
+            int max_coords[3] = {
+                (int)floorf((x + r) / (float)voxel_dx + 0.5f),
+                (int)floorf((y + r) / (float)voxel_dy + 0.5f),
+                (int)floorf((z + r) / (float)voxel_dz + 0.5f)
+            };
+
+            // Iterate over all voxels within the bounding box of the sphere
+            for (int iz = min_coords[2]; iz <= max_coords[2]; ++iz) {
+                for (int iy = min_coords[1]; iy <= max_coords[1]; ++iy) {
+                    for (int ix = min_coords[0]; ix <= max_coords[0]; ++ix) {
+                        // Compute voxel center coordinates
+                        float vx = (ix + 0.5f) * (float)voxel_dx;
+                        float vy = (iy + 0.5f) * (float)voxel_dy;
+                        float vz = (iz + 0.5f) * (float)voxel_dz;
+
+                        // Check if voxel center is within the atom radius
+                        float dx = vx - x;
+                        float dy = vy - y;
+                        float dz = vz - z;
+                        float dist2 = dx * dx + dy * dy + dz * dz;
+                        if (dist2 <= r * r) {
+                            // Map to volume coordinates
+                            uint32_t vvx = (uint32_t)CLAMP((vx / (float)a + 0.5f) * dim, 0.0f, (float)(dim - 1));
+                            uint32_t vvy = (uint32_t)CLAMP((vy / (float)b + 0.5f) * dim, 0.0f, (float)(dim - 1));
+                            uint32_t vvz = (uint32_t)CLAMP((vz / (float)c + 0.5f) * dim, 0.0f, (float)(dim - 1));
+
+                            const size_t bit_idx = (size_t)vvz * (dim * dim) + (size_t)vvy * dim + (size_t)vvx;
+                            vol_bits[bit_idx / 64] |= ((uint64_t)1 << (bit_idx % 64));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Do a big popcount 
+        size_t set_bits = 0;
+        for (size_t i = 0; i < num_u64; ++i) {
+            set_bits += popcnt64(vol_bits[i]);
+        }
+
+        // Write resulting ratio
+        float* out = (float*)dst->ptr;
+
+        *out = (float)(set_bits / (double)num_bits);
+
+        md_vm_arena_temp_end(temp);
+    }
+
+    return 0;
 }
 
 static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
