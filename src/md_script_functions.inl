@@ -392,11 +392,11 @@ static int _density_x(data_t*, data_t[], eval_context_t*);
 static int _density_y(data_t*, data_t[], eval_context_t*);
 static int _density_z(data_t*, data_t[], eval_context_t*);
 
-static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
+static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
 // Misc
-static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> int
-static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float
+static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> float
+static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
@@ -690,7 +690,7 @@ static procedure_t procedures[] = {
     {CSTR("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
     {CSTR("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
-    {CSTR("porosity"), TI_FLOAT,  1,   {TI_BITFIELD_ARR},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {CSTR("porosity"), TI_FLOAT,  1,   {TI_BITFIELD},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
 
     {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
@@ -5914,25 +5914,41 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
 
-    // Only support orthogonal cells for now
-    if (ctx->mol->unitcell.flags & MD_UNITCELL_TRICLINIC) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "void_ratio: triclinic unit cells not supported yet");
-        *(float*)dst->ptr = 0.0f;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_alloc);
+    
+    const size_t bf_dim = element_count(arg[0]);
+    const md_bitfield_t* bf = as_bitfield(arg[0]);
+
+    if (bf_dim != 1) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "porosity: expected a single bitfield as input");
+        md_vm_arena_temp_end(temp);
         return 0;
     }
 
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_alloc);
+    // Extract indices of selected atoms
+    const size_t count = md_bitfield_popcount(bf);
+    int* idx = md_vm_arena_push_array(ctx->temp_alloc, int, count);
+    md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
 
-    const md_bitfield_t* bf = as_bitfield(arg[0]);
-    size_t bf_dim = element_count(arg[0]);
+    // Extract radii of selected atoms
+    float* r = md_vm_arena_push_array(ctx->temp_alloc, float, count);
+    md_atom_extract_radii(r, 0, count, &ctx->mol->atom);
 
-    md_bitfield_t tmp = {0};
-    if (bf_dim > 1) {
-        tmp = _internal_flatten_bf(bf, bf_dim, ctx->temp_alloc);
-        bf = &tmp;
+    // Max radius
+    float max_r = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+        max_r = MAX(max_r, r[i]);
     }
 
-    const size_t count = md_bitfield_popcount(bf);
+    double cutoff = max_r;
+
+    // Alternative approach where we count subcells within the spatial acceleration structure formed by the atoms
+    md_spatial_acc_t acc = {.alloc = ctx->temp_alloc};
+    md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, idx, count, cutoff, &ctx->mol->unitcell);
+
+    size_t occupied_count = 0;
+    size_t total_count = 0;
+
     float* out = (float*)dst->ptr;
     *out = 0.0f;
 
@@ -5941,13 +5957,6 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_vm_arena_temp_end(temp);
         return 0;
     }
-
-    // Extract indices of selected atoms
-    int* idx = md_vm_arena_push_array(ctx->temp_alloc, int, count);
-    md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
-
-    float* r = md_vm_arena_push_array(ctx->temp_alloc, float, count);
-    md_atom_extract_radii(r, 0, count, &ctx->mol->atom);
 
     // Build a working copy of coordinates and deperiodize to make selection contiguous
     md_array(vec4_t) xyzr = 0;

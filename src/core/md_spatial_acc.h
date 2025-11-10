@@ -23,10 +23,9 @@ typedef struct md_spatial_acc_t {
     uint32_t  cell_dim[3];
 	float     cell_ext[3];
 
-    float G00, G11, G22;
-    float H01, H02, H12;
-
+    float A[3][3];
     float I[3][3];
+
     // Origin offset (added to input coords before multiplying with I) to maintain same fractional frame as build
     float origin[3];
 
@@ -35,9 +34,12 @@ typedef struct md_spatial_acc_t {
     struct md_allocator_i* alloc;
 } md_spatial_acc_t;
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef void (*md_spatial_acc_cell_callback_t)(const uint32_t* idx, const float* x, const float* y, size_t num_elem, const uint32_t cell_idx[3], void* user_param);
 
 typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 
@@ -66,6 +68,9 @@ bool md_spatial_acc_for_each_external_point_within_cutoff(const md_spatial_acc_t
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
 bool md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, md_spatial_acc_pair_callback_t callback, void* user_param);
 #endif
+
+// Can fail if neighberhood is too large
+bool md_spatial_acc_for_each_cell_neighbors(const md_spatial_acc_t* acc, const int ncell[3], md_spatial_acc_cell_callback_t callback, void* user_param);
 
 // --- HELPER FUNCTIONS ---
 
