@@ -690,9 +690,9 @@ static procedure_t procedures[] = {
     {CSTR("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
     {CSTR("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
-    {CSTR("porosity"), TI_FLOAT,  1,   {TI_BITFIELD_ARR},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {CSTR("porosity"), TI_FLOAT,  1,   {TI_BITFIELD},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
 
-    {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     // --- GEOMETRICAL OPERATIONS ---
     {CSTR("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },

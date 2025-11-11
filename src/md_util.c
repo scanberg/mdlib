@@ -4967,7 +4967,8 @@ bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
 }
 
 typedef struct {
-    str_t ident;
+    const char* comp;
+    const char* atom;
     int   atomic_nr;
     float mass;
     float radius;
@@ -4998,169 +4999,169 @@ typedef struct {
 // Predefined atom types (This include coarse grained types)
 static const atom_type_t predefined_atom_types[] = {
     // Martini CG types (BB) + (SC*)
-    {BAKE("ALA_BB"),  0,   89.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("ARG_BB"),  0,  174.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("ARG_SC1"), 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("ARG_SC2"), 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("ASN_BB"),  0,  132.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("ASN_SC1"), 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("ASP_BB"),  0,  133.10f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("ASP_SC1"), 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("CYS_BB"),  0,  121.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("CYS_SC1"), 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("GLN_BB"),  0,  146.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("GLN_SC1"), 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("GLU_BB"),  0,  147.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("GLU_SC1"), 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("GLY_BB"),  0,   75.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("HIS_BB"),  0,  155.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("HIS_SC1"), 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("HIS_SC2"), 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("HIS_SC3"), 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("ILE_BB"),  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("ILE_SC1"), 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("LEU_BB"),  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("LEU_SC1"), 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("LYS_BB"),  0,  146.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("LYS_SC1"), 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("LYS_SC2"), 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("MET_BB"),  0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("MET_SC1"), 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("PHE_BB"),  0,  165.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("PHE_SC1"), 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("PHE_SC2"), 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("PHE_SC3"), 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("PRO_BB"),  0,  115.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("SER_BB"),  0,  105.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("SER_SC1"), 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("THR_BB"),  0,  119.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("THR_SC1"), 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("TRP_BB"),  0,  204.23f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("TRP_SC1"), 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("TRP_SC2"), 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("TRP_SC3"), 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("TRP_SC4"), 0,   15.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("TYR_BB"),  0,  181.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {BAKE("TYR_SC1"), 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("TYR_SC2"), 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{BAKE("TYR_SC3"), 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {BAKE("VAL_BB"),  0,  117.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-	{BAKE("VAL_SC1"), 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ALA", "BB",  0,   89.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"ARG", "BB",  0,  174.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ASN", "BB",  0,  132.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ASP", "BB",  0,  133.10f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"CYS", "BB",  0,  121.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"GLN", "BB",  0,  146.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"GLU", "BB",  0,  147.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"GLY", "BB",  0,   75.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"HIS", "BB",  0,  155.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ILE", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"LEU", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"LYS", "BB",  0,  146.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"MET", "BB",  0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"MET", "SC1", 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"PHE", "BB",  0,  165.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"PRO", "BB",  0,  115.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"SER", "BB",  0,  105.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"SER", "SC1", 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"THR", "BB",  0,  119.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"THR", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"TRP", "BB",  0,  204.23f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"TYR", "BB",  0,  181.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"VAL", "BB",  0,  117.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
+	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
 
-	{BAKE("POPE_PO4"), 0,  95.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_GL1"), 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_GL2"), 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C1A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_D2A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C3A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C4A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C1B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C2B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C3B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-	{BAKE("POPE_C4B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "GL2", 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C1A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "D2A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C3A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C4A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C1B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C2B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C3B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+	{"POPE", "C4B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
 
-    {BAKE("POPG_GL0"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_PO4"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_GL1"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_GL2"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C1A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_D2A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C3A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C4A"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C1B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C2B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C3B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("POPG_C4B"), 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "GL0", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "PO4", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "GL1", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "GL2", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C1A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "D2A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C3A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C4A", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C1B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C2B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C3B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
+    {"POPG", "C4B", 0,  72.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
 
-    {BAKE("RAMP_PO1"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM1"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM2"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM3"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM4"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM5"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GM6"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_PO2"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL1"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL2"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1A"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2A"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C3A"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1B"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2B"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C3B"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL3"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL4"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1C"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2C"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C3C"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1D"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2D"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C3D"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL5"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL6"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1E"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2E"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL7"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_GL8"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C1F"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_C2F"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S01"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S02"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S03"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S04"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S05"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S06"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S07"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S08"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S09"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S10"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S11"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S12"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S13"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S14"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S15"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S16"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S17"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S18"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S19"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S20"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S21"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S22"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S23"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S24"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S25"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S26"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S27"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S28"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S29"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S30"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S31"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S32"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S33"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S34"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S35"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S36"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S37"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S38"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("RAMP_S39"), 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "PO1", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM1", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM2", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM3", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM4", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM5", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GM6", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "PO2", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL1", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL2", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1A", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2A", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C3A", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1B", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2B", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C3B", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL3", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL4", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1C", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2C", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C3C", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1D", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2D", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C3D", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL5", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL6", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1E", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2E", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL7", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "GL8", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C1F", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "C2F", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S01", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S02", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S03", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S04", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S05", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S06", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S07", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S08", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S09", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S10", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S11", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S12", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S13", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S14", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S15", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S16", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S17", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S18", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S19", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S20", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S21", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S22", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S23", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S24", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S25", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S26", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S27", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S28", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S29", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S30", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S31", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S32", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S33", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S34", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S35", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S36", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S37", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S38", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
+    {"RAMP", "S39", 0, 50.f, 4.0f, MD_FLAG_COARSE_GRAINED},
 
 	// Depending on the Martini version, water can be represented as a single bead or as 4-to-1 mapping
-	{ BAKE("W_W"),     0,  18.015f,     2.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_WATER },
+	{ "W", "W",     0,  18.015f,     2.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_WATER },
 
-    { BAKE("ION_CL"),  17, 35.45f,     1.8f, MD_FLAG_ION },
-    { BAKE("ION_NA"),  11, 22.99f,     2.3f, MD_FLAG_ION },
-    { BAKE("ION_K"),   19, 39.10f,     2.7f, MD_FLAG_ION },
-    { BAKE("ION_CA"),  20, 40.08f,     2.7f, MD_FLAG_ION },
-	{ BAKE("ION_MG"),  12, 24.31f,     2.0f, MD_FLAG_ION },
+    { "ION", "CL",  17, 35.45f,     1.8f, MD_FLAG_ION },
+    { "ION", "NA",  11, 22.99f,     2.3f, MD_FLAG_ION },
+    { "ION", "K",   19, 39.10f,     2.7f, MD_FLAG_ION },
+    { "ION", "CA",  20, 40.08f,     2.7f, MD_FLAG_ION },
+	{ "ION", "MG",  12, 24.31f,     2.0f, MD_FLAG_ION },
 
-    {BAKE("MSC_IC"), 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("MSC_OC"), 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("MSC_CC"), 0, 3885.336f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {"*", "IC", 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {"*", "OC", 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {"*", "CC", 0, 3885.336f,   8.0f, MD_FLAG_COARSE_GRAINED},
 
-    {BAKE("P10_X1"), 0, 3.31E6f,   50.0f,  MD_FLAG_COARSE_GRAINED},
-    {BAKE("P20_X2"), 0, 2.65E7f,   100.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("P30_X3"), 0, 8.93E7f,   150.0f, MD_FLAG_COARSE_GRAINED},
-    {BAKE("P40_X4"), 0, 2.12E8f,   200.0f, MD_FLAG_COARSE_GRAINED},
+    {"P10", "X1", 0, 3.31E6f,   50.0f,  MD_FLAG_COARSE_GRAINED},
+    {"P20", "X2", 0, 2.65E7f,   100.0f, MD_FLAG_COARSE_GRAINED},
+    {"P30", "X3", 0, 8.93E7f,   150.0f, MD_FLAG_COARSE_GRAINED},
+    {"P40", "X4", 0, 2.12E8f,   200.0f, MD_FLAG_COARSE_GRAINED},
 };
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
@@ -5168,6 +5169,49 @@ static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
     int len = snprintf(buf, sizeof(buf), STR_FMT "_" STR_FMT, STR_ARG(comp_name), STR_ARG(atom_name));
     str_t str = {buf, (size_t)len};
     return md_hash64_str(str, 0);
+}
+
+// Searches the predefined atom types for a matching atom name within a component
+// We support simple pattern matching here like wildcards and numerical substitutes
+// * is supported to match any sequence of characters
+// ? is supported to match any single character
+// # is supported to match any single digit
+
+bool pattern_match(const char* pattern, const char* str) {
+    while (*pattern && *str) {
+        if (*pattern == '*') {
+            pattern++;
+            if (!*pattern) return true;
+            while (*str) {
+                if (pattern_match(pattern, str)) return true;
+                str++;
+            }
+            return false;
+        } else if (*pattern == '?') {
+            pattern++;
+            str++;
+        } else if (*pattern == '#') {
+            if (!is_digit((unsigned char)*str)) return false;
+            pattern++;
+            str++;
+        } else {
+            if (*pattern != *str) return false;
+            pattern++;
+            str++;
+        }
+    }
+    while (*pattern == '*') pattern++;
+    return !*pattern && !*str;
+}
+
+static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) {
+    for (size_t i = 0; i < ARRAY_SIZE(predefined_atom_types); ++i) {
+        atom_type_t type = predefined_atom_types[i];
+        if (pattern_match(type.comp, comp_name.ptr) && pattern_match(type.atom, atom_name.ptr)) {
+            return (atom_type_t*)&predefined_atom_types[i];
+        }
+    }
+    return NULL;
 }
 
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], md_allocator_i* alloc) {
@@ -5184,15 +5228,6 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
 
     md_hashmap32_t atom_type_cache = {.allocator = md_get_temp_allocator() };
     md_hashmap_reserve(&atom_type_cache, 256);
-
-    md_hashmap32_t predef_type_cache = {.allocator = md_get_temp_allocator() };
-    md_hashmap_reserve(&predef_type_cache, 256);
-
-    for (size_t i = 0; i < ARRAY_SIZE(predefined_atom_types); ++i) {
-        atom_type_t type = predefined_atom_types[i];
-        uint64_t key = md_hash64_str(type.ident, 0);
-        md_hashmap_add(&predef_type_cache, key, (uint32_t)i);
-    }
     
     size_t num_success = 0;
 
@@ -5220,13 +5255,12 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                     md_flags_t flags = 0;
 
                     // Try to find in predefined set
-                    uint32_t* predef_type_idx = md_hashmap_get(&predef_type_cache, gen_key_from_names(comp_name, atom_name));
-                    if (predef_type_idx) {
-                        atom_type_t type = predefined_atom_types[*predef_type_idx];    
-                        z       = type.atomic_nr;
-                        mass    = type.mass;
-                        radius  = type.radius;
-                        flags   = type.flags;
+                    atom_type_t* predef_type = find_predefined_atom_type(comp_name, atom_name);
+                    if (predef_type) {
+                        z       = predef_type->atomic_nr;
+                        mass    = predef_type->mass;
+                        radius  = predef_type->radius;
+                        flags   = predef_type->flags;
                     } else {
                         z       = md_atomic_number_infer_from_label(atom_name, comp_name, comp_size);
                         mass    = md_atomic_number_mass(z);
@@ -8814,6 +8848,20 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     if (sys->atom.count == 0) return false;
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+
+    bool coarse_grain = false;
+    for (size_t i = 0; i < sys->atom.type.count; ++i) {
+        uint32_t flags = sys->atom.type.flags[i];
+        if (flags & MD_FLAG_COARSE_GRAINED) {
+            coarse_grain = true;
+            break;
+        }
+    }
+
+    if (coarse_grain) {
+        flags &= ~MD_UTIL_POSTPROCESS_BOND_BIT;
+        flags &= ~MD_UTIL_POSTPROCESS_HBOND_BIT;
+    }
 
     if (!sys->atom.flags) {
         md_array_resize(sys->atom.flags, sys->atom.count, alloc);
