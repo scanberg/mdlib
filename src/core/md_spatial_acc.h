@@ -39,9 +39,12 @@ typedef struct md_spatial_acc_t {
 extern "C" {
 #endif
 
-typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
+// Callback for cells
+// The coordinates are fractional coordinates
+typedef void (*md_spatial_acc_cell_callback_t)(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_elems, void* user_param);
 
-//typedef void (*md_spatial_acc_callback_t)(uint32_t i_idx, const uint32_t* j_idx, md_256 ij_dist2, void* user_param);
+// Callback for pairwise interactions
+typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 
 // It is recommended to use a cell extent that is equal to the maximum search radius
 void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);

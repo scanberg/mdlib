@@ -212,6 +212,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 	// Reset acc, but to not free memory
     md_spatial_acc_reset(acc);
 
+    // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
+    // Using ~cutoff-ish spacing gives good pruning.
+    const double CELL_EXT = in_cell_ext > 0.0 ? in_cell_ext : 3.0;
+
     double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double I[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     uint32_t flags = 0;
@@ -232,6 +236,14 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 
         // Construct A and I from aabb extent
         vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
+
+        // Round up to nearest N * CELL_EXT
+        aabb_ext = vec4_mul_f(vec4_ceil(vec4_div_f(aabb_ext, (float)CELL_EXT)), (float)CELL_EXT);
+
+        // Set min as center - half extent
+        vec4_t aabb_center = vec4_mul_f(vec4_add(aabb_min, aabb_max), 0.5f);
+        aabb_min = vec4_sub(aabb_center, vec4_mul_f(aabb_ext, 0.5f));
+        aabb_max = vec4_add(aabb_center, vec4_mul_f(aabb_ext, 0.5f));
 
         if ((flags & MD_UNITCELL_PBC_X) == 0) {
             coord_offset.x = -aabb_min.x;
@@ -263,10 +275,6 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     double H01 = 2 * (A[0][0] * A[0][1] + A[1][0] * A[1][1] + A[2][0] * A[2][1]); // 2 dot(a,b)
     double H02 = 2 * (A[0][0] * A[0][2] + A[1][0] * A[1][2] + A[2][0] * A[2][2]); // 2 dot(a, c)
     double H12 = 2 * (A[0][1] * A[0][2] + A[1][1] * A[1][2] + A[2][1] * A[2][2]); // 2 dot(b, c)
-
-    // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
-    // Using ~cutoff-ish spacing gives good pruning.
-    const double CELL_EXT = in_cell_ext > 0.0 ? in_cell_ext : 6.0;
 
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
     // This is only a heuristic for bin counts; the grid is still in fractional space.
@@ -420,39 +428,6 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     md_arena_allocator_destroy(temp_arena);
 }
 
-// The 13 'forward' neighbor offsets in 3D
-static const int FWD_NBRS[13][4] = {
-    { 1, 0, 0, 0},  {-1, 1, 0, 0}, {0, 1, 0, 0}, { 1, 1, 0, 0}, {-1, -1, 1, 0}, {0, -1, 1, 0}, {1, -1, 1, 0},
-    {-1, 0, 1, 0},  { 0, 0, 1, 0}, {1, 0, 1, 0}, {-1, 1, 1, 0}, { 0,  1, 1, 0}, {1, 1, 1, 0},
-};
-
-// Generate forward neighbor offsets for a 3D grid cell
-// - out: user-provided array of size at least (ncell*2+1)^3 - 1
-// - ncell: number of cells in the neighborhood (1 → 1-cell, 2 → 2-cell, etc.)
-// - Each element in out is int[3] representing offset {dx, dy, dz}
-// Returns the number of neighbors written
-static inline size_t generate_forward_neighbors3(int out[][3], const int ncell[3]) {
-    size_t count = 0;
-
-    for (int dz = 0; dz <= ncell[2]; ++dz) {        // memory order: z-major
-        for (int dy = -ncell[1]; dy <= ncell[1]; ++dy) {
-            for (int dx = -ncell[0]; dx <= ncell[0]; ++dx) {
-                // skip the origin
-                if (dx == 0 && dy == 0 && dz == 0) continue;
-
-                // Forward neighbor condition: i < j
-                if (dz > 0 || (dz == 0 && dy > 0) || (dz == 0 && dy == 0 && dx > 0)) {
-                    out[count][0] = dx;
-                    out[count][1] = dy;
-                    out[count][2] = dz;
-                    count++;
-                }
-            }
-        }
-    }
-    return count;
-}
-
 // Generate forward neighbor offsets for a 3D grid cell
 // - out: user-provided array of size at least (ncell*2+1)^3 - 1
 // - ncell: number of cells in the neighborhood (1 → 1-cell, 2 → 2-cell, etc.)
@@ -577,6 +552,11 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
     float    buf_d2[SPATIAL_ACC_BUFLEN];
 	size_t count = 0;
 
+    // Generate forward neighbor offsets
+    const int ncell[3] = {1, 1, 1};
+    int fwd_nbrs[16][4];
+    size_t num_fwd_nbrs = generate_forward_neighbors4(fwd_nbrs, ncell);
+
     const float*    element_x = acc->elem_x;
     const float*    element_y = acc->elem_y;
     const float*    element_z = acc->elem_z;
@@ -653,8 +633,8 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                 const ivec4_t c_v = ivec4_set(cx, cy, cz, 0);
 
                 // --- Forward neighbors ---
-                for (uint32_t n = 0; n < ARRAY_SIZE(FWD_NBRS); ++n) {
-                    const ivec4_t fwd_v = ivec4_load(FWD_NBRS[n]);
+                for (uint32_t n = 0; n < num_fwd_nbrs; ++n) {
+                    const ivec4_t fwd_v = ivec4_load(fwd_nbrs[n]);
                     ivec4_t n_v = ivec4_add(c_v, fwd_v);
 
                     const ivec4_t wrap_upper = ivec4_cmpgt(n_v, cdim_1v);
@@ -747,6 +727,11 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
     uint32_t buf_j[SPATIAL_ACC_BUFLEN];
     float    buf_d2[SPATIAL_ACC_BUFLEN];
 
+    // Generate forward neighbor offsets
+    const int ncell[3] = {1, 1, 1};
+    int fwd_nbrs[16][4];
+    size_t num_fwd_nbrs = generate_forward_neighbors4(fwd_nbrs, ncell);
+
     size_t count = 0;
 
     const float*    element_x = acc->elem_x;
@@ -825,8 +810,8 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                 const ivec4_t c_v = ivec4_set(cx, cy, cz, 0);
 
                 // --- Forward neighbors ---
-                for (uint32_t n = 0; n < ARRAY_SIZE(FWD_NBRS); ++n) {
-                    const ivec4_t fwd_v = ivec4_load(FWD_NBRS[n]);
+                for (uint32_t n = 0; n < num_fwd_nbrs; ++n) {
+                    const ivec4_t fwd_v = ivec4_load(fwd_nbrs[n]);
                     ivec4_t n_v = ivec4_add(c_v, fwd_v);
 
                     const ivec4_t wrap_upper = ivec4_cmpgt(n_v, cdim_1v);
