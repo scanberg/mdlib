@@ -115,8 +115,8 @@ const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_i
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
 
-// returns the AO coefficients for the given NTO
-const double* md_vlx_rsp_nto_lambda_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
+// returns the AO coefficients for the given NTO, lambda idx and type
+size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)

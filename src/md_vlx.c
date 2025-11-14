@@ -2784,7 +2784,7 @@ size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size
 	return 0;
 }
 
-const double* md_vlx_rsp_nto_lambda_ao_coefficients(const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
 			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
@@ -2797,18 +2797,21 @@ const double* md_vlx_rsp_nto_lambda_ao_coefficients(const md_vlx_t* vlx, size_t 
 				mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
 			} else {
 				MD_LOG_ERROR("Invalid NTO type!");
-				return NULL;
+				return 0;
 			}
 
 			if (mo_idx < 0 || mo_idx >= md_vlx_scf_number_of_molecular_orbitals(vlx)) {
 				MD_LOG_ERROR("lambda_idx out of bounds");
-				return NULL;
+				return 0;
 			}
 
-			return orb->coefficients.data + mo_idx * orb->coefficients.size[0];
+			if (out_ao) {
+				extract_mo_coefficients(out_ao, orb, mo_idx);
+			}
+			return number_of_mo_coefficients(orb);
 		}
 	}
-	return NULL;
+	return 0;
 }
 
 size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
