@@ -40,3 +40,4 @@ build*/
 unittest/data/
 gen/
 .vs
+xcode/
