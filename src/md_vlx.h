@@ -74,17 +74,23 @@ size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
-// Atomic orbital GTOs
-bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
+// Atomic orbital GTO data
+bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
 
 // The overlap matrix (S) is a square, symmetric matrix [N][N], this returns the length N
 size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx);
 
 // Get the required element size of a compact upper triangular matrix representation
-size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
+size_t md_vlx_scf_upper_triangular_density_matrix_size(const struct md_vlx_t* vlx);
 
 // Extracts the elements of the matrix into a compact upper triangular matrix
+bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+
+// Get the regular density matrix size N in (N x N)
+size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
+
+// Extracts the full density matrix into a square matrix representation
 bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
 // SCF History

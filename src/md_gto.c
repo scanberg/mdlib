@@ -387,14 +387,20 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLintptr   ssbo_cgto_xyzr_base      = 0;
     GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
 
-    GLintptr   ssbo_cgto_offset_base   = ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
-    GLsizeiptr ssbo_cgto_offset_size   = sizeof(uint32_t) * (gto_data->num_cgtos + 1);
+    GLintptr   ssbo_cgto_offset_base    = ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
+    GLsizeiptr ssbo_cgto_offset_size    = sizeof(uint32_t) * (gto_data->num_cgtos + 1);
 
-    GLintptr   ssbo_pgto_base           = ALIGN_TO(ssbo_cgto_offset_base + ssbo_cgto_offset_size, 256);
-    GLsizeiptr ssbo_pgto_size           = sizeof(md_pgto_t) * (gto_data->num_pgtos);
+    GLintptr   ssbo_pgto_coeff_base     = ALIGN_TO(ssbo_cgto_offset_base + ssbo_cgto_offset_size, 256);
+    GLsizeiptr ssbo_pgto_coeff_size     = sizeof(float) * (gto_data->num_pgtos);
 
-    GLintptr   ssbo_matrix_base = ALIGN_TO(ssbo_pgto_base + ssbo_pgto_size, 256);
-    GLsizeiptr ssbo_matrix_size = sizeof(float) * matrix_size;
+    GLintptr   ssbo_pgto_alpha_base     = ALIGN_TO(ssbo_pgto_coeff_base + ssbo_pgto_coeff_size, 256);
+    GLsizeiptr ssbo_pgto_alpha_size     = sizeof(float) * (gto_data->num_pgtos); 
+
+    GLintptr   ssbo_pgto_ijkl_base      = ALIGN_TO(ssbo_pgto_alpha_base + ssbo_pgto_alpha_size, 256);
+    GLsizeiptr ssbo_pgto_ijkl_size      = sizeof(uint32_t) * (gto_data->num_pgtos);
+
+    GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_ijkl_base + ssbo_pgto_ijkl_size, 256);
+    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_size;
 
     size_t total_size = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
     GLuint ssbo = get_buffer(total_size);
@@ -403,13 +409,17 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
 
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_xyzr_base,      ssbo_cgto_xyzr_size,    gto_data->cgto_xyzr);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_offset_base,    ssbo_cgto_offset_size,  gto_data->cgto_offset);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_base,           ssbo_pgto_size,         gto_data->pgtos);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_coeff_base,     ssbo_pgto_coeff_size,   gto_data->pgto_coeff);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_alpha_base,     ssbo_pgto_alpha_size,   gto_data->pgto_alpha);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_ijkl_base,      ssbo_pgto_ijkl_size,    gto_data->pgto_ijkl);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       matrix_data);
 
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_pgto_base,            ssbo_pgto_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, ssbo, ssbo_matrix_base,          ssbo_matrix_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_pgto_coeff_base,      ssbo_pgto_coeff_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, ssbo, ssbo_pgto_alpha_base,      ssbo_pgto_alpha_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, ssbo, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, ssbo, ssbo_matrix_base,          ssbo_matrix_size);
 
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 

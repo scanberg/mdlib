@@ -2,52 +2,74 @@
 
 #extension GL_KHR_shader_subgroup_basic  : enable
 #extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 
-// This is the external representation of PGTOs that are supplied with the CGTOs
 struct PGTO {
     float coeff;
     float alpha;
-    float radius;
     uint packed_ijkl;
 };
 
 struct CGTO {
-    vec3 center;
-    uint off_len;
+    vec3 coord;
+    uint pgto_off_len;
 };
 
 layout (binding = 0, std430) readonly restrict buffer CGTO_XYZR_BUFFER {
     vec4 cgto_xyzr[];
 };
-
-layout (binding = 1, std430) readonly restrict buffer CGTO_OFF_LEN_BUFFER {
+layout (binding = 1, std430) readonly restrict buffer CGTO_OFFSET_BUFFER {
     uint cgto_offset[];
 };
-
-layout (binding = 2, std430) readonly restrict buffer PGTO_BUFFER {
-    PGTO pgto_data[];
+layout (binding = 2, std430) readonly restrict buffer PGTO_COEFF_BUFFER {
+    float pgto_coeff[];
+};
+layout (binding = 3, std430) readonly restrict buffer PGTO_ALPHA_BUFFER {
+    float pgto_alpha[];
+};
+layout (binding = 4, std430) readonly restrict buffer PGTO_IJKL_BUFFER {
+    uint pgto_packed_ijkl[];
 };
 
-layout (binding = 3, std430) readonly restrict buffer D_BUFFER {
+layout (binding = 5, std430) readonly restrict buffer D_BUFFER {
     float D_matrix[];
 };
 
-layout(location = 0) uniform mat4 world_to_model;
-layout(location = 1) uniform mat4 index_to_world;
-layout(location = 2) uniform vec3 step;
-layout(location = 3) uniform uint num_cgtos;
+layout(std140, binding = 0) uniform UniformBlock {
+    mat4 world_to_model;
+    mat4 index_to_world;
+    vec3 step;
+    uint D_matrix_dim;
+};
 
 layout(binding = 0) writeonly restrict uniform image3D out_vol;
 
-float safe_pow(float base, uint exp) {
-    switch(exp) {
-    case 4: return (base * base) * (base * base);
-    case 3: return (base * base) * base;
-    case 2: return base * base;
-    case 1: return base;
-    case 0: return 1.0;
+#if 0
+float safe_pow(float base, uint exponent) {
+    switch(exponent) {
+        case 0u: return 1.0;
+        case 1u: return base;
+        case 2u: return base * base;
+        case 3u: return base * base * base;
+        case 4u: {
+            float b2 = base * base;
+            return b2 * b2;
+        }
+        default: {
+            return 1.0;
+        }
     }
 }
+#else
+float safe_pow(float base, uint exponent) {
+    // Handles any non-negative integer exponent
+    float v = 1.0;
+    for (uint e = 0u; e < exponent; ++e) {
+        v *= base;
+    }
+    return v;
+}
+#endif
 
 uvec4 unpack_ijkl(in uint packed_ijkl) {
     return uvec4(
@@ -58,22 +80,16 @@ uvec4 unpack_ijkl(in uint packed_ijkl) {
     );
 }
 
-uint unpack_offset(in uint packed_off_len) {
-    return packed_off_len & 0x00FFFFFFu;
+uint unpack_offset(uint x) {
+    return x & 0x00FFFFFFu;
 }
 
-uint unpack_length(in uint packed_off_len) {
-    return packed_off_len >> 24u;
+uint unpack_length(uint x) {
+    return x >> 24u;
 }
 
-uint pack_offset_length(in uint offset, in uint length) {
+uint pack_offset_length(uint offset, uint length) {
     return (length << 24u) | offset;
-}
-
-uint get_matrix_index(uint row, uint col) {
-    uint i = max(row, col);
-    uint j = min(row, col);
-    return (i * (i + 1)) / 2 + j;
 }
 
 #define WG_SIZE 512
@@ -83,8 +99,8 @@ uint get_matrix_index(uint row, uint col) {
 #define MAX_TILE_PGTOS (TILE_SIZE * 16)
 #define INVALID_CGTO_IDX 0xFFFFFFFFu
 
-shared uint  pruned_cgto_idx[MAX_PRUNED_CGTOS];
-shared uint  num_pruned_cgtos;
+shared uint  screened_cgto_ids[MAX_PRUNED_CGTOS];
+shared uint  num_screened_cgtos;
 
 shared float D_tile[TILE_SIZE][TILE_SIZE];
 shared CGTO  cgtos_tile[TILE_SIZE];
@@ -93,127 +109,202 @@ shared uint  num_pgtos;
 
 // Populate the D GSM from the global D_matrix
 void fill_D_tile(uint tile_i, uint tile_j) {
-    uint thread_id = gl_LocalInvocationIndex;
-    for (uint idx = thread_id; idx < TILE_AREA; idx += WG_SIZE) {
-        uint i = idx / TILE_SIZE;
-        uint j = idx % TILE_SIZE;
+    uint tid = gl_LocalInvocationIndex;
+    if (tid >= TILE_SIZE) return;
 
-        uint global_i = pruned_cgto_idx[tile_i * TILE_SIZE + i];
-        uint global_j = pruned_cgto_idx[tile_j * TILE_SIZE + j];
+    uint baseI = tile_i * TILE_SIZE;
+    uint baseJ = tile_j * TILE_SIZE;
 
-        float D_value = 0.0;
-        if ((global_i != INVALID_CGTO_IDX) && (global_j != INVALID_CGTO_IDX)) {
-            D_value = D_matrix[get_matrix_index(global_i, global_j)];
+    uint idxI = baseI + tid;
+    uint gi = (idxI < MAX_PRUNED_CGTOS) ? screened_cgto_ids[idxI] : INVALID_CGTO_IDX;
+
+    for (uint col = 0; col < TILE_SIZE; ++col) {
+        uint idxJ = baseJ + col;
+        uint gj = (idxJ < MAX_PRUNED_CGTOS) ? screened_cgto_ids[idxJ] : INVALID_CGTO_IDX;
+
+        float value = 0.0;
+        if (gi != INVALID_CGTO_IDX && gj != INVALID_CGTO_IDX) {
+            uint a = min(gi, gj);
+            uint b = max(gi, gj);
+            value = D_matrix[a * D_matrix_dim + b];
         }
-
-        D_tile[i][j] = D_value;
+        D_tile[tid][col] = value;
     }
 }
 
 // Populate CGTO and PGTO GSM with CGTOs found in tile
-void fill_cgtos_tile(uint tile_offset) {
-    uint thread_id = gl_LocalInvocationIndex;
-    uint tile_idx = thread_id;
+void fill_cgtos_tile(uint tile_number) {
+    const uint tid  = gl_LocalInvocationIndex;
 
-    if (tile_idx < TILE_SIZE) {
-        uint global_cgto_idx = pruned_cgto_idx[tile_offset * TILE_SIZE + tile_idx];
-        if (global_cgto_idx != INVALID_CGTO_IDX) {
-            vec3 center   = cgto_xyzr[global_cgto_idx].xyz;
-            uint offset   = cgto_offset[global_cgto_idx];
-            uint length   = cgto_offset[global_cgto_idx + 1];
-            uint dst_base = atomicAdd(num_pgtos, length);
+    // Only first TILE_SIZE threads participate
+    if (tid >= TILE_SIZE) return;
 
-            cgtos_tile[tile_idx].center  = center;
-            cgtos_tile[tile_idx].off_len = pack_offset_length(dst_base, length);
+    // Global CGTO index for this tile position
+    uint global_cgto_idx = screened_cgto_ids[tile_number * TILE_SIZE + tid];
 
-            for (uint k = 0; k < length; ++k) {
-                uint src_idx = offset   + k;
-                uint dst_idx = dst_base + k;
-                if (dst_idx < MAX_TILE_PGTOS) {
-                    pgtos_tile[dst_idx] = pgto_data[src_idx];
-                }
-            }
-        }
+    if (global_cgto_idx == INVALID_CGTO_IDX) {
+        cgtos_tile[tid].coord        = vec3(0.0);
+        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
+        return;
+    }
+
+    // Load packed offset/length
+    uint beg = cgto_offset[global_cgto_idx];
+    uint end = cgto_offset[global_cgto_idx + 1u];
+    uint src_base = unpack_offset(beg);
+    uint len      = unpack_length(end - beg);
+
+    if (len == 0u) {
+        cgtos_tile[tid].coord        = vec3(0.0);
+        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
+        return;
+    }
+
+    // Reserve contiguous space for this CGTO's PGTOs
+    uint dst_base = atomicAdd(num_pgtos, len);
+    if (dst_base + len > MAX_TILE_PGTOS) {
+        // Overflow: mark as empty
+        cgtos_tile[tid].coord        = vec3(0.0);
+        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
+        return;
+    }
+
+    cgtos_tile[tid].coord        = cgto_xyzr[global_cgto_idx].xyz;
+    cgtos_tile[tid].pgto_off_len = pack_offset_length(dst_base, len);
+
+    // Copy PGTOs
+    for (uint k = 0; k < len; ++k) {
+        uint dst = dst_base + k;
+        PGTO g;
+        g.coeff        = pgto_coeff[src_base + k];
+        g.alpha        = pgto_alpha[src_base + k];
+        g.packed_ijkl  = pgto_packed_ijkl[src_base + k];
+        pgtos_tile[dst] = g;
     }
 }
 
-// Evaluate thread local phi values for cgto_tile for the supplied coordinate
+// One thread per CGTO
 void eval_phis(out float out_phi[TILE_SIZE], vec3 coord) {
-    uint thread_id = gl_LocalInvocationIndex;
+    uint i = gl_LocalInvocationIndex;
+    if (i >= TILE_SIZE) return;
 
-    for (uint i = 0; i < TILE_SIZE; ++i) {
-        float phi = 0.0;
+    uint off_len = cgtos_tile[i].pgto_off_len;
+    uint offset  = unpack_offset(off_len);
+    uint length  = unpack_length(off_len);
 
-        vec3 center = cgtos_tile[i].center;
-        uint offset = unpack_offset(cgtos_tile[i].off_len);
-        uint length = unpack_length(cgtos_tile[i].off_len);
-
-        // Sum over PGTOs for this CGTO
-        for (uint j = offset; j < offset + length; ++j) {
-            PGTO pgto = pgtos_tile[j];
-            uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
-            vec3 d = coord - center;
-            float r2 = dot(d, d);
-            float fx = safe_pow(d.x, ijkl.x);
-            float fy = safe_pow(d.y, ijkl.y);
-            float fz = safe_pow(d.z, ijkl.z);
-            phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
-        }
-
-        out_phi[i] = phi;
+    if (length == 0u) {
+        out_phi[i] = 0.0;
+        return;
     }
+
+    vec3 center  = cgtos_tile[i].coord;
+
+    vec3 d = coord - center;
+    float r2 = dot(d, d);
+
+    float phi = 0.0;
+
+    // Loop over PGTOs
+    for (uint j = offset; j < offset + length; ++j) {
+        PGTO pgto = pgtos_tile[j];
+        uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
+
+        float fx = safe_pow(d.x, ijkl.x);
+        float fy = safe_pow(d.y, ijkl.y);
+        float fz = safe_pow(d.z, ijkl.z);
+
+        phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
+    }
+
+    out_phi[i] = phi;
+}
+
+float symmetric_contraction(float phi[TILE_SIZE], float D[TILE_SIZE][TILE_SIZE]) {
+    float result = 0.0;
+    for (uint i = 0; i < TILE_SIZE; ++i) {
+        float ai = phi[i];
+        result += D[i][i] * ai * ai;                        // Diagonal
+        for (uint j = i + 1; j < TILE_SIZE; ++j) {
+            result += 2.0 * D[i][j] * ai * phi[j];          // Off-diagonal
+        }
+    }
+    return result;
+}
+
+float contraction(float phi_mu[TILE_SIZE], float phi_nu[TILE_SIZE], float D[TILE_SIZE][TILE_SIZE]) {
+    float result = 0.0;
+    for (uint i = 0; i < TILE_SIZE; ++i) {
+        float ai = phi_mu[i];
+        for (uint j = 0; j < TILE_SIZE; ++j) {
+            result += 2.0 * D[i][j] * ai * phi_nu[j];
+        }
+    }
+    return result;
 }
 
 layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 void main() {
-    uint thread_id = gl_LocalInvocationIndex;
-    if (thread_id == 0) {
-        num_pruned_cgtos = 0;
+    uint tid = gl_LocalInvocationIndex;
+    if (tid == 0) {
+        num_screened_cgtos = 0;
     }
     barrier();
 
     vec3 model_aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * step;
     vec3 model_aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * step;
+    // Stage 1: Screening. Prune CGTOs to identify which are relevant for region
+    {
+        // Stream matches directly; avoid large per-thread stacks and subgroup prefix sums
+        for (uint i = tid; i < D_matrix_dim; i += WG_SIZE) {
+            vec4 cgto = cgto_xyzr[i];
+            if (cgto.w == 0.0) continue;
 
-    for (uint i = thread_id; i < num_cgtos; i += WG_SIZE) {
-        vec4 cgto = cgto_xyzr[i];
-        if (cgto.w == 0.0) continue;
+            vec3 model_xyz = vec3(world_to_model * vec4(cgto.xyz, 1.0));
+            float r2       = cgto.w * cgto.w;
 
-        vec3 model_xyz = vec3(world_to_model * vec4(cgto.xyz, 1.0));
-        float r2       = cgto.w * cgto.w;
+            vec3   d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
+            float d2 = dot(d, d);
 
-        vec3   d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
-        float d2 = dot(d, d);
-
-        if (d2 < r2) {
-            // Push to GSM CGTOs
-            uint idx = atomicAdd(num_pruned_cgtos, 1);
-            pruned_cgto_idx[idx] = i;
+            if (d2 < r2) {
+                uint idx = atomicAdd(num_screened_cgtos, 1u);
+                if (idx < MAX_PRUNED_CGTOS) {
+                    screened_cgto_ids[idx] = i;
+                }
+            }
         }
-    }
 
-    // Write invalid indices for the unused portion of pruned_cgto_idx
-    for (uint i = thread_id; i < MAX_PRUNED_CGTOS; i += WG_SIZE) {
-        if (i >= num_pruned_cgtos) {
-            pruned_cgto_idx[i] = INVALID_CGTO_IDX;
+        barrier();
+
+        // Clamp to capacity
+        if (tid == 0) {
+            if (num_screened_cgtos > MAX_PRUNED_CGTOS) {
+                num_screened_cgtos = MAX_PRUNED_CGTOS;
+            }
+        }
+        barrier();
+
+        // Fill tail with INVALID_CGTO_IDX
+        for (uint i = tid; i < MAX_PRUNED_CGTOS; i += WG_SIZE) {
+            if (i >= num_screened_cgtos) {
+                screened_cgto_ids[i] = INVALID_CGTO_IDX;
+            }
         }
     }
 
     float phi_tile_mu[TILE_SIZE]; // evaluated φ_μ(r) in registers
     float phi_tile_nu[TILE_SIZE]; // evaluated φ_ν(r) in registers
     vec3 coord = (index_to_world * vec4(gl_GlobalInvocationID.xyz, 1.0)).xyz;
-    float rho  = 0.0;
+    float rho = 0.0;
 
     // DIV UP
-    uint num_tiles = (num_pruned_cgtos + TILE_SIZE - 1) / TILE_SIZE;
+    uint num_tiles = (num_screened_cgtos + TILE_SIZE - 1) / TILE_SIZE;
 
     for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
         // DIAGONAL TILE
 
-        if (thread_id == 0) {
+        if (tid == 0) {
             num_pgtos = 0;
         }
-
         barrier();
 
         // Populate GSM
@@ -222,21 +313,17 @@ void main() {
 
         barrier();
 
-        // Evaluate into phi
+        // Evaluate into phi mu
         eval_phis(phi_tile_mu, coord);
 
-        // Diagonal tile Contribution loop
-        for (uint i = 0; i < TILE_SIZE; ++i) {
-            rho += D_tile[i][i] * phi_tile_mu[i] * phi_tile_mu[i];            // Diagonal
-            for (uint j = i + 1; j < TILE_SIZE; ++j) {
-                rho += 2.0 * D_tile[i][j] * phi_tile_mu[i] * phi_tile_mu[j];  // Off-diagonal
-            }
-        }
+        // Diagonal tile Contribution
+        rho += symmetric_contraction(phi_tile_mu, D_tile);
 
         for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
-            // OFF DIAGONAL TILE
+            barrier();
 
-            if (thread_id == 0) {
+            // OFF DIAGONAL TILE
+            if (tid == 0) {
                 num_pgtos = 0;
             }
 
@@ -248,21 +335,16 @@ void main() {
 
             barrier();
 
-            // Evaluate into phi
+            // Evaluate into phi nu
             eval_phis(phi_tile_nu, coord);
 
-            // Off-Diagonal tile Contribution loop
-            for (uint i = 0; i < TILE_SIZE; ++i) {
-                for (uint j = 0; j < TILE_SIZE; ++j) {
-                    rho += 2.0 * D_tile[i][j] * phi_tile_mu[i] * phi_tile_nu[j];
-                }
-            }
+            // Off-diagonal tile Contribution
+            rho += contraction(phi_tile_mu, phi_tile_nu, D_tile);
         }
     }
     
     // Step 3: Write result
-    ivec3 vol_idx = ivec3(gl_GlobalInvocationID.xyz);
-    if (all(lessThan(vol_idx, imageSize(out_vol)))) {
-        imageStore(out_vol, vol_idx, vec4(rho));
+    if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
+        imageStore(out_vol, ivec3(gl_GlobalInvocationID.xyz), vec4(rho));
     }
 }
