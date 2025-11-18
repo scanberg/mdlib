@@ -351,7 +351,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_size) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
     ASSERT(grid);
     ASSERT(gto_data);
     ASSERT(matrix_data);
@@ -384,6 +384,26 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         goto done;
     }
 
+    uint32_t num_cgtos = (uint32_t)gto_data->num_cgtos;
+    if (matrix_dim != num_cgtos) {
+        MD_LOG_ERROR("Matrix dim, cgto mismatch");
+        goto done;
+    }
+
+    typedef struct {
+        mat4_t world_to_model;
+        mat4_t index_to_world;
+        vec4_t step;
+        uint32_t D_matrix_dim;
+        uint32_t _pad[3];
+    } uniform_block_t;
+
+    uniform_block_t ub_data = {0};
+    world_to_model_matrix(ub_data.world_to_model.elem, grid);
+    index_to_world_matrix(ub_data.index_to_world.elem, grid);
+    ub_data.step = vec4_from_vec3(grid->spacing, 0);
+    ub_data.D_matrix_dim = (uint32_t)matrix_dim;
+
     GLintptr   ssbo_cgto_xyzr_base      = 0;
     GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
 
@@ -400,13 +420,15 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLsizeiptr ssbo_pgto_ijkl_size      = sizeof(uint32_t) * (gto_data->num_pgtos);
 
     GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_ijkl_base + ssbo_pgto_ijkl_size, 256);
-    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_size;
+    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_dim * matrix_dim;
 
-    size_t total_size = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
-    GLuint ssbo = get_buffer(total_size);
+    GLintptr   ubo_base                 = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
+    GLsizeiptr ubo_size                 = sizeof(uniform_block_t);
 
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    size_t total_size = ALIGN_TO(ubo_base + ubo_size, 256);
+    GLuint buf = get_buffer(total_size);
 
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_xyzr_base,      ssbo_cgto_xyzr_size,    gto_data->cgto_xyzr);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_offset_base,    ssbo_cgto_offset_size,  gto_data->cgto_offset);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_coeff_base,     ssbo_pgto_coeff_size,   gto_data->pgto_coeff);
@@ -414,27 +436,20 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_ijkl_base,      ssbo_pgto_ijkl_size,    gto_data->pgto_ijkl);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       matrix_data);
 
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_pgto_coeff_base,      ssbo_pgto_coeff_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, ssbo, ssbo_pgto_alpha_base,      ssbo_pgto_alpha_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, ssbo, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, ssbo, ssbo_matrix_base,          ssbo_matrix_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buf, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buf, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, buf, ssbo_pgto_coeff_base,      ssbo_pgto_coeff_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, buf, ssbo_pgto_alpha_base,      ssbo_pgto_alpha_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, buf, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, buf, ssbo_matrix_base,          ssbo_matrix_size);
 
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glBindBuffer(GL_UNIFORM_BUFFER, buf);
+    glBufferSubData(GL_UNIFORM_BUFFER, ubo_base, ubo_size, &ub_data);
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, buf, ubo_base, ubo_size);
 
     glUseProgram(program);
-
-    float world_to_model[4][4];
-    float index_to_world[4][4];
-
-    world_to_model_matrix(world_to_model, grid);
-    index_to_world_matrix(index_to_world, grid);
-
-    glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
-    glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
-    glUniform3fv(2, 1, grid->spacing.elem);
-    glUniform1ui(3, (GLuint)gto_data->num_cgtos);
+    GLuint block = glGetUniformBlockIndex(program, "UniformBlock");
+    glUniformBlockBinding(program, block, 0);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
 
@@ -443,11 +458,11 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         DIV_UP(grid->dim[1], 8),
         DIV_UP(grid->dim[2], 8),
     };
-
     glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
-
     glUseProgram(0);
+
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
 

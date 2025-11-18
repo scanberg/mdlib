@@ -5997,12 +5997,12 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int iz_max = (int)floorf((z + r - bmin.z) / dz);
 
         // Clamp to grid
-        ix_min = MAX(0, MIN((int)dim - 1, ix_min));
-        iy_min = MAX(0, MIN((int)dim - 1, iy_min));
-        iz_min = MAX(0, MIN((int)dim - 1, iz_min));
-        ix_max = MAX(0, MIN((int)dim - 1, ix_max));
-        iy_max = MAX(0, MIN((int)dim - 1, iy_max));
-        iz_max = MAX(0, MIN((int)dim - 1, iz_max));
+        ix_min = MAX(0, MIN(dim[0] - 1, ix_min));
+        iy_min = MAX(0, MIN(dim[1] - 1, iy_min));
+        iz_min = MAX(0, MIN(dim[2] - 1, iz_min));
+        ix_max = MAX(0, MIN(dim[0] - 1, ix_max));
+        iy_max = MAX(0, MIN(dim[1] - 1, iy_max));
+        iz_max = MAX(0, MIN(dim[2] - 1, iz_max));
 
         const float r2 = r * r;
 

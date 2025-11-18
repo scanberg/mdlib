@@ -124,7 +124,7 @@ void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, 
 // - gto_data: The gto data to evaluate
 // - matrix: The matrix coefficients
 // - mode: evaluation mode
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_data_len);
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

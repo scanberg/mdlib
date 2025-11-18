@@ -1,8 +1,8 @@
 #version 430 core
 
-#extension GL_KHR_shader_subgroup_basic  : enable
-#extension GL_KHR_shader_subgroup_ballot : enable
-#extension GL_KHR_shader_subgroup_arithmetic : enable
+//#extension GL_KHR_shader_subgroup_basic  : enable
+//#extension GL_KHR_shader_subgroup_ballot : enable
+//#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 struct PGTO {
     float coeff;
@@ -12,7 +12,8 @@ struct PGTO {
 
 struct CGTO {
     vec3 coord;
-    uint pgto_off_len;
+    uint pgto_beg;
+    uint pgto_end;
 };
 
 layout (binding = 0, std430) readonly restrict buffer CGTO_XYZR_BUFFER {
@@ -38,7 +39,7 @@ layout (binding = 5, std430) readonly restrict buffer D_BUFFER {
 layout(std140, binding = 0) uniform UniformBlock {
     mat4 world_to_model;
     mat4 index_to_world;
-    vec3 step;
+    vec4 step;
     uint D_matrix_dim;
 };
 
@@ -95,11 +96,11 @@ uint pack_offset_length(uint offset, uint length) {
 #define WG_SIZE 512
 #define TILE_SIZE 32
 #define TILE_AREA (TILE_SIZE*TILE_SIZE)
-#define MAX_PRUNED_CGTOS 2048
+#define MAX_SCREENED_CGTOS 2048
 #define MAX_TILE_PGTOS (TILE_SIZE * 16)
 #define INVALID_CGTO_IDX 0xFFFFFFFFu
 
-shared uint  screened_cgto_ids[MAX_PRUNED_CGTOS];
+shared uint  screened_cgto_ids[MAX_SCREENED_CGTOS];
 shared uint  num_screened_cgtos;
 
 shared float D_tile[TILE_SIZE][TILE_SIZE];
@@ -116,11 +117,11 @@ void fill_D_tile(uint tile_i, uint tile_j) {
     uint baseJ = tile_j * TILE_SIZE;
 
     uint idxI = baseI + tid;
-    uint gi = (idxI < MAX_PRUNED_CGTOS) ? screened_cgto_ids[idxI] : INVALID_CGTO_IDX;
+    uint gi = (idxI < MAX_SCREENED_CGTOS) ? screened_cgto_ids[idxI] : INVALID_CGTO_IDX;
 
     for (uint col = 0; col < TILE_SIZE; ++col) {
         uint idxJ = baseJ + col;
-        uint gj = (idxJ < MAX_PRUNED_CGTOS) ? screened_cgto_ids[idxJ] : INVALID_CGTO_IDX;
+        uint gj = (idxJ < MAX_SCREENED_CGTOS) ? screened_cgto_ids[idxJ] : INVALID_CGTO_IDX;
 
         float value = 0.0;
         if (gi != INVALID_CGTO_IDX && gj != INVALID_CGTO_IDX) {
@@ -142,81 +143,67 @@ void fill_cgtos_tile(uint tile_number) {
     // Global CGTO index for this tile position
     uint global_cgto_idx = screened_cgto_ids[tile_number * TILE_SIZE + tid];
 
-    if (global_cgto_idx == INVALID_CGTO_IDX) {
-        cgtos_tile[tid].coord        = vec3(0.0);
-        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
-        return;
+    vec3 cgto_center = vec3(0.0);
+    uint cgto_pgto_beg = 0u;
+    uint cgto_pgto_end = 0u;
+
+    if (global_cgto_idx != INVALID_CGTO_IDX) {
+        // Load packed offset/length
+        uint src_beg = cgto_offset[global_cgto_idx];
+        uint src_end = cgto_offset[global_cgto_idx + 1u];
+        uint src_len = src_end - src_beg;
+
+        if (src_beg != src_end) {
+            // Reserve contiguous space for this CGTO's PGTOs
+            uint dst_base = atomicAdd(num_pgtos, src_len);
+
+            cgto_center = cgto_xyzr[global_cgto_idx].xyz;
+            cgto_pgto_beg = dst_base;
+            cgto_pgto_end = dst_base + src_len;
+
+            // Copy PGTOs
+            for (uint k = 0; k < src_len; ++k) {
+                uint dst = dst_base + k;
+                PGTO g;
+                g.coeff        = pgto_coeff[src_beg + k];
+                g.alpha        = pgto_alpha[src_beg + k];
+                g.packed_ijkl  = pgto_packed_ijkl[src_beg + k];
+                pgtos_tile[dst] = g;
+            }
+        }
     }
 
-    // Load packed offset/length
-    uint beg = cgto_offset[global_cgto_idx];
-    uint end = cgto_offset[global_cgto_idx + 1u];
-    uint src_base = unpack_offset(beg);
-    uint len      = unpack_length(end - beg);
-
-    if (len == 0u) {
-        cgtos_tile[tid].coord        = vec3(0.0);
-        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
-        return;
-    }
-
-    // Reserve contiguous space for this CGTO's PGTOs
-    uint dst_base = atomicAdd(num_pgtos, len);
-    if (dst_base + len > MAX_TILE_PGTOS) {
-        // Overflow: mark as empty
-        cgtos_tile[tid].coord        = vec3(0.0);
-        cgtos_tile[tid].pgto_off_len = pack_offset_length(0u, 0u);
-        return;
-    }
-
-    cgtos_tile[tid].coord        = cgto_xyzr[global_cgto_idx].xyz;
-    cgtos_tile[tid].pgto_off_len = pack_offset_length(dst_base, len);
-
-    // Copy PGTOs
-    for (uint k = 0; k < len; ++k) {
-        uint dst = dst_base + k;
-        PGTO g;
-        g.coeff        = pgto_coeff[src_base + k];
-        g.alpha        = pgto_alpha[src_base + k];
-        g.packed_ijkl  = pgto_packed_ijkl[src_base + k];
-        pgtos_tile[dst] = g;
-    }
+    cgtos_tile[tid].coord    = cgto_center;
+    cgtos_tile[tid].pgto_beg = cgto_pgto_beg;
+    cgtos_tile[tid].pgto_end = cgto_pgto_end;
 }
 
 // One thread per CGTO
 void eval_phis(out float out_phi[TILE_SIZE], vec3 coord) {
-    uint i = gl_LocalInvocationIndex;
-    if (i >= TILE_SIZE) return;
+    // Initialize to zero to handle empty CGTO slots
+    for (uint i = 0; i < TILE_SIZE; ++i) out_phi[i] = 0.0;
 
-    uint off_len = cgtos_tile[i].pgto_off_len;
-    uint offset  = unpack_offset(off_len);
-    uint length  = unpack_length(off_len);
+    // Compute φ_i(coord) for all CGTOs in the tile
+    for (uint i = 0; i < TILE_SIZE; ++i) {
+        uint pgto_beg = cgtos_tile[i].pgto_beg;
+        uint pgto_end = cgtos_tile[i].pgto_end;
+        if (pgto_beg >= pgto_end) continue;
 
-    if (length == 0u) {
-        out_phi[i] = 0.0;
-        return;
+        vec3 center = cgtos_tile[i].coord;
+        vec3 d  = coord - center;
+        float r2 = dot(d, d);
+
+        float phi = 0.0;
+        for (uint j = pgto_beg; j < pgto_end; ++j) {
+            PGTO pgto = pgtos_tile[j];
+            uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
+            float fx = safe_pow(d.x, ijkl.x);
+            float fy = safe_pow(d.y, ijkl.y);
+            float fz = safe_pow(d.z, ijkl.z);
+            phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
+        }
+        out_phi[i] = phi;
     }
-
-    vec3 center  = cgtos_tile[i].coord;
-
-    vec3 d = coord - center;
-    float r2 = dot(d, d);
-
-    float phi = 0.0;
-
-    // Loop over PGTOs
-    for (uint j = offset; j < offset + length; ++j) {
-        PGTO pgto = pgtos_tile[j];
-        uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
-
-        float fx = safe_pow(d.x, ijkl.x);
-        float fy = safe_pow(d.y, ijkl.y);
-        float fz = safe_pow(d.z, ijkl.z);
-
-        phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
-    }
-
-    out_phi[i] = phi;
 }
 
 float symmetric_contraction(float phi[TILE_SIZE], float D[TILE_SIZE][TILE_SIZE]) {
@@ -250,8 +237,8 @@ void main() {
     }
     barrier();
 
-    vec3 model_aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * step;
-    vec3 model_aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * step;
+    vec3 model_aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * step.xyz;
+    vec3 model_aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * step.xyz;
     // Stage 1: Screening. Prune CGTOs to identify which are relevant for region
     {
         // Stream matches directly; avoid large per-thread stacks and subgroup prefix sums
@@ -267,7 +254,7 @@ void main() {
 
             if (d2 < r2) {
                 uint idx = atomicAdd(num_screened_cgtos, 1u);
-                if (idx < MAX_PRUNED_CGTOS) {
+                if (idx < MAX_SCREENED_CGTOS) {
                     screened_cgto_ids[idx] = i;
                 }
             }
@@ -277,14 +264,14 @@ void main() {
 
         // Clamp to capacity
         if (tid == 0) {
-            if (num_screened_cgtos > MAX_PRUNED_CGTOS) {
-                num_screened_cgtos = MAX_PRUNED_CGTOS;
+            if (num_screened_cgtos > MAX_SCREENED_CGTOS) {
+                num_screened_cgtos = MAX_SCREENED_CGTOS;
             }
         }
         barrier();
 
         // Fill tail with INVALID_CGTO_IDX
-        for (uint i = tid; i < MAX_PRUNED_CGTOS; i += WG_SIZE) {
+        for (uint i = tid; i < MAX_SCREENED_CGTOS; i += WG_SIZE) {
             if (i >= num_screened_cgtos) {
                 screened_cgto_ids[i] = INVALID_CGTO_IDX;
             }
