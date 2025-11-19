@@ -43,7 +43,10 @@ typedef struct md_gto_data_t {
 	uint32_t*  cgto_offset;		// offsets into pgtos (contains num_cgtos + 1 entries) such that a 'range' can be represented by cgto_offset[i] -> cgto_offset[i+1]
 
 	size_t     num_pgtos;
-	md_pgto_t* pgtos;
+	float*     pgto_alpha;
+	float*     pgto_coeff;
+	float*     pgto_radius;
+	uint32_t*  pgto_ijkl;
 } md_gto_data_t;
 
 typedef enum {
@@ -54,6 +57,22 @@ typedef enum {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
+	uint32_t res = 0;
+	res |= ((uint32_t)i) << 0;
+	res |= ((uint32_t)j) << 8;
+	res |= ((uint32_t)k) << 16;
+	res |= ((uint32_t)l) << 24;
+	return res;
+}
+
+static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, int* l) {
+	if (i) *i = (packed >> 0) & 0xFF;
+	if (j) *j = (packed >> 8) & 0xFF;
+	if (k) *k = (packed >> 16) & 0xFF;
+	if (l) *l = (packed >> 24) & 0xFF;
+}
 
 // Evaluates GTOs over a grid on the GPU and stores the result into a supplied volume
 // - vol_tex: The texture handle to the volume
@@ -105,7 +124,7 @@ void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, 
 // - gto_data: The gto data to evaluate
 // - matrix: The matrix coefficients
 // - mode: evaluation mode
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_data_len);
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

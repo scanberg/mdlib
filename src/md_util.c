@@ -5154,14 +5154,16 @@ static const atom_type_t predefined_atom_types[] = {
     { "ION", "CA",  20, 40.08f,     2.7f, MD_FLAG_ION },
 	{ "ION", "MG",  12, 24.31f,     2.0f, MD_FLAG_ION },
 
-    {"*", "IC", 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
-    {"*", "OC", 0, 3237.780f,   8.0f, MD_FLAG_COARSE_GRAINED},
-    {"*", "CC", 0, 3885.336f,   8.0f, MD_FLAG_COARSE_GRAINED},
+    {"*", "IC", 0,   3240.0f,   19.5f, MD_FLAG_COARSE_GRAINED},
+    {"*", "OC", 0,   3240.0f,   13.5f, MD_FLAG_COARSE_GRAINED},
+    {"*", "CC", 0,   3900.0f,   10.0f, MD_FLAG_COARSE_GRAINED},
 
     {"P10", "X1", 0, 3.31E6f,   50.0f,  MD_FLAG_COARSE_GRAINED},
     {"P20", "X2", 0, 2.65E7f,   100.0f, MD_FLAG_COARSE_GRAINED},
     {"P30", "X3", 0, 8.93E7f,   150.0f, MD_FLAG_COARSE_GRAINED},
     {"P40", "X4", 0, 2.12E8f,   200.0f, MD_FLAG_COARSE_GRAINED},
+
+    {"C##", "C#?", 0, 1727.7f,   13.5f, MD_FLAG_COARSE_GRAINED},
 };
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {

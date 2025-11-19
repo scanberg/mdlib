@@ -176,8 +176,8 @@ typedef struct md_vlx_t {
 	md_vlx_vib_t vib;
 	md_vlx_opt_t opt;
 
-	// Atomic orbital data
-	md_gto_data_t ao_data;
+	// Atomic orbital data represented as GTOs
+	md_gto_data_t gto_data;
 
 	struct md_allocator_i* arena;
 } md_vlx_t;
@@ -622,7 +622,7 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 	return count;
 }
 
-static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, md_allocator_i* alloc) {
+static void extract_gto_data(struct md_gto_data_t* out_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, md_allocator_i* alloc) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
@@ -676,23 +676,23 @@ static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_
 					const double* exponents = basis_func.exponents;
 					const double* normcoefs = basis_func.normalization_coefficients;
 
+					size_t new_pgto_count = out_data->num_pgtos + (size_t)nprims * (size_t)ncomp;
+					md_array_ensure(out_data->pgto_alpha,  new_pgto_count, alloc);
+					md_array_ensure(out_data->pgto_coeff,  new_pgto_count, alloc);
+					md_array_ensure(out_data->pgto_radius, new_pgto_count, alloc);
+					md_array_ensure(out_data->pgto_ijkl,   new_pgto_count, alloc);
+
 					for (int iprim = 0; iprim < nprims; iprim++) {
 						double alpha = exponents[iprim];
 						double coef1 = normcoefs[iprim];
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
-							struct md_pgto_t pgto = {
-								.coeff = (float)(coef1 * fcarts[icomp]),
-								.alpha = (float)alpha,
-								.radius = FLT_MAX,
-								.i = (uint8_t)lx[icomp],
-								.j = (uint8_t)ly[icomp],
-								.k = (uint8_t)lz[icomp],
-								.l = (uint8_t)angl,
-							};
-
-							md_array_push(out_data->pgtos, pgto, alloc);
+							uint32_t packed_ijkl = md_gto_pack_ijkl(lx[icomp], ly[icomp], lz[icomp], angl);
+							md_array_push_no_grow(out_data->pgto_alpha, (float)alpha);
+							md_array_push_no_grow(out_data->pgto_coeff, (float)(coef1 * fcarts[icomp]));
+							md_array_push_no_grow(out_data->pgto_radius, FLT_MAX);
+							md_array_push_no_grow(out_data->pgto_ijkl,  packed_ijkl);
 							out_data->num_pgtos += 1;
 						}
 					}
@@ -2345,7 +2345,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			extract_ao_to_atom_idx(vlx->ao_to_atom_idx, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
 		}
 
-		extract_ao_data(&vlx->ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
+		extract_gto_data(&vlx->gto_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
 	}
 
 	result = true;
@@ -2357,7 +2357,7 @@ done:
 
 // Extract Natural Transition Orbitals PGTOs
 size_t md_vlx_nto_gto_count(const md_vlx_t* vlx) {
-	return vlx->ao_data.num_pgtos;
+	return vlx->gto_data.num_pgtos;
 }
 
 static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
@@ -2421,7 +2421,9 @@ static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, con
 	size_t count = 0;
 	for (size_t i = 0; i < ao_data->num_cgtos; ++i) {
 		for (size_t j = ao_data->cgto_offset[i]; j < ao_data->cgto_offset[i+1]; ++j) {
-			double radius = md_gto_compute_radius_of_influence(ao_data->pgtos[j].i, ao_data->pgtos[j].k, ao_data->pgtos[j].k, ao_data->pgtos[j].coeff, ao_data->pgtos[j].alpha, value_cutoff);
+			int pi,pj,pk,pl;
+			md_gto_unpack_ijkl(ao_data->pgto_ijkl[j], &pi, &pj, &pk, &pl);
+			double radius = md_gto_compute_radius_of_influence(pi, pj, pk, ao_data->pgto_coeff[j], ao_data->pgto_alpha[j], value_cutoff);
 			if (radius == 0.0) {
 				continue; // Skip GTOs with zero radius of influence given this cutoff_value
 			}
@@ -2429,13 +2431,13 @@ static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, con
 			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
 			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
 			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
-			out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgtos[j].coeff);
-			out_gtos[count].alpha = ao_data->pgtos[j].alpha;
+			out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgto_coeff[j]);
+			out_gtos[count].alpha = ao_data->pgto_alpha[j];
 			out_gtos[count].cutoff = (float)radius;
-			out_gtos[count].i = ao_data->pgtos[j].i;
-			out_gtos[count].j = ao_data->pgtos[j].j;
-			out_gtos[count].k = ao_data->pgtos[j].k;
-			out_gtos[count].l = ao_data->pgtos[j].l;
+			out_gtos[count].i = (uint8_t)pi;
+			out_gtos[count].j = (uint8_t)pj;
+			out_gtos[count].k = (uint8_t)pk;
+			out_gtos[count].l = (uint8_t)pl;
 			count += 1;
 		}
 	}
@@ -2486,7 +2488,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_gtos(out_gtos, &vlx->ao_data, mo_coeffs, 0.0);
+	extract_gtos(out_gtos, &vlx->gto_data, mo_coeffs, 0.0);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -2494,7 +2496,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_
 
 size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	ASSERT(vlx);
-	return vlx->ao_data.num_pgtos;
+	return vlx->gto_data.num_pgtos;
 }
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
@@ -2686,7 +2688,7 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
 
-	size_t count = extract_gtos(gtos, &vlx->ao_data, mo_coeffs, value_cutoff);
+	size_t count = extract_gtos(gtos, &vlx->gto_data, mo_coeffs, value_cutoff);
 
 	md_temp_set_pos_back(temp_pos);
 	return count;
@@ -2784,7 +2786,7 @@ size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size
 	return 0;
 }
 
-const double* md_vlx_rsp_nto_lambda_ao_coefficients(const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
 			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
@@ -2797,18 +2799,21 @@ const double* md_vlx_rsp_nto_lambda_ao_coefficients(const md_vlx_t* vlx, size_t 
 				mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
 			} else {
 				MD_LOG_ERROR("Invalid NTO type!");
-				return NULL;
+				return 0;
 			}
 
 			if (mo_idx < 0 || mo_idx >= md_vlx_scf_number_of_molecular_orbitals(vlx)) {
 				MD_LOG_ERROR("lambda_idx out of bounds");
-				return NULL;
+				return 0;
 			}
 
-			return orb->coefficients.data + mo_idx * orb->coefficients.size[0];
+			if (out_ao) {
+				extract_mo_coefficients(out_ao, orb, mo_idx);
+			}
+			return number_of_mo_coefficients(orb);
 		}
 	}
-	return NULL;
+	return 0;
 }
 
 size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
@@ -3145,33 +3150,42 @@ const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	return NULL;
 }
 
-bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const md_vlx_t* vlx, double cutoff_value, md_allocator_i* alloc) {
+bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vlx, double cutoff_value, md_allocator_i* alloc) {
 	if (vlx) {
-        ASSERT(out_ao_data);
-		for (size_t i = 0; i < vlx->ao_data.num_cgtos; ++i) {
+        ASSERT(out_gto_data);
+		for (size_t i = 0; i < vlx->gto_data.num_cgtos; ++i) {
             double cgto_radius = 0.0;
-			uint32_t cgto_offset = (uint32_t)out_ao_data->num_cgtos;
-			for (size_t j = vlx->ao_data.cgto_offset[i]; j < vlx->ao_data.cgto_offset[i + 1]; ++j) {
-				double radius = md_gto_compute_radius_of_influence(vlx->ao_data.pgtos[j].i, vlx->ao_data.pgtos[j].j, vlx->ao_data.pgtos[j].k, vlx->ao_data.pgtos[j].coeff, vlx->ao_data.pgtos[j].alpha, cutoff_value);
+			uint32_t cgto_offset = (uint32_t)out_gto_data->num_pgtos;
+			for (size_t j = vlx->gto_data.cgto_offset[i]; j < vlx->gto_data.cgto_offset[i + 1]; ++j) {
+				int pi, pj, pk, pl;
+				md_gto_unpack_ijkl(vlx->gto_data.pgto_ijkl[j], &pi, &pj, &pk, &pl);
+				double radius = md_gto_compute_radius_of_influence(pi, pj, pk, vlx->gto_data.pgto_coeff[j], vlx->gto_data.pgto_alpha[j], cutoff_value);
 				if (radius == 0.0) {
 					continue;
 				}
 
-                md_pgto_t pgto = vlx->ao_data.pgtos[j];
-				pgto.radius = (float)radius;  // Update the radius of influence
+                float pgto_coeff = (float)vlx->gto_data.pgto_coeff[j];
+				float pgto_alpha = (float)vlx->gto_data.pgto_alpha[j];
+				float pgto_radius = (float)radius;
+				uint32_t pgto_ijkl = vlx->gto_data.pgto_ijkl[j];
 
-				md_array_push(out_ao_data->pgtos, pgto, alloc);
-				out_ao_data->num_pgtos += 1;
+				md_array_push(out_gto_data->pgto_coeff, pgto_coeff, alloc);
+				md_array_push(out_gto_data->pgto_alpha, pgto_alpha, alloc);
+				md_array_push(out_gto_data->pgto_radius, pgto_radius, alloc);
+				md_array_push(out_gto_data->pgto_ijkl, pgto_ijkl, alloc);
+				out_gto_data->num_pgtos += 1;
 
 				cgto_radius = MAX(cgto_radius, radius);
             }
             // Push cgtos regardless of radius (otherwise indexing will be off)
-            vec4_t cgto_xyzr = {vlx->ao_data.cgto_xyzr[i].x, vlx->ao_data.cgto_xyzr[i].y, vlx->ao_data.cgto_xyzr[i].z, (float)cgto_radius};
-            md_array_push(out_ao_data->cgto_xyzr, cgto_xyzr, alloc);
-            md_array_push(out_ao_data->cgto_offset, cgto_offset, alloc);
+            vec4_t cgto_xyzr = {vlx->gto_data.cgto_xyzr[i].x, vlx->gto_data.cgto_xyzr[i].y, vlx->gto_data.cgto_xyzr[i].z, (float)cgto_radius};
+            md_array_push(out_gto_data->cgto_xyzr,   cgto_xyzr,   alloc);
+            md_array_push(out_gto_data->cgto_offset, cgto_offset, alloc);
 			
-			out_ao_data->num_cgtos += 1;
+			out_gto_data->num_cgtos += 1;
         }
+		// push final offset
+		md_array_push(out_gto_data->cgto_offset, out_gto_data->num_pgtos, alloc);
 
 		return true;
 	}
@@ -3201,7 +3215,7 @@ const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx) {
 
 // Returns the size of the density matrix in number of elements.
 // This only contains the upper triangular part of the matrix, due to symmetry.
-size_t md_vlx_scf_density_matrix_size(const md_vlx_t* vlx) {
+size_t md_vlx_scf_upper_triangular_density_matrix_size(const md_vlx_t* vlx) {
 	if (vlx) {
 		return (vlx->scf.alpha.density.size[0] > 0) ? (vlx->scf.alpha.density.size[0] * (vlx->scf.alpha.density.size[0] + 1)) / 2 : 0;
 	}
@@ -3209,7 +3223,7 @@ size_t md_vlx_scf_density_matrix_size(const md_vlx_t* vlx) {
 }
 
 // Populates the provided array with the density matrix data.
-bool md_vlx_scf_extract_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
 		size_t dim = vlx->scf.alpha.density.size[0];
         const double* density_data = NULL;
@@ -3226,6 +3240,37 @@ bool md_vlx_scf_extract_density_matrix_data(float* out_values, const md_vlx_t* v
 				size_t idx = get_matrix_index(i, j);
                 out_values[idx] = (float)density_data[i * dim + j];  // Convert to float
             }
+		}
+		return true;
+	}
+	return false;
+}
+
+// Get the regular density matrix size N in (N x N)
+size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.alpha.density.size[0];
+	}
+	return 0;
+}
+
+// Extracts the full density matrix into a square matrix representation
+bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type) {
+	if (vlx) {
+		size_t dim = vlx->scf.alpha.density.size[0];
+		const double* density_data = NULL;
+		if (type == MD_VLX_MO_TYPE_ALPHA) {
+			density_data = vlx->scf.alpha.density.data;
+		} else if (type == MD_VLX_MO_TYPE_BETA) {
+			density_data = vlx->scf.beta.density.data;
+		} else {
+			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
+			return false;
+		}
+		for (size_t i = 0; i < dim; ++i) {
+			for (size_t j = 0; j < dim; ++j) {
+				out_values[i * dim + j] = (float)density_data[i * dim + j];  // Convert to float
+			}
 		}
 		return true;
 	}
