@@ -488,6 +488,9 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
 
 }
 
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+
+}
 
 #endif
 
