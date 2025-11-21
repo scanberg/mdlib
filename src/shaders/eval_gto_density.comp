@@ -192,14 +192,21 @@ void eval_phis(out float out_phi[TILE_SIZE], vec3 coord) {
         vec3 center = cgtos_tile[i].coord;
         vec3 d  = coord - center;
         float r2 = dot(d, d);
+        float dx2 = d.x * d.x;
+        float dy2 = d.y * d.y;
+        float dz2 = d.z * d.z;
 
+        float px[4] = float[4](1.0, d.x, dx2, dx2 * d.x);
+        float py[4] = float[4](1.0, d.y, dy2, dy2 * d.y);
+        float pz[4] = float[4](1.0, d.z, dz2, dz2 * d.z);
+        
         float phi = 0.0;
         for (uint j = pgto_beg; j < pgto_end; ++j) {
             PGTO pgto = pgtos_tile[j];
             uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
-            float fx = safe_pow(d.x, ijkl.x);
-            float fy = safe_pow(d.y, ijkl.y);
-            float fz = safe_pow(d.z, ijkl.z);
+            float fx = px[ijkl.x];
+            float fy = py[ijkl.y];
+            float fz = pz[ijkl.z];
             phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
         }
         out_phi[i] = phi;
