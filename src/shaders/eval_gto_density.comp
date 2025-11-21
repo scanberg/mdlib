@@ -1,19 +1,19 @@
 #version 430 core
 
-//#extension GL_KHR_shader_subgroup_basic  : enable
-//#extension GL_KHR_shader_subgroup_ballot : enable
-//#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic  : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 struct PGTO {
     float coeff;
     float alpha;
-    uint packed_ijkl;
+    uint ijkl;
 };
 
 struct CGTO {
     vec3 coord;
-    uint pgto_beg;
-    uint pgto_end;
+    uint pgto_off;
+    uint pgto_len;
 };
 
 layout (binding = 0, std430) readonly restrict buffer CGTO_XYZR_BUFFER {
@@ -28,11 +28,14 @@ layout (binding = 2, std430) readonly restrict buffer PGTO_COEFF_BUFFER {
 layout (binding = 3, std430) readonly restrict buffer PGTO_ALPHA_BUFFER {
     float pgto_alpha[];
 };
-layout (binding = 4, std430) readonly restrict buffer PGTO_IJKL_BUFFER {
-    uint pgto_packed_ijkl[];
+layout (binding = 4, std430) readonly restrict buffer PGTO_RADIUS_BUFFER {
+    float pgto_radius[];
+};
+layout (binding = 5, std430) readonly restrict buffer PGTO_IJKL_BUFFER {
+    uint pgto_ijkl[];
 };
 
-layout (binding = 5, std430) readonly restrict buffer D_BUFFER {
+layout (binding = 6, std430) readonly restrict buffer D_BUFFER {
     float D_matrix[];
 };
 
@@ -72,12 +75,12 @@ float safe_pow(float base, uint exponent) {
 }
 #endif
 
-uvec4 unpack_ijkl(in uint packed_ijkl) {
+uvec4 unpack_ijkl(in uint ijkl) {
     return uvec4(
-        (packed_ijkl >>  0) & 0xFFu,
-        (packed_ijkl >>  8) & 0xFFu,
-        (packed_ijkl >> 16) & 0xFFu,
-        (packed_ijkl >> 24) & 0xFFu
+        (ijkl >>  0) & 0xFFu,
+        (ijkl >>  8) & 0xFFu,
+        (ijkl >> 16) & 0xFFu,
+        (ijkl >> 24) & 0xFFu
     );
 }
 
@@ -100,13 +103,21 @@ uint pack_offset_length(uint offset, uint length) {
 #define MAX_TILE_PGTOS (TILE_SIZE * 16)
 #define INVALID_CGTO_IDX 0xFFFFFFFFu
 
-shared uint  screened_cgto_ids[MAX_SCREENED_CGTOS];
+shared uint  screened_cgtos[MAX_SCREENED_CGTOS];
 shared uint  num_screened_cgtos;
 
 shared float D_tile[TILE_SIZE][TILE_SIZE];
 shared CGTO  cgtos_tile[TILE_SIZE];
 shared PGTO  pgtos_tile[MAX_TILE_PGTOS];
 shared uint  num_pgtos;
+
+// Calculates the D matrix index for the upper triangular symmetric matrix storage
+uint get_index(uint i, uint j, uint N) {
+    uint row = (i < j) ? i : j;   // smaller index
+    uint col = (i < j) ? j : i;   // larger index
+    uint row_offset = row * (2 * N - row + 1) / 2;
+    return row_offset + (col - row);
+}
 
 // Populate the D GSM from the global D_matrix
 void fill_D_tile(uint tile_i, uint tile_j) {
@@ -117,35 +128,33 @@ void fill_D_tile(uint tile_i, uint tile_j) {
     uint baseJ = tile_j * TILE_SIZE;
 
     uint idxI = baseI + tid;
-    uint gi = (idxI < MAX_SCREENED_CGTOS) ? screened_cgto_ids[idxI] : INVALID_CGTO_IDX;
+    uint gi = (idxI < MAX_SCREENED_CGTOS) ? screened_cgtos[idxI] : INVALID_CGTO_IDX;
 
     for (uint col = 0; col < TILE_SIZE; ++col) {
         uint idxJ = baseJ + col;
-        uint gj = (idxJ < MAX_SCREENED_CGTOS) ? screened_cgto_ids[idxJ] : INVALID_CGTO_IDX;
+        uint gj = (idxJ < MAX_SCREENED_CGTOS) ? screened_cgtos[idxJ] : INVALID_CGTO_IDX;
 
         float value = 0.0;
         if (gi != INVALID_CGTO_IDX && gj != INVALID_CGTO_IDX) {
-            uint a = min(gi, gj);
-            uint b = max(gi, gj);
-            value = D_matrix[a * D_matrix_dim + b];
+            value = D_matrix[get_index(gi, gj, D_matrix_dim)];
         }
         D_tile[tid][col] = value;
     }
 }
 
 // Populate CGTO and PGTO GSM with CGTOs found in tile
-void fill_cgtos_tile(uint tile_number) {
+void fill_cgtos_tile(uint tile_number, vec3 model_aabb_min, vec3 model_aabb_max) {
     const uint tid  = gl_LocalInvocationIndex;
 
     // Only first TILE_SIZE threads participate
     if (tid >= TILE_SIZE) return;
 
     // Global CGTO index for this tile position
-    uint global_cgto_idx = screened_cgto_ids[tile_number * TILE_SIZE + tid];
+    uint global_cgto_idx = screened_cgtos[tile_number * TILE_SIZE + tid];
 
     vec3 cgto_center = vec3(0.0);
-    uint cgto_pgto_beg = 0u;
-    uint cgto_pgto_end = 0u;
+    uint cgto_pgto_off = 0u;
+    uint cgto_pgto_len = 0u;
 
     if (global_cgto_idx != INVALID_CGTO_IDX) {
         // Load packed offset/length
@@ -155,27 +164,34 @@ void fill_cgtos_tile(uint tile_number) {
 
         if (src_beg != src_end) {
             // Reserve contiguous space for this CGTO's PGTOs
-            uint dst_base = atomicAdd(num_pgtos, src_len);
+            uint dst = atomicAdd(num_pgtos, src_len);
 
             cgto_center = cgto_xyzr[global_cgto_idx].xyz;
-            cgto_pgto_beg = dst_base;
-            cgto_pgto_end = dst_base + src_len;
+            cgto_pgto_off = dst;
+            
+            vec3 model_xyz = vec3(world_to_model * vec4(cgto_center, 1.0));
+            vec3   d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
+            float d2 = dot(d, d);
 
             // Copy PGTOs
             for (uint k = 0; k < src_len; ++k) {
-                uint dst = dst_base + k;
-                PGTO g;
-                g.coeff        = pgto_coeff[src_beg + k];
-                g.alpha        = pgto_alpha[src_beg + k];
-                g.packed_ijkl  = pgto_packed_ijkl[src_beg + k];
-                pgtos_tile[dst] = g;
+                float r = pgto_radius[src_beg + k];
+                // Cull based on radius
+                if (d2 < r * r) {
+                    PGTO g;
+                    g.coeff = pgto_coeff[src_beg + k];
+                    g.alpha = pgto_alpha[src_beg + k];
+                    g.ijkl  = pgto_ijkl[src_beg + k];
+                    pgtos_tile[cgto_pgto_off + cgto_pgto_len] = g;
+                    cgto_pgto_len++;
+                }
             }
         }
     }
 
     cgtos_tile[tid].coord    = cgto_center;
-    cgtos_tile[tid].pgto_beg = cgto_pgto_beg;
-    cgtos_tile[tid].pgto_end = cgto_pgto_end;
+    cgtos_tile[tid].pgto_off = cgto_pgto_off;
+    cgtos_tile[tid].pgto_len = cgto_pgto_len;
 }
 
 // One thread per CGTO
@@ -185,28 +201,20 @@ void eval_phis(out float out_phi[TILE_SIZE], vec3 coord) {
 
     // Compute φ_i(coord) for all CGTOs in the tile
     for (uint i = 0; i < TILE_SIZE; ++i) {
-        uint pgto_beg = cgtos_tile[i].pgto_beg;
-        uint pgto_end = cgtos_tile[i].pgto_end;
-        if (pgto_beg >= pgto_end) continue;
+        uint pgto_off = cgtos_tile[i].pgto_off;
+        uint pgto_len = cgtos_tile[i].pgto_len;
 
         vec3 center = cgtos_tile[i].coord;
         vec3 d  = coord - center;
         float r2 = dot(d, d);
-        float dx2 = d.x * d.x;
-        float dy2 = d.y * d.y;
-        float dz2 = d.z * d.z;
-
-        float px[4] = float[4](1.0, d.x, dx2, dx2 * d.x);
-        float py[4] = float[4](1.0, d.y, dy2, dy2 * d.y);
-        float pz[4] = float[4](1.0, d.z, dz2, dz2 * d.z);
         
         float phi = 0.0;
-        for (uint j = pgto_beg; j < pgto_end; ++j) {
+        for (uint j = pgto_off; j < pgto_off + pgto_len; ++j) {
             PGTO pgto = pgtos_tile[j];
-            uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
-            float fx = px[ijkl.x];
-            float fy = py[ijkl.y];
-            float fz = pz[ijkl.z];
+            uvec4 ijkl = unpack_ijkl(pgto.ijkl);
+            float fx = safe_pow(d.x, ijkl.x);
+            float fy = safe_pow(d.y, ijkl.y);
+            float fz = safe_pow(d.z, ijkl.z);
             phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
         }
         out_phi[i] = phi;
@@ -262,7 +270,7 @@ void main() {
             if (d2 < r2) {
                 uint idx = atomicAdd(num_screened_cgtos, 1u);
                 if (idx < MAX_SCREENED_CGTOS) {
-                    screened_cgto_ids[idx] = i;
+                    screened_cgtos[idx] = i;
                 }
             }
         }
@@ -280,7 +288,7 @@ void main() {
         // Fill tail with INVALID_CGTO_IDX
         for (uint i = tid; i < MAX_SCREENED_CGTOS; i += WG_SIZE) {
             if (i >= num_screened_cgtos) {
-                screened_cgto_ids[i] = INVALID_CGTO_IDX;
+                screened_cgtos[i] = INVALID_CGTO_IDX;
             }
         }
     }
@@ -289,6 +297,14 @@ void main() {
     float phi_tile_nu[TILE_SIZE]; // evaluated φ_ν(r) in registers
     vec3 coord = (index_to_world * vec4(gl_GlobalInvocationID.xyz, 1.0)).xyz;
     float rho = 0.0;
+
+    if (num_screened_cgtos == 0u) {
+        // No CGTOs contribute to this region
+        if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
+            imageStore(out_vol, ivec3(gl_GlobalInvocationID.xyz), vec4(0.0));
+        }
+        return;
+    }
 
     // DIV UP
     uint num_tiles = (num_screened_cgtos + TILE_SIZE - 1) / TILE_SIZE;
@@ -303,7 +319,7 @@ void main() {
 
         // Populate GSM
         fill_D_tile(tile_i, tile_i);
-        fill_cgtos_tile(tile_i);
+        fill_cgtos_tile(tile_i, model_aabb_min, model_aabb_max);
 
         barrier();
 
@@ -325,7 +341,7 @@ void main() {
 
             // Populate GSM
             fill_D_tile(tile_i, tile_j);
-            fill_cgtos_tile(tile_j);
+            fill_cgtos_tile(tile_j, model_aabb_min, model_aabb_max);
 
             barrier();
 

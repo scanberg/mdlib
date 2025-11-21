@@ -1591,6 +1591,63 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
+static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* arena) {
+	ASSERT(rsp);
+	char buf[64];
+	uint64_t dim[2];
+
+	// Test to read first NTO entry to get dimensions, NTO is optional and may not exist
+	if (!h5_read_dataset_dims(dim, 2, handle, "NTO_S1_alpha_orbitals")) {
+		// No NTO data present, do not fail here
+		return true;
+	}
+
+	md_array_resize(rsp->nto, rsp->number_of_excited_states, arena);
+	MEMSET(rsp->nto, 0, rsp->number_of_excited_states * sizeof(md_vlx_orbital_t));
+
+	for (size_t i = 0; i < rsp->number_of_excited_states; ++i) {
+		int idx = (int)(i + 1);
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
+		uint64_t dim[2];
+		if (!h5_read_dataset_dims(dim, 2, handle, buf)) {
+			return false;
+		}
+		if (dim[0] == 0 || dim[1] == 0) {
+			MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
+			return false;
+		}
+
+		md_array_resize(rsp->nto[i].coefficients.data, dim[0] * dim[1], arena);
+		MEMSET(rsp->nto[i].coefficients.data, 0, md_array_bytes(rsp->nto[i].coefficients.data));
+		MEMCPY(rsp->nto[i].coefficients.size, dim, sizeof(dim));
+
+		md_array_resize(rsp->nto[i].energy.data, dim[1], arena);
+		MEMSET(rsp->nto[i].energy.data, 0, md_array_bytes(rsp->nto[i].energy.data));
+		rsp->nto[i].energy.size = dim[1];
+
+		md_array_resize(rsp->nto[i].occupancy.data, dim[1], arena);
+		MEMSET(rsp->nto[i].occupancy.data, 0, md_array_bytes(rsp->nto[i].occupancy.data));
+		rsp->nto[i].occupancy.size = dim[1];
+
+		if (!h5_read_dataset_data(rsp->nto[i].coefficients.data, rsp->nto[i].coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, buf)) {
+			return false;
+		}
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_occupations", idx);
+		if (!h5_read_dataset_data(rsp->nto[i].occupancy.data, &rsp->nto[i].occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
+			return false;
+		}
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
+		if (!h5_read_dataset_data(rsp->nto[i].energy.data, &rsp->nto[i].energy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	if (!h5_read_scalar(&vlx->rsp.number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states")) {
 		return false;
@@ -1603,9 +1660,6 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	}
 
 	// Allocate data
-	md_array_resize(vlx->rsp.nto, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.nto, 0, vlx->rsp.number_of_excited_states * sizeof(md_vlx_orbital_t));
-
 	md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
 	MEMSET(vlx->rsp.electric_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
 
@@ -1625,48 +1679,8 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
 
 	// NTO data
-	char buf[32];
-	for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
-		int idx = (int)(i + 1);
-
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
-
-		uint64_t dim[2];
-		if (!h5_read_dataset_dims(dim, 2, handle, buf)) {
-			return false;
-		}
-		if (dim[0] == 0 || dim[1] == 0) {
-			MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
-			return false;
-		}
-
-		md_array_resize(vlx->rsp.nto[i].coefficients.data, dim[0] * dim[1], vlx->arena);
-		MEMSET(vlx->rsp.nto[i].coefficients.data, 0, md_array_bytes(vlx->rsp.nto[i].coefficients.data));
-		MEMCPY(vlx->rsp.nto[i].coefficients.size, dim, sizeof(dim));
-
-		md_array_resize(vlx->rsp.nto[i].energy.data, dim[1], vlx->arena);
-		MEMSET(vlx->rsp.nto[i].energy.data, 0, md_array_bytes(vlx->rsp.nto[i].energy.data));
-		vlx->rsp.nto[i].energy.size = dim[1];
-
-		md_array_resize(vlx->rsp.nto[i].occupancy.data, dim[1], vlx->arena);
-		MEMSET(vlx->rsp.nto[i].occupancy.data, 0, md_array_bytes(vlx->rsp.nto[i].occupancy.data));
-		vlx->rsp.nto[i].occupancy.size = dim[1];
-
-		if (!h5_read_dataset_data(vlx->rsp.nto[i].coefficients.data, vlx->rsp.nto[i].coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, buf)) {
-			return false;
-		}
-
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_occupations", idx);
-		if (!h5_read_dataset_data(vlx->rsp.nto[i].occupancy.data, &vlx->rsp.nto[i].occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
-			return false;
-		}
-
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
-		if (!h5_read_dataset_data(vlx->rsp.nto[i].energy.data, &vlx->rsp.nto[i].energy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
-			return false;
-		}
-
-
+	if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
+		return false;
 	}
 
 	// Dipoles
@@ -2141,47 +2155,53 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 	}
 
 	if (flags & VLX_FLAG_RSP) {
-		for (int i = 0; i < (int)vlx->rsp.number_of_excited_states; ++i) {
-			md_strb_reset(&sb);
-			md_strb_fmt(&sb, STR_FMT "_S%i_NTO.h5", STR_ARG(base_file), i + 1);
-			if (md_path_is_valid(md_strb_to_str(sb))) {
-				// Open an existing file
-				hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
-				if (file_id == H5I_INVALID_HID) {
-					MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
-					goto done;
-				}
+        // Test if we can read the first NTO file
+		md_strb_reset(&sb);
+		md_strb_fmt(&sb, STR_FMT "_S1_NTO.h5", STR_ARG(base_file));
+		if (H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT) != H5I_INVALID_HID) {
+			for (int i = 0; i < (int)vlx->rsp.number_of_excited_states; ++i) {
+				md_strb_reset(&sb);
+				md_strb_fmt(&sb, STR_FMT "_S%i_NTO.h5", STR_ARG(base_file), i + 1);
+				if (md_path_is_valid(md_strb_to_str(sb))) {
+					// Open an existing file
+					hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
+					if (file_id == H5I_INVALID_HID) {
+						MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
+						goto done;
+					}
 
-				uint64_t dim[2];
-				if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
-					goto done;
-				}
-				if (dim[0] == 0 || dim[1] == 0) {
-					MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
-					goto done;
-				}
+					uint64_t dim[2];
+					if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
+						goto done;
+					}
+					if (dim[0] == 0 || dim[1] == 0) {
+						MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
+						goto done;
+					}
 
-				md_array_push(vlx->rsp.nto, (md_vlx_orbital_t){0}, vlx->arena);
-				md_vlx_orbital_t* nto = md_array_last(vlx->rsp.nto);
+					md_array_push(vlx->rsp.nto, (md_vlx_orbital_t) { 0 }, vlx->arena);
+					md_vlx_orbital_t* nto = md_array_last(vlx->rsp.nto);
 
-				md_array_resize(nto->coefficients.data, dim[0] * dim[1], vlx->arena);
-				MEMCPY(nto->coefficients.size, dim, sizeof(dim));
+					md_array_resize(nto->coefficients.data, dim[0] * dim[1], vlx->arena);
+					MEMCPY(nto->coefficients.size, dim, sizeof(dim));
 
-				md_array_resize(nto->occupancy.data, dim[1], vlx->arena);
-				nto->occupancy.size = dim[1];
+					md_array_resize(nto->occupancy.data, dim[1], vlx->arena);
+					nto->occupancy.size = dim[1];
 
-				if (!h5_read_dataset_data(nto->coefficients.data, nto->coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
-					goto done;
+					if (!h5_read_dataset_data(nto->coefficients.data, nto->coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
+						goto done;
+					}
+					if (!h5_read_dataset_data(nto->occupancy.data, &nto->occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
+						goto done;
+					}
 				}
-				if (!h5_read_dataset_data(nto->occupancy.data, &nto->occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
-					goto done;
-				}
-			} else {
-				MD_LOG_INFO("The veloxchem object specified %zu excited states, but the matching NTOs could not be found.", vlx->rsp.number_of_excited_states);
-				if (vlx->rsp.nto) {
-					md_array_free(vlx->rsp.nto, vlx->arena);
-					vlx->rsp.nto = NULL;
-					break;
+				else {
+					MD_LOG_INFO("The veloxchem object specified %zu excited states, but the matching NTOs could not be found.", vlx->rsp.number_of_excited_states);
+					if (vlx->rsp.nto) {
+						md_array_free(vlx->rsp.nto, vlx->arena);
+						vlx->rsp.nto = NULL;
+						break;
+					}
 				}
 			}
 		}
@@ -2750,6 +2770,10 @@ const double* md_vlx_rsp_absorption_ev(const md_vlx_t* vlx) {
 	return NULL;
 }
 
+bool md_vlx_rsp_has_nto(const md_vlx_t* vlx) {
+	return vlx && vlx->rsp.nto;
+}
+
 const double* md_vlx_rsp_nto_occupancy(const md_vlx_t* vlx, size_t nto_idx) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
@@ -3192,10 +3216,11 @@ bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vl
 	return false;
 }
 
-static inline size_t get_matrix_index(size_t row, size_t col) {
-	size_t i = MAX(row, col);
-	size_t j = MIN(row, col);
-	return (i * (i + 1)) / 2 + j;
+static inline size_t get_matrix_index(size_t i, size_t j, size_t N) {
+	size_t row = (i < j) ? i : j;
+	size_t col = (i < j) ? j : i;
+	size_t row_offset = row * (2 * N - row + 1) / 2;
+	return row_offset + (col - row);
 }
 
 // The overlap matrix is a square, symmetric matrix [N][N], this returns the length N
@@ -3235,9 +3260,10 @@ bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, 
 			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
 			return false;
         }
+
 		for (size_t i = 0; i < dim; ++i) {
 			for (size_t j = i; j < dim; ++j) {
-				size_t idx = get_matrix_index(i, j);
+				size_t idx = get_matrix_index(i, j, dim);
                 out_values[idx] = (float)density_data[i * dim + j];  // Convert to float
             }
 		}

@@ -351,10 +351,10 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim) {
     ASSERT(grid);
     ASSERT(gto_data);
-    ASSERT(matrix_data);
+    ASSERT(upper_triangular_matrix_data);
 
     md_gl_debug_push("EVAL DENSITY");
 
@@ -384,8 +384,10 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         goto done;
     }
 
-    uint32_t num_cgtos = (uint32_t)gto_data->num_cgtos;
-    if (matrix_dim != num_cgtos) {
+    size_t matrix_data_len = (matrix_dim * (matrix_dim + 1)) / 2;
+    const float* matrix_data = upper_triangular_matrix_data;
+
+    if (matrix_dim != gto_data->num_cgtos) {
         MD_LOG_ERROR("Matrix dim, cgto mismatch");
         goto done;
     }
@@ -404,6 +406,9 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     ub_data.step = vec4_from_vec3(grid->spacing, 0);
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
 
+    GLuint query;
+    glGenQueries(1, &query);
+
     GLintptr   ssbo_cgto_xyzr_base      = 0;
     GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
 
@@ -416,11 +421,14 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLintptr   ssbo_pgto_alpha_base     = ALIGN_TO(ssbo_pgto_coeff_base + ssbo_pgto_coeff_size, 256);
     GLsizeiptr ssbo_pgto_alpha_size     = sizeof(float) * (gto_data->num_pgtos); 
 
-    GLintptr   ssbo_pgto_ijkl_base      = ALIGN_TO(ssbo_pgto_alpha_base + ssbo_pgto_alpha_size, 256);
+    GLintptr   ssbo_pgto_radius_base    = ALIGN_TO(ssbo_pgto_alpha_base + ssbo_pgto_alpha_size, 256);
+    GLsizeiptr ssbo_pgto_radius_size    = sizeof(float) * (gto_data->num_pgtos); 
+
+    GLintptr   ssbo_pgto_ijkl_base      = ALIGN_TO(ssbo_pgto_radius_base + ssbo_pgto_radius_size, 256);
     GLsizeiptr ssbo_pgto_ijkl_size      = sizeof(uint32_t) * (gto_data->num_pgtos);
 
     GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_ijkl_base + ssbo_pgto_ijkl_size, 256);
-    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_dim * matrix_dim;
+    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_data_len;
 
     GLintptr   ubo_base                 = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
     GLsizeiptr ubo_size                 = sizeof(uniform_block_t);
@@ -433,6 +441,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_offset_base,    ssbo_cgto_offset_size,  gto_data->cgto_offset);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_coeff_base,     ssbo_pgto_coeff_size,   gto_data->pgto_coeff);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_alpha_base,     ssbo_pgto_alpha_size,   gto_data->pgto_alpha);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_radius_base,    ssbo_pgto_radius_size,  gto_data->pgto_radius);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_ijkl_base,      ssbo_pgto_ijkl_size,    gto_data->pgto_ijkl);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       matrix_data);
 
@@ -440,8 +449,9 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buf, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, buf, ssbo_pgto_coeff_base,      ssbo_pgto_coeff_size);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, buf, ssbo_pgto_alpha_base,      ssbo_pgto_alpha_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, buf, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, buf, ssbo_matrix_base,          ssbo_matrix_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, buf, ssbo_pgto_radius_base,     ssbo_pgto_radius_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, buf, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 6, buf, ssbo_matrix_base,          ssbo_matrix_size);
 
     glBindBuffer(GL_UNIFORM_BUFFER, buf);
     glBufferSubData(GL_UNIFORM_BUFFER, ubo_base, ubo_size, &ub_data);
@@ -453,12 +463,25 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
 
+    // Start timing
+    glBeginQuery(GL_TIME_ELAPSED, query);
+
     int num_groups[3] = {
         DIV_UP(grid->dim[0], 8),
         DIV_UP(grid->dim[1], 8),
         DIV_UP(grid->dim[2], 8),
     };
     glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
+
+    // End timing
+    glEndQuery(GL_TIME_ELAPSED);
+
+    // Retrieve the result (blocking until GPU finishes)
+    GLuint64 elapsedTime = 0;
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &elapsedTime); // nanoseconds
+
+	MD_LOG_DEBUG("GTO Density evaluation GPU time: %.3f ms", elapsedTime / 1e6);
+
     glUseProgram(0);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);

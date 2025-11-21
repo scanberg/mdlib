@@ -117,6 +117,7 @@ const double*  md_vlx_rsp_rotatory_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
 
+bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
