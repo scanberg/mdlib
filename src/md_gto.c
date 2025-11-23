@@ -56,6 +56,11 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][1] = grid->origin.elem[1];
     out_mat[3][2] = grid->origin.elem[2];
     out_mat[3][3] = 1.0f;
+
+    // Incorporate a half voxel offset to move to voxel centers
+    out_mat[3][0] += 0.5f * (out_mat[0][0] + out_mat[1][0] + out_mat[2][0]);
+    out_mat[3][1] += 0.5f * (out_mat[0][1] + out_mat[1][1] + out_mat[2][1]);
+    out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
 
 static GLuint get_gto_program(void) {
