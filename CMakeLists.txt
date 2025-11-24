@@ -159,7 +159,30 @@ endif()
 create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")
 create_resources("${GTO_SHADER_FILES}" "gen/gto_shaders.inl")
 
-if (CMAKE_C_COMPILER_ID MATCHES "Clang")
+# Detect AppleClang vs other Clang
+if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
+  if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")  # clang-cl
+    set(COMPILER_TYPE "MSVC-Clang")
+  elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "AppleClang")
+    set(COMPILER_TYPE "AppleClang")
+  elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")  # native Clang
+    set(COMPILER_TYPE "Clang")
+  else()
+    set(COMPILER_TYPE "Clang-Unknown")
+  endif()
+elseif (CMAKE_C_COMPILER_ID STREQUAL "AppleClang")  # CMake 3.x
+  set(COMPILER_TYPE "AppleClang")
+elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  set(COMPILER_TYPE "GCC")
+elseif (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+  set(COMPILER_TYPE "MSVC")
+else()
+  set(COMPILER_TYPE "Unknown")
+endif()
+
+message(STATUS "mdlib: Compiler detected as ${COMPILER_TYPE}")
+
+if (COMPILER_TYPE MATCHES "Clang")
   set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
   set(MD_FLAGS ${MD_FLAGS}
     "-Wall"
@@ -172,29 +195,24 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-gnu-zero-variadic-macro-arguments"
     "-Wno-nested-anon-types")
 
-  if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
-    if (MD_ENABLE_AVX512)
-      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
-    elseif (MD_ENABLE_AVX2)
-      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
-    elseif (MD_ENABLE_AVX)
-      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
-    endif()
-
-    if (MD_ENABLE_FMA)
-      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
-    endif()
-    if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
-      message(STATUS "mdlib: MSVC-Clang configuration was used")
-    elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
-      message(STATUS "mdlib: Clang configuration was used")
-      set(MD_LIBS ${MD_LIBS} "m" "atomic")
-    endif()
-  elseif (CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
-    message(STATUS "mdlib: AppleClang configuration was used")
+  if (COMPILER_TYPE STREQUAL "Clang") # native Clang
+    set(MD_LIBS ${MD_LIBS} "m" "atomic")
   endif()
-elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
-    message(STATUS "mdlib: GCC configuration was used")
+
+  # AVX/FMA flags
+  if (MD_ENABLE_AVX512)
+    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
+  elseif (MD_ENABLE_AVX2)
+    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
+  elseif (MD_ENABLE_AVX)
+    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
+  endif()
+
+  if (MD_ENABLE_FMA)
+    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
+  endif()
+
+elseif (COMPILER_TYPE STREQUAL "GCC") # GCC
     set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
     set(MD_FLAGS ${MD_FLAGS}
       "-Wall"
@@ -228,8 +246,7 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     set(MD_LIBS ${MD_LIBS}
         "m"
         "Threads::Threads")
-elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
-    message(STATUS "mdlib: MSVC configuration was used")
+elseif ((COMPILER_TYPE STREQUAL "MSVC")) # msvc
     set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "/W2")
     set(MD_FLAGS ${MD_FLAGS}
       "/W4"
@@ -311,7 +328,7 @@ target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DE
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
 target_compile_features(mdlib PRIVATE c_std_11)
-target_link_libraries(mdlib PRIVATE ${MD_LIBS})
+target_link_libraries(mdlib PUBLIC ${MD_LIBS})
 
 get_directory_property(has_parent PARENT_DIRECTORY)
 if (has_parent)
