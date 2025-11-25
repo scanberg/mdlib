@@ -91,15 +91,13 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, c
 void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
 // This is malplaced at the moment, but this is for the moment, the best match in where to place the functionality
-// Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding group of the closest point
-// - out_group_values: Destination array holding the group values that are written to
-// - cap_groups: Capacity of group array
+// Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding point
+// - out_values: Destination array holding the point values that are written to, should have length 'num_points'
+// - point_xyzr: Point coordinates + radius, packed xyzrxyzrxyzr
+// - num_points: Number of points
 // - vol_tex: The texture handle to the volume
 // - vol_grid: The grid defining the volume
-// - point_xyzr: Point coordinates + radius, packed xyzrxyzrxyzr
-// - point_group_idx: Point group index [0, num_groups-1]
-// - num_points: Number of points
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* vol_grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
+void md_gto_voronoi_segment_GPU(float* out_values, const float* point_xyzr, size_t num_points, uint32_t vol_tex, const md_grid_t* vol_grid);
 
 // Evaluates GTOs over a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

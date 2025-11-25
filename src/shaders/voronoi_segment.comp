@@ -1,7 +1,7 @@
 #version 430 core
 
 #define QUANTIZATION_SCALE_FACTOR 1.0e6
-#define MAX_GROUPS 16
+#define MAX_POINTS 1024
 
 // This is exposed as an image since we want to perform atomic float operations on it...
 layout(binding = 0, r32f) readonly restrict uniform image3D in_vol;
@@ -10,12 +10,8 @@ layout (binding = 0, std430) readonly restrict buffer PointBuffer {
     vec4 in_points_geom[];
 };
 
-layout (binding = 1, std430) readonly restrict buffer PointGroupIndexBuffer {
-    uint in_point_group_idx[];
-};
-
-layout (binding = 2, std430) buffer GroupValueBuffer {
-    uint out_group_values[MAX_GROUPS];
+layout (binding = 1, std430) buffer ValueBuffer {
+    uint out_values[];
 };
 
 layout(location = 0) uniform mat4 in_world_to_model;
@@ -24,10 +20,9 @@ layout(location = 2) uniform vec3 in_step;
 layout(location = 3) uniform uint in_num_points;
 
 shared uint  num_points;
-shared vec4  points_geom[1024];
-shared uint  points_group_index[1024];
-
-shared uint  group_values[MAX_GROUPS];
+shared vec4  point_geom[MAX_POINTS];
+shared uint  point_idx[MAX_POINTS];
+shared uint  point_values[MAX_POINTS];
 
 layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 void main() {
@@ -37,8 +32,8 @@ void main() {
     if (thread_id == 0) {
         num_points = 0;
     }
-    if (thread_id < MAX_GROUPS) {
-        group_values[thread_id] = 0;
+    for (uint i = thread_id; i < MAX_POINTS; i += wg_size) {
+        point_values[i] = 0;
     }
 
     barrier();
@@ -57,43 +52,52 @@ void main() {
         if (r2 < radius * radius) {
             // Push to workgroup GTOs
             uint idx = atomicAdd(num_points, 1);
-            points_geom[idx] = in_points_geom[i];
-            points_group_index[idx] = in_point_group_idx[i];
+            if (idx < MAX_POINTS) {
+                point_geom[idx] = in_points_geom[i];
+                point_idx[idx] = i;
+            }   
         }
     }
 
     // Wait for all threads to add group shared points
     barrier();
 
+    if (thread_id == 0) {
+        num_points = min(num_points, MAX_POINTS);
+    }
+    barrier(); 
+
     ivec3 vol_idx = ivec3(gl_GlobalInvocationID.xyz);
     if (all(lessThan(vol_idx, imageSize(in_vol)))) {
         vec3 coord = vec3(in_index_to_world * vec4(vec3(vol_idx), 1.0));
-        float psi = imageLoad(in_vol, vol_idx).x;
+        float val = imageLoad(in_vol, vol_idx).x;
 
         // Step 2: Find closest point (in the workgroup) for the coord and attribute to group index
-        uint closest_group_idx = MAX_GROUPS;
+        uint closest_idx = ~(0u);
         float closest_d2 = 1.0e20;
         for (uint i = 0; i < num_points; ++i) {
-            vec3 delta = coord - points_geom[i].xyz;
-            float d2 = dot(delta, delta) - points_geom[i].w * points_geom[i].w;
+            vec4 pos_rad = point_geom[i];
+            vec3 delta = coord - pos_rad.xyz;
+            float d2 = dot(delta, delta) - pos_rad.w * pos_rad.w;
 
             if (d2 < closest_d2) {
-                closest_d2 = d2;
-                closest_group_idx = points_group_index[i];
+                closest_d2  = d2;
+                closest_idx = i;
             }
         }
 
-        if (closest_group_idx < MAX_GROUPS) {
-            uint quantized_value = uint(round(psi * QUANTIZATION_SCALE_FACTOR));
-            atomicAdd(group_values[closest_group_idx], quantized_value);
+        if (closest_idx < ~(0u)) {
+            uint quantized_value = uint(round(val * QUANTIZATION_SCALE_FACTOR));
+            atomicAdd(point_values[closest_idx], quantized_value);
         }
     }
 
     // Wait for all threads to write group values
     barrier();
 
-    // Step 5: Write out results to groups
-    if (thread_id < MAX_GROUPS) {
-        atomicAdd(out_group_values[thread_id], group_values[thread_id]);
+    // Step 5: Write out results to global memory
+    if (thread_id < num_points) {
+        uint global_idx = point_idx[thread_id];
+        atomicAdd(out_values[global_idx], point_values[thread_id]);
     }
 }

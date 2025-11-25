@@ -101,7 +101,8 @@ set(GTO_SHADER_FILES
     src/shaders/eval_alie.comp
     src/shaders/eval_gto.comp
     src/shaders/eval_gto_density.comp
-    src/shaders/segment_and_attribute_to_group.comp
+    src/shaders/eval_gto_density_grad.comp
+    src/shaders/voronoi_segment.comp
 )
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})

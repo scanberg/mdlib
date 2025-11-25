@@ -93,11 +93,11 @@ static GLuint get_alie_program(void) {
     return program;
 }
 
-static GLuint get_vol_segment_to_groups_program(void) {
+static GLuint get_voronoi_segment_program(void) {
     static GLuint program = 0;
     if (!program) {
         GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t){(const char*)segment_and_attribute_to_group_comp, segment_and_attribute_to_group_comp_size}, 0, 0)) {
+        if (md_gl_shader_compile(shader, (str_t){(const char*)voronoi_segment_comp, voronoi_segment_comp_size}, 0, 0)) {
             GLuint prog = glCreateProgram();
             if (md_gl_program_attach_and_link(prog, &shader, 1)) {
                 program = prog;
@@ -247,10 +247,10 @@ void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, 
     gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
 }
 
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
-    ASSERT(out_group_values);
+void md_gto_voronoi_segment_GPU(float* out_values, const float* point_xyzr, size_t num_points, uint32_t vol_tex, const md_grid_t* grid) {
+    ASSERT(out_values);
     ASSERT(point_xyzr);
-    ASSERT(point_group_idx);
+    ASSERT(grid);
 
     GLenum format = 0;
     if (glGetTextureLevelParameteriv) {
@@ -273,37 +273,30 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 
     md_gl_debug_push("SEGMENT VOL TO GROUP");
 
-    GLintptr   ssbo_group_value_offset = 0;
-    GLsizeiptr ssbo_group_value_size   = sizeof(float) * 16;
+    GLintptr   ssbo_point_value_offset = 0;
+    GLsizeiptr ssbo_point_value_size   = sizeof(float) * 16;
 
-    GLintptr   ssbo_point_xyzr_offset  = ALIGN_TO(ssbo_group_value_offset + ssbo_group_value_size, 256);
+    GLintptr   ssbo_point_xyzr_offset  = ALIGN_TO(ssbo_point_value_offset + ssbo_point_value_size, 256);
     GLsizeiptr ssbo_point_xyzr_size    = sizeof(float) * 4 * num_points;
 
-    GLintptr   ssbo_point_group_offset = ALIGN_TO(ssbo_point_xyzr_offset + ssbo_point_xyzr_size, 256);
-    GLsizeiptr ssbo_point_group_size   = sizeof(uint32_t) * num_points;
-
-    size_t total_size = ALIGN_TO(ssbo_point_group_offset + ssbo_point_group_size, 256);
-
+    size_t total_size = ALIGN_TO(ssbo_point_xyzr_offset + ssbo_point_xyzr_size, 256);
     GLuint ssbo = get_buffer(total_size);
     
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
 
-    // Clear first 16 bytes which represents the result (group_values)
-    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32F, ssbo_group_value_offset, ssbo_group_value_size, GL_RED, GL_FLOAT, NULL);
+    // Clear first portion of buffer holding point values
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32F, ssbo_point_value_offset, ssbo_point_value_size, GL_RED, GL_FLOAT, NULL);
     // Fill next portion of buffer with point xyzr
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_xyzr_offset,  ssbo_point_xyzr_size,  point_xyzr);
-    // Fill last portion of buffer with point indices
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_group_offset, ssbo_point_group_size, point_group_idx);
 
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_point_xyzr_offset,  ssbo_point_xyzr_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_point_group_offset, ssbo_point_group_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_group_value_offset, ssbo_group_value_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_point_value_offset, ssbo_point_value_size);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, format);
 
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
-    GLuint program = get_vol_segment_to_groups_program();
+    GLuint program = get_voronoi_segment_program();
     glUseProgram(program);
 
     float world_to_model[4][4];
@@ -321,18 +314,16 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
         DIV_UP(grid->dim[1], 8),
         DIV_UP(grid->dim[2], 8),
     };
-
     glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    uint32_t temp_group_values[16];
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_group_value_offset, ssbo_group_value_size, temp_group_values);
-
-    for (size_t i = 0; i < MIN(cap_groups, 16); ++i) {
-        double value = temp_group_values[i] / QUANTIZATION_SCALE_FACTOR;
-        out_group_values[i] = (float)value;
+    uint32_t* temp_values = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_points);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_value_offset, ssbo_point_value_size, temp_values);
+    for (size_t i = 0; i < num_points; ++i) {
+        out_values[i] = (float)(temp_values[i] / QUANTIZATION_SCALE_FACTOR);
     }
+    md_temp_pop(sizeof(uint32_t) * num_points);
 
     glUseProgram(0);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -485,7 +476,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLuint64 elapsedTime = 0;
     glGetQueryObjectui64v(query, GL_QUERY_RESULT, &elapsedTime); // nanoseconds
 
-	MD_LOG_DEBUG("GTO Density evaluation GPU time: %.3f ms", elapsedTime / 1e6);
+	MD_LOG_DEBUG("GTO Density evaluation of [%i,%i,%i] GPU time: %.3f ms", grid->dim[0], grid->dim[1], grid->dim[2], elapsedTime / 1e6);
 
     glUseProgram(0);
 
