@@ -111,18 +111,17 @@ void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const m
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
 // - grid: The grid defining the samples to evaluate
 // - gto_data: The gto data to evaluate
-// - matrix: The matrix coefficients (This is an upper triangular matrix of size num_cgtos x num_cgtos, where num_cgtos is the number of CGTOs in
-// gto_data)
-// - mode: evaluation mode
-void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data);
+// - matrix: The matrix coefficients (Upper triangular format)
+// - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
+void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
 
 // Evaluates CGTOs defined by gto_data with a given 'density' matrix
 // - vol_tex: The texture handle to the volume
 // - grid: The grid defining the location of samples to evaluate
 // - gto_data: The gto data to evaluate
-// - matrix: The matrix coefficients
-// - mode: evaluation mode
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
+// - matrix_data: The matrix coefficients (Upper triangular format)
+// - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim, bool output_grad_and_value);
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

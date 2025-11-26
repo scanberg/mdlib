@@ -123,6 +123,22 @@ static GLuint get_gto_density_program(void) {
     return program;
 }
 
+static GLuint get_gto_density_grad_program(void) {
+    static GLuint program = 0;
+    if (!program) {
+        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+        if (md_gl_shader_compile(shader, (str_t) { (const char*)eval_gto_density_grad_comp, eval_gto_density_grad_comp_size }, 0, 0)) {
+            GLuint prog = glCreateProgram();
+            if (md_gl_program_attach_and_link(prog, &shader, 1)) {
+                program = prog;
+            }
+        }
+        glDeleteShader(shader);
+    }
+    return program;
+}
+
+
 static GLuint get_buffer(size_t size) {
     GLuint id = 0;
     glCreateBuffers(1, &id);
@@ -347,7 +363,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim, bool output_gradients_and_value) {
     ASSERT(grid);
     ASSERT(gto_data);
     ASSERT(upper_triangular_matrix_data);
@@ -364,17 +380,33 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
     glBindTexture(GL_TEXTURE_3D, 0);
 
-    switch (format) {
-    case GL_R16F:
-    case GL_R32F:
-        break;
-    default:
-        // Not good
-        MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
-        goto done;
+
+    GLuint program = 0;
+    if (output_gradients_and_value) {
+        switch (format) {
+        case GL_RGBA16F:
+        case GL_RGBA32F:
+            break;
+        default:
+            // Not good
+            MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
+            goto done;
+        }
+        program = get_gto_density_grad_program();
+    }
+    else {
+        switch (format) {
+        case GL_R16F:
+        case GL_R32F:
+            break;
+        default:
+            // Not good
+            MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
+            goto done;
+        }
+        program = get_gto_density_program();
     }
 
-    GLuint program = get_gto_density_program();
     if (!program) {
         MD_LOG_ERROR("Program not found?!");
         goto done;
@@ -507,7 +539,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
 
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim, bool output_grad_and_value) {
 
 }
 
