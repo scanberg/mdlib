@@ -380,7 +380,6 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
     glBindTexture(GL_TEXTURE_3D, 0);
 
-
     GLuint program = 0;
     if (include_gradients) {
         switch (format) {

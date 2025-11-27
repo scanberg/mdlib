@@ -40,7 +40,6 @@ layout(std140, binding = 0) uniform UniformBlock {
     mat4 index_to_world;
     vec4 step;
     uint D_matrix_dim;
-    uint operator;
 };
 
 layout(binding = 0) writeonly restrict uniform image3D out_vol;
@@ -323,7 +322,7 @@ void main() {
     vec4 phi_tile_mu[TILE_SIZE]; // vec4(φ_μ, ∇φ_μ) in registers
     vec4 phi_tile_nu[TILE_SIZE]; // vec4(φ_ν, ∇φ_ν) in registers
     vec3 coord = (index_to_world * vec4(gl_GlobalInvocationID.xyz, 1.0)).xyz;
-    vec4 grad_rho = vec4(0.0); // (∇ρ_x, ∇ρ_y, ∇ρ_z, ρ)
+    vec4 rho_grad = vec4(0.0);   // (∇ρ_x, ∇ρ_y, ∇ρ_z, ρ)
 
     if (num_screened_cgtos == 0u) {
         if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
@@ -348,7 +347,7 @@ void main() {
 
         eval_phis(phi_tile_mu, coord);
 
-        grad_rho += symmetric_contraction(phi_tile_mu, D_tile);
+        rho_grad += symmetric_contraction(phi_tile_mu, D_tile);
 
         for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
             // OFF DIAGONAL TILE
@@ -365,12 +364,14 @@ void main() {
 
             eval_phis(phi_tile_nu, coord);
 
-            grad_rho += contraction(phi_tile_mu, phi_tile_nu, D_tile);
+            rho_grad += contraction(phi_tile_mu, phi_tile_nu, D_tile);
         }
     }
     
-    // Write result: vec4(∇ρ_x, ∇ρ_y, ∇ρ_z, ρ)
+    // Write result
     if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
-        imageStore(out_vol, ivec3(gl_GlobalInvocationID.xyz), grad_rho);
+        // Change to vec4(ρ, ∇ρ_x, ∇ρ_y, ∇ρ_z)
+        rho_grad = vec4(rho_grad.w, rho_grad.xyz);
+        imageStore(out_vol, ivec3(gl_GlobalInvocationID.xyz), rho_grad);
     }
 }
