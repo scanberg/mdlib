@@ -363,7 +363,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim, bool output_gradients_and_value) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim, bool include_gradients) {
     ASSERT(grid);
     ASSERT(gto_data);
     ASSERT(upper_triangular_matrix_data);
@@ -382,7 +382,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
 
 
     GLuint program = 0;
-    if (output_gradients_and_value) {
+    if (include_gradients) {
         switch (format) {
         case GL_RGBA16F:
         case GL_RGBA32F:
