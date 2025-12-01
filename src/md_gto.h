@@ -115,6 +115,9 @@ void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const m
 // - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
 void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
 
+
+void md_gto_xyz_evaluate_matrix(float* out_values, const float* in_x, const float* in_y, const float* in_z, size_t count, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
+
 // Evaluates CGTOs defined by gto_data with a given 'density' matrix
 // - vol_tex: The texture handle to the volume
 // - grid: The grid defining the location of samples to evaluate

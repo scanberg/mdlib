@@ -1382,6 +1382,288 @@ void md_gto_grid_evaluate(float* out_values, const md_grid_t* grid, const md_gto
     md_temp_set_pos_back(temp_pos);
 }
 
+void evaluate_phi_float_avx2(
+    float* phi_out,
+    const float* in_point_x,
+    const float* in_point_y,
+    const float* in_point_z,
+    size_t n_points,
+    const md_gto_data_t* gto_data)
+{
+    // Loop over CGTOs
+    for (int mu = 0; mu < gto_data->num_cgtos; ++mu) {
+        const md_256 cx = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].x);
+        const md_256 cy = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].y);
+        const md_256 cz = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].z);
+
+        const uint32_t pgto_beg = gto_data->cgto_offset[mu];
+        const uint32_t pgto_end = gto_data->cgto_offset[mu + 1];
+
+        for (int j = 0; j < n_points; j += 8) {
+            md_256 x = md_mm256_loadu_ps(in_point_x + j);
+            md_256 y = md_mm256_loadu_ps(in_point_y + j);
+            md_256 z = md_mm256_loadu_ps(in_point_z + j);
+
+            md_256 dx = md_mm256_sub_ps(x, cx);
+            md_256 dy = md_mm256_sub_ps(y, cy);
+            md_256 dz = md_mm256_sub_ps(z, cz);
+            md_256 phi = md_mm256_setzero_ps();
+
+            // Contract primitives
+            for (size_t p = pgto_beg; p < pgto_end; ++p) {
+                float alpha = gto_data->pgto_alpha[p];
+                float coeff = gto_data->pgto_coeff[p];
+
+                int pi, pj, pk;
+                md_gto_unpack_ijkl(gto_data->pgto_ijkl[p], &pi, &pj, &pk, NULL);
+
+                // r^2 = dx*dx + dy*dy + dz*dz
+                md_256 r2 = md_mm256_fmadd_ps(dy, dy, md_mm256_fmadd_ps(dz, dz, md_mm256_mul_ps(dx, dx)));
+
+                // exp(-alpha * r2)
+                md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(md_mm256_set1_ps(-alpha), r2));
+                md_256 fx = md_mm256_fast_pow1(dx, pi);
+                md_256 fy = md_mm256_fast_pow1(dy, pj);
+                md_256 fz = md_mm256_fast_pow1(dz, pk);
+
+                md_256 prod_a = md_mm256_mul_ps(md_mm256_set1_ps(coeff), fx);
+                md_256 prod_b = md_mm256_mul_ps(fy, fz);
+
+                phi = md_mm256_fmadd_ps(prod_a, prod_b, phi);
+            }
+
+            // Store phi
+            md_mm256_storeu_ps(&phi_out[mu * n_points + j], phi);
+        }
+    }
+}
+
+// Matrix multiply C = A * B^T where A is K0 x K0, B is M0 x K0, C is K0 x M0
+// All matrices are in row-major format
+// It is assumed that M0 and K0 are multiples of 8
+static void matrix_multiply_blocked_8x8_avx2(int K0, int M0, const float *A, int ldA, const float *B, int ldB, float *C, int ldC) {
+    MEMSET(C, 0, (size_t)K0 * ldC * sizeof(float));
+
+    // Process C in 8x8 tiles
+    for (int i = 0; i < K0; i += 8) {
+        for (int j = 0; j < M0; j += 8) {
+            // Accumulate 8x8 tile in registers
+            md_256 c0 = md_mm256_setzero_ps();
+            md_256 c1 = md_mm256_setzero_ps();
+            md_256 c2 = md_mm256_setzero_ps();
+            md_256 c3 = md_mm256_setzero_ps();
+            md_256 c4 = md_mm256_setzero_ps();
+            md_256 c5 = md_mm256_setzero_ps();
+            md_256 c6 = md_mm256_setzero_ps();
+            md_256 c7 = md_mm256_setzero_ps();
+            
+            for (int k = 0; k < K0; ++k) {
+                md_256 b = md_mm256_load_ps(&B[k * ldB + j]);
+                
+                c0 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+0) * ldA + k]), b, c0);
+                c1 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+1) * ldA + k]), b, c1);
+                c2 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+2) * ldA + k]), b, c2);
+                c3 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+3) * ldA + k]), b, c3);
+                c4 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+4) * ldA + k]), b, c4);
+                c5 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+5) * ldA + k]), b, c5);
+                c6 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+6) * ldA + k]), b, c6);
+                c7 = md_mm256_fmadd_ps(md_mm256_set1_ps(A[(i+7) * ldA + k]), b, c7);
+            }
+            
+            // Write back accumulated results
+            md_mm256_store_ps(&C[(i+0) * ldC + j], c0);
+            md_mm256_store_ps(&C[(i+1) * ldC + j], c1);
+            md_mm256_store_ps(&C[(i+2) * ldC + j], c2);
+            md_mm256_store_ps(&C[(i+3) * ldC + j], c3);
+            md_mm256_store_ps(&C[(i+4) * ldC + j], c4);
+            md_mm256_store_ps(&C[(i+5) * ldC + j], c5);
+            md_mm256_store_ps(&C[(i+6) * ldC + j], c6);
+            md_mm256_store_ps(&C[(i+7) * ldC + j], c7);
+        }
+    }
+}
+
+void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+
+
+}
+
+#define BLOCK_SIZE 512
+void md_gto_evaluate_matrix(float* out_values, const float* in_xyz, size_t count, const md_gto_data_t* gto, const float* matrix_data, size_t matrix_dim) {
+    size_t num_cgtos = gto->num_cgtos;
+
+    ASSERT(matrix_dim == num_cgtos);
+    
+    // This will probably have to change
+    md_allocator_i* alloc = md_get_temp_allocator();
+
+    float* phi_block    = (float*)md_alloc(alloc, sizeof(float) * BLOCK_SIZE * num_cgtos);
+    float* A_block      = (float*)md_alloc(alloc, sizeof(float) * BLOCK_SIZE * num_cgtos);
+    float* result_block = (float*)md_alloc(alloc, sizeof(float) * BLOCK_SIZE * matrix_dim);
+
+    float block_x[BLOCK_SIZE];
+    float block_y[BLOCK_SIZE];
+    float block_z[BLOCK_SIZE];
+
+    float min_aabb[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+    float max_aabb[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+
+
+    for (size_t offset = 0; offset < count; offset += BLOCK_SIZE) {
+        size_t block_size = MIN(BLOCK_SIZE, count - offset);
+
+        // Prepare block of coordinates
+        for (size_t j = 0; j < block_size; ++j) {
+            const float* xyz = &in_xyz[(offset + j) * 3];
+            block_x[j] = xyz[0];
+            block_y[j] = xyz[1];
+            block_z[j] = xyz[2];
+        }
+
+        // Evaluate phi for block
+        evaluate_phi_float_avx2(phi_block, block_x, block_y, block_z, block_size, gto);
+
+        // Prepare A matrix for block
+        MEMCPY(A_block, phi_block, sizeof(float) * block_size * num_cgtos);
+
+        // Matrix multiply to get result block
+        matrix_multiply_blocked_8x8_avx2((int)num_cgtos, (int)matrix_dim, A_block, (int)num_cgtos, matrix_data, (int)num_cgtos, result_block, (int)matrix_dim);
+
+        // Store result block
+        for (size_t j = 0; j < block_size; ++j) {
+            float* out_ptr = &out_values[(offset + j) * matrix_dim];
+            MEMCPY(out_ptr, &result_block[j * matrix_dim], sizeof(float) * matrix_dim);
+        }
+    }
+    
+}
+
+// Fused CGTO evaluation with density matrix contraction
+// Evaluates: rho(r) = sum_mu sum_nu P(mu,nu) * phi_mu(r) * phi_nu(r)
+// where P is symmetric density matrix
+static inline void evaluate_density_fused_256(
+    float* out_rho,
+    const float* xyz,
+    size_t num_points,
+    const md_gto_data_t* gto_data,
+    const float* density_matrix,  // K x K symmetric, column-major
+    size_t matrix_dim)
+{
+    ASSERT(gto_data);
+    ASSERT(matrix_dim == gto_data->num_cgtos);
+    
+    const size_t K = matrix_dim;
+    MEMSET(out_rho, 0, num_points * sizeof(float));
+    
+    const size_t AVX_WIDTH = 8;
+    
+    for (size_t pt = 0; pt < num_points; pt += AVX_WIDTH) {
+        const size_t chunk = MIN(AVX_WIDTH, num_points - pt);
+        
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, xyz + 3 * pt, 12);
+        
+        md_256 rho_vec = md_mm256_setzero_ps();
+        
+        // Loop over CGTOs (mu)
+        for (size_t mu = 0; mu < K; ++mu) {
+            md_256 phi_mu_vec = md_mm256_setzero_ps();
+            
+            const md_256 cx = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].x);
+            const md_256 cy = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].y);
+            const md_256 cz = md_mm256_set1_ps(gto_data->cgto_xyzr[mu].z);
+            
+            const uint32_t pgto_beg = gto_data->cgto_offset[mu];
+            const uint32_t pgto_end = gto_data->cgto_offset[mu + 1];
+            
+            // Contract primitives for CGTO mu
+            for (uint32_t p = pgto_beg; p < pgto_end; ++p) {
+                const md_256 coeff = md_mm256_set1_ps(gto_data->pgto_coeff[p]);
+                const md_256 alpha = md_mm256_set1_ps(gto_data->pgto_alpha[p]);
+                
+                // Unpack angular momentum
+                int pi, pj, pk, pl;
+                md_gto_unpack_ijkl(gto_data->pgto_ijkl[p], &pi, &pj, &pk, &pl);
+                const md_256i ijkl = md_mm256_set1_epi32(gto_data->pgto_ijkl[p]);
+                
+                // Compute displacement vectors
+                md_256 dx = md_mm256_sub_ps(vx, cx);
+                md_256 dy = md_mm256_sub_ps(vy, cy);
+                md_256 dz = md_mm256_sub_ps(vz, cz);
+                
+                // r^2 = dx^2 + dy^2 + dz^2
+                md_256 r2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+                
+                // Angular momentum: dx^i * dy^j * dz^k
+                md_256 fx = md_mm256_fast_pow1(dx, pi);
+                md_256 fy = md_mm256_fast_pow1(dy, pj);
+                md_256 fz = md_mm256_fast_pow1(dz, pk);
+                
+                // Exponential: exp(-alpha * r^2)
+                md_256 exp_vec = md_mm256_exp_ps(md_mm256_mul_ps(md_mm256_set1_ps(-1.0f), md_mm256_mul_ps(alpha, r2)));
+                
+                // Combine: coeff * dx^i * dy^j * dz^k * exp(-alpha * r^2)
+                md_256 contrib = md_mm256_mul_ps(coeff, md_mm256_mul_ps(fx, md_mm256_mul_ps(fy, fz)));
+                phi_mu_vec = md_mm256_fmadd_ps(contrib, exp_vec, phi_mu_vec);
+            }
+            
+            // Diagonal contribution: P(mu,mu) * phi_mu^2
+            const float P_mm = density_matrix[mu + mu * K];
+            md_256 phi_mu_sq = md_mm256_mul_ps(phi_mu_vec, phi_mu_vec);
+            rho_vec = md_mm256_fmadd_ps(md_mm256_set1_ps(P_mm), phi_mu_sq, rho_vec);
+            
+            // Off-diagonal contribution (mu < nu) - exploit symmetry
+            for (size_t nu = mu + 1; nu < K; ++nu) {
+                md_256 phi_nu_vec = md_mm256_setzero_ps();
+                
+                const md_256 c2x = md_mm256_set1_ps(gto_data->cgto_xyzr[nu].x);
+                const md_256 c2y = md_mm256_set1_ps(gto_data->cgto_xyzr[nu].y);
+                const md_256 c2z = md_mm256_set1_ps(gto_data->cgto_xyzr[nu].z);
+                
+                const uint32_t pgto_beg2 = gto_data->cgto_offset[nu];
+                const uint32_t pgto_end2 = gto_data->cgto_offset[nu + 1];
+                
+                // Contract primitives for CGTO nu
+                for (uint32_t p = pgto_beg2; p < pgto_end2; ++p) {
+                    const md_256 coeff = md_mm256_set1_ps(gto_data->pgto_coeff[p]);
+                    const md_256 alpha = md_mm256_set1_ps(gto_data->pgto_alpha[p]);
+                    
+                    int pi, pj, pk, pl;
+                    md_gto_unpack_ijkl(gto_data->pgto_ijkl[p], &pi, &pj, &pk, &pl);
+                    
+                    md_256 dx = md_mm256_sub_ps(vx, c2x);
+                    md_256 dy = md_mm256_sub_ps(vy, c2y);
+                    md_256 dz = md_mm256_sub_ps(vz, c2z);
+                    
+                    md_256 r2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+                    
+                    md_256 fx = md_mm256_fast_pow1(dx, pi);
+                    md_256 fy = md_mm256_fast_pow1(dy, pj);
+                    md_256 fz = md_mm256_fast_pow1(dz, pk);
+                    
+                    md_256 exp_vec = md_mm256_exp_ps(md_mm256_mul_ps(md_mm256_set1_ps(-1.0f), md_mm256_mul_ps(alpha, r2)));
+                    
+                    md_256 contrib = md_mm256_mul_ps(coeff, md_mm256_mul_ps(fx, md_mm256_mul_ps(fy, fz)));
+                    phi_nu_vec = md_mm256_fmadd_ps(contrib, exp_vec, phi_nu_vec);
+                }
+                
+                // 2 * P(mu,nu) * phi_mu * phi_nu (factor of 2 from symmetry)
+                const float P_mn = density_matrix[mu + nu * K];
+                md_256 cross_term = md_mm256_mul_ps(phi_mu_vec, phi_nu_vec);
+                rho_vec = md_mm256_fmadd_ps(md_mm256_set1_ps(2.0f * P_mn), cross_term, rho_vec);
+            }
+        }
+        
+        // Store result
+        ALIGN(32) float tmp_out[8];
+        md_mm256_store_ps(tmp_out, rho_vec);
+        for (size_t ii = 0; ii < chunk; ++ii) {
+            out_rho[pt + ii] = tmp_out[ii];
+        }
+    }
+}
+
 // Evaluate GTOs over a set of passed in packed XYZ coordinates with a bytestride
 static void evaluate_gtos(float* out_psi, const float* in_xyz, size_t num_xyz, size_t xyz_stride, const md_gto_t* in_gto, size_t num_gtos, md_gto_eval_mode_t mode) {
     for (size_t j = 0; j < num_xyz; ++j) {
