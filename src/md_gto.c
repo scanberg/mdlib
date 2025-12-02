@@ -1656,7 +1656,7 @@ static inline void evaluate_density_fused_256(
         }
         
         // Store result
-        ALIGN(32) float tmp_out[8];
+        ALIGNAS(32) float tmp_out[8] = {0};
         md_mm256_store_ps(tmp_out, rho_vec);
         for (size_t ii = 0; ii < chunk; ++ii) {
             out_rho[pt + ii] = tmp_out[ii];

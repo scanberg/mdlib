@@ -122,6 +122,15 @@ const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_i
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
 
+// Extracts a submatrix of the density matrix for a given NTO and atom
+// out_matrix: Preallocated matrix of size (matrix_size x matrix_size)
+// matrix_size: The size of the square matrix to extract
+// vlx: A valid VeloxChem object
+// nto_idx: The index of the NTO to extract from
+// atom_idx: The atom index to extract the submatrix for
+// type: The NTO type (Particle / Hole)
+void md_vlx_rsp_nto_extract_density_submatrix_for_atom(float* out_matrix, size_t matrix_size, const struct md_vlx_t* vlx, size_t nto_idx, size_t atom_idx, md_vlx_nto_type_t type);
+
 // returns the AO coefficients for the given NTO, lambda idx and type
 size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 

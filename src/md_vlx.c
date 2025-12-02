@@ -39,18 +39,6 @@ https://github.com/VeloxChem/VeloxChem which is released under the LGPL-3.0 lice
 
 */
 
-// Single contracted basis function
-typedef struct basis_set_func_t {
-	uint8_t  type; // Azimuthal Quantum Number
-	uint8_t  param_count;
-	uint16_t param_offset;
-} basis_set_func_t;
-
-typedef struct basis_set_basis_t {
-	uint8_t  max_type;
-	uint8_t  basis_func_count;
-	uint16_t basis_func_offset;
-} basis_set_basis_t;
 
 typedef struct basis_set_t {
 	str_t identifier;
@@ -58,18 +46,20 @@ typedef struct basis_set_t {
 		size_t count;
 		double* exponents;
 		double* normalization_coefficients;
-	} param;
+	} primitive;
 
 	struct {
 		size_t count;
-		basis_set_func_t* data;
+		uint32_t* angular_momentum_types; // Expanded list of angular momentum types for each primitive in each basis function
+		uint32_t* primitive_offsets;
 	} basis_func;
 
 	// The atom basis entries are implicitly stored in the order of atomic numbers
 	// 0 is a NULL entry, 1 = Hydrogen, 2 = Helium etc.
 	struct {
 		size_t count;
-		basis_set_basis_t* data;
+		uint32_t* max_types;              	// Max angular momentum type for each atom
+		uint32_t* basis_func_offsets; 		// Offsets into basis_func for each atom
 	} atom_basis;
 } basis_set_t;
 
@@ -193,11 +183,11 @@ static int char_to_angular_momentum_type(int c) {
 	}
 }
 
-static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* basis_set, int atomic_number) {
-	if (atomic_number < (int)basis_set->atom_basis.count) {
-		return basis_set->atom_basis.data + atomic_number;
+static inline int basis_set_max_angular_momentum(const basis_set_t* basis_set, int atomic_number) {
+	if (atomic_number > 0 && atomic_number < (int)basis_set->atom_basis.count) {
+		return basis_set->atom_basis.max_types[atomic_number];
 	}
-	return NULL;
+	return 0;
 }
 
 static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
@@ -205,8 +195,8 @@ static inline int compute_max_angular_momentum(const basis_set_t* basis_set, con
 	ASSERT(atomic_numbers);
 	int max_angl = 0;
 	for (size_t i = 0; i < count; ++i) {
-		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_numbers[i]);
-		max_angl = MAX(max_angl, (int)atom_basis->max_type);
+		int max_type = basis_set_max_angular_momentum(basis_set, atomic_numbers[i]);
+		max_angl = MAX(max_angl, max_type);
 	}
 	return max_angl;
 }
@@ -360,27 +350,42 @@ typedef struct basis_func_t {
     double* normalization_coefficients;
 } basis_func_t;
 
-static inline basis_func_t get_basis_func(const basis_set_t* basis_set, int basis_func_idx) {
-	basis_set_func_t func = basis_set->basis_func.data[basis_func_idx];
-	return (basis_func_t) {
-		.type = func.type,
-		.count = func.param_count,
-		.exponents = basis_set->param.exponents + func.param_offset,
-		.normalization_coefficients = basis_set->param.normalization_coefficients + func.param_offset,
+static inline bool extract_basis_func(basis_func_t* out_func, const basis_set_t* basis_set, int basis_func_idx) {
+	if (basis_func_idx < 0 || (size_t)basis_func_idx >= basis_set->basis_func.count) {
+		return false;
+	}
+
+	ASSERT(out_func);
+	
+	int type = basis_set->basis_func.angular_momentum_types[basis_func_idx];
+	int param_beg = basis_set->basis_func.primitive_offsets[basis_func_idx];
+	int param_end = basis_set->basis_func.primitive_offsets[basis_func_idx + 1];
+
+	*out_func = (basis_func_t) {
+		.type = type,
+		.count = param_end - param_beg,
+		.exponents = basis_set->primitive.exponents + param_beg,
+		.normalization_coefficients = basis_set->primitive.normalization_coefficients + param_beg,
 	};
+
+	return true;
 }
 
 static size_t basis_set_extract_atomic_basis_func_angl(basis_func_t* out_funcs, size_t cap_funcs, const basis_set_t* basis_set, int atomic_number, int angl) {
     size_t count = 0;
 
-    basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
-    if (atom_basis) {
-        int beg = atom_basis->basis_func_offset;
-        int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
-        for (int i = beg; i < end; ++i) {
+    if (atomic_number > 0 && atomic_number < (int)basis_set->atom_basis.count) {
+        uint32_t beg = basis_set->atom_basis.basis_func_offsets[atomic_number];
+        uint32_t end = basis_set->atom_basis.basis_func_offsets[atomic_number + 1];
+        for (uint32_t i = beg; i < end; ++i) {
             if (count == cap_funcs) break;
-            if (basis_set->basis_func.data[i].type == angl) {
-                out_funcs[count++] = get_basis_func(basis_set, i);
+            if (basis_set->basis_func.angular_momentum_types[i] == angl) {
+                if (extract_basis_func(&out_funcs[count], basis_set, i)) {
+					count++;
+				} else {
+					MD_LOG_DEBUG("basis_set_extract_atomic_basis_func_angl: Failed to extract basis function %d for atom %d", i, atomic_number);
+					break;
+				}
             }
         }
     }
@@ -760,7 +765,9 @@ static void rescale_basis_func(basis_func_t func) {
 
 static void normalize_basis_set(basis_set_t* basis_set) {
 	for (size_t func_idx = 0; func_idx < basis_set->basis_func.count; ++func_idx) {
-		basis_func_t func = get_basis_func(basis_set, (int)func_idx);
+		basis_func_t func;
+		if (!extract_basis_func(&func, basis_set, (int)func_idx)) continue;
+		
 		// uncontracted basis, set expansion coeficient to 1.0
 		if (func.count == 1) func.normalization_coefficients[0] = 1.0;
 
@@ -791,10 +798,9 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	str_t tok[4];
 	size_t line_count = 0;
 
-	// Insert null_basis element for index 0
-	const basis_set_basis_t null_basis = {0};
+	// Track current atom being parsed
+	int curr_atomic_number = -1;
 
-	basis_set_basis_t* curr_atom_basis = NULL;
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		line_count += 1;
 		str_t line_original = line;
@@ -811,24 +817,22 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 				MD_LOG_ERROR("Unrecognized element '" STR_FMT "' in basis set", STR_ARG(tok[1]));
 				return false;
 			}
-			basis_set_basis_t atom_basis = {
-				.max_type = 0,
-				.basis_func_count = 0,
-				.basis_func_offset = (uint16_t)basis_set->basis_func.count,
-			};
 
-			// Grow the array and fill in slots with null_basis
-			while (md_array_size(basis_set->atom_basis.data) < atomic_number) {
-				md_array_push(basis_set->atom_basis.data, null_basis, alloc);
+			// Grow the arrays and fill in slots with zeros for missing elements
+			while (md_array_size(basis_set->atom_basis.max_types) < (size_t)atomic_number) {
+				md_array_push(basis_set->atom_basis.max_types, 0, alloc);
+				md_array_push(basis_set->atom_basis.basis_func_offsets, (uint32_t)basis_set->basis_func.count, alloc);
 			}
 
-			md_array_push(basis_set->atom_basis.data, atom_basis, alloc);
-			curr_atom_basis = md_array_last(basis_set->atom_basis.data);
+			// Add entry for this atom
+			md_array_push(basis_set->atom_basis.max_types, 0, alloc);
+			md_array_push(basis_set->atom_basis.basis_func_offsets, (uint32_t)basis_set->basis_func.count, alloc);
 
-			basis_set->atom_basis.count = md_array_size(basis_set->atom_basis.data);
+			curr_atomic_number = atomic_number;
+			basis_set->atom_basis.count = md_array_size(basis_set->atom_basis.max_types);
 		}
 		else if (num_tok == 1 && str_eq(tok[0], STR_LIT("@END"))) {
-			curr_atom_basis = NULL;
+			curr_atomic_number = -1;
 		}
 		else if (num_tok == 3) {
 			int type = char_to_angular_momentum_type(tok[0].ptr[0]);
@@ -844,18 +848,14 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 				return false;
 			}
 
-			if (curr_atom_basis == NULL) {
+			if (curr_atomic_number < 0) {
 				MD_LOG_ERROR("No atom basis has been defined for supplied coefficients");
 				return false;
 			}
 
-			// We have a new basis function for the current atom basis
-			basis_set_func_t basis_func = {
-				.type = (uint8_t)type,
-				.param_count = (uint8_t)count,
-				.param_offset = (uint16_t)basis_set->param.count,
-			};
-			md_array_push(basis_set->basis_func.data, basis_func, alloc);
+			// Add a new basis function for the current atom
+			md_array_push(basis_set->basis_func.angular_momentum_types, (uint8_t)type, alloc);
+			md_array_push(basis_set->basis_func.primitive_offsets, (uint32_t)basis_set->primitive.count, alloc);
 			basis_set->basis_func.count += 1;
 
 			for (int i = 0; i < count; ++i) {
@@ -874,14 +874,23 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 				double exponent = parse_float(tok[0]);
 				double coeff    = parse_float(tok[1]);
 				
-				md_array_push(basis_set->param.exponents, exponent, alloc);
-				md_array_push(basis_set->param.normalization_coefficients, coeff, alloc);
-				basis_set->param.count += 1;
+				md_array_push(basis_set->primitive.exponents, exponent, alloc);
+				md_array_push(basis_set->primitive.normalization_coefficients, coeff, alloc);
+				basis_set->primitive.count += 1;
 			}
 
-			curr_atom_basis->basis_func_count += 1;
-			curr_atom_basis->max_type = MAX(curr_atom_basis->max_type, (uint8_t)type);
+			// Update max_type for current atom
+			uint8_t curr_max = basis_set->atom_basis.max_types[curr_atomic_number];
+			basis_set->atom_basis.max_types[curr_atomic_number] = MAX(curr_max, (uint8_t)type);
 		}
+	}
+
+	// Finalize offset arrays (add sentinel values at the end)
+	if (basis_set->basis_func.count > 0) {
+		md_array_push(basis_set->basis_func.primitive_offsets, (uint32_t)basis_set->primitive.count, alloc);
+	}
+	if (basis_set->atom_basis.count > 0) {
+		md_array_push(basis_set->atom_basis.basis_func_offsets, (uint32_t)basis_set->basis_func.count, alloc);
 	}
 
 	return true;
@@ -2808,6 +2817,21 @@ size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size
 		}
 	}
 	return 0;
+}
+
+void md_vlx_rsp_nto_extract_density_submatrix_for_atom(float* out_matrix, size_t matrix_size, const struct md_vlx_t* vlx, size_t nto_idx, size_t atom_idx, md_vlx_nto_type_t type) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
+
+			int64_t mo_idx = 0;
+			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+				mo_idx = (int64_t)vlx->scf.lumo_idx[0];
+			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
+				mo_idx = (int64_t)vlx->scf.homo_idx[0];
+			}
+		}
+	}
 }
 
 size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
