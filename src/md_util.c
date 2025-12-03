@@ -954,7 +954,7 @@ static inline uint8_t vertex_type_from_atom_idx(const md_atom_data_t* atom, size
     case VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER:
         return md_atom_atomic_number(atom, atom_idx);
     case VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX:
-        return md_atom_type_idx(atom, atom_idx);
+        return (uint8_t)md_atom_type_idx(atom, atom_idx);
     default:
         ASSERT(false);
     }
@@ -8889,8 +8889,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
     bool cg = false;
     for (size_t i = 0; i < sys->atom.type.count; ++i) {
-        uint32_t flags = sys->atom.type.flags[i];
-        if (flags & MD_FLAG_COARSE_GRAINED) {
+        if (sys->atom.type.flags[i] & MD_FLAG_COARSE_GRAINED) {
             cg = true;
             break;
         }
@@ -8913,7 +8912,14 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                         sys->atom.type.color[i] = color;
                     } else {
                         // Assign a random color for the type
-                        
+                        float hue = (float)(i * 97 % 360) / 360.0f;
+                        float chroma = 0.8f;
+                        float light  = 1.0f;
+                        float alpha  = 1.0f;
+                        vec3_t rgb = hcl_to_rgb(hue, chroma, light);
+                        // Pack into 0xAARRGGBB
+                        color = (uint32_t)((uint8_t)(alpha * 255) << 24 | (uint8_t)(rgb.x * 255) << 16 | (uint8_t)(rgb.y * 255) << 8 | (uint8_t)(rgb.z * 255));
+                        sys->atom.type.color[i] = color;
                     }
                 }
             }

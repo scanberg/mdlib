@@ -75,9 +75,9 @@ static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
         }
     }
     if (all_digits)
-	    return parse_int(str);
+	    return (int32_t)parse_int(str);
     else
-		return parse_hex(str);
+		return (int32_t)parse_hex(str);
 }
 
 static inline md_pdb_coordinate_t extract_coord(str_t line) {

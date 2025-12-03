@@ -191,7 +191,7 @@ static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
 
 static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z) {
     ASSERT(atom_type);
-    md_atom_type_idx_t type_idx = -1;
+	md_atom_type_idx_t type_idx = 0; // Zero is sentinel for "not found"
     for (size_t i = 0; i < atom_type->count; ++i) {
         str_t atom_type_name = LBL_TO_STR(atom_type->name[i]);
         if (str_eq(atom_type_name, name) && atom_type->z[i] == z) {
@@ -208,7 +208,7 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     
     // First try to find existing atom type
     md_atom_type_idx_t type_idx = md_atom_type_find(atom_type, name, z);
-    if (type_idx != -1) {
+    if (type_idx != 0) {
         return type_idx;
     }
     
@@ -252,6 +252,14 @@ static inline float md_atom_type_radius(const md_atom_type_data_t* type_data, si
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->radius[type_idx];
+    }
+    return 0;
+}
+
+static inline uint32_t md_atom_type_color(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_idx < type_data->count) {
+        return type_data->color[type_idx];
     }
     return 0;
 }
