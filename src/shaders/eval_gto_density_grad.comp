@@ -209,7 +209,7 @@ void eval_phis(out vec4 out_phi[TILE_SIZE], vec3 coord) {
             }
 
             float gauss = exp(-pgto.alpha * r2);
-            float radial_factor = -2.0 * pgto.alpha * gauss;
+            float radial_factor = -2.0 * pgto.alpha;
             
             float angular = fx * fy * fz;
             float coeff_gauss = pgto.coeff * gauss;
