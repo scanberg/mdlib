@@ -14,6 +14,7 @@ extern "C" {
 
 enum {
     MD_UTIL_POSTPROCESS_NONE                = 0,
+    MD_UTIL_POSTPROCESS_COLOR_BIT           = 0x0001,
     MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
     MD_UTIL_POSTPROCESS_INSTANCE_BIT        = 0x0010,
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,

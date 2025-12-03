@@ -189,20 +189,27 @@ static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
     return atom_type->count;
 }
 
-static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, md_flags_t flags, struct md_allocator_i* alloc) {
+static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z) {
+    ASSERT(atom_type);
+    md_atom_type_idx_t type_idx = -1;
+    for (size_t i = 0; i < atom_type->count; ++i) {
+        str_t atom_type_name = LBL_TO_STR(atom_type->name[i]);
+        if (str_eq(atom_type_name, name) && atom_type->z[i] == z) {
+            type_idx = (md_atom_type_idx_t)i;
+            break;
+        }
+    }
+    return type_idx;
+}
+
+static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_flags_t flags, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
     
     // First try to find existing atom type
-    for (size_t i = 0; i < atom_type->count; ++i) {
-        str_t atom_type_name = LBL_TO_STR(atom_type->name[i]);
-        if (str_eq(atom_type_name, name) && 
-            atom_type->z[i] == z &&
-            atom_type->mass[i] == mass &&
-            atom_type->radius[i] == radius &&
-            atom_type->flags[i] == flags) {
-            return (md_atom_type_idx_t)i;
-        }
+    md_atom_type_idx_t type_idx = md_atom_type_find(atom_type, name, z);
+    if (type_idx != -1) {
+        return type_idx;
     }
     
     // Add new atom type
@@ -210,6 +217,7 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
     md_array_push(atom_type->z, z, alloc);
     md_array_push(atom_type->mass, mass, alloc);
     md_array_push(atom_type->radius, radius, alloc);
+    md_array_push(atom_type->color, color, alloc);
     md_array_push(atom_type->flags, flags, alloc);
     atom_type->count++;
     

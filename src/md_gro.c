@@ -15,6 +15,7 @@
 #include <string.h>
 
 #define MD_GRO_MOL_MAGIC  0xbabcebf677bfaf67
+#define NM_TO_ANGSTROM 10.0f
 
 typedef struct gro_molecule {
     uint64_t magic;
@@ -182,13 +183,13 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
     md_array_ensure(sys->atom.flags, capacity, alloc);
 
     sys->atom.type.count = 0;
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
 	uint64_t prev_comp_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
-        const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
-        const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
-        const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
+        const float x = data->atom_data[i].x * NM_TO_ANGSTROM;
+        const float y = data->atom_data[i].y * NM_TO_ANGSTROM;
+        const float z = data->atom_data[i].z * NM_TO_ANGSTROM; 
         str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
         md_seq_id_t res_id = data->atom_data[i].res_id;

@@ -2990,7 +2990,7 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
 		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
@@ -3001,8 +3001,9 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 		str_t sym  = md_atomic_number_symbol(z);
         float mass = md_atomic_number_mass(z);
 		float radius = md_atomic_number_vdw_radius(z);
+		uint32_t color = md_atomic_number_cpk_color(z);
 
-		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, 0, alloc);
+		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, alloc);
 		sys->atom.type_idx[i] = type_idx;
 	}
 

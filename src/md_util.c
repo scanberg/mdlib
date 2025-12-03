@@ -5254,6 +5254,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                     md_atomic_number_t z = 0;
                     float mass = 0;
                     float radius = 0;
+                    uint32_t color = 0;
                     md_flags_t flags = 0;
 
                     // Try to find in predefined set
@@ -5262,17 +5263,19 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                         z       = predef_type->atomic_nr;
                         mass    = predef_type->mass;
                         radius  = predef_type->radius;
+                        color   = z == 0 ? 0 : md_atomic_number_cpk_color(z);
                         flags   = predef_type->flags;
                     } else {
                         z       = md_atomic_number_infer_from_label(atom_name, comp_name, comp_size);
                         mass    = md_atomic_number_mass(z);
                         radius  = md_atomic_number_vdw_radius(z);
+                        color   = md_atomic_number_cpk_color(z);
                         flags   = 0;
                     }
 
                     comp_flags |= flags;
 
-                    md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_name, z, mass, radius, flags, alloc);
+                    md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_name, z, mass, radius, color, flags, alloc);
                     sys->atom.type_idx[i] = type;
                     md_hashmap_add(&atom_type_cache, key, (uint32_t)type);
                 }
@@ -5292,8 +5295,9 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], (str_t){0}, 0);
                 float mass   = md_atomic_number_mass(z);
                 float radius = md_atomic_number_vdw_radius(z);
+                uint32_t color = md_atomic_number_cpk_color(z);
                 md_flags_t flags = 0;
-                md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, flags, alloc);
+                md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, color, flags, alloc);
                 sys->atom.type_idx[i] = type;
                 md_hashmap_add(&atom_type_cache, key, (uint32_t)type);
             }
@@ -8839,6 +8843,38 @@ static void md_util_compute_backbone_data(md_protein_backbone_data_t* protein_ba
 }
 #endif
 
+static inline vec3_t hcl_to_rgb(float h, float c, float l) {
+    float r = 0, g = 0, b = 0;
+
+    if (c == 0) {
+        r = g = b = l;
+    } else {
+        float h_prime = h * 6.0f;
+        float x = c * (1.0f - fabsf(fmodf(h_prime, 2.0f) - 1.0f));
+        float m = l - c * 0.5f;
+
+        if (0.0f <= h_prime && h_prime < 1.0f) {
+            r = c; g = x; b = 0;
+        } else if (1.0f <= h_prime && h_prime < 2.0f) {
+            r = x; g = c; b = 0;
+        } else if (2.0f <= h_prime && h_prime < 3.0f) {
+            r = 0; g = c; b = x;
+        } else if (3.0f <= h_prime && h_prime < 4.0f) {
+            r = 0; g = x; b = c;
+        } else if (4.0f <= h_prime && h_prime < 5.0f) {
+            r = x; g = 0; b = c;
+        } else if (5.0f <= h_prime && h_prime < 6.0f) {
+            r = c; g = 0; b = x;
+        }
+
+        r += m;
+        g += m;
+        b += m;
+    }
+
+    return (vec3_t){r, g, b};
+}
+
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
@@ -8851,18 +8887,37 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
-    bool coarse_grain = false;
+    bool cg = false;
     for (size_t i = 0; i < sys->atom.type.count; ++i) {
         uint32_t flags = sys->atom.type.flags[i];
         if (flags & MD_FLAG_COARSE_GRAINED) {
-            coarse_grain = true;
+            cg = true;
             break;
         }
     }
 
-    if (coarse_grain) {
+    if (cg) {
         flags &= ~MD_UTIL_POSTPROCESS_BOND_BIT;
         flags &= ~MD_UTIL_POSTPROCESS_HBOND_BIT;
+    }
+
+    if (flags & MD_UTIL_POSTPROCESS_COLOR_BIT) {
+        if (sys->atom.type.color) {
+            for (size_t i = 1; i < sys->atom.type.count; ++i) {
+                uint32_t color = sys->atom.type.color[i];
+                md_atomic_number_t z = sys->atom.type.z[i];
+                if (color == 0) {
+                    // Try to assign a color based on element if available
+                    if (z != 0) {
+                        color = md_util_element_cpk_color(z);
+                        sys->atom.type.color[i] = color;
+                    } else {
+                        // Assign a random color for the type
+                        
+                    }
+                }
+            }
+        }
     }
 
     if (!sys->atom.flags) {

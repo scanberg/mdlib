@@ -496,7 +496,7 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
     md_array_ensure(sys->atom.flags,    capacity, alloc);
 
 	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
@@ -530,7 +530,8 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             atomic_number = md_atomic_number_from_symbol(sym, true);
             float mass   = md_atomic_number_mass(atomic_number);
             float radius = md_atomic_number_vdw_radius(atomic_number);
-            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, 0, alloc);
+            uint32_t color = md_atomic_number_cpk_color(atomic_number);
+            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, alloc);
         } else {
             num_unassigned_atom_types += 1;
         }

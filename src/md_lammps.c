@@ -860,7 +860,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, alloc);
+	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, alloc);
 
 	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
     md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
@@ -880,8 +880,9 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		str_t type_id = {buf, len};
 		float mass   = data->atom_types[i].mass;
 		float radius = data->atom_types[i].radius;
+		uint32_t color = type_z[i] != MD_Z_X ? md_atomic_number_cpk_color(type_z[i]) : 0xFF808080; // Gray for unknown elements
 		
-		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, 0, alloc);
+		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, color, 0, alloc);
 	}
 
 	int prev_resid = -1;
