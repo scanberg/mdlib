@@ -58,7 +58,7 @@ uvec4 unpack_ijkl(in uint ijkl) {
 #define WG_Z 8
 
 #define WG_SIZE (WG_X * WG_Y * WG_Z)
-#define TILE_SIZE 32
+#define TILE_SIZE 16
 #define TILE_AREA (TILE_SIZE*TILE_SIZE)
 #define MAX_SCREENED_CGTOS 2048
 #define MAX_TILE_PGTOS (TILE_SIZE * 16)
@@ -162,51 +162,30 @@ void eval_phis(out vec4 out_phi[TILE_SIZE], vec3 coord) {
         float dy2 = d.y * d.y;
         float dz2 = d.z * d.z;
 
+        // Precompute powers 1-4 (power 0 handled separately)
+        float dx_pow[4] = {d.x, dx2, dx2 * d.x, dx2 * dx2};
+        float dy_pow[4] = {d.y, dy2, dy2 * d.y, dy2 * dy2};
+        float dz_pow[4] = {d.z, dz2, dz2 * d.z, dz2 * dz2};
+        
+        // Precompute derivatives for powers 1-4
+        float dx_deriv[4] = {1.0, 2.0 * d.x, 3.0 * dx2, 4.0 * dx2 * d.x};
+        float dy_deriv[4] = {1.0, 2.0 * d.y, 3.0 * dy2, 4.0 * dy2 * d.y};
+        float dz_deriv[4] = {1.0, 2.0 * d.z, 3.0 * dz2, 4.0 * dz2 * d.z};
+
         vec4 phi_grad = vec4(0.0); // (∇φ_x, ∇φ_y, ∇φ_z, φ)
 
         for (uint j = pgto_off; j < pgto_off + pgto_len; ++j) {
             PGTO pgto = pgtos_tile[j];
             uvec4 ijkl = unpack_ijkl(pgto.ijkl);
             
-            // Compute powers and their derivatives
-            float fx, dfx;
-            if (ijkl.x == 0u) {
-                fx = 1.0; dfx = 0.0;
-            } else if (ijkl.x == 1u) {
-                fx = d.x; dfx = 1.0;
-            } else if (ijkl.x == 2u) {
-                fx = dx2; dfx = 2.0 * d.x;
-            } else if (ijkl.x == 3u) {
-                fx = dx2 * d.x; dfx = 3.0 * dx2;
-            } else {
-                fx = dx2 * dx2; dfx = 4.0 * dx2 * d.x;
-            }
+            float fx   = (ijkl.x == 0u) ? 1.0 : dx_pow[ijkl.x - 1u];
+            float dfx  = (ijkl.x == 0u) ? 0.0 : dx_deriv[ijkl.x - 1u];
             
-            float fy, dfy;
-            if (ijkl.y == 0u) {
-                fy = 1.0; dfy = 0.0;
-            } else if (ijkl.y == 1u) {
-                fy = d.y; dfy = 1.0;
-            } else if (ijkl.y == 2u) {
-                fy = dy2; dfy = 2.0 * d.y;
-            } else if (ijkl.y == 3u) {
-                fy = dy2 * d.y; dfy = 3.0 * dy2;
-            } else {
-                fy = dy2 * dy2; dfy = 4.0 * dy2 * d.y;
-            }
+            float fy   = (ijkl.y == 0u) ? 1.0 : dy_pow[ijkl.y - 1u];
+            float dfy  = (ijkl.y == 0u) ? 0.0 : dy_deriv[ijkl.y - 1u];
             
-            float fz, dfz;
-            if (ijkl.z == 0u) {
-                fz = 1.0; dfz = 0.0;
-            } else if (ijkl.z == 1u) {
-                fz = d.z; dfz = 1.0;
-            } else if (ijkl.z == 2u) {
-                fz = dz2; dfz = 2.0 * d.z;
-            } else if (ijkl.z == 3u) {
-                fz = dz2 * d.z; dfz = 3.0 * dz2;
-            } else {
-                fz = dz2 * dz2; dfz = 4.0 * dz2 * d.z;
-            }
+            float fz   = (ijkl.z == 0u) ? 1.0 : dz_pow[ijkl.z - 1u];
+            float dfz  = (ijkl.z == 0u) ? 0.0 : dz_deriv[ijkl.z - 1u];
 
             float gauss = exp(-pgto.alpha * r2);
             float radial_factor = -2.0 * pgto.alpha;
@@ -265,7 +244,7 @@ vec4 contraction(vec4 phi_mu[TILE_SIZE], vec4 phi_nu[TILE_SIZE], float D[TILE_SI
             // 2 * D[i][j] * φ_μ[i] * φ_ν[j]
             // ∇(2 * D * φ_μ * φ_ν) = 2 * D * (φ_μ * ∇φ_ν + φ_ν * ∇φ_μ)
             result.xyz += 2.0 * D_ij * (phi_i.w * phi_j.xyz + phi_j.w * phi_i.xyz);
-            result.w += 2.0 * D_ij * phi_i.w * phi_j.w;
+            result.w   += 2.0 * D_ij * phi_i.w * phi_j.w;
         }
     }
     return result;
