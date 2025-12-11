@@ -1,4 +1,3 @@
-// bidirectional_manifold.comp
 #version 450
 
 // Use 3D workgroup size for natural grid mapping
@@ -22,11 +21,19 @@ layout(std430, binding = 2) writeonly buffer DescendingManifold {
     uint descending[];
 };
 
+// Shared memory for scalar values and voxel IDs in a 10x10x10 region (8x8x8 block + 1 padding in each direction)
+shared float sharedScalars[10][10][10];
+shared uint sharedIds[10][10][10];
+
 bool sos_is_greater(float value_a, uint id_a, float value_b, uint id_b) {
-    return value_a > value_b || (value_a == value_b && id_a > id_b);
+    return (value_a > value_b) || (value_a == value_b && id_a > id_b);
 }
 
 float get_scalar(ivec3 ijk) {
+    ivec3 dims_i = ivec3(dims);
+    if (any(lessThan(ijk, ivec3(0))) || any(greaterThanEqual(ijk, dims_i))) {
+        return 0.0;
+    }
     return imageLoad(volumeTex, ijk).r;
 }
 
@@ -37,14 +44,50 @@ void main() {
         return;
     }
     uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
+    ivec3 dims_i = ivec3(dims);
     ivec3 pos = ivec3(gid);
-    float val = get_scalar(pos);
-    if (val < scalar_threshold) {
-        // Mark as invalid (do not process further in path compression)
-        ascending[i]  = 0xFFFFFFFFu;
-        descending[i] = 0xFFFFFFFFu;
-        return;
+
+    // Compute local index inside shared 10x10x10 (offset by +1 for padding)
+    ivec3 local_idx = ivec3(gl_LocalInvocationID) + ivec3(1);
+
+    // Cooperative linear fill of the 10x10x10 shared region (covers centers + padding)
+    {
+        const int SG_X = 10;
+        const int SG_Y = 10;
+        const int SG_Z = 10;
+        const int SG_SIZE = SG_X * SG_Y * SG_Z;
+        // Use compile-time workgroup size constants to avoid driver compiler issues
+        const ivec3 WG_SIZE = ivec3(8,8,8);
+        const int WG_THREADS = 8 * 8 * 8;
+        int tid = int(gl_LocalInvocationIndex);
+
+        // Block origin in voxel coordinates (position of the thread (0,0,0) in this WG)
+        ivec3 block_origin = ivec3(gl_WorkGroupID) * WG_SIZE;
+        for (int s = tid; s < SG_SIZE; s += WG_THREADS) {
+            int sx = s % SG_X;
+            int sy = (s / SG_X) % SG_Y;
+            int sz = s / (SG_X * SG_Y);
+
+            // map shared slot to global voxel: block_origin + (sx-1, sy-1, sz-1)
+            ivec3 gp = block_origin + ivec3(sx - 1, sy - 1, sz - 1);
+            gp = clamp(gp, ivec3(0), dims_i - 1);
+
+            sharedScalars[sx][sy][sz] = get_scalar(gp);
+            int lin = gp.x + gp.y * dims_i.x + gp.z * dims_i.x * dims_i.y;
+            sharedIds[sx][sy][sz] = uint(lin);
+        }
     }
+
+    // Ensure all shared loads are visible
+    barrier();
+
+    float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
+
+    //if (val < scalar_threshold) {
+    //    ascending[i]  = 0xFFFFFFFFu;
+    //    descending[i] = 0xFFFFFFFFu;
+    //    return;
+    //}
 
     float max_val = val;
     float min_val = val;
@@ -68,10 +111,16 @@ void main() {
 
     for (int j = 0; j < 26; j++) {
         ivec3 npos = pos + neighbors[j];
-        bool valid = all(greaterThanEqual(npos, ivec3(0))) && all(lessThan(npos, ivec3(dims)));
-        npos = clamp(npos, ivec3(0), ivec3(dims) - 1);
-        uint n = uint(npos.x + npos.y * dims.x + npos.z * dims.x * dims.y);
-        float s = get_scalar(npos);
+        bool valid = all(greaterThanEqual(npos, ivec3(0))) && all(lessThan(npos, dims_i));
+        if (!valid) {
+            continue;
+        }
+
+        ivec3 sidx = local_idx + neighbors[j];
+        // Read from shared memory (padding ensures sidx is in 0..9 range)
+        float s = sharedScalars[sidx.x][sidx.y][sidx.z];
+        uint  n = sharedIds[sidx.x][sidx.y][sidx.z];
+
         bool is_max = valid && sos_is_greater(s, n, max_val, max_neighbor);
         bool is_min = valid && sos_is_greater(min_val, min_neighbor, s, n);
         max_val      = is_max ? s : max_val;

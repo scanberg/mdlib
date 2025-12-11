@@ -1,4 +1,3 @@
-// critical_points.comp
 #version 450
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
@@ -31,7 +30,6 @@ layout (std430, binding = 4) buffer CriticalPointCounts {
     uint splitSaddleCount;  // saddles in ascending manifold
     uint minimaCount;
     uint joinSaddleCount;   // saddles in descending manifold
-    uint edgeCount;         // total number of unique edges
 };
 
 #define REGULAR 0
@@ -63,7 +61,7 @@ uint get_voxel_id(ivec3 ijk) {
 }
 
 bool sos_is_greater(float value_a, uint id_a, float value_b, uint id_b) {
-    return value_a > value_b || (value_a == value_b && id_a > id_b);
+    return (value_a > value_b) || (value_a == value_b && id_a > id_b);
 }
 
 // Precomputed adjacency masks for 26 neighbors (bit i set if neighbor i is adjacent)
@@ -170,7 +168,7 @@ void main() {
     if (any(greaterThanEqual(gid, dims))) {
         return;
     }
-    uint voxelId = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
+    uint voxel_id = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
 
     // Initialize shared memory for counters
     if (gl_LocalInvocationIndex == 0) {
@@ -180,48 +178,46 @@ void main() {
         numJoinSaddles = 0u;
         numEdges = 0u;
     }
+    // Ensure all threads see the zeroed counters before proceeding
+    barrier();
 
     // Compute local indices in shared memory (with +1 padding)
-    ivec3 localIdx = ivec3(gl_LocalInvocationID.x + 1, gl_LocalInvocationID.y + 1, gl_LocalInvocationID.z + 1);
-    ivec3 globalIdx = ivec3(gid);
+    ivec3 local_idx = ivec3(gl_LocalInvocationID.x + 1, gl_LocalInvocationID.y + 1, gl_LocalInvocationID.z + 1);
+    ivec3 global_idx = ivec3(gid);
 
-    // Load scalar values and voxel IDs for the local block and its padding
-    // Each thread loads its own value
-    sharedScalars[localIdx.x][localIdx.y][localIdx.z] = get_scalar(globalIdx);
-    sharedIds[localIdx.x][localIdx.y][localIdx.z] = voxelId;
+    ivec3 dims_i = ivec3(dims);
 
-    // Load padding (threads at the boundary load extra values)
-    // X boundaries
-    if (gl_LocalInvocationID.x == 0) {
-        sharedScalars[0][localIdx.y][localIdx.z] = get_scalar(globalIdx + ivec3(-1, 0, 0));
-        sharedIds[0][localIdx.y][localIdx.z] = get_voxel_id(globalIdx + ivec3(-1, 0, 0));
-    }
-    if (gl_LocalInvocationID.x == 7) {
-        sharedScalars[9][localIdx.y][localIdx.z] = get_scalar(globalIdx + ivec3(1, 0, 0));
-        sharedIds[9][localIdx.y][localIdx.z] = get_voxel_id(globalIdx + ivec3(1, 0, 0));
-    }
-    // Y boundaries
-    if (gl_LocalInvocationID.y == 0) {
-        sharedScalars[localIdx.x][0][localIdx.z] = get_scalar(globalIdx + ivec3(0, -1, 0));
-        sharedIds[localIdx.x][0][localIdx.z] = get_voxel_id(globalIdx + ivec3(0, -1, 0));
-    }
-    if (gl_LocalInvocationID.y == 7) {
-        sharedScalars[localIdx.x][9][localIdx.z] = get_scalar(globalIdx + ivec3(0, 1, 0));
-        sharedIds[localIdx.x][9][localIdx.z] = get_voxel_id(globalIdx + ivec3(0, 1, 0));
-    }
-    // Z boundaries
-    if (gl_LocalInvocationID.z == 0) {
-        sharedScalars[localIdx.x][localIdx.y][0] = get_scalar(globalIdx + ivec3(0, 0, -1));
-        sharedIds[localIdx.x][localIdx.y][0] = get_voxel_id(globalIdx + ivec3(0, 0, -1));
-    }
-    if (gl_LocalInvocationID.z == 7) {
-        sharedScalars[localIdx.x][localIdx.y][9] = get_scalar(globalIdx + ivec3(0, 0, 1));
-        sharedIds[localIdx.x][localIdx.y][9] = get_voxel_id(globalIdx + ivec3(0, 0, 1));
+    // Cooperative linear fill of the 10x10x10 shared region (covers centers + padding)
+    {
+        const int SG_X = 10;
+        const int SG_Y = 10;
+        const int SG_Z = 10;
+        const int SG_SIZE = SG_X * SG_Y * SG_Z;
+        // Use compile-time workgroup size constants to avoid driver compiler issues
+        const ivec3 WG_SIZE = ivec3(8,8,8);
+        const int WG_THREADS = 8 * 8 * 8;
+        int tid = int(gl_LocalInvocationIndex);
+
+        // Block origin in voxel coordinates (position of the thread (0,0,0) in this WG)
+        ivec3 block_origin = ivec3(gl_WorkGroupID) * WG_SIZE;
+        for (int s = tid; s < SG_SIZE; s += WG_THREADS) {
+            int sx = s % SG_X;
+            int sy = (s / SG_X) % SG_Y;
+            int sz = s / (SG_X * SG_Y);
+
+            // map shared slot to global voxel: block_origin + (sx-1, sy-1, sz-1)
+            ivec3 gp = block_origin + ivec3(sx - 1, sy - 1, sz - 1);
+            gp = clamp(gp, ivec3(0), dims_i - 1);
+
+            sharedScalars[sx][sy][sz] = get_scalar(gp);
+            int lin = gp.x + gp.y * dims_i.x + gp.z * dims_i.x * dims_i.y;
+            sharedIds[sx][sy][sz] = uint(lin);
+        }
     }
 
     barrier();
 
-    float fi = sharedScalars[localIdx.x][localIdx.y][localIdx.z];
+    float fi = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
     int type = REGULAR;
 
     if (scalar_threshold < fi) {
@@ -233,9 +229,9 @@ void main() {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dx = -1; dx <= 1; dx++) {
                     if (dx == 0 && dy == 0 && dz == 0) continue;
-                    int nx = localIdx.x + dx;
-                    int ny = localIdx.y + dy;
-                    int nz = localIdx.z + dz;
+                    int nx = local_idx.x + dx;
+                    int ny = local_idx.y + dy;
+                    int nz = local_idx.z + dz;
                     neighbor_ids[neighbor_count] = sharedIds[nx][ny][nz];
                     neighbor_scalars[neighbor_count] = sharedScalars[nx][ny][nz];
                     neighbor_count++;
@@ -249,6 +245,7 @@ void main() {
         
         for (int i = 0; i < neighbor_count; i++) {
             uint n_id = neighbor_ids[i];
+            if (n_id == 0xFFFFFFFFu) continue;
             float n_scalar = neighbor_scalars[i];
             bool in_upper_link = sos_is_greater(n_scalar, n_id, fi, voxel_id);
             if (in_upper_link) {
@@ -262,7 +259,6 @@ void main() {
                 }
                 if (!found && reachable_maxima_count < NUM_NEIGHBORS) {
                     reachable_maxima[reachable_maxima_count++] = max_id;
-                    atomicAdd(numEdges, 1u); // Count unique edge
                 }
             }
         }
@@ -272,7 +268,8 @@ void main() {
             atomicAdd(numMaxima, 1u);
         } else if (reachable_maxima_count > 1) {
             uint link_mask = create_upper_link_mask(voxel_id, fi, neighbor_ids, neighbor_scalars);
-            if (count_link_components(link_mask) > 1) {
+            int num_components = count_link_components(link_mask);
+            if (num_components > 1) {
                 type = SPLIT_SADDLE;
                 atomicAdd(numSplitSaddles, 1u);
             }
@@ -286,6 +283,7 @@ void main() {
             
             for (int i = 0; i < neighbor_count; i++) {
                 uint n_id = neighbor_ids[i];
+                if (n_id == 0xFFFFFFFFu) continue;
                 float n_scalar = neighbor_scalars[i];
                 bool in_lower_link = sos_is_greater(fi, voxel_id, n_scalar, n_id);
                 if (in_lower_link) {
@@ -299,7 +297,7 @@ void main() {
                     }
                     if (!found && reachable_minima_count < NUM_NEIGHBORS) {
                         reachable_minima[reachable_minima_count++] = min_id;
-                        atomicAdd(numEdges, 1u); // Count unique edge
+                        // Do not increment global edge count here; compaction will account once per representative
                     }
                 }
             }
@@ -309,7 +307,8 @@ void main() {
                 atomicAdd(numMinima, 1u);
             } else if (reachable_minima_count > 1) {
                 uint link_mask = create_lower_link_mask(voxel_id, fi, neighbor_ids, neighbor_scalars);
-                if (count_link_components(link_mask) > 1) {
+                int num_components = count_link_components(link_mask);
+                if (num_components > 1) {
                     type = JOIN_SADDLE;
                     atomicAdd(numJoinSaddles, 1u);
                 }
@@ -317,7 +316,7 @@ void main() {
         }
     }
     
-    types[voxelId] = type;
+    types[voxel_id] = type;
 
     barrier();
     if (gl_LocalInvocationIndex == 0) {
@@ -325,6 +324,5 @@ void main() {
         atomicAdd(splitSaddleCount, numSplitSaddles);
         atomicAdd(minimaCount,      numMinima);
         atomicAdd(joinSaddleCount,  numJoinSaddles);
-        atomicAdd(edgeCount,        numEdges);
     }
 }

@@ -433,9 +433,6 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     ub_data.step = vec4_from_vec3(grid->spacing, 0);
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
 
-    GLuint query;
-    glGenQueries(1, &query);
-
     GLintptr   ssbo_cgto_xyzr_base      = 0;
     GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
 
@@ -489,6 +486,9 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glUniformBlockBinding(program, block, 0);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
+
+    GLuint query;
+    glGenQueries(1, &query);
 
     // Start timing
     glBeginQuery(GL_TIME_ELAPSED, query);

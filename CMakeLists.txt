@@ -65,6 +65,8 @@ set(SRC_FILES
     src/md_script_functions.inl
     src/md_smiles.c
     src/md_smiles.h
+    src/md_topo.c
+    src/md_topo.h
     src/md_trajectory.h
     src/md_trr.c
     src/md_trr.h

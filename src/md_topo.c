@@ -1,4 +1,4 @@
-#include <md_topo.h>
+﻿#include <md_topo.h>
 
 #include <core/md_platform.h>
 #include <core/md_log.h>
@@ -36,11 +36,24 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
 #include <topo_shaders.inl>
 #include <GL/gl3w.h>
 
+static GLuint create_compute_program(const char* source, size_t length) {
+    GLuint program = 0;
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    if (md_gl_shader_compile(shader, (str_t){(const char*)source, length}, 0, 0)) {
+        GLuint prog = glCreateProgram();
+        if (md_gl_program_attach_and_link(prog, &shader, 1)) {
+			program = prog;
+        }
+    }
+    glDeleteShader(shader);
+    return program;
+}
+
 // Shader program cache
 static GLuint get_bidirectional_manifold_program(void) {
     static GLuint prog = 0;
     if (prog == 0) {
-        prog = md_gl_create_compute_program_from_source((const char*)bidirectional_manifold_comp, bidirectional_manifold_comp_size);
+        prog = create_compute_program((const char*)bidirectional_manifold_comp, bidirectional_manifold_comp_size);
         if (prog == 0) {
             MD_LOG_ERROR("Failed to create bidirectional_manifold compute program");
         }
@@ -51,7 +64,7 @@ static GLuint get_bidirectional_manifold_program(void) {
 static GLuint get_path_compression_program(void) {
     static GLuint prog = 0;
     if (prog == 0) {
-        prog = md_gl_create_compute_program_from_source((const char*)path_compression_comp, path_compression_comp_size);
+        prog = create_compute_program((const char*)path_compression_comp, path_compression_comp_size);
         if (prog == 0) {
             MD_LOG_ERROR("Failed to create path_compression compute program");
         }
@@ -62,7 +75,7 @@ static GLuint get_path_compression_program(void) {
 static GLuint get_critical_points_program(void) {
     static GLuint prog = 0;
     if (prog == 0) {
-        prog = md_gl_create_compute_program_from_source((const char*)critical_points_comp, critical_points_comp_size);
+        prog = create_compute_program((const char*)critical_points_comp, critical_points_comp_size);
         if (prog == 0) {
             MD_LOG_ERROR("Failed to create critical_points compute program");
         }
@@ -71,9 +84,9 @@ static GLuint get_critical_points_program(void) {
 }
 
 static GLuint get_critical_point_compaction_program(void) {
-    static GLuint prog = 0;
+	static GLuint prog = 0;
     if (prog == 0) {
-        prog = md_gl_create_compute_program_from_source((const char*)critical_point_compaction_comp, critical_point_compaction_comp_size);
+        prog = create_compute_program((const char*)critical_point_compaction_comp, critical_point_compaction_comp_size);
         if (prog == 0) {
             MD_LOG_ERROR("Failed to create critical_point_compaction compute program");
         }
@@ -84,7 +97,7 @@ static GLuint get_critical_point_compaction_program(void) {
 static GLuint get_vertex_edge_extraction_program(void) {
     static GLuint prog = 0;
     if (prog == 0) {
-        prog = md_gl_create_compute_program_from_source((const char*)vertex_edge_extraction_comp, vertex_edge_extraction_comp_size);
+        prog = create_compute_program((const char*)vertex_edge_extraction_comp, vertex_edge_extraction_comp_size);
         if (prog == 0) {
             MD_LOG_ERROR("Failed to create vertex_edge_extraction compute program");
         }
@@ -113,6 +126,12 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         MD_LOG_ERROR("Invalid input: out_graph=%p, vol_tex=%u, grid=%p", (void*)out_graph, vol_tex, (void*)grid);
         return false;
     }
+
+    GLuint query;
+    glGenQueries(1, &query);
+
+    // Start timing
+    glBeginQuery(GL_TIME_ELAPSED, query);
     
     // Use heap allocator if none specified
     md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
@@ -136,10 +155,11 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     ubo_data.dims[0] = grid->dim[0];
     ubo_data.dims[1] = grid->dim[1];
     ubo_data.dims[2] = grid->dim[2];
-    ubo_data.scalar_threshold = 1.0E-7f; // Set appropriate scalar threshold value here if needed
+    // Use a permissive threshold by default to avoid dropping valid low-amplitude features
+    ubo_data.scalar_threshold = 0.0f; // Set to >0.0 to filter noise if desired
     
-    GLuint grid_ubo = create_buffer(sizeof(ubo_data), &ubo_data, GL_STATIC_DRAW);
-    if (!grid_ubo) {
+    GLuint ubo_buf = create_buffer(sizeof(ubo_data), &ubo_data, GL_STATIC_DRAW);
+    if (!ubo_buf) {
         return false;
     }
     
@@ -149,7 +169,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     uint32_t temp = max_dim;
     while (temp > 1) {
         temp >>= 1;
-        num_compression_iterations++;
     }
     num_compression_iterations += 1; // Add safety margin
     
@@ -170,7 +189,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glUseProgram(manifold_prog);
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32F);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, grid_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ascending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, descending_buf);
     
@@ -182,7 +201,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     if (!compression_prog) goto cleanup;
     
     glUseProgram(compression_prog);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, grid_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ascending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, descending_buf);
     
@@ -203,7 +222,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glUseProgram(critical_prog);
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32F);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, grid_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ascending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, descending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, types_buf);
@@ -211,9 +230,16 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    {
+		// Ensure all writes are done before reading back
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+        glDeleteSync(fence);
+    }
     
     // Read back counts
-    uint32_t counts[5] = {0};
+    uint32_t counts[4] = {0};
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, counts_buf);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(counts), counts);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -222,11 +248,11 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     uint32_t num_split_saddles = counts[1];
     uint32_t num_minima = counts[2];
     uint32_t num_join_saddles = counts[3];
-    uint32_t num_edges = counts[4];
     uint32_t num_vertices = num_maxima + num_split_saddles + num_minima + num_join_saddles;
+    uint32_t num_edges = 8 * (num_split_saddles + num_join_saddles); // We estimate this from split saddles + join saddles for allocation, this will be updated later to the exact count
     
-    MD_LOG_INFO("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u), edges: %u",
-                num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices, num_edges);
+    MD_LOG_INFO("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
+                num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices);
     
     // === Step 4: Compact critical point indices into ordered array ===
     GLuint compaction_prog = get_critical_point_compaction_program();
@@ -238,11 +264,11 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     GLuint minima_buf = create_buffer(num_minima * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     GLuint join_saddles_buf = create_buffer(num_join_saddles * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     
-    uint32_t counters_init[4] = {0, 0, 0, 0};
+    uint32_t counters_init[4] = {0};
     counter_buf = create_buffer(sizeof(counters_init), counters_init, GL_DYNAMIC_COPY);
     
     glUseProgram(compaction_prog);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, grid_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, types_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, maxima_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, split_saddles_buf);
@@ -257,26 +283,37 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     GLuint extraction_prog = get_vertex_edge_extraction_program();
     if (!extraction_prog) goto cleanup;
     
+    // Allocate unified indices buffer (packed: maxima, split saddles, minima, join saddles)
+    if (num_vertices > 0) {
+        indices_buf = create_buffer(num_vertices * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        if (!indices_buf) {
+            MD_LOG_ERROR("Failed to allocate indices buffer");
+            goto cleanup;
+        }
+    } else {
+        indices_buf = 0;
+    }
+
     // Copy indices from separate buffers into unified buffer in correct order
-    if (num_maxima > 0) {
+    if (num_maxima > 0 && indices_buf) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, maxima_buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
         glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, num_maxima * sizeof(uint32_t));
     }
     uint32_t offset = num_maxima;
-    if (num_split_saddles > 0) {
+    if (num_split_saddles > 0 && indices_buf) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, split_saddles_buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
         glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_split_saddles * sizeof(uint32_t));
     }
     offset += num_split_saddles;
-    if (num_minima > 0) {
+    if (num_minima > 0 && indices_buf) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, minima_buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
         glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_minima * sizeof(uint32_t));
     }
     offset += num_minima;
-    if (num_join_saddles > 0) {
+    if (num_join_saddles > 0 && indices_buf) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, join_saddles_buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
         glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_join_saddles * sizeof(uint32_t));
@@ -308,7 +345,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glUseProgram(extraction_prog);
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32F);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, grid_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, indices_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, type_counts_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ascending_buf);
@@ -323,8 +360,14 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glDispatchCompute(num_extraction_workgroups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
+    {
+		// Ensure all writes are done before reading back
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+        glDeleteSync(fence);
+    }
+
     // Read back edge count
-    uint32_t num_edges = 0;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, edge_count_buf);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &num_edges);
     
@@ -366,9 +409,18 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     MD_LOG_INFO("Extracted %u edges in Morse-Smale complex", num_edges);
     
     success = true;
+
+    // End timing
+    glEndQuery(GL_TIME_ELAPSED);
+
+    // Retrieve the result (blocking until GPU finishes)
+    GLuint64 elapsedTime = 0;
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &elapsedTime); // nanoseconds
+
+	MD_LOG_INFO("Topology computation of [%u,%u,%u] GPU time: %.3f ms", grid->dim[0], grid->dim[1], grid->dim[2], elapsedTime / 1e6);
     
 cleanup:
-    delete_buffer(grid_ubo);
+    delete_buffer(ubo_buf);
     delete_buffer(ascending_buf);
     delete_buffer(descending_buf);
     delete_buffer(types_buf);

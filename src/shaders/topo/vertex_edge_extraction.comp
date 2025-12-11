@@ -1,5 +1,3 @@
-// vertex_edge_extraction.comp
-// Extracts vertices (positions + values) and edges from critical point indices
 #version 450
 
 layout(local_size_x = 64) in;
@@ -23,11 +21,6 @@ layout(std430, binding = 2) readonly buffer TypeCounts {
     uint num_minima;
     uint num_join_saddles;
     uint num_vertices;
-};
-
-// Input: voxel_id -> vertex_index mapping (overwritten types buffer)
-layout(std430, binding = 8) readonly buffer VoxelToVertexIndex {
-    int voxel_to_vertex_idx[];
 };
 
 // Input: ascending/descending manifolds for edge extraction
@@ -57,13 +50,17 @@ layout(std430, binding = 7) buffer EdgeCounter {
     uint edge_count;
 };
 
+// Input: voxel_id -> vertex_index mapping (overwritten types buffer)
+layout(std430, binding = 8) readonly buffer VoxelToVertexIndex {
+    int voxel_to_vertex_idx[];
+};
+
 // Shared memory for workgroup-local operations
 shared uint local_edge_count;
 shared uint global_edge_offset;
 
-#define MAX_LOCAL_EDGES 256
+#define MAX_LOCAL_EDGES 512
 shared uvec2 local_edges[MAX_LOCAL_EDGES];
-shared uint local_edge_write_pos;
 
 // Helper functions
 ivec3 get_voxel_coords(uint id) {
@@ -73,17 +70,13 @@ ivec3 get_voxel_coords(uint id) {
     return ivec3(x, y, z);
 }
 
-vec3 voxel_to_world(uint voxel_id) {
-    ivec3 ijk = get_voxel_coords(voxel_id);
-    vec3 index = vec3(ijk) + vec3(0.5);
-    vec3 scaled = spacing * index;
-    vec3 rotated = orientation * scaled;
-    return origin + rotated;
+vec3 voxel_to_world(ivec3 ijk) {
+    vec4 world_pos = index_to_world * vec4(vec3(ijk), 1.0);
+    return world_pos.xyz;
 }
 
-float get_scalar(uint voxel_id) {
-    ivec3 coords = get_voxel_coords(voxel_id);
-    return imageLoad(volumeTex, coords).r;
+float get_scalar(ivec3 ijk) {
+    return imageLoad(volumeTex, ijk).r;
 }
 
 // Get critical point type based on vertex index
@@ -108,51 +101,103 @@ void main() {
     // Initialize shared memory
     if (local_id == 0) {
         local_edge_count = 0;
-        local_edge_write_pos = 0;
     }
     barrier();
-    if (vert_idx >= num_vertices) {
-        return;
-    }
-    
-    // === Extract vertex data ===
-    uint voxel_id = cp_indices[vert_idx];
-    vec3 world_pos = voxel_to_world(voxel_id);
-    float value = get_scalar(voxel_id);
-    
-    vertex_data[vert_idx] = vec4(world_pos, value);
-    
-    // === Extract edges based on manifold connectivity ===
-    uint type = get_type(vert_idx);
-    
-    // Store edges in local shared memory first
-    uint target_voxel = 0xFFFFFFFF;
-    
-    if (type == 1) { // MAXIMUM
-        // Follow descending manifold to find connected split saddle
-        target_voxel = descending[voxel_id];
-    }
-    else if (type == 2) { // SPLIT_SADDLE
-        // Connect to descending manifold (toward minima)
-        target_voxel = descending[voxel_id];
-    }
-    else if (type == 3) { // MINIMUM
-        // Follow ascending manifold to find connected join saddle
-        target_voxel = ascending[voxel_id];
-    }
-    else if (type == 4) { // JOIN_SADDLE
-        // Connect to ascending manifold (toward maxima)
-        target_voxel = ascending[voxel_id];
-    }
-    
-    // If we have a valid edge target, add to local buffer
-    if (target_voxel != voxel_id && target_voxel != 0xFFFFFFFF) {
-        uint target_idx = get_vertex_index(target_voxel);
-        if (target_idx != 0xFFFFFFFF) {
-            // Atomically reserve space in local edge buffer
-            uint local_idx = atomicAdd(local_edge_count, 1);
-            if (local_idx < MAX_LOCAL_EDGES) {
-                local_edges[local_idx] = uvec2(vert_idx, target_idx);
+
+    if (vert_idx < num_vertices) {
+        // === Extract vertex data ===
+        uint  voxel_id     = cp_indices[vert_idx];
+        ivec3 voxel_coords = get_voxel_coords(voxel_id);
+        vec3  world_pos    = voxel_to_world(voxel_coords);
+        float value        = get_scalar(voxel_coords);
+        
+        vertex_data[vert_idx] = vec4(world_pos, value);
+        
+        // === Extract edges based on manifold connectivity ===
+        uint type = get_type(vert_idx);
+        
+        // Store edges in local shared memory first
+        uint target_voxel = 0xFFFFFFFF;
+
+        // Explicit neighbor offsets for 26-connectivity
+        const ivec3 neighbors[26] = ivec3[](
+            ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
+            ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
+            ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
+            
+            ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
+            ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
+            ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
+            
+            ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
+            ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
+            ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
+        );
+        
+        if (type == 2) { // SPLIT_SADDLE
+            // Iterate over 26-neighborhood
+            uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
+            uint unique_count = 0;
+            ivec3 center = get_voxel_coords(voxel_id);
+            for (int n = 0; n < 26; ++n) {
+                ivec3 nc = center + neighbors[n];
+                if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
+                uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
+                // Follow ascending manifold from neighbor to its CP
+                uint cp_voxel = ascending[nid];
+                if (cp_voxel == 0xFFFFFFFFu || cp_voxel == voxel_id) continue;
+                // Map to vertex index
+                uint cp_idx = get_vertex_index(cp_voxel);
+                if (cp_idx == 0xFFFFFFFFu) continue;
+                // Uniqueness check (linear scan, max 8)
+                bool found = false;
+                for (uint i = 0; i < unique_count; ++i) {
+                    if (unique_targets[i] == cp_idx) { found = true; break; }
+                }
+                if (!found && unique_count < 8) {
+                    unique_targets[unique_count++] = cp_idx;
+                }
+            }
+            // Emit edges to all unique CPs
+            for (uint i = 0; i < unique_count; ++i) {
+                uint target_idx = unique_targets[i];
+                uint local_idx = atomicAdd(local_edge_count, 1);
+                if (local_idx < MAX_LOCAL_EDGES) {
+                    local_edges[local_idx] = uvec2(vert_idx, target_idx);
+                }
+            }
+        }
+        else if (type == 4) { // JOIN_SADDLE
+            // Iterate over 26-neighborhood
+            uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
+            uint unique_count = 0;
+            ivec3 center = get_voxel_coords(voxel_id);
+            for (int n = 0; n < 26; ++n) {
+                ivec3 nc = center + neighbors[n];
+                if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
+                uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
+                // Follow descending manifold from neighbor to its CP
+                uint cp_voxel = descending[nid];
+                if (cp_voxel == 0xFFFFFFFFu || cp_voxel == voxel_id) continue;
+                // Map to vertex index
+                uint cp_idx = get_vertex_index(cp_voxel);
+                if (cp_idx == 0xFFFFFFFFu) continue;
+                // Uniqueness check (linear scan, max 8)
+                bool found = false;
+                for (uint i = 0; i < unique_count; ++i) {
+                    if (unique_targets[i] == cp_idx) { found = true; break; }
+                }
+                if (!found && unique_count < 8) {
+                    unique_targets[unique_count++] = cp_idx;
+                }
+            }
+            // Emit edges to all unique CPs
+            for (uint i = 0; i < unique_count; ++i) {
+                uint target_idx = unique_targets[i];
+                uint local_idx = atomicAdd(local_edge_count, 1);
+                if (local_idx < MAX_LOCAL_EDGES) {
+                    local_edges[local_idx] = uvec2(vert_idx, target_idx);
+                }
             }
         }
     }
