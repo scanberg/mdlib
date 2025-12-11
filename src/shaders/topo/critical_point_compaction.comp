@@ -1,0 +1,148 @@
+// critical_point_compaction.comp
+#version 450
+
+layout(local_size_x = 8, local_size_y= 8, local_size_z = 8) in;
+
+// UBO data (shared across all shaders)
+layout(std140, binding = 0) uniform UBO {
+    mat4  index_to_world;
+    uvec3 dims;
+    float scalar_threshold;
+};
+
+layout(std430, binding = 1) buffer CriticalPointTypes {
+    int types[];
+};
+
+layout(std430, binding = 2) writeonly buffer MaximaList {
+    uint maxima[];
+};
+
+layout(std430, binding = 3) writeonly buffer SplitSaddleList {
+    uint splitSaddles[];
+};
+
+layout(std430, binding = 4) writeonly buffer MinimaList {
+    uint minima[];
+};
+
+layout(std430, binding = 5) writeonly buffer JoinSaddleList {
+    uint joinSaddles[];
+};
+
+// Atomic counters for write positions
+layout(std430, binding = 6) buffer Counters {
+    uint maximaWritePos;
+    uint splitSaddleWritePos;
+    uint minimaWritePos;
+    uint joinSaddleWritePos;
+};
+
+#define REGULAR 0
+#define MAXIMUM 1
+#define SPLIT_SADDLE 2
+#define MINIMUM 3
+#define JOIN_SADDLE 4
+
+// Shared memory for workgroup-local compaction
+shared uint localMaxima[64];
+shared uint localSplitSaddles[64];
+shared uint localMinima[64];
+shared uint localJoinSaddles[64];
+shared uint localMaximaCount;
+shared uint localSplitSaddleCount;
+shared uint localMinimaCount;
+shared uint localJoinSaddleCount;
+shared uint globalMaximaOffset;
+shared uint globalSplitSaddleOffset;
+shared uint globalMinimaOffset;
+shared uint globalJoinSaddleOffset;
+
+void main() {
+    uvec3 gid = gl_GlobalInvocationID.xyz;
+    uint local_id = gl_LocalInvocationID.x;
+    uint voxel_id = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
+    
+    // Initialize shared counters (once per workgroup)
+    if (local_id == 0) {
+        localMaximaCount = 0;
+        localSplitSaddleCount = 0;
+        localMinimaCount = 0;
+        localJoinSaddleCount = 0;
+    }
+    barrier();
+    
+    uint num_points = dims.x * dims.y * dims.z;
+    
+    // Step 1: Each thread checks its voxel and compacts locally
+    int type = (voxel_id < num_points) ? types[voxel_id] : REGULAR;
+    // We'll use these to store the vertex index for each critical point
+    uint local_max_pos = 0;
+    uint local_split_pos = 0;
+    uint local_min_pos = 0;
+    uint local_join_pos = 0;
+    // Compute the global vertex index for each critical point type
+    // The order is: maxima, split_saddles, minima, join_saddles
+    // We'll need to know the global offset for each type, which is only available after compaction
+    // So, we do this after the global offset is known (after barrier below)
+    if (type == MAXIMUM) {
+        local_max_pos = atomicAdd(localMaximaCount, 1u);
+        localMaxima[local_max_pos] = voxel_id;
+    } else if (type == SPLIT_SADDLE) {
+        local_split_pos = atomicAdd(localSplitSaddleCount, 1u);
+        localSplitSaddles[local_split_pos] = voxel_id;
+    } else if (type == MINIMUM) {
+        local_min_pos = atomicAdd(localMinimaCount, 1u);
+        localMinima[local_min_pos] = voxel_id;
+    } else if (type == JOIN_SADDLE) {
+        local_join_pos = atomicAdd(localJoinSaddleCount, 1u);
+        localJoinSaddles[local_join_pos] = voxel_id;
+    }
+    
+    barrier();
+    
+    // Step 2: One thread per workgroup reserves space in global memory
+    if (local_id == 0) {
+        if (localMaximaCount > 0) {
+            globalMaximaOffset = atomicAdd(maximaWritePos, localMaximaCount);
+        }
+        if (localSplitSaddleCount > 0) {
+            globalSplitSaddleOffset = atomicAdd(splitSaddleWritePos, localSplitSaddleCount);
+        }
+        if (localMinimaCount > 0) {
+            globalMinimaOffset = atomicAdd(minimaWritePos, localMinimaCount);
+        }
+        if (localJoinSaddleCount > 0) {
+            globalJoinSaddleOffset = atomicAdd(joinSaddleWritePos, localJoinSaddleCount);
+        }
+    }
+    barrier();
+    
+    // Step 3: Cooperatively write to global memory and write vertex indices into types
+    // The vertex index is the global index in the unified vertex array:
+    // [maxima | split_saddles | minima | join_saddles]
+    if (local_id < localMaximaCount) {
+        uint vtx_idx = globalMaximaOffset + local_id;
+        maxima[vtx_idx] = localMaxima[local_id];
+        types[localMaxima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+    }
+    if (local_id < localSplitSaddleCount) {
+        uint vtx_idx = globalSplitSaddleOffset + local_id;
+        splitSaddles[vtx_idx] = localSplitSaddles[local_id];
+        types[localSplitSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+    }
+    if (local_id < localMinimaCount) {
+        uint vtx_idx = globalMinimaOffset + local_id;
+        minima[vtx_idx] = localMinima[local_id];
+        types[localMinima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+    }
+    if (local_id < localJoinSaddleCount) {
+        uint vtx_idx = globalJoinSaddleOffset + local_id;
+        joinSaddles[vtx_idx] = localJoinSaddles[local_id];
+        types[localJoinSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+    }
+    // For non-critical points, set to -1 (0xFFFFFFFF)
+    if (type == REGULAR && voxel_id < num_points) {
+        types[voxel_id] = -1;
+    }
+}

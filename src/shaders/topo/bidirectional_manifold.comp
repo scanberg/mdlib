@@ -1,0 +1,85 @@
+// bidirectional_manifold.comp
+#version 450
+
+// Use 3D workgroup size for natural grid mapping
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+// UBO data (shared across all shaders)
+layout(std140, binding = 0) uniform UBO {
+    mat4  index_to_world;
+    uvec3 dims;
+    float scalar_threshold;
+};
+// Input volume texture
+layout(binding = 0, r32f) uniform readonly image3D volumeTex;
+
+// Output buffers: stores steepest neighbor index for each voxel
+layout(std430, binding = 1) writeonly buffer AscendingManifold {
+    uint ascending[];
+};
+
+layout(std430, binding = 2) writeonly buffer DescendingManifold {
+    uint descending[];
+};
+
+bool sos_is_greater(float value_a, uint id_a, float value_b, uint id_b) {
+    return value_a > value_b || (value_a == value_b && id_a > id_b);
+}
+
+float get_scalar(ivec3 ijk) {
+    return imageLoad(volumeTex, ijk).r;
+}
+
+void main() {
+    // Compute global voxel index from 3D thread indices
+    uvec3 gid = gl_GlobalInvocationID.xyz;
+    if (any(greaterThanEqual(gid, dims))) {
+        return;
+    }
+    uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
+    ivec3 pos = ivec3(gid);
+    float val = get_scalar(pos);
+    if (val < scalar_threshold) {
+        // Mark as invalid (do not process further in path compression)
+        ascending[i]  = 0xFFFFFFFFu;
+        descending[i] = 0xFFFFFFFFu;
+        return;
+    }
+
+    float max_val = val;
+    float min_val = val;
+    uint max_neighbor = i;
+    uint min_neighbor = i;
+
+    // Explicit neighbor offsets for 26-connectivity
+    const ivec3 neighbors[26] = ivec3[](
+        ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
+        ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
+        ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
+        
+        ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
+        ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
+        ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
+        
+        ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
+        ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
+        ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
+    );
+
+    for (int j = 0; j < 26; j++) {
+        ivec3 npos = pos + neighbors[j];
+        bool valid = all(greaterThanEqual(npos, ivec3(0))) && all(lessThan(npos, ivec3(dims)));
+        npos = clamp(npos, ivec3(0), ivec3(dims) - 1);
+        uint n = uint(npos.x + npos.y * dims.x + npos.z * dims.x * dims.y);
+        float s = get_scalar(npos);
+        bool is_max = valid && sos_is_greater(s, n, max_val, max_neighbor);
+        bool is_min = valid && sos_is_greater(min_val, min_neighbor, s, n);
+        max_val      = is_max ? s : max_val;
+        max_neighbor = is_max ? n : max_neighbor;
+        min_val      = is_min ? s : min_val;
+        min_neighbor = is_min ? n : min_neighbor;
+    }
+
+    ascending[i]  = max_neighbor;
+    descending[i] = min_neighbor;
+}

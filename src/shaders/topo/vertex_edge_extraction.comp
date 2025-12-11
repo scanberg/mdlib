@@ -1,0 +1,174 @@
+// vertex_edge_extraction.comp
+// Extracts vertices (positions + values) and edges from critical point indices
+#version 450
+
+layout(local_size_x = 64) in;
+
+// UBO data (shared across all shaders)
+layout(std140, binding = 0) uniform UBO {
+    mat4  index_to_world;
+    uvec3 dims;
+    float scalar_threshold;
+};
+
+// Input: critical point indices (ordered: maxima, split_saddles, minima, join_saddles)
+layout(std430, binding = 1) readonly buffer CriticalPointIndices {
+    uint cp_indices[];
+};
+
+// Input: type counts for indexing
+layout(std430, binding = 2) readonly buffer TypeCounts {
+    uint num_maxima;
+    uint num_split_saddles;
+    uint num_minima;
+    uint num_join_saddles;
+    uint num_vertices;
+};
+
+// Input: voxel_id -> vertex_index mapping (overwritten types buffer)
+layout(std430, binding = 8) readonly buffer VoxelToVertexIndex {
+    int voxel_to_vertex_idx[];
+};
+
+// Input: ascending/descending manifolds for edge extraction
+layout(std430, binding = 3) readonly buffer AscendingManifold {
+    uint ascending[];
+};
+
+layout(std430, binding = 4) readonly buffer DescendingManifold {
+    uint descending[];
+};
+
+// Input: volume texture for sampling values
+layout(binding = 0, r32f) uniform readonly image3D volumeTex;
+
+// Output: vertex data (positions + values)
+layout(std430, binding = 5) writeonly buffer Vertices {
+    vec4 vertex_data[];  // xyz = position, w = value
+};
+
+// Output: edges (from, to pairs)
+layout(std430, binding = 6) writeonly buffer Edges {
+    uvec2 edges[];  // x = from vertex index, y = to vertex index
+};
+
+// Edge counter
+layout(std430, binding = 7) buffer EdgeCounter {
+    uint edge_count;
+};
+
+// Shared memory for workgroup-local operations
+shared uint local_edge_count;
+shared uint global_edge_offset;
+
+#define MAX_LOCAL_EDGES 256
+shared uvec2 local_edges[MAX_LOCAL_EDGES];
+shared uint local_edge_write_pos;
+
+// Helper functions
+ivec3 get_voxel_coords(uint id) {
+    int x = int(id % dims.x);
+    int y = int((id / dims.x) % dims.y);
+    int z = int(id / (dims.x * dims.y));
+    return ivec3(x, y, z);
+}
+
+vec3 voxel_to_world(uint voxel_id) {
+    ivec3 ijk = get_voxel_coords(voxel_id);
+    vec3 index = vec3(ijk) + vec3(0.5);
+    vec3 scaled = spacing * index;
+    vec3 rotated = orientation * scaled;
+    return origin + rotated;
+}
+
+float get_scalar(uint voxel_id) {
+    ivec3 coords = get_voxel_coords(voxel_id);
+    return imageLoad(volumeTex, coords).r;
+}
+
+// Get critical point type based on vertex index
+uint get_type(uint vert_idx) {
+    if (vert_idx < num_maxima) return 1; // MAXIMUM
+    if (vert_idx < num_maxima + num_split_saddles) return 2; // SPLIT_SADDLE
+    if (vert_idx < num_maxima + num_split_saddles + num_minima) return 3; // MINIMUM
+    return 4; // JOIN_SADDLE
+}
+
+// Get vertex index for a given voxel ID using direct mapping
+// Returns 0xFFFFFFFF if not found
+uint get_vertex_index(uint voxel_id) {
+    int idx = voxel_to_vertex_idx[voxel_id];
+    return (idx >= 0) ? uint(idx) : 0xFFFFFFFFu;
+}
+
+void main() {
+    uint vert_idx = gl_GlobalInvocationID.x;
+    uint local_id = gl_LocalInvocationID.x;
+    
+    // Initialize shared memory
+    if (local_id == 0) {
+        local_edge_count = 0;
+        local_edge_write_pos = 0;
+    }
+    barrier();
+    if (vert_idx >= num_vertices) {
+        return;
+    }
+    
+    // === Extract vertex data ===
+    uint voxel_id = cp_indices[vert_idx];
+    vec3 world_pos = voxel_to_world(voxel_id);
+    float value = get_scalar(voxel_id);
+    
+    vertex_data[vert_idx] = vec4(world_pos, value);
+    
+    // === Extract edges based on manifold connectivity ===
+    uint type = get_type(vert_idx);
+    
+    // Store edges in local shared memory first
+    uint target_voxel = 0xFFFFFFFF;
+    
+    if (type == 1) { // MAXIMUM
+        // Follow descending manifold to find connected split saddle
+        target_voxel = descending[voxel_id];
+    }
+    else if (type == 2) { // SPLIT_SADDLE
+        // Connect to descending manifold (toward minima)
+        target_voxel = descending[voxel_id];
+    }
+    else if (type == 3) { // MINIMUM
+        // Follow ascending manifold to find connected join saddle
+        target_voxel = ascending[voxel_id];
+    }
+    else if (type == 4) { // JOIN_SADDLE
+        // Connect to ascending manifold (toward maxima)
+        target_voxel = ascending[voxel_id];
+    }
+    
+    // If we have a valid edge target, add to local buffer
+    if (target_voxel != voxel_id && target_voxel != 0xFFFFFFFF) {
+        uint target_idx = get_vertex_index(target_voxel);
+        if (target_idx != 0xFFFFFFFF) {
+            // Atomically reserve space in local edge buffer
+            uint local_idx = atomicAdd(local_edge_count, 1);
+            if (local_idx < MAX_LOCAL_EDGES) {
+                local_edges[local_idx] = uvec2(vert_idx, target_idx);
+            }
+        }
+    }
+    
+    barrier();
+    
+    // One thread reserves space in global buffer and writes all local edges
+    if (local_id == 0 && local_edge_count > 0) {
+        uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
+        global_edge_offset = atomicAdd(edge_count, write_count);
+    }
+    barrier();
+    
+    // Threads cooperatively write local edges to global memory
+    uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
+    for (uint i = local_id; i < write_count; i += 64) {
+        edges[global_edge_offset + i] = local_edges[i];
+    }
+}

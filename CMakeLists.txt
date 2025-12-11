@@ -105,6 +105,14 @@ set(GTO_SHADER_FILES
     src/shaders/voronoi_segment.comp
 )
 
+set(TOPO_SHADER_FILES
+    src/shaders/topo/critical_point_compaction.comp
+    src/shaders/topo/bidirectional_manifold.comp
+    src/shaders/topo/path_compression.comp
+    src/shaders/topo/critical_points.comp
+    src/shaders/topo/vertex_edge_extraction.comp
+)
+
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
 if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
@@ -159,6 +167,7 @@ endif()
 
 create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")
 create_resources("${GTO_SHADER_FILES}" "gen/gto_shaders.inl")
+create_resources("${TOPO_SHADER_FILES}" "gen/topo_shaders.inl")
 
 # Detect AppleClang vs other Clang
 if (CMAKE_C_COMPILER_ID STREQUAL "Clang")

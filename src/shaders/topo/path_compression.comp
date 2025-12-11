@@ -1,0 +1,53 @@
+// path_compression.comp
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+// UBO data (shared across all shaders)
+layout(std140, binding = 0) uniform UBO {
+    mat4 index_to_world;
+    uvec3 dims;
+    float scalar_threshold;
+};
+
+// Input/Output buffers (read and write)
+layout(std430, binding = 1) buffer AscendingManifold {
+    uint ascending[];
+};
+
+layout(std430, binding = 2) buffer DescendingManifold {
+    uint descending[];
+};
+
+void main() {
+    // Compute global voxel index from 3D thread indices
+    uvec3 gid = gl_GlobalInvocationID.xyz;
+    if (any(greaterThanEqual(gid, dims))) {
+        return;
+    }
+
+    uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
+
+    uint parent_asc  = ascending[i];
+    uint parent_desc = descending[i];
+
+    if (parent_asc == 0xFFFFFFFFu || parent_desc == 0xFFFFFFFFu) {
+        return; // Invalid voxel, skip
+    }
+
+    // Compress ascending manifold
+    if (parent_asc != i) {  // Skip if already a root
+        uint grandparent_asc = ascending[parent_asc];
+        if (parent_asc != grandparent_asc) {
+            ascending[i] = grandparent_asc;
+        }
+    }
+    
+    // Compress descending manifold
+    if (parent_desc != i) {  // Skip if already a root
+        uint grandparent_desc = descending[parent_desc];
+        if (parent_desc != grandparent_desc) {
+            descending[i] = grandparent_desc;
+        }
+    }
+}
