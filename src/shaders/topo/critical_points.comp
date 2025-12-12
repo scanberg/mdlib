@@ -94,32 +94,6 @@ const uint adjacencyMasks[26] = {
     0x0161A000,
 };
 
-uint create_upper_link_mask(uint voxel_id, float fi, uint neighbor_ids[NUM_NEIGHBORS], float neighbor_scalars[NUM_NEIGHBORS]) {
-    uint link_mask = 0u;
-    for (int i = 0; i < NUM_NEIGHBORS; i++) {
-        uint n_id = neighbor_ids[i];
-        if (n_id == 0xFFFFFFFFu) continue;
-
-        float n_scalar = neighbor_scalars[i];
-        bool in_link = sos_is_greater(n_scalar, n_id, fi, voxel_id);
-        link_mask |= in_link ? (1u << i) : 0u;
-    }
-    return link_mask;
-}
-
-uint create_lower_link_mask(uint voxel_id, float fi, uint neighbor_ids[NUM_NEIGHBORS], float neighbor_scalars[NUM_NEIGHBORS]) {
-    uint link_mask = 0u;
-    for (int i = 0; i < NUM_NEIGHBORS; i++) {
-        uint n_id = neighbor_ids[i];
-        if (n_id == 0xFFFFFFFFu) continue;
-
-        float n_scalar = neighbor_scalars[i];
-        bool in_link = sos_is_greater(fi, voxel_id, n_scalar, n_id);
-        link_mask |= in_link ? (1u << i) : 0u;
-    }
-    return link_mask;
-}
-
 // Count link components using bitmask and static adjacency
 int count_link_components(uint link_mask) {
     if (link_mask == 0u) return 0;
@@ -195,7 +169,7 @@ void main() {
         const int SG_SIZE = SG_X * SG_Y * SG_Z;
         // Use compile-time workgroup size constants to avoid driver compiler issues
         const ivec3 WG_SIZE = ivec3(8,8,8);
-        const int WG_THREADS = 8 * 8 * 8;
+        const int WG_THREADS = WG_SIZE.x * WG_SIZE.y * WG_SIZE.z;
         int tid = int(gl_LocalInvocationIndex);
 
         // Block origin in voxel coordinates (position of the thread (0,0,0) in this WG)
@@ -207,7 +181,11 @@ void main() {
 
             // map shared slot to global voxel: block_origin + (sx-1, sy-1, sz-1)
             ivec3 gp = block_origin + ivec3(sx - 1, sy - 1, sz - 1);
-            gp = clamp(gp, ivec3(0), dims_i - 1);
+            if (any(lessThan(gp, ivec3(0))) || any(greaterThanEqual(gp, dims_i))) {
+                sharedScalars[sx][sy][sz] = 0.0;
+                sharedIds[sx][sy][sz] = 0xFFFFFFFFu;
+                continue;
+            }
 
             sharedScalars[sx][sy][sz] = get_scalar(gp);
             int lin = gp.x + gp.y * dims_i.x + gp.z * dims_i.x * dims_i.y;
@@ -221,34 +199,49 @@ void main() {
     int type = REGULAR;
 
     if (scalar_threshold < fi) {
+        // Explicit neighbor offsets for 26-connectivity
+        const ivec3 neighbor_offset[NUM_NEIGHBORS] = ivec3[](
+            ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
+            ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
+            ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
+            
+            ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
+            ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
+            ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
+            
+            ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
+            ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
+            ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
+        );
+
         // Get all neighbors using shared memory
         uint  neighbor_ids[NUM_NEIGHBORS];
         float neighbor_scalars[NUM_NEIGHBORS];
-        int neighbor_count = 0;
-        for (int dz = -1; dz <= 1; dz++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    if (dx == 0 && dy == 0 && dz == 0) continue;
-                    int nx = local_idx.x + dx;
-                    int ny = local_idx.y + dy;
-                    int nz = local_idx.z + dz;
-                    neighbor_ids[neighbor_count] = sharedIds[nx][ny][nz];
-                    neighbor_scalars[neighbor_count] = sharedScalars[nx][ny][nz];
-                    neighbor_count++;
-                }
+        uint  neighbor_mask = 0u;
+        for (int i = 0; i < NUM_NEIGHBORS; i++) {
+            ivec3 offset = neighbor_offset[i];
+            int nx = local_idx.x + offset.x;
+            int ny = local_idx.y + offset.y;
+            int nz = local_idx.z + offset.z;
+            neighbor_ids[i] = sharedIds[nx][ny][nz];
+            neighbor_scalars[i] = sharedScalars[nx][ny][nz];
+            if (neighbor_ids[i] != 0xFFFFFFFFu) {
+                neighbor_mask |= (1u << i);
             }
         }
         
         // ===== Analyze ASCENDING manifold (maxima + split saddles) =====
         uint reachable_maxima[NUM_NEIGHBORS];
         int  reachable_maxima_count = 0;
+        uint upper_link_mask = 0u;
         
-        for (int i = 0; i < neighbor_count; i++) {
+        for (int i = 0; i < NUM_NEIGHBORS; i++) {
             uint n_id = neighbor_ids[i];
             if (n_id == 0xFFFFFFFFu) continue;
             float n_scalar = neighbor_scalars[i];
             bool in_upper_link = sos_is_greater(n_scalar, n_id, fi, voxel_id);
             if (in_upper_link) {
+                upper_link_mask |= (1u << i);
                 uint max_id = ascending[n_id];
                 bool found = false;
                 for (int j = 0; j < reachable_maxima_count; j++) {
@@ -267,8 +260,7 @@ void main() {
             type = MAXIMUM;
             atomicAdd(numMaxima, 1u);
         } else if (reachable_maxima_count > 1) {
-            uint link_mask = create_upper_link_mask(voxel_id, fi, neighbor_ids, neighbor_scalars);
-            int num_components = count_link_components(link_mask);
+            int num_components = count_link_components(upper_link_mask);
             if (num_components > 1) {
                 type = SPLIT_SADDLE;
                 atomicAdd(numSplitSaddles, 1u);
@@ -280,13 +272,15 @@ void main() {
         if (type == REGULAR) {
             uint reachable_minima[NUM_NEIGHBORS];
             int  reachable_minima_count = 0;
+            uint lower_link_mask = 0u;
             
-            for (int i = 0; i < neighbor_count; i++) {
+            for (int i = 0; i < NUM_NEIGHBORS; i++) {
                 uint n_id = neighbor_ids[i];
                 if (n_id == 0xFFFFFFFFu) continue;
                 float n_scalar = neighbor_scalars[i];
                 bool in_lower_link = sos_is_greater(fi, voxel_id, n_scalar, n_id);
                 if (in_lower_link) {
+                    lower_link_mask |= (1u << i);
                     uint min_id = descending[n_id];
                     bool found = false;
                     for (int j = 0; j < reachable_minima_count; j++) {
@@ -297,7 +291,6 @@ void main() {
                     }
                     if (!found && reachable_minima_count < NUM_NEIGHBORS) {
                         reachable_minima[reachable_minima_count++] = min_id;
-                        // Do not increment global edge count here; compaction will account once per representative
                     }
                 }
             }
@@ -306,8 +299,7 @@ void main() {
                 type = MINIMUM;
                 atomicAdd(numMinima, 1u);
             } else if (reachable_minima_count > 1) {
-                uint link_mask = create_lower_link_mask(voxel_id, fi, neighbor_ids, neighbor_scalars);
-                int num_components = count_link_components(link_mask);
+                int num_components = count_link_components(lower_link_mask);
                 if (num_components > 1) {
                     type = JOIN_SADDLE;
                     atomicAdd(numJoinSaddles, 1u);

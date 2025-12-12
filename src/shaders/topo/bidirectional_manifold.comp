@@ -82,7 +82,6 @@ void main() {
     barrier();
 
     float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
-
     //if (val < scalar_threshold) {
     //    ascending[i]  = 0xFFFFFFFFu;
     //    descending[i] = 0xFFFFFFFFu;

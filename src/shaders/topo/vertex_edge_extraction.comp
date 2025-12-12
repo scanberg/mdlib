@@ -88,10 +88,8 @@ uint get_type(uint vert_idx) {
 }
 
 // Get vertex index for a given voxel ID using direct mapping
-// Returns 0xFFFFFFFF if not found
 uint get_vertex_index(uint voxel_id) {
-    int idx = voxel_to_vertex_idx[voxel_id];
-    return (idx >= 0) ? uint(idx) : 0xFFFFFFFFu;
+    return voxel_to_vertex_idx[voxel_id];
 }
 
 void main() {
@@ -138,17 +136,16 @@ void main() {
             // Iterate over 26-neighborhood
             uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
             uint unique_count = 0;
-            ivec3 center = get_voxel_coords(voxel_id);
             for (int n = 0; n < 26; ++n) {
-                ivec3 nc = center + neighbors[n];
+                ivec3 nc = voxel_coords + neighbors[n];
                 if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
                 uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
                 // Follow ascending manifold from neighbor to its CP
-                uint cp_voxel = ascending[nid];
-                if (cp_voxel == 0xFFFFFFFFu || cp_voxel == voxel_id) continue;
-                // Map to vertex index
-                uint cp_idx = get_vertex_index(cp_voxel);
+                uint cp_id = ascending[nid];
+                if (cp_id == 0xFFFFFFFFu || cp_id == voxel_id) continue;
+                uint cp_idx = get_vertex_index(cp_id);
                 if (cp_idx == 0xFFFFFFFFu) continue;
+
                 // Uniqueness check (linear scan, max 8)
                 bool found = false;
                 for (uint i = 0; i < unique_count; ++i) {
@@ -158,29 +155,28 @@ void main() {
                     unique_targets[unique_count++] = cp_idx;
                 }
             }
-            // Emit edges to all unique CPs
+            // Emit edges to all unique CPs (shared memory batching)
+            uint local_offset = atomicAdd(local_edge_count, unique_count);
             for (uint i = 0; i < unique_count; ++i) {
-                uint target_idx = unique_targets[i];
-                uint local_idx = atomicAdd(local_edge_count, 1);
-                if (local_idx < MAX_LOCAL_EDGES) {
-                    local_edges[local_idx] = uvec2(vert_idx, target_idx);
+                uint local_idx = local_offset + i;
+                if (local_idx >= MAX_LOCAL_EDGES) {
+                    break;
                 }
+                local_edges[local_idx] = uvec2(vert_idx, unique_targets[i]);
             }
         }
         else if (type == 4) { // JOIN_SADDLE
             // Iterate over 26-neighborhood
             uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
             uint unique_count = 0;
-            ivec3 center = get_voxel_coords(voxel_id);
             for (int n = 0; n < 26; ++n) {
-                ivec3 nc = center + neighbors[n];
+                ivec3 nc = voxel_coords + neighbors[n];
                 if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
                 uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
                 // Follow descending manifold from neighbor to its CP
-                uint cp_voxel = descending[nid];
-                if (cp_voxel == 0xFFFFFFFFu || cp_voxel == voxel_id) continue;
-                // Map to vertex index
-                uint cp_idx = get_vertex_index(cp_voxel);
+                uint cp_id = descending[nid];
+                if (cp_id == 0xFFFFFFFFu || cp_id == voxel_id) continue;
+                uint cp_idx = get_vertex_index(cp_id);
                 if (cp_idx == 0xFFFFFFFFu) continue;
                 // Uniqueness check (linear scan, max 8)
                 bool found = false;
@@ -191,28 +187,28 @@ void main() {
                     unique_targets[unique_count++] = cp_idx;
                 }
             }
-            // Emit edges to all unique CPs
+            // Emit edges to all unique CPs (shared memory batching)
+            uint local_offset = atomicAdd(local_edge_count, unique_count);
             for (uint i = 0; i < unique_count; ++i) {
-                uint target_idx = unique_targets[i];
-                uint local_idx = atomicAdd(local_edge_count, 1);
-                if (local_idx < MAX_LOCAL_EDGES) {
-                    local_edges[local_idx] = uvec2(vert_idx, target_idx);
+                uint local_idx = local_offset + i;
+                if (local_idx >= MAX_LOCAL_EDGES) {
+                    break;
                 }
+                local_edges[local_idx] = uvec2(vert_idx, unique_targets[i]);
             }
         }
     }
     
     barrier();
     
+    uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
     // One thread reserves space in global buffer and writes all local edges
-    if (local_id == 0 && local_edge_count > 0) {
-        uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
+    if (local_id == 0 && write_count > 0) {
         global_edge_offset = atomicAdd(edge_count, write_count);
     }
     barrier();
     
     // Threads cooperatively write local edges to global memory
-    uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
     for (uint i = local_id; i < write_count; i += 64) {
         edges[global_edge_offset + i] = local_edges[i];
     }

@@ -18,6 +18,12 @@ layout(std430, binding = 2) buffer DescendingManifold {
     uint descending[];
 };
 
+layout(std430, binding = 3) buffer ChangedFlag {
+    uint changed;
+};
+
+shared uint local_changed;
+
 void main() {
     // Compute global voxel index from 3D thread indices
     uvec3 gid = gl_GlobalInvocationID.xyz;
@@ -25,28 +31,37 @@ void main() {
         return;
     }
 
+    if (gl_LocalInvocationIndex == 0) {
+        local_changed = 0;
+    }
+    barrier();
+
     uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
 
     uint parent_asc  = ascending[i];
     uint parent_desc = descending[i];
 
-    if (parent_asc == 0xFFFFFFFFu || parent_desc == 0xFFFFFFFFu) {
-        return; // Invalid voxel, skip
-    }
-
     // Compress ascending manifold
-    if (parent_asc != i) {  // Skip if already a root
+    if (parent_asc != i && parent_asc != 0xFFFFFFFFu) {  // Skip if already a root
         uint grandparent_asc = ascending[parent_asc];
         if (parent_asc != grandparent_asc) {
             ascending[i] = grandparent_asc;
+            local_changed = 1;
         }
     }
     
     // Compress descending manifold
-    if (parent_desc != i) {  // Skip if already a root
+    if (parent_desc != i && parent_desc != 0xFFFFFFFFu) {  // Skip if already a root
         uint grandparent_desc = descending[parent_desc];
         if (parent_desc != grandparent_desc) {
             descending[i] = grandparent_desc;
+            local_changed = 1;
         }
+    }
+
+    barrier();
+
+    if (gl_LocalInvocationIndex == 0) {
+        atomicOr(changed, local_changed);
     }
 }

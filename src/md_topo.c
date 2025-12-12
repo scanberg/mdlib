@@ -6,6 +6,20 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_grid.h>
 
+#if DEBUG
+#include <core/md_hash.h>
+#include <stdlib.h>
+
+// Comparison function to sort uint32 indices (for quicksort C)
+static int uint_compare(const void* a, const void* b) {
+    uint32_t val_a = *(const uint32_t*)a;
+    uint32_t val_b = *(const uint32_t*)b;
+    if (val_a < val_b) return -1;
+    if (val_a > val_b) return 1;
+    return 0;
+}
+#endif
+
 static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* grid) {
     out_mat[0][0] = grid->orientation.elem[0][0] * grid->spacing.elem[0];
     out_mat[0][1] = grid->orientation.elem[0][1] * grid->spacing.elem[0];
@@ -156,21 +170,12 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     ubo_data.dims[1] = grid->dim[1];
     ubo_data.dims[2] = grid->dim[2];
     // Use a permissive threshold by default to avoid dropping valid low-amplitude features
-    ubo_data.scalar_threshold = 0.0f; // Set to >0.0 to filter noise if desired
+    ubo_data.scalar_threshold = 1.0E-4f; // Set to >0.0 to filter noise if desired
     
     GLuint ubo_buf = create_buffer(sizeof(ubo_data), &ubo_data, GL_STATIC_DRAW);
     if (!ubo_buf) {
         return false;
     }
-    
-    // Auto-compute compression iterations based on grid dimensions
-    uint32_t max_dim = MAX(grid->dim[0], MAX(grid->dim[1], grid->dim[2]));
-    uint32_t num_compression_iterations = 0;
-    uint32_t temp = max_dim;
-    while (temp > 1) {
-        temp >>= 1;
-    }
-    num_compression_iterations += 1; // Add safety margin
     
     bool success = false;
     GLuint ascending_buf = 0;
@@ -199,16 +204,54 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // === Step 2: Path compression (iteratively) ===
     GLuint compression_prog = get_path_compression_program();
     if (!compression_prog) goto cleanup;
+
+    GLuint changed_flag_buf = create_buffer(sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     
     glUseProgram(compression_prog);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ascending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, descending_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, changed_flag_buf);
     
-    for (uint32_t i = 0; i < num_compression_iterations; ++i) {
+    uint32_t changed = 1;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, changed_flag_buf);
+    while (changed) {
+        // Reset changed flag
+        changed = 0;
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
         glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+        glDeleteSync(fence);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
     }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+	delete_buffer(changed_flag_buf);
+
+#if DEBUG
+    {
+		// Ensure all writes are done before reading back
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+        glDeleteSync(fence);
+    
+        md_allocator_i* temp_alloc = md_get_heap_allocator();
+        uint32_t* asc_data  = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
+        uint32_t* desc_data = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ascending_buf);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_points * sizeof(uint32_t), asc_data);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, descending_buf);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_points * sizeof(uint32_t), desc_data);
+        uint64_t asc_hash  = md_hash64(asc_data,  num_points * sizeof(uint32_t), 0);
+        uint64_t desc_hash = md_hash64(desc_data, num_points * sizeof(uint32_t), 0);
+        MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
+        MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
+        md_free(temp_alloc, asc_data,  num_points * sizeof(uint32_t));
+        md_free(temp_alloc, desc_data, num_points * sizeof(uint32_t));
+    }
+#endif
     
     // === Step 3: Identify critical points ===
     GLuint critical_prog = get_critical_points_program();
@@ -216,8 +259,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     types_buf = create_buffer(num_points * sizeof(int), NULL, GL_DYNAMIC_COPY);
     
-    // Counts buffer: maximaCount, splitSaddleCount, minimaCount, joinSaddleCount, edgeCount
-    uint32_t counts_init[5] = {0, 0, 0, 0, 0};
+    // Counts buffer: maximaCount, splitSaddleCount, minimaCount, joinSaddleCount
+    uint32_t counts_init[4] = {0};
     counts_buf = create_buffer(sizeof(counts_init), counts_init, GL_DYNAMIC_COPY);
     
     glUseProgram(critical_prog);
@@ -257,32 +300,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // === Step 4: Compact critical point indices into ordered array ===
     GLuint compaction_prog = get_critical_point_compaction_program();
     if (!compaction_prog) goto cleanup;
-    
-    // Create separate buffers for each type
-    GLuint maxima_buf = create_buffer(num_maxima * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
-    GLuint split_saddles_buf = create_buffer(num_split_saddles * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
-    GLuint minima_buf = create_buffer(num_minima * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
-    GLuint join_saddles_buf = create_buffer(num_join_saddles * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
-    
-    uint32_t counters_init[4] = {0};
-    counter_buf = create_buffer(sizeof(counters_init), counters_init, GL_DYNAMIC_COPY);
-    
-    glUseProgram(compaction_prog);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, types_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, maxima_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, split_saddles_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, minima_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, join_saddles_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, counter_buf);
 
-    glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    
-    // === Step 5: Extract vertices and edges using GPU shader ===
-    GLuint extraction_prog = get_vertex_edge_extraction_program();
-    if (!extraction_prog) goto cleanup;
-    
     // Allocate unified indices buffer (packed: maxima, split saddles, minima, join saddles)
     if (num_vertices > 0) {
         indices_buf = create_buffer(num_vertices * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
@@ -293,38 +311,47 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     } else {
         indices_buf = 0;
     }
-
-    // Copy indices from separate buffers into unified buffer in correct order
-    if (num_maxima > 0 && indices_buf) {
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, maxima_buf);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
-        glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, num_maxima * sizeof(uint32_t));
-    }
-    uint32_t offset = num_maxima;
-    if (num_split_saddles > 0 && indices_buf) {
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, split_saddles_buf);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
-        glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_split_saddles * sizeof(uint32_t));
-    }
-    offset += num_split_saddles;
-    if (num_minima > 0 && indices_buf) {
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, minima_buf);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
-        glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_minima * sizeof(uint32_t));
-    }
-    offset += num_minima;
-    if (num_join_saddles > 0 && indices_buf) {
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, join_saddles_buf);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, indices_buf);
-        glCopyBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_COPY_WRITE_BUFFER, 0, offset * sizeof(uint32_t), num_join_saddles * sizeof(uint32_t));
-    }
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
     
-    delete_buffer(maxima_buf);
-    delete_buffer(split_saddles_buf);
-    delete_buffer(minima_buf);
-    delete_buffer(join_saddles_buf);
+    // These are the write offsets into the unified indices buffer
+    uint32_t counters_init[4] = {0, num_maxima, num_maxima + num_split_saddles, num_maxima + num_split_saddles + num_minima};
+    counter_buf = create_buffer(sizeof(counters_init), counters_init, GL_DYNAMIC_COPY);
+    
+    glUseProgram(compaction_prog);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, types_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, indices_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, counter_buf);
+
+    glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    // Print out all of the critical point indices found (sorted)
+    #if DEBUG
+    {
+		// Ensure all writes are done before reading back
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+        glDeleteSync(fence);
+
+        md_allocator_i* temp_alloc = md_get_heap_allocator();
+        if (num_vertices > 0) {
+            uint32_t* data = (uint32_t*)md_alloc(temp_alloc, num_vertices * sizeof(uint32_t));
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, indices_buf);
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_vertices * sizeof(uint32_t), data);
+            qsort(data, num_vertices, sizeof(uint32_t), uint_compare);
+            printf("Maxima indices:");
+            for (uint32_t i = 0; i < num_vertices; i++) {
+                printf("  %u", data[i]);
+            }
+            printf("\n");
+            md_free(temp_alloc, data, num_vertices * sizeof(uint32_t));
+        }
+    }
+    #endif
+    
+    // === Step 5: Extract vertices and edges using GPU shader ===
+    GLuint extraction_prog = get_vertex_edge_extraction_program();
+    if (!extraction_prog) goto cleanup;
     
     // Create type counts buffer
     struct {
@@ -453,5 +480,6 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
             md_free(alloc, graph->edges, graph->num_edges * sizeof(md_topo_edge_t));
         }
         MEMSET(graph, 0, sizeof(md_topo_extremum_graph_t));
+        graph->alloc = alloc;
     }
 }

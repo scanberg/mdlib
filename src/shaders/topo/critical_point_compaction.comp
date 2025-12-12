@@ -13,24 +13,13 @@ layout(std430, binding = 1) buffer CriticalPointTypes {
     int types[];
 };
 
-layout(std430, binding = 2) writeonly buffer MaximaList {
-    uint maxima[];
+// Write to a single buffer containing all critical point indices in correct order
+layout(std430, binding = 2) writeonly buffer CriticalPointIndices {
+    uint cp_indices[];
 };
 
-layout(std430, binding = 3) writeonly buffer SplitSaddleList {
-    uint splitSaddles[];
-};
-
-layout(std430, binding = 4) writeonly buffer MinimaList {
-    uint minima[];
-};
-
-layout(std430, binding = 5) writeonly buffer JoinSaddleList {
-    uint joinSaddles[];
-};
-
-// Atomic counters for write positions
-layout(std430, binding = 6) buffer Counters {
+// Atomic counters for write positions (these have been preset to the correct offset into the cp_indices buffer)
+layout(std430, binding = 3) buffer Counters {
     uint maximaWritePos;
     uint splitSaddleWritePos;
     uint minimaWritePos;
@@ -59,7 +48,7 @@ shared uint globalJoinSaddleOffset;
 
 void main() {
     uvec3 gid = gl_GlobalInvocationID.xyz;
-    uint local_id = gl_LocalInvocationID.x;
+    uint local_id = gl_LocalInvocationIndex;
     uint voxel_id = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
     
     // Initialize shared counters (once per workgroup)
@@ -122,22 +111,22 @@ void main() {
     // [maxima | split_saddles | minima | join_saddles]
     if (local_id < localMaximaCount) {
         uint vtx_idx = globalMaximaOffset + local_id;
-        maxima[vtx_idx] = localMaxima[local_id];
+        cp_indices[vtx_idx] = localMaxima[local_id];
         types[localMaxima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
     }
     if (local_id < localSplitSaddleCount) {
         uint vtx_idx = globalSplitSaddleOffset + local_id;
-        splitSaddles[vtx_idx] = localSplitSaddles[local_id];
+        cp_indices[vtx_idx] = localSplitSaddles[local_id];
         types[localSplitSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
     }
     if (local_id < localMinimaCount) {
         uint vtx_idx = globalMinimaOffset + local_id;
-        minima[vtx_idx] = localMinima[local_id];
+        cp_indices[vtx_idx] = localMinima[local_id];
         types[localMinima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
     }
     if (local_id < localJoinSaddleCount) {
         uint vtx_idx = globalJoinSaddleOffset + local_id;
-        joinSaddles[vtx_idx] = localJoinSaddles[local_id];
+        cp_indices[vtx_idx] = localJoinSaddles[local_id];
         types[localJoinSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
     }
     // For non-critical points, set to -1 (0xFFFFFFFF)
