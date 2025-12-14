@@ -146,6 +146,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
     // Start timing
     glBeginQuery(GL_TIME_ELAPSED, query);
+	md_gl_debug_push("Compute Extremum Graph");
     
     // Use heap allocator if none specified
     md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
@@ -188,6 +189,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // === Step 1: Compute bidirectional manifolds (steepest ascent/descent) ===
     GLuint manifold_prog = get_bidirectional_manifold_program();
     if (!manifold_prog) goto cleanup;
+
+	md_gl_debug_push("Bidirectional Manifolds");
     
     ascending_buf  = create_buffer(num_points * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     descending_buf = create_buffer(num_points * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
@@ -200,10 +203,14 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	md_gl_debug_pop(); // Bidirectional Manifolds
     
     // === Step 2: Path compression (iteratively) ===
     GLuint compression_prog = get_path_compression_program();
     if (!compression_prog) goto cleanup;
+
+	md_gl_debug_push("Path Compression");
 
     GLuint changed_flag_buf = create_buffer(sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     
@@ -229,6 +236,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
 	delete_buffer(changed_flag_buf);
+
+	md_gl_debug_pop(); // Path Compression
 
 #if DEBUG
     {
@@ -256,6 +265,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // === Step 3: Identify critical points ===
     GLuint critical_prog = get_critical_points_program();
     if (!critical_prog) goto cleanup;
+
+	md_gl_debug_push("Critical Points");
     
     types_buf = create_buffer(num_points * sizeof(int), NULL, GL_DYNAMIC_COPY);
     
@@ -273,6 +284,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	md_gl_debug_pop(); // Critical Points
 
     {
 		// Ensure all writes are done before reading back
@@ -301,6 +314,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     GLuint compaction_prog = get_critical_point_compaction_program();
     if (!compaction_prog) goto cleanup;
 
+	md_gl_debug_push("Critical Point Compaction");
+
     // Allocate unified indices buffer (packed: maxima, split saddles, minima, join saddles)
     if (num_vertices > 0) {
         indices_buf = create_buffer(num_vertices * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
@@ -324,6 +339,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
     glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	md_gl_debug_pop(); // Critical Point Compaction
 
     // Print out all of the critical point indices found (sorted)
     #if DEBUG
@@ -352,6 +369,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // === Step 5: Extract vertices and edges using GPU shader ===
     GLuint extraction_prog = get_vertex_edge_extraction_program();
     if (!extraction_prog) goto cleanup;
+
+	md_gl_debug_push("Graph Extraction");
     
     // Create type counts buffer
     struct {
@@ -386,6 +405,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     uint32_t num_extraction_workgroups = (num_vertices + 63) / 64;
     glDispatchCompute(num_extraction_workgroups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	md_gl_debug_pop(); // Graph Extraction
 
     {
 		// Ensure all writes are done before reading back
@@ -454,6 +475,7 @@ cleanup:
     delete_buffer(counts_buf);
     delete_buffer(counter_buf);
     
+    md_gl_debug_pop();
     return success;
 }
 

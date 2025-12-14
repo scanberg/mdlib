@@ -37,10 +37,12 @@ shared uint localMaxima[64];
 shared uint localSplitSaddles[64];
 shared uint localMinima[64];
 shared uint localJoinSaddles[64];
+
 shared uint localMaximaCount;
 shared uint localSplitSaddleCount;
 shared uint localMinimaCount;
 shared uint localJoinSaddleCount;
+
 shared uint globalMaximaOffset;
 shared uint globalSplitSaddleOffset;
 shared uint globalMinimaOffset;
@@ -111,23 +113,27 @@ void main() {
     // [maxima | split_saddles | minima | join_saddles]
     if (local_id < localMaximaCount) {
         uint vtx_idx = globalMaximaOffset + local_id;
-        cp_indices[vtx_idx] = localMaxima[local_id];
-        types[localMaxima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+        uint vtx_id  = localMaxima[local_id];
+        cp_indices[vtx_idx] = vtx_id;
+        types[vtx_id] = int(vtx_idx);        // Overwrite type with vertex index
     }
     if (local_id < localSplitSaddleCount) {
         uint vtx_idx = globalSplitSaddleOffset + local_id;
-        cp_indices[vtx_idx] = localSplitSaddles[local_id];
-        types[localSplitSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+        uint vtx_id  = localSplitSaddles[local_id];
+        cp_indices[vtx_idx] = vtx_id;
+        types[vtx_id] = int(vtx_idx);  // Overwrite type with vertex index
     }
     if (local_id < localMinimaCount) {
         uint vtx_idx = globalMinimaOffset + local_id;
-        cp_indices[vtx_idx] = localMinima[local_id];
-        types[localMinima[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+        uint vtx_id  = localMinima[local_id];
+        cp_indices[vtx_idx] = vtx_id;
+        types[vtx_id] = int(vtx_idx);        // Overwrite type with vertex index
     }
     if (local_id < localJoinSaddleCount) {
         uint vtx_idx = globalJoinSaddleOffset + local_id;
-        cp_indices[vtx_idx] = localJoinSaddles[local_id];
-        types[localJoinSaddles[local_id]] = int(vtx_idx); // Overwrite type with vertex index
+        uint vtx_id  = localJoinSaddles[local_id];
+        cp_indices[vtx_idx] = vtx_id;
+        types[vtx_id] = int(vtx_idx);   // Overwrite type with vertex index
     }
     // For non-critical points, set to -1 (0xFFFFFFFF)
     if (type == REGULAR && voxel_id < num_points) {

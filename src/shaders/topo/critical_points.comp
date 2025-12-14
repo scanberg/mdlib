@@ -1,6 +1,24 @@
 #version 450
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+#define WG_X 8
+#define WG_Y 8
+#define WG_Z 8
+#define WG_SIZE (WG_X * WG_Y * WG_Z)
+
+#define SG_X (WG_X + 2)
+#define SG_Y (WG_Y + 2)
+#define SG_Z (WG_Z + 2)
+#define SG_SIZE (SG_X * SG_Y * SG_Z)
+
+#define REGULAR 0
+#define MAXIMUM 1
+#define SPLIT_SADDLE 2
+#define MINIMUM 3
+#define JOIN_SADDLE 4
+
+#define NUM_NEIGHBORS 26
+
+layout(local_size_x = WG_X, local_size_y = WG_Y, local_size_z = WG_Z) in;
 
 // UBO data (shared across all shaders)
 layout(std140, binding = 0) uniform UBO {
@@ -32,17 +50,8 @@ layout (std430, binding = 4) buffer CriticalPointCounts {
     uint joinSaddleCount;   // saddles in descending manifold
 };
 
-#define REGULAR 0
-#define MAXIMUM 1
-#define SPLIT_SADDLE 2
-#define MINIMUM 3
-#define JOIN_SADDLE 4
-
-#define NUM_NEIGHBORS 26
-
 bool is_valid_voxel(ivec3 ijk) {
-    return all(greaterThanEqual(ijk, ivec3(0))) &&
-           all(lessThan(ijk, ivec3(dims)));
+    return all(greaterThanEqual(ijk, ivec3(0))) && all(lessThan(ijk, ivec3(dims)));
 }
 
 // Helper functions
@@ -64,8 +73,23 @@ bool sos_is_greater(float value_a, uint id_a, float value_b, uint id_b) {
     return (value_a > value_b) || (value_a == value_b && id_a > id_b);
 }
 
+// Explicit neighbor offsets for 26-connectivity
+const ivec3 neighbor_offset[NUM_NEIGHBORS] = ivec3[](
+    ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
+    ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
+    ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
+    
+    ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
+    ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
+    ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
+    
+    ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
+    ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
+    ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
+);
+
 // Precomputed adjacency masks for 26 neighbors (bit i set if neighbor i is adjacent)
-const uint adjacencyMasks[26] = {
+const uint neighbor_adjacency_mask[NUM_NEIGHBORS] = {
     0x0000161A,
     0x00003E3D,
     0x00002C32,
@@ -114,7 +138,7 @@ int count_link_components(uint link_mask) {
             prev = component;
             for (int nb = 0; nb < NUM_NEIGHBORS; ++nb) {
                 if ((component & (1u << nb)) != 0u) {
-                    component |= adjacencyMasks[nb] & link_mask;
+                    component |= neighbor_adjacency_mask[nb] & link_mask;
                 }
             }
         }
@@ -133,8 +157,8 @@ shared uint numJoinSaddles;
 shared uint numEdges;
 
 // Shared memory for scalar values and voxel IDs in a 10x10x10 region (8x8x8 block + 1 padding in each direction)
-shared float sharedScalars[10][10][10];
-shared uint sharedIds[10][10][10];
+shared float sharedScalars[SG_X][SG_Y][SG_Z];
+shared uint sharedIds[SG_X][SG_Y][SG_Z];
 
 void main() {
     // Compute global voxel index from 3D thread indices
@@ -163,33 +187,24 @@ void main() {
 
     // Cooperative linear fill of the 10x10x10 shared region (covers centers + padding)
     {
-        const int SG_X = 10;
-        const int SG_Y = 10;
-        const int SG_Z = 10;
-        const int SG_SIZE = SG_X * SG_Y * SG_Z;
         // Use compile-time workgroup size constants to avoid driver compiler issues
-        const ivec3 WG_SIZE = ivec3(8,8,8);
-        const int WG_THREADS = WG_SIZE.x * WG_SIZE.y * WG_SIZE.z;
         int tid = int(gl_LocalInvocationIndex);
 
         // Block origin in voxel coordinates (position of the thread (0,0,0) in this WG)
-        ivec3 block_origin = ivec3(gl_WorkGroupID) * WG_SIZE;
-        for (int s = tid; s < SG_SIZE; s += WG_THREADS) {
+        ivec3 block_origin = ivec3(gl_WorkGroupID) * ivec3(WG_X, WG_Y, WG_Z) - ivec3(1,1,1);
+        for (int s = tid; s < SG_SIZE; s += WG_SIZE) {
             int sx = s % SG_X;
             int sy = (s / SG_X) % SG_Y;
             int sz = s / (SG_X * SG_Y);
 
             // map shared slot to global voxel: block_origin + (sx-1, sy-1, sz-1)
-            ivec3 gp = block_origin + ivec3(sx - 1, sy - 1, sz - 1);
-            if (any(lessThan(gp, ivec3(0))) || any(greaterThanEqual(gp, dims_i))) {
-                sharedScalars[sx][sy][sz] = 0.0;
-                sharedIds[sx][sy][sz] = 0xFFFFFFFFu;
-                continue;
-            }
+            ivec3 gp = block_origin + ivec3(sx, sy, sz);
+            bool is_valid = is_valid_voxel(gp);
+            gp = clamp(gp, ivec3(0), dims_i - 1);
 
-            sharedScalars[sx][sy][sz] = get_scalar(gp);
+            sharedScalars[sx][sy][sz] = imageLoad(volumeTex, gp).r;
             int lin = gp.x + gp.y * dims_i.x + gp.z * dims_i.x * dims_i.y;
-            sharedIds[sx][sy][sz] = uint(lin);
+            sharedIds[sx][sy][sz] = is_valid ? uint(lin) : 0xFFFFFFFFu;
         }
     }
 
@@ -199,35 +214,16 @@ void main() {
     int type = REGULAR;
 
     if (scalar_threshold < fi) {
-        // Explicit neighbor offsets for 26-connectivity
-        const ivec3 neighbor_offset[NUM_NEIGHBORS] = ivec3[](
-            ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
-            ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
-            ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
-            
-            ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
-            ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
-            ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
-            
-            ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
-            ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
-            ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
-        );
-
         // Get all neighbors using shared memory
         uint  neighbor_ids[NUM_NEIGHBORS];
         float neighbor_scalars[NUM_NEIGHBORS];
         uint  neighbor_mask = 0u;
         for (int i = 0; i < NUM_NEIGHBORS; i++) {
             ivec3 offset = neighbor_offset[i];
-            int nx = local_idx.x + offset.x;
-            int ny = local_idx.y + offset.y;
-            int nz = local_idx.z + offset.z;
-            neighbor_ids[i] = sharedIds[nx][ny][nz];
-            neighbor_scalars[i] = sharedScalars[nx][ny][nz];
-            if (neighbor_ids[i] != 0xFFFFFFFFu) {
-                neighbor_mask |= (1u << i);
-            }
+            ivec3 n = local_idx + offset;
+            neighbor_ids[i] = sharedIds[n.x][n.y][n.z];
+            neighbor_scalars[i] = sharedScalars[n.x][n.y][n.z];
+            neighbor_mask |= (neighbor_ids[i] != 0xFFFFFFFFu) ? (1u << i) : 0u;
         }
         
         // ===== Analyze ASCENDING manifold (maxima + split saddles) =====
