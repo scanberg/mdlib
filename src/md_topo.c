@@ -223,11 +223,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
         glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-#if 0
-        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-        glDeleteSync(fence);
-#endif
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
     }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
