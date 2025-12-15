@@ -141,11 +141,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         return false;
     }
 
-    GLuint query;
-    glGenQueries(1, &query);
-
-    // Start timing
-    glBeginQuery(GL_TIME_ELAPSED, query);
 	md_gl_debug_push("Compute Extremum Graph");
     
     // Use heap allocator if none specified
@@ -171,7 +166,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     ubo_data.dims[1] = grid->dim[1];
     ubo_data.dims[2] = grid->dim[2];
     // Use a permissive threshold by default to avoid dropping valid low-amplitude features
-    ubo_data.scalar_threshold = 1.0E-4f; // Set to >0.0 to filter noise if desired
+    ubo_data.scalar_threshold = 1.0E-7f; // Set to >0.0 to filter noise if desired
     
     GLuint ubo_buf = create_buffer(sizeof(ubo_data), &ubo_data, GL_STATIC_DRAW);
     if (!ubo_buf) {
@@ -228,9 +223,11 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
         glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+#if 0
         GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
         glDeleteSync(fence);
+#endif
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
     }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -240,23 +237,24 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 	md_gl_debug_pop(); // Path Compression
 
 #if DEBUG
-    {
-		// Ensure all writes are done before reading back
-        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-        glDeleteSync(fence);
-    
+    {  
         md_allocator_i* temp_alloc = md_get_heap_allocator();
+        float*    vol_data  = (float*)md_alloc(temp_alloc, num_points * sizeof(float));
         uint32_t* asc_data  = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
         uint32_t* desc_data = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
+        glBindTexture(GL_TEXTURE_3D, vol_tex);
+        glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, vol_data);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ascending_buf);
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_points * sizeof(uint32_t), asc_data);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, descending_buf);
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_points * sizeof(uint32_t), desc_data);
+        uint64_t vol_hash  = md_hash64(vol_data,  num_points * sizeof(float), 0);
         uint64_t asc_hash  = md_hash64(asc_data,  num_points * sizeof(uint32_t), 0);
         uint64_t desc_hash = md_hash64(desc_data, num_points * sizeof(uint32_t), 0);
-        MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
-        MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
+        MD_LOG_INFO("Volume              hash: 0x%016llX", (unsigned long long)vol_hash);
+        //MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
+        //MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
+        md_free(temp_alloc, vol_data,  num_points * sizeof(float));
         md_free(temp_alloc, asc_data,  num_points * sizeof(uint32_t));
         md_free(temp_alloc, desc_data, num_points * sizeof(uint32_t));
     }
@@ -286,13 +284,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
 	md_gl_debug_pop(); // Critical Points
-
-    {
-		// Ensure all writes are done before reading back
-        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-        glDeleteSync(fence);
-    }
     
     // Read back counts
     uint32_t counts[4] = {0};
@@ -307,7 +298,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     uint32_t num_vertices = num_maxima + num_split_saddles + num_minima + num_join_saddles;
     uint32_t num_edges = 8 * (num_split_saddles + num_join_saddles); // We estimate this from split saddles + join saddles for allocation, this will be updated later to the exact count
     
-    MD_LOG_INFO("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
+    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
                 num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices);
     
     // === Step 4: Compact critical point indices into ordered array ===
@@ -342,14 +333,10 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 	md_gl_debug_pop(); // Critical Point Compaction
 
+#if 0
     // Print out all of the critical point indices found (sorted)
     #if DEBUG
     {
-		// Ensure all writes are done before reading back
-        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-        glDeleteSync(fence);
-
         md_allocator_i* temp_alloc = md_get_heap_allocator();
         if (num_vertices > 0) {
             uint32_t* data = (uint32_t*)md_alloc(temp_alloc, num_vertices * sizeof(uint32_t));
@@ -365,6 +352,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         }
     }
     #endif
+#endif
     
     // === Step 5: Extract vertices and edges using GPU shader ===
     GLuint extraction_prog = get_vertex_edge_extraction_program();
@@ -408,12 +396,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 	md_gl_debug_pop(); // Graph Extraction
 
-    {
-		// Ensure all writes are done before reading back
-        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-        glDeleteSync(fence);
-    }
+    md_gl_debug_push("Readback Results");
 
     // Read back edge count
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, edge_count_buf);
@@ -435,6 +418,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_edges * sizeof(md_topo_edge_t), edges);
     }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    md_gl_debug_pop(); // Readback Results
     
     delete_buffer(indices_buf);
     delete_buffer(type_counts_buf);
@@ -457,16 +442,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     MD_LOG_INFO("Extracted %u edges in Morse-Smale complex", num_edges);
     
     success = true;
-
-    // End timing
-    glEndQuery(GL_TIME_ELAPSED);
-
-    // Retrieve the result (blocking until GPU finishes)
-    GLuint64 elapsedTime = 0;
-    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &elapsedTime); // nanoseconds
-
-	MD_LOG_INFO("Topology computation of [%u,%u,%u] GPU time: %.3f ms", grid->dim[0], grid->dim[1], grid->dim[2], elapsedTime / 1e6);
-    
 cleanup:
     delete_buffer(ubo_buf);
     delete_buffer(ascending_buf);

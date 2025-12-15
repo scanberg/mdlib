@@ -1,5 +1,7 @@
 #version 450
 
+#define NUM_NEIGHBORS 26
+
 layout(local_size_x = 64) in;
 
 // UBO data (shared across all shaders)
@@ -59,7 +61,7 @@ layout(std430, binding = 8) readonly buffer VoxelToVertexIndex {
 shared uint local_edge_count;
 shared uint global_edge_offset;
 
-#define MAX_LOCAL_EDGES 512
+#define MAX_LOCAL_EDGES 2048
 shared uvec2 local_edges[MAX_LOCAL_EDGES];
 
 // Helper functions
@@ -92,6 +94,21 @@ uint get_vertex_index(uint voxel_id) {
     return voxel_to_vertex_idx[voxel_id];
 }
 
+// Explicit neighbor offsets for 26-connectivity
+const ivec3 neighbors[26] = ivec3[](
+    ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
+    ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
+    ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
+    
+    ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
+    ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
+    ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
+    
+    ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
+    ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
+    ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
+);
+
 void main() {
     uint vert_idx = gl_GlobalInvocationID.x;
     uint local_id = gl_LocalInvocationID.x;
@@ -111,89 +128,47 @@ void main() {
         
         vertex_data[vert_idx] = vec4(world_pos, value);
         
-        // === Extract edges based on manifold connectivity ===
-        uint type = get_type(vert_idx);
+        uint split_saddle_beg = num_maxima;
+        uint split_saddle_end = num_maxima + num_split_saddles;
+        uint join_saddle_beg  = num_maxima + num_split_saddles + num_minima;
+        uint join_saddle_end  = num_vertices;
+
+        bool is_split_saddle = (split_saddle_beg <= vert_idx) && (vert_idx < split_saddle_end);
+        bool is_join_saddle  = (join_saddle_beg  <= vert_idx) && (vert_idx < join_saddle_end);
         
         // Store edges in local shared memory first
-        uint target_voxel = 0xFFFFFFFF;
-
-        // Explicit neighbor offsets for 26-connectivity
-        const ivec3 neighbors[26] = ivec3[](
-            ivec3(-1, -1, -1), ivec3(0, -1, -1), ivec3(1, -1, -1),
-            ivec3(-1, 0, -1),  ivec3(0, 0, -1),  ivec3(1, 0, -1),
-            ivec3(-1, 1, -1),  ivec3(0, 1, -1),  ivec3(1, 1, -1),
-            
-            ivec3(-1, -1, 0),  ivec3(0, -1, 0),  ivec3(1, -1, 0),
-            ivec3(-1, 0, 0),                     ivec3(1, 0, 0),
-            ivec3(-1, 1, 0),   ivec3(0, 1, 0),   ivec3(1, 1, 0),
-            
-            ivec3(-1, -1, 1),  ivec3(0, -1, 1),  ivec3(1, -1, 1),
-            ivec3(-1, 0, 1),   ivec3(0, 0, 1),   ivec3(1, 0, 1),
-            ivec3(-1, 1, 1),   ivec3(0, 1, 1),   ivec3(1, 1, 1)
-        );
+        uint target_voxel = 0xFFFFFFFFu;
         
-        if (type == 2) { // SPLIT_SADDLE
+        if (is_split_saddle || is_join_saddle) { // BOTH SADDLES
             // Iterate over 26-neighborhood
-            uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
+            uint unique_targets[NUM_NEIGHBORS]; // max 8 unique CPs (adjacency theory)
             uint unique_count = 0;
-            for (int n = 0; n < 26; ++n) {
+            for (int n = 0; n < NUM_NEIGHBORS; ++n) {
                 ivec3 nc = voxel_coords + neighbors[n];
                 if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
                 uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
-                // Follow ascending manifold from neighbor to its CP
-                uint cp_id = ascending[nid];
-                if (cp_id == 0xFFFFFFFFu || cp_id == voxel_id) continue;
+
+                // Follow manifold from neighbor to its CP
+                uint cp_id = is_split_saddle ? ascending[nid] : descending[nid];
+                if (cp_id == voxel_id) continue;
+
                 uint cp_idx = get_vertex_index(cp_id);
                 if (cp_idx == 0xFFFFFFFFu) continue;
 
-                // Uniqueness check (linear scan, max 8)
+                // Uniqueness check
                 bool found = false;
                 for (uint i = 0; i < unique_count; ++i) {
                     if (unique_targets[i] == cp_idx) { found = true; break; }
                 }
-                if (!found && unique_count < 8) {
+                if (!found) {
                     unique_targets[unique_count++] = cp_idx;
                 }
             }
             // Emit edges to all unique CPs (shared memory batching)
             uint local_offset = atomicAdd(local_edge_count, unique_count);
-            for (uint i = 0; i < unique_count; ++i) {
+            uint write_count = min(unique_count, MAX_LOCAL_EDGES - local_offset);
+            for (uint i = 0; i < write_count; ++i) {
                 uint local_idx = local_offset + i;
-                if (local_idx >= MAX_LOCAL_EDGES) {
-                    break;
-                }
-                local_edges[local_idx] = uvec2(vert_idx, unique_targets[i]);
-            }
-        }
-        else if (type == 4) { // JOIN_SADDLE
-            // Iterate over 26-neighborhood
-            uint unique_targets[8]; // max 8 unique CPs (adjacency theory)
-            uint unique_count = 0;
-            for (int n = 0; n < 26; ++n) {
-                ivec3 nc = voxel_coords + neighbors[n];
-                if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(dims)))) continue;
-                uint nid = uint(nc.x) + uint(nc.y) * dims.x + uint(nc.z) * dims.x * dims.y;
-                // Follow descending manifold from neighbor to its CP
-                uint cp_id = descending[nid];
-                if (cp_id == 0xFFFFFFFFu || cp_id == voxel_id) continue;
-                uint cp_idx = get_vertex_index(cp_id);
-                if (cp_idx == 0xFFFFFFFFu) continue;
-                // Uniqueness check (linear scan, max 8)
-                bool found = false;
-                for (uint i = 0; i < unique_count; ++i) {
-                    if (unique_targets[i] == cp_idx) { found = true; break; }
-                }
-                if (!found && unique_count < 8) {
-                    unique_targets[unique_count++] = cp_idx;
-                }
-            }
-            // Emit edges to all unique CPs (shared memory batching)
-            uint local_offset = atomicAdd(local_edge_count, unique_count);
-            for (uint i = 0; i < unique_count; ++i) {
-                uint local_idx = local_offset + i;
-                if (local_idx >= MAX_LOCAL_EDGES) {
-                    break;
-                }
                 local_edges[local_idx] = uvec2(vert_idx, unique_targets[i]);
             }
         }

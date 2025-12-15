@@ -43,7 +43,7 @@ void main() {
         uint grandparent_asc = ascending[parent_asc];
         if (parent_asc != grandparent_asc) {
             ascending[i] = grandparent_asc;
-            local_changed = 1u;
+            atomicOr(local_changed, 1u);
         }
     }
 
@@ -53,7 +53,7 @@ void main() {
         uint grandparent_desc = descending[parent_desc];
         if (parent_desc != grandparent_desc) {
             descending[i] = grandparent_desc;
-            local_changed = 1u;
+            atomicOr(local_changed, 1u);
         }
     }
 

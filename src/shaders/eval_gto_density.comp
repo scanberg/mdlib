@@ -101,7 +101,7 @@ uint pack_offset_length(uint offset, uint length) {
 #define WG_Z 8
 
 #define WG_SIZE (WG_X * WG_Y * WG_Z)
-#define TILE_SIZE 32
+#define TILE_SIZE 16
 #define TILE_AREA (TILE_SIZE*TILE_SIZE)
 #define MAX_SCREENED_CGTOS 2048
 #define MAX_TILE_PGTOS (TILE_SIZE * 16)

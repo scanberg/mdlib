@@ -93,15 +93,6 @@ void main() {
     barrier();
 
     float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
-#if 0
-    // Early out for low-scalar voxels (This was causing issues in critical point detection)
-    // Probably due to neighbors being set to invalid as well, breaking the manifold structure
-    if (val < scalar_threshold) {
-        ascending[i]  = 0xFFFFFFFFu;
-        descending[i] = 0xFFFFFFFFu;
-        return;
-    }
-#endif
 
     float max_val = val;
     float min_val = val;
@@ -109,9 +100,6 @@ void main() {
     uint min_neighbor = i;
 
     for (int j = 0; j < NUM_NEIGHBORS; j++) {
-        ivec3 npos = pos + neighbor_offset[j];
-        npos = clamp(npos, ivec3(0), dims_i - 1);
-        
         ivec3 sidx = local_idx + neighbor_offset[j];
         float s = sharedScalars[sidx.x][sidx.y][sidx.z];
         uint  n = sharedIds[sidx.x][sidx.y][sidx.z];

@@ -122,13 +122,12 @@ const uint neighbor_adjacency_mask[NUM_NEIGHBORS] = {
 int count_link_components(uint link_mask) {
     if (link_mask == 0u) return 0;
 
-    uint visited = 0u;
+    uint mask = link_mask;
     int num_components = 0;
     // Count unvisited components
     for (int start = 0; start < NUM_NEIGHBORS; ++start) {
         uint bit = 1u << start;
-        if ((link_mask & bit) == 0u) continue;
-        if ((visited & bit) != 0u) continue;
+        if ((mask & bit) == 0u) continue;
         num_components++;
 
         // Bitwise flood-fill
@@ -142,7 +141,7 @@ int count_link_components(uint link_mask) {
                 }
             }
         }
-        visited |= component;
+        mask &= ~component;
     }
 
     return num_components;
@@ -246,7 +245,7 @@ void main() {
                         break;
                     }
                 }
-                if (!found && reachable_maxima_count < NUM_NEIGHBORS) {
+                if (!found) {
                     reachable_maxima[reachable_maxima_count++] = max_id;
                 }
             }
@@ -285,7 +284,7 @@ void main() {
                             break;
                         }
                     }
-                    if (!found && reachable_minima_count < NUM_NEIGHBORS) {
+                    if (!found) {
                         reachable_minima[reachable_minima_count++] = min_id;
                     }
                 }
