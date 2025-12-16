@@ -147,7 +147,6 @@ int count_link_components(uint link_mask) {
     return num_components;
 }
 
-
 // Shared memory for workgroup-local compaction
 shared uint numMaxima;
 shared uint numSplitSaddles;
@@ -216,13 +215,11 @@ void main() {
         // Get all neighbors using shared memory
         uint  neighbor_ids[NUM_NEIGHBORS];
         float neighbor_scalars[NUM_NEIGHBORS];
-        uint  neighbor_mask = 0u;
         for (int i = 0; i < NUM_NEIGHBORS; i++) {
             ivec3 offset = neighbor_offset[i];
             ivec3 n = local_idx + offset;
             neighbor_ids[i] = sharedIds[n.x][n.y][n.z];
             neighbor_scalars[i] = sharedScalars[n.x][n.y][n.z];
-            neighbor_mask |= (neighbor_ids[i] != 0xFFFFFFFFu) ? (1u << i) : 0u;
         }
         
         // ===== Analyze ASCENDING manifold (maxima + split saddles) =====
@@ -293,7 +290,7 @@ void main() {
             if (reachable_minima_count == 0) {
                 type = MINIMUM;
                 atomicAdd(numMinima, 1u);
-            } else if (reachable_minima_count > 1) {
+            } else {
                 int num_components = count_link_components(lower_link_mask);
                 if (num_components > 1) {
                     type = JOIN_SADDLE;
