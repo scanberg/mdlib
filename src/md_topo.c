@@ -479,3 +479,23 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
         graph->alloc = alloc;
     }
 }
+
+void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph) {
+    // Copy structure, assume that the allocator is set within out_graph
+    md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
+    MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+    out_graph->alloc = alloc;
+    out_graph->num_vertices = src_graph->num_vertices;
+    out_graph->num_maxima = src_graph->num_maxima;
+    out_graph->num_split_saddles = src_graph->num_split_saddles;
+    out_graph->num_minima = src_graph->num_minima;
+    out_graph->num_join_saddles = src_graph->num_join_saddles;
+    out_graph->num_edges = src_graph->num_edges;
+
+    out_graph->vertices = md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    out_graph->edges    = md_alloc(alloc, src_graph->num_edges    * sizeof(md_topo_edge_t));
+
+
+    MEMCPY(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    MEMCPY(out_graph->edges, src_graph->edges, src_graph->num_edges * sizeof(md_topo_edge_t));
+}
