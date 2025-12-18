@@ -170,6 +170,8 @@ set(TOPO_SHADER_FILES
   src/shaders/topo/vertex_edge_extraction.comp
 )
 
+set(GEN_FILES)
+
 if (MD_ENABLE_GPU AND APPLE)
   set(MD_GPU_BACKEND "METAL")
   enable_language(OBJC)
@@ -186,10 +188,15 @@ endif()
 message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
 include(cmake/Shaders.cmake)
 
-md_compile_shaders(topo_shaders.inl
+ # Generate gen folder if not present
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen)
+
+md_compile_shaders(gen/topo_shaders.inl
     NAMESPACE topo
     SOURCES ${TOPO_SHADER_FILES}
 )
+
+list(APPEND GEN_FILES ${CMAKE_CURRENT_BINARY_DIR}/gen/topo_shaders.inl)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
@@ -389,10 +396,11 @@ endif()
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
 source_group("ext"      FILES ${EXT_FILES})
+source_group("gen"      FILES ${GEN_FILES})
 source_group("shaders"  FILES ${SHADER_FILES})
 source_group("proj"     FILES ${PROJ_FILES})
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
+add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
 target_include_directories(mdlib
   PUBLIC

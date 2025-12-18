@@ -12,15 +12,14 @@ function(md_compile_shaders OUT_FILE)
         OUTPUT ${GENERATED_C}
         COMMAND ${CMAKE_COMMAND}
                 -DMD_GPU_BACKEND=${MD_GPU_BACKEND}
-                -DSOURCES="${SHADER_SOURCES}"
-                -DNAMESPACE=${SHADER_NAMESPACE}
-                -DOUTPUT=${GENERATED_C}
-                -DSHADERC=${SHADERC_EXECUTABLE}
-                -DMETAL=${METAL_EXECUTABLE}
-                -DMETALLIB=${METALLIB_EXECUTABLE}
-                -DSPIRV_CROSS=${SPIRV_CROSS_EXECUTABLE}
-                -DXXD=${XXD_EXECUTABLE}
-                -P ${CMAKE_SOURCE_DIR}/cmake/CompileShaders.cmake
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DSHADER_SOURCES=${SHADER_SOURCES}
+                -DSHADER_NAMESPACE=${SHADER_NAMESPACE}
+                -DOUTPUT_FILE=${GENERATED_C}
+                -DGLSLC_EXECUTABLE=${GLSLC_EXECUTABLE}
+                -DXCRUN_EXECUTABLE=${XCRUN_EXECUTABLE}
+                -DSPIRV_CROSS_EXECUTABLE=${SPIRV_CROSS_EXECUTABLE}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileShaders.cmake
         DEPENDS ${SHADER_SOURCES}
         COMMENT "Compiling shaders (${MD_GPU_BACKEND}) → ${OUT_FILE}"
         VERBATIM
