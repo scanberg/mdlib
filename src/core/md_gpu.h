@@ -1,5 +1,3 @@
-# md_gpu.h
-
 /*
 md_gpu.h
 
@@ -23,6 +21,7 @@ Design goals:
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,25 +45,25 @@ Flags & enums
 
 typedef uint32_t md_gpu_buffer_flags_t;
 enum {
-  MD_GPU_BUFFER_NONE        = 0,
-  MD_GPU_BUFFER_CPU_VISIBLE = 1 << 0,
+    MD_GPU_BUFFER_NONE        = 0,
+    MD_GPU_BUFFER_CPU_VISIBLE = 1 << 0,
 };
 
 typedef uint32_t md_gpu_image_flags_t;
 enum {
-  MD_GPU_IMAGE_NONE         = 0,
-  MD_GPU_IMAGE_STORAGE     = 1 << 0, /* shader read/write */
-  MD_GPU_IMAGE_CPU_VISIBLE = 1 << 1, /* readback via copy */
+    MD_GPU_IMAGE_NONE         = 0,
+    MD_GPU_IMAGE_STORAGE     = 1 << 0, /* shader read/write */
+    MD_GPU_IMAGE_CPU_VISIBLE = 1 << 1, /* readback via copy */
 };
 
 typedef enum md_gpu_image_format_t {
-  MD_GPU_IMAGE_FORMAT_R8_UINT,
-  MD_GPU_IMAGE_FORMAT_R16_UINT,
-  MD_GPU_IMAGE_FORMAT_R32_UINT,
-  MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-  MD_GPU_IMAGE_FORMAT_RGBA8_UNORM,
-  MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT,
-  MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT,
+    MD_GPU_IMAGE_FORMAT_R8_UINT,
+    MD_GPU_IMAGE_FORMAT_R16_UINT,
+    MD_GPU_IMAGE_FORMAT_R32_UINT,
+    MD_GPU_IMAGE_FORMAT_R32_FLOAT,
+    MD_GPU_IMAGE_FORMAT_RGBA8_UNORM,
+    MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT,
+    MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT,
 } md_gpu_image_format_t;
 
 /* =============================

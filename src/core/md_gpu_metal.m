@@ -6,15 +6,16 @@
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 
-#include <core/common.h>
+#include <core/md_common.h> // Assert
+#include <stdlib.h>         // malloc, free
 
 /* =============================
    Configuration limits
    ============================= */
 
-#define MD_GPU_MAX_BIND_SLOTS   16
-#define MD_GPU_MAX_COMMANDS     1024
-#define MD_GPU_MAX_PUSH_CONSTANTS 256
+#define MD_GPU_MAX_BIND_SLOTS      16
+#define MD_GPU_MAX_COMMANDS        1024
+#define MD_GPU_MAX_PUSH_CONSTANTS  256
 
 /* =============================
    Internal structs
@@ -26,7 +27,7 @@ struct md_gpu_device {
 };
 
 struct md_gpu_queue {
-    md_gpu_device* dev;
+    struct md_gpu_device* dev;
 };
 
 struct md_gpu_buffer {
@@ -42,52 +43,48 @@ struct md_gpu_image {
 
 struct md_gpu_compute_pipeline {
     id<MTLComputePipelineState> pso;
+    uint32_t tg_size[3];
 };
 
-enum md_gpu_cmd_type {
+typedef enum md_gpu_cmd_type_t {
     CMD_DISPATCH,
     CMD_COPY_BUFFER,
     CMD_COPY_IMAGE_TO_BUFFER,
     CMD_BARRIER
-};
-
-struct md_gpu_cmd_dispatch {
-    uint32_t x, y, z;
-};
+} md_gpu_cmd_type_t;
 
 struct md_gpu_cmd_copy_buffer {
-    md_gpu_buffer* src;
-    md_gpu_buffer* dst;
+    struct md_gpu_buffer* src;
+    struct md_gpu_buffer* dst;
     size_t size;
     size_t src_offset;
     size_t dst_offset;
 };
 
 struct md_gpu_cmd_copy_image_to_buffer {
-    md_gpu_image* image;
-    md_gpu_buffer* buffer;
+    struct md_gpu_image* image;
+    struct md_gpu_buffer* buffer;
 };
 
 struct md_gpu_recorded_cmd {
-    md_gpu_cmd_type type;
+    md_gpu_cmd_type_t type;
     union {
-        md_gpu_cmd_dispatch dispatch;
-        md_gpu_cmd_copy_buffer copy_buf;
-        md_gpu_cmd_copy_image_to_buffer copy_img_buf;
+        uint32_t dispatch_size[3];
+        struct md_gpu_cmd_copy_buffer copy_buf;
+        struct md_gpu_cmd_copy_image_to_buffer copy_img_buf;
     } u;
 };
 
 struct md_gpu_command_buffer {
-    md_gpu_device* dev;
+    struct md_gpu_device* dev;
 
-    md_gpu_compute_pipeline* bound_pipeline;
-    md_gpu_buffer* bound_buffers[MD_GPU_MAX_BIND_SLOTS];
-    md_gpu_image*  bound_images[MD_GPU_MAX_BIND_SLOTS];
-
+    struct md_gpu_compute_pipeline* bound_pipeline;
+    struct md_gpu_buffer* bound_buffers[MD_GPU_MAX_BIND_SLOTS];
+    struct md_gpu_image*  bound_images[MD_GPU_MAX_BIND_SLOTS];
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t  push_constant_size;
 
-    md_gpu_recorded_cmd commands[MD_GPU_MAX_COMMANDS];
+    struct md_gpu_recorded_cmd commands[MD_GPU_MAX_COMMANDS];
     uint32_t command_count;
 };
 
@@ -117,7 +114,7 @@ static MTLPixelFormat to_mtl_format(md_gpu_image_format_t fmt) {
    ============================= */
 
 md_gpu_device_t md_gpu_create_device(void) {
-    md_gpu_device* dev = (md_gpu_device*)CALLOC(1, sizeof(md_gpu_device));
+    struct md_gpu_device* dev = (struct md_gpu_device*)calloc(1, sizeof(struct md_gpu_device));
     dev->device = MTLCreateSystemDefaultDevice();
     ASSERT(dev->device);
     dev->queue = [dev->device newCommandQueue];
@@ -125,11 +122,13 @@ md_gpu_device_t md_gpu_create_device(void) {
 }
 
 void md_gpu_destroy_device(md_gpu_device_t device) {
+    [device->queue release];
+    [device->device release];
     free(device);
 }
 
 md_gpu_queue_t md_gpu_get_compute_queue(md_gpu_device_t device) {
-    md_gpu_queue* q = (md_gpu_queue*)CALLOC(1, sizeof(md_gpu_queue));
+    struct md_gpu_queue* q = (struct md_gpu_queue*)calloc(1, sizeof(struct md_gpu_queue));
     q->dev = device;
     return q;
 }
@@ -139,8 +138,8 @@ md_gpu_queue_t md_gpu_get_compute_queue(md_gpu_device_t device) {
    ============================= */
 
 md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device,
-                                    const md_gpu_buffer_desc_t* desc) {
-    md_gpu_buffer* buf = (md_gpu_buffer*)CALLOC(1, sizeof(md_gpu_buffer));
+                                     const md_gpu_buffer_desc_t* desc) {
+    struct md_gpu_buffer* buf = (struct md_gpu_buffer*)calloc(1, sizeof(struct md_gpu_buffer));
     buf->size = desc->size;
     buf->flags = desc->flags;
 
@@ -153,6 +152,7 @@ md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device,
 }
 
 void md_gpu_destroy_buffer(md_gpu_buffer_t buffer) {
+    [buffer->buffer release];
     free(buffer);
 }
 
@@ -170,8 +170,8 @@ void md_gpu_unmap_buffer(md_gpu_buffer_t buffer) {
    ============================= */
 
 md_gpu_image_t md_gpu_create_image(md_gpu_device_t device,
-                                  const md_gpu_image_desc_t* desc) {
-    md_gpu_image* img = (md_gpu_image*)CALLOC(1, sizeof(md_gpu_image));
+                                   const md_gpu_image_desc_t* desc) {
+    struct md_gpu_image* img = (struct md_gpu_image*)calloc(1, sizeof(struct md_gpu_image));
     img->desc = *desc;
 
     MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
@@ -183,10 +183,12 @@ md_gpu_image_t md_gpu_create_image(md_gpu_device_t device,
     td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 
     img->texture = [device->device newTextureWithDescriptor:td];
+    [td release];
     return img;
 }
 
 void md_gpu_destroy_image(md_gpu_image_t image) {
+    [image->texture release];
     free(image);
 }
 
@@ -194,50 +196,52 @@ void md_gpu_destroy_image(md_gpu_image_t image) {
    Pipelines
    ============================= */
 
-md_gpu_compute_pipeline_t md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
+md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
     md_gpu_device_t device,
-    const md_gpu_compute_pipeline_desc_t* desc
-);
+    const md_gpu_compute_pipeline_desc_t* desc)
+{
     NSError* err = nil;
-    id<MTLLibrary> lib = [device->device newLibraryWithData:data error:&err];
+
+    NSData* data = [NSData dataWithBytes:desc->shader.data
+                                  length:desc->shader.size];
+
+    id<MTLLibrary> lib =
+        [device->device newLibraryWithData:data error:&err];
     ASSERT(lib && !err);
 
     id<MTLFunction> fn = [lib newFunctionWithName:@"main0"];
     ASSERT(fn);
 
-    md_gpu_compute_pipeline* p = (md_gpu_compute_pipeline*)CALLOC(1, sizeof(md_gpu_compute_pipeline));
-    p->pso = [device->device newComputePipelineStateWithFunction:fn error:&err];
+    struct md_gpu_compute_pipeline* p =
+        (struct md_gpu_compute_pipeline*)calloc(1, sizeof(struct md_gpu_compute_pipeline));
+
+    p->pso =
+        [device->device newComputePipelineStateWithFunction:fn error:&err];
     ASSERT(p->pso && !err);
+
     NSUInteger max_threads = [p->pso maxTotalThreadsPerThreadgroup];
     NSUInteger exec_width  = [p->pso threadExecutionWidth];
 
-    if (desc->threadgroup_size.x == 0 &&
-        desc->threadgroup_size.y == 0 &&
-        desc->threadgroup_size.z == 0) {
-
-        /* Auto mode */
-        p->tg.x = (uint32_t)exec_width;
-        p->tg.y = (uint32_t)(tg_size / exec_width);
-        p->tg.z = 1;
-        if (p->tg.y == 0) p->tg.y = 1;
-
+    if (desc->threadgroup_size[0] == 0 &&
+        desc->threadgroup_size[1] == 0 &&
+        desc->threadgroup_size[2] == 0) {
+        // Auto-configure threadgroup size
+        p->tg_size[0] = (uint32_t)exec_width;
+        p->tg_size[1] = (uint32_t)(max_threads / exec_width);
+        if (p->tg_size[1] == 0) p->tg_size[1] = 1;
+        p->tg_size[2] = 1;
     } else {
-
-        /* Fixed mode */
-        uint32_t total =
-            desc->threadgroup_size.x *
-            desc->threadgroup_size.y *
-            desc->threadgroup_size.z;
-
-        ASSERT(total <= tg_size);
-
-        p->tg = desc->threadgroup_size;
+        MEMCPY(p->tg_size, desc->threadgroup_size, sizeof(uint32_t) * 3);
     }
+
+    [fn release];
+    [lib release];
 
     return p;
 }
 
 void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
+    [pipeline->pso release];
     free(pipeline);
 }
 
@@ -246,7 +250,7 @@ void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
    ============================= */
 
 md_gpu_command_buffer_t md_gpu_create_command_buffer(md_gpu_device_t device) {
-    md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)CALLOC(1, sizeof(md_gpu_command_buffer));
+    struct md_gpu_command_buffer* cmd = (struct md_gpu_command_buffer*)calloc(1, sizeof(struct md_gpu_command_buffer));
     cmd->dev = device;
     return cmd;
 }
@@ -285,14 +289,16 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd,
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
                          uint32_t x, uint32_t y, uint32_t z) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
-    md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_DISPATCH;
-    rc->u.dispatch = { x, y, z };
+    rc->u.dispatch_size[0] = x;
+    rc->u.dispatch_size[1] = y;
+    rc->u.dispatch_size[2] = z; 
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
-    md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_BARRIER;
 }
 
@@ -303,18 +309,23 @@ void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
                             size_t src_offset,
                             size_t dst_offset) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
-    md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_COPY_BUFFER;
-    rc->u.copy_buf = { src, dst, size, src_offset, dst_offset };
+    rc->u.copy_buf.src = src;
+    rc->u.copy_buf.dst = dst;
+    rc->u.copy_buf.size = size;
+    rc->u.copy_buf.src_offset = src_offset;
+    rc->u.copy_buf.dst_offset = dst_offset;
 }
 
 void md_gpu_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd,
                                      md_gpu_image_t src_image,
                                      md_gpu_buffer_t dst_buffer) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
-    md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_COPY_IMAGE_TO_BUFFER;
-    rc->u.copy_img_buf = { src_image, dst_buffer };
+    rc->u.copy_img_buf.image = src_image;
+    rc->u.copy_img_buf.buffer = dst_buffer;
 }
 
 /* =============================
@@ -328,7 +339,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue,
     id<MTLComputeCommandEncoder> compute_enc = nil;
 
     for (uint32_t i = 0; i < cmd->command_count; ++i) {
-        md_gpu_recorded_cmd* c = &cmd->commands[i];
+        struct md_gpu_recorded_cmd* c = &cmd->commands[i];
 
         switch (c->type) {
             case CMD_DISPATCH: {
@@ -347,12 +358,12 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue,
                 if (cmd->push_constant_size > 0)
                     [compute_enc setBytes:cmd->push_constants length:cmd->push_constant_size atIndex:0];
 
-                md_gpu_compute_pipeline* p = cmd->bound_pipeline;
+                struct md_gpu_compute_pipeline* p = cmd->bound_pipeline;
 
-                uint32_t gx = c->u.dispatch.x;
-                uint32_t gy = c->u.dispatch.y;
-                uint32_t gz = c->u.dispatch.z;
-                MTLSize tg = MTLSizeMake(p->tg.x, p->tg.y, p->tg.z);
+                uint32_t gx = c->u.dispatch_size[0];
+                uint32_t gy = c->u.dispatch_size[1];
+                uint32_t gz = c->u.dispatch_size[2];
+                MTLSize tg = MTLSizeMake(p->tg_size[0], p->tg_size[1], p->tg_size[2]);
                 MTLSize grid = MTLSizeMake(
                     ((gx + tg.width  - 1) / tg.width)  * tg.width,
                     ((gy + tg.height - 1) / tg.height) * tg.height,
@@ -411,7 +422,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue,
 
     [mtl_cmd commit];
 
-    md_gpu_fence* fence = (md_gpu_fence*)CALLOC(1, sizeof(md_gpu_fence));
+    struct md_gpu_fence* fence = (struct md_gpu_fence*)calloc(1, sizeof(struct md_gpu_fence));
     fence->cmd = mtl_cmd;
     return fence;
 }

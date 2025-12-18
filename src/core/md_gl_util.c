@@ -1,7 +1,5 @@
 #include "md_gl_util.h"
-#include "md_gl_util.h"
 #include <core/md_gl_util.h>
-
 #include <core/md_str_builder.h>
 #include <core/md_log.h>
 

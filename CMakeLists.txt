@@ -43,7 +43,10 @@ set(CORE_FILES
   src/core/md_array.h
   src/core/md_base64.c
   src/core/md_base64.h
+  src/core/md_bitfield.c
+  src/core/md_bitfield.h
   src/core/md_bitop.inl
+  src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
   src/core/md_gl_util.c
@@ -169,12 +172,12 @@ set(TOPO_SHADER_FILES
 
 if (MD_ENABLE_GPU AND APPLE)
   set(MD_GPU_BACKEND "METAL")
-  enable_language(OBJCXX)
-  list(APPEND CORE_FILES src/core/md_gpu_metal.mm)
+  enable_language(OBJC)
+  list(APPEND CORE_FILES src/core/md_gpu_metal.m)
   set_source_files_properties(
-    src/core/md_gpu_metal.mm
+    src/core/md_gpu_metal.m
     PROPERTIES
-    LANGUAGE OBJCXX
+    LANGUAGE OBJC
   )
 else()
   set(MD_GPU_BACKEND "VULKAN")
