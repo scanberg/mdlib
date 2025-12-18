@@ -1,16 +1,24 @@
 ﻿cmake_minimum_required(VERSION 3.20)
 
-include(cmake/common.cmake)
+include(cmake/CheckVCPKG.cmake)
 
-project(mdlib VERSION 0.1.12 LANGUAGES C)
+project(mdlib LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+if (CMAKE_COMPILER_IS_GNUCC)
+  set(CMAKE_C_EXTENSIONS ON)
+endif()
 
 include(CMakeDependentOption)
 include(cmake/FindAVX.cmake)
+include(cmake/Common.cmake)
 
 # Options
 option(MD_UNITTEST "Enable unittests" ON)
 option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
+option(MD_ENABLE_GPU "Enable GPU acceleration" OFF)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
@@ -19,118 +27,183 @@ option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-if (CMAKE_COMPILER_IS_GNUCC)
-  set(CMAKE_C_EXTENSIONS ON)
+if (MD_ENABLE_VLX)
+  set(MD_ENABLE_HDF5 TRUE)
 endif()
 
-if (${MD_ENABLE_VLX})
-    set(MD_ENABLE_HDF5 TRUE)
-endif()
-
-file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
+#file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
+set(CORE_FILES
+  src/core/md_allocator.c
+  src/core/md_allocator.h
+  src/core/md_arena_allocator.c
+  src/core/md_arena_allocator.h
+  src/core/md_array.h
+  src/core/md_base64.c
+  src/core/md_base64.h
+  src/core/md_bitop.inl
+  src/core/md_common.h
+  src/core/md_compiler.h
+  src/core/md_gl_util.c
+  src/core/md_gl_util.h
+  src/core/md_gpu.h
+  src/core/md_grid.c
+  src/core/md_grid.h
+  src/core/md_handle.c
+  src/core/md_handle.h
+  src/core/md_hash.h
+  src/core/md_intrinsics.h
+  src/core/md_linear_allocator.c
+  src/core/md_linear_allocator.h
+  src/core/md_log.c
+  src/core/md_log.h
+  src/core/md_lru_cache.inl
+  src/core/md_os.c
+  src/core/md_os.h
+  src/core/md_parse.h
+  src/core/md_platform.h
+  src/core/md_ring_allocator.c
+  src/core/md_ring_allocator.h
+  src/core/md_simd.h
+  src/core/md_spatial_acc.c
+  src/core/md_spatial_acc.h
+  src/core/md_spatial_hash.c
+  src/core/md_spatial_hash.h
+  src/core/md_str_builder.c
+  src/core/md_str_builder.h
+  src/core/md_str.c
+  src/core/md_str.h
+  src/core/md_tracking_allocator.c
+  src/core/md_tracking_allocator.h
+  src/core/md_unit.c
+  src/core/md_unit.h
+  src/core/md_vec_math.c
+  src/core/md_vec_math.h
+  src/core/md_virtual_allocator.c
+  src/core/md_virtual_allocator.h
+)
+
 set(SRC_FILES
-    src/md_atomic_infer.c
-    src/md_csv.c
-    src/md_csv.h
-    src/md_cube.c
-    src/md_cube.h
-    src/md_edr.c
-    src/md_edr.h
-    src/md_filter.h
-    src/md_frame_cache.c
-    src/md_frame_cache.h
-    src/md_gfx.c
-    src/md_gfx.h
-    src/md_gl.c
-    src/md_gl.h
-    src/md_gro.c
-    src/md_gro.h
-    src/md_gto.c
-    src/md_gto.h
-    src/md_lammps.c
-    src/md_lammps.h
-    src/md_mmcif.c
-    src/md_mmcif.h
-    src/md_system.c
-    src/md_system.h
-    src/md_pdb.c
-    src/md_pdb.h
-    src/md_script.c
-    src/md_script.h
-    src/md_script_functions.inl
-    src/md_smiles.c
-    src/md_smiles.h
-    src/md_topo.c
-    src/md_topo.h
-    src/md_trajectory.h
-    src/md_trr.c
-    src/md_trr.h
-    src/md_types.h
-    src/md_util.c
-    src/md_util.h
-    src/md_xtc.c
-    src/md_xtc.h
-    src/md_xvg.c
-    src/md_xvg.h
-    src/md_xyz.c
-    src/md_xyz.h
+  src/md_atomic_infer.c
+  src/md_csv.c
+  src/md_csv.h
+  src/md_cube.c
+  src/md_cube.h
+  src/md_edr.c
+  src/md_edr.h
+  src/md_filter.h
+  src/md_frame_cache.c
+  src/md_frame_cache.h
+  src/md_gfx.c
+  src/md_gfx.h
+  src/md_gl.c
+  src/md_gl.h
+  src/md_gro.c
+  src/md_gro.h
+  src/md_gto.c
+  src/md_gto.h
+  src/md_lammps.c
+  src/md_lammps.h
+  src/md_mmcif.c
+  src/md_mmcif.h
+  src/md_system.c
+  src/md_system.h
+  src/md_pdb.c
+  src/md_pdb.h
+  src/md_script.c
+  src/md_script.h
+  src/md_script_functions.inl
+  src/md_smiles.c
+  src/md_smiles.h
+  src/md_topo.c
+  src/md_topo.h
+  src/md_trajectory.h
+  src/md_trr.c
+  src/md_trr.h
+  src/md_types.h
+  src/md_util.c
+  src/md_util.h
+  src/md_xtc.c
+  src/md_xtc.h
+  src/md_xvg.c
+  src/md_xvg.h
+  src/md_xyz.c
+  src/md_xyz.h
 )
 
 set(GL_SHADER_FILES 
-    src/shaders/compute_spline.vert
-    src/shaders/compute_spline.geom
-    src/shaders/compute_velocity.vert
-    src/shaders/cartoon.vert
-    src/shaders/cartoon.geom
-    src/shaders/cartoon.frag
-    src/shaders/licorice.vert
-    src/shaders/licorice.geom
-    src/shaders/licorice.frag
-    src/shaders/ribbons.vert
-    src/shaders/ribbons.geom
-    src/shaders/ribbons.frag
-    src/shaders/spacefill.vert
-    src/shaders/spacefill.geom
-    src/shaders/spacefill.frag
+  src/shaders/compute_spline.vert
+  src/shaders/compute_spline.geom
+  src/shaders/compute_velocity.vert
+  src/shaders/cartoon.vert
+  src/shaders/cartoon.geom
+  src/shaders/cartoon.frag
+  src/shaders/licorice.vert
+  src/shaders/licorice.geom
+  src/shaders/licorice.frag
+  src/shaders/ribbons.vert
+  src/shaders/ribbons.geom
+  src/shaders/ribbons.frag
+  src/shaders/spacefill.vert
+  src/shaders/spacefill.geom
+  src/shaders/spacefill.frag
 )
 
 set(GTO_SHADER_FILES 
-    src/shaders/eval_alie.comp
-    src/shaders/eval_gto.comp
-    src/shaders/eval_gto_density.comp
-    src/shaders/eval_gto_density_grad.comp
-    src/shaders/voronoi_segment.comp
+  src/shaders/eval_alie.comp
+  src/shaders/eval_gto.comp
+  src/shaders/eval_gto_density.comp
+  src/shaders/eval_gto_density_grad.comp
+  src/shaders/voronoi_segment.comp
 )
 
 set(TOPO_SHADER_FILES
-    src/shaders/topo/critical_point_compaction.comp
-    src/shaders/topo/bidirectional_manifold.comp
-    src/shaders/topo/path_compression.comp
-    src/shaders/topo/critical_points.comp
-    src/shaders/topo/vertex_edge_extraction.comp
+  src/shaders/topo/critical_point_compaction.comp
+  src/shaders/topo/bidirectional_manifold.comp
+  src/shaders/topo/path_compression.comp
+  src/shaders/topo/critical_points.comp
+  src/shaders/topo/vertex_edge_extraction.comp
+)
+
+if (MD_ENABLE_GPU AND APPLE)
+  set(MD_GPU_BACKEND "METAL")
+  enable_language(OBJCXX)
+  list(APPEND CORE_FILES src/core/md_gpu_metal.mm)
+  set_source_files_properties(
+    src/core/md_gpu_metal.mm
+    PROPERTIES
+    LANGUAGE OBJCXX
+  )
+else()
+  set(MD_GPU_BACKEND "VULKAN")
+endif()
+
+message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
+include(cmake/Shaders.cmake)
+
+md_compile_shaders(topo_shaders.inl
+    NAMESPACE topo
+    SOURCES ${TOPO_SHADER_FILES}
 )
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
 if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
-    set(MD_DEFINES ${MD_DEFINES} __BIG_ENDIAN__)
+  set(MD_DEFINES ${MD_DEFINES} __BIG_ENDIAN__)
 else()
-    set(MD_DEFINES ${MD_DEFINES} __LITTLE_ENDIAN__)
+  set(MD_DEFINES ${MD_DEFINES} __LITTLE_ENDIAN__)
 endif()
 
 if (${MD_ENABLE_FMA})
-    set(MD_DEFINES ${MD_DEFINES} __FMA__)
+  set(MD_DEFINES ${MD_DEFINES} __FMA__)
 endif()
 
 if (MD_FORCE_ASSERTIONS)
-    set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=1)
+  set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=1)
 else()
-    set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=0)    
+  set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=0)    
 endif()
 
 set(MD_FLAGS)
@@ -145,26 +218,26 @@ set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
 set(MD_PROPERTIES)
 
-if (${MD_ENABLE_VLX})
-    set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
-    if(NOT DEFINED MD_VLX_BASIS_FOLDER)
-        set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
-    endif()
-    set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
+if (MD_ENABLE_VLX)
+  list(APPEND SRC_FILES src/md_vlx.c src/md_vlx.h)
+  if(NOT DEFINED MD_VLX_BASIS_FOLDER)
+    set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
+  endif()
+  list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
 endif()
 
 if (MD_ENABLE_NETCDF)
-    find_package(NetCDF REQUIRED)
-    set(MD_LIBS ${MD_LIBS} NetCDF::NetCDF_C)
+  find_package(NetCDF REQUIRED)
+  list(APPEND MD_LIBS NetCDF::NetCDF_C)
 endif()
 
 if (MD_ENABLE_HDF5)
-    if (WIN32)
-        set(HDF5_USE_STATIC_LIBRARIES TRUE)
-    endif()
-    set(HDF5_PREFER_PARALLEL FALSE)
-    find_package(HDF5 REQUIRED)
-    set(MD_LIBS ${MD_LIBS} HDF5::HDF5)
+  if (WIN32)
+    set(HDF5_USE_STATIC_LIBRARIES TRUE)
+  endif()
+  set(HDF5_PREFER_PARALLEL FALSE)
+  find_package(HDF5 REQUIRED)
+  list(APPEND MD_LIBS HDF5::HDF5)
 endif()
 
 create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")
@@ -195,8 +268,8 @@ endif()
 message(STATUS "mdlib: Compiler detected as ${COMPILER_TYPE}")
 
 if (COMPILER_TYPE MATCHES "Clang")
-  set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
-  set(MD_FLAGS ${MD_FLAGS}
+  list(APPEND MD_FLAGS_EXT "-w")
+  list(APPEND MD_FLAGS
     "-Wall"
     "-Wextra"
     "-Wpedantic"
@@ -208,25 +281,29 @@ if (COMPILER_TYPE MATCHES "Clang")
     "-Wno-nested-anon-types")
 
   if (COMPILER_TYPE STREQUAL "Clang") # native Clang
-    set(MD_LIBS ${MD_LIBS} "m" "atomic")
+    list(APPEND MD_LIBS "m" "atomic")
+  endif()
+
+  if (COMPILER_TYPE STREQUAL "AppleClang")
+    list(APPEND MD_FLAGS "-Wno-format")
   endif()
 
   # AVX/FMA flags
   if (MD_ENABLE_AVX512)
-    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
+    list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq")
   elseif (MD_ENABLE_AVX2)
-    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
+    list(APPEND MD_FLAGS_AVX "-mavx2")
   elseif (MD_ENABLE_AVX)
-    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
+    list(APPEND MD_FLAGS_AVX "-mavx")
   endif()
 
   if (MD_ENABLE_FMA)
-    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
+    list(APPEND MD_FLAGS_AVX "-mfma" "-ffp-contract=fast")
   endif()
 
-elseif (COMPILER_TYPE STREQUAL "GCC") # GCC
-    set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
-    set(MD_FLAGS ${MD_FLAGS}
+elseif (COMPILER_TYPE STREQUAL "GCC")
+    list(APPEND MD_FLAGS_EXT "-w")
+    list(APPEND MD_FLAGS
       "-Wall"
       "-Wextra"
       "-Wpedantic"
@@ -237,30 +314,30 @@ elseif (COMPILER_TYPE STREQUAL "GCC") # GCC
       "-Wno-format-truncation")
 
     if (MD_ENABLE_AVX512)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
+        list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq")
     elseif (MD_ENABLE_AVX2)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
+        list(APPEND MD_FLAGS_AVX "-mavx2")
     elseif (MD_ENABLE_AVX)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
+        list(APPEND MD_FLAGS_AVX "-mavx")
     endif()
 
     if (MD_ENABLE_FMA)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffast-math")
+        list(APPEND MD_FLAGS_AVX "-mfma" "-ffast-math")
     endif()
 
     if (MD_LINK_STDLIB_STATIC)
-      set(MD_LIBS ${MD_LIBS}
+      list(APPEND MD_LIBS
         "-static-libgcc"
         "-static-libstdc++")
     endif()
     find_package(Threads REQUIRED)
-    set(MD_DEFINES ${MD_DEFINES} "${_GNU_SOURCE}")
-    set(MD_LIBS ${MD_LIBS}
+    list(APPEND MD_DEFINES "${_GNU_SOURCE}")
+    list(APPEND MD_LIBS
         "m"
         "Threads::Threads")
-elseif ((COMPILER_TYPE STREQUAL "MSVC")) # msvc
-    set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "/W2")
-    set(MD_FLAGS ${MD_FLAGS}
+elseif ((COMPILER_TYPE STREQUAL "MSVC"))
+    list(APPEND MD_FLAGS_EXT "/W2")
+    list(APPEND MD_FLAGS
       "/W4"
       "/wd4201"
       "/wd4305"
@@ -273,25 +350,25 @@ elseif ((COMPILER_TYPE STREQUAL "MSVC")) # msvc
       "/fp:except-")
 
     if (MD_ENABLE_AVX512)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX512" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX512" "/fp:fast")
     elseif (MD_ENABLE_AVX2)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX2" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX2" "/fp:fast")
     elseif (MD_ENABLE_AVX)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX" "/fp:fast")
     endif()
       
-    set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
+    list(APPEND MD_DEFINES "_CRT_SECURE_NO_WARNINGS")
     
-    set(MD_FLAGS_DEB ${MD_FLAGS_DEB} "/Ob1" "/ZI")
-    set(MD_FLAGS_REL ${MD_FLAGS_REL} "/GS-" "/GL")
-    set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} "/INCREMENTAL")
-    set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} "/LTCG")
-    set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
+    list(APPEND MD_FLAGS_DEB "/Ob1" "/ZI")
+    list(APPEND MD_FLAGS_REL "/GS-" "/GL")
+    list(APPEND MD_LINK_FLAGS_DEB "/INCREMENTAL")
+    list(APPEND MD_LINK_FLAGS_REL "/LTCG")
+    list(APPEND PROJ_FILES "mdlib.natvis")
 
     if (MD_LINK_STDLIB_STATIC)
-        set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        list(APPEND MD_PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     else()
-        set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+        list(APPEND MD_PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     endif()
 endif()
 
@@ -332,7 +409,7 @@ target_include_directories(mdlib
 )
 
 if (MD_PROPERTIES)
-set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})
+  set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})
 endif()
 
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
