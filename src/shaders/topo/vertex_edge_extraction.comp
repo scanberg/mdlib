@@ -141,7 +141,7 @@ void main() {
         
         if (is_split_saddle || is_join_saddle) { // BOTH SADDLES
             // Iterate over 26-neighborhood
-            uint unique_targets[NUM_NEIGHBORS]; // max 8 unique CPs (adjacency theory)
+            uint unique_targets[NUM_NEIGHBORS];
             uint unique_count = 0;
             for (int n = 0; n < NUM_NEIGHBORS; ++n) {
                 ivec3 nc = voxel_coords + neighbors[n];

@@ -64,10 +64,14 @@ extern "C" {
 //      Should have alloc field set to the desired allocator (0 for default heap allocator)
 // - vol_tex: The texture handle to the volume (must be a 3D texture with float format)
 // - grid: The grid defining the volume dimensions and spacing
-bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid);
+// - scalar_threshold: Minimum scalar value to consider for critical points (to filter noise)
+bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);
 
 // Free an extremum graph structure
 void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph);
+
+// Copy an extremum graph structure (deep copy)
+void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph);
 
 // Total counts
 static inline size_t md_topo_total_critical_points(const md_topo_extremum_graph_t* graph) {

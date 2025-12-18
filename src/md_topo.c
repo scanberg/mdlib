@@ -135,7 +135,7 @@ static void delete_buffer(GLuint buffer) {
     }
 }
 
-bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid) {
+bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid, float scalar_threshold) {
     if (!out_graph || vol_tex == 0 || !grid) {
         MD_LOG_ERROR("Invalid input: out_graph=%p, vol_tex=%u, grid=%p", (void*)out_graph, vol_tex, (void*)grid);
         return false;
@@ -166,7 +166,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     ubo_data.dims[1] = grid->dim[1];
     ubo_data.dims[2] = grid->dim[2];
     // Use a permissive threshold by default to avoid dropping valid low-amplitude features
-    ubo_data.scalar_threshold = 1.0E-7f; // Set to >0.0 to filter noise if desired
+    ubo_data.scalar_threshold = scalar_threshold; // Set to >0.0 to filter noise if desired
     
     GLuint ubo_buf = create_buffer(sizeof(ubo_data), &ubo_data, GL_STATIC_DRAW);
     if (!ubo_buf) {
@@ -205,6 +205,14 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     GLuint compression_prog = get_path_compression_program();
     if (!compression_prog) goto cleanup;
 
+    uint32_t num_iterations = 0;
+    uint32_t max_dim = MAX(grid->dim[0], MAX(grid->dim[1], grid->dim[2]));
+    // Log2 ceiling
+    while (max_dim > (1U << num_iterations)) {
+        num_iterations++;
+    }
+    num_iterations += 2; // A couple of extra iterations to be safe
+
 	md_gl_debug_push("Path Compression");
 
     GLuint changed_flag_buf = create_buffer(sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
@@ -215,15 +223,10 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, descending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, changed_flag_buf);
     
-    uint32_t changed = 1;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, changed_flag_buf);
-    while (changed) {
-        // Reset changed flag
-        changed = 0;
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
+    for (size_t i = 0; i < num_iterations; i++) {
         glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &changed);
     }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -452,10 +455,11 @@ cleanup:
 #else
 
 // macOS stub implementation
-bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid) {
+bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid, float scalar_threshold) {
     (void)out_graph;
     (void)vol_tex;
     (void)grid;
+    (void)scalar_threshold;
     MD_LOG_ERROR("Topology computation not supported on macOS");
     return false;
 }
@@ -474,4 +478,24 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
         MEMSET(graph, 0, sizeof(md_topo_extremum_graph_t));
         graph->alloc = alloc;
     }
+}
+
+void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph) {
+    // Copy structure, assume that the allocator is set within out_graph
+    md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
+    MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+    out_graph->alloc = alloc;
+    out_graph->num_vertices = src_graph->num_vertices;
+    out_graph->num_maxima = src_graph->num_maxima;
+    out_graph->num_split_saddles = src_graph->num_split_saddles;
+    out_graph->num_minima = src_graph->num_minima;
+    out_graph->num_join_saddles = src_graph->num_join_saddles;
+    out_graph->num_edges = src_graph->num_edges;
+
+    out_graph->vertices = md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    out_graph->edges    = md_alloc(alloc, src_graph->num_edges    * sizeof(md_topo_edge_t));
+
+
+    MEMCPY(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    MEMCPY(out_graph->edges, src_graph->edges, src_graph->num_edges * sizeof(md_topo_edge_t));
 }
