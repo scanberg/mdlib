@@ -11,6 +11,7 @@
 #include <core/md_log.h>
 #endif
 
+// Secondary structure types (DSSP-like)
 enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
     MD_SECONDARY_STRUCTURE_COIL,

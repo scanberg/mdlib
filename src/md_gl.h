@@ -18,12 +18,14 @@
 // Forward declarations
 struct md_system_t;
 
+#if 0
 // Predefined Palettes
 enum {
     MD_GL_PALETTE_CPK,
     MD_GL_PALETTE_SECONDARY_STRUCTURE,
     MD_GL_PALETTE_ORDINAL_DIVERGING_HSV,
 };
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,6 +84,42 @@ typedef struct {
     uint32_t id;
 } md_gl_mol_t;
 
+// Secondary Structure Type
+// This is different from md_secondary_structure_t to allow interpolated values
+// It essentially controls the blend (barycentric) between the geometrical representations of coil, helix, and sheet
+// coil is implied when both helix and sheet are zero
+typedef struct {
+    float helix;  // 1.0 = full helix
+    float sheet;  // 1.0 = full sheet
+} md_gl_secondary_structure_t;
+
+static inline md_gl_secondary_structure_t md_gl_secondary_structure_convert(md_secondary_structure_t ss) {
+    md_gl_secondary_structure_t gl_ss = {0};
+    switch (ss) {
+        case MD_SECONDARY_STRUCTURE_HELIX_310:
+        case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+        case MD_SECONDARY_STRUCTURE_HELIX_PI:
+            gl_ss.helix = 1.0f;
+            gl_ss.sheet = 0.0f;
+            break;
+        case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+        case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+            gl_ss.helix = 0.0f;
+            gl_ss.sheet = 1.0f;
+            break;
+        case MD_SECONDARY_STRUCTURE_COIL:
+        case MD_SECONDARY_STRUCTURE_TURN:
+        case MD_SECONDARY_STRUCTURE_BEND:
+        case MD_SECONDARY_STRUCTURE_UNKNOWN:
+        default:
+            gl_ss.helix = 0.0f;
+            gl_ss.sheet = 0.0f;
+            break;
+    }
+    return gl_ss;
+}
+
+
 md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
 void md_gl_mol_destroy(md_gl_mol_t handle);
 
@@ -107,7 +145,7 @@ void md_gl_mol_compute_velocity(md_gl_mol_t handle, const float pbc_ext[3]);
 void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 
 void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
-void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
+void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 #if 0
 typedef struct {

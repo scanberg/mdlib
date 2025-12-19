@@ -578,29 +578,20 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
     }
 }
 
-static inline uint32_t md_secondary_structure_to_gl(md_secondary_structure_t ss) {
-    switch (ss) {
-        case MD_SECONDARY_STRUCTURE_UNKNOWN:
-        case MD_SECONDARY_STRUCTURE_COIL:
-        case MD_SECONDARY_STRUCTURE_TURN:
-        case MD_SECONDARY_STRUCTURE_BEND:
-        default:
-            return 0x000000FF;
-            break;
-        case MD_SECONDARY_STRUCTURE_HELIX_310:
-        case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
-        case MD_SECONDARY_STRUCTURE_HELIX_PI:
-            return 0x0000FF00;
-            break;
-        case MD_SECONDARY_STRUCTURE_BETA_SHEET:
-        case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
-            return 0x00FF0000;
-            break;
-    }
-    return 0;
+// Essentially packing normalized secondary structure floats into a uint32_t
+static inline uint32_t pack_gl_secondary_structure(md_gl_secondary_structure_t ss) {
+    float helix = CLAMP(ss.helix, 0.0f, 1.0f);
+    float sheet = CLAMP(ss.sheet, 0.0f, 1.0f);
+    float coil  = CLAMP(1.0f - (helix + sheet), 0.0f, 1.0f);
+
+    uint32_t packed = 0;
+    packed |= (uint8_t)(coil  * 255.0f) << 0;
+    packed |= (uint8_t)(helix * 255.0f) << 8;
+    packed |= (uint8_t)(sheet * 255.0f) << 16;
+    return packed;
 }
 
-void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
+void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (secondary_structure == NULL) {
         MD_LOG_ERROR("One or more arguments are missing");
         return;
@@ -623,8 +614,8 @@ void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t off
             return;
         }
         for (uint32_t i = offset; i < count; ++i) {
-            md_secondary_structure_t ss = *(const md_secondary_structure_t*)(const uint8_t*)(secondary_structure + byte_stride * i);
-            md_secondary_structure_to_gl(ss);
+            md_gl_secondary_structure_t ss = *(const md_gl_secondary_structure_t*)(const uint8_t*)(secondary_structure + byte_stride * i);
+            buffer_data[i] = pack_gl_secondary_structure(ss);
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -968,7 +959,8 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < (uint32_t)sys->protein_backbone.range.count; ++i) {
                     for (uint32_t j = sys->protein_backbone.range.offset[i]; j < sys->protein_backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = md_secondary_structure_to_gl(sys->protein_backbone.segment.secondary_structure[j]);
+                        md_secondary_structure_t ss = sys->protein_backbone.segment.secondary_structure[j];
+                        secondary_structure[idx++] = pack_gl_secondary_structure(md_gl_secondary_structure_convert(ss));
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
