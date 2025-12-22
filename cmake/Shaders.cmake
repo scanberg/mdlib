@@ -28,7 +28,7 @@ function(md_compile_shaders OUT_FILE)
     set(${OUT_FILE} ${GENERATED_C} PARENT_SCOPE)
 endfunction()
 
-if (DEFINED MD_GPU_BACKEND)
+if (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL")
     # Required for GLSL -> SPIR-V compilation
     find_program(GLSLC_EXECUTABLE glslc REQUIRED)
     message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")

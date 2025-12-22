@@ -172,29 +172,31 @@ set(TOPO_SHADER_FILES
 
 set(GEN_FILES)
 
-if (MD_ENABLE_GPU AND APPLE)
-  set(MD_GPU_BACKEND "METAL")
-  enable_language(OBJC)
-  list(APPEND CORE_FILES src/core/md_gpu_metal.m)
-  set_source_files_properties(
-    src/core/md_gpu_metal.m
-    PROPERTIES
-    LANGUAGE OBJC
-  )
-else()
-  set(MD_GPU_BACKEND "VULKAN")
+if (MD_ENABLE_GPU)
+  if (APPLE)
+    set(MD_GPU_BACKEND "METAL")
+    enable_language(OBJC)
+    list(APPEND CORE_FILES src/core/md_gpu_metal.m)
+    set_source_files_properties(
+      src/core/md_gpu_metal.m
+      PROPERTIES
+      LANGUAGE OBJC
+    )
+  else()
+    set(MD_GPU_BACKEND "VULKAN")
+  endif()
+  message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
 endif()
 
-message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
 include(cmake/Shaders.cmake)
 
  # Generate gen folder if not present
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
-md_compile_shaders(gen/topo_shaders.inl
-    NAMESPACE topo
-    SOURCES ${TOPO_SHADER_FILES}
-)
+#md_compile_shaders(gen/topo_shaders.inl
+#    NAMESPACE topo
+#    SOURCES ${TOPO_SHADER_FILES}
+#)
 
 list(APPEND GEN_FILES ${CMAKE_CURRENT_BINARY_DIR}/gen/topo_shaders.inl)
 
