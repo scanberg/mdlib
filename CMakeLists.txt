@@ -186,19 +186,15 @@ if (MD_ENABLE_GPU)
     set(MD_GPU_BACKEND "VULKAN")
   endif()
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen)
+  list(APPEND GEN_FILES ${CMAKE_CURRENT_BINARY_DIR}/gen/topo_shaders.inl)
+  include(cmake/Shaders.cmake)
+
+  #md_compile_shaders(gen/topo_shaders.inl
+    #    NAMESPACE topo
+    #    SOURCES ${TOPO_SHADER_FILES}
+    #)
 endif()
-
-include(cmake/Shaders.cmake)
-
- # Generate gen folder if not present
-file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen)
-
-#md_compile_shaders(gen/topo_shaders.inl
-#    NAMESPACE topo
-#    SOURCES ${TOPO_SHADER_FILES}
-#)
-
-list(APPEND GEN_FILES ${CMAKE_CURRENT_BINARY_DIR}/gen/topo_shaders.inl)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
