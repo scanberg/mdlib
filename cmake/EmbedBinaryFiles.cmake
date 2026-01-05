@@ -61,7 +61,7 @@ const uint8_t ${SYMBOL}_start[] = {
     ${ARRAY_DATA}
 };
 
-const uint8_t ${SYMBOL}_end[] = {};
+const uint8_t * const ${SYMBOL}_end = ${SYMBOL}_start + sizeof(${SYMBOL}_start);
 ")
 
             target_sources(${EMBED_TARGET} PRIVATE ${C_FILE})
