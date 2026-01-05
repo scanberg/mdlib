@@ -1,104 +1,77 @@
-cmake_minimum_required(VERSION 3.20)
+include(${CMAKE_CURRENT_LIST_DIR}/EmbedBinaryFiles.cmake)
 
-if (NOT DEFINED SHADER_SOURCES)
-    message(FATAL_ERROR "CompileShaders.cmake: SHADER_SOURCES not set")
-endif()
+function(compile_shaders OUT_FILE)
+    set(options)
+    set(oneValueArgs NAMESPACE TARGET)
+    set(multiValueArgs SOURCES)
+    cmake_parse_arguments(SHADER "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-file(WRITE "${OUTPUT_FILE}" "// Generated shader resources\n\n")
-
-foreach(SHADER ${SHADER_SOURCES})
-    if(NOT IS_ABSOLUTE "${SHADER}")
-        set(SHADER_ABS "${SOURCE_DIR}/${SHADER}")
-    else()
-        set(SHADER_ABS "${SHADER}")
+    if (NOT SHADER_TARGET OR NOT SHADER_NAMESPACE)
+        message(FATAL_ERROR "compile_shaders: TARGET and NAMESPACE required")
     endif()
-    get_filename_component(SHADER_NAME ${SHADER} NAME)
-    get_filename_component(SHADER_BASE ${SHADER} NAME_WE)
 
-    message(STATUS "Processing shader: ${SHADER_NAME}")
+    set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
+    file(MAKE_DIRECTORY ${GEN_DIR})
+
+    set(COMPILED_SHADERS "")
 
     if (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL")
-        set(SPV_FILE "${SHADER_BASE}.spv")
-
-        execute_process(
-            COMMAND ${GLSLC_EXECUTABLE} ${SHADER_ABS} -o ${SPV_FILE}
-            RESULT_VARIABLE RC
-            ERROR_VARIABLE  GLSLC_STDERR
-        )
-        if (RC)
-            message(STATUS "COMMAND: ${GLSLC_EXECUTABLE} ${SHADER_ABS} -o ${SPV_FILE}")
-            message(FATAL_ERROR "glslc failed for ${SHADER_NAME}")
-            message(STATUS "STDERR: ${GLSLC_STDERR}")
+        if (NOT DEFINED GLSLC_EXECUTABLE)
+            message(FATAL_ERROR "GLSLC_EXECUTABLE not defined but required for shader compilation")
         endif()
     endif()
 
-    # Set empty BIN_FILE variable (the compiled binary file to write to output)
-    set(BIN_FILE "")
+    foreach(SRC ${SHADER_SOURCES})
+        get_filename_component(NAME ${SRC} NAME_WE)
+        get_filename_component(ABS_SRC ${SRC} ABSOLUTE)
 
-    if (MD_GPU_BACKEND STREQUAL "VULKAN")
-        # Assert that SPV_FILE exists
-        if (NOT EXISTS "${SPV_FILE}")
-            message(FATAL_ERROR "SPIR-V file not found: ${SPV_FILE}")
+        if (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL")
+            set(SPV_FILE "${GEN_DIR}/${NAME}.spv")
+
+            # Compile GLSL to SPIR-V
+            add_custom_command(
+                OUTPUT ${SPV_FILE}
+                COMMAND ${GLSLC_EXECUTABLE} ${ABS_SRC} -o ${SPV_FILE}
+                DEPENDS ${SRC}
+            )
+
+            set(BIN_FILE "${SPV_FILE}")
+
+            if (MD_GPU_BACKEND STREQUAL "METAL")
+                set(MSL_FILE "${GEN_DIR}/${NAME}.metal")
+                set(LIB_FILE "${GEN_DIR}/${NAME}.metallib")
+
+                # Cross-compile SPIR-V to MSL
+                add_custom_command(
+                    OUTPUT ${MSL_FILE}
+                    COMMAND ${SPIRV_CROSS_EXECUTABLE} --msl --output ${MSL_FILE} ${SPV_FILE}
+                    DEPENDS ${SPV_FILE}
+                )
+
+                # Compile MSL to metallib
+                add_custom_command(
+                    OUTPUT ${LIB_FILE}
+                    COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal ${MSL_FILE} -o ${LIB_FILE}
+                    DEPENDS ${MSL_FILE}
+                )
+
+                set(BIN_FILE "${LIB_FILE}")
+            endif()
+        else()
+            # OpenGL backend, no compilation needed
+            set(BIN_FILE "${ABS_SRC}")
         endif()
 
-        set(BIN_FILE "${SPV_FILE}")
-
-    elseif (MD_GPU_BACKEND STREQUAL "METAL")
-        # Assert that SPV_FILE exists
-        if (NOT EXISTS "${SPV_FILE}")
-            message(FATAL_ERROR "SPIR-V file not found: ${SPV_FILE}")
-        endif()
-
-        set(MSL_FILE "${SHADER_BASE}.metal")
-        set(LIB_FILE "${SHADER_BASE}.metallib")
-
-        execute_process(
-            COMMAND ${SPIRV_CROSS_EXECUTABLE} ${SPV_FILE} --msl --output ${MSL_FILE}
-            RESULT_VARIABLE RC
-            ERROR_VARIABLE  SPIRV_CROSS_STDERR
-        )
-        if (RC)
-            message(STATUS "COMMAND: ${SPIRV_CROSS_EXECUTABLE} ${SPV_FILE} --msl --output ${MSL_FILE}")
-            message(STATUS "STDERR: ${SPIRV_CROSS_STDERR}")
-            message(FATAL_ERROR "spirv-cross failed for ${SHADER_NAME}")
-        endif()
-
-        execute_process(
-            COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal
-                    ${MSL_FILE} -o ${LIB_FILE}
-            RESULT_VARIABLE RC
-            OUTPUT_VARIABLE METAL_STDOUT
-            ERROR_VARIABLE  METAL_STDERR
-        )
-        if (RC)
-            message(STATUS "COMMAND: ${XCRUN_EXECUTABLE} -sdk macosx metal ${MSL_FILE} -o ${LIB_FILE}")
-            message(STATUS "STDOUT: ${METAL_STDOUT}")
-            message(STATUS "STDERR: ${METAL_STDERR}")
-            message(FATAL_ERROR "metal failed for ${SHADER_NAME}")
-        endif()
-
-        set(BIN_FILE "${LIB_FILE}")
-    else()
-        message(FATAL_ERROR "Unknown MD_GPU_BACKEND: ${MD_GPU_BACKEND}")
-    endif()
-
-    # Read binary → hex
-    file(READ "${BIN_FILE}" BIN HEX)
-
-    # Emit C array
-    file(APPEND "${OUTPUT_FILE}"
-        "// ${SHADER_NAME}\n"
-        "static const unsigned char ${SHADER_NAMESPACE}_${SHADER_BASE}[] = {"
-    )
-
-    string(LENGTH "${BIN}" BIN_LEN)
-    math(EXPR BYTE_COUNT "${BIN_LEN} / 2")
-
-    foreach(I RANGE 0 ${BYTE_COUNT}-1)
-        math(EXPR OFFSET "${I} * 2")
-        string(SUBSTRING "${BIN}" ${OFFSET} 2 BYTE)
-        file(APPEND "${OUTPUT_FILE}" "0x${BYTE},")
+        list(APPEND COMPILED_SHADERS ${BIN_FILE})
     endforeach()
 
-    file(APPEND "${OUTPUT_FILE}" "};\n\n")
-endforeach()
+    add_custom_target(${SHADER_NAMESPACE}_shaders DEPENDS ${COMPILED_SHADERS})
+    add_dependencies(${SHADER_TARGET} ${SHADER_NAMESPACE}_shaders)
+
+    embed_binary_files(
+        TARGET ${SHADER_TARGET}
+        NAMESPACE ${SHADER_NAMESPACE}
+        OUTPUT ${OUT_FILE}
+        FILES ${COMPILED_SHADERS}
+    )
+endfunction()

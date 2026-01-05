@@ -172,31 +172,33 @@ set(TOPO_SHADER_FILES
 
 set(GEN_FILES)
 
-if (MD_ENABLE_GPU AND APPLE)
-  set(MD_GPU_BACKEND "METAL")
-  enable_language(OBJC)
-  list(APPEND CORE_FILES src/core/md_gpu_metal.m)
-  set_source_files_properties(
-    src/core/md_gpu_metal.m
-    PROPERTIES
-    LANGUAGE OBJC
-  )
-else()
-  set(MD_GPU_BACKEND "VULKAN")
+if (MD_ENABLE_GPU)
+  if (APPLE)
+    set(MD_GPU_BACKEND "METAL")
+    enable_language(OBJC)
+    list(APPEND CORE_FILES src/core/md_gpu_metal.m)
+    set_source_files_properties(
+      src/core/md_gpu_metal.m
+      PROPERTIES
+      LANGUAGE OBJC
+      )
+    find_program(SPIRV_CROSS_EXECUTABLE spirv-cross)
+    find_program(XCRUN_EXECUTABLE xcrun)
+  else()
+    set(MD_GPU_BACKEND "VULKAN")
+    list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
+  endif()
+  message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
+  find_program(GLSLC_EXECUTABLE glslc)
+  include(cmake/CompileShaders.cmake)
 endif()
 
-message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
-include(cmake/Shaders.cmake)
+set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
- # Generate gen folder if not present
-file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen)
+# Generate gen folder if not present
+file(MAKE_DIRECTORY ${GEN_DIR})
 
-md_compile_shaders(gen/topo_shaders.inl
-    NAMESPACE topo
-    SOURCES ${TOPO_SHADER_FILES}
-)
-
-list(APPEND GEN_FILES ${CMAKE_CURRENT_BINARY_DIR}/gen/topo_shaders.inl)
+list(APPEND GEN_FILES ${GEN_DIR}/topo_shaders.inl)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
@@ -250,8 +252,8 @@ if (MD_ENABLE_HDF5)
   list(APPEND MD_LIBS HDF5::HDF5)
 endif()
 
-create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")
-create_resources("${GTO_SHADER_FILES}" "gen/gto_shaders.inl")
+create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
+create_resources("${GTO_SHADER_FILES}"  "gen/gto_shaders.inl")
 create_resources("${TOPO_SHADER_FILES}" "gen/topo_shaders.inl")
 
 # Detect AppleClang vs other Clang
@@ -418,6 +420,14 @@ target_include_directories(mdlib
   ext/stb/
   ext/libdivide
 )
+
+if (MD_ENABLE_GPU)
+  compile_shaders(topo_shaders.inl
+    TARGET mdlib
+    NAMESPACE topo
+    SOURCES ${TOPO_SHADER_FILES}
+  )
+endif()
 
 if (MD_PROPERTIES)
   set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})

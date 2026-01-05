@@ -454,6 +454,9 @@ cleanup:
 
 #else
 
+#include <core/md_gpu.h>
+#include <topo_shaders.inl>
+
 // macOS stub implementation
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid, float scalar_threshold) {
     (void)out_graph;
