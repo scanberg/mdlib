@@ -171,6 +171,8 @@ set(TOPO_SHADER_FILES
 )
 
 set(GEN_FILES)
+set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
+file(MAKE_DIRECTORY ${GEN_DIR})
 
 if (MD_ENABLE_GPU)
   if (APPLE)
@@ -191,14 +193,8 @@ if (MD_ENABLE_GPU)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
   find_program(GLSLC_EXECUTABLE glslc)
   include(cmake/CompileShaders.cmake)
+  list(APPEND GEN_FILES ${GEN_DIR}/topo_shaders.inl)
 endif()
-
-set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
-
-# Generate gen folder if not present
-file(MAKE_DIRECTORY ${GEN_DIR})
-
-list(APPEND GEN_FILES ${GEN_DIR}/topo_shaders.inl)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 

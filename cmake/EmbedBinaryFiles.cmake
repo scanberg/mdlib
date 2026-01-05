@@ -43,20 +43,28 @@ static inline size_t ${SYMBOL}_size(void) {
 ")
 
         if (MSVC)
-            enable_language(ASM_MASM)
-            set(ASM ${GEN_DIR}/${SYMBOL}.asm)
+            set(C_FILE ${GEN_DIR}/${SYMBOL}.c)
 
-            file(WRITE ${ASM}
-".data
-PUBLIC ${SYMBOL}_start
-PUBLIC ${SYMBOL}_end
+            file(READ ${ABS} HEX_CONTENT HEX)
+            
+            string(LENGTH "${HEX_CONTENT}" HEX_LENGTH)
+            math(EXPR BYTE_COUNT "${HEX_LENGTH} / 2")
+            
+            # Convert hex string to C array format
+            string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," ARRAY_DATA "${HEX_CONTENT}")
+            string(REGEX REPLACE ",$" "" ARRAY_DATA "${ARRAY_DATA}")
+            
+            file(WRITE ${C_FILE}
+"#include <stdint.h>
 
-${SYMBOL}_start LABEL BYTE
-    INCBIN \"${ABS}\"
-${SYMBOL}_end LABEL BYTE
+const uint8_t ${SYMBOL}_start[] = {
+    ${ARRAY_DATA}
+};
+
+const uint8_t ${SYMBOL}_end[] = {};
 ")
 
-            target_sources(${EMBED_TARGET} PRIVATE ${ASM})
+            target_sources(${EMBED_TARGET} PRIVATE ${C_FILE})
 
         elseif (APPLE)
             target_link_options(${EMBED_TARGET} PRIVATE
