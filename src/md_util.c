@@ -1754,50 +1754,56 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     const dssp_res_coords_t* don = &res_coords[don_idx];
     const dssp_res_coords_t* acc = &res_coords[acc_idx];
 
-    float result = 0.0f;
+    float energy = 0.0f;
 
     const float min_distance_sq = 0.5f * 0.5f;
     const float min_bond_energy = -9.9f;
+	const float energy_cutoff   = -0.5f;
 
     const vec4_t d2 = {
-        vec4_distance_squared(don->H, acc->O),
+        vec4_distance_squared(don->N, acc->O),
         vec4_distance_squared(don->H, acc->C),
         vec4_distance_squared(don->N, acc->C),
-        vec4_distance_squared(don->N, acc->O),
+        vec4_distance_squared(don->H, acc->O),
     };
     
     const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
     if (mask_min > 0) {
-        result = min_bond_energy;
+        energy = min_bond_energy;
     } else {
-        const vec4_t v = vec4_rsqrt(d2);
-        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, -1.0f, 1.0f, -1.0f)));
+        const vec4_t inv_d = vec4_rsqrt(d2);
+		const vec4_t w = vec4_set(1.0f, 1.0f, -1.0f, -1.0f);
+        const float Q  = 27.888f; // 0.084f * 332.0f;
+        energy = Q * vec4_reduce_add(vec4_mul(inv_d, w));
     }
 
-    result = MAX(result, min_bond_energy);
+    if (energy > energy_cutoff)
+		return 0.0f;
+
+    energy = MAX(energy, min_bond_energy);
 
     dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
     dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
 
-    if (result < don_hbonds->acc[0].energy) {
+    if (energy < don_hbonds->acc[0].energy) {
         don_hbonds->acc[1] = don_hbonds->acc[0];
         don_hbonds->acc[0].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[0].energy  = result;
-    } else if (result < don_hbonds->acc[1].energy) {
+        don_hbonds->acc[0].energy  = energy;
+    } else if (energy < don_hbonds->acc[1].energy) {
         don_hbonds->acc[1].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[1].energy  = result;
+        don_hbonds->acc[1].energy  = energy;
     }
 
-    if (result < acc_hbonds->don[0].energy) {
+    if (energy < acc_hbonds->don[0].energy) {
         acc_hbonds->don[1] = acc_hbonds->don[0];
         acc_hbonds->don[0].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[0].energy  = result;
-    } else if (result < acc_hbonds->don[1].energy) {
+        acc_hbonds->don[0].energy  = energy;
+    } else if (energy < acc_hbonds->don[1].energy) {
         acc_hbonds->don[1].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[1].energy  = result;
+        acc_hbonds->don[1].energy  = energy;
     }
 
-    return result;
+    return energy;
 }
 
 static inline vec4_t estimate_HN(vec4_t N, vec4_t CA, vec4_t C_prev) {
@@ -1807,7 +1813,7 @@ static inline vec4_t estimate_HN(vec4_t N, vec4_t CA, vec4_t C_prev) {
     return vec4_add(N, vec4_mul_f(vec4_normalize(vec4_add(U, V)), NH_dist));
 }
 
-static inline vec4_t estimate_terminal_HN(vec4_t N, vec4_t CA, vec4_t C) {
+static inline vec4_t estimate_HN_term(vec4_t N, vec4_t CA, vec4_t C) {
     // i == range.beg (N-terminus): estimate previous C by extrapolation
     // C_prev_est = N + (CA - C)
     vec4_t CA_minus_C = vec4_sub(CA, C);
@@ -1817,10 +1823,10 @@ static inline vec4_t estimate_terminal_HN(vec4_t N, vec4_t CA, vec4_t C) {
     return estimate_HN(N, CA, Cprev_est);
 }
 
-static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], size_t res_a, size_t res_b) {
+static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], size_t acceptor, size_t donor) {
     const float max_hbond_energy = -0.5f;
-    return (res_hbonds[res_a].acc[0].res_idx == res_b && res_hbonds[res_a].acc[0].energy < max_hbond_energy) ||
-           (res_hbonds[res_a].acc[1].res_idx == res_b && res_hbonds[res_a].acc[1].energy < max_hbond_energy);
+    return (res_hbonds[donor].acc[0].res_idx == acceptor && res_hbonds[donor].acc[0].energy < max_hbond_energy) ||
+        (res_hbonds[donor].acc[1].res_idx == acceptor && res_hbonds[donor].acc[1].energy < max_hbond_energy);
 }
 
 enum {
@@ -1846,10 +1852,19 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
 
     dssp_res_coords_t* res_coords = md_vm_arena_push(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
     dssp_res_hbonds_t* res_hbonds = md_vm_arena_push(temp_alloc, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+    uint32_t* res_range_id = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
+    uint8_t* turn_mask = md_vm_arena_push_zero(temp_alloc, sizeof(uint8_t) * backbone_segment_count);
+
+    for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
+        const md_urange_t range = { backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1] };
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            res_range_id[i] = range_idx;
+        }
+    }
     uint32_t* ss_flags = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
 
     for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
+        const md_irange_t range = {(int)backbone_range_offsets[range_idx], (int)backbone_range_offsets[range_idx + 1]};
 
         for (int i = range.beg; i < range.end; ++i) {
             md_atom_idx_t ca_idx = backbone_atoms[i].ca;
@@ -1863,130 +1878,277 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
             res_coords[i].C  = vec4_set(x[c_idx],  y[c_idx],  z[c_idx],  0);
             res_coords[i].O  = vec4_set(x[o_idx],  y[o_idx],  z[o_idx],  0);
 
-            if (hn_idx > 0) {
+            if (hn_idx >= 0) {
                 res_coords[i].H = vec4_set(x[hn_idx], y[hn_idx], z[hn_idx], 0);
             } else {
-                if (i > 0)
+                if (i > range.beg)
                     res_coords[i].H = estimate_HN(res_coords[i].N, res_coords[i].CA, res_coords[i - 1].C);
                 else
-                    res_coords[i].H = estimate_terminal_HN(res_coords[i].N, res_coords[i].CA, res_coords[i].C);
+                    res_coords[i].H = estimate_HN_term(res_coords[i].N, res_coords[i].CA, res_coords[i].C);
             }
         }
     }
 
+	// Safe to set to zero, as we will only be comparing energies (which are negative)
+	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+
     // Do N^2 bond energy calculations
-    MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
     const float min_ca_dist2 = (9.0f * 9.0f);
     for (size_t i = 0; i + 1 < backbone_segment_count; ++i) {
         for (size_t j = i + 1; j < backbone_segment_count; ++j) {
+            // Only apply local-sequence exclusion within the same backbone range (chain)
+            if (res_range_id[i] == res_range_id[j] && (j - i) <= 1) {
+                continue;
+            }
             if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
                 continue;
             }
 
             calc_hbond_energy(res_hbonds, res_coords, i, j);
-            if (j != i + 1) {
-                calc_hbond_energy(res_hbonds, res_coords, j, i);
+            calc_hbond_energy(res_hbonds, res_coords, j, i);
+        }
+    }
+
+    // ---- Per-range passes: helices, turns, bends (set flags only) ----
+    // Ground-truth DSSP helix assignment:
+    // Two consecutive n-turns define a helix, and then residues i+1..i+n get helix flag.
+    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
+        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
+
+        // Bits in turn_mask (local indices): 1 = 3-turn, 2 = 4-turn, 4 = 5-turn
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (i + 3 < range.end && dssp_test_bond(res_hbonds, i, i + 3)) {
+                turn_mask[i] |= 1;
+            }
+            if (i + 4 < range.end && dssp_test_bond(res_hbonds, i, i + 4)) {
+                turn_mask[i] |= 2;
+            }
+            if (i + 5 < range.end && dssp_test_bond(res_hbonds, i, i + 5)) {
+                turn_mask[i] |= 4;
+            }
+        }
+
+        // DSSP helix assignment from consecutive turns:
+        // If turn_n(i) && turn_n(i+1) then mark residues (i+1 ... i+n) as helix_n.
+        // n=3 => 3_10 helix, n=4 => alpha helix, n=5 => pi helix.
+        for (uint32_t i = range.beg; i + 1 < range.end; ++i) {
+            const uint8_t a = turn_mask[i];
+            const uint8_t b = turn_mask[i + 1];
+
+            // 3_10 helix (G)
+            if ((a & 1) && (b & 1)) {
+                const uint32_t beg = i + 1;
+                const uint32_t end = MIN(i + 3, range.end - 1);
+                for (uint32_t r = beg; r <= end; ++r) {
+                    ss_flags[r] |= SS_FLAG_HELIX_310;
+                }
+            }
+
+            // alpha helix (H)
+            if ((a & 2) && (b & 2)) {
+                const uint32_t beg = i + 1;
+                const uint32_t end = MIN(i + 4, range.end - 1);
+                for (uint32_t r = beg; r <= end; ++r) {
+                    ss_flags[r] |= SS_FLAG_HELIX_ALPHA;
+                }
+            }
+
+            // pi helix (I)
+            if ((a & 4) && (b & 4)) {
+                const uint32_t beg = i + 1;
+                const uint32_t end = MIN(i + 5, range.end - 1);
+                for (uint32_t r = beg; r <= end; ++r) {
+                    ss_flags[r] |= SS_FLAG_HELIX_PI;
+                }
+            }
+
+            // Just turn
+            if (a) {
+				const int len = (a & 4) ? 5 : (a & 2) ? 4 : 3;
+                const uint32_t beg = i + 1;
+                const uint32_t end = MIN(i + len, range.end - 1);
+                for (uint32_t r = beg; r <= end; ++r) {
+                    ss_flags[r] |= SS_FLAG_TURN;
+                }
+			}
+        }
+
+        // Bends: unchanged
+        for (uint32_t i = range.beg + 2; i + 2 < range.end; ++i) {
+            vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
+            vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
+            float angle = RAD_TO_DEG(vec4_angle(v1, v2));
+            if (angle < 70.0f) {
+                for (int k = -2; k <= 2; ++k) {
+                    ss_flags[i + k] |= SS_FLAG_BEND;
+				}
             }
         }
     }
 
-    // Classify secondary structure
-    MEMSET(out_secondary_structure, MD_SECONDARY_STRUCTURE_COIL, sizeof(md_secondary_structure_t) * backbone_segment_count);
 
-    // ---- Per-range passes: helices, turns, bends (set flags only) ----
-    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
+#if 1
+    // ---- Global pass: sheets / bridges ----
+    // NOTE: CA cutoff is only an optimization; DSSP itself doesn't use it.
+    const float min_ca_dist2_sheet = 9.0f * 9.0f;
 
-        // Helices (i -> i+3, i+4, i+5)
-        for (size_t i = range.beg; i < range.end; ++i) {
-            if (i + 3 < range.end && dssp_test_bond(res_hbonds, i, i + 3)) {
-                ss_flags[i] |= SS_FLAG_HELIX_310;
+    typedef struct {
+        uint32_t i;
+        uint32_t j;
+        uint8_t  type; // 0 = antiparallel, 1 = parallel
+    } dssp_bridge_t;
+
+    // Worst-case: could be large; allocate generously but not insanely.
+    dssp_bridge_t* bridges = md_vm_arena_push(temp_alloc, sizeof(dssp_bridge_t) * backbone_segment_count * 8);
+    size_t num_bridges = 0;
+
+    // Helper lambdas are not allowed in C; keep as local inline-ish macros
+#define SAME_RANGE(a,b) (res_range_id[(a)] == res_range_id[(b)])
+
+    for (uint32_t i = 0; i < (uint32_t)backbone_segment_count; ++i) {
+        const uint32_t ri = res_range_id[i];
+
+        for (uint32_t j = i + 1; j < (uint32_t)backbone_segment_count; ++j) {
+            const uint32_t rj = res_range_id[j];
+
+            // DSSP excludes very local sequence contacts on the same chain
+            if (ri == rj && (int)j - (int)i <= 2) continue;
+
+            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2_sheet) continue;
+
+            // Neighbor existence within each chain/range
+            const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
+            const bool i_has_ip1 = (i + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(i + 1, i);
+            const bool j_has_jm1 = (j > 0) && SAME_RANGE(j - 1, j);
+            const bool j_has_jp1 = (j + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(j + 1, j);
+
+            // Evaluate DSSP bridge patterns (directed H-bonds)
+            bool antiparallel = false;
+            bool parallel     = false;
+
+            // Antiparallel:
+            // (i -> j && j -> i) OR (i-1 -> j+1 && j-1 -> i+1)
+            if (dssp_test_bond(res_hbonds, i, j) && dssp_test_bond(res_hbonds, j, i)) {
+                antiparallel = true;
+            } else if (i_has_im1 && i_has_ip1 && j_has_jm1 && j_has_jp1) {
+                if (dssp_test_bond(res_hbonds, i - 1, j + 1) && dssp_test_bond(res_hbonds, j - 1, i + 1)) {
+                    antiparallel = true;
+                }
             }
-            if (i + 4 < range.end && dssp_test_bond(res_hbonds, i, i + 4)) {
-                ss_flags[i] |= SS_FLAG_HELIX_ALPHA;
+
+            // Parallel:
+            // (i-1 -> j && j -> i+1) OR (j-1 -> i && i -> j+1)
+            if (!antiparallel) {
+                if (i_has_im1 && i_has_ip1) {
+                    if (dssp_test_bond(res_hbonds, i - 1, j) && dssp_test_bond(res_hbonds, j, i + 1)) {
+                        parallel = true;
+                    }
+                }
+                if (!parallel && j_has_jm1 && j_has_jp1) {
+                    if (dssp_test_bond(res_hbonds, j - 1, i) && dssp_test_bond(res_hbonds, i, j + 1)) {
+                        parallel = true;
+                    }
+                }
             }
-            if (i + 5 < range.end && dssp_test_bond(res_hbonds, i, i + 5)) {
-                ss_flags[i] |= SS_FLAG_HELIX_PI;
+
+            if (!(antiparallel || parallel)) {
+                continue;
             }
+
+            // Record bridge (normalize ordering i<j already true)
+            bridges[num_bridges++] = (dssp_bridge_t){
+                .i = i,
+                .j = j,
+                .type = parallel ? 1 : 0,
+            };
+
+            // DSSP marks both residues as "bridge" even before ladder/sheet conversion
+            ss_flags[i] |= SS_FLAG_BRIDGE;
+            ss_flags[j] |= SS_FLAG_BRIDGE;
         }
+    }
 
-        // Turns: 4-residue H-bonded turn i->i+3 (only set if coil-ish)
-        for (size_t i = range.beg; i + 3 < range.end; ++i) {
-            if (dssp_test_bond(res_hbonds, i, i + 3)) {
-                // mark the 4 residues as turn candidates (don't override helix flags)
-                for (size_t k = 0; k < 4; ++k) {
-                    ss_flags[i + k] |= SS_FLAG_TURN;
+    // ---- Build ladders by chaining bridges ----
+    // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
+    bool* used = md_vm_arena_push_zero(temp_alloc, sizeof(bool) * num_bridges);
+
+    for (size_t b = 0; b < num_bridges; ++b) {
+        if (used[b]) continue;
+
+        const dssp_bridge_t seed = bridges[b];
+        used[b] = true;
+
+        // Ladder endpoints
+        uint32_t i_min = seed.i, i_max = seed.i;
+        uint32_t j_min = seed.j, j_max = seed.j;
+
+        // Chain constraints: ladders should stay within the same chain pair
+        const uint32_t ri = res_range_id[seed.i];
+        const uint32_t rj = res_range_id[seed.j];
+
+        bool grew = true;
+        while (grew) {
+            grew = false;
+
+            for (size_t c = 0; c < num_bridges; ++c) {
+                if (used[c]) continue;
+
+                const dssp_bridge_t br = bridges[c];
+                if (br.type != seed.type) continue;
+
+                // Must be between the same chain pair (order-insensitive)
+                const uint32_t bri = res_range_id[br.i];
+                const uint32_t brj = res_range_id[br.j];
+                if (!((bri == ri && brj == rj) || (bri == rj && brj == ri))) continue;
+
+                bool connects = false;
+
+                if (seed.type == 1) {
+                    // Parallel ladder: (i+1, j+1)
+                    connects = (br.i == i_max + 1 && br.j == j_max + 1) ||
+                        (br.i + 1 == i_min && br.j + 1 == j_min);
+                } else {
+                    // Antiparallel ladder: (i+1, j-1)
+                    connects = (br.i == i_max + 1 && br.j + 1 == j_min) ||
+                        (br.i + 1 == i_min && br.j == j_max + 1);
+                }
+
+                if (connects) {
+                    used[c] = true;
+                    i_min = MIN(i_min, br.i);
+                    i_max = MAX(i_max, br.i);
+                    j_min = MIN(j_min, br.j);
+                    j_max = MAX(j_max, br.j);
+                    grew = true;
                 }
             }
         }
 
-        // Bends: geometric Cα pseudo-angle around i (i-2 .. i+2)
-        for (size_t i = range.beg + 2; i + 2 < range.end; ++i) {
-            vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
-            vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
-            float angle = vec4_angle(v1, v2);  // radians
-            if (RAD_TO_DEG(angle) < 70.0f) {
-                ss_flags[i] |= SS_FLAG_BEND;
-            }
+        const uint32_t len_i = i_max - i_min + 1;
+        const uint32_t len_j = j_max - j_min + 1;
+
+        if (len_i >= 3 || len_j >= 3) {
+            for (uint32_t k = i_min; k <= i_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
+            for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
         }
     }
 
-    // ---- Global pass: sheets / bridges (non-local, can cross ranges) ----
-    const float min_ca_dist2_sheet = 5.5f * 5.5f;  // slightly relaxed CA cutoff
-    for (size_t i = 0; i < backbone_segment_count; ++i) {
-        // We will track how many partner hbonds found and whether ladders exist.
-        int partner_count = 0;
-
-        for (size_t j = 0; j < backbone_segment_count; ++j) {
-            if (i == j) continue;
-            if (abs((int)i - (int)j) <= 2) continue;  // skip sequence neighbors
-            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2_sheet) continue;
-
-            bool ij = dssp_test_bond(res_hbonds, i, j);
-            bool ji = dssp_test_bond(res_hbonds, j, i);
-            if (!(ij || ji)) continue;
-
-            // Check ladder-style partners to prefer sheets over isolated bridges:
-            bool ladder = false;
-            // antiparallel: i bonds j  AND (i-1 binds j+1 OR i+1 binds j-1)
-            if (i > 0 && j + 1 < backbone_segment_count) {
-                if (dssp_test_bond(res_hbonds, i - 1, j + 1) || dssp_test_bond(res_hbonds, j + 1, i - 1)) ladder = true;
-            }
-            if (i + 1 < backbone_segment_count && j > 0) {
-                if (dssp_test_bond(res_hbonds, i + 1, j - 1) || dssp_test_bond(res_hbonds, j - 1, i + 1)) ladder = true;
-            }
-            // parallel ladder: i+1 binds j+1 or i-1 binds j-1 also OK
-            if (i + 1 < backbone_segment_count && j + 1 < backbone_segment_count) {
-                if (dssp_test_bond(res_hbonds, i + 1, j + 1) || dssp_test_bond(res_hbonds, j + 1, i + 1)) ladder = true;
-            }
-            if (i > 0 && j > 0) {
-                if (dssp_test_bond(res_hbonds, i - 1, j - 1) || dssp_test_bond(res_hbonds, j - 1, i - 1)) ladder = true;
-            }
-
-            if (ladder) {
-                ss_flags[i] |= SS_FLAG_SHEET;
-                ss_flags[j] |= SS_FLAG_SHEET;
-            } else {
-                // isolated single H-bond — candidate bridge
-                ss_flags[i] |= SS_FLAG_BRIDGE;
-                ss_flags[j] |= SS_FLAG_BRIDGE;
-            }
-            partner_count++;
-        }
-    }
+#undef SAME_RANGE
+#endif
 
     // ---- Final resolution: convert flags to enum with priority ----
-    // Priority: HELIX (alpha > 310 > pi) > SHEET > BRIDGE > TURN > BEND > COIL
+    // Priority: HELIX (PI > 310 > ALPHA) > SHEET > BRIDGE > TURN > BEND > COIL
+    MEMSET(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
+
     for (size_t i = 0; i < backbone_segment_count; ++i) {
         uint32_t f = ss_flags[i];
 
-        // prefer alpha helix, but allow other helix flags if alpha not present
-        if (f & SS_FLAG_HELIX_ALPHA) {
+        if (f & SS_FLAG_HELIX_PI) {
+            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_PI;
+        } else if (f & SS_FLAG_HELIX_ALPHA) {
             out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
         } else if (f & SS_FLAG_HELIX_310) {
             out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_310;
-        } else if (f & SS_FLAG_HELIX_PI) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_PI;
         } else if (f & SS_FLAG_SHEET) {
             out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BETA_SHEET;
         } else if (f & SS_FLAG_BRIDGE) {
@@ -2004,8 +2166,15 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
 }
 
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
+#if 0
     return tm_align(secondary_structure, capacity, sys);
-    //return dssp(secondary_structure, capacity, sys);
+#else
+    if (secondary_structure && sys) {
+        dssp(secondary_structure, sys->atom.x, sys->atom.y, sys->atom.z, sys);
+        return true;
+    }
+    return false;
+#endif
 }
 
 bool md_util_system_infer_secondary_structure(md_system_t* sys) {
