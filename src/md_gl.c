@@ -606,15 +606,16 @@ void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t off
             MD_LOG_ERROR("Attempting to write out of bounds");
             return;
         }
-        byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
+        byte_stride = MAX(sizeof(md_gl_secondary_structure_t), byte_stride);
         glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
-        uint32_t* buffer_data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        uint32_t* buffer_data = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (buffer_data == NULL) {
             MD_LOG_ERROR("Failed to map molecule secondary structure buffer");
             return;
         }
         for (uint32_t i = offset; i < count; ++i) {
-            md_gl_secondary_structure_t ss = *(const md_gl_secondary_structure_t*)(const uint8_t*)(secondary_structure + byte_stride * i);
+			const uint8_t* secondary_structure_raw = (const uint8_t*)secondary_structure + byte_stride * i;
+            md_gl_secondary_structure_t ss = *(const md_gl_secondary_structure_t*)secondary_structure_raw;
             buffer_data[i] = pack_gl_secondary_structure(ss);
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
