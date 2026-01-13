@@ -1718,39 +1718,60 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
-	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
-	uint64_t dim[2];
-	int num_dim = h5_read_dataset_dims(dim, 2, handle, "force_constants");
-	if (num_dim <= 0) {
+	
+	size_t number_of_modes = 0;
+
+	// Attempt to read number_of_modes (Available in new format)
+	if (!h5_read_scalar(&number_of_modes, handle, H5T_NATIVE_HSIZE, "number_of_modes")) {
+		// Fallback (Old format, read force_constant dims to get number of modes)
+		uint64_t dim[2];
+		int num_dim = h5_read_dataset_dims(dim, 2, handle, "force_constants");
+		if (num_dim <= 0) {
+			return false;
+		}
+		// This is a fix because the input data in one version is supplied as a 2D object
+		number_of_modes = (num_dim == 1) ? dim[0] : dim[1];
+	}
+
+	if (number_of_modes == 0) {
 		return false;
 	}
 
-	// This is a fix because the input data in one version is supplied as a 2D object
-	size_t len = (num_dim == 1) ? dim[0] : dim[1];
-	vlx->vib.number_of_normal_modes = len;
+	vlx->vib.number_of_normal_modes = number_of_modes;
 
-	md_array_resize(vlx->vib.force_constants, len, vlx->arena);
+	uint64_t dim[1] = { number_of_modes };
+	int num_dim = 1;
+
+	md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
 	if (!h5_read_dataset_data(vlx->vib.force_constants, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "force_constants")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.ir_intensities, len, vlx->arena);
+	md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
 	if (!h5_read_dataset_data(vlx->vib.ir_intensities, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.frequencies, len, vlx->arena);
+	md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
 	if (!h5_read_dataset_data(vlx->vib.frequencies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.reduced_masses, len, vlx->arena);
+	md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
 	if (!h5_read_dataset_data(vlx->vib.reduced_masses, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
 		return false;
 	}
 
-	// Normal Modes
-	if (H5Lexists(handle, "normal_modes", H5P_DEFAULT) > 0) {
+	// Check if "normal_modes" is a group or dataset
+	hid_t obj_info = H5Oopen(handle, "normal_modes", H5P_DEFAULT);
+	if (obj_info == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to open 'normal_modes' object");
+		return false;
+	}
+
+	// Read normal modes (group or dataset)
+	hid_t obj_type = H5Iget_type(obj_info);
+	if (obj_type == H5I_GROUP) {
         hid_t normal_modes_id = H5Gopen(handle, "normal_modes", H5P_DEFAULT);
         if (normal_modes_id != H5I_INVALID_HID) {
 			if (vlx->number_of_atoms == 0) {
@@ -1777,7 +1798,39 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
                 md_array_push(vlx->vib.normal_modes, data, vlx->arena);
             }
         }
-    }
+	} else if (obj_type == H5I_DATASET) {
+		// Handle dataset case
+		// Iterate over outer dimension in dataset, which should be [number_of_normal_modes][number_of_atoms][3]
+
+		uint64_t data_dim[3];
+		int num_dim = h5_read_dataset_dims(data_dim, 3, handle, "normal_modes");
+
+		// Assert expected dimensions
+		if (num_dim != 3 || data_dim[0] != vlx->vib.number_of_normal_modes || data_dim[1] != vlx->number_of_atoms || data_dim[2] != 3) {
+			MD_LOG_ERROR("Unexpected dimensions in normal_modes dataset");
+			H5Oclose(obj_info);
+			return false;
+		}
+
+		double* raw_data = md_array_create(double, vlx->vib.number_of_normal_modes * vlx->number_of_atoms * 3, vlx->arena);
+		if (!h5_read_dataset_data(raw_data, data_dim, 3, handle, H5T_NATIVE_DOUBLE, "normal_modes")) {
+			MD_LOG_ERROR("Failed to read normal_modes dataset");
+			md_array_free(raw_data, vlx->arena);
+			H5Oclose(obj_info);
+			return false;
+		}
+
+		// Set the pointers to each normal mode (within raw_data)
+		dvec3_t* base_ptr = (dvec3_t*)raw_data;
+		for (size_t i = 0; i < vlx->vib.number_of_normal_modes; ++i) {
+			dvec3_t* mode_data = base_ptr + (i * vlx->number_of_atoms);
+			md_array_push(vlx->vib.normal_modes, mode_data, vlx->arena);
+		}
+	} else {
+		MD_LOG_ERROR("Unrecognized object type for 'normal_modes'");
+		H5Oclose(obj_info);
+		return false;
+	}
 
 	return true;
 }
