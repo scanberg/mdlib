@@ -555,7 +555,7 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
             return;
         }
 
-        if (offset == 0 && count > mol->bond_count) {
+        if (offset == 0) {
             gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_atom_pair_t), bonds);
             mol->bond_count = count;
             return;
@@ -570,8 +570,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
         }
         for (uint32_t i = offset; i < count; ++i) {
             const md_atom_pair_t* bond = (const md_atom_pair_t*)((const uint8_t*)bonds + byte_stride * i);
-            bond_data[i].atom_idx[0] = bond->idx[0];
-            bond_data[i].atom_idx[1] = bond->idx[1];
+			uint32_t dst = offset + i;
+            bond_data[dst].atom_idx[0] = bond->idx[0];
+            bond_data[dst].atom_idx[1] = bond->idx[1];
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -616,7 +617,8 @@ void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t off
         for (uint32_t i = offset; i < count; ++i) {
 			const uint8_t* secondary_structure_raw = (const uint8_t*)secondary_structure + byte_stride * i;
             md_gl_secondary_structure_t ss = *(const md_gl_secondary_structure_t*)secondary_structure_raw;
-            buffer_data[i] = pack_gl_secondary_structure(ss);
+			uint32_t dst = offset + i;
+            buffer_data[dst] = pack_gl_secondary_structure(ss);
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1246,6 +1248,9 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
 
     uint32_t index_base[2] = {0,0};
+
+    // Maximum bond length in units (Ångström assumed)
+    const float max_length = args->max_bond_length > 0.0f ? args->max_bond_length : 5.0f;
         
     PUSH_GPU_SECTION("DRAW REPRESENTATIONS")
     for (size_t i = 0; i < md_array_size(draw_ops); i++) {
@@ -1277,25 +1282,22 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             gl_buffer_set_sub_data(ctx.ubo, offsetof(gl_ubo_base_t, atom_index_base), sizeof(index_base), &index_base);
         }
 
-        // Maximum bond length in units (Ångström assumed)
-        const float max_length = 5.0f;
-
         switch (draw_op->type) {
         case MD_GL_REP_SPACE_FILL:
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, scale * draw_op->args.space_fill.radius_scale);
             break;
         case MD_GL_REP_LICORICE:
-            draw_licorice(shaders->licorice[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.licorice.radius, max_length);
+            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.licorice.radius, max_length);
             break;
         case MD_GL_REP_BALL_AND_STICK:
             draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius, max_length);
-            draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f  * scale * draw_op->args.ball_and_stick.ball_scale);
+            draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
         case MD_GL_REP_RIBBONS:
-            draw_ribbons(shaders->ribbons[program_permutation], mol, rep->atom_color, scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale);
+            draw_ribbons(shaders->ribbons[program_permutation],      mol, rep->atom_color, scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale);
             break;
         case MD_GL_REP_CARTOON:
-            draw_cartoon(shaders->cartoon[program_permutation], mol, rep->atom_color, scale * draw_op->args.cartoon.coil_scale, draw_op->args.cartoon.helix_scale, draw_op->args.cartoon.sheet_scale);
+            draw_cartoon(shaders->cartoon[program_permutation],      mol, rep->atom_color, scale * draw_op->args.cartoon.coil_scale, draw_op->args.cartoon.helix_scale, draw_op->args.cartoon.sheet_scale);
             break;
         default:
             MD_LOG_ERROR("Representation had unexpected type");

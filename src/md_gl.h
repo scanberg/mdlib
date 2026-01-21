@@ -245,6 +245,7 @@ typedef struct md_gl_draw_args_t {
     } view_transform;
 
     uint32_t atom_mask;
+	float max_bond_length;	// Maximum bond length for rendering bonds (in Ångström)
 } md_gl_draw_args_t;
 
 bool md_gl_draw(const md_gl_draw_args_t* args);
