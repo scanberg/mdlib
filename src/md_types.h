@@ -90,6 +90,7 @@ enum {
     MD_BOND_FLAG_INTER          = 0x20, // Inter residue / component
     MD_BOND_FLAG_COORDINATE     = 0x40, // Coordinate / Dative
     MD_BOND_FLAG_METAL          = 0x80, // Involves a metal atom
+	MD_BOND_FLAG_USER_DEFINED   = 0x100, // User defined bond
 };
 
 // Atomic number constants for all elements (Z values)

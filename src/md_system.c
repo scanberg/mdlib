@@ -15,7 +15,7 @@ extern "C" {
         }                        \
     } while (0)
 
-void md_system_free(md_system_t* mol, struct md_allocator_i* alloc) {
+    void md_system_free(md_system_t* mol, struct md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
 
@@ -156,6 +156,86 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
 #undef ARRAY_PUSH
 #undef ARRAY_INCREMENT
 #undef ARRAY_INCREMENT_FIELD
+
+static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
+    ASSERT(conn);
+    ASSERT(alloc);
+
+    if (bond_pairs == NULL) return;
+    if (bond_pair_count == 0) return;
+    if (atom_count == 0) return;
+
+    conn->offset_count = atom_count + 1;
+    md_array_resize(conn->offset, conn->offset_count, alloc);
+    MEMSET(conn->offset, 0, md_array_bytes(conn->offset));
+
+    // This have length of 2 * bond_count (one for each direction of the bond)
+    conn->count = 2 * bond_pair_count;
+    md_array_resize(conn->atom_idx, conn->count, alloc);
+    md_array_resize(conn->bond_idx, conn->count, alloc);
+
+    typedef struct {
+        uint16_t off[2];
+    } offset_t;
+
+    offset_t* local_offset = calloc(bond_pair_count, sizeof(offset_t));
+    ASSERT(local_offset);
+
+    // Two packed 16-bit local offsets for each of the bond idx
+    // Use offsets as accumulators for length
+    for (size_t i = 0; i < bond_pair_count; ++i) {
+		ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
+		ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
+        local_offset[i].off[0] = (uint16_t)conn->offset[bond_pairs[i].idx[0]]++;
+        local_offset[i].off[1] = (uint16_t)conn->offset[bond_pairs[i].idx[1]]++;
+    }
+
+    // Compute complete edge offsets (exclusive scan)
+    uint32_t off = 0;
+    for (size_t i = 0; i < conn->offset_count; ++i) {
+        const uint32_t len = conn->offset[i];
+        conn->offset[i] = off;
+        off += len;
+    }
+
+    // Write edge indices to correct location
+    for (size_t i = 0; i < bond_pair_count; ++i) {
+        const md_atom_pair_t p = bond_pairs[i];
+        const int atom_a = p.idx[0];
+        const int atom_b = p.idx[1];
+        const int local_a = (int)local_offset[i].off[0];
+        const int local_b = (int)local_offset[i].off[1];
+        const int off_a = conn->offset[atom_a];
+        const int off_b = conn->offset[atom_b];
+
+        const int idx_a = off_a + local_a;
+        const int idx_b = off_b + local_b;
+
+        ASSERT(idx_a < (int)conn->count);
+        ASSERT(idx_b < (int)conn->count);
+
+        // Store the cross references to the 'other' atom index signified by the bond in the correct location
+        conn->atom_idx[idx_a] = atom_b;
+        conn->atom_idx[idx_b] = atom_a;
+
+        conn->bond_idx[idx_a] = (md_bond_idx_t)i;
+        conn->bond_idx[idx_b] = (md_bond_idx_t)i;
+    }
+
+    free(local_offset);
+}
+
+void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
+    ASSERT(in_out_bond);
+    ASSERT(alloc);
+	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->count, atom_count, alloc);
+}
+
+void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
+	md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
+}
 
 #ifdef __cplusplus
 }

@@ -103,7 +103,7 @@ typedef struct md_assembly_data_t {
 } md_assembly_data_t;
 
 // Atom centric representation of bonds
-typedef struct md_conn_data_t {
+typedef struct md_bond_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
     md_bond_idx_t* bond_idx; // Indices to the bonds
@@ -111,14 +111,14 @@ typedef struct md_conn_data_t {
     // Consequently offset_count should be atom count + 1
     size_t offset_count;
     uint32_t* offset;
-} md_conn_data_t;
+} md_bond_conn_data_t;
 
 // Bond centric representation
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t* pairs;
     md_flags_t*     flags;
-    md_conn_data_t  conn;   // Connectivity
+    md_bond_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
 
 typedef struct md_bond_iter_t {
@@ -770,6 +770,10 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
+// This is not something which should be done frequently
+void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
+void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc);
+
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     ASSERT(bond_data);
     return bond_data->conn.offset[atom_idx + 1] - bond_data->conn.offset[atom_idx];
@@ -810,7 +814,78 @@ static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
-static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
+static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
+    ASSERT(bond_data);
+	md_bond_iter_t it = md_bond_iter(bond_data, atom_idx_a);
+    while (md_bond_iter_has_next(&it)) {
+        md_atom_idx_t other_atom_idx = md_bond_iter_atom_index(&it);
+        if (other_atom_idx == atom_idx_b) {
+            return md_bond_iter_bond_index(&it);
+        }
+        md_bond_iter_next(&it);
+	}
+	return -1;
+}
+
+static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_flags_t flags, md_allocator_i* alloc) {
+    ASSERT(bond_data);
+    ASSERT(alloc);
+
+    // Ensure that the bond does not exist
+	md_bond_idx_t bond_idx = md_bond_find(bond_data, atom_idx_a, atom_idx_b);
+    if (bond_idx != -1) {
+        return;
+    }
+
+    // Add bond
+    md_atom_pair_t pair = {atom_idx_a, atom_idx_b};
+    md_array_push(bond_data->pairs, pair, alloc);
+    md_array_push(bond_data->flags, flags, alloc);
+    bond_data->count++;
+}
+
+// This requires a rebuild of connectivity to be valid again
+static inline void md_bond_remove(md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
+    ASSERT(bond_data);
+    ASSERT(bond_idx < (md_bond_idx_t)bond_data->count);
+
+    // Swap and pop
+    size_t last_idx = bond_data->count - 1;
+    if ((size_t)bond_idx != last_idx) {
+        bond_data->pairs[bond_idx] = bond_data->pairs[last_idx];
+        bond_data->flags[bond_idx] = bond_data->flags[last_idx];
+    }
+    bond_data->count--;
+    md_array_shrink(bond_data->pairs, bond_data->count);
+    md_array_shrink(bond_data->flags, bond_data->count);
+}
+
+static inline md_atom_pair_t md_bond_pair(const md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
+    ASSERT(bond_data);
+    if (bond_idx < (md_bond_idx_t)bond_data->count) {
+        return bond_data->pairs[bond_idx];
+    }
+    md_atom_pair_t invalid_pair = { -1, -1 };
+    return invalid_pair;
+}
+
+static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
+    ASSERT(sys);
+    return md_bond_find(&sys->bond, atom_idx_a, atom_idx_b);
+}
+
+static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_flags_t flags, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
+    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, alloc);
+}
+
+static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx) {
+    ASSERT(sys);
+    md_bond_remove(&sys->bond, bond_idx);
+}
+
+static inline void md_bond_conn_clear(md_bond_conn_data_t* conn_data) {
     ASSERT(conn_data);
     conn_data->count = 0;
     md_array_shrink(conn_data->atom_idx, 0);
