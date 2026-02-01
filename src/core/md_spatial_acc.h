@@ -21,8 +21,9 @@ typedef struct md_spatial_acc_t {
     uint32_t  cell_min[3];
     uint32_t  cell_max[3];
     uint32_t  cell_dim[3];
-	float     cell_ext[3];
+    float     inv_cell_ext[3];
 
+	float sxy, sxz, syz; // Skew factors for triclinic cells
     float G00, G11, G22;
     float H01, H02, H12;
 

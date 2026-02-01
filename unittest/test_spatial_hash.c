@@ -149,19 +149,13 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
     uint32_t flags = md_unitcell_flags(cell);
 
     if ((flags & MD_UNITCELL_PBC_ALL) == MD_UNITCELL_PBC_ALL) {
-        vec4_t ext = md_unitcell_diag_vec4(cell);
-        vec4_t inv_ext = vec4_set(ext.x > 0.0f ? 1.0f / ext.x : 0.0f, ext.y > 0.0f ? 1.0f / ext.y : 0.0f, ext.z > 0.0f ? 1.0f / ext.z : 0.0f, 0.0f);
-
         for (size_t i = 0; i < num_points - 1; ++i) {
             float x = in_x[i];
             float y = in_y[i];
             float z = in_z[i];
             for (size_t j = i + 1; j < num_points; ++j) {
-                float dx = in_x[j] - x;
-                float dy = in_y[j] - y;
-                float dz = in_z[j] - z;
-
-                vec4_t d = vec4_min_image(vec4_set(dx, dy, dz, 0.0f), ext, inv_ext);
+				vec3_t d = { in_x[j] - x, in_y[j] - y, in_z[j] - z };
+				md_util_min_image_vec3(&d, 1, cell);
                 float d2 = fmaf(d.x, d.x, fmaf(d.y, d.y, d.z * d.z));
                 if (d2 < r2) {
                     if (pairs) {
@@ -237,32 +231,45 @@ UTEST(spatial_hash, n2) {
 
     {
 
-#define test_count 2048
-        float x[test_count];
-        float y[test_count];
-        float z[test_count];
+#define TEST_COUNT 2048
+        float x[TEST_COUNT];
+        float y[TEST_COUNT];
+        float z[TEST_COUNT];
 
-        const double ext[3]  = {103.0, 103.0, 103.0};
-	    const double min_rad = 3.0;
-		const double max_rad = 6.0;
+        const mat3_t cell_matrix = {
+            60.0,  0.0,   0.0,
+            20.0, 50.0,   0.0,
+            10.0, 20.0,  40.0
+		};
+	    const float min_rad = 3.0;
+		const float max_rad = 6.0;
 
         srand(0);
-        for (size_t i = 0; i < test_count; ++i) {
-            x[i] = rnd_rng(0.0, ext[0]);
-            y[i] = rnd_rng(0.0, ext[1]);
-            z[i] = rnd_rng(0.0, ext[2]);
+        // Generate random points in the triclinic unit cell: r = A * s with s in [0,1)^3
+        for (size_t i = 0; i < TEST_COUNT; ++i) {
+            const double u = rnd_rng(0.0, 1.0);
+            const double v = rnd_rng(0.0, 1.0);
+            const double w = rnd_rng(0.0, 1.0);
+			vec3_t t = { u, v, w };
+			t = mat3_mul_vec3(cell_matrix, t);
+            x[i] = t.x;
+            y[i] = t.y;
+            z[i] = t.z;
         }
 
         dist_pair_t bf_pairs[4096];
         dist_pair_t sa_pairs[4096];
 
-        md_unitcell_t test_cell = md_unitcell_from_extent(ext[0], ext[1], ext[2]);
+		md_unitcell_t test_cell = md_unitcell_from_matrix_float(cell_matrix.elem);
+		mat3_t I = md_unitcell_inv_basis_mat3(&test_cell);
+
+        vec3_t p = mat3_mul_vec3(I, vec3_set(30.0, 30.0, 30.0));
 
         md_spatial_acc_t sa = { .alloc = alloc };
-		md_spatial_acc_init(&sa, x, y, z, NULL, test_count, max_rad, &test_cell);
+		md_spatial_acc_init(&sa, x, y, z, NULL, TEST_COUNT, max_rad, &test_cell);
 
         for (double rad = 3.0; rad <= 6.0; rad += 0.5) {
-            size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
+            size_t bf_count = do_brute_force(x, y, z, TEST_COUNT, rad, &test_cell, NULL);
 
             uint32_t sa_count = 0;
             md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &sa_count);

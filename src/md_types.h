@@ -316,6 +316,24 @@ static inline void md_unitcell_extract_extent_angles(double* out_a, double* out_
     if (out_gamma) *out_gamma = gamma;
 }
 
+static inline void md_unitcell_extract_basis_parameters(double* out_x, double* out_y, double* out_z, double* out_xy, double* out_xz, double* out_yz, const md_unitcell_t* cell) {
+    if (!cell) {
+        if (out_x) *out_x = 0;
+        if (out_y) *out_y = 0;
+        if (out_z) *out_z = 0;
+        if (out_xy) *out_xy = 0;
+        if (out_xz) *out_xz = 0;
+        if (out_yz) *out_yz = 0;
+        return;
+    }
+    if (out_x) *out_x = cell->x;
+    if (out_y) *out_y = cell->y;
+    if (out_z) *out_z = cell->z;
+    if (out_xy) *out_xy = cell->xy;
+    if (out_xz) *out_xz = cell->xz;
+    if (out_yz) *out_yz = cell->yz;
+}
+
 // From here: https://www.arianarab.com/post/crystal-structure-software
 // Assumes that all input angles (alpha, beta, gamma) are given in degrees
 static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
@@ -342,12 +360,14 @@ static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double 
     return md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 }
 
+// Construct unitcell from float matrix [3][3] (column major)
 static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
-    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
 }
 
+// Construct unitcell from double matrix [3][3] (column major)
 static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3]) {
-    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[0][1], A[0][2], A[1][2]);
+    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
 }
 
 // Getters and helper functionality
@@ -419,7 +439,7 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
         const double i12 = -cell->xy / (cell->x * cell->y);
         const double i13 = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
         const double i23 = -cell->yz / (cell->y * cell->z);
-        mat3_t Ai = {(float)i11, 0, 0, (float)i12, (float)i22, 0, (float)i13, (float)i23, (float)i33};
+        mat3_t Ai = {(float)i11, (float)i12, (float)i13, 0, (float)i22, (float)i23, 0, 0, (float)i33};
         return Ai;
     }
     return mat3_ident();
@@ -432,13 +452,13 @@ static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_u
             return;
         }
         out_Ai[0][0] = 1.0 / cell->x;
-        out_Ai[0][1] = 0;
-        out_Ai[0][2] = 0;
-        out_Ai[1][0] = -cell->xy / (cell->x * cell->y);
+        out_Ai[0][1] = -cell->xy / (cell->x * cell->y);
+        out_Ai[0][2] = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        out_Ai[1][0] = 0;
         out_Ai[1][1] = 1.0 / cell->y;
-        out_Ai[1][2] = 0;
-        out_Ai[2][0] = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
-        out_Ai[2][1] = -cell->yz / (cell->y * cell->z);
+        out_Ai[1][2] = -cell->yz / (cell->y * cell->z);
+        out_Ai[2][0] = 0;
+        out_Ai[2][1] = 0;
         out_Ai[2][2] = 1.0 / cell->z;
     }
 }
@@ -456,20 +476,6 @@ static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
         return G;
     }
     return mat3_ident();
-}
-
-static inline void md_unitcell_extract_cell_parameters(double* a, double* b, double* c, double* alpha, double* beta, double* gamma, const md_unitcell_t* cell) {
-    ASSERT(cell);
-
-    // lengths
-    *a = fabs(cell->x);
-    *b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
-    *c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
-
-    // angles (radians)
-    *alpha = acos((cell->xy * cell->xz + cell->y * cell->yz) / (*b * *c));
-    *beta  = acos((cell->x * cell->xz) / (*a * *c));
-    *gamma = acos((cell->x * cell->xy) / (*a * *b));
 }
 
 // Create a vec4 mask which represents the periodic dimensions from a unit cell.
