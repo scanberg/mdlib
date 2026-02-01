@@ -9,7 +9,7 @@
 
 #define STR(x) {x"", sizeof(x"")-1}
 
-#define FULL_TEST 0
+#define FULL_TEST 1
 
 static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
 static const str_t amy_path = STR(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
@@ -222,7 +222,7 @@ UBENCH_EX(xtc, xtc_amyloid) {
         return;
     }
 
-    static const size_t num_frames = 2345;
+    static const size_t num_frames = 100;//2345;
     static const size_t num_atoms  = 161742;
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);
@@ -262,7 +262,7 @@ UBENCH_EX(xtc, xtc_aspirin) {
         return;
     }
 
-    static const size_t num_frames = 601;
+    static const size_t num_frames = 100;//601;
     static const size_t num_atoms  = 50515;
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);
@@ -302,7 +302,7 @@ UBENCH_EX(xtc, xtc_ion_channel) {
         return;
     }
 
-    static const size_t num_frames = 1989;
+    static const size_t num_frames = 100;//1989;
     static const size_t num_atoms  = 222387;
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);

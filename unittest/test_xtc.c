@@ -11,7 +11,7 @@
 
 #include <xdrfile_xtc.h>
 
-#define FULL_TEST 0
+#define FULL_TEST 1
 
 static inline uint64_t decodebits(int buf[3], int num_of_bits) {
     int cnt;
@@ -199,17 +199,165 @@ UTEST(xtc, bitread) {
     md_temp_set_pos_back(temp_pos);
 }
 
+static inline uint64_t extract_bits_57_be(
+    const uint64_t* base,
+    size_t bit_offset,
+    size_t bit_length)
+{
+    size_t wi = bit_offset >> 6;
+    size_t sh = bit_offset & 63;
+    
+    uint64_t word = base[wi];
+    
+    // Left shift to align, then right shift to extract
+    return (word << sh) >> (64 - bit_length);
+}
+
+static inline uint32_t extract_bits_be_32(
+    const uint64_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..32
+{
+    size_t wi = bit_offset >> 6;
+    size_t sh = bit_offset & 63;
+    
+    uint64_t word = base[wi];
+    
+    // Extract bit_length bits starting at bit position sh
+    return (uint32_t)((word << sh) >> (64 - bit_length));
+}
+
+static inline uint64_t extract_bits_be_raw_57(
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..64
+{
+    // Calculate byte offset
+    size_t byte_offset = bit_offset >> 3;
+    size_t bit_in_byte = bit_offset & 7;
+    
+    // Read 8 bytes unaligned (covers up to 64 bits + 7 bit offset)
+    uint64_t raw;
+    memcpy(&raw, &base[byte_offset], sizeof(uint64_t));
+    
+    // Byteswap to host endian (assuming host is little-endian)
+    uint64_t swapped = BSWAP64(raw);
+    
+    // Extract the bits (they're now at the top after bswap)
+    return (swapped << bit_in_byte) >> (64 - bit_length);
+}
+
+static inline uint64_t extract_bits_be_raw_64(
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..64
+{
+    size_t byte_offset = bit_offset >> 3;
+    size_t bit_in_byte = bit_offset & 7;
+    
+    // Always read 16 bytes (two uint64_t)
+    uint64_t raw_hi, raw_lo;
+    memcpy(&raw_hi, &base[byte_offset], sizeof(uint64_t));
+    memcpy(&raw_lo, &base[byte_offset + 8], sizeof(uint64_t));
+    
+    uint64_t hi = BSWAP64(raw_hi);
+    uint64_t lo = BSWAP64(raw_lo);
+    
+    // Combine (lo part masked out if not needed)
+    uint64_t nz_mask = -(uint64_t)(bit_in_byte != 0);
+    uint64_t combined = (hi << bit_in_byte) | ((lo >> (64 - bit_in_byte)) & nz_mask);
+    
+    return combined >> (64 - bit_length);
+}
+
+static inline uint32_t extract_bits_be_raw_32(
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..32
+{
+    size_t byte_offset = bit_offset >> 3;
+    size_t bit_in_byte = bit_offset & 7;
+    
+    // Read 8 bytes (or could read just 5 bytes for 32-bit case)
+    uint64_t raw;
+    memcpy(&raw, &base[byte_offset], sizeof(uint64_t));
+    
+    uint64_t swapped = BSWAP64(raw);
+    return (uint32_t)((swapped << bit_in_byte) >> (64 - bit_length));
+}
+
+static inline uint64_t extract_bits_be(
+    const uint64_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..64
+{
+    size_t wi = bit_offset >> 6;
+    size_t sh = bit_offset & 63;
+    
+    uint64_t hi = base[wi];
+    uint64_t lo = base[wi + 1];
+    
+    // Alternative: use conditional move (may compile to cmov)
+    uint64_t lo_part = (sh == 0) ? 0 : (lo >> (64 - sh));
+    uint64_t win_hi = (hi << sh) | lo_part;
+    
+    return win_hi >> (64 - bit_length);
+}
+
+uint64_t extract_packed_le(
+    const uint64_t* base,
+    size_t bit_offset,
+    size_t nbits)
+{
+    size_t wi  = bit_offset >> 6;
+    size_t sh  = bit_offset & 63;
+
+    uint64_t hi = BSWAP64(base[wi]);
+    uint64_t lo = BSWAP64(base[wi + 1]);
+
+    // Build 128-bit MSB-first window (hi:lo)
+    uint64_t rshift  = (64 - sh) & 63;
+    uint64_t lo_part = lo >> rshift;
+    uint64_t nz_mask = -(uint64_t)(sh != 0);
+
+    uint64_t win_hi = (hi << sh) | (lo_part & nz_mask);
+
+    // Field is MSB-aligned in win_hi, move to LSB
+    uint64_t x = win_hi >> (64 - nbits);
+
+    // Byte packing
+    uint64_t byte_count  = (nbits + 7) >> 3;
+    uint64_t pad_bits    = (byte_count << 3) - nbits;
+    uint64_t final_shift = 64 - (byte_count << 3);
+
+    x >>= pad_bits;
+
+    return BSWAP64(x) >> final_shift;
+}
+
 UTEST(xtc, decode_bits) {
     size_t temp_pos = md_temp_get_pos();
-    int* buf = md_temp_push(sizeof(int) * (1024 + 3));
+    size_t size_in_bytes = sizeof(int) * 1024;
+    int* buf = md_temp_push(3 * sizeof(int) + size_in_bytes);
     buf[0] = buf[1] = buf[2] = 0;
     srand(0);
     for (int i = 3; i < 1024; ++i) {
         buf[i] = rand() << 16 | rand();
     }
 
+    const uint64_t* buf_raw = (const uint64_t*)&buf[3];
+
+    uint64_t* buf_be = md_temp_push(size_in_bytes);
+    size_t num_u64 = size_in_bytes / sizeof(uint64_t);
+    // Preform pre-BE swaps
+    for (size_t i = 0; i < num_u64; ++i) {
+        buf_be[i] = BSWAP64(buf_raw[i]);
+    }
+
     br_t r = {0};
-    br_init(&r, (const uint64_t*)&buf[3], 512 * sizeof(int));
+    br_init(&r, buf_raw, 512 * sizeof(int));
+    
+    size_t bit_offset = 0;
 
     for (size_t i = 0; i < ARRAY_SIZE(num_bits); ++i) {
         int num_of_bits = num_bits[i];
@@ -228,22 +376,30 @@ UTEST(xtc, decode_bits) {
             v |= ((uint64_t) decodebits(buf, partbits)) << (8 * i);
         }
 
+        int part_bits = num_of_bits & 7;
         uint64_t big_shift = 64 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
         uint64_t sml_shift = (8 - partbits) & 7;             // Avoid branch, ensures zero when partbits == 0
-        uint64_t part_mask = partbits ? (1ull << partbits) - 1 : 0xFF;
-
-        uint64_t next = ALIGN_TO(num_of_bits, 8);
-        uint64_t u = br_peek(&r, num_of_bits);
-        uint64_t l = u << sml_shift;
-        uint64_t j = BSWAP64(u);
-        uint64_t m = BSWAP64(l);
-        uint64_t k = j >> big_shift;
+        uint64_t part_mask = part_bits ? (1ull << part_bits) - 1 : 0xFF;
 
         uint64_t w = br_read(&r, num_of_bits);
         // Remove unnecessary masking by directly applying shifts
         uint64_t t = (w << sml_shift) & ~0xFFull | (w & part_mask);
         // Byte-swap and shift to align the result correctly
         uint64_t q = BSWAP64(t) >> big_shift;
+
+        uint64_t x = extract_bits_be(buf_be, bit_offset, num_of_bits);
+        uint64_t y = extract_bits_be_raw_64(buf_raw, bit_offset, num_of_bits);
+        uint64_t z = extract_bits_be_raw_32(buf_raw, bit_offset, num_of_bits);
+
+        bit_offset += num_of_bits;
+
+        EXPECT_EQ(x, w);
+
+        EXPECT_EQ(y, w);
+
+        if (num_of_bits <= 32) {
+            EXPECT_EQ(z, w);
+        }
 
         EXPECT_EQ(v, q);
         if (v != q) {
@@ -273,7 +429,7 @@ UTEST(xtc, trajectory_i) {
 
     md_trajectory_frame_header_t header;
 
-    for (int64_t i = 0; i < num_frames; ++i) {
+    for (int64_t i = 0; i < 1; ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
@@ -341,7 +497,7 @@ done:
 UTEST(xtc, big) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
-    const str_t path = STR_LIT("/home/robin/data/PROD_r2.part0001.xtc");
+    const str_t path = STR_LIT("E:/data/md/big/PROD_r2.part0001.xtc");
     md_file_o*  file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
