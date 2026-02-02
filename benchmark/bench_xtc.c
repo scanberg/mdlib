@@ -173,6 +173,11 @@ UBENCH_EX(xtc, xdr_ion_channel) {
 UBENCH_EX(xtc, xtc_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_o* file = md_file_open(cat_path, MD_FILE_READ | MD_FILE_BINARY);
+    //setvbuf((FILE*)file, NULL, _IOFBF, BUFFER_SIZE);
+
+#if MD_PLATFORM_UNIX
+    posix_fadvise(fileno((FILE*)file), 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 
     if (!file) {
         MD_LOG_ERROR("Bad");

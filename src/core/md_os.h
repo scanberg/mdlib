@@ -85,8 +85,8 @@ size_t      md_file_read_line(md_file_o* file, char* buf, size_t cap);
 // returns the number of bytes read (up to cap-1)
 size_t      md_file_read_lines(md_file_o* file, char* buf, size_t cap);
 
-size_t      md_file_read(md_file_o* file, void* ptr, size_t num_bytes);
-size_t      md_file_write(md_file_o* file, const void* ptr, size_t num_bytes);
+size_t      md_file_read(md_file_o* file, void* dst, size_t num_bytes);
+size_t      md_file_write(md_file_o* file, const void* src, size_t num_bytes);
 
 size_t      md_file_printf(md_file_o* file, const char* format, ...);
 
