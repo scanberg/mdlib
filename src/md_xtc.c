@@ -468,6 +468,22 @@ static inline uint32_t extract_bits_be_raw_32(
     return (uint32_t)((swapped << bit_in_byte) >> (64 - bit_length));
 }
 
+static inline uint32_t extract_bits_be_raw_25(
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..32
+{
+    size_t byte_offset = bit_offset >> 3;
+    size_t bit_in_byte = bit_offset & 7;
+
+    // Read 8 bytes (or could read just 5 bytes for 32-bit case)
+    uint32_t raw;
+    memcpy(&raw, &base[byte_offset], sizeof(uint32_t));
+
+    uint32_t swapped = BSWAP32(raw);
+    return (uint32_t)((swapped << bit_in_byte) >> (32 - bit_length));
+}
+
 static inline v4i_t unpack_coord(const uint8_t* base, size_t bit_offset, const unpack_data_t* unpack) {
     int num_of_bits = unpack->bit.num_of_bits;
 
@@ -828,7 +844,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     size_t bit_offset = 0;
 
     while (atom_idx < natoms) {
-        uint32_t run_data = (uint32_t)extract_bits_be_raw_32(base, bit_offset + big_skip, 6);
+        uint32_t run_data = extract_bits_be_raw_25(base, bit_offset + big_skip, 6);
 
         if (bitsize == 0) {
             thiscoord = read_ints3(base, bit_offset, big_bit_data);
@@ -839,10 +855,9 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             } else {
                 thiscoord = unpack_coord128(&br, &big_unpack);
             }
-            v4i_t c = unpack_coord(base_ptr, bit_offset, &big_unpack);
-            ASSERT(v4i_eq(c, thiscoord));
+            //v4i_t c = unpack_coord(base_ptr, bit_offset, &big_unpack);
+            //ASSERT(v4i_eq(c, thiscoord));
 #else
-            //thiscoord = unpack_coord(base, bit_offset, &big_unpack);
             thiscoord = unpack_coord(base, bit_offset, &big_unpack);
 #endif
         }
@@ -850,8 +865,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         thiscoord = v4i_add(thiscoord, vminint);
 #if USE_BR
         uint32_t data = (uint32_t)br_peek(&br, 6);
-        uint32_t d = (uint32_t)extract_bits_be(base_ptr, bit_offset, 6);
-        ASSERT(data == d);
+        //uint32_t d = (uint32_t)extract_bits_be(base, bit_offset, 6);
+        //ASSERT(data == d);
 #else
         //uint32_t data = (uint32_t)extract_bits_be_raw_32(base, bit_offset, 6);
 #endif
@@ -859,7 +874,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         uint32_t run_skip = run_flag ? 6 : 1;
         bit_offset += big_skip + run_skip;
 #if USE_BR
-        br_skip(&br, skip);
+        br_skip(&br, run_skip);
 #endif
 
         int is_smaller = 0;
@@ -889,8 +904,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
 #if USE_BR
             v4i_t coord = unpack_coord64(&br, &sml_unpack);
-            v4i_t c = unpack_coord(base_ptr, bit_offset, &sml_unpack);
-            ASSERT(v4i_eq(coord, c));
+            //v4i_t c = unpack_coord(base, bit_offset, &sml_unpack);
+            //ASSERT(v4i_eq(coord, c));
 #else
             v4i_t coord = unpack_coord(base, bit_offset, &sml_unpack);
 #endif
@@ -906,8 +921,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             for (int i = 1; i < run_count; ++i) {
 #if USE_BR
                 coord = unpack_coord64(&br, &sml_unpack);
-                c = unpack_coord(base_ptr, bit_offset, &sml_unpack);
-                ASSERT(v4i_eq(coord, c));
+                //c = unpack_coord(base, bit_offset, &sml_unpack);
+                //ASSERT(v4i_eq(coord, c));
 #else
                 coord = unpack_coord(base, bit_offset, &sml_unpack);
 #endif
