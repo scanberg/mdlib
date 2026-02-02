@@ -25,7 +25,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
         return;
     }
 
-    static const size_t num_frames = 501;
+    static const size_t num_frames = 100; // 501;
     static const size_t num_atoms  = 1336;
 
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
@@ -35,7 +35,6 @@ UBENCH_EX(xtc, xdr_catalyst) {
     md_file_close(file);
 
     XDRFILE* xdr = xdrfile_open(cat_path.ptr, "rb");
-    
 
     int natoms, step;
     float time, prec, box[3][3];
@@ -65,7 +64,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
         return;
     }
 
-    static const size_t num_frames = 2345;
+    static const size_t num_frames = 100; // 2345;
     static const size_t num_atoms  = 161742;
 
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
@@ -103,7 +102,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
         return;
     }
 
-    static const size_t num_frames = 601;
+    static const size_t num_frames = 100; // 601;
     static const size_t num_atoms = 50515;
 
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
@@ -141,7 +140,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
         return;
     }
     
-    static const size_t num_frames = 1989;
+    static const size_t num_frames = 100; //1989;
     static const size_t num_atoms  = 222387;
 
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
@@ -180,7 +179,7 @@ UBENCH_EX(xtc, xtc_catalyst) {
         return;
     }
 
-    static const size_t num_frames = 501;
+    static const size_t num_frames = 100; // 501;
     static const size_t num_atoms  = 1336;
 
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
@@ -315,7 +314,6 @@ UBENCH_EX(xtc, xtc_ion_channel) {
         MD_LOG_ERROR("Bad");
         return;
     }
-
 
     int natoms, step;
     float time, box[3][3];
