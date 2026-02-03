@@ -4,7 +4,7 @@ project(md_unittest VERSION 0.1 LANGUAGES C)
 
 add_executable(md_unittest unittest.c)
 
-target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" UTEST_USE_OLD_QPC ${MD_DEFINES})
+target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${MD_UNITTEST_DATA_DIR}\" UTEST_USE_OLD_QPC ${MD_DEFINES})
 target_compile_options(md_unittest PRIVATE ${MD_FLAGS_EXT} ${MD_FLAGS_AVX} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_unittest PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_unittest PRIVATE mdlib ${MD_LIBS})

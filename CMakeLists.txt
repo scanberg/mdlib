@@ -383,11 +383,13 @@ endif()
 set(MD_FLAGS ${MD_FLAGS} ${MD_FLAGS_AVX})
 
 if (MD_UNITTEST)
+  set(MD_UNITTEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test_data" CACHE PATH "Path to unit test data directory")
   enable_testing()
   add_subdirectory(unittest)
 endif()
 
 if (MD_BENCHMARK)
+  set(MD_BENCHMARK_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test_data" CACHE PATH "Path to benchmark test data directory")
   add_subdirectory(benchmark)
 endif()
 
