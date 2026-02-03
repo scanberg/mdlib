@@ -93,6 +93,14 @@ typedef uint64_t ubench_uint64_t;
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef UBENCH_DEFAULT_MIN_ITERATIONS
+#define UBENCH_DEFAULT_MIN_ITERATIONS 10
+#endif
+
+#ifndef UBENCH_DEFAULT_MAX_ITERATIONS
+#define UBENCH_DEFAULT_MAX_ITERATIONS 500
+#endif
+
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -300,7 +308,12 @@ static UBENCH_INLINE ubench_int64_t ubench_ns(void) {
   return UBENCH_CAST(ubench_int64_t, ts.tv_sec) * 1000 * 1000 * 1000 +
          ts.tv_nsec;
 #elif __APPLE__
-  return UBENCH_CAST(ubench_int64_t, mach_absolute_time());
+  static mach_timebase_info_data_t timebase = {0};
+  if (timebase.denom == 0) {
+    mach_timebase_info(&timebase);
+  }
+  ubench_int64_t ticks = mach_absolute_time();
+  return (ticks * timebase.numer) / timebase.denom;
 #endif
 }
 
@@ -323,6 +336,7 @@ struct ubench_state_s {
   size_t benchmarks_length;
   FILE *output;
   double confidence;
+  ubench_int64_t iterations_override;
 };
 
 /* extern to the global state ubench needs to execute */
@@ -568,6 +582,7 @@ int ubench_main(int argc, const char *const argv[]) {
     const char filter_str[] = "--filter=";
     const char output_str[] = "--output=";
     const char confidence_str[] = "--confidence=";
+    const char iterations_str[] = "--iterations=";
 
     if (0 == ubench_strncmp(argv[index], help_str, strlen(help_str))) {
       printf("ubench.h - the single file benchmarking solution for C/C++!\n"
@@ -579,7 +594,10 @@ int ubench_main(int argc, const char *const argv[]) {
              "Output names can be passed to --filter.\n"
              "  --output=<output>         Output a CSV file of the results.\n"
              "  --confidence=<confidence> Change the confidence cut-off for a "
-             "failed test. Defaults to 2.5%%\n");
+              "failed test. Defaults to 2.5%%\n"
+              "  --iterations=<count>      Override iterations per benchmark "
+              "run. Must be in range [1..%d].\n",
+              UBENCH_DEFAULT_MAX_ITERATIONS);
       goto cleanup;
     } else if (0 ==
                ubench_strncmp(argv[index], filter_str, strlen(filter_str))) {
@@ -607,6 +625,31 @@ int ubench_main(int argc, const char *const argv[]) {
                 "Confidence must be in the range [0..100] (you specified %f)\n",
                 ubench_state.confidence);
         goto cleanup;
+      }
+    } else if (0 == ubench_strncmp(argv[index], iterations_str,
+                                   strlen(iterations_str))) {
+      const char *iter_str = argv[index] + strlen(iterations_str);
+      char *end_ptr = UBENCH_NULL;
+      const ubench_int64_t parsed =
+          UBENCH_CAST(ubench_int64_t, strtoll(iter_str, &end_ptr, 10));
+
+      if ((iter_str == end_ptr) || (*end_ptr != '\0')) {
+        fprintf(stderr, "Invalid --iterations value: %s\n", iter_str);
+        goto cleanup;
+      }
+
+      if (parsed < 1) {
+        fprintf(stderr, "--iterations must be >= 1\n");
+        goto cleanup;
+      }
+
+      if (parsed > UBENCH_DEFAULT_MAX_ITERATIONS) {
+        fprintf(stderr,
+                "--iterations exceeds max (%d); clamping to max.\n",
+                UBENCH_DEFAULT_MAX_ITERATIONS);
+        ubench_state.iterations_override = UBENCH_DEFAULT_MAX_ITERATIONS;
+      } else {
+        ubench_state.iterations_override = parsed;
       }
     }
   }
@@ -636,9 +679,9 @@ int ubench_main(int argc, const char *const argv[]) {
     double best_confidence = 101.0;
     struct ubench_run_state_s ubs;
 
-#define UBENCH_MIN_ITERATIONS 10
-#define UBENCH_MAX_ITERATIONS 500
-    ubench_int64_t iterations = 10;
+#define UBENCH_MIN_ITERATIONS UBENCH_DEFAULT_MIN_ITERATIONS
+#define UBENCH_MAX_ITERATIONS UBENCH_DEFAULT_MAX_ITERATIONS
+  ubench_int64_t iterations = UBENCH_DEFAULT_MIN_ITERATIONS;
     const ubench_int64_t max_iterations = UBENCH_MAX_ITERATIONS;
     const ubench_int64_t min_iterations = UBENCH_MIN_ITERATIONS;
     /* Add one extra timestamp slot, as we save times between runs and time
@@ -659,12 +702,18 @@ int ubench_main(int argc, const char *const argv[]) {
     ubs.sample = 0;
     ubs.bytes = 0;
 
-    /* Time once to work out the base number of iterations to use. */
-    ubench_state.benchmarks[index].func(&ubs);
+    if (ubench_state.iterations_override > 0) {
+      iterations = ubench_state.iterations_override;
+      iterations = iterations > max_iterations ? max_iterations : iterations;
+    } else {
+      /* Time once to work out the base number of iterations to use. */
+      ubench_state.benchmarks[index].func(&ubs);
 
-    iterations = (100 * 1000 * 1000) / ((ns[1] <= ns[0]) ? 1 : ns[1] - ns[0]);
-    iterations = iterations < min_iterations ? min_iterations : iterations;
-    iterations = iterations > max_iterations ? max_iterations : iterations;
+      iterations =
+          (100 * 1000 * 1000) / ((ns[1] <= ns[0]) ? 1 : ns[1] - ns[0]);
+      iterations = iterations < min_iterations ? min_iterations : iterations;
+      iterations = iterations > max_iterations ? max_iterations : iterations;
+    }
 
     for (mndex = 0; (mndex < 100) && (result != 0); mndex++) {
       ubench_int64_t kndex = 0;
@@ -672,8 +721,12 @@ int ubench_main(int argc, const char *const argv[]) {
       double deviation = 0;
       double confidence = 0;
 
-      iterations = iterations * (UBENCH_CAST(ubench_int64_t, mndex) + 1);
-      iterations = iterations > max_iterations ? max_iterations : iterations;
+      if (ubench_state.iterations_override > 0) {
+        iterations = ubench_state.iterations_override;
+      } else {
+        iterations = iterations * (UBENCH_CAST(ubench_int64_t, mndex) + 1);
+        iterations = iterations > max_iterations ? max_iterations : iterations;
+      }
 
       ubs.sample = 0;
       ubs.size = iterations;
@@ -843,7 +896,7 @@ UBENCH_C_FUNC void _ReadWriteBarrier(void);
 */
 #define UBENCH_STATE()                                                         \
   UBENCH_DECLARE_DO_NOTHING()                                                  \
-  struct ubench_state_s ubench_state = {0, 0, 0, 2.5}
+  struct ubench_state_s ubench_state = {0, 0, 0, 2.5, 0}
 
 /*
    define a main() function to call into ubench.h and start executing

@@ -507,39 +507,6 @@ static inline v4i_t unpack_coord(const uint8_t* base, size_t bit_offset, const u
 	return v4i_set(x, y, z, 0);
 }
 
-static inline v4i_t unpack_coord64_fused(
-    const uint8_t* base,
-    size_t bit_offset,
-    const unpack_data_t* u)
-{
-    size_t byte_offset = bit_offset >> 3;
-    size_t bit_in_byte = bit_offset & 7;
-    size_t N = u->bit.num_of_bits;
-
-    uint64_t raw;
-    memcpy(&raw, base + byte_offset, 8);
-
-    uint64_t be = BSWAP64(raw);
-
-    // Extract MSB-first field
-    uint64_t f = (be << bit_in_byte) >> (64 - N);
-
-    // Convert to packed little-endian integer
-    uint64_t B   = (N + 7) >> 3;
-    uint64_t pad = (B << 3) - N;
-
-    uint64_t v = BSWAP64(f >> pad) >> (64 - (B << 3));
-
-    // Mixed radix decode (parallel form)
-    uint64_t x  = DIV(v, &u->div_zy);
-    uint64_t yz = DIV(v, &u->div_z);
-
-    uint32_t y = yz - x * u->size_y;
-    uint32_t z = v  - yz * u->size_z;
-
-    return v4i_set((uint32_t)x, y, z, 0);
-}
-
 static inline v4i_t read_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bit_data[3]) {
     uint32_t val[4];
     int offset = 0;
@@ -808,22 +775,86 @@ static inline void read_ints(int* dst, size_t count, uint8_t* src) {
 #endif
 }
 
+static inline void decode_rle_batch_upto8(
+    float**      lfp_io,
+    v4i_t*       thiscoord_io,
+    const uint8_t* base,
+    size_t*      bit_offset_io,
+    const unpack_data_t* sml_unpack,
+    int          run_count,      // 1..8
+    int          smallnum,
+    float        inv_precision)
+{
+    ASSERT(run_count >= 1 && run_count <= 8);
+
+    const int sml_bits = sml_unpack->bit.num_of_bits;
+    v4i_t coords[8];
+
+    // Branchless-ish batch read via switch/fallthrough.
+    // Each unpack reads sml_bits and advances bit_offset.
+#define READ_SML(i) do { \
+        coords[(i)] = unpack_coord(base, *bit_offset_io, sml_unpack); \
+        *bit_offset_io += (size_t)sml_bits; \
+    } while (0)
+
+    switch (run_count) {
+        case 8: READ_SML(7); /* fallthrough */
+        case 7: READ_SML(6); /* fallthrough */
+        case 6: READ_SML(5); /* fallthrough */
+        case 5: READ_SML(4); /* fallthrough */
+        case 4: READ_SML(3); /* fallthrough */
+        case 3: READ_SML(2); /* fallthrough */
+        case 2: READ_SML(1); /* fallthrough */
+        case 1: READ_SML(0); break;
+        default: ASSERT(false); break;
+    }
+
+#undef READ_SML
+
+    float* lfp = *lfp_io;
+
+    // Update rule matches existing code:
+    // thiscoord = coord + (thiscoord - vsmall)
+    // then for subsequent: thiscoord = thiscoord + (coord - vsmall)
+    v4i_t vsmall = v4i_set1(smallnum);
+    v4i_t thiscoord = *thiscoord_io;
+
+    // First RLE coord is written "before" the anchor (water-swap semantics)
+    thiscoord = v4i_add(coords[0], v4i_sub(thiscoord, vsmall));
+    write_coord(lfp - 3, thiscoord, inv_precision);
+    lfp += 3;
+
+    // Remaining RLE coords (if any) written sequentially
+    for (int i = 1; i < run_count; ++i) {
+        thiscoord = v4i_add(thiscoord, v4i_sub(coords[i], vsmall));
+        write_coord(lfp, thiscoord, inv_precision);
+        lfp += 3;
+    }
+
+    *lfp_io = lfp;
+    *thiscoord_io = thiscoord;
+}
+
+#define USE_BYTESTREAM 0
+
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
     if (xdr_file == NULL || out_coords_ptr == NULL) {
         return 0;
     }
     
+#if USE_BYTESTREAM
 	bytestream_t stream = { 0 };
     if (!bytestream_init(&stream, xdr_file)) {
         MD_LOG_ERROR("XTC: Failed to allocate bytestream buffer");
         return 0;
 	}
+    uint8_t* base_ptr = bytestream_ensure(&stream, 64);
+#endif
 
     int atom_idx = 0;
-	uint8_t* base_ptr = bytestream_ensure(&stream, 64);
 
     int natoms;
-#if 1
+#if USE_BYTESTREAM
     read_ints(&natoms, 1, base_ptr);
     base_ptr += 4;
 #else
@@ -839,7 +870,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     /* Dont bother with compression for three atoms or less */
     if (natoms <= 9) {
-#if 1
+#if USE_BYTESTREAM
 		read_ints((int*)out_coords_ptr, natoms * 3, base_ptr);
 #else
         if (!xdr_read_float(out_coords_ptr, natoms * 3, xdr_file)) {
@@ -851,7 +882,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     /* Compression-time if we got here. Read precision first */
     float precision;
-#if 1
+#if USE_BYTESTREAM
     read_ints((int*)&precision, 1, base_ptr);
 	base_ptr += 4;
 #else
@@ -861,7 +892,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
     int32_t minint[3], maxint[3];
-#if 1
+#if USE_BYTESTREAM
     read_ints(minint, 3, base_ptr);
     base_ptr += 12;
     read_ints(maxint, 3, base_ptr);
@@ -902,7 +933,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     }
 
     int smallidx;
-#if 1
+#if USE_BYTESTREAM
     read_ints(&smallidx, 1, base_ptr);
 	base_ptr += 4;
 #else
@@ -927,7 +958,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     /* length in bytes */
     uint32_t num_bytes = 0;
-#if 1
+#if USE_BYTESTREAM
     read_ints((int*)&num_bytes, 1, base_ptr);
     base_ptr += 4;
 #else
@@ -943,11 +974,6 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     }
 #endif
 
-#if USE_BR
-    br_t br = {0};
-    br_init(&br, mem, mem_size / 8);
-#endif
-
     float* lfp = out_coords_ptr;
     float inv_precision = 1.0f / precision;
     v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
@@ -961,12 +987,16 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     MD_LOG_DEBUG("bigsize: %i", bitsize);
 #endif
 
+#if USE_BYTESTREAM
 	// Advance to compressed base data
 	bytestream_advance(&stream, 10 * sizeof(int32_t));
+#endif
     size_t bit_offset = 0;
 
     while (atom_idx < natoms) {
-        uint8_t* base = bytestream_ensure(&stream, 128);
+#if USE_BYTESTREAM
+        uint8_t* base = bytestream_ensure(&stream, 256);
+#endif
 
         uint32_t run_data = extract_bits_be_raw_25(base, bit_offset + big_skip, 6);
 
@@ -977,19 +1007,10 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         }
 
         thiscoord = v4i_add(thiscoord, vminint);
-#if USE_BR
-        uint32_t data = (uint32_t)br_peek(&br, 6);
-        //uint32_t d = (uint32_t)extract_bits_be(base, bit_offset, 6);
-        //ASSERT(data == d);
-#else
-        //uint32_t data = (uint32_t)extract_bits_be_raw_32(base, bit_offset, 6);
-#endif
+
         uint32_t run_flag = run_data & 32;
         uint32_t run_skip = run_flag ? 6 : 1;
         bit_offset += big_skip + run_skip;
-#if USE_BR
-        br_skip(&br, run_skip);
-#endif
 
         int is_smaller = 0;
         if (run_flag) {
@@ -1017,45 +1038,28 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         if (run) {
             int sml_bits = sml_unpack.bit.num_of_bits;
-            //v4i_t prevcoord = thiscoord;
+
             v4i_t vsmall = v4i_set1(smallnum);
-
-#if USE_BR
-            v4i_t coord = unpack_coord64(&br, &sml_unpack);
-            //v4i_t c = unpack_coord(base, bit_offset, &sml_unpack);
-            //ASSERT(v4i_eq(coord, c));
-#else
             v4i_t coord = unpack_coord(base, bit_offset, &sml_unpack);
-#endif
             thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-
             bit_offset += sml_bits;
 
             // Write second atom before first atom
             write_coord(lfp - 3, thiscoord, inv_precision);
             lfp += 3;
 
-            for (int i = 1; i < run_count; ++i) {
-#if USE_BR
-                coord = unpack_coord64(&br, &sml_unpack);
-                //c = unpack_coord(base, bit_offset, &sml_unpack);
-                //ASSERT(v4i_eq(coord, c));
-#else
+            for (int i = 3; i < run; i += 3) {
                 coord = unpack_coord(base, bit_offset, &sml_unpack);
-#endif
                 bit_offset += sml_bits;
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
                 write_coord(lfp, thiscoord, inv_precision); lfp += 3;
             }
         }
 
-        smallidx += is_smaller;
-        if (is_smaller < 0) {
-            smallnum = smaller;
-            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
-        } else if (is_smaller > 0) {
-            smaller = smallnum;
-            smallnum = magicints[smallidx] / 2;
+        if (is_smaller) {
+            smallidx += is_smaller;
+            smallnum = (int)magicints[smallidx] / 2;
+            smaller  = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
         }
         if (smallidx != sml_unpack.bit.num_of_bits) {
 #ifdef PRINT_DEBUG
@@ -1074,14 +1078,19 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             goto done;
         }
 
+#if USE_BYTESTREAM
 		size_t advanced_bytes = bit_offset / 8;
 		bytestream_advance(&stream, advanced_bytes);
 		bit_offset &= 7;
+#endif
     }
     
 done:
-    //free(mem);
+#if USE_BYTESTREAM
 	bytestream_free(&stream);
+#else
+    free(mem);
+#endif
 
 #ifdef PRINT_DEBUG
     int max_smallbits = 0;
