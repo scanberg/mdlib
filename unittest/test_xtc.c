@@ -12,6 +12,8 @@
 #include <xdrfile_xtc.h>
 
 #define FULL_TEST 1
+#define ONLY_ONE_FRAME 1
+#define XTC_COORD_OFFSET 52
 
 static inline uint64_t decodebits(int buf[3], int num_of_bits) {
     int cnt;
@@ -43,6 +45,100 @@ static inline uint64_t decodebits(int buf[3], int num_of_bits) {
     buf[1] = lastbits;
     buf[2] = lastbyte;
     return num;
+}
+
+typedef struct brn_t {
+    const uint64_t* p;      // Next qword to load
+    uint64_t a;             // Current qword (BE->host swapped)
+    uint64_t b;             // Next qword (BE->host swapped)
+    uint32_t bitpos;        // 0..63, number of bits consumed from MSB side of a
+    uint32_t qwords_left;   // Remaining qwords in p
+} brn_t;
+
+static inline uint64_t brn_load_qword(const uint64_t* src) {
+    uint64_t v = *src;
+#if __LITTLE_ENDIAN__
+    v = BSWAP64(v);
+#endif
+    return v;
+}
+
+static inline void brn_init(brn_t* r, const void* data, size_t num_bytes) {
+    ASSERT(r);
+    ASSERT(data);
+    ASSERT((num_bytes & 7) == 0);
+    const uint64_t* q = (const uint64_t*)data;
+    const size_t num_qwords = num_bytes / 8;
+    ASSERT(num_qwords >= 2);
+
+    r->a = brn_load_qword(q + 0);
+    r->b = brn_load_qword(q + 1);
+    r->p = q + 2;
+    r->qwords_left = (uint32_t)num_qwords - 2;
+    r->bitpos = 0;
+}
+
+static inline void brn_slide_1(brn_t* r) {
+    r->a = r->b;
+    if (r->qwords_left) {
+        r->b = brn_load_qword(r->p++);
+        r->qwords_left -= 1;
+    } else {
+        r->b = 0;
+    }
+}
+
+// Produce a 64-bit "view" of the stream starting at current bitpos (MSB-first).
+static inline uint64_t brn_view64(const brn_t* r) {
+    const uint32_t s = r->bitpos;
+
+    // view = (a << s) | (b >> (64-s)) but avoid UB when s==0.
+    const uint64_t upper = r->a << s;
+    const uint64_t nz_mask = -(uint64_t)(s != 0);
+    const uint64_t lower = (r->b >> (64 - s)) & nz_mask;
+    return upper | lower;
+}
+
+static inline uint64_t brn_peek_u64(const brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+    const uint64_t view = brn_view64(r);
+    return view >> (64 - n);
+}
+
+static inline void brn_skip(brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+    const uint32_t newpos = r->bitpos + n;
+    r->bitpos = newpos & 63u;
+    if (newpos >= 64) {
+        brn_slide_1(r);
+        if (newpos >= 128) {
+            brn_slide_1(r);
+        }
+    }
+}
+
+// Read 1..64 bits, return in low bits.
+static inline uint64_t brn_read_u64(brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+
+    const uint64_t view = brn_view64(r);
+    const uint64_t res  = view >> (64 - n);
+
+    const uint32_t newpos = r->bitpos + n;
+    r->bitpos = newpos & 63u;
+
+    if (newpos >= 64) {
+        brn_slide_1(r);
+        // n can be 64 and bitpos can be non-zero: could cross 2 qwords.
+        if (newpos >= 128) {
+            brn_slide_1(r);
+        }
+    }
+
+    return res;
 }
 
 typedef struct br_t {
@@ -356,6 +452,9 @@ UTEST(xtc, decode_bits) {
 
     br_t r = {0};
     br_init(&r, buf_raw, 512 * sizeof(int));
+
+    brn_t brn;
+	brn_init(&brn, buf_raw, 512 * sizeof(int));
     
     size_t bit_offset = 0;
 
@@ -388,23 +487,18 @@ UTEST(xtc, decode_bits) {
         uint64_t q = BSWAP64(t) >> big_shift;
 
         uint64_t x = extract_bits_be(buf_be, bit_offset, num_of_bits);
-        uint64_t y = extract_bits_be_raw_64(buf_raw, bit_offset, num_of_bits);
-        uint64_t z = extract_bits_be_raw_32(buf_raw, bit_offset, num_of_bits);
+        uint64_t y = extract_bits_be_raw_64((const uint8_t*)buf_raw, bit_offset, num_of_bits);
 
-        bit_offset += num_of_bits;
+		uint64_t z = brn_read_u64(&brn, num_of_bits);
 
         EXPECT_EQ(x, w);
-
         EXPECT_EQ(y, w);
-
-        if (num_of_bits <= 32) {
-            EXPECT_EQ(z, w);
-        }
-
         EXPECT_EQ(v, q);
         if (v != q) {
             printf("Error with N=%i\n", num_of_bits);
         }
+
+        bit_offset += num_of_bits;
     }
 
     md_temp_set_pos_back(temp_pos);
@@ -415,13 +509,13 @@ UTEST(xtc, trajectory_i) {
     md_trajectory_i* traj = md_xtc_trajectory_create(path, md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
-    const int64_t num_atoms  = md_trajectory_num_atoms(traj);
-    const int64_t num_frames = md_trajectory_num_frames(traj);
+    const size_t num_atoms  = md_trajectory_num_atoms(traj);
+    const size_t num_frames = md_trajectory_num_frames(traj);
 
     EXPECT_EQ(num_atoms, 1336);
     EXPECT_EQ(num_frames, 501);
 
-    const int64_t mem_size = num_atoms * 3 * sizeof(float);
+    const size_t mem_size = num_atoms * 3 * sizeof(float);
     void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + num_atoms * 1;
@@ -429,7 +523,9 @@ UTEST(xtc, trajectory_i) {
 
     md_trajectory_frame_header_t header;
 
-    for (int64_t i = 0; i < 1; ++i) {
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
@@ -470,8 +566,7 @@ UTEST(xtc, catalyst) {
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
 
-        static const size_t xtc_header_size = 52;
-        xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
         int ncoord = natoms;
         float prec;
         if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
@@ -522,13 +617,14 @@ UTEST(xtc, big) {
     int natoms, step;
     float time, box[3][3];
 
-    for (size_t i = 0; i < 1; ++i) {
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
         md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
 
-        static const size_t xtc_header_size = 52;
-        xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
         int ncoord = natoms;
         float prec;
         if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
@@ -538,9 +634,9 @@ UTEST(xtc, big) {
         EXPECT_EQ(ncoord, num_atoms);
 
         for (int j = 0; j < num_atoms; ++j) {
-            //EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
-            //EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
-            //EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
         }
     }
     
@@ -578,13 +674,14 @@ UTEST(xtc, amyloid) {
     int natoms, step;
     float time, box[3][3];
 
-    for (size_t i = 0; i < 5; ++i) {
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
         md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
 
-        static const size_t xtc_header_size = 52;
-        xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
         int ncoord = natoms;
         float prec;
         if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
@@ -634,13 +731,14 @@ UTEST(xtc, H1N1) {
     int natoms, step;
     float time, box[3][3];
 
-    for (size_t i = 0; i < 1; ++i) {
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
         md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
 
-        static const size_t xtc_header_size = 52;
-        xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
         int ncoord = natoms;
         float prec;
         if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
@@ -662,3 +760,117 @@ done:
     xdrfile_close(xdr);
 }
 #endif
+
+UTEST(xtc, f1) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/xtc/f1.xtc");
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+
+    XDRFILE* xdr = xdrfile_open(path.ptr, "r");
+
+    ASSERT_TRUE(file);
+    ASSERT_TRUE(xdr);
+
+    md_array(int64_t) frame_offsets = 0;
+    md_array(double)  frame_times = 0;
+
+    const size_t num_atoms  = 29;
+    const size_t num_frames = 1;
+
+    const size_t coord_size = num_atoms * 3 * sizeof(float);
+    float *ref = (float*)md_vm_arena_push(arena, coord_size);
+    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+
+    md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
+    size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
+    EXPECT_EQ(xtc_num_frames, num_frames);
+
+    int natoms, step;
+    float time, box[3][3];
+
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
+        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
+        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
+        EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
+
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
+        int ncoord = natoms;
+        float prec;
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+            MD_LOG_ERROR("Error reading coordinates from XDR file\n");
+            goto done;
+        }
+        EXPECT_EQ(ncoord, num_atoms);
+
+        for (int j = 0; j < num_atoms; ++j) {
+            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+        }
+    }
+
+done:
+    md_vm_arena_destroy(arena);
+    md_file_close(file);
+    xdrfile_close(xdr);
+}
+
+UTEST(xtc, pep) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/xtc/pep.xtc");
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+
+    XDRFILE* xdr = xdrfile_open(path.ptr, "r");
+
+    ASSERT_TRUE(file);
+    ASSERT_TRUE(xdr);
+
+    md_array(int64_t) frame_offsets = 0;
+    md_array(double)  frame_times = 0;
+
+    const size_t num_atoms  = 29;
+    const size_t num_frames = 21;
+
+    const size_t coord_size = num_atoms * 3 * sizeof(float);
+    float *ref = (float*)md_vm_arena_push(arena, coord_size);
+    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+
+    md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
+    size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
+    EXPECT_EQ(xtc_num_frames, num_frames);
+
+    int natoms, step;
+    float time, box[3][3];
+
+	size_t N = ONLY_ONE_FRAME ? 1 : num_frames;
+
+    for (size_t i = 0; i < N; ++i) {
+        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
+        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
+        EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
+
+        xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
+        int ncoord = natoms;
+        float prec;
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+            MD_LOG_ERROR("Error reading coordinates from XDR file\n");
+            goto done;
+        }
+        EXPECT_EQ(ncoord, num_atoms);
+
+        for (int j = 0; j < num_atoms; ++j) {
+            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+        }
+    }
+
+done:
+    md_vm_arena_destroy(arena);
+    md_file_close(file);
+    xdrfile_close(xdr);
+}

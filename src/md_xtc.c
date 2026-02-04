@@ -218,6 +218,139 @@ typedef struct br_t {
     uint32_t cache_bits;
     uint32_t stream_size;
 } br_t;
+// --- Normalized sequential bit reader --------------------------------------
+// * Input bitstream is big-endian (network order), MSB-first.
+// * Returned integers are canonical: bitfield is placed in the low bits of the return value.
+
+typedef struct brn_t {
+    const uint64_t* p;      // Next qword to load
+    uint64_t a;             // Current qword (BE->host swapped)
+    uint64_t b;             // Next qword (BE->host swapped)
+    uint32_t bitpos;        // 0..63, number of bits consumed from MSB side of a
+    uint32_t qwords_left;   // Remaining qwords in p
+} brn_t;
+
+static inline uint64_t brn_load_qword(const uint64_t* src) {
+    uint64_t v = *src;
+#if __LITTLE_ENDIAN__
+    v = BSWAP64(v);
+#endif
+    return v;
+}
+
+static inline void brn_init(brn_t* r, const void* data, size_t num_bytes) {
+    ASSERT(r);
+    ASSERT(data);
+    ASSERT((num_bytes & 7) == 0);
+    const uint64_t* q = (const uint64_t*)data;
+    const size_t num_qwords = num_bytes / 8;
+    ASSERT(num_qwords >= 2);
+
+    r->a = brn_load_qword(q + 0);
+    r->b = brn_load_qword(q + 1);
+    r->p = q + 2;
+    r->qwords_left = (uint32_t)num_qwords - 2;
+    r->bitpos = 0;
+}
+
+static inline void brn_slide_1(brn_t* r) {
+    r->a = r->b;
+    if (r->qwords_left) {
+        r->b = brn_load_qword(r->p++);
+        r->qwords_left -= 1;
+    } else {
+        r->b = 0;
+    }
+}
+
+// Produce a 64-bit "view" of the stream starting at current bitpos (MSB-first).
+static inline uint64_t brn_view64(const brn_t* r) {
+    const uint32_t s = r->bitpos;
+
+    // view = (a << s) | (b >> (64-s)) but avoid UB when s==0.
+    const uint64_t upper = r->a << s;
+    const uint64_t nz_mask = -(uint64_t)(s != 0);
+    const uint64_t lower = (r->b >> (64 - s)) & nz_mask;
+    return upper | lower;
+}
+
+static inline uint64_t brn_peek_u64(const brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+    const uint64_t view = brn_view64(r);
+    return view >> (64 - n);
+}
+
+static inline void brn_skip(brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+    const uint32_t newpos = r->bitpos + n;
+    r->bitpos = newpos & 63u;
+    if (newpos >= 64) {
+        brn_slide_1(r);
+        if (newpos >= 128) {
+            brn_slide_1(r);
+        }
+    }
+}
+
+// Read 1..64 bits, return in low bits.
+static inline uint64_t brn_read_u64(brn_t* r, uint32_t n) {
+    ASSERT(r);
+    ASSERT(n >= 1 && n <= 64);
+
+    const uint64_t view = brn_view64(r);
+    const uint64_t res  = view >> (64 - n);
+
+    const uint32_t newpos = r->bitpos + n;
+    r->bitpos = newpos & 63u;
+
+    if (newpos >= 64) {
+        brn_slide_1(r);
+        // n can be 64 and bitpos can be non-zero: could cross 2 qwords.
+        if (newpos >= 128) {
+            brn_slide_1(r);
+        }
+    }
+
+    return res;
+}
+
+// Read 65..128 bits into canonical (hi, lo) where V = (hi<<64)|lo and uses low n bits.
+static inline void brn_read_u128(brn_t* r, uint32_t n, uint64_t out_hi_lo[2]) {
+    ASSERT(r);
+    ASSERT(out_hi_lo);
+    ASSERT(n > 64 && n <= 128);
+
+    // Strategy:
+    // - Read 64 bits first (high part of the n-bit field)
+    // - Read remaining (n-64) bits (low part)
+    //
+    // But we must preserve bit-exact order. The field is MSB-first.
+    //
+    // So: hi_part contains the first 64 bits of the field.
+    //      lo_part contains the remaining bits left-aligned within 64, then shift it down.
+    const uint32_t lo_bits = n - 64;
+
+    const uint64_t hi_part = brn_read_u64(r, 64);
+    const uint64_t lo_part = brn_read_u64(r, lo_bits);
+
+    // Now normalize: field should occupy the low n bits of a 128-bit integer.
+    // hi_part currently holds 64 bits, lo_part holds lo_bits bits.
+    // Place them as: V = (hi_part << lo_bits) | lo_part.
+    // That means:
+    //   out_hi = hi_part >> (64 - lo_bits) ??? No, because hi_part is 64 bits already.
+    //
+    // Compute in 128-bit-free way:
+    if (lo_bits == 64) {
+        out_hi_lo[0] = hi_part;
+        out_hi_lo[1] = lo_part;
+    } else {
+        // V = ( (__uint128)hi_part << lo_bits ) | lo_part
+        out_hi_lo[0] = (lo_bits == 0) ? 0 : (hi_part >> (64 - lo_bits));
+        out_hi_lo[1] = (hi_part << lo_bits) | lo_part;
+    }
+}
 
 static inline void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
     ASSERT(num_qwords >= 2);
@@ -323,28 +456,6 @@ static inline void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_bits) 
     data->part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
 }
 
-static inline md_128i md_mm_bswap_128(md_128i v) {
-    const md_128i shuf_mask = md_mm_set_epi8(
-        0x0, 0x1, 0x2, 0x3,
-        0x4, 0x5, 0x6, 0x7,
-        0x8, 0x9, 0xA, 0xB,
-        0xC, 0xD, 0xE, 0xF
-    );
-    md_128i swapped = simde_mm_shuffle_epi8(v, shuf_mask);
-    return swapped;
-}
-
-static inline md_128i md_mm_bswap_64(md_128i v) {
-    const md_128i shuf_mask = md_mm_set_epi8(
-        0x7, 0x6, 0x5, 0x4,
-        0x3, 0x2, 0x1, 0x0,
-        0xF, 0xE, 0xD, 0xC,
-        0xB, 0xA, 0x9, 0x8
-    );
-    md_128i swapped = simde_mm_shuffle_epi8(v, shuf_mask);
-    return swapped;
-}
-
 // THIS ASSUMES BIG-ENDIAN INPUT DATA
 // AND BIT_LENGTH IS > 64 AND <= 121
 static inline void extract_bits_be_raw_121(uint64_t out[2],
@@ -358,75 +469,18 @@ static inline void extract_bits_be_raw_121(uint64_t out[2],
     size_t bit_in_byte = bit_offset & 7;
     int shift_right = (int)(128 - bit_length);
 
-#if defined(MD_XTC_VECTOR_EXTRACT)
-    md_128i v = md_mm_loadu_si128((const md_128i*)(base + byte_offset));
-    v = md_mm_bswap_64(v);
-
-    md_128i shift = md_mm_set1_epi64((int64_t)bit_in_byte);
-    md_128i shifted = simde_mm_sll_epi64(v, shift);
-
-    md_128i carry = simde_mm_srl_epi64(v, md_mm_set1_epi64(64 - (int64_t)bit_in_byte));
-    carry = simde_mm_slli_si128(carry, 8);
-
-    md_128i combined = simde_mm_or_si128(shifted, carry);
-
-    uint64_t out[2];
-    md_mm_storeu_si128((md_128i*)out, combined);
-
-    out[1] = out[1] >> shift_right;
-#else
     uint64_t raw[2];
     MEMCPY(raw, base + byte_offset, sizeof(raw));
-    uint64_t swapped0 = BSWAP64(raw[0]);
-    uint64_t swapped1 = BSWAP64(raw[1]);
-    uint64_t high = (swapped0 << bit_in_byte);
-    uint64_t low  = (swapped1 << bit_in_byte) | (swapped0 >> (64 - bit_in_byte));
-    out[0] = high;
-    out[1] = low >> shift_right;
+
+#if __LITTLE_ENDIAN__
+    raw[0] = BSWAP64(raw[0]);
+    raw[1] = BSWAP64(raw[1]);
 #endif
-}
 
-// Loads 16 bytes from base+(bit_offset>>3), byteswaps, then left-shifts the 128-bit window by (bit_offset&7).
-// out[0] = high 64 bits, out[1] = low 64 bits, both MSB-first aligned to bit_offset.
-static inline void load_shifted_be128(uint64_t out[2], const uint8_t* base, size_t bit_offset) {
-    const size_t byte_offset = bit_offset >> 3;
-    const size_t bit_in_byte = bit_offset & 7;
-
-    uint64_t raw[2];
-    MEMCPY(raw, base + byte_offset, sizeof(raw));
-    uint64_t hi = BSWAP64(raw[0]);
-    uint64_t lo = BSWAP64(raw[1]);
-
-    const uint64_t k = bit_in_byte;
-    const uint64_t nz_mask = -(uint64_t)(k != 0);
-    const uint64_t s = (64u - (uint64_t)k) & 63u; // never 64
-
-    uint64_t high = (hi << k) | ((lo >> s) & nz_mask);
-    uint64_t low  = (lo << k);
-
-    out[0] = high;
-    out[1] = low;
-}
-
-// Extract up to 32 bits starting at `start` (0..127) where 0 is MSB of out[0].
-static inline uint32_t get_bits_be128_u32(const uint64_t win[2], uint32_t start, uint32_t len) {
-    ASSERT(len > 0 && len <= 32);
-    if (start < 64) {
-        const uint64_t x = win[0] << start;
-        if (start + len <= 64) {
-            return (uint32_t)(x >> (64 - len));
-        } else {
-            // crosses into win[1]
-            const uint32_t a = 64 - start;
-            const uint32_t b = len - a;
-            const uint32_t hi_part = (uint32_t)(x >> (64 - a));
-            const uint32_t lo_part = (uint32_t)(win[1] >> (64 - b));
-            return (hi_part << b) | lo_part;
-        }
-    } else {
-        const uint32_t s = start - 64;
-        return (uint32_t)((win[1] << s) >> (64 - len));
-    }
+    uint64_t hi = (raw[0] << bit_in_byte);
+    uint64_t lo = (raw[1] << bit_in_byte) | (raw[0] >> (64 - bit_in_byte));
+    out[0] = hi;
+    out[1] = lo >> shift_right;
 }
 
 static inline uint64_t extract_bits_be_raw_64(
@@ -441,8 +495,13 @@ static inline uint64_t extract_bits_be_raw_64(
     uint64_t raw[2];
     MEMCPY(raw, base + byte_offset, sizeof(raw));
     
-    uint64_t hi = BSWAP64(raw[0]);
-    uint64_t lo = BSWAP64(raw[1]);
+#if __LITTLE_ENDIAN__
+    raw[0] = BSWAP64(raw[0]);
+    raw[1] = BSWAP64(raw[1]);
+#endif
+
+	uint64_t hi = raw[0];
+	uint64_t lo = raw[1];
     
     // Combine (lo part masked out if not needed)
     uint64_t nz_mask = -(uint64_t)(bit_in_byte != 0);
@@ -464,12 +523,13 @@ static inline uint64_t extract_bits_be_raw_57(
     uint64_t raw;
     MEMCPY(&raw, base + byte_offset, sizeof(raw));
 
-    // Byteswap to host endian (assuming host is little-endian)
-    uint64_t swapped = BSWAP64(raw);
+#if __LITTLE_ENDIAN__
+    raw = BSWAP64(raw);
+#endif
 
     // Extract the bits (they're now at the top after bswap)
 	// Mask upper by shifting left and then right
-    return (swapped << bit_in_byte) >> (64 - bit_length);
+    return (raw << bit_in_byte) >> (64 - bit_length);
 }
 
 static inline uint32_t extract_bits_be_raw_32(
@@ -483,9 +543,10 @@ static inline uint32_t extract_bits_be_raw_32(
     // Read 8 bytes (or could read just 5 bytes for 32-bit case)
     uint64_t raw;
     MEMCPY(&raw, base + byte_offset, sizeof(raw));
-    
-    uint64_t swapped = BSWAP64(raw);
-    return (uint32_t)((swapped << bit_in_byte) >> (64 - bit_length));
+#if __LITTLE_ENDIAN__
+    raw = BSWAP64(raw);
+#endif
+    return (uint32_t)((raw << bit_in_byte) >> (64 - bit_length));
 }
 
 // Method for 25 bits extraction
@@ -500,33 +561,53 @@ static inline uint32_t extract_bits_be_raw_25(
     // Read 4 bytes unaligned
     uint32_t raw;
     MEMCPY(&raw, base + byte_offset, sizeof(raw));
+#if __LITTLE_ENDIAN__
+    raw = BSWAP32(raw);
+#endif
+    return (uint32_t)((raw << bit_in_byte) >> (32 - bit_length));
+}
 
-    uint32_t swapped = BSWAP32(raw);
-    return (uint32_t)((swapped << bit_in_byte) >> (32 - bit_length));
+// Generic version that issues the appropriate version based on number of bits
+static inline void extract_bits_be(
+    uint64_t out[2],
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length)   // 1..121
+{
+    if (bit_length <= 57) {
+        out[0] = extract_bits_be_raw_57(base, bit_offset, bit_length);
+    } else if (bit_length <= 64) {
+        out[0] = extract_bits_be_raw_64(base, bit_offset, bit_length);
+    } else {
+        extract_bits_be_raw_121(out, base, bit_offset, bit_length);
+    }
 }
 
 static inline v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack) {
+	// Reconstruct correct value with shifts and masks
     uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
     uint64_t v = BSWAP64(t) >> unpack->bit.big_shift;
 
-    uint32_t x  = DIV(v, &unpack->div_zy);   // v / (Y*Z)
-    uint64_t yz = DIV(v, &unpack->div_z);    // v / Z
+    uint32_t x  = (uint32_t)DIV(v, &unpack->div_zy);   // v / (Y*Z)
+    uint64_t yz = (uint64_t)DIV(v, &unpack->div_z);    // v / Z
 
-    uint32_t y = yz - (uint64_t)x  * unpack->size_y;
-    uint32_t z = v  - (uint64_t)yz * unpack->size_z;
+    uint32_t y = (uint32_t)(yz - (uint64_t)x  * unpack->size_y);
+    uint32_t z = (uint32_t)(v  - (uint64_t)yz * unpack->size_z);
 
 	return v4i_set(x, y, z, 0);
 }
 
-
 static inline v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) {
-    int fullbytes = unpack->bit.num_of_bits >> 3;
-    int partbits  = unpack->bit.num_of_bits  & 7;
     const uint64_t zy = (uint64_t)unpack->size_z * unpack->size_y;
 
+	// Construct correct hi and lo portions of the 128-bit integer
+	// One half is just a BSWAP, the other needs shifting and masking as seen in unpack_coord64
+    uint64_t hi = ((w[1] << unpack->bit.sml_shift) & (~0xFFull)) | (w[1] & unpack->bit.part_mask);
+	hi = BSWAP64(hi) >> unpack->bit.big_shift;
+	uint64_t lo = BSWAP64(w[0]);
+
 #ifdef HAS_INT128_T
-    __uint128_t v;
-    MEMCPY(&v, w, sizeof(v));
+	__uint128_t v = (__uint128_t)lo | (__uint128_t)hi << 64;
     uint32_t x = (uint32_t)(v / zy);
     uint64_t q = (uint64_t)(v - x*zy);
     uint32_t y = (uint32_t)(q / unpack->size_z);
@@ -534,18 +615,25 @@ static inline v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) 
     return v4i_set(x, y, z, 0);
 #elif defined(__x86_64__) && defined(_MSC_VER) && (_MSC_VER >= 1920)
     uint64_t q = 0;
-    uint32_t x = (uint32_t)_udiv128(w[1], w[0], zy, &q);
+    uint32_t x = (uint32_t)_udiv128(hi, lo, zy, &q);
     uint32_t y = (uint32_t)(q / unpack->size_z);
     uint32_t z = (uint32_t)(q % unpack->size_z);
     return v4i_set(x, y, z, 0);
+
 #else
     // Default fallback
     // limbs[0] is least-significant 32 bits
+
+    const int fullbytes = unpack->bit.num_of_bits >> 3;
+    const int partbits  = unpack->bit.num_of_bits  & 7;
     const int num_of_bytes = fullbytes + (partbits ? 1 : 0);
     const uint32_t sizes[3] = {0, unpack->size_y, unpack->size_z};
     uint32_t nums[4]  = {0};
     uint32_t limbs[4] = {0};
-    MEMCPY(limbs, w, (size_t)num_of_bytes);
+    
+	// Load limbs
+	MEMCPY(limbs + 0, &lo, sizeof(uint32_t) * 2);
+	MEMCPY(limbs + 2, &hi, sizeof(uint32_t) * 2);
 
     const int num_limbs = (num_of_bytes + 3) / 4;
     for (int i = 2; i > 0; --i) {
@@ -565,21 +653,80 @@ static inline v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) 
 #endif
 }
 
-static inline v4i_t read_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bit_data[3]) {
-    uint32_t val[4];
-    int offset = 0;
-    for (int i = 0; i < 3; ++i) {
-        int num_bits  = bit_data[i].num_of_bits;
-        int big_shift = bit_data[i].big_shift;
-        int sml_shift = bit_data[i].sml_shift;
-        int part_mask = bit_data[i].part_mask;
-        uint32_t w = extract_bits_be_raw_32(base, bit_offset + offset, num_bits);
-        uint32_t r = ((w << sml_shift) & (~0xFFul)) | (w & part_mask);
-        uint32_t v = BSWAP32(r) >> big_shift;
-        val[i] = v;
-        offset += num_bits;
+// Loads an unaligned BE qword and returns it as a host uint64_t with BE->host byte swap.
+static inline uint64_t load_be_u64_unaligned(const uint8_t* p) {
+    uint64_t v;
+    MEMCPY(&v, p, sizeof(v));
+#if __LITTLE_ENDIAN__
+    v = BSWAP64(v);
+#endif
+    return v;
+}
+
+// Extract 1..64 bits starting at bit_offset (MSB-first), return normalized in low bits.
+// ASSUMES input stream is big-endian bit/byte order (as your existing extractors do).
+static inline uint64_t extract_bits_be_norm_64(const uint8_t* base, size_t bit_offset, uint32_t bit_length) {
+    ASSERT(base);
+    ASSERT(bit_length >= 1 && bit_length <= 64);
+
+    const size_t byte_offset = bit_offset >> 3;
+    const uint32_t bit_in_byte = (uint32_t)(bit_offset & 7);
+
+    // We align to a BE 64-bit chunk starting at byte_offset.
+    // If the requested bits fit within this qword after applying bit_in_byte, we only need 8 bytes.
+    // Condition: bit_in_byte + bit_length <= 64
+    if (bit_in_byte + bit_length <= 64) {
+        const uint64_t hi = load_be_u64_unaligned(base + byte_offset);
+
+        // Treat hi as MSB-first shift register: shift left by bit_in_byte then right to low bits.
+        return (hi << bit_in_byte) >> (64 - bit_length);
+    } else {
+        // Need two qwords
+        const uint64_t hi = load_be_u64_unaligned(base + byte_offset);
+        const uint64_t lo = load_be_u64_unaligned(base + byte_offset + 8);
+
+        // Build a 64-bit view starting at bit_in_byte across the 128-bit window (hi||lo), MSB-first.
+        const uint64_t view = (hi << bit_in_byte) | (lo >> (64 - bit_in_byte));
+
+        return view >> (64 - bit_length);
     }
-    return v4i_load(val);
+}
+
+static inline v4i_t extract_and_unpack(
+    const uint8_t* base,
+    size_t bit_offset,
+    size_t bit_length,
+    const unpack_data_t* unpack)
+{
+    if (bit_length <= 64) {
+        uint64_t w;
+        if (bit_length <= 57)
+			w = extract_bits_be_raw_57(base, bit_offset, bit_length);
+        else
+            w = extract_bits_be_raw_64(base, bit_offset, bit_length);
+        return unpack_coord64(w, unpack);
+    } else {
+        uint64_t w[2];
+        extract_bits_be_raw_121(w, base, bit_offset, bit_length);
+        return unpack_coord128(w, unpack);
+	}
+}
+
+static inline uint32_t unpack_uint32(uint32_t w, const bit_data_t* bits) {
+	uint32_t t = ((w << bits->sml_shift) & (~0xFFul)) | (w & bits->part_mask);
+	uint32_t v = BSWAP32(t) >> bits->big_shift;
+    return v;
+}
+
+static inline v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bits[3]) {
+    uint32_t v[4];
+    for (int i = 0; i < 3; ++i) {
+        size_t num_bits = bits[i].num_of_bits;
+        uint32_t w = extract_bits_be_raw_32(base, bit_offset, num_bits);
+        v[i] = unpack_uint32(w, &bits[0]);
+        bit_offset += num_bits;
+    }
+    return v4i_load(v);
 }
 
 bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
@@ -733,6 +880,7 @@ done:
 }
 
 //#define PRINT_DEBUG
+#define USE_BITREADER 1
 
 #define BUFFER_SIZE KILOBYTES(64)
 #define ALIGNMENT 64
@@ -751,92 +899,15 @@ done:
 #define ALIGNED_FREE(ptr) free(ptr)
 #endif
 
-typedef struct bytestream_t {
-    md_file_o* file;
-    uint8_t* buf;
-    size_t pos;   // next byte to consume
-    size_t end;   // one past last valid byte
-} bytestream_t;
-
-static inline bool bytestream_init(bytestream_t* bs, md_file_o* file) {
-    bs->file = file;
-    bs->pos = 0;
-    bs->end = 0;
-    bs->buf = ALIGNED_ALLOC(BUFFER_SIZE, ALIGNMENT);
-    if (bs->buf == NULL) {
-        return false;
-    }
-    return true;
-}
-
-static inline void bytestream_free(bytestream_t* bs) {
-    if (bs->buf) {
-        ALIGNED_FREE(bs->buf);
-        bs->buf = NULL;
-    }
-}
-
-static inline int bytestream_refill(bytestream_t *s) {
-    // Move remaining data to front
-    size_t remain = s->end - s->pos;
-    MEMMOVE(s->buf, s->buf + s->pos, remain);
-
-    s->pos = 0;
-    s->end = remain;
-	size_t n = md_file_read(s->file, s->buf + remain, BUFFER_SIZE - remain);
-    if (n == 0) return n;
-
-    s->end += n;
-    return 1;
-}
-
-static inline uint8_t *bytestream_ensure(bytestream_t *s, size_t need) {
-    while (s->end - s->pos < need) {
-        if (!bytestream_refill(s)) break;
-    }
-    return s->buf + s->pos;
-}
-
-static inline void bytestream_advance(bytestream_t *s, size_t n) {
-    s->pos += n;
-}
-
-static inline void read_ints(int* dst, size_t count, uint8_t* src) {
-	MEMCPY(dst, src, count * sizeof(int32_t));
-#if __LITTLE_ENDIAN__
-    for (size_t i = 0; i < count; i++) {
-        dst[i] = BSWAP32(dst[i]);
-    }
-#endif
-}
-
-#define USE_BYTESTREAM 0
-
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
     if (xdr_file == NULL || out_coords_ptr == NULL) {
         return 0;
     }
-    
-#if USE_BYTESTREAM
-	bytestream_t stream = { 0 };
-    if (!bytestream_init(&stream, xdr_file)) {
-        MD_LOG_ERROR("XTC: Failed to allocate bytestream buffer");
-        return 0;
-	}
-    uint8_t* base_ptr = bytestream_ensure(&stream, 64);
-#endif
-
-    int atom_idx = 0;
 
     int natoms;
-#if USE_BYTESTREAM
-    read_ints(&natoms, 1, base_ptr);
-    base_ptr += 4;
-#else
     if (!xdr_read_int32(&natoms, 1, xdr_file)) {
         return 0;
     }
-#endif
 
     if (out_coord_cap < (size_t)natoms) {
         MD_LOG_ERROR("The supplied coordinate buffer is not sufficient to fit the number of atoms within the frame");
@@ -845,38 +916,22 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     /* Dont bother with compression for three atoms or less */
     if (natoms <= 9) {
-#if USE_BYTESTREAM
-		read_ints((int*)out_coords_ptr, natoms * 3, base_ptr);
-#else
         if (!xdr_read_float(out_coords_ptr, natoms * 3, xdr_file)) {
             return 0;
         }
-#endif
         return (size_t)natoms;
     }
 
     /* Compression-time if we got here. Read precision first */
     float precision;
-#if USE_BYTESTREAM
-    read_ints((int*)&precision, 1, base_ptr);
-	base_ptr += 4;
-#else
     if (!xdr_read_float(&precision, 1, xdr_file)) {
         return 0;
     }
-#endif
 
     int32_t minint[3], maxint[3];
-#if USE_BYTESTREAM
-    read_ints(minint, 3, base_ptr);
-    base_ptr += 12;
-    read_ints(maxint, 3, base_ptr);
-    base_ptr += 12;
-#else
     if (!xdr_read_int32(minint, 3, xdr_file) || !xdr_read_int32(maxint, 3, xdr_file)) {
         return 0;
     }
-#endif
 
     uint32_t sizeint[3] = {
         (uint32_t)(maxint[0] - minint[0] + 1),
@@ -907,14 +962,9 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     }
 
     int smallidx;
-#if USE_BYTESTREAM
-    read_ints(&smallidx, 1, base_ptr);
-	base_ptr += 4;
-#else
     if (!xdr_read_int32(&smallidx, 1, xdr_file)) {
         return 0;
     }
-#endif
 
     int smaller = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
     int smallnum = magicints[smallidx] / 2;
@@ -930,21 +980,19 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     /* length in bytes */
     uint32_t num_bytes = 0;
-#if USE_BYTESTREAM
-    read_ints((int*)&num_bytes, 1, base_ptr);
-    base_ptr += 4;
-#else
     if (!xdr_read_int32((int32_t*)&num_bytes, 1, xdr_file)) {
         return 0;
     }
     size_t mem_size = ALIGN_TO(num_bytes, 32);
-    char* mem = malloc(mem_size);
-    uint8_t* base = mem;
+    void* mem = malloc(mem_size);
 
+    uint8_t* base = mem;
+    size_t bit_offset = 0;
+
+    int atom_idx = 0;
     if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xdr_file)) {
         goto done;
     }
-#endif
 
     float* lfp = out_coords_ptr;
 	const md_128 invp = md_mm_set1_ps(1.0f / precision);
@@ -959,35 +1007,20 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     MD_LOG_DEBUG("bigsize: %i", bitsize);
 #endif
 
-#if USE_BYTESTREAM
-	// Advance to compressed base data
-	bytestream_advance(&stream, 10 * sizeof(int32_t));
-#endif
-    size_t bit_offset = 0;
-
     while (atom_idx < natoms) {
-#if USE_BYTESTREAM
-        uint8_t* base = bytestream_ensure(&stream, 256);
-#endif
         uint32_t run_data = extract_bits_be_raw_25(base, bit_offset + big_bits, 6);
-        uint64_t raw[2];
-        load_shifted_be128(raw, base, bit_offset);
 
         if (bitsize == 0) {
-            thiscoord = read_ints3(base, bit_offset, big_bit_data);
+            thiscoord = extract_ints3(base, bit_offset, big_bit_data);
         } else {
-            if (big_bits <= 64) {
-                thiscoord = unpack_coord64(raw[0], &big_unpack);
-            } else {
-                thiscoord = unpack_coord128(raw, &big_unpack);
-            }
+			thiscoord = extract_and_unpack(base, bit_offset, bitsize, &big_unpack);
         }
-
         thiscoord = v4i_add(thiscoord, vminint);
 
         uint32_t run_flag = run_data & 32;
-        uint32_t run_skip = run_flag ? 6 : 1;
-        bit_offset += big_bits + run_skip;
+        uint32_t run_bits = run_flag ? 6 : 1;
+
+        bit_offset += big_bits + run_bits;
 
         int is_smaller = 0;
         if (run_flag) {
@@ -1003,7 +1036,6 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
             goto done;
         }
-        atom_idx += batch_size;
 
 #ifdef PRINT_DEBUG
         rle_hist[run_count]++;
@@ -1015,34 +1047,26 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         if (run) {
             const v4i_t vsmall = v4i_set1(smallnum);
-            const int sml_bits = sml_unpack.bit.num_of_bits;
+            const int num_bits = sml_unpack.bit.num_of_bits;
 
-            uint64_t raw;
-            if (sml_bits <= 57) {
-                raw = extract_bits_be_raw_57(base, bit_offset, sml_bits);
-            } else {
-                raw = extract_bits_be_raw_64(base, bit_offset, sml_bits);
-			}
-            
-            v4i_t coord = unpack_coord64(raw, &sml_unpack);
-            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-            
+			v4i_t delta = v4i_sub(thiscoord, vsmall);
+			v4i_t coord = extract_and_unpack(base, bit_offset, num_bits, &sml_unpack);
+            thiscoord = v4i_add(coord, delta);
+
             // Write second atom before first atom
             write_coord(lfp - 3, thiscoord, invp); lfp += 3;
-            bit_offset += sml_bits;
+            bit_offset += num_bits;
 
             for (int i = 1; i < run_count; i += 1) {
-                if (sml_bits <= 57) {
-                    raw = extract_bits_be_raw_57(base, bit_offset, sml_bits);
-                } else {
-                    raw = extract_bits_be_raw_64(base, bit_offset, sml_bits);
-                }
-                coord = unpack_coord64(raw, &sml_unpack);
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+				delta = v4i_sub(thiscoord, vsmall);
+				coord = extract_and_unpack(base, bit_offset, num_bits, &sml_unpack);
+                thiscoord = v4i_add(coord, delta);
                 write_coord(lfp, thiscoord, invp); lfp += 3;
-
-                bit_offset += sml_bits;
+                bit_offset += num_bits;
             }
+            #ifdef PRINT_DEBUG
+                smlbits_hist[smallidx]++;
+            #endif
         }
 
         if (is_smaller) {
@@ -1050,10 +1074,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             smallnum = (int)magicints[smallidx] / 2;
             smaller  = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
         }
+
         if (smallidx != sml_unpack.bit.num_of_bits) {
-#ifdef PRINT_DEBUG
-            smlbits_hist[smallidx]++;
-#endif
             uint32_t sml_size       = magicints[smallidx];
             sml_unpack.size_y       = sml_size;
             sml_unpack.size_z       = sml_size;
@@ -1066,19 +1088,11 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             goto done;
         }
 
-#if USE_BYTESTREAM
-		size_t advanced_bytes = bit_offset / 8;
-		bytestream_advance(&stream, advanced_bytes);
-		bit_offset &= 7;
-#endif
+        atom_idx += batch_size;
     }
     
 done:
-#if USE_BYTESTREAM
-	bytestream_free(&stream);
-#else
     free(mem);
-#endif
 
 #ifdef PRINT_DEBUG
     int max_smallbits = 0;
