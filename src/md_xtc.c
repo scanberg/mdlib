@@ -310,11 +310,9 @@ typedef md_128i v4i_t;
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(src)       md_mm_loadu_epi32(src)
 
-static inline void write_coord(float* dst, v4i_t coord, md_128 inv_precision) {
-    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), inv_precision);
-    //const md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    //md_mm_maskstore_ps(dst, mask, data);
-    md_mm_storeu_ps(dst, data);
+static inline void write_coord(float* dst, v4i_t coord, md_128 invp) {
+    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), invp);
+    MEMCPY(dst, &data, sizeof(float) * 3);
 }
 
 static inline void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_bits) {
@@ -361,7 +359,7 @@ static inline void extract_bits_be_raw_121(uint64_t out[2],
     int shift_right = (int)(128 - bit_length);
 
 #if defined(MD_XTC_VECTOR_EXTRACT)
-    md_128i v = md_mm_loadu_si128(base + byte_offset);
+    md_128i v = md_mm_loadu_si128((const md_128i*)(base + byte_offset));
     v = md_mm_bswap_64(v);
 
     md_128i shift = md_mm_set1_epi64((int64_t)bit_in_byte);
@@ -378,7 +376,7 @@ static inline void extract_bits_be_raw_121(uint64_t out[2],
     out[1] = out[1] >> shift_right;
 #else
     uint64_t raw[2];
-    memcpy(&raw[0], &base[byte_offset], sizeof(uint64_t) * 2);
+    MEMCPY(raw, base + byte_offset, sizeof(raw));
     uint64_t swapped0 = BSWAP64(raw[0]);
     uint64_t swapped1 = BSWAP64(raw[1]);
     uint64_t high = (swapped0 << bit_in_byte);
@@ -386,6 +384,49 @@ static inline void extract_bits_be_raw_121(uint64_t out[2],
     out[0] = high;
     out[1] = low >> shift_right;
 #endif
+}
+
+// Loads 16 bytes from base+(bit_offset>>3), byteswaps, then left-shifts the 128-bit window by (bit_offset&7).
+// out[0] = high 64 bits, out[1] = low 64 bits, both MSB-first aligned to bit_offset.
+static inline void load_shifted_be128(uint64_t out[2], const uint8_t* base, size_t bit_offset) {
+    const size_t byte_offset = bit_offset >> 3;
+    const size_t bit_in_byte = bit_offset & 7;
+
+    uint64_t raw[2];
+    MEMCPY(raw, base + byte_offset, sizeof(raw));
+    uint64_t hi = BSWAP64(raw[0]);
+    uint64_t lo = BSWAP64(raw[1]);
+
+    const uint64_t k = bit_in_byte;
+    const uint64_t nz_mask = -(uint64_t)(k != 0);
+    const uint64_t s = (64u - (uint64_t)k) & 63u; // never 64
+
+    uint64_t high = (hi << k) | ((lo >> s) & nz_mask);
+    uint64_t low  = (lo << k);
+
+    out[0] = high;
+    out[1] = low;
+}
+
+// Extract up to 32 bits starting at `start` (0..127) where 0 is MSB of out[0].
+static inline uint32_t get_bits_be128_u32(const uint64_t win[2], uint32_t start, uint32_t len) {
+    ASSERT(len > 0 && len <= 32);
+    if (start < 64) {
+        const uint64_t x = win[0] << start;
+        if (start + len <= 64) {
+            return (uint32_t)(x >> (64 - len));
+        } else {
+            // crosses into win[1]
+            const uint32_t a = 64 - start;
+            const uint32_t b = len - a;
+            const uint32_t hi_part = (uint32_t)(x >> (64 - a));
+            const uint32_t lo_part = (uint32_t)(win[1] >> (64 - b));
+            return (hi_part << b) | lo_part;
+        }
+    } else {
+        const uint32_t s = start - 64;
+        return (uint32_t)((win[1] << s) >> (64 - len));
+    }
 }
 
 static inline uint64_t extract_bits_be_raw_64(
@@ -398,7 +439,7 @@ static inline uint64_t extract_bits_be_raw_64(
     
     // Always read 16 bytes (two uint64_t)
     uint64_t raw[2];
-    memcpy(&raw, &base[byte_offset], sizeof(raw));
+    MEMCPY(raw, base + byte_offset, sizeof(raw));
     
     uint64_t hi = BSWAP64(raw[0]);
     uint64_t lo = BSWAP64(raw[1]);
@@ -421,7 +462,7 @@ static inline uint64_t extract_bits_be_raw_57(
 
     // Read 8 bytes unaligned (covers up to 64 bits + 7 bit offset)
     uint64_t raw;
-    memcpy(&raw, &base[byte_offset], sizeof(uint64_t));
+    MEMCPY(&raw, base + byte_offset, sizeof(raw));
 
     // Byteswap to host endian (assuming host is little-endian)
     uint64_t swapped = BSWAP64(raw);
@@ -441,7 +482,7 @@ static inline uint32_t extract_bits_be_raw_32(
     
     // Read 8 bytes (or could read just 5 bytes for 32-bit case)
     uint64_t raw;
-    memcpy(&raw, &base[byte_offset], sizeof(uint64_t));
+    MEMCPY(&raw, base + byte_offset, sizeof(raw));
     
     uint64_t swapped = BSWAP64(raw);
     return (uint32_t)((swapped << bit_in_byte) >> (64 - bit_length));
@@ -458,7 +499,7 @@ static inline uint32_t extract_bits_be_raw_25(
 
     // Read 4 bytes unaligned
     uint32_t raw;
-    memcpy(&raw, &base[byte_offset], sizeof(uint32_t));
+    MEMCPY(&raw, base + byte_offset, sizeof(raw));
 
     uint32_t swapped = BSWAP32(raw);
     return (uint32_t)((swapped << bit_in_byte) >> (32 - bit_length));
@@ -478,67 +519,48 @@ static inline v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack) {
 }
 
 
-static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
+static inline v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) {
     int fullbytes = unpack->bit.num_of_bits >> 3;
     int partbits  = unpack->bit.num_of_bits  & 7;
-    ASSERT(fullbytes >= 8);
-
     const uint64_t zy = (uint64_t)unpack->size_z * unpack->size_y;
 
 #ifdef HAS_INT128_T
-    __uint128_t v = BSWAP64(br_read(r, 64));
-    int i = 8;
-    for (; i < fullbytes; i++) {
-        v |= ((__uint128_t) br_read(r, 8)) << (8 * i);
-    }
-    if (partbits) {
-        v |= ((__uint128_t) br_read(r, partbits)) << (8 * i);
-    }
-    uint32_t x  = (uint32_t)(v / zy);
+    __uint128_t v;
+    MEMCPY(&v, w, sizeof(v));
+    uint32_t x = (uint32_t)(v / zy);
     uint64_t q = (uint64_t)(v - x*zy);
     uint32_t y = (uint32_t)(q / unpack->size_z);
     uint32_t z = (uint32_t)(q % unpack->size_z);
     return v4i_set(x, y, z, 0);
 #elif defined(__x86_64__) && defined(_MSC_VER) && (_MSC_VER >= 1920)
-    uint64_t lo = BSWAP64(br_read(r, 64));
-    uint64_t hi = 0;
-    fullbytes -= 8;
-    int i = 0;
-    for (; i < fullbytes; ++i) {
-        hi |= ((uint64_t)br_read(r, 8)) << (8 * i);
-    }
-    if (partbits) {
-        hi |= ((uint64_t)br_read(r, partbits)) << (8 * i);
-    }
-
     uint64_t q = 0;
-    uint32_t x = (uint32_t)_udiv128(hi, lo, zy, &q);
+    uint32_t x = (uint32_t)_udiv128(w[1], w[0], zy, &q);
     uint32_t y = (uint32_t)(q / unpack->size_z);
     uint32_t z = (uint32_t)(q % unpack->size_z);
     return v4i_set(x, y, z, 0);
 #else
     // Default fallback
-    uint32_t nums[4] = {0};
-    uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
-    uint32_t bytes[16];
-    bytes[1] = bytes[2] = bytes[3] = 0;
-    int num_of_bytes = 0;
-    for (int i = 0; i < fullbytes; ++i) {
-        bytes[num_of_bytes++] = (uint32_t)br_read(r, 8);
-    }
-    if (partbits) {
-        bytes[num_of_bytes++] = (uint32_t)br_read(r, partbits);
-    }
-    for (int i = 2; i > 0; i--) {
-        uint32_t num = 0;
-        for (int j = num_of_bytes - 1; j >= 0; j--) {
-            num = (num << 8) | bytes[j];
-            bytes[j] = num / sizes[i];
-            num = num % sizes[i];
+    // limbs[0] is least-significant 32 bits
+    const int num_of_bytes = fullbytes + (partbits ? 1 : 0);
+    const uint32_t sizes[3] = {0, unpack->size_y, unpack->size_z};
+    uint32_t nums[4]  = {0};
+    uint32_t limbs[4] = {0};
+    MEMCPY(limbs, w, (size_t)num_of_bytes);
+
+    const int num_limbs = (num_of_bytes + 3) / 4;
+    for (int i = 2; i > 0; --i) {
+        const uint32_t d = sizes[i];
+        uint32_t rem = 0;
+
+        for (int j = num_limbs - 1; j >= 0; --j) {
+            uint64_t cur = ((uint64_t)rem << 32) | (uint64_t)limbs[j];
+            limbs[j] = (uint32_t)(cur / d);
+            rem      = (uint32_t)(cur % d);
         }
-        nums[i] = num;
+        nums[i] = rem;
     }
-    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+
+    nums[0] = limbs[0];
     return v4i_load(nums);
 #endif
 }
@@ -711,13 +733,6 @@ done:
 }
 
 //#define PRINT_DEBUG
-#define USE_BR 0
-
-#if USE_BR
-static inline bool v4i_eq(v4i_t a, v4i_t b) {
-    return memcmp(&a, &b, sizeof(a)) == 0;
-}
-#endif
 
 #define BUFFER_SIZE KILOBYTES(64)
 #define ALIGNMENT 64
@@ -901,8 +916,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     }
 #endif
 
-    int idx = MAX(smallidx - 1, FIRSTIDX);
-    int smaller = magicints[idx] / 2;
+    int smaller = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
     int smallnum = magicints[smallidx] / 2;
     uint32_t smallsize = magicints[smallidx];
 
@@ -933,9 +947,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
     float* lfp = out_coords_ptr;
-    float inv_precision = 1.0f / precision;
-	const md_128 vip = md_mm_set1_ps(inv_precision);
-    v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
+	const md_128 invp = md_mm_set1_ps(1.0f / precision);
+    const v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
     v4i_t thiscoord;
     int run = 0;
     int run_count = 0;
@@ -957,17 +970,17 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         uint8_t* base = bytestream_ensure(&stream, 256);
 #endif
         uint32_t run_data = extract_bits_be_raw_25(base, bit_offset + big_bits, 6);
+        uint64_t raw[2];
+        load_shifted_be128(raw, base, bit_offset);
 
         if (bitsize == 0) {
             thiscoord = read_ints3(base, bit_offset, big_bit_data);
         } else {
-            uint64_t raw;
-            if (big_bits <= 57) {
-                raw = extract_bits_be_raw_57(base, bit_offset, big_bits);
-            } else if (big_bits <= 64) {
-                raw = extract_bits_be_raw_64(base, bit_offset, big_bits);
+            if (big_bits <= 64) {
+                thiscoord = unpack_coord64(raw[0], &big_unpack);
+            } else {
+                thiscoord = unpack_coord128(raw, &big_unpack);
             }
-            thiscoord = unpack_coord64(raw, &big_unpack);
         }
 
         thiscoord = v4i_add(thiscoord, vminint);
@@ -996,13 +1009,13 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         rle_hist[run_count]++;
 #endif
 
+        // If run, write first atom after second atom
         int offset = run ? 3 : 0;
-        write_coord(lfp + offset, thiscoord, vip);
-		lfp += 3;
+        write_coord(lfp + offset, thiscoord, invp); lfp += 3;
 
         if (run) {
-            v4i_t vsmall = v4i_set1(smallnum);
-            int sml_bits = sml_unpack.bit.num_of_bits;
+            const v4i_t vsmall = v4i_set1(smallnum);
+            const int sml_bits = sml_unpack.bit.num_of_bits;
 
             uint64_t raw;
             if (sml_bits <= 57) {
@@ -1010,21 +1023,13 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             } else {
                 raw = extract_bits_be_raw_64(base, bit_offset, sml_bits);
 			}
-			md_128 thisc = md_mm_cvtepi32_ps(thiscoord);
-			md_128 vsml = md_mm_cvtepi32_ps(vsmall);
-
+            
             v4i_t coord = unpack_coord64(raw, &sml_unpack);
-            md_128 c = md_mm_cvtepi32_ps(coord);
-
-            //thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-			thisc = md_mm_add_ps(c, md_mm_sub_ps(thisc, vsml));
-			md_mm_storeu_ps(lfp - 3, thisc);
-
-            bit_offset += sml_bits;
-
+            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+            
             // Write second atom before first atom
-            //write_coord(lfp - 3, thiscoord, vip);
-            lfp += 3;
+            write_coord(lfp - 3, thiscoord, invp); lfp += 3;
+            bit_offset += sml_bits;
 
             for (int i = 1; i < run_count; i += 1) {
                 if (sml_bits <= 57) {
@@ -1033,16 +1038,10 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                     raw = extract_bits_be_raw_64(base, bit_offset, sml_bits);
                 }
                 coord = unpack_coord64(raw, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                write_coord(lfp, thiscoord, invp); lfp += 3;
+
                 bit_offset += sml_bits;
-
-                //thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                //write_coord(lfp, thiscoord, vip);
-
-				c = md_mm_cvtepi32_ps(coord);
-                thisc = md_mm_add_ps(c, md_mm_sub_ps(thisc, vsml));
-                md_mm_storeu_ps(lfp - 3, thisc);
-
-                lfp += 3;
             }
         }
 
