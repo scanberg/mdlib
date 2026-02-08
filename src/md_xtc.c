@@ -443,9 +443,20 @@ typedef md_128i v4i_t;
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(src)       md_mm_loadu_epi32(src)
 
-static inline void write_coord(float* dst, v4i_t coord, md_128 invp) {
-    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), invp);
-    MEMCPY(dst, &data, sizeof(float) * 3);
+static inline md_128 cvt_coord(v4i_t v, md_128 invp) {
+	return md_mm_mul_ps(md_mm_cvtepi32_ps(v), invp);
+}
+
+static inline void write_coord_interleaved(float* dst, md_128 coord) {
+    MEMCPY(dst, &coord, sizeof(float) * 3);
+}
+
+static inline void write_coord_xyz(float* x, float* y, float* z, int offset, md_128 coord) {
+    float tmp[4];
+    md_mm_storeu_ps(tmp, coord);
+    x[offset] = tmp[0];
+    y[offset] = tmp[1];
+    z[offset] = tmp[2];
 }
 
 static inline void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_bits) {
@@ -1043,7 +1054,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         // If run, write first atom after second atom
         int offset = run ? 3 : 0;
-        write_coord(lfp + offset, thiscoord, invp); lfp += 3;
+        write_coord_interleaved(lfp + offset, cvt_coord(thiscoord, invp)); lfp += 3;
 
         if (run) {
             const v4i_t vsmall = v4i_set1(smallnum);
@@ -1054,14 +1065,14 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             thiscoord = v4i_add(coord, delta);
 
             // Write second atom before first atom
-            write_coord(lfp - 3, thiscoord, invp); lfp += 3;
+            write_coord_interleaved(lfp - 3, cvt_coord(thiscoord, invp)); lfp += 3;
             bit_offset += num_bits;
 
             for (int i = 1; i < run_count; i += 1) {
 				delta = v4i_sub(thiscoord, vsmall);
 				coord = extract_and_unpack(base, bit_offset, num_bits, &sml_unpack);
                 thiscoord = v4i_add(coord, delta);
-                write_coord(lfp, thiscoord, invp); lfp += 3;
+                write_coord_interleaved(lfp, cvt_coord(thiscoord, invp)); lfp += 3;
                 bit_offset += num_bits;
             }
             #ifdef PRINT_DEBUG
@@ -1139,6 +1150,203 @@ done:
     return (size_t)atom_idx;
 }
 
+size_t md_xtc_read_frame_coords_xyz(md_file_o* xdr_file, float* out_x, float* out_y, float* out_z, size_t out_coord_cap) {
+    if (xdr_file == NULL || out_x == NULL || out_y == NULL || out_z == NULL) {
+		MD_LOG_ERROR("Invalid arguments: xdr_file and output coordinate buffers must not be NULL");
+        return 0;
+    }
+
+    int natoms;
+    if (!xdr_read_int32(&natoms, 1, xdr_file)) {
+		MD_LOG_ERROR("XTC: Failed to read number of atoms");
+        return 0;
+    }
+
+    if (out_coord_cap < (size_t)natoms) {
+        MD_LOG_ERROR("The supplied coordinate buffer is not sufficient to fit the number of atoms within the frame");
+        return 0;
+    }
+
+    /* Dont bother with compression for three atoms or less */
+    if (natoms <= 9) {
+		float coords[9 * 3];
+        if (!xdr_read_float(coords, natoms * 3, xdr_file)) {
+			MD_LOG_ERROR("XTC: Failed to read uncompressed coordinates");
+            return 0;
+        }
+		// De-interleave coordinates into separate x, y, z arrays
+        for (int i = 0; i < natoms; ++i) {
+            out_x[i] = coords[i * 3 + 0];
+            out_y[i] = coords[i * 3 + 1];
+            out_z[i] = coords[i * 3 + 2];
+		}
+        return (size_t)natoms;
+    }
+
+    // Compression-time if we got here. Read precision first
+    float precision;
+    if (!xdr_read_float(&precision, 1, xdr_file)) {
+		MD_LOG_ERROR("XTC: Failed to read precision");
+        return 0;
+    }
+
+    int32_t minint[3], maxint[3];
+    if (!xdr_read_int32(minint, 3, xdr_file) || !xdr_read_int32(maxint, 3, xdr_file)) {
+        MD_LOG_ERROR("XTC: Failed to read min/max coordinates");
+        return 0;
+    }
+
+    uint32_t sizeint[3] = {
+        (uint32_t)(maxint[0] - minint[0] + 1),
+        (uint32_t)(maxint[1] - minint[1] + 1),
+        (uint32_t)(maxint[2] - minint[2] + 1),
+    };
+
+    uint32_t bitsize = 0;
+    uint32_t big_bits = 0;
+    unpack_data_t big_unpack = {0};
+    bit_data_t big_bit_data[3] = {0};
+
+    /* check if one of the sizes is to big to be multiplied */
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        for (int i = 0; i < 3; ++i) {
+            int bits = sizeofint(sizeint[i]);
+            init_unpack_bit_data(&big_bit_data[i], bits);
+            big_bits += bits;
+        }
+    } else {
+        bitsize = sizeofints(3, sizeint);
+        big_bits = bitsize;
+        big_unpack.size_y = sizeint[1];
+        big_unpack.size_z = sizeint[2];
+        big_unpack.div_zy = DIV_INIT((uint64_t)sizeint[1] * sizeint[2]);
+        big_unpack.div_z  = DIV_INIT(sizeint[2]);
+        init_unpack_bit_data(&big_unpack.bit, bitsize);
+    }
+
+    int smallidx;
+    if (!xdr_read_int32(&smallidx, 1, xdr_file)) {
+        return 0;
+    }
+
+    int smaller = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
+    int smallnum = magicints[smallidx] / 2;
+    uint32_t smallsize = magicints[smallidx];
+
+    unpack_data_t sml_unpack = {
+        .size_y = smallsize, 
+        .size_z = smallsize,
+        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
+        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
+    };
+    init_unpack_bit_data(&sml_unpack.bit, smallidx);
+
+    /* length in bytes */
+    uint32_t num_bytes = 0;
+    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xdr_file)) {
+        return 0;
+    }
+    size_t mem_size = ALIGN_TO(num_bytes, 32);
+    void* mem = malloc(mem_size);
+
+    uint8_t* base = mem;
+    size_t bit_offset = 0;
+
+    int atom_idx = 0;
+    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xdr_file)) {
+        goto done;
+    }
+
+	const md_128 invp = md_mm_set1_ps(1.0f / precision);
+    const v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
+    int run = 0;
+    int run_count = 0;
+
+    while (atom_idx < natoms) {
+        uint32_t run_data = extract_bits_be_raw_25(base, bit_offset + big_bits, 6);
+
+        v4i_t thiscoord;
+        if (bitsize == 0) {
+            thiscoord = extract_ints3(base, bit_offset, big_bit_data);
+        } else {
+			thiscoord = extract_and_unpack(base, bit_offset, bitsize, &big_unpack);
+        }
+        thiscoord = v4i_add(thiscoord, vminint);
+
+        uint32_t run_flag = run_data & 32;
+        uint32_t run_bits = run_flag ? 6 : 1;
+
+        bit_offset += big_bits + run_bits;
+
+        int is_smaller = 0;
+        if (run_flag) {
+            run = run_data & 31;
+            run_count  = run / 3;
+            is_smaller = run % 3;
+            run -= is_smaller;
+            is_smaller--;
+        }
+
+        int batch_size = run_count + 1;
+        if (atom_idx + batch_size > natoms) {
+            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
+            goto done;
+        }
+
+        const int base_idx = atom_idx;
+        if (run) {
+            const v4i_t vsmall = v4i_set1(smallnum);
+            const int num_bits = sml_unpack.bit.num_of_bits;
+
+			// If run, write first atom after second atom
+            write_coord_xyz(out_x, out_y, out_z, base_idx + 1, cvt_coord(thiscoord, invp));
+
+			v4i_t delta = v4i_sub(thiscoord, vsmall);
+			v4i_t coord = extract_and_unpack(base, bit_offset, num_bits, &sml_unpack);
+            thiscoord = v4i_add(coord, delta);
+
+            // Write second atom before first atom
+            write_coord_xyz(out_x, out_y, out_z, base_idx, cvt_coord(thiscoord, invp));
+            bit_offset += num_bits;
+
+			for (int i = 2; i < batch_size; i += 1) {
+				delta = v4i_sub(thiscoord, vsmall);
+				coord = extract_and_unpack(base, bit_offset, num_bits, &sml_unpack);
+                thiscoord = v4i_add(coord, delta);
+                write_coord_xyz(out_x, out_y, out_z, base_idx + i, cvt_coord(thiscoord, invp));
+                bit_offset += num_bits;
+            }
+            atom_idx = base_idx + batch_size;
+        } else {
+			write_coord_xyz(out_x, out_y, out_z, base_idx, cvt_coord(thiscoord, invp));
+            atom_idx = base_idx + 1;
+        }
+
+        if (is_smaller) {
+            smallidx += is_smaller;
+            smallnum = (int)magicints[smallidx] / 2;
+            smaller  = (smallidx > FIRSTIDX) ? (int)magicints[smallidx - 1] / 2 : 0;
+        }
+
+        if (smallidx != sml_unpack.bit.num_of_bits) {
+            uint32_t sml_size       = magicints[smallidx];
+            sml_unpack.size_y       = sml_size;
+            sml_unpack.size_z       = sml_size;
+            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
+            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
+            init_unpack_bit_data(&sml_unpack.bit, smallidx);
+        }
+        if (smallidx < FIRSTIDX) {
+            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
+            goto done;
+        }
+    }
+    
+done:
+    free(mem);
+    return (size_t)atom_idx;
+}
+
 bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     xtc_t* xtc = (xtc_t*)inst;
     ASSERT(xtc);
@@ -1179,19 +1387,8 @@ static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t*
         }
 
         if (x && y && z) {
-            size_t byte_size = natoms * sizeof(float) * 3;
-            float* xyz = md_alloc(md_get_heap_allocator(), byte_size);
-            size_t written_count = md_xtc_read_frame_coords(file, xyz, natoms);
+            size_t written_count = md_xtc_read_frame_coords_xyz(file, x, y, z, natoms);
             result = (written_count == natoms);
-            if (result) {
-                // nm -> Ångström
-                for (int i = 0; i < natoms; ++i) {
-                    x[i] = xyz[i*3 + 0] * 10.0f;
-                    y[i] = xyz[i*3 + 1] * 10.0f;
-                    z[i] = xyz[i*3 + 2] * 10.0f;
-                }
-            }
-            md_free(md_get_heap_allocator(), xyz, byte_size);
         }
     }
 

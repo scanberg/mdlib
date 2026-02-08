@@ -83,18 +83,10 @@ UBENCH_EX(xtc, xdr_amyloid) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 2345;
-#endif
-    static const size_t num_atoms  = 161742;
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 2345;
+    const size_t num_atoms  = 161742;
 
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
     UBENCH_SET_BYTES(num_bytes);
     md_file_close(file);
 
@@ -127,18 +119,10 @@ UBENCH_EX(xtc, xdr_aspirin) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 601;
-#endif
-    static const size_t num_atoms = 50515;
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 601;
+    const size_t num_atoms = 50515;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
 
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
     UBENCH_SET_BYTES(num_bytes);
     md_file_close(file);
 
@@ -171,18 +155,10 @@ UBENCH_EX(xtc, xdr_ion_channel) {
         return;
     }
     
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 1989;
-#endif
-    static const size_t num_atoms  = 222387;
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 1989;
+    const size_t num_atoms  = 222387;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
 
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
     UBENCH_SET_BYTES(num_bytes);
     md_file_close(file);
 
@@ -222,18 +198,10 @@ UBENCH_EX(xtc, xtc_catalyst) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 501;
-#endif
-    static const size_t num_atoms  = 1336;
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 501;
+    const size_t num_atoms  = 1336;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
 
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
     UBENCH_SET_BYTES(num_bytes);
 
     md_array(int64_t) frame_offsets = 0;
@@ -248,13 +216,16 @@ UBENCH_EX(xtc, xtc_catalyst) {
     float time, box[3][3];
 
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
+	float* x = md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* y = md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* z = md_vm_arena_push(arena, num_atoms * sizeof(float));
     
     UBENCH_DO_BENCHMARK() {
         
         for (size_t i = 0; i < num_frames; ++i) {
             md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
             md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+            md_xtc_read_frame_coords_xyz(file, x, y, z, num_atoms);
         }
     }
 
@@ -271,17 +242,10 @@ UBENCH_EX(xtc, xtc_amyloid) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 2345;
-#endif
-    static const size_t num_atoms  = 161742;
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 2345;
+    const size_t num_atoms  = 161742;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
+
     UBENCH_SET_BYTES(num_bytes);
 
     md_array(int64_t) frame_offsets = 0;
@@ -296,13 +260,16 @@ UBENCH_EX(xtc, xtc_amyloid) {
     float time, box[3][3];
 
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
+    float* x = md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* y = md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* z = md_vm_arena_push(arena, num_atoms * sizeof(float));
 
     UBENCH_DO_BENCHMARK() {
         
         for (size_t i = 0; i < num_frames; ++i) {
             md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
             md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+            md_xtc_read_frame_coords_xyz(file, x, y, z, num_atoms);
         }
     }
 
@@ -318,17 +285,10 @@ UBENCH_EX(xtc, xtc_aspirin) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 601;
-#endif
-    static const size_t num_atoms  = 50515;
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 601;
+    const size_t num_atoms  = 50515;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
+
     UBENCH_SET_BYTES(num_bytes);
 
     md_array(int64_t) frame_offsets = 0;
@@ -365,17 +325,10 @@ UBENCH_EX(xtc, xtc_ion_channel) {
         return;
     }
 
-#if USE_FRAME_SUBSET
-    static const size_t num_frames = 100;
-#else
-    static const size_t num_frames = 1989;
-#endif
-    static const size_t num_atoms  = 222387;
-#if MEASURE_DECOMPRESSED_SIZE
-    size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
-#else
-    size_t num_bytes = md_file_size(file);
-#endif
+    const size_t num_frames = USE_FRAME_SUBSET ? 100 : 1989;
+    const size_t num_atoms  = 222387;
+    const size_t num_bytes = MEASURE_DECOMPRESSED_SIZE ? (num_frames * num_atoms * 3 * sizeof(float)) : md_file_size(file);
+
     UBENCH_SET_BYTES(num_bytes);
 
     md_array(int64_t) frame_offsets = 0;

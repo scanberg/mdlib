@@ -553,6 +553,9 @@ UTEST(xtc, catalyst) {
     const size_t coord_size = num_atoms * 3 * sizeof(float);
     float *ref = (float*)md_vm_arena_push(arena, coord_size);
     float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+	float* x = (float*)md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* y = (float*)md_vm_arena_push(arena, num_atoms * sizeof(float));
+	float* z = (float*)md_vm_arena_push(arena, num_atoms * sizeof(float));
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
@@ -565,6 +568,9 @@ UTEST(xtc, catalyst) {
         md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
+
+		md_file_seek(file, frame_offsets[i] + XTC_COORD_OFFSET, MD_FILE_BEG);
+        EXPECT_TRUE(md_xtc_read_frame_coords_xyz(file, x, y, z, num_atoms));
 
         xdr_seek(xdr, frame_offsets[i] + XTC_COORD_OFFSET, SEEK_SET);
         int ncoord = natoms;
@@ -579,6 +585,9 @@ UTEST(xtc, catalyst) {
             EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
             EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
             EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+			EXPECT_EQ(ref[j * 3 + 0], x[j]);
+			EXPECT_EQ(ref[j * 3 + 1], y[j]);
+			EXPECT_EQ(ref[j * 3 + 2], z[j]);
         }
     }
     
