@@ -86,12 +86,6 @@ void main() {
     w[1] = in_vert[1].control_point;
 
     float incr = TWO_PI / float(RES);
-    int idx[2] = int[2](0, 1);
-    if (dot(x[1], y[0]) > 0.0) {
-        incr = -incr;
-        idx[0] = 1;
-        idx[1] = 0;
-    }
 
     M[0] = u_world_to_view * mat4(vec4(x[0], 0), vec4(y[0], 0), vec4(z[0], 0), vec4(w[0], 1.0));
     M[1] = u_world_to_view * mat4(vec4(x[1], 0), vec4(y[1], 0), vec4(z[1], 0), vec4(w[1], 1.0));
@@ -113,42 +107,42 @@ void main() {
     float t = 0.0;
     for (int i = 0; i < RES; ++i) {
         vec2 x = vec2(cos(t), sin(t));
-        v0[i] = vec3(M[idx[0]] * vec4(x * s[idx[0]], 0, 1));
-        v1[i] = vec3(M[idx[1]] * vec4(x * s[idx[1]], 0, 1));
+        v0[i] = vec3(M[0] * vec4(x * s[0], 0, 1));
+        v1[i] = vec3(M[1] * vec4(x * s[1], 0, 1));
 
-        n0[i] = vec3(N[idx[0]] * vec3(x / s[idx[0]], 0));
-        n1[i] = vec3(N[idx[1]] * vec3(x / s[idx[1]], 0));
+        n0[i] = vec3(N[0] * vec3(x / s[0], 0));
+        n1[i] = vec3(N[1] * vec3(x / s[1], 0));
         t += incr;
     }
     
     for (int i = 0; i < RES; ++i) {
-        emit_vertex(v1[i], n1[i], idx[1]);
-        emit_vertex(v0[i], n0[i], idx[0]);
+        emit_vertex(v1[i], n1[i], 1);
+        emit_vertex(v0[i], n0[i], 0);
     }
-    emit_vertex(v1[0], n1[0], idx[1]);
-    emit_vertex(v0[0], n0[0], idx[0]);
+    emit_vertex(v1[0], n1[0], 1);
+    emit_vertex(v0[0], n0[0], 0);
     EndPrimitive();
 
     // MAKE CAP
-    if ((in_vert[idx[0]].spline_flags & 1U) != 0U) { // BEG_CHAIN
-        vec3 cc = M[idx[0]][3].xyz;
-        vec3 cn = N[idx[0]] * vec3(0,0,-1);
+    if ((in_vert[0].spline_flags & 1U) != 0U) { // BEG_CHAIN
+        vec3 cc = M[0][3].xyz;
+        vec3 cn = N[0] * vec3(0,0,-1);
         for (int i = 0; i < RES-1; i += 2) {
-            emit_vertex(v0[i], cn, idx[0]);
-            emit_vertex(cc, cn, idx[0]);
-            emit_vertex(v0[i+1], cn, idx[0]);
-            emit_vertex(v0[(i+2)%RES], cn, idx[0]);
+            emit_vertex(v0[i], cn, 0);
+            emit_vertex(cc, cn, 0);
+            emit_vertex(v0[i+1], cn, 0);
+            emit_vertex(v0[(i+2)%RES], cn, 0);
         }
         EndPrimitive();
     } 
-    if ((in_vert[idx[1]].spline_flags & 2U) != 0U) { // END_CHAIN
-        vec3 cc = M[idx[1]][3].xyz;
-        vec3 cn = N[idx[1]] * vec3(0,0,1);
+    if ((in_vert[1].spline_flags & 2U) != 0U) { // END_CHAIN
+        vec3 cc = M[1][3].xyz;
+        vec3 cn = N[1] * vec3(0,0,1);
         for (int i = 0; i < RES-1; i += 2) {
-            emit_vertex(v1[i], cn, idx[1]);
-            emit_vertex(v1[i+1], cn, idx[1]);
-            emit_vertex(cc, cn, idx[1]);
-            emit_vertex(v1[(i+2)%RES], cn, idx[1]);
+            emit_vertex(v1[i], cn, 1);
+            emit_vertex(v1[i+1], cn, 1);
+            emit_vertex(cc, cn, 1);
+            emit_vertex(v1[(i+2)%RES], cn, 1);
         }
         EndPrimitive();
     }

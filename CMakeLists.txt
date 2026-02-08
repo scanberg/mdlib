@@ -391,6 +391,8 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
+set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES})
+
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
 source_group("ext"      FILES ${EXT_FILES})
