@@ -305,11 +305,11 @@ typedef md_128i v4i_t;
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(addr)      md_mm_loadu_epi32(addr)
 
-static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
-    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
-    md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    md_mm_maskstore_ps(dst, mask, data);
-    //MEMCPY(dst, &v, 3 * sizeof(float));
+static inline void write_coord(float* dst, v4i_t coord, md_128 invp) {
+    md_128 data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), invp);
+    //md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
+    //md_mm_maskstore_ps(dst, mask, data);
+    MEMCPY(dst, &data, 3 * sizeof(float));
 }
 
 static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
@@ -658,7 +658,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     br_init(&br, mem, mem_size / 8);
 
     float* lfp = out_coords_ptr;
-    float inv_precision = 1.0f / precision;
+    md_128 invp = md_mm_set1_ps(1.0f / precision);
     v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
     v4i_t thiscoord;
     int run = 0;
@@ -717,30 +717,30 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
 
                 // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+                write_coord(lfp, thiscoord, invp); lfp += 3;
+                write_coord(lfp, prevcoord, invp); lfp += 3;
 
                 for (int i = 1; i < run_count; ++i) {
                     coord = unpack_coord64(&br, &sml_unpack);
                     thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                    write_coord(lfp, thiscoord, invp); lfp += 3;
                 }
             } else {
                 v4i_t coord = unpack_coord128(&br, &sml_unpack);
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
 
                 // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+                write_coord(lfp, thiscoord, invp); lfp += 3;
+                write_coord(lfp, prevcoord, invp); lfp += 3;
 
                 for (int i = 1; i < run_count; ++i) {
                     coord = unpack_coord128(&br, &sml_unpack);
                     thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                    write_coord(lfp, thiscoord, invp); lfp += 3;
                 }
             }
         } else {
-            write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+            write_coord(lfp, thiscoord, invp); lfp += 3;
         }
         smallidx += is_smaller;
         if (is_smaller < 0) {
