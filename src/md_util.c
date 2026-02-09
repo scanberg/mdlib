@@ -252,7 +252,7 @@ static const uint8_t element_max_valence[] = {
 // Some stem from Jmol, some from Rasmol
 // http://jmol.sourceforge.net/jscolors/
 static const uint32_t element_cpk_colors[] = {
-    0xFFFF00FF, 0xFFFFFFFF, 0xFFFFFFD9, 0xFF2222B2, 0xFF00FFC2, 0xFFB5B5FF, 0xFFB0B0B0, 0xFFFF8F8F, 0xFF0000F0, 0xFF50E090, 0xFFF5E3B3, 0xFFF25CAB,
+    0xFFFF00FF, 0xFFFFFFFF, 0xFFFFFFD9, 0xFF2222B2, 0xFF00FFC2, 0xFFB5B5FF, 0xFF909090, 0xFFFF8F8F, 0xFF0000F0, 0xFF50E090, 0xFFF5E3B3, 0xFFF25CAB,
     0xFF00FF8A, 0xFF908080, 0xFFA0C8F0, 0xFF00A5FF, 0xFF32C8FF, 0xFF1FF01F, 0xFFE3D180, 0xFFD4408F, 0xFF908080, 0xFFE6E6E6, 0xFF908080, 0xFFABA6A6,
     0xFF908080, 0xFF908080, 0xFF3366E0, 0xFFA090F0, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF8F8FC2, 0xFF8F8F66, 0xFFE380BD, 0xFF00A1FF, 0xFF2A2AA5,
     0xFFD1B85C, 0xFFB02E70, 0xFF00FF00, 0xFFFFFF94, 0xFFE0E094, 0xFFC9C273, 0xFFB5B554, 0xFF9E9E3B, 0xFF8F8F24, 0xFF8C7D0A, 0xFF856900, 0xFF908080,
@@ -1627,19 +1627,12 @@ static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], c
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
-static inline bool zhang_skolnick_ss(const md_system_t* sys, md_urange_t bb_range, int i, const float distances[3], float delta) {
-    ASSERT(sys);
-    ASSERT(sys->atom.x);
-    ASSERT(sys->atom.y);
-    ASSERT(sys->atom.z);
-    ASSERT(sys->protein_backbone.segment.atoms);
-    for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
+static inline bool zhang_skolnick_ss(const vec3_t* ca_pos, int seq_beg, int seq_end, int i, const float distances[3], float delta) {
+    for (int j = MAX(seq_beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
-            if (j + k >= (int)bb_range.end) continue;
-            const int ca_j = sys->protein_backbone.segment.atoms[j].ca;
-            const int ca_k = sys->protein_backbone.segment.atoms[j + k].ca;
-            const vec3_t pos_j = md_atom_coord(&sys->atom, ca_j);
-            const vec3_t pos_k = md_atom_coord(&sys->atom, ca_k);
+            if (j + k >= seq_end) continue;
+            const vec3_t pos_j = ca_pos[j];
+            const vec3_t pos_k = ca_pos[j + k];
             const float d = vec3_distance(pos_j, pos_k);
             if (fabsf(d - distances[k - 2]) > delta) {
                 return false;
@@ -1649,36 +1642,60 @@ static inline bool zhang_skolnick_ss(const md_system_t* sys, md_urange_t bb_rang
     return true;
 }
 
-static inline bool is_helical(const md_system_t* sys, md_urange_t bb_range, int i) {
+static inline bool is_helical(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
     const float distances[] = { 5.45f, 5.18f, 6.37f };
     const float delta = 2.1f;
-    return zhang_skolnick_ss(sys, bb_range, i, distances, delta);
+    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
 }
 
-static inline bool is_sheet(const md_system_t* sys, md_urange_t bb_range, int i) {
+static inline bool is_sheet(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
     const float distances[] = { 6.1f, 10.4f, 13.0f };
     const float delta = 1.42f;
-    return zhang_skolnick_ss(sys, bb_range, i, distances, delta);
+    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
 }
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
 
-bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
+enum {
+    TM_ALIGN_VALID = 1,
+	TM_ALIGN_HELIX = 2,
+	TM_ALIGN_SHEET = 4,
+};
+
+bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!secondary_structure) return false;
     if (capacity == 0) return false;
 
     MEMSET(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
 
-    if (!sys) return false;
-    if (!sys->atom.x) return false;
-    if (!sys->atom.y) return false;
-    if (!sys->atom.z) return false;
-    if (!sys->protein_backbone.segment.atoms) return false;
-    if (!sys->protein_backbone.range.offset) return false;
+    if (!backbone) return false;
+    if (!x) return false;
+    if (!y) return false;
+    if (!z) return false;
+    if (!backbone->segment.atoms) return false;
+    if (!backbone->range.offset)  return false;
 
-    for (size_t bb_idx = 0; bb_idx < sys->protein_backbone.range.count; ++bb_idx) {
-        const md_urange_t range = {sys->protein_backbone.range.offset[bb_idx], sys->protein_backbone.range.offset[bb_idx + 1]};
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    int* type_mask = md_vm_arena_push(temp_arena, sizeof(int)    * backbone->segment.count);
+    vec3_t* ca_pos = md_vm_arena_push(temp_arena, sizeof(vec3_t) * backbone->segment.count);
+
+    for (size_t i = 0; i < backbone->segment.count; ++i) {
+        const md_atom_idx_t ca_idx = backbone->segment.atoms[i].ca;
+        if (ca_idx >= 0) {
+			ca_pos[i] = vec3_set(x[ca_idx], y[ca_idx], z[ca_idx]);
+        }
+		type_mask[i] = ca_idx >= 0 ? TM_ALIGN_VALID : 0;
+	}
+
+    const float helix_distances[] = { 5.45f, 5.18f, 6.37f };
+    const float helix_delta = 2.1f;
+
+    const float sheet_distances[] = { 6.1f, 10.4f, 13.0f };
+    const float sheet_delta = 1.42f;
+
+    for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
+        const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
         ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
@@ -1689,10 +1706,10 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
         for (uint32_t i = range.beg; i < range.end; ++i) {
             md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
 
-            if (is_sheet(sys, range, i)) {
+            if (is_sheet(ca_pos, range.beg, range.end, i)) {
                 ss = MD_SECONDARY_STRUCTURE_BETA_SHEET;
             }
-            else if (is_helical(sys, range, i)) {
+            else if (is_helical(ca_pos, range.beg, range.end, i)) {
                 ss = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
             }
             secondary_structure[i] = ss;
@@ -1720,6 +1737,8 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
         }
         if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
     }
+
+    md_vm_arena_destroy(temp_arena);
 
     return true;
 }
@@ -1840,20 +1859,64 @@ enum {
     SS_FLAG_BRIDGE = 64,
 };
 
-void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, const float* y, const float* z, const md_system_t* sys) {
+typedef struct residue_pair_t {
+    uint32_t i;
+    uint32_t j;
+} residue_pair_t;
+
+typedef struct dssp_hbond_energy_user_param_t {
+	const uint32_t* res_range_id;
+    const dssp_res_coords_t* res_coords;
+    dssp_res_hbonds_t* res_hbonds;
+	md_array(residue_pair_t)* sheet_candidates;
+	md_allocator_i* alloc;
+} dssp_hbond_energy_user_param_t;
+
+void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
+    for (size_t pair_idx = 0; pair_idx < num_pairs; ++pair_idx) {
+        uint32_t i = i_idx[pair_idx];
+        uint32_t j = j_idx[pair_idx];
+        calc_hbond_energy(param->res_hbonds, param->res_coords, i, j);
+        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i);
+
+		uint32_t ri = param->res_range_id[i];
+		uint32_t rj = param->res_range_id[j];
+
+        // DSSP excludes very local sequence contacts on the same chain
+        if (ri != rj && abs((int)j - (int)i) > 2) {
+			// Ensure that pairs are sorted (i < j) to avoid duplicates
+			residue_pair_t pair = { MIN(i,j), MAX(i,j)};
+			md_array_push(*param->sheet_candidates, pair, param->alloc);
+        }
+    }
+}
+
+void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     ASSERT(out_secondary_structure);
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+    ASSERT(cell);
+    ASSERT(backbone);
 
     md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
 
-    size_t backbone_segment_count = sys->protein_backbone.segment.count;
-    size_t backbone_range_count   = sys->protein_backbone.range.count;
-    const uint32_t* backbone_range_offsets = sys->protein_backbone.range.offset;
-    const md_protein_backbone_atoms_t* backbone_atoms = sys->protein_backbone.segment.atoms;
+    size_t backbone_segment_count = backbone->segment.count;
+    size_t backbone_range_count   = backbone->range.count;
+    const uint32_t* backbone_range_offsets = backbone->range.offset;
+    const md_protein_backbone_atoms_t* backbone_atoms = backbone->segment.atoms;
 
     dssp_res_coords_t* res_coords = md_vm_arena_push(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
     dssp_res_hbonds_t* res_hbonds = md_vm_arena_push(temp_alloc, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
     uint32_t* res_range_id = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
     uint8_t* turn_mask = md_vm_arena_push_zero(temp_alloc, sizeof(uint8_t) * backbone_segment_count);
+    float* res_ca_x = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
+    float* res_ca_y = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
+    float* res_ca_z = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
+
+    residue_pair_t* sheet_candidates = { 0 };
+	md_array_ensure(sheet_candidates, 1024, temp_alloc);
 
     for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
         const md_urange_t range = { backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1] };
@@ -1872,6 +1935,10 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
             md_atom_idx_t c_idx  = backbone_atoms[i].c;
             md_atom_idx_t o_idx  = backbone_atoms[i].o;
             md_atom_idx_t hn_idx = backbone_atoms[i].hn;
+
+			res_ca_x[i] = x[ca_idx];
+			res_ca_y[i] = y[ca_idx];
+			res_ca_z[i] = z[ca_idx];
 
             res_coords[i].CA = vec4_set(x[ca_idx], y[ca_idx], z[ca_idx], 0);
             res_coords[i].N  = vec4_set(x[n_idx],  y[n_idx],  z[n_idx],  0);
@@ -1892,22 +1959,36 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
+    md_spatial_acc_t acc = { .alloc = temp_alloc };
+    md_spatial_acc_init(&acc, res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count, 9.0, cell);
+
+    dssp_hbond_energy_user_param_t user_param = {
+		.res_range_id = res_range_id,
+        .res_coords = res_coords,
+        .res_hbonds = res_hbonds,
+		.sheet_candidates = &sheet_candidates,
+		.alloc = temp_alloc,
+	};
+
+    /*
     // Do N^2 bond energy calculations
     const float min_ca_dist2 = (9.0f * 9.0f);
     for (size_t i = 0; i + 1 < backbone_segment_count; ++i) {
-        for (size_t j = i + 1; j < backbone_segment_count; ++j) {
-            // Only apply local-sequence exclusion within the same backbone range (chain)
-            if (res_range_id[i] == res_range_id[j] && (j - i) <= 1) {
-                continue;
-            }
-            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
-                continue;
-            }
-
-            calc_hbond_energy(res_hbonds, res_coords, i, j);
-            calc_hbond_energy(res_hbonds, res_coords, j, i);
-        }
+    for (size_t j = i + 1; j < backbone_segment_count; ++j) {
+    // Only apply local-sequence exclusion within the same backbone range (chain)
+    if (res_range_id[i] == res_range_id[j] && (j - i) <= 1) {
+    continue;
     }
+    if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
+    continue;
+    }
+
+    calc_hbond_energy(res_hbonds, res_coords, i, j);
+    calc_hbond_energy(res_hbonds, res_coords, j, i);
+    }
+    }
+    */
+    md_spatial_acc_for_each_pair_within_cutoff(&acc, 9.0, dssp_hbond_energy_cb, &user_param);
 
     // ---- Per-range passes: helices, turns, bends (set flags only) ----
     // Ground-truth DSSP helix assignment:
@@ -1986,7 +2067,6 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
         }
     }
 
-
 #if 1
     // ---- Global pass: sheets / bridges ----
     // NOTE: CA cutoff is only an optimization; DSSP itself doesn't use it.
@@ -1995,7 +2075,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
     typedef struct {
         uint32_t i;
         uint32_t j;
-        uint8_t  type; // 0 = antiparallel, 1 = parallel
+		uint64_t chain_pair_id_and_type; // Unique id for the chain_pair from (res_range_id[i], res_range_id[j]) and the bridge type (parallel/antiparallel)
     } dssp_bridge_t;
 
     // Worst-case: could be large; allocate generously but not insanely.
@@ -2005,6 +2085,81 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
     // Helper lambdas are not allowed in C; keep as local inline-ish macros
 #define SAME_RANGE(a,b) (res_range_id[(a)] == res_range_id[(b)])
 
+	md_hashmap32_t parallel_bridge_map     = { .allocator = temp_alloc };
+	md_hashmap32_t antiparallel_bridge_map = { .allocator = temp_alloc };
+
+	size_t num_sheet_candidates = md_array_size(sheet_candidates);
+    for (size_t c = 0; c < num_sheet_candidates; ++c) {
+        size_t i = sheet_candidates[c].i;
+        size_t j = sheet_candidates[c].j;
+
+        // Neighbor existence within each chain/range
+        const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
+        const bool i_has_ip1 = (i + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(i + 1, i);
+        const bool j_has_jm1 = (j > 0) && SAME_RANGE(j - 1, j);
+        const bool j_has_jp1 = (j + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(j + 1, j);
+
+        // Evaluate DSSP bridge patterns (directed H-bonds)
+        bool antiparallel = false;
+        bool parallel     = false;
+
+        // Antiparallel:
+        // (i -> j && j -> i) OR (i-1 -> j+1 && j-1 -> i+1)
+        if (dssp_test_bond(res_hbonds, i, j) && dssp_test_bond(res_hbonds, j, i)) {
+            antiparallel = true;
+        } else if (i_has_im1 && i_has_ip1 && j_has_jm1 && j_has_jp1) {
+            if (dssp_test_bond(res_hbonds, i - 1, j + 1) && dssp_test_bond(res_hbonds, j - 1, i + 1)) {
+                antiparallel = true;
+            }
+        }
+
+        // Parallel:
+        // (i-1 -> j && j -> i+1) OR (j-1 -> i && i -> j+1)
+        if (!antiparallel) {
+            if (i_has_im1 && i_has_ip1) {
+                if (dssp_test_bond(res_hbonds, i - 1, j) && dssp_test_bond(res_hbonds, j, i + 1)) {
+                    parallel = true;
+                }
+            }
+            if (!parallel && j_has_jm1 && j_has_jp1) {
+                if (dssp_test_bond(res_hbonds, j - 1, i) && dssp_test_bond(res_hbonds, i, j + 1)) {
+                    parallel = true;
+                }
+            }
+        }
+
+        if (!(antiparallel || parallel)) {
+            continue;
+        }
+
+		uint32_t ri = res_range_id[i];
+		uint32_t rj = res_range_id[j];
+		uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
+
+        // Record bridge (normalize ordering i<j already true)
+		uint32_t idx = num_bridges++;
+        bridges[idx] = (dssp_bridge_t){
+            .i = i,
+            .j = j,
+			.chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
+        };
+
+		uint64_t key = md_hash64(&bridges[idx], sizeof(dssp_bridge_t), 0);
+
+		if (parallel) {
+			md_hashmap_add(&parallel_bridge_map, key, idx);
+		} else {
+			md_hashmap_add(&antiparallel_bridge_map, key, idx);
+		}
+
+        ASSERT(i < j);
+
+        // DSSP marks both residues as "bridge" even before ladder/sheet conversion
+        ss_flags[i] |= SS_FLAG_BRIDGE;
+        ss_flags[j] |= SS_FLAG_BRIDGE;
+    }
+
+#if 0
     for (uint32_t i = 0; i < (uint32_t)backbone_segment_count; ++i) {
         const uint32_t ri = res_range_id[i];
 
@@ -2067,7 +2222,77 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
             ss_flags[j] |= SS_FLAG_BRIDGE;
         }
     }
+#endif
 
+#if 1
+	// ---- Build ladders by directly looking up bridges in hashmaps ----
+    // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
+    bool* used = md_vm_arena_push_zero(temp_alloc, sizeof(bool) * num_bridges);
+    for (size_t b = 0; b < num_bridges; ++b) {
+        if (used[b]) continue;
+        const dssp_bridge_t seed = bridges[b];
+        used[b] = true;
+        // Ladder endpoints
+        uint32_t i_min = seed.i, i_max = seed.i;
+        uint32_t j_min = seed.j, j_max = seed.j;
+        // Chain pair and type
+        const uint64_t chain_pair_id_and_type = seed.chain_pair_id_and_type;
+        const bool is_parallel = (chain_pair_id_and_type >> 63) != 0;
+        const uint64_t chain_pair_id = chain_pair_id_and_type & 0x7FFFFFFFFFFFFFFF;
+        md_hashmap32_t* bridge_map = is_parallel ? &parallel_bridge_map : &antiparallel_bridge_map;
+
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            // Look for the next bridge in the ladder by checking the expected next positions based on the ladder type
+            uint32_t next_i_min, next_i_max, next_j_min, next_j_max;
+            if (is_parallel) {
+                // Parallel ladder: (i+1, j+1)
+                next_i_min = i_max + 1;
+                next_j_min = j_max + 1;
+                next_i_max = i_min - 1;
+                next_j_max = j_min - 1;
+            } else {
+                // Antiparallel ladder: (i+1, j-1)
+                next_i_min = i_max + 1;
+                next_j_min = j_min - 1;
+                next_i_max = i_min - 1;
+                next_j_max = j_max + 1;
+            }
+            // Check both possible extensions of the ladder
+            dssp_bridge_t query_bridge_1 = { .i = next_i_min, .j = next_j_min, .chain_pair_id_and_type = chain_pair_id_and_type };
+            dssp_bridge_t query_bridge_2 = { .i = next_i_max, .j = next_j_max, .chain_pair_id_and_type = chain_pair_id_and_type };
+			uint64_t key_1 = md_hash64(&query_bridge_1, sizeof(dssp_bridge_t), 0);
+			uint64_t key_2 = md_hash64(&query_bridge_2, sizeof(dssp_bridge_t), 0);
+
+            uint32_t* found_idx_1 = md_hashmap_get(bridge_map, key_1);
+            uint32_t* found_idx_2 = md_hashmap_get(bridge_map, key_2);
+            if (found_idx_1) {
+                const dssp_bridge_t next_bridge = bridges[*found_idx_1];
+                used[*found_idx_1] = true;
+                i_min = MIN(i_min, next_bridge.i);
+                i_max = MAX(i_max, next_bridge.i);
+                j_min = MIN(j_min, next_bridge.j);
+                j_max = MAX(j_max, next_bridge.j);
+                grew = true;
+            } else if (found_idx_2) {
+                const dssp_bridge_t next_bridge = bridges[*found_idx_2];
+                used[*found_idx_2] = true;
+                i_min = MIN(i_min, next_bridge.i);
+                i_max = MAX(i_max, next_bridge.i);
+                j_min = MIN(j_min, next_bridge.j);
+                j_max = MAX(j_max, next_bridge.j);
+                grew = true;
+            }
+        }
+        const uint32_t len_i = i_max - i_min + 1;
+        const uint32_t len_j = j_max - j_min + 1;
+        if (len_i >= 3 || len_j >= 3) {
+            for (uint32_t k = i_min; k <= i_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
+            for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
+        }
+	}
+#else
     // ---- Build ladders by chaining bridges ----
     // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
     bool* used = md_vm_arena_push_zero(temp_alloc, sizeof(bool) * num_bridges);
@@ -2076,6 +2301,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
         if (used[b]) continue;
 
         const dssp_bridge_t seed = bridges[b];
+		int seed_type = (seed.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
         used[b] = true;
 
         // Ladder endpoints
@@ -2094,7 +2320,8 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
                 if (used[c]) continue;
 
                 const dssp_bridge_t br = bridges[c];
-                if (br.type != seed.type) continue;
+				int br_type = (br.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
+                if (br_type != seed_type) continue;
 
                 // Must be between the same chain pair (order-insensitive)
                 const uint32_t bri = res_range_id[br.i];
@@ -2103,7 +2330,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
 
                 bool connects = false;
 
-                if (seed.type == 1) {
+                if (seed_type == 1) {
                     // Parallel ladder: (i+1, j+1)
                     connects = (br.i == i_max + 1 && br.j == j_max + 1) ||
                         (br.i + 1 == i_min && br.j + 1 == j_min);
@@ -2132,6 +2359,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
             for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
         }
     }
+#endif
 
 #undef SAME_RANGE
 #endif
@@ -2165,48 +2393,58 @@ void dssp(md_secondary_structure_t out_secondary_structure[], const float* x, co
     md_vm_arena_destroy(temp_alloc);
 }
 
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const md_system_t* sys) {
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+
+    if (!backbone) return false;
+    if (capacity < backbone->segment.count) {
+        MD_LOG_ERROR("Secondary structure capacity is not sufficient to hold the number of segments in the protein backbone");
+        return false;
+    }
+
+    // TODO: Use tm_align when coarse grained
 #if 0
     return tm_align(secondary_structure, capacity, sys);
 #else
-    if (secondary_structure && sys) {
-        dssp(secondary_structure, sys->atom.x, sys->atom.y, sys->atom.z, sys);
+    if (secondary_structure && x && y && z && backbone) {
+        dssp(secondary_structure, capacity, x, y, z, cell, backbone);
         return true;
     }
     return false;
 #endif
 }
 
-bool md_util_system_infer_secondary_structure(md_system_t* sys) {
-	return md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys);
-}
-
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_system_t* sys) {
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
     MEMSET(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
 
-    if (!sys) return false;
-    if (!sys->atom.x) return false;
-    if (!sys->atom.y) return false;
-    if (!sys->atom.z) return false;
-    if (!sys->protein_backbone.segment.atoms) return false;
+    if (!backbone) return false;
+    if (!x) return false;
+    if (!y) return false;
+    if (!z) return false;
+    if (!backbone->segment.atoms) return false;
 
-    for (size_t bb_idx = 0; bb_idx < sys->protein_backbone.range.count; ++bb_idx) {
-        const md_urange_t range = {sys->protein_backbone.range.offset[bb_idx], sys->protein_backbone.range.offset[bb_idx + 1]};
+    for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
+        const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
         ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
             continue;
         }
 
-        for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
-            const vec3_t c_prev = md_atom_coord(&sys->atom, sys->protein_backbone.segment.atoms[i-1].c);
-            const vec3_t n      = md_atom_coord(&sys->atom, sys->protein_backbone.segment.atoms[i].n);
-            const vec3_t ca     = md_atom_coord(&sys->atom, sys->protein_backbone.segment.atoms[i].ca);
-            const vec3_t c      = md_atom_coord(&sys->atom, sys->protein_backbone.segment.atoms[i].c);
-            const vec3_t n_next = md_atom_coord(&sys->atom, sys->protein_backbone.segment.atoms[i+1].n);
+        for (size_t i = range.beg + 1; i + 1 < range.end; ++i) {
+			int c_prev_idx = backbone->segment.atoms[i - 1].c;
+			int ca_idx     = backbone->segment.atoms[i].ca;
+			int  c_idx     = backbone->segment.atoms[i].c;
+			int  n_idx     = backbone->segment.atoms[i].n;
+			int n_next_idx = backbone->segment.atoms[i + 1].n;
+
+			vec3_t c_prev = vec3_set(x[c_prev_idx], y[c_prev_idx], z[c_prev_idx]);
+            vec3_t n      = vec3_set(x[n_idx], y[n_idx], z[n_idx]);
+            vec3_t ca     = vec3_set(x[ca_idx], y[ca_idx], z[ca_idx]);
+            vec3_t c      = vec3_set(x[c_idx], y[c_idx], z[c_idx]);
+            vec3_t n_next = vec3_set(x[n_next_idx], y[n_next_idx], z[n_next_idx]);
 
             vec3_t d[4] = {
                 vec3_sub(n, c_prev),
@@ -2215,7 +2453,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
                 vec3_sub(n_next, c),
             };
 
-            md_util_min_image_vec3(d, ARRAY_SIZE(d), &sys->unitcell);
+            md_util_min_image_vec3(d, ARRAY_SIZE(d), cell);
 
             backbone_angles[i].phi = vec3_dihedral_angle(d[0], d[1], d[2]);
             backbone_angles[i].psi = vec3_dihedral_angle(d[1], d[2], d[3]);
@@ -9053,8 +9291,8 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 md_array_resize(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, alloc);
 
                 if (sys->protein_backbone.segment.count > 0) {
-                    md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, sys);
-                    md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys);
+                    md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
+                    md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
                     md_util_backbone_ramachandran_classify(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, sys);
                 }
             }
