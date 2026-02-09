@@ -1388,6 +1388,11 @@ static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t*
 
         if (x && y && z) {
             size_t written_count = md_xtc_read_frame_coords_xyz(file, x, y, z, natoms);
+            for (size_t i = 0; i < written_count; ++i) {
+                x[i] *= 10.0f;
+                y[i] *= 10.0f;
+				z[i] *= 10.0f;  
+            }
             result = (written_count == natoms);
         }
     }
