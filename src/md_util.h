@@ -67,13 +67,11 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_system_t* sys);
-
-bool md_util_system_infer_secondary_structure(md_system_t* sys);
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_system_t* sys);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
