@@ -122,6 +122,13 @@ typedef struct md_vlx_scf_t {
 	md_vlx_scf_history_t history;
 } md_vlx_scf_t;
 
+typedef struct md_vlx_cpp_t {
+	size_t number_of_frequencies;
+	double* frequencies;
+	double* sigmas;
+	double* delta_epsilon;
+} md_vlx_cpp_t;
+
 typedef struct md_vlx_rsp_t {
 	size_t   number_of_excited_states;
 	dvec3_t* electric_transition_dipoles;
@@ -131,6 +138,7 @@ typedef struct md_vlx_rsp_t {
 	double* oscillator_strengths;
 	double* absorption_ev;
 	md_vlx_orbital_t* nto;
+	md_vlx_cpp_t cpp;
 } md_vlx_rsp_t;
 
 typedef struct md_vlx_vib_t {
@@ -801,9 +809,16 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (!num_tok) continue;
 
-		if (num_tok == 2 && str_eq(tok[0], STR_LIT("@BASIS_SET"))) {
-			basis_set->identifier = str_copy(tok[1], alloc);
-			MD_LOG_DEBUG("Parsing Basis Set with identifier: '" STR_FMT "'", STR_ARG(tok[1]));
+		if ((num_tok == 2 || num_tok == 3) && str_eq(tok[0], STR_LIT("@BASIS_SET"))) {
+			// In the case of renamed identifiers using the alias table, there is an additional token which provides the original identifier (prepended with an !)
+			str_t ident = {0};
+			if (num_tok == 2)
+				ident = tok[1];
+			else {
+				ident = str_substr(tok[2], 1, SIZE_MAX);
+			}
+			MD_LOG_DEBUG("Parsing Basis Set with identifier: '" STR_FMT "'", STR_ARG(ident));
+			basis_set->identifier = str_copy(ident, alloc);
 		}
 		else if (num_tok == 2 && str_eq(tok[0], STR_LIT("@ATOMBASIS"))) {
 			int atomic_number = md_atomic_number_from_symbol(tok[1], true);
@@ -1379,6 +1394,11 @@ done:
 	return ndim;
 }
 
+static bool h5_check_dataset_exists(hid_t file_id, const char* field_name) {
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	return exists > 0;
+}
+
 static bool h5_read_dataset_data(void* out_data, const size_t dims[], int num_dim, hid_t file_id, hid_t mem_type_id, const char* field_name) {
 	ASSERT(out_data);
 	ASSERT(dims);
@@ -1649,68 +1669,88 @@ static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* ar
 }
 
 static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
-	if (!h5_read_scalar(&vlx->rsp.number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states")) {
-		return false;
+	h5_read_scalar(&vlx->rsp.number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states");
+	if (vlx->rsp.number_of_excited_states > 0) {
+		// Standard Linear Response data, allocate and read
+
+		// Allocate data
+		md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.electric_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+
+		md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+
+		md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.velocity_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+
+		md_array_resize(vlx->rsp.absorption_ev,	vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.absorption_ev, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+
+		md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.oscillator_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+
+		md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
+		MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+
+		// NTO data
+		if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
+			return false;
+		}
+
+		// Dipoles
+		size_t dipole_dim[2] = { vlx->rsp.number_of_excited_states, 3 };
+		if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
+			return false;
+		}
+
+		// Abs, rot and osc
+		size_t dim[1] = { vlx->rsp.number_of_excited_states };
+		if (!h5_read_dataset_data(vlx->rsp.absorption_ev, dim, 1, handle, H5T_NATIVE_DOUBLE, "eigenvalues")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
+			return false;
+		}
+
+		// Convert Atomic units (Hartree) to eV
+		if (vlx->rsp.absorption_ev) {
+			for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
+				vlx->rsp.absorption_ev[i] *= HARTREE_TO_EV;
+			}
+		}
 	}
 
-	if (vlx->rsp.number_of_excited_states == 0) {
-		// Wierd
-		MD_LOG_ERROR("No excited states listed in response section of VeloxChem h5 file");
-		return false;
-	}
+	// CPP data is optional, only read if present
+	size_t dim;
+	if (h5_read_dataset_dims(&dim, 1, handle, "frequencies")) {
+		vlx->rsp.cpp.number_of_frequencies = dim;
+		md_array_resize(vlx->rsp.cpp.frequencies, dim, vlx->arena);
+		if (!h5_read_dataset_data(vlx->rsp.cpp.frequencies, &dim, 1, handle, H5T_NATIVE_DOUBLE, "frequencies")) {
+			// Frequencies has to be present if cpp section is present, fail if missing
+			return false;
+		}
+		
+		if (h5_check_dataset_exists(handle, "sigma")) {
+			md_array_resize(vlx->rsp.cpp.sigmas, dim, vlx->arena);
+			if (!h5_read_dataset_data(vlx->rsp.cpp.sigmas, &dim, 1, handle, H5T_NATIVE_DOUBLE, "sigma")) {
+				return false;
+			}
+		}
 
-	// Allocate data
-	md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.electric_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
-
-	md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
-
-	md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.velocity_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
-
-	md_array_resize(vlx->rsp.absorption_ev,	vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.absorption_ev, 0, vlx->rsp.number_of_excited_states * sizeof(double));
-
-	md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.oscillator_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
-
-	md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
-	MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
-
-	// NTO data
-	if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
-		return false;
-	}
-
-	// Dipoles
-	size_t dipole_dim[2] = { vlx->rsp.number_of_excited_states, 3 };
-	if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
-		return false;
-	}
-
-	// Abs, rot and osc
-	size_t dim[1] = { vlx->rsp.number_of_excited_states };
-	if (!h5_read_dataset_data(vlx->rsp.absorption_ev, dim, 1, handle, H5T_NATIVE_DOUBLE, "eigenvalues")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
-		return false;
-	}
-
-	// Convert Atomic units (Hartree) to eV
-	if (vlx->rsp.absorption_ev) {
-		for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
-			vlx->rsp.absorption_ev[i] *= HARTREE_TO_EV;
+		if (h5_check_dataset_exists(handle, "delta-epsilon")) {
+			md_array_resize(vlx->rsp.cpp.delta_epsilon, dim, vlx->arena);
+			if (!h5_read_dataset_data(vlx->rsp.cpp.delta_epsilon, &dim, 1, handle, H5T_NATIVE_DOUBLE, "delta-epsilon")) {
+				return false;
+			}
 		}
 	}
 
@@ -2819,6 +2859,34 @@ const double* md_vlx_rsp_oscillator_strengths(const md_vlx_t* vlx) {
 const double* md_vlx_rsp_absorption_ev(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.absorption_ev;
+	}
+	return NULL;
+}
+
+size_t md_vlx_rsp_cpp_number_of_frequencies(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.cpp.number_of_frequencies;
+	}
+	return 0;
+}
+
+const double* md_vlx_rsp_cpp_frequencies(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.cpp.frequencies;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_cpp_sigma(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.cpp.sigmas;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_cpp_delta_epsilon(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.cpp.delta_epsilon;
 	}
 	return NULL;
 }

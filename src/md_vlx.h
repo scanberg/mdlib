@@ -106,7 +106,7 @@ const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
 // If present, has the length of num of atoms
 const double* md_vlx_scf_resp_charges(const struct md_vlx_t* vlx);
 
-// RSP
+// RSP (Standard Linear Response, TD-DFT)
 size_t md_vlx_rsp_number_of_excited_states(const struct md_vlx_t* vlx);
 
 // RSP arrays with length of num excited states
@@ -116,6 +116,18 @@ const dvec3_t* md_vlx_rsp_velocity_transition_dipole_moments(const struct md_vlx
 const double*  md_vlx_rsp_rotatory_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
+
+// RSP CPP (Complex Polarization Propagator)
+size_t md_vlx_rsp_cpp_number_of_frequencies(const struct md_vlx_t* vlx);
+
+// unit = eV
+const double* md_vlx_rsp_cpp_frequencies(const struct md_vlx_t* vlx);
+
+// Encodes unpolarized? response, i.e. the average of left and right polarized light
+const double* md_vlx_rsp_cpp_sigma(const struct md_vlx_t* vlx);
+
+// Encodes difference between left vs. right polarized light
+const double* md_vlx_rsp_cpp_delta_epsilon(const struct md_vlx_t* vlx);
 
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
