@@ -284,6 +284,8 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 	double H02 = 2.0 * G02;
 	double H12 = 2.0 * G12;
 
+
+
 	double det = G00 * (G11 * G22 - G12 * G12) - G01 * (G01 * G22 - G12 * G02) + G02 * (G01 * G12 - G11 * G02);
 	double GI00 = (G11 * G22 - G12 * G12) / det;
 	double GI11 = (G00 * G22 - G02 * G02) / det;
