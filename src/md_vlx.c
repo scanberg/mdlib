@@ -1739,7 +1739,6 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
-	
 	size_t number_of_modes = 0;
 
 	// Attempt to read number_of_modes (Available in new format)
@@ -2047,7 +2046,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
 			// Which currently write alot of restart data into the rsp section
 			// clear
-			flags &= ~VLX_FLAG_RSP;
+			// flags &= ~VLX_FLAG_RSP;
         }
     }
 
