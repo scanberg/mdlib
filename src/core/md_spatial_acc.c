@@ -276,43 +276,45 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     double G00 = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); // dot(a, a)
     double G11 = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]); // dot(b, b)
     double G22 = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]); // dot(c, c)
-    double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // 2 dot(a, b)
-    double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // 2 dot(a, c)
-    double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // 2 dot(b, c)
 
-	double H01 = 2.0 * G01;
-	double H02 = 2.0 * G02;
-	double H12 = 2.0 * G12;
+    double H01 = 0.0, H02 = 0.0, H12 = 0.0;
+    double sxy = 0.0, sxz = 0.0, syz = 0.0;
+    float inv_cell_ext[3] = {G00 > 0.0 ? (float)(1.0 / sqrt(G00)) : 0.0f,
+                             G11 > 0.0 ? (float)(1.0 / sqrt(G11)) : 0.0f,
+                             G22 > 0.0 ? (float)(1.0 / sqrt(G22)) : 0.0f};
 
+    if (flags & MD_UNITCELL_TRICLINIC) {
+        // Skew factors (tilt) used for MIC box handling in the triclinic case
+        sxy = (a[1] / a[0]);
+        sxz = (a[2] / a[0]);
+        syz = (b[2] / b[1]);
 
+        double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // 2 dot(a, b)
+        double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // 2 dot(a, c)
+        double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // 2 dot(b, c)
 
-	double det = G00 * (G11 * G22 - G12 * G12) - G01 * (G01 * G22 - G12 * G02) + G02 * (G01 * G12 - G11 * G02);
-	double GI00 = (G11 * G22 - G12 * G12) / det;
-	double GI11 = (G00 * G22 - G02 * G02) / det;
-	double GI22 = (G00 * G11 - G01 * G01) / det;
+        double H01 = 2.0 * G01;
+        double H02 = 2.0 * G02;
+        double H12 = 2.0 * G12;
 
-	// Skew coefficients (tilt) used for MIC box handling in the triclinic case
-	double sxy = a[1] / a[0];
-	double sxz = a[2] / a[0];
-	double syz = b[2] / b[1];
+        double det = G00 * (G11 * G22 - G12 * G12) - G01 * (G01 * G22 - G12 * G02) + G02 * (G01 * G12 - G11 * G02);
+        double GI00 = (G11 * G22 - G12 * G12) / det;
+        double GI11 = (G00 * G22 - G02 * G02) / det;
+        double GI22 = (G00 * G11 - G01 * G01) / det;
 
+        if (det < DBL_EPSILON) {
+            MD_LOG_ERROR("Degenerate unit cell / A matrix provided to spatial acc");
+            md_spatial_acc_reset(acc);
+            return;
+        }
 
-    //sxy = 0;
-    //sxz = 0;
-    //syz = 0;
-
-    if (det < DBL_EPSILON) {
-        MD_LOG_ERROR("Degenerate unit cell / A matrix provided to spatial acc");
-        md_spatial_acc_reset(acc);
-        return;
-	}
-
-	// Conservative cell extents along each axis
-    float inv_cell_ext[3] = {
-        (float)(sqrt(GI00)),
-        (float)(sqrt(GI11)),
-        (float)(sqrt(GI22)),
-	};
+        // Conservative cell extents along each axis
+        float inv_cell_ext[3] = {
+            (float)(sqrt(GI00)),
+            (float)(sqrt(GI11)),
+            (float)(sqrt(GI22)),
+        };
+    }
 
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
     // This is only a heuristic for bin counts; the grid is still in fractional space.
@@ -326,7 +328,9 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const size_t num_cells = (size_t)cell_dim[0] * cell_dim[1] * cell_dim[2];
 
+#if DEBUG
     MD_LOG_DEBUG("cell_dim: %i %i %i", cell_dim[0], cell_dim[1], cell_dim[2]);
+#endif
 
     // Temporary arrays
     const size_t temp_arena_page_size = MEGABYTES(4);
