@@ -141,6 +141,10 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
     }
     
     if (atom_name.len == 0) return MD_Z_X;
+
+    if (is_digit(atom_name.ptr[0])) {
+        atom_name = str_substr(atom_name, 1, SIZE_MAX); // Skip leading digits
+    }
     
     // First try residue+atom combination
     if (res_name.len > 0) {
