@@ -14,6 +14,8 @@
 #include <md_system.h>
 #include <md_util.h>
 
+#include <float.h>
+
 typedef struct {
     uint32_t i, j;
     double d2;
