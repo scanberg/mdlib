@@ -8,6 +8,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_os.h>
 #include <core/md_log.h>
+#include <core/md_hash.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_system.h>
@@ -18,9 +19,9 @@ typedef struct {
     double d2;
 } dist_pair_t;
 
-typedef struct {
-    dist_pair_t* pairs;
-    uint32_t count;
+typedef struct spatial_acc_data_t {
+    md_array(dist_pair_t)* pairs;
+    md_allocator_i* alloc;
 } spatial_acc_data_t;
 
 static void spatial_acc_neighbor_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
@@ -43,8 +44,15 @@ static void spatial_acc_neighbor_callback(const uint32_t* i_idx, const uint32_t*
 }
 
 static void spatial_acc_cutoff_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
-    uint32_t* count = (uint32_t*)user_param;
-    *count += (uint32_t)num_pairs;
+    spatial_acc_data_t* data = (spatial_acc_data_t*)user_param;
+    for (size_t i = 0; i < num_pairs; i++) {
+        dist_pair_t pair = {
+            .i = i_idx[i],
+            .j = j_idx[i],
+            .d2 = ij_dist2[i]
+        };
+        md_array_push(*data->pairs, pair, data->alloc);
+    }
 }
 
 static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
@@ -142,7 +150,7 @@ UTEST(spatial_hash, big) {
     md_arena_allocator_destroy(alloc);
 }
 
-static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const md_unitcell_t* cell, dist_pair_t* pairs) {
+static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const md_unitcell_t* cell, md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
     size_t count = 0;
     const float r2 = (float)(cutoff * cutoff);
 
@@ -159,9 +167,12 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
                 float d2 = fmaf(d.x, d.x, fmaf(d.y, d.y, d.z * d.z));
                 if (d2 < r2) {
                     if (pairs) {
-                        pairs[count].i = (uint32_t)i;
-                        pairs[count].j = (uint32_t)j;
-                        pairs[count].d2 = d2;
+                        dist_pair_t pair = {
+                            .i = (uint32_t)i,
+                            .j = (uint32_t)j,
+                            .d2 = d2
+                        };
+                        md_array_push(*pairs, pair, alloc);
                     }
                     count += 1;
                 }
@@ -180,9 +191,12 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
                 float d2 = dx * dx + dy * dy + dz * dz;
                 if (d2 < r2) {
                     if (pairs) {
-                        pairs[count].i = (uint32_t)i;
-                        pairs[count].j = (uint32_t)j;
-                        pairs[count].d2 = d2;
+                        dist_pair_t pair = {
+                            .i = (uint32_t)i,
+                            .j = (uint32_t)j,
+                            .d2 = d2
+                        };
+                        md_array_push(*pairs, pair, alloc);
                     }
                     count += 1;
                 }
@@ -190,6 +204,55 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
         }
     }
 
+    return count;
+}
+
+static double distance_ref_mic27(const double G[3][3], const double I[3][3], const double x0[3], const double x1[3]) {
+    double s0[3], s1[3];
+    for (int k = 0; k < 3; k++) {
+        s0[k] = I[k][0]*x0[0] + I[k][1]*x0[1] + I[k][2]*x0[2];
+        s1[k] = I[k][0]*x1[0] + I[k][1]*x1[1] + I[k][2]*x1[2];
+    }
+
+    double ds0[3] = { s1[0]-s0[0], s1[1]-s0[1], s1[2]-s0[2] };
+
+    // Start from the rounded guess
+    ds0[0] -= round(ds0[0]);
+    ds0[1] -= round(ds0[1]);
+    ds0[2] -= round(ds0[2]);
+
+    double best = DBL_MAX;
+    for (int ix = -1; ix <= 1; ++ix)
+    for (int iy = -1; iy <= 1; ++iy)
+    for (int iz = -1; iz <= 1; ++iz) {
+        double d[3] = { ds0[0] + ix, ds0[1] + iy, ds0[2] + iz };
+        double d2 = 0.0;
+        for (int a = 0; a < 3; a++)
+            for (int b = 0; b < 3; b++)
+                d2 += G[a][b] * d[a] * d[b];
+        if (d2 < best) best = d2;
+    }
+    return best;
+}
+static size_t do_brute_force_double(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const double G[3][3], const double I[3][3], md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
+    size_t count = 0;
+    const double r2 = cutoff * cutoff;
+
+    for (size_t i = 0; i < num_points - 1; ++i) {
+        // Fractional coords of i
+        double xi[3] = { in_x[i], in_y[i], in_z[i] };
+        for (size_t j = i + 1; j < num_points; ++j) {
+            double xj[3] = { in_x[j], in_y[j], in_z[j] };
+            double d2 = distance_ref_mic27(G, I, xi, xj);
+            if (d2 < r2) {
+                if (pairs) {
+                    dist_pair_t pair = { .i = (uint32_t)i, .j = (uint32_t)j, .d2 = d2 };
+                    md_array_push(*pairs, pair, alloc);
+                }
+                count += 1;
+            }
+        }
+    }
     return count;
 }
 
@@ -226,8 +289,8 @@ UTEST(spatial_hash, n2) {
     }
 
     const vec4_t mask = md_unitcell_pbc_mask_vec4(&sys.unitcell);
-    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(&sys.unitcell));
-    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(&sys.unitcell));
+    //mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(&sys.unitcell));
+    //mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(&sys.unitcell));
 
     {
 
@@ -236,47 +299,105 @@ UTEST(spatial_hash, n2) {
         float y[TEST_COUNT];
         float z[TEST_COUNT];
 
-        const mat3_t cell_matrix = {
-            60.0,  0.0,   0.0,
-            20.0, 50.0,   0.0,
-            10.0, 20.0,  40.0
+        const double A[3][3] = {
+            {40.0,  0.0,   0.0},
+            {10.0, 50.0,   0.0},
+            { 0.0,  0.0,  60.0}
 		};
+
+        const double I[3][3] = {
+            {1.0/A[0][0], 0.0, 0.0},
+            {-A[1][0]/(A[0][0]*A[1][1]), 1.0/A[1][1], 0.0},
+            {(A[2][0]/(A[0][0]*A[2][2]) - A[2][1]/(A[1][1]*A[2][2])), -A[2][1]/(A[1][1]*A[2][2]), 1.0/A[2][2]}
+        };
+
+        const double G[3][3] = {
+            {A[0][0]*A[0][0] + A[1][0]*A[1][0] + A[2][0]*A[2][0], A[1][0]*A[1][1] + A[2][0]*A[2][1], A[2][0]*A[2][2]},
+            {A[1][0]*A[1][1] + A[2][0]*A[2][1], A[1][1]*A[1][1] + A[2][1]*A[2][1], A[2][1]*A[2][2]},
+            {A[2][0]*A[2][2], A[2][1]*A[2][2], A[2][2]*A[2][2]}
+        };
+
 	    const float min_rad = 3.0;
 		const float max_rad = 6.0;
 
         srand(0);
+
         // Generate random points in the triclinic unit cell: r = A * s with s in [0,1)^3
         for (size_t i = 0; i < TEST_COUNT; ++i) {
-            const double u = rnd_rng(0.0, 1.0);
-            const double v = rnd_rng(0.0, 1.0);
-            const double w = rnd_rng(0.0, 1.0);
-			vec3_t t = { u, v, w };
-			t = mat3_mul_vec3(cell_matrix, t);
-            x[i] = t.x;
-            y[i] = t.y;
-            z[i] = t.z;
+            const double cx = rnd_rng(0.0, 100.0);
+            const double cy = rnd_rng(0.0, 100.0);
+            const double cz = rnd_rng(0.0, 100.0);
+
+            x[i] = cx;
+            y[i] = cy;
+            z[i] = cz;
         }
 
-        dist_pair_t bf_pairs[4096];
-        dist_pair_t sa_pairs[4096];
-
-		md_unitcell_t test_cell = md_unitcell_from_matrix_float(cell_matrix.elem);
-		mat3_t I = md_unitcell_inv_basis_mat3(&test_cell);
-
-        vec3_t p = mat3_mul_vec3(I, vec3_set(30.0, 30.0, 30.0));
+		md_unitcell_t test_cell = md_unitcell_from_matrix_double(A);
 
         md_spatial_acc_t sa = { .alloc = alloc };
 		md_spatial_acc_init(&sa, x, y, z, NULL, TEST_COUNT, max_rad, &test_cell);
 
+        md_array(dist_pair_t) sa_pairs = NULL;
+        md_array(dist_pair_t) bf_pairs = NULL;
+
+        spatial_acc_data_t usr_data = {
+            .pairs = &sa_pairs,
+            .alloc = alloc
+        };
+
         for (double rad = 3.0; rad <= 6.0; rad += 0.5) {
-            size_t bf_count = do_brute_force(x, y, z, TEST_COUNT, rad, &test_cell, NULL);
+            md_array_shrink(bf_pairs, 0);
+            md_array_shrink(sa_pairs, 0);
 
-            uint32_t sa_count = 0;
-            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &sa_count);
+            size_t bf_count = do_brute_force_double(x, y, z, TEST_COUNT, rad, G, I, &bf_pairs, alloc);
+            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &usr_data);
 
+            printf("bf_count: %zu\n", bf_count);
+
+            size_t sa_count = md_array_size(sa_pairs);
             EXPECT_EQ(bf_count, sa_count);
             if (bf_count != sa_count) {
-                printf("wierd expected: %zu, but got: %u\n", bf_count, sa_count);
+                printf("wierd expected: %zu, but got: %zu, cutoff: %f\n", bf_count, sa_count, rad);
+                size_t temp_pos = md_temp_get_pos();
+                md_hashmap32_t map_sa = { .allocator = md_get_temp_allocator() };
+                md_hashmap32_t map_bf = { .allocator = md_get_temp_allocator() };
+
+                // populate reference hashmap with brute force pairs
+                for (size_t i = 0; i < bf_count; ++i) {
+                    uint64_t key = ((uint64_t)bf_pairs[i].i << 32) | bf_pairs[i].j;
+                    md_hashmap_add(&map_bf, key, 1);
+                }
+
+                for (size_t idx = 0; idx < sa_count; ++idx) {
+                    uint32_t i = MIN(sa_pairs[idx].i, sa_pairs[idx].j);
+                    uint32_t j = MAX(sa_pairs[idx].i, sa_pairs[idx].j);
+                    uint64_t key = ((uint64_t)i << 32) | j;
+                    md_hashmap_add(&map_sa, key, 1);
+
+                    if (!md_hashmap_get(&map_bf, key)) {
+                        printf("SA only pair: %u %u %f\n", i, j, sqrt(sa_pairs[idx].d2));
+                        double x0[3] = { x[i], y[i], z[i] };
+                        double x1[3] = { x[j], y[j], z[j] };
+                        double dist_ref = sqrt(distance_ref_mic27(G, I, x0, x1));
+                        printf("Reference distance: %f\n", dist_ref);
+                    }
+                }
+
+                for (size_t idx = 0; idx < bf_count; ++idx) {
+                    uint32_t i = bf_pairs[idx].i;
+                    uint32_t j = bf_pairs[idx].j;
+                    uint64_t key = ((uint64_t)i << 32) | j;
+                    if (!md_hashmap_get(&map_sa, key)) {
+                        printf("BF only pair: %u %u %f\n", i, j, sqrt(bf_pairs[idx].d2));
+                        double x0[3] = { x[i], y[i], z[i] };
+                        double x1[3] = { x[j], y[j], z[j] };
+                        double dist_ref = sqrt(distance_ref_mic27(G, I, x0, x1));
+                        printf("Reference distance: %f\n", dist_ref);
+                    }
+                }
+
+                md_temp_set_pos_back(temp_pos);
             }
 #if 0
             if (bf_count != sh_count) {
@@ -383,7 +504,7 @@ UTEST(spatial_hash, n2) {
 
     // Brute force
     start = md_time_current();
-    size_t bf_count = do_brute_force(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, &cell, NULL);
+    size_t bf_count = do_brute_force(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, &cell, NULL, NULL);
     end = md_time_current();
     printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);

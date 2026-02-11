@@ -284,36 +284,30 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
                              G22 > 0.0 ? (float)(1.0 / sqrt(G22)) : 0.0f};
 
     if (flags & MD_UNITCELL_TRICLINIC) {
-        // Skew factors (tilt) used for MIC box handling in the triclinic case
-        sxy = (a[1] / a[0]);
-        sxz = (a[2] / a[0]);
-        syz = (b[2] / b[1]);
+        double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // dot(a, b)
+        double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // dot(a, c)
+        double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // dot(b, c)
 
-        double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // 2 dot(a, b)
-        double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // 2 dot(a, c)
-        double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // 2 dot(b, c)
-
-        double H01 = 2.0 * G01;
-        double H02 = 2.0 * G02;
-        double H12 = 2.0 * G12;
+        H01 = 2.0 * G01;
+        H02 = 2.0 * G02;
+        H12 = 2.0 * G12;
 
         double det = G00 * (G11 * G22 - G12 * G12) - G01 * (G01 * G22 - G12 * G02) + G02 * (G01 * G12 - G11 * G02);
-        double GI00 = (G11 * G22 - G12 * G12) / det;
-        double GI11 = (G00 * G22 - G02 * G02) / det;
-        double GI22 = (G00 * G11 - G01 * G01) / det;
-
+        
         if (det < DBL_EPSILON) {
             MD_LOG_ERROR("Degenerate unit cell / A matrix provided to spatial acc");
             md_spatial_acc_reset(acc);
             return;
         }
 
+        double GI00 = (G11 * G22 - G12 * G12) / det;
+        double GI11 = (G00 * G22 - G02 * G02) / det;
+        double GI22 = (G00 * G11 - G01 * G01) / det;
+
         // Conservative cell extents along each axis
-        float inv_cell_ext[3] = {
-            (float)(sqrt(GI00)),
-            (float)(sqrt(GI11)),
-            (float)(sqrt(GI22)),
-        };
+        inv_cell_ext[0] = (float)sqrt(GI00);
+        inv_cell_ext[1] = (float)sqrt(GI11);
+        inv_cell_ext[2] = (float)sqrt(GI22);
     }
 
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
@@ -427,10 +421,6 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     MEMCPY(acc->cell_dim, cell_dim, sizeof(acc->cell_dim));
 	MEMCPY(acc->inv_cell_ext, inv_cell_ext, sizeof(acc->inv_cell_ext));
     acc->num_cells = num_cells;
-        
-	acc->sxy = (float)sxy;
-	acc->sxz = (float)sxz;
-	acc->syz = (float)syz;
 
     acc->G00 = (float)G00;
     acc->G11 = (float)G11;
@@ -608,11 +598,9 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
     const ivec4_t cdim_1v = ivec4_sub(cdim_v, ivec4_set(1, 1, 1, 0));
     const ivec4_t zero_v  = ivec4_set1(0);
 
-    const ivec4_t pmask_v = ivec4_set(
-        (acc->flags & MD_UNITCELL_PBC_X) ? 0xFFFFFFFF : 0,
-        (acc->flags & MD_UNITCELL_PBC_Y) ? 0xFFFFFFFF : 0,
-        (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
-        0);
+    // If we have a triclinic cell, the cell must be periodic in all dimensions.
+    ASSERT(acc->flags & MD_UNITCELL_TRICLINIC);
+    ASSERT((acc->flags & MD_UNITCELL_PBC_ALL) == (MD_UNITCELL_PBC_ALL));
 
     // --- Main cell loops ---
     for (uint32_t cz = cmin[2]; cz <= cmax[2]; ++cz) {
@@ -672,10 +660,6 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
 
                     const ivec4_t wrap_upper = ivec4_cmpgt(n_v, cdim_1v);
                     const ivec4_t wrap_lower = ivec4_cmplt(n_v, zero_v);
-                    const ivec4_t wrap_any   = ivec4_or(wrap_upper, wrap_lower);
-
-                    // Skip nonperiodic wraps
-                    if (ivec4_any(ivec4_andnot(wrap_any, pmask_v))) continue;
 
                     // Apply wrapping
                     n_v = ivec4_add(n_v, ivec4_and(wrap_lower, cdim_v));
@@ -925,6 +909,25 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
     FLUSH_TAIL();
 }
 
+static inline int32_t floor_div_int32(int32_t a, int32_t b) {
+    // floor division for negative values
+    int32_t q = a / b;
+    int32_t r = a % b;
+    return (r != 0 && ((r > 0) != (b > 0))) ? (q - 1) : q;
+}
+
+static inline int32_t mod_int32(int32_t a, int32_t m) {
+    int32_t r = a % m;
+    return (r < 0) ? r + m : r;
+}
+
+// Compute wrap count and wrapped index
+static inline void wrap_index_and_count(int32_t* idx, int32_t* wrap, int32_t dim) {
+    int32_t w = floor_div_int32(*idx, dim);
+    *wrap = w;
+    *idx = *idx - w * dim; // wrap to [0, dim)
+}
+
 static bool for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * (double)acc->cell_dim[0]),
@@ -975,11 +978,9 @@ static bool for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
     const ivec4_t cdim_1v = ivec4_sub(cdim_v, ivec4_set(1, 1, 1, 0));
     const ivec4_t zero_v  = ivec4_set1(0);
 
-    const ivec4_t pmask_v = ivec4_set(
-        (acc->flags & MD_UNITCELL_PBC_X) ? 0xFFFFFFFF : 0,
-        (acc->flags & MD_UNITCELL_PBC_Y) ? 0xFFFFFFFF : 0,
-        (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
-        0);
+    // If we have a triclinic cell, the cell must be periodic in all dimensions.
+    ASSERT(acc->flags & MD_UNITCELL_TRICLINIC);
+    ASSERT((acc->flags & MD_UNITCELL_PBC_ALL) == (MD_UNITCELL_PBC_ALL));
 
     // --- Main cell loops ---
     for (uint32_t cz = cmin[2]; cz <= cmax[2]; ++cz) {
@@ -1052,10 +1053,6 @@ static bool for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
 
                     const ivec4_t wrap_upper = ivec4_cmpgt(n_v, cdim_1v);
                     const ivec4_t wrap_lower = ivec4_cmplt(n_v, zero_v);
-                    const ivec4_t wrap_any   = ivec4_or(wrap_upper, wrap_lower);
-
-                    // Skip nonperiodic wraps
-                    if (ivec4_any(ivec4_andnot(wrap_any, pmask_v))) continue;
 
                     // Apply wrapping
                     n_v = ivec4_add(n_v, ivec4_and(wrap_lower, cdim_v));
@@ -1078,12 +1075,8 @@ static bool for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                     const float shift_yf = (float)simde_mm_extract_epi32(shift_i, 1);
                     const float shift_zf = (float)simde_mm_extract_epi32(shift_i, 2);
 
-                    if (shift_yf != 0) {
-                        while(0) {};
-                    }
-
-                    const md_256 shift_x = md_mm256_set1_ps(shift_xf + shift_yf * acc->sxy + shift_zf * acc->sxz);
-                    const md_256 shift_y = md_mm256_set1_ps(shift_yf + shift_zf * acc->syz);
+                    const md_256 shift_x = md_mm256_set1_ps(shift_xf);// + shift_yf * acc->sxy + shift_zf * acc->sxz);
+                    const md_256 shift_y = md_mm256_set1_ps(shift_yf);// + shift_zf * acc->syz);
                     const md_256 shift_z = md_mm256_set1_ps(shift_zf);
 
                     const md_256i v_len_j = md_mm256_set1_epi32(len_j);
