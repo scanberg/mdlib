@@ -4850,8 +4850,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 					key = md_hash64_str(id_str, 0);
                 }
             }
+
             md_array_push(sys->inst.id, inst_id, alloc);
-            md_array_push(sys->inst.auth_id, make_label(comp_auth_id), alloc);  // No auth id info as its generated
+            md_array_push(sys->inst.auth_id, make_label(str_trim(comp_auth_id)), alloc);  // No auth id info as its generated
             md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
             md_array_push(sys->inst.entity_idx, entity_idx, alloc);
             sys->inst.count += 1;

@@ -550,6 +550,10 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             md_array_push(sys->comp.flags,  comp_flags, alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
+            if (terminator) {
+                // Trigger a new component for the next residue even if the chain id is the same, to correctly capture chain breaks
+                asym_id.len = 2;
+            }
             md_array_push(comp_auth_asym_ids, asym_id, temp_alloc);
         }
 
