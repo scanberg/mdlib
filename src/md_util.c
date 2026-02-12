@@ -1874,21 +1874,26 @@ typedef struct dssp_hbond_energy_user_param_t {
 
 void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
-    for (size_t pair_idx = 0; pair_idx < num_pairs; ++pair_idx) {
-        uint32_t i = i_idx[pair_idx];
-        uint32_t j = j_idx[pair_idx];
-        calc_hbond_energy(param->res_hbonds, param->res_coords, i, j);
-        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i);
+    for (size_t idx = 0; idx < num_pairs; ++idx) {
+        uint32_t i = MIN(i_idx[idx], j_idx[idx]);
+        uint32_t j = MAX(i_idx[idx], j_idx[idx]);
 
 		uint32_t ri = param->res_range_id[i];
 		uint32_t rj = param->res_range_id[j];
 
+        int d = (int)j - (int)i;
+
+        if (ri == rj && d <= 1) continue;
+
+        calc_hbond_energy(param->res_hbonds, param->res_coords, i, j);
+        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i);
+
         // DSSP excludes very local sequence contacts on the same chain
-        if (ri != rj && abs((int)j - (int)i) > 2) {
-			// Ensure that pairs are sorted (i < j) to avoid duplicates
-			residue_pair_t pair = { MIN(i,j), MAX(i,j)};
-			md_array_push(*param->sheet_candidates, pair, param->alloc);
-        }
+        if (ri == rj && d <= 2) continue;
+
+		// Ensure that pairs are sorted (i < j) to avoid duplicates
+		residue_pair_t pair = { i, j };
+		md_array_push(*param->sheet_candidates, pair, param->alloc);
     }
 }
 
@@ -1915,7 +1920,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     float* res_ca_y = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
     float* res_ca_z = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
 
-    residue_pair_t* sheet_candidates = { 0 };
+    md_array(residue_pair_t) sheet_candidates = NULL;
 	md_array_ensure(sheet_candidates, 1024, temp_alloc);
 
     for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
@@ -2067,10 +2072,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         }
     }
 
-#if 1
     // ---- Global pass: sheets / bridges ----
-    // NOTE: CA cutoff is only an optimization; DSSP itself doesn't use it.
-    const float min_ca_dist2_sheet = 9.0f * 9.0f;
 
     typedef struct {
         uint32_t i;
@@ -2085,13 +2087,14 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     // Helper lambdas are not allowed in C; keep as local inline-ish macros
 #define SAME_RANGE(a,b) (res_range_id[(a)] == res_range_id[(b)])
 
+#if 1
 	md_hashmap32_t parallel_bridge_map     = { .allocator = temp_alloc };
 	md_hashmap32_t antiparallel_bridge_map = { .allocator = temp_alloc };
 
 	size_t num_sheet_candidates = md_array_size(sheet_candidates);
     for (size_t c = 0; c < num_sheet_candidates; ++c) {
-        size_t i = sheet_candidates[c].i;
-        size_t j = sheet_candidates[c].j;
+        uint32_t i = sheet_candidates[c].i;
+        uint32_t j = sheet_candidates[c].j;
 
         // Neighbor existence within each chain/range
         const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
@@ -2134,32 +2137,32 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 
 		uint32_t ri = res_range_id[i];
 		uint32_t rj = res_range_id[j];
+
 		uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
 
+        size_t idx = num_bridges++;
+
         // Record bridge (normalize ordering i<j already true)
-		uint32_t idx = num_bridges++;
         bridges[idx] = (dssp_bridge_t){
             .i = i,
             .j = j,
-			.chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
+            .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
         };
 
-		uint64_t key = md_hash64(&bridges[idx], sizeof(dssp_bridge_t), 0);
+        // DSSP marks both residues as "bridge" even before ladder/sheet conversion
+        ss_flags[i] |= SS_FLAG_BRIDGE;
+        ss_flags[j] |= SS_FLAG_BRIDGE;
 
+		uint64_t key = md_hash64(&bridges[idx], sizeof(dssp_bridge_t), 0);
 		if (parallel) {
 			md_hashmap_add(&parallel_bridge_map, key, idx);
 		} else {
 			md_hashmap_add(&antiparallel_bridge_map, key, idx);
 		}
-
-        ASSERT(i < j);
-
-        // DSSP marks both residues as "bridge" even before ladder/sheet conversion
-        ss_flags[i] |= SS_FLAG_BRIDGE;
-        ss_flags[j] |= SS_FLAG_BRIDGE;
     }
 
-#if 0
+#else
+    const float min_ca_dist2_sheet = 9.0f * 9.0f;
     for (uint32_t i = 0; i < (uint32_t)backbone_segment_count; ++i) {
         const uint32_t ri = res_range_id[i];
 
@@ -2210,11 +2213,13 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
                 continue;
             }
 
+		    uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
+
             // Record bridge (normalize ordering i<j already true)
             bridges[num_bridges++] = (dssp_bridge_t){
                 .i = i,
                 .j = j,
-                .type = parallel ? 1 : 0,
+                .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
             };
 
             // DSSP marks both residues as "bridge" even before ladder/sheet conversion
@@ -2223,6 +2228,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         }
     }
 #endif
+#undef SAME_RANGE
 
 #if 1
 	// ---- Build ladders by directly looking up bridges in hashmaps ----
@@ -2359,9 +2365,6 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
         }
     }
-#endif
-
-#undef SAME_RANGE
 #endif
 
     // ---- Final resolution: convert flags to enum with priority ----
@@ -4751,7 +4754,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             size_t comp_size = md_comp_atom_count(&sys->comp, i);
             md_flags_t comp_flags = md_comp_flags(&sys->comp, i);
             uint64_t entity_key = md_hash64_str(comp_name, 0);
-            str_t  comp_auth_id = comp_auth_asym_id ? comp_auth_asym_id[i] : STR_LIT("");
+            str_t  comp_auth_id = comp_auth_asym_id ? str_trim(comp_auth_asym_id[i]) : STR_LIT("");
 
             md_flags_t entity_flags = comp_flags;
 
@@ -4776,7 +4779,8 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
             if (test_name || test_seq_id || test_bond || test_auth_id) {
                 while (j < sys->comp.count) {
-                    if (test_name && !str_eq(comp_name, md_comp_name(&sys->comp, j))) break;
+                    str_t comp_name_j = md_comp_name(&sys->comp, j);
+                    if (test_name && !str_eq(comp_name, comp_name_j)) break;
                     if (test_seq_id && comp_seq_id != md_comp_seq_id(&sys->comp, j)) break;
                     if (test_bond && !connected_to_prev[j]) break;
                     if (test_auth_id && !str_eq(comp_auth_id, comp_auth_asym_id[j])) break;
@@ -4784,7 +4788,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                     md_flags_t flags = md_comp_flags(&sys->comp, j);
                     if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
                     if (!test_name) {
-                        entity_key = md_hash64_str(LBL_TO_STR(sys->comp.name[j]), entity_key);
+                        entity_key = md_hash64_str(comp_name_j, entity_key);
                     }
                     ++j;
                 }
