@@ -398,7 +398,7 @@ static inline mat3_t md_unitcell_basis_mat3(const md_unitcell_t* cell) {
     return mat3_ident();
 }
 
-// returns the unit_cell basis matrix (A)
+// returns the unit_cell basis matrix (A) as mat4
 static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
     if (cell) {
         mat4_t A = {
@@ -412,6 +412,7 @@ static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
     return mat4_ident();
 }
 
+// extracts unit_cell basis matrix (A)
 static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
     if (cell) {
         out_A[0][0] = cell->x;
@@ -426,7 +427,7 @@ static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitce
     }
 }
 
-// returns the unit_cell basis matrix (A)
+// returns the unit_cell inverse basis matrix (A^i)
 static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
     if (cell) {
         if (!cell->flags) {
@@ -445,6 +446,7 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
     return mat3_ident();
 }
 
+// extracts the unit_cell inverse basis matrix (A^i)
 static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_unitcell_t* cell) {
     if (cell) {
         if (!cell->flags) {
@@ -466,16 +468,54 @@ static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_u
 // returns the unitcell metric tensor G=(A^T)A
 static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
     if (cell) {
-        const double g11 = cell->x * cell->x;
-        const double g22 = cell->xy * cell->xy + cell->y * cell->y;
-        const double g33 = cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z;
-        const double g12 = cell->x * cell->xy;
-        const double g13 = cell->x * cell->xz;
-        const double g23 = cell->xy * cell->xz + cell->y * cell->yz;
-        mat3_t G = {(float)g11, (float)g12, (float)g13, (float)g12, (float)g22, (float)g23, (float)g13, (float)g23, (float)g33};
+        const double x  = cell->x;
+        const double xy = cell->xy;
+        const double xz = cell->xz;
+        const double y  = cell->y;
+        const double yz = cell->yz;
+        const double z  = cell->z;
+
+        // A = [[x,0,0],[xy,y,0],[xz,yz,z]]
+        // G = A^T A
+        const double g00 = x*x + xy*xy + xz*xz;
+        const double g01 = xy*y + xz*yz;
+        const double g02 = xz*z;
+        const double g11 = y*y + yz*yz;
+        const double g12 = yz*z;
+        const double g22 = z*z;
+
+        mat3_t G = {
+            (float)g00, (float)g01, (float)g02,
+            (float)g01, (float)g11, (float)g12,
+            (float)g02, (float)g12, (float)g22
+        };
         return G;
     }
     return mat3_ident();
+}
+
+// extracts the unitcell metric tensor G=(A^T)A
+static inline void md_unitcell_G_extract(double out_G[3][3], const md_unitcell_t* cell) {
+    if (cell) {
+        const double x  = cell->x;
+        const double xy = cell->xy;
+        const double xz = cell->xz;
+        const double y  = cell->y;
+        const double yz = cell->yz;
+        const double z  = cell->z;
+
+        out_G[0][0] = x*x + xy*xy + xz*xz;
+        out_G[0][1] = xy*y + xz*yz;
+        out_G[0][2] = xz*z;
+
+        out_G[1][0] = out_G[0][1];
+        out_G[1][1] = y*y + yz*yz;
+        out_G[1][2] = yz*z;
+
+        out_G[2][0] = out_G[0][2];
+        out_G[2][1] = out_G[1][2];
+        out_G[2][2] = z*z;
+    }
 }
 
 // Create a vec4 mask which represents the periodic dimensions from a unit cell.
