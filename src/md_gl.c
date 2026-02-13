@@ -956,14 +956,22 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 return handle;
             }
 
+            const uint32_t ss_sheet = pack_gl_secondary_structure((md_gl_secondary_structure_t){.sheet = 1.0f});
+            const uint32_t ss_coil  = pack_gl_secondary_structure((md_gl_secondary_structure_t){0});
+
             glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
-                uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)sys->protein_backbone.range.count; ++i) {
-                    for (uint32_t j = sys->protein_backbone.range.offset[i]; j < sys->protein_backbone.range.offset[i+1]; ++j) {
-                        md_secondary_structure_t ss = sys->protein_backbone.segment.secondary_structure[j];
-                        secondary_structure[idx++] = pack_gl_secondary_structure(md_gl_secondary_structure_convert(ss));
+                for (size_t i = 0; i < sys->protein_backbone.segment.count; ++i) {
+                    md_secondary_structure_t ss = sys->protein_backbone.segment.secondary_structure[i];
+                    secondary_structure[i] = pack_gl_secondary_structure(md_gl_secondary_structure_convert(ss));
+                }
+                for (size_t i = 0; i < sys->protein_backbone.range.count; ++i) {
+                    // Set isolated secondary structures to its neighbors within the chain
+                    for (size_t j = sys->protein_backbone.range.offset[i] + 1; j + 1 < sys->protein_backbone.range.offset[i + 1]; ++j) {
+                        if (secondary_structure[j] == ss_coil && secondary_structure[j - 1] == ss_sheet && secondary_structure[j + 1] == ss_sheet) {
+                            secondary_structure[j] = ss_sheet;
+                        }
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);

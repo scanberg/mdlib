@@ -66,7 +66,6 @@ vec3 catmull_rom(in vec3 p0, in vec3 p1, in vec3 p2, in vec3 p3, float s, float 
 vec3 catmull_rom_tangent(in vec3 p0, in vec3 p1, in vec3 p2, in vec3 p3, float s, float tension) {
     vec3 v0 = (p2 - p0) * tension;
     vec3 v1 = (p3 - p1) * tension;
-
     return (2.0 * p1 - 2.0 * p2 + v0 + v1) * 3.0 * s * s + (-3.0 * p1 + 3.0 * p2 - 2.0 * v0 - v1) * 2.0 * s + v0;
 }
 
@@ -74,18 +73,18 @@ vec3 catmull_rom_tangent(in vec3 p0, in vec3 p1, in vec3 p2, in vec3 p3, float s
 // https://www.it.uu.se/edu/course/homepage/grafik1/ht07/examples/curves.cpp
 float b3(float t) {
     float at = abs(t);
-    float at1 = -at + 1.0;
-    float at2 = -at + 2.0;
+    float at1 = 1.0 - at;
+    float at2 = 2.0 - at;
     float t1 = at1 * at1 * at1 * (2.0 / 3.0);
-    float t2 = at2 * at2 * at2 / 6.0;
+    float t2 = at2 * at2 * at2 * (1.0 / 6.0);
     return mix(t2 - t1, t2, step(1.0, at));
 }
 
 // b-spline tangent -> 1st derivative
 float b3_t(float t) {
     float at = abs(t);
-    float at1 = -at + 1.0;
-    float at2 = -at + 2.0;
+    float at1 = 1.0 - at;
+    float at2 = 2.0 - at;
     float t1 = -sign(t) * at1 * at1 * 2.0;
     float t2 = -sign(t) * at2 * at2 * 0.5;
     return mix(t2 - t1, t2, step(1.0, at));
@@ -167,14 +166,15 @@ void main() {
     fl[1] = in_vert[2].flags;
 
     int end_idx = (fl[1] & 2u) != 0U ? NUM_SUBDIVISIONS + 1 : NUM_SUBDIVISIONS;
+    int last_idx = end_idx - 1;
     for (int i = 0; i < end_idx; i++) {
         float t = float(i) / float(NUM_SUBDIVISIONS);
         vec3 s_vec = normalize(spline(sv[0], sv[1], sv[2], sv[3], t));
         vec3 s_tan = normalize(spline_tangent(cp[0], cp[1], cp[2], cp[3], t));
-        vec3 s_sec = spline(ss[0], ss[1], ss[2], ss[3], t);
+        vec3 s_sec = catmull_rom(ss[0], ss[1], ss[2], ss[3], t, 0.5);
         vec3 s_pos = spline(cp[0], cp[1], cp[2], cp[3], t);
         vec3 s_vel = spline(cv[0], cv[1], cv[2], cv[3], t);
-        uint s_flags = (i == 0) ? fl[0] : (i == end_idx - 1) ? fl[1] : 0U;
+        uint s_flags = (i == 0) ? fl[0] : (i == last_idx) ? fl[1] : 0U;
 
 #if ORTHONORMALIZE
         s_vec = normalize(s_vec - s_tan*dot(s_vec, s_tan));
@@ -182,7 +182,7 @@ void main() {
 
         out_position = s_pos;
         out_atom_idx = t < 0.5 ? ai[0] : ai[1];   // Pick closest control point for index
-        out_velocity = s_vel;;
+        out_velocity = s_vel;
         out_segment_t = in_vert[1].segment_t + t;
         out_secondary_structure_and_flags = (s_flags << 24U) | (packUnorm4x8(vec4(s_sec, 0)) & 0x00FFFFFFU);
         out_support_and_tangent_vector[0] = packSnorm2x16(s_vec.xy);
