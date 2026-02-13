@@ -3667,506 +3667,6 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 }
 #endif
 
-#if 0
-// Returns the bond-order (0 if no bond is present)
-static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_element_t b) {
-    const uint8_t va = element_max_valence[a];
-    const uint8_t vb = element_max_valence[b];
-
-    const int v[3] = {
-        (int)(va > 0 && vb > 0),
-        (int)(va > 1 && vb > 1),
-        (int)(va > 2 && vb > 2),
-    };
-
-    const float r[3] = {
-        (element_covalent_radii3[a][0] * 0.01f + element_covalent_radii3[b][0] * 0.01f),
-        (element_covalent_radii3[a][1] * 0.01f + element_covalent_radii3[b][1] * 0.01f),
-        (element_covalent_radii3[a][2] * 0.01f + element_covalent_radii3[b][2] * 0.01f),
-    };
-
-    const float x = sqrtf(d2);
-
-    const float k[3] = {-10, -20, -40}; 
-    const float z[3] = {
-        (x - r[0]),
-        (x - r[1]),
-        (x - r[2]),
-    };
-    const float y[3] = {
-        v[0] * (k[0] * z[0] * z[0] + 1),
-        v[1] * (k[1] * z[1] * z[1] + 1),
-        v[2] * (k[2] * z[2] * z[2] + 1),
-    };
-
-    uint8_t val = 0;
-    float max_val = 0;
-    for (int i = 0; i < 3; ++i) {
-        if (y[i] > max_val) {
-            max_val = y[i];
-            val = (uint8_t)(i + 1);
-        }
-    }
-    return val;
-}
-
-#define R_MIN 0.8f
-#define R_MAX 0.45f // 0.3f ???
-
-static inline bool bond_heuristic(float d2, float r_min, float r_max) {
-    return (r_min * r_min) < d2 && d2 < (r_max * r_max);
-}
-
-static inline int simd_bond_heuristic(md_256 d2, md_256 r2_min, md_256 r2_max) {
-    const md_256 mask_d2  = md_mm256_and_ps(md_mm256_cmpgt_ps(d2, r2_min), md_mm256_cmplt_ps(d2, r2_max));
-    return md_mm256_movemask_ps(mask_d2);
-}
-
-static inline bool covalent_bond_heuristic(float d2, float ra, float rb) {
-    const float r_sum = ra + rb;
-    const float r_min = R_MIN;
-    const float r_max = r_sum + R_MAX;
-    return r_min * r_min < d2 && d2 < (r_max * r_max);
-}
-
-static inline int simd_covalent_bond_heuristic(md_256 d2, md_256 cov_rad_a, md_256 cov_rad_b) {
-    const md_256 r_sum = md_mm256_add_ps(cov_rad_a, cov_rad_b);
-    const md_256 r_min = md_mm256_set1_ps(R_MIN);
-    const md_256 r_max = md_mm256_add_ps(r_sum, md_mm256_set1_ps(R_MAX));
-    const md_256 mask_d2  = md_mm256_and_ps(md_mm256_cmpgt_ps(d2, md_mm256_mul_ps(r_min, r_min)), md_mm256_cmplt_ps(d2, md_mm256_mul_ps(r_max, r_max)));
-    const md_256 mask_rad = md_mm256_and_ps(md_mm256_cmpgt_ps(cov_rad_a, md_mm256_setzero_ps()),  md_mm256_cmpgt_ps(cov_rad_b, md_mm256_setzero_ps()));
-    return md_mm256_movemask_ps(md_mm256_and_ps(mask_d2, mask_rad));
-}
-
-static inline float distance_squared(vec4_t dx, const md_unitcell_t* cell) {
-    if (cell->flags & MD_UNITCELL_ORTHO) {
-        const vec4_t p  = md_unitcell_diag_vec4(cell);
-        const vec4_t rp = vec4_set(p.x != 0.0f ? 1.0f / p.x : 0.0f, p.y != 0.0f ? 1.0f / p.y : 0.0f, p.z != 0.0f ? 1.0f / p.z : 0.0f, 0.0f);
-        const vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_mul(dx, rp)), p));
-        dx = vec4_blend(d, dx, vec4_cmp_eq(p, vec4_zero()));
-    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        mat3_t basis = md_unitcell_basis_mat3(cell);
-        minimum_image_triclinic(dx.elem, basis.elem);
-    }
-    return vec4_length_squared(dx);
-}
-
-static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unitcell_t* cell) {
-    md_256 d[3] = {
-        dx[0],
-        dx[1],
-        dx[2],
-    };
-    mat3_t basis = md_unitcell_basis_mat3(cell);
-    if (cell->flags & MD_UNITCELL_ORTHO) {
-        md_256 p[3] = {
-            md_mm256_set1_ps(basis.elem[0][0]),
-            md_mm256_set1_ps(basis.elem[1][1]),
-            md_mm256_set1_ps(basis.elem[2][2]),
-        };
-        md_256 rp[3] = {
-            md_mm256_set1_ps(basis.elem[0][0] ? 1.0f / basis.elem[0][0] : 0.0f),
-            md_mm256_set1_ps(basis.elem[1][1] ? 1.0f / basis.elem[1][1] : 0.0f),
-            md_mm256_set1_ps(basis.elem[2][2] ? 1.0f / basis.elem[2][2] : 0.0f),
-        };
-        d[0] = md_mm256_minimage_ps(d[0], p[0], rp[0]);
-        d[1] = md_mm256_minimage_ps(d[1], p[1], rp[1]);
-        d[2] = md_mm256_minimage_ps(d[2], p[2], rp[2]);
-    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        simd_minimum_image_triclinic(d, basis.elem);
-    }
-    return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
-}
-
-// Compile-time bond_allowed table
-// Indexed as bond_allowed[NUM_ELEMENTS][NUM_ELEMENTS]
-// Assumes md_element_t enum matches periodic order (H=1, He=2, ...)
-
-// ---------------------- Covalent Bonds ----------------------
-static const float cov_r_min[Num_Elements][Num_Elements] = {
-    [0] = {0},  // dummy
-
-    // Main group elements
-    [H]  = { [H]=0.33f, [B]=0.33f, [C]=0.33f, [N]=0.33f, [O]=0.33f, [F]=0.33f, [Si]=0.33f, [P]=0.33f, [S]=0.33f, [Cl]=0.33f, [Br]=0.33f, [I]=0.33f },
-    [Li] = { [H]=1.68f, [C]=1.68f, [O]=1.68f, [N]=1.68f },
-    [Be] = { [O]=1.42f, [N]=1.42f, [C]=1.42f },
-    [B]  = { [H]=0.33f, [C]=0.99f, [N]=0.99f, [O]=0.99f, [F]=0.99f, [Si]=1.21f, [P]=1.21f, [S]=1.32f },
-    [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.70f, [Br]=1.80f, [I]=2.14f, [B]=0.99f, [W]=2.1f },
-    [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f, [W]=2.0f },
-    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.50f, [P]=1.32f, [B]=0.99f, [Fe]=1.90f, [W]=1.50f },
-    [F]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f },
-    [Na] = { [H]=1.89f, [O]=1.89f, [N]=1.89f },
-    [Mg] = { [O]=1.99f, [N]=1.99f, [S]=2.04f },
-    [Al] = { [H]=1.26f, [C]=1.58f, [N]=1.47f, [O]=1.47f, [Si]=1.47f, [P]=1.68f, [S]=1.84f },
-    [Si] = { [H]=0.33f, [C]=1.16f, [O]=1.47f, [Si]=1.22f, [P]=1.63f, [S]=1.84f, [B]=1.21f },
-    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.32f, [S]=1.79f, [W]=2.1f },
-    [S]  = { [H]=0.33f, [C]=0.77f, [O]=1.50f, [P]=1.79f, [S]=1.84f, [W]=2.2f },
-    [Cl] = { [H]=0.33f, [C]=1.70f, [N]=1.63f, [O]=1.53f, [Cl]=0.95f },
-    [K]  = { [H]=2.24f, [O]=2.24f, [N]=2.24f },
-    [Ca] = { [O]=2.04f, [S]=2.14f },
-
-    // Transition metals
-    [Sc] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
-    [Ti] = { [O]=1.53f, [N]=1.68f, [C]=1.78f },
-    [V]  = { [O]=1.63f, [N]=1.73f, [C]=1.84f },
-    [Cr] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
-    [Mn] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
-    [Fe] = { [O]=1.90f, [N]=1.68f, [C]=1.78f, [S]=1.73f },
-    [Co] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
-    [Ni] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
-    [Cu] = { [O]=1.43f, [N]=1.43f, [S]=1.53f },
-    [Zn] = { [O]=1.43f, [N]=1.43f, [S]=1.53f },
-    [Ga] = { [O]=1.42f, [N]=1.42f, [C]=1.58f, [Ga]=1.22f },
-    [Ge] = { [O]=1.43f, [C]=1.58f, [Ge]=1.22f },
-    [As] = { [H]=0.33f, [C]=1.37f, [O]=1.37f, [S]=1.63f, [P]=1.53f },
-    [Se] = { [H]=0.33f, [C]=1.58f, [O]=1.58f, [S]=1.73f },
-    [Br] = { [H]=0.33f, [C]=1.80f, [Cl]=1.99f, [Br]=1.27f },
-    [Rb] = { [O]=2.24f },
-    [Sr] = { [O]=2.14f },
-    [Y]  = { [O]=1.68f },
-    [Zr] = { [O]=1.68f },
-    [Nb] = { [O]=1.68f },
-    [Mo] = { [O]=1.58f },
-    [Tc] = { [O]=1.58f },
-    [Ru] = { [O]=1.58f },
-    [Rh] = { [O]=1.58f },
-    [Pd] = { [O]=1.58f },
-    [Ag] = { [O]=1.53f },
-    [Cd] = { [O]=1.53f },
-    [In] = { [O]=1.43f },
-    [Sn] = { [O]=1.43f },
-    [Sb] = { [O]=1.53f },
-    [Te] = { [O]=1.53f },
-    [I]  = { [H]=0.33f, [C]=2.14f, [Cl]=2.14f, [I]=1.40f },
-    [W]  = { [N]=2.0f, [C]=2.1f, [O]=1.50f, [P]=2.1f, [S]=2.2f},
-
-    // Lanthanides
-    [La] = { [O]=2.04f, [N]=2.04f },
-    [Ce] = { [O]=2.04f, [N]=2.04f },
-    [Pr] = { [O]=2.04f, [N]=2.04f },
-    [Nd] = { [O]=2.04f, [N]=2.04f },
-    [Sm] = { [O]=2.04f },
-    [Eu] = { [O]=2.04f },
-    [Gd] = { [O]=2.04f },
-    [Tb] = { [O]=2.04f },
-    [Dy] = { [O]=2.04f },
-    [Ho] = { [O]=2.04f },
-    [Er] = { [O]=2.04f },
-    [Tm] = { [O]=2.04f },
-    [Yb] = { [O]=2.04f },
-    [Lu] = { [O]=2.04f },
-
-    // Actinides
-    [Th] = { [O]=2.04f },
-    [Pa] = { [O]=2.04f },
-    [U]  = { [O]=2.04f },
-    [Np] = { [O]=2.04f },
-    [Pu] = { [O]=2.04f },
-};
-
-static const float cov_r_max[Num_Elements][Num_Elements] = {
-    [0] = {0},  // dummy
-
-    // Main group elements
-    [H]  = { [H]=0.951f, [B]=1.251f, [C]=1.251f, [N]=1.251f, [O]=1.251f, [F]=1.151f, [Si]=1.651f, [P]=1.651f, [S]=1.651f, [Cl]=1.651f, [Br]=1.951f, [I]=2.151f },
-    [Li] = { [H]=2.151f, [C]=2.251f, [O]=2.151f, [N]=2.151f },
-    [Be] = { [O]=1.951f, [N]=1.951f, [C]=1.951f },
-    [B]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.851f, [P]=1.851f, [S]=2.051f },
-    [C]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.951f, [P]=2.051f, [S]=1.951f, [Cl]=2.151f, [Br]=2.351f, [I]=2.651f, [B]=1.651f, [W]=2.3f },
-    [N]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [P]=1.951f, [S]=2.051f, [B]=1.651f, [W]=2.3f },
-    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f, [Fe]=2.151f, [W]=1.95f },
-    [F]  = { [H]=1.151f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [F]=1.451f },
-    [Na] = { [H]=2.451f, [O]=2.451f, [N]=2.451f },
-    [Mg] = { [O]=2.251f, [N]=2.251f, [S]=2.351f },
-    [Al] = { [H]=1.651f, [C]=2.151f, [N]=2.051f, [O]=2.051f, [Si]=2.151f, [P]=2.451f, [S]=2.551f },
-    [Si] = { [H]=1.651f, [C]=1.951f, [O]=2.151f, [Si]=2.151f, [P]=2.451f, [S]=2.551f, [B]=1.851f },
-    [P]  = { [H]=1.651f, [C]=2.051f, [N]=2.051f, [O]=1.951f, [S]=2.551f, [W]=2.35f },
-    [S]  = { [H]=1.651f, [C]=1.951f, [O]=2.051f, [P]=2.551f, [S]=2.651f, [W]=2.4f },
-    [Cl] = { [H]=1.651f, [C]=2.151f, [N]=1.951f, [O]=1.951f, [Cl]=1.951f },
-    [K]  = { [O]=2.851f, [H]=2.851f, [N]=2.851f },
-    [Ca] = { [O]=2.451f, [S]=2.551f },
-
-    // Transition metals
-    [Sc] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
-    [Ti] = { [O]=2.051f, [N]=2.151f, [C]=2.251f },
-    [V]  = { [O]=2.051f, [N]=2.151f, [C]=2.251f },
-    [Cr] = { [O]=2.051f, [N]=2.151f, [C]=2.251f, [S]=2.351f },
-    [Mn] = { [O]=2.051f, [N]=2.151f, [C]=2.251f, [S]=2.351f },
-    [Fe] = { [O]=2.151f, [N]=2.151f, [C]=2.251f, [S]=2.251f },
-    [Co] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
-    [Ni] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
-    [Cu] = { [O]=2.051f, [N]=2.051f, [S]=2.151f },
-    [Zn] = { [O]=2.051f, [N]=2.051f, [S]=2.151f },
-    [Ga] = { [O]=1.951f, [N]=1.951f, [C]=2.151f, [Ga]=2.051f },
-    [Ge] = { [O]=2.051f, [C]=2.151f, [Ge]=2.151f },
-    [As] = { [H]=1.651f, [C]=2.051f, [O]=2.051f, [S]=2.351f, [P]=2.151f },
-    [Se] = { [H]=1.651f, [C]=2.151f, [O]=2.151f, [S]=2.451f },
-    [Br] = { [H]=1.951f, [C]=2.351f, [Cl]=2.351f, [Br]=2.051f },
-    [Rb] = { [O]=2.851f },
-    [Sr] = { [O]=2.551f },
-    [Y]  = { [O]=2.151f },
-    [Zr] = { [O]=2.151f },
-    [Nb] = { [O]=2.151f },
-    [Mo] = { [O]=2.051f },
-    [Tc] = { [O]=2.051f },
-    [Ru] = { [O]=2.051f },
-    [Rh] = { [O]=2.051f },
-    [Pd] = { [O]=2.051f },
-    [Ag] = { [O]=2.151f },
-    [Cd] = { [O]=2.151f },
-    [In] = { [O]=2.051f },
-    [Sn] = { [O]=2.051f },
-    [Sb] = { [O]=2.151f },
-    [Te] = { [O]=2.151f },
-    [I]  = { [H]=2.151f, [C]=2.651f, [Cl]=2.651f, [I]=2.251f },
-    [W]  = { [N]=2.3f, [C]=2.3f, [O]=1.95f, [P]=2.35f, [S]=2.4f},
-
-    // Lanthanides
-    [La] = { [O]=2.451f, [N]=2.451f },
-    [Ce] = { [O]=2.451f, [N]=2.451f },
-    [Pr] = { [O]=2.451f, [N]=2.451f },
-    [Nd] = { [O]=2.451f, [N]=2.451f },
-    [Sm] = { [O]=2.451f },
-    [Eu] = { [O]=2.451f },
-    [Gd] = { [O]=2.451f },
-    [Tb] = { [O]=2.451f },
-    [Dy] = { [O]=2.451f },
-    [Ho] = { [O]=2.451f },
-    [Er] = { [O]=2.451f },
-    [Tm] = { [O]=2.451f },
-    [Yb] = { [O]=2.451f },
-    [Lu] = { [O]=2.451f },
-
-    // Actinides
-    [Ac] = { [O]=2.451f },
-    [Th] = { [O]=2.451f },
-    [Pa] = { [O]=2.451f },
-    [U]  = { [O]=2.451f },
-};
-
-// ---------------------- Coordination Bonds ----------------------
-static const float coord_r_min[Num_Elements][Num_Elements] = {
-    [0] = {0},  // dummy
-
-    // Common donor atoms
-    [C]  = { [H]=0.90f, [C]=1.20f, [N]=1.10f, [O]=1.10f, [S]=1.50f, [P]=1.50f },
-    [N]  = { [H]=0.90f, [C]=1.10f, [N]=1.20f, [O]=1.20f, [P]=1.50f, [S]=1.50f },
-    [O]  = { [H]=0.90f, [C]=1.10f, [N]=1.20f, [O]=1.20f, [S]=1.50f, [P]=1.50f },
-    [S]  = { [H]=1.00f, [C]=1.50f, [N]=1.50f, [O]=1.50f, [S]=1.60f, [P]=1.60f },
-    [P]  = { [H]=1.10f, [C]=1.50f, [N]=1.50f, [O]=1.50f, [S]=1.60f, [P]=1.60f },
-
-    // Halogens as donors are uncommon but possible
-    [F]  = { [H]=0.90f, [C]=1.20f, [N]=1.20f, [O]=1.20f },
-    [Cl] = { [H]=1.20f, [C]=1.80f, [N]=1.80f, [O]=1.80f },
-    [Br] = { [H]=1.20f, [C]=2.00f, [N]=2.00f, [O]=2.00f },
-    [I]  = { [H]=1.20f, [C]=2.20f, [N]=2.20f, [O]=2.20f },
-
-    // Metals (common acceptors in coordination)
-    [Li] = { [O]=1.80f, [N]=1.80f, [S]=2.00f },
-    [Be] = { [O]=1.60f, [N]=1.60f, [C]=1.70f },
-    [Na] = { [O]=2.00f, [N]=2.00f },
-    [Mg] = { [O]=1.90f, [N]=1.90f },
-    [Al] = { [O]=1.80f, [N]=1.80f },
-    [K]  = { [O]=2.20f, [N]=2.20f },
-    [Ca] = { [O]=2.00f, [N]=2.00f },
-
-    // Transition metals (typical coordination distances, minimal)
-    [Ti] = { [O]=1.80f, [N]=1.85f, [S]=1.90f },
-    [V]  = { [O]=1.80f, [N]=1.85f },
-    [Cr] = { [O]=1.85f, [N]=1.90f },
-    [Mn] = { [O]=1.85f, [N]=1.90f },
-    [Fe] = { [O]=1.85f, [N]=1.90f },
-    [Co] = { [O]=1.85f, [N]=1.90f },
-    [Ni] = { [O]=1.85f, [N]=1.90f },
-    [Cu] = { [O]=1.85f, [N]=1.90f, [S]=2.00f },
-    [Zn] = { [O]=1.85f, [N]=1.90f, [S]=2.00f },
-
-    // Post-transition metals
-    [Ga] = { [O]=1.80f, [N]=1.80f },
-    [In] = { [O]=1.90f, [N]=1.90f },
-    [Sn] = { [O]=1.90f, [N]=1.90f },
-
-    // Selected lanthanides (typical coordination distances)
-    [La] = { [O]=2.20f, [N]=2.20f },
-    [Ce] = { [O]=2.20f, [N]=2.20f },
-    [Nd] = { [O]=2.20f, [N]=2.20f },
-    [Eu] = { [O]=2.20f, [N]=2.20f },
-    [Yb] = { [O]=2.20f, [N]=2.20f },
-
-    // Actinides
-    [Th] = { [O]=2.30f, [N]=2.30f },
-    [U]  = { [O]=2.30f, [N]=2.30f },
-};
-
-// Coordination max distances
-static const float coord_r_max[Num_Elements][Num_Elements] = {
-    [0] = {0},  // dummy
-
-    // Common donor atoms
-    [C]  = { [H]=1.40f, [C]=1.90f, [N]=1.80f, [O]=1.80f, [S]=2.20f, [P]=2.20f },
-    [N]  = { [H]=1.40f, [C]=1.80f, [N]=1.90f, [O]=1.90f, [P]=2.20f, [S]=2.20f },
-    [O]  = { [H]=1.40f, [C]=1.80f, [N]=1.90f, [O]=1.90f, [S]=2.20f, [P]=2.20f },
-    [S]  = { [H]=1.50f, [C]=2.20f, [N]=2.20f, [O]=2.20f, [S]=2.30f, [P]=2.30f },
-    [P]  = { [H]=1.60f, [C]=2.20f, [N]=2.20f, [O]=2.20f, [S]=2.30f, [P]=2.30f },
-
-    // Halogens as donors
-    [F]  = { [H]=1.40f, [C]=1.90f, [N]=1.90f, [O]=1.90f },
-    [Cl] = { [H]=1.60f, [C]=2.50f, [N]=2.50f, [O]=2.50f },
-    [Br] = { [H]=1.60f, [C]=2.70f, [N]=2.70f, [O]=2.70f },
-    [I]  = { [H]=1.60f, [C]=3.00f, [N]=3.00f, [O]=3.00f },
-
-    // Metals (typical acceptors in coordination)
-    [Li] = { [O]=2.50f, [N]=2.50f, [S]=2.80f },
-    [Be] = { [O]=2.10f, [N]=2.10f, [C]=2.20f },
-    [Na] = { [O]=2.80f, [N]=2.80f },
-    [Mg] = { [O]=2.50f, [N]=2.50f },
-    [Al] = { [O]=2.30f, [N]=2.30f },
-    [K]  = { [O]=3.00f, [N]=3.00f },
-    [Ca] = { [O]=2.80f, [N]=2.80f },
-
-    // Transition metals
-    [Ti] = { [O]=2.30f, [N]=2.40f, [S]=2.50f },
-    [V]  = { [O]=2.30f, [N]=2.40f },
-    [Cr] = { [O]=2.40f, [N]=2.50f },
-    [Mn] = { [O]=2.40f, [N]=2.50f },
-    [Fe] = { [O]=2.40f, [N]=2.50f },
-    [Co] = { [O]=2.40f, [N]=2.50f },
-    [Ni] = { [O]=2.40f, [N]=2.50f },
-    [Cu] = { [O]=2.40f, [N]=2.50f, [S]=2.60f },
-    [Zn] = { [O]=2.40f, [N]=2.50f, [S]=2.60f },
-
-    // Post-transition metals
-    [Ga] = { [O]=2.30f, [N]=2.30f },
-    [In] = { [O]=2.50f, [N]=2.50f },
-    [Sn] = { [O]=2.50f, [N]=2.50f },
-
-    // Lanthanides
-    [La] = { [O]=2.80f, [N]=2.80f },
-    [Ce] = { [O]=2.80f, [N]=2.80f },
-    [Nd] = { [O]=2.80f, [N]=2.80f },
-    [Eu] = { [O]=2.80f, [N]=2.80f },
-    [Yb] = { [O]=2.80f, [N]=2.80f },
-
-    // Actinides
-    [Th] = { [O]=3.00f, [N]=3.00f },
-    [U]  = { [O]=3.00f, [N]=3.00f },
-};
-
-
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unitcell_t* cell, md_urange_t range_a, md_urange_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
-    ASSERT(bond);
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(cell);
-
-    size_t pre_count = bond->count;
-
-    const int N = (range_a.end - range_a.beg) * (range_b.end - range_b.beg);
-    // Swap ranges if required
-    if (range_b.beg < range_a.beg) {
-        md_urange_t tmp = range_a;
-        range_a = range_b;
-        range_b = tmp;
-    }
-    if (N < 20000) {
-        // Brute force
-        for (int i = range_a.beg; i < range_a.end; ++i) {
-            const md_256  ci[3] = {
-                md_mm256_set1_ps(x[i]),
-                md_mm256_set1_ps(y[i]),
-                md_mm256_set1_ps(z[i]),
-            };
-
-            const float* table_cov_r_min = cov_r_min[element[i]];
-            const float* table_cov_r_max = cov_r_max[element[i]];
-
-            for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
-                const md_256  cj[3] = {
-                    md_mm256_loadu_ps(x + j),
-                    md_mm256_loadu_ps(y + j),
-                    md_mm256_loadu_ps(z + j),
-                };
-                const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-
-                const md_256  r_min_cov = md_mm256_i32gather_ps(table_cov_r_min, ej, 4);
-                const md_256  r_max_cov = md_mm256_i32gather_ps(table_cov_r_max, ej, 4);
-
-                const md_256  r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-                const md_256  r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
-
-                const md_256 dx[3] = {
-                    md_mm256_sub_ps(ci[0], cj[0]),
-                    md_mm256_sub_ps(ci[1], cj[1]),
-                    md_mm256_sub_ps(ci[2], cj[2]),
-                };
-                const md_256 d2 = simd_distance_squared(dx, cell);
-                int mask        = simd_bond_heuristic(d2, r2_min_cov, r2_max_cov);
-
-                md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
-                while (mask) {
-                    const int idx = ctz32(mask);
-                    mask = mask & ~(1 << idx);
-                    md_array_push_no_grow(bond->pairs, ((md_atom_pair_t){i, j + idx}));
-                    bond->count += 1;
-                }
-            }
-        }
-    }
-    else {
-        size_t temp_pos = md_vm_arena_get_pos(temp_arena);
-        int capacity = range_b.end - range_b.beg;
-        int* indices = md_vm_arena_push(temp_arena, sizeof(int) * capacity);
-
-        int size = 0;
-        for (uint32_t i = range_b.beg; i < range_b.end; ++i) {
-            if (element[i] != 0) {
-                indices[size++] = i;
-            }
-        }
-
-        // Spatial acceleration structure
-        md_spatial_hash_t* sh = md_spatial_hash_create_soa(x, y, z, indices, size, cell, temp_arena);
-
-        const float cutoff = 3.0f;
-
-        for (int i = range_a.beg; i < range_a.end; ++i) {
-            if (element[i] != 0) {
-                const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];;
-
-                const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
-                for (size_t idx = 0; idx < num_indices; ++idx) {
-                    const int j = indices[idx];
-                    // Only store monotonic bond connections
-                    if (j < i) continue;
-
-                    const float r_min_cov = table_cov_r_min[element[j]];
-                    const float r_max_cov = table_cov_r_max[element[j]];
-
-                    const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const vec4_t dx = vec4_sub(ci, cj);
-                    const float d2 = distance_squared(dx, cell);
-
-                    if (bond_heuristic(d2, r_min_cov, r_max_cov))
-                    {
-                        md_array_push(bond->pairs, ((md_atom_pair_t){i, j}), alloc);
-                        bond->count += 1;
-                    }
-                }
-            }
-        }
-
-        md_vm_arena_set_pos_back(temp_arena, temp_pos);
-    }
-
-    return bond->count - pre_count;
-}
-#endif
-
 typedef struct {
     int atom_i;
     int atom_j;
@@ -9202,6 +8702,15 @@ static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms
     }
 }
 
+static inline void flush_protein_backbone_segment(md_protein_backbone_atoms_t* backbone_atoms, md_comp_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+    size_t backbone_length = md_array_size(backbone_atoms);
+    if (backbone_length >= min_backbone_length && *comp_base != -1) {
+        commit_protein_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
+    }
+    md_array_shrink(backbone_atoms, 0);
+    *comp_base = -1;
+}
+
 static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc) {
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
@@ -9214,59 +8723,14 @@ static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms
     }
 }
 
-#if 0
-static void md_util_compute_backbone_data(md_protein_backbone_data_t* protein_backbone, const md_system_t* mol, md_allocator_i* alloc) {
-    if (mol->chain.count) {
-        // Compute backbone data
-        // 
-        // @NOTE: We should only attempt to compute backbone data for valid residues (e.g. amino acids / dna)
-        // Backbones are not directly tied to chains and therefore we cannot use chains as a 1:1 mapping for the backbones.
-        // We look within the chains and see if we can find consecutive ranges which form backbones.
-
-        static const int64_t MIN_BACKBONE_LENGTH = 3;
-        md_protein_backbone_atoms_t* bb_atoms = 0;
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-
-        for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
-            for (int64_t res_idx = mol->chain.residue_range[chain_idx].beg; res_idx < mol->chain.residue_range[chain_idx].end; ++res_idx) {
-                md_protein_backbone_atoms_t atoms;
-                if (md_util_backbone_atoms_extract_from_residue_idx(&atoms, (int32_t)res_idx, mol)) {
-                    md_array_push(bb_atoms, atoms, temp_alloc);
-                } else {
-                    if (md_array_size(protein_backbone) >= MIN_BACKBONE_LENGTH) {
-                        // Commit the backbone
-                        md_range_t res_range = {(int32_t)(res_idx - md_array_size(bb_atoms)), (int32_t)res_idx};
-                        commit_backbone(protein_backbone, bb_atoms, md_array_size(bb_atoms), res_range, alloc);
-                    }
-                    md_array_shrink(bb_atoms, 0);
-                }
-            }
-            // Possibly commit remainder of the chain
-            if (md_array_size(bb_atoms) >= MIN_BACKBONE_LENGTH) {
-                int64_t res_idx = mol->chain.residue_range[chain_idx].end;
-                md_range_t res_range = {(int32_t)(res_idx - md_array_size(bb_atoms)), (int32_t)res_idx};
-                commit_backbone(protein_backbone, bb_atoms, md_array_size(bb_atoms), res_range, alloc);
-            }
-            md_array_shrink(bb_atoms, 0);
-        }
-
-        md_array_free(bb_atoms, temp_alloc);
-
-        protein_backbone->range_count = md_array_size(protein_backbone->range);
-        protein_backbone->count = md_array_size(protein_backbone->atoms);
-
-        md_array_resize(protein_backbone->angle, protein_backbone->count, alloc);
-        md_array_resize(protein_backbone->secondary_structure, protein_backbone->count, alloc);
-        md_array_resize(protein_backbone->ramachandran_type, protein_backbone->count, alloc);
-
-        if (mol->protein_backbone.segment.count > 0) {
-            md_util_backbone_angles_compute(protein_backbone->angle, protein_backbone->count, mol);
-            md_util_secondary_structure_compute(protein_backbone->secondary_structure, protein_backbone->count, mol);
-            md_util_backbone_ramachandran_classify(protein_backbone->ramachandran_type, protein_backbone->count, mol);
-        }
+static inline void flush_nucleic_backbone_segment(md_nucleic_backbone_atoms_t* backbone_atoms, md_comp_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+    size_t backbone_length = md_array_size(backbone_atoms);
+    if (backbone_length >= min_backbone_length && *comp_base != -1) {
+        commit_nucleic_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
     }
+    md_array_shrink(backbone_atoms, 0);
+    *comp_base = -1;
 }
-#endif
 
 static inline vec3_t hcl_to_rgb(float h, float c, float l) {
     float r = 0, g = 0, b = 0;
@@ -9409,6 +8873,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 md_array(md_protein_backbone_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_comp_idx_t comp_base = -1;
+                md_seq_id_t prev_seq_id = -1;
 
                 for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
                     md_flags_t inst_flags = md_system_inst_flags(sys, inst_idx);
@@ -9420,31 +8885,32 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
                     md_urange_t range = md_inst_comp_range(&sys->inst, inst_idx);
                     for (md_comp_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
-
                         md_protein_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, res_idx);
-                        if (md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range)) {
-                            md_array_push(backbone_atoms, atoms, temp_arena);
+                        bool has_backbone_atoms = md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
+
+                        if (has_backbone_atoms) {
+                            md_seq_id_t seq_id = md_system_comp_seq_id(sys, res_idx);
+                            size_t backbone_length = md_array_size(backbone_atoms);
+
+                            if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
+                                flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            }
+
                             if (comp_base == -1) {
                                 comp_base = res_idx;
                             }
-                        } else {
-							size_t backbone_length = md_array_size(backbone_atoms);
-                            if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
-                                // Commit the backbone
-                                commit_protein_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->protein_backbone, alloc);
-                            }
-							md_array_shrink(backbone_atoms, 0);
-                            comp_base = -1;
+                            md_array_push(backbone_atoms, atoms, temp_arena);
+                            prev_seq_id = seq_id;
+                            continue;
                         }
+
+                        flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                        prev_seq_id = -1;
                     }
                     // Possibly commit remainder of the chain
-                    size_t backbone_length = md_array_size(backbone_atoms);
-                    if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
-                        commit_protein_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->protein_backbone, alloc);
-                    }
-                    md_array_shrink(backbone_atoms, 0);
-                    comp_base = -1;
+                    flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    prev_seq_id = -1;
                 }
 
                 sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
@@ -9466,17 +8932,17 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
 
-#if 1
             {
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEOTIDE;
                 md_array(md_nucleic_backbone_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_comp_idx_t comp_base = -1;
+                md_seq_id_t prev_seq_id = -1;
 
                 for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
                     md_flags_t inst_flags = md_system_inst_flags(sys, inst_idx);
 
-                    // Check for polymer and amino acid otherwise skip
+                    // Check for polymer and nucleotide otherwise skip
                     if ((inst_flags & req_flags) != req_flags) {
                         continue;
                     }
@@ -9485,31 +8951,35 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                     for (md_comp_idx_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
                         md_nucleic_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, comp_idx);
-                        if (md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range) ) {
+                        bool has_backbone_atoms = md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
+
+                        if (has_backbone_atoms) {
+                            md_seq_id_t seq_id = md_system_comp_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
-                            if (backbone_length > 0 && atoms.p != -1) {
-                                md_array_push(backbone_atoms, atoms, temp_arena);
+
+                            if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
+                                flush_nucleic_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                backbone_length = 0;
+                            }
+
+                            bool can_extend_segment = (backbone_length == 0) || (atoms.p != -1);
+
+                            if (can_extend_segment) {
                                 if (comp_base == -1) {
                                     comp_base = comp_idx;
                                 }
+                                md_array_push(backbone_atoms, atoms, temp_arena);
+                                prev_seq_id = seq_id;
+                                continue;
                             }
-                        } else {
-							size_t backbone_length = md_array_size(backbone_atoms);
-                            if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
-                                // Commit the backbone
-                                commit_nucleic_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->nucleic_backbone, alloc);
-                            }
-                            md_array_shrink(backbone_atoms, 0);
-                            comp_base = -1;
                         }
+
+                        flush_nucleic_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                        prev_seq_id = -1;
                     }
                     // Possibly commit remainder of the chain
-					size_t backbone_length = md_array_size(backbone_atoms);
-                    if (backbone_length >= MIN_BACKBONE_LENGTH && comp_base != -1) {
-                        commit_nucleic_backbone(backbone_atoms, backbone_length, comp_base, inst_idx, &sys->nucleic_backbone, alloc);
-                    }
-					md_array_shrink(backbone_atoms, 0);
-                    comp_base = -1;
+                    flush_nucleic_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    prev_seq_id = -1;
                 }
 
                 sys->nucleic_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
@@ -9520,7 +8990,6 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
-#endif
         }
     }
 

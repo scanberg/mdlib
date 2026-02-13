@@ -703,6 +703,10 @@ static inline size_t md_system_inst_entity_idx(const md_system_t* sys, size_t in
     return md_inst_entity_idx(&sys->inst, inst_idx);
 }
 
+static inline md_seq_id_t md_system_comp_seq_id(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    return md_comp_seq_id(&sys->comp, comp_idx);
+}
 
 static inline md_urange_t md_system_comp_atom_range(const md_system_t* sys, size_t comp_idx) {
     ASSERT(sys);
