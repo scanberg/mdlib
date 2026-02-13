@@ -28,6 +28,28 @@ vec3 safe_normalize(vec3 v, vec3 fallback) {
     return d2 > 0.0 ? v * inversesqrt(d2) : fallback;
 }
 
+#ifndef GL_ARB_shading_language_packing
+uint packSnorm2x16(in vec2 v) {
+    ivec2 iv = ivec2(round(clamp(v, -1.0f, 1.0f) * 32767.0f));
+    return uint(iv.y << 16) | uint(iv.x & 0xFFFF);
+}
+
+uint packUnorm4x8(in vec4 v) {
+    uvec4 iv = uvec4(round(clamp(v, 0.0f, 1.0f) * 255.0f));
+    return (iv.w << 24U) | (iv.z << 16U) | (iv.y << 8U) | (iv.x);
+}
+
+vec2 unpackSnorm2x16(uint p) {
+    ivec2 iv = ivec2(p & 0xFFFFU, p >> 16);
+    return clamp(vec2(iv) * (1.0f / 32767.0f), -1.0f, 1.0f);
+}
+
+vec4 unpackUnorm4x8(uint p) {
+    uvec4 iv = uvec4(p & 0xFFU, (p >> 8U) & 0xFFU, (p >> 16U) & 0xFFU, (p >> 24U) & 0xFFU);
+    return vec4(iv) * (1.0f / 255.0f);
+}
+#endif
+
 vec3 unpack_support(uint w0, uint w1, uint w2) {
     vec2 xy = unpackSnorm2x16(w0);
     vec2 zx = unpackSnorm2x16(w1);

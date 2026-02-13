@@ -24,6 +24,18 @@ vec3 safe_normalize(vec3 v) {
     return d2 > 0.0 ? v * inversesqrt(d2) : vec3(0.0, 0.0, 1.0);
 }
 
+#ifndef GL_ARB_shading_language_packing
+uint packSnorm2x16(in vec2 v) {
+    ivec2 iv = ivec2(round(clamp(v, -1.0f, 1.0f) * 32767.0f));
+    return uint(iv.y << 16) | uint(iv.x & 0xFFFF);
+}
+
+uint packUnorm4x8(in vec4 v) {
+    uvec4 iv = uvec4(round(clamp(v, 0.0f, 1.0f) * 255.0f));
+    return (iv.w << 24U) | (iv.z << 16U) | (iv.y << 8U) | (iv.x);
+}
+#endif
+
 void main() {
     uint ca_idx = in_atom_offset + in_atom_ca;
     uint c_idx  = in_atom_offset + in_atom_c;
