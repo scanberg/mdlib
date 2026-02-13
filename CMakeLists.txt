@@ -137,6 +137,9 @@ set(SRC_FILES
 )
 
 set(GL_SHADER_FILES 
+  src/shaders/compute_spline_extract.vert
+  src/shaders/compute_spline_smooth.vert
+  src/shaders/compute_spline_subdivide.vert
   src/shaders/compute_spline.vert
   src/shaders/compute_spline.geom
   src/shaders/compute_velocity.vert
