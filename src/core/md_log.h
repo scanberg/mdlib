@@ -25,8 +25,8 @@ typedef struct md_logger_i {
 extern "C" {
 #endif
 
-void md_logger_add(const md_logger_i* logger);
-void md_logger_remove(const md_logger_i* logger);
+void md_log_register(const md_logger_i* logger);
+void md_log_unregister(const md_logger_i* logger);
 
 int  md_log (md_log_type_t log_type, const char* msg);
 int  md_logf(md_log_type_t log_type, const char* fmt, ...);

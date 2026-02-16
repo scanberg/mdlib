@@ -190,7 +190,7 @@ static int num_loggers = 1;
 static md_logger_i* loggers[MAX_LOGGERS] = {&_default_logger};
 md_logger_i* default_logger = &_default_logger;
 
-void md_logger_add(const md_logger_i* logger) {
+void md_log_register(const md_logger_i* logger) {
     if (num_loggers < MAX_LOGGERS) {
         loggers[num_loggers++] = (md_logger_i*)logger; // push back
         return;
@@ -198,7 +198,7 @@ void md_logger_add(const md_logger_i* logger) {
     MD_LOG_ERROR("Failed to add logger, maximum capacity reached. (%d)", MAX_LOGGERS);
 }
 
-void md_logger_remove(const md_logger_i* logger) {
+void md_log_unregister(const md_logger_i* logger) {
     for (int i = 0; i < num_loggers; ++i) {
         if (loggers[i] == logger) {
             loggers[i] = loggers[--num_loggers]; // swap and pop back
