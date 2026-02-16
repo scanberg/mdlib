@@ -2226,8 +2226,8 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         for (uint32_t i = range.beg + 2; i + 2 < range.end; ++i) {
             vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
             vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
-            float angle = RAD_TO_DEG(vec4_angle(v1, v2));
-            if (angle < 70.0f) {
+            double angle = vec4_angle(v1, v2);
+            if (angle < DEG_TO_RAD(70.0)) {
                 for (int k = -2; k <= 2; ++k) {
                     ss_flags[i + k] |= SS_FLAG_BEND;
 				}
@@ -2303,7 +2303,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 
 		uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
 
-        size_t idx = num_bridges++;
+        uint32_t idx = (uint32_t)(num_bridges++);
 
         // Record bridge (normalize ordering i<j already true)
         bridges[idx] = (dssp_bridge_t){
@@ -4386,7 +4386,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
         MEMSET(atom_comp_idx, 0, sizeof(md_comp_idx_t) * sys->atom.count);
         for (size_t i = 0; i < sys->comp.count; ++i) {
             md_urange_t atom_range = md_comp_atom_range(&sys->comp, i);
-            for (int32_t j = atom_range.beg; j < atom_range.end; ++j) {
+            for (uint32_t j = atom_range.beg; j < atom_range.end; ++j) {
                 atom_comp_idx[j] = (md_comp_idx_t)i;
             }
         }
@@ -5229,8 +5229,6 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
         }
     }
 
-    // @TODO: Try to automate the identification of coarse grained systems here and if so, remove the
-    
     md_temp_set_pos_back(temp_pos);
 }
 
