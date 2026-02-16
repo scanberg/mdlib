@@ -1844,7 +1844,7 @@ static bool compute_spline(const molecule_t* mol) {
         glUseProgram(program);
         glUniform1i(glGetUniformLocation(program, "u_buf_control_point_words"), 0);
         glUniform1i(glGetUniformLocation(program, "u_buf_smooth_neighbors"), 1);
-        glUniform1i(glGetUniformLocation(program, "u_enable_smoothing"), 1);
+        glUniform1i(glGetUniformLocation(program, "u_enable_smoothing"), 0);
         glUniform1f(glGetUniformLocation(program, "u_smooth_weight_coil"),  0.12f);
         glUniform1f(glGetUniformLocation(program, "u_smooth_weight_helix"), 0.30f);
         glUniform1f(glGetUniformLocation(program, "u_smooth_weight_sheet"), 0.48f);
