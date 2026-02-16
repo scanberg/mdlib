@@ -184,6 +184,12 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
 
     // User has provided a component size and its likely not an ion
     if (res_size > 2) {
+        str_t two_letter_str = str_substr(atom_name, 0, 2);
+        md_atomic_number_t two_z = md_atomic_number_from_symbol(two_letter_str, false);
+        if (two_z != MD_Z_X) {
+            return two_z;
+        }
+
         // Try single-letter element heuristic (e.g., C1 => C, N2 => N)
         str_t first_letter_str = str_substr(atom_name, 0, 1);
         md_atomic_number_t first_z = md_atomic_number_from_symbol(first_letter_str, true);
