@@ -214,6 +214,7 @@ enum {
     MD_Z_Lv = 116, // Livermorium
     MD_Z_Ts = 117, // Tennessine
     MD_Z_Og = 118, // Oganesson
+    MD_Z_Count
 };
 
 typedef int32_t     md_atom_idx_t;
