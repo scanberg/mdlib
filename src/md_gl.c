@@ -461,8 +461,8 @@ void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t c
     }
     molecule_t* mol = mol_lookup(handle.id);
     if (mol) {
-        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
-            MD_LOG_ERROR("Molecule position buffer missing");
+        if (!mol->buffer[GL_BUFFER_ATOM_VELOCITY].id) {
+            MD_LOG_ERROR("Molecule velocity buffer missing");
             return;
         }
         if (offset + count > mol->atom_count) {
@@ -470,7 +470,7 @@ void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t c
             return;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
         float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {
             for (uint32_t i = offset; i < count; ++i) {

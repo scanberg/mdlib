@@ -133,12 +133,12 @@ void md_gl_mol_set_atom_flags   (md_gl_mol_t handle, uint32_t atom_offset, uint3
 // This is a simpler version which assumes packed xyz data (identical to the internal representation and therefore faster to copy)
 void md_gl_mol_set_atom_position_xyz(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* xyz);
 
+
 // Call this function after setting new atomic positions to update velocities
 // It will compute a new velocity as the difference between new and old atomic positions
-// 
 // pbc_ext is an optional parameter which corresponds to the extent of the periodic boundry conditions.
 // If supplied, it will make sure to deperiodize the atomic positions before computing the velocity,
-// which is crucial in order to resolve an accrucate velocity in a periodic domain.
+// which is crucial in order to resolve an accurate velocity in a periodic domain.
 void md_gl_mol_compute_velocity(md_gl_mol_t handle, const float pbc_ext[3]);
 
 // Clear the velocity to zero.
