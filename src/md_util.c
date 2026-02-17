@@ -245,7 +245,7 @@ static const uint8_t element_max_valence[] = {
     1, 2, 3, 4, 5, 6, 7, 7, 7, 6, 5, 5, 4, 3, 3, 3, 3, 4, 5, 6, 7, 8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0,
 };
 
-#define RGBA(r,g,b,a) ( ((a & 255) << 24) | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255) )
+#define RGBA(r,g,b,a) (uint32_t)( ((a & 255) << 24) | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255) )
 #define RGB(r,g,b) RGBA(r,g,b,255)
 
 // Based on this with some values modified
