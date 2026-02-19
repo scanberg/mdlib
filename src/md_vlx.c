@@ -1870,19 +1870,36 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	md_array_resize(vlx->opt.energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, "opt_energies")) {
+	const char* energy_ident = "";
+	const char* coord_ident  = "";
+
+	if (h5_check_dataset_exists(handle, "opt_energies")) {
+		energy_ident = "opt_energies";
+		coord_ident  = "opt_coordinates_au";
+	}
+	else if (h5_check_dataset_exists(handle, "scan_energies")) {
+		energy_ident = "scan_energies";
+		coord_ident  = "scan_coordinates_au";
+	}
+
+	if (strlen(energy_ident) == 0 || strlen(coord_ident) == 0) {
+		MD_LOG_ERROR("No optimization or scan data found in HDF5 file");
 		return false;
 	}
 
-	num_dim = h5_read_dataset_dims(dim, 3, handle, "opt_coordinates_au");
+	md_array_resize(vlx->opt.energies, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
+		return false;
+	}
+
+	num_dim = h5_read_dataset_dims(dim, 3, handle, coord_ident);
 	if (dim[0] != len || dim[1] != vlx->number_of_atoms || dim[2] != 3) {
 		MD_LOG_ERROR("Inconsistent or invalid opt_coordinates dimensions");
 		return false;
 	}
 
 	md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, "opt_coordinates_au")) {
+	if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
 		return false;
 	}
 
