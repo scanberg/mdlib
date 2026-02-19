@@ -77,6 +77,8 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
 
     md_array_resize(data->atom_data, data->num_atoms, alloc);
 
+	bool warn_about_fixed_width = false;
+
     for (size_t i = 0; i < data->num_atoms; ++i) {
         if (!md_buffered_reader_extract_line(&line, reader)) {
             MD_LOG_ERROR("Failed to extract atom line");
@@ -86,7 +88,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
 
         const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
         if (num_tokens < 3) {
-            MD_LOG_DEBUG("Failed to tokenize atom coordinates in line: \"" STR_FMT "", STR_ARG(line));
+            warn_about_fixed_width = true;
             // Fallback to fixed width format
 			atom->x = (float)parse_float((str_t) { line.ptr + 20, 8 });
             atom->y = (float)parse_float((str_t) { line.ptr + 28, 8 });
@@ -102,6 +104,10 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         str_copy_to_char_buf(atom->res_name,  sizeof(atom->res_name),  str_trim(str_substr(line,  5, 5)));
         str_copy_to_char_buf(atom->atom_name, sizeof(atom->atom_name), str_trim(str_substr(line, 10, 5)));
     }
+
+    if (warn_about_fixed_width) {
+        MD_LOG_DEBUG("Parsed GRO file using fixed-width format. This may indicate an issue with the file formatting.");
+	}
 
     if (!md_buffered_reader_extract_line(&line, reader)) {
         MD_LOG_ERROR("Failed to extract unitcell line");
