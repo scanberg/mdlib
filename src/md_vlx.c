@@ -2542,6 +2542,7 @@ static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, con
 			out_gtos[count].j = (uint8_t)pj;
 			out_gtos[count].k = (uint8_t)pk;
 			out_gtos[count].l = (uint8_t)pl;
+			out_gtos[count]._pad = (uint32_t)i; // Store mo coeff idx here
 			count += 1;
 		}
 	}
