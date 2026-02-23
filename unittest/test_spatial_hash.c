@@ -307,7 +307,7 @@ UTEST(spatial_hash, n2) {
             md_array_shrink(sa_pairs, 0);
 
             size_t bf_count = do_brute_force_double(x, y, z, TEST_COUNT, rad, G, I, &bf_pairs, alloc);
-            md_spatial_acc_for_each_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &usr_data);
+            md_spatial_acc_for_each_internal_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &usr_data);
 
             printf("bf_count: %zu\n", bf_count);
 
@@ -375,7 +375,7 @@ UTEST(spatial_hash, n2) {
     start = md_time_current();
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, &cell);
-    md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
+    md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
     end = md_time_current();
     size_t sa_count = count;
@@ -388,7 +388,7 @@ UTEST(spatial_hash, n2) {
 
     start = md_time_current();
     count = 0;
-    md_spatial_acc_for_each_external_point_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, spatial_acc_neighbor_callback, &count);
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, spatial_acc_neighbor_callback, &count);
 	end = md_time_current();
     sa_count = count;
 	printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
