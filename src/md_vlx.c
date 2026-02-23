@@ -1675,8 +1675,20 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
 
 		// NTO data
-		if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
-			return false;
+		if (h5_check_dataset_exists(handle, "NTO_S1_alpha_orbitals")) {
+			if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
+				return false;
+			}
+		} else {
+			// Check for 'nto' folder inside
+            hid_t nto_group = H5Gopen(handle, "nto", H5P_DEFAULT);
+			if (nto_group >= 0) {
+				bool result = h5_read_nto_data(&vlx->rsp, nto_group, vlx->arena);
+				H5Gclose(nto_group);
+                if (!result) {
+                    return false;
+				}
+            }
 		}
 
 		// Dipoles
