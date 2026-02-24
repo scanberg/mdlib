@@ -57,31 +57,15 @@ static void spatial_acc_cutoff_callback(const uint32_t* i_idx, const uint32_t* j
     }
 }
 
+static void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {  
+    uint32_t* count = (uint32_t*)user_param;
+    *count += (uint32_t)num_pairs;
+}
+
 static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
     (void)elem;
     uint32_t* count = (uint32_t*)user_param;
     *count += 1;
-    return true;
-}
-
-typedef struct {
-    uint32_t exclude_idx;
-    uint32_t count;
-} iter_excl_data_t;
-
-static bool iter_excl_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
-    (void)elem;
-    iter_excl_data_t* data = user_param;
-    if (elem->idx != data->exclude_idx) {
-        data->count += 1;
-    }
-    return true;
-}
-
-static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* user_param) {
-    (void)elem;
-    uint32_t* count = (uint32_t*)user_param;
-    *count += popcnt32(mask);
     return true;
 }
 
@@ -109,53 +93,17 @@ static bool iter_batch_pairs_fn(const md_spatial_hash_elem_t* elem, md_256 d2, i
     return true;
 }
 
-UTEST(spatial_hash, small_periodic) {
-    float x[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    float y[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-
-    md_unitcell_t unit_cell = md_unitcell_from_extent(10, 0, 0);
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_get_heap_allocator());
-    ASSERT_TRUE(spatial_hash);
-    
-    uint32_t count = 0;
-    md_spatial_hash_query(spatial_hash, (vec3_t){5,0,0}, 1.5f, iter_fn, &count);
-    EXPECT_EQ(3, count);
-
-    count = 0;
-    md_spatial_hash_query(spatial_hash, (vec3_t){8.5f, 0, 0}, 3, iter_fn, &count);
-    EXPECT_EQ(6, count);
-
-    md_spatial_hash_free(spatial_hash);
-}
-
-UTEST(spatial_hash, big) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    const str_t pdb_file = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
-
-    md_system_t mol = {0};
-    ASSERT_TRUE(md_pdb_system_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
-
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unitcell, alloc);
-    ASSERT_TRUE(spatial_hash);
-
-    vec3_t pos = {24, 48, 24};
-    float  rad = 10.0f;
-    uint32_t count = 0;
-    md_spatial_hash_query(spatial_hash, pos, rad, iter_fn, &count);
-
-    EXPECT_NE(0, count);
-
-    md_arena_allocator_destroy(alloc);
-}
 
 // Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
 static inline void cart_to_fract(double out_s[3], const double in_x[3], const double I[3][3]) {
     for (int k = 0; k < 3; k++) {
         out_s[k] = I[0][k]*in_x[0] + I[1][k]*in_x[1] + I[2][k]*in_x[2];
+    }
+}
+
+static inline void fract_to_cart(double out_x[3], const double in_s[3], const double A[3][3]) {
+    for (int k = 0; k < 3; k++) {
+        out_x[k] = A[k][0]*in_s[0] + A[k][1]*in_s[1] + A[k][2]*in_s[2];
     }
 }
 
@@ -179,6 +127,29 @@ static inline double distance_ref_mic27(const double G[3][3], const double s0[3]
         if (d2 < best) best = d2;
     }
     return best;
+}
+
+UTEST(spatial_hash, small_periodic) {
+    float x[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    float y[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    md_unitcell_t unit_cell = md_unitcell_from_extent(10, 0, 0);
+
+    md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+    md_spatial_acc_init(&acc, x, y, z, NULL, 10, 10.0, &unit_cell);
+    
+    uint32_t count = 0;
+    vec3_t p0 = {5, 0, 0};
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, p0, 1.5f, iter_fn, &count);
+    EXPECT_EQ(3, count);
+
+    count = 0;
+    vec3_t p1 = {8.5f, 0, 0};
+    md_spatial_hash_query(spatial_hash, (vec3_t){8.5f, 0, 0}, 3, iter_fn, &count);
+    EXPECT_EQ(6, count);
+
+    md_spatial_hash_free(spatial_hash);
 }
 
 static size_t do_brute_force_double(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const double G[3][3], const double I[3][3], md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
@@ -422,11 +393,6 @@ struct spatial_hash {
 
 UTEST_F_SETUP(spatial_hash) {
     utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
-
-    md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), utest_fixture->arena));
-    ASSERT_TRUE(md_gro_system_init(&utest_fixture->sys, &gro_data, utest_fixture->arena));
-    utest_fixture->pbc_ext = md_unitcell_diag_vec3(&utest_fixture->sys.unitcell);
 }
 
 UTEST_F_TEARDOWN(spatial_hash) {
@@ -438,293 +404,139 @@ static inline float rnd() {
 }
 
 UTEST_F(spatial_hash, test_correctness_centered) {
-    md_system_t* sys = &utest_fixture->sys;
     md_allocator_i* alloc = utest_fixture->arena;
-    vec3_t pbc_ext = utest_fixture->pbc_ext;
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, NULL, sys->atom.count, NULL, alloc);
-    ASSERT_TRUE(spatial_hash);
+    md_system_t sys;
+    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc));
+
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell);
     
     srand(31);
-    
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
+
+    double G[3][3], A[3][3], I[3][3];
+    md_unitcell_G_extract(G, &sys.unitcell);
+    md_unitcell_basis_extract(A, &sys.unitcell);
+    md_unitcell_inv_basis_extract(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
-        float radius = rnd() * 20;
+        double s0[3] = { rnd(), rnd(), rnd() };
+        double x0[3];
+        fract_to_cart(x0, s0, A);
+        double radius = rnd() * 20;
 
         int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (int64_t i = 0; i < sys->atom.count; ++i) {
-            vec4_t c = {sys->atom.x[i], sys->atom.y[i], sys->atom.z[i], 0};
+        const double rad2 = radius * radius;
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double si[3];
+            cart_to_fract(si, xi, I);
 
-            if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < rad2) {
                 ref_count += 1;
             }
         }
 
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
-        EXPECT_EQ(ref_count, count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
+        uint32_t batch_count = 0;
+        vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, radius, spatial_acc_pair_count_callback, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
 
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        if (batch_count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, batch_count);
         }
     }
-
-    md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_ala) {
     md_allocator_i* alloc = utest_fixture->arena;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_system_t sys;
     ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, &sys.unitcell, alloc);
-    ASSERT_TRUE(spatial_hash);
-
     const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
 
     srand(31);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell);
+
+    double G[3][3], A[3][3], I[3][3];
+    md_unitcell_G_extract(G, &sys.unitcell);
+    md_unitcell_basis_extract(A, &sys.unitcell);
+    md_unitcell_inv_basis_extract(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20.f;
-        const float rad2 = radius * radius;
+        double s0[3] = { rnd(), rnd(), rnd() };
+        double x0[3];
+        fract_to_cart(x0, s0, A);
+        vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
+        double radius = rnd() * 20.0;
 
         int ref_count = 0;
+        const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            const vec4_t c = {sys.atom.x[i], sys.atom.y[i], sys.atom.z[i], 0};
-            if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
+            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double si[3];
+            cart_to_fract(si, xi, I);
+            if (distance_ref_mic27(G, s0, si) < rad2) {
                 ref_count += 1;
             }
         }
 
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
+        uint32_t count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &count);
         EXPECT_EQ(ref_count, count);
 
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        if (count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, count);
         }
     }
-
-    md_vm_arena_temp_end(temp);
-}
-
-UTEST_F(spatial_hash, test_correctness_ala_vec3) {
-    md_allocator_i* alloc = utest_fixture->arena;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
-
-    md_system_t sys;
-    ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
-
-    vec3_t* xyz = md_array_create(vec3_t, sys.atom.count, alloc);
-    for (int i = 0; i < sys.atom.count; ++i) {
-        xyz[i] = vec3_set(sys.atom.x[i], sys.atom.y[i], sys.atom.z[i]);
-    }
-
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_vec3(xyz, NULL, md_array_size(xyz), &sys.unitcell, alloc);
-    ASSERT_TRUE(spatial_hash);
-
-    const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
-
-    srand(31);
-
-    const int num_iter = 100;
-    for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20;
-
-        int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (size_t i = 0; i < sys.atom.count; ++i) {
-            const vec4_t c = {sys.atom.x[i], sys.atom.y[i], sys.atom.z[i], 0};
-            if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
-                ref_count += 1;
-            }
-        }
-
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
-        EXPECT_EQ(ref_count, count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-    }
-
-    md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_water) {
     md_allocator_i* alloc = utest_fixture->arena;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_system_t sys;
     ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
-
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, NULL, alloc);
-    ASSERT_TRUE(spatial_hash);
-
     const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
 
     srand(31);
 
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell);
+
+    double G[3][3], A[3][3], I[3][3];
+    md_unitcell_G_extract(G, &sys.unitcell);
+    md_unitcell_basis_extract(A, &sys.unitcell);
+    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20;
+        double s0[3] = { rnd(), rnd(), rnd() };
+        double x0[3];
+        fract_to_cart(x0, s0, A);
+        vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
+        double radius = rnd() * 20.0;
 
         int ref_count = 0;
-        const float rad2 = radius * radius;
+        const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            const vec4_t c = {sys.atom.x[i], sys.atom.y[i], sys.atom.z[i], 0};
-            if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
+            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double si[3];
+            cart_to_fract(si, xi, I);
+            if (distance_ref_mic27(G, s0, si) < rad2) {
                 ref_count += 1;
             }
         }
 
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
+        uint32_t count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &count);
         EXPECT_EQ(ref_count, count);
 
         if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, count);
         }
     }
-
-    md_vm_arena_temp_end(temp);
-}
-
-UTEST_F(spatial_hash, test_correctness_periodic_centered) {
-    md_allocator_i* alloc = utest_fixture->arena;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
-
-    md_system_t* sys = &utest_fixture->sys;
-    vec3_t pbc_ext = utest_fixture->pbc_ext;
-
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, NULL, sys->atom.count, &sys->unitcell, alloc);
-    ASSERT_TRUE(spatial_hash);
-    
-    srand(31);
-
-    const int num_iter = 100;
-    const vec4_t period = vec4_from_vec3(pbc_ext, 0);
-    for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
-        float radius = rnd() * 20.0f;
-
-        int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (size_t i = 0; i < sys->atom.count; ++i) {
-            vec4_t c = {sys->atom.x[i], sys->atom.y[i], sys->atom.z[i], 0};
-
-            if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, period) < rad2) {
-                ref_count += 1;
-            }
-        }
-
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
-        EXPECT_EQ(ref_count, count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-    }
-
-    md_vm_arena_temp_end(temp);
-}
-
-UTEST_F(spatial_hash, test_correctness_periodic_water) {
-    md_allocator_i* alloc = utest_fixture->arena;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
-
-    md_system_t sys;
-    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
-
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, &sys.unitcell, alloc);
-    ASSERT_TRUE(spatial_hash);
-
-    const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
-
-    srand(31);
-
-    const int num_iter = 100;
-    for (int iter = 0; iter < num_iter; ++iter) {
-        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20;
-
-        int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (size_t i = 0; i < sys.atom.count; ++i) {
-            const vec4_t c = {sys.atom.x[i], sys.atom.y[i], sys.atom.z[i], 0};
-            if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, pbc_ext) < rad2) {
-                ref_count += 1;
-            }
-        }
-
-        int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
-        EXPECT_EQ(ref_count, count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-
-        int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
-
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
-        }
-    }
-
-    md_vm_arena_temp_end(temp);
 }
