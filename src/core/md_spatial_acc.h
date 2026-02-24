@@ -1,7 +1,5 @@
 ﻿#pragma once
 
-#include <core/md_common.h>
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -18,10 +16,7 @@ typedef struct md_spatial_acc_t {
 
     size_t num_cells;
     uint32_t* cell_off;
-    // Bitmask indicating which cells are occupied
-    uint64_t  cell_mask_x[1024 / 64];
-    uint64_t  cell_mask_y[1024 / 64];
-    uint64_t  cell_mask_z[1024 / 64];
+    uint64_t  cell_mask[3][16];
     uint32_t  cell_dim[3];
     float     cell_ext[3];
 
@@ -68,10 +63,10 @@ void md_spatial_acc_for_each_internal_pair_in_neighboring_cells(const md_spatial
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices in the callback
 void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
-void md_spatial_acc_query_point(const md_spatial_acc_t* acc, double x, double y, double z, double cutoff, md_spatial_acc_point_callback_t callback, void* user_param);
-
 // Perform a spatial query for points within the spatial acceleration structure within a bounding box defined by center and extent
-void md_spatial_acc_query_aabb(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param);
+void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param);
+
+void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param);
 
 #if 0
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
@@ -82,7 +77,6 @@ bool md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatia
 
 // Helper functions for partial functionality
 static inline void md_spatial_acc_cell_range(uint32_t out_cell_range[2], const md_spatial_acc_t* acc, size_t cell_idx) {
-    ASSERT(out_cell_range);
 	out_cell_range[0] = 0;
 	out_cell_range[1] = 0;
     if (cell_idx < acc->num_cells) {
