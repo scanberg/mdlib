@@ -141,7 +141,7 @@ UTEST(spatial_hash, small_periodic) {
     
     uint32_t count = 0;
     vec3_t p0 = {5, 0, 0};
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, p0, 1.5f, iter_fn, &count);
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &p0.x, , 1.5f, iter_fn, &count);
     EXPECT_EQ(3, count);
 
     count = 0;
