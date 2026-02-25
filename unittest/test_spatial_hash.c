@@ -62,6 +62,11 @@ static void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_
     *count += (uint32_t)num_pairs;
 }
 
+static void spatial_acc_point_count_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param) {
+    uint32_t* count = (uint32_t*)user_param;
+    *count += (uint32_t)num_points;
+}   
+
 static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
     (void)elem;
     uint32_t* count = (uint32_t*)user_param;
@@ -140,16 +145,16 @@ UTEST(spatial_hash, small_periodic) {
     md_spatial_acc_init(&acc, x, y, z, NULL, 10, 10.0, &unit_cell);
     
     uint32_t count = 0;
-    vec3_t p0 = {5, 0, 0};
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &p0.x, , 1.5f, iter_fn, &count);
+    double p0[3] = {5, 0, 0};
+    md_spatial_acc_for_each_point_in_sphere(&acc, p0, 1.5f, spatial_acc_point_count_callback, &count);
     EXPECT_EQ(3, count);
 
     count = 0;
-    vec3_t p1 = {8.5f, 0, 0};
-    md_spatial_hash_query(spatial_hash, (vec3_t){8.5f, 0, 0}, 3, iter_fn, &count);
+    double p1[3] = {8.5f, 0, 0};
+    md_spatial_acc_for_each_point_in_sphere(&acc, p1, 3, spatial_acc_point_count_callback, &count);
     EXPECT_EQ(6, count);
 
-    md_spatial_hash_free(spatial_hash);
+    md_spatial_acc_free(&acc);
 }
 
 static size_t do_brute_force_double(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const double G[3][3], const double I[3][3], md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
