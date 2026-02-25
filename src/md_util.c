@@ -1851,12 +1851,6 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
 		type_mask[i] = ca_idx >= 0 ? TM_ALIGN_VALID : 0;
 	}
 
-    const float helix_distances[] = { 5.45f, 5.18f, 6.37f };
-    const float helix_delta = 2.1f;
-
-    const float sheet_distances[] = { 6.1f, 10.4f, 13.0f };
-    const float sheet_delta = 1.42f;
-
     for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
         const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
         ASSERT(range.end <= (int)capacity);
@@ -2036,6 +2030,7 @@ typedef struct dssp_hbond_energy_user_param_t {
 } dssp_hbond_energy_user_param_t;
 
 void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)ij_dist2;
     dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
     for (size_t idx = 0; idx < num_pairs; ++idx) {
         uint32_t i = MIN(i_idx[idx], j_idx[idx]);
