@@ -5356,9 +5356,9 @@ static ast_node_t* prune_expressions(ast_node_t* node) {
     return node;
 }
 
-static bool parse_script(md_script_ir_t* ir) {
+static bool parse_script(md_script_ir_t* ir, md_allocator_i* temp_arena) {
     ASSERT(ir);
-    size_t temp_pos = md_temp_get_pos();
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
 
     bool result = true;
 
@@ -5368,7 +5368,7 @@ static bool parse_script(md_script_ir_t* ir) {
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = md_get_temp_allocator(),
+        .temp_alloc = temp_arena,
     };
 
     ir->stage = "Parsing";
@@ -5397,21 +5397,19 @@ static bool parse_script(md_script_ir_t* ir) {
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_vm_arena_temp_end(temp);
     return result;
 }
 
-static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const md_trajectory_i* traj) {
+static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const md_trajectory_i* traj, md_allocator_i* temp_arena) {
     ASSERT(ir);
     ASSERT(mol);
 
     bool result = true;
 
-    SETUP_TEMP_ALLOC(GIGABYTES(4));
-
     eval_context_t ctx = {
         .ir = ir,
-        .temp_alloc = temp_alloc,
+        .temp_alloc = temp_arena,
         .alloc = ir->arena,
         .mol = mol,
         .traj = traj,
@@ -5429,8 +5427,6 @@ static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const 
             result = false;
         }
     }
-
-    FREE_TEMP_ALLOC;
 
     return result;
 }
@@ -6204,9 +6200,11 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
         add_ir_ctx(ir, ctx_ir);
     }
 
+    SETUP_TEMP_ALLOC(GIGABYTES(1));
+
     ir->compile_success =
-        parse_script(ir) &&
-        static_type_check(ir, mol, traj) &&
+        parse_script(ir, temp_alloc) &&
+        static_type_check(ir, mol, traj, temp_alloc) &&
         // optimize ast?
         //static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
@@ -6214,6 +6212,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
         extract_properties(ir);
 
     extract_vis_tokens(ir);
+
+    FREE_TEMP_ALLOC
 
 #if DEBUG
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
@@ -7138,55 +7138,58 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
         .temp_alloc = temp_alloc,
     };
 
-    ir->stage = "Visualize String";
-    ir->record_log = false;
+    if (parse_script(ir, temp_alloc)) {
+        if (static_type_check(ir, vis_ctx->mol, vis_ctx->traj, temp_alloc)) {
+            size_t num_nodes = md_array_size(ir->type_checked_expressions);
+            if (num_nodes) {
+                md_bitfield_clear(&vis->atom_mask);
+                ir->stage = "Visualize Node";
 
-    ast_node_t* node = parse_expression(&parse_ctx);
-    node = prune_expressions(node);
-    if (node) {
-        md_bitfield_clear(&vis->atom_mask);
+                size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
+                float* init_x = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+                float* init_y = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+                float* init_z = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
 
-        size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
-        float* init_x = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
-        float* init_y = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
-        float* init_z = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+                md_trajectory_frame_header_t header = { 0 };
+                if (vis_ctx->traj) {
+                    md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
+                } else {
+                    init_x = vis_ctx->mol->atom.x;
+                    init_y = vis_ctx->mol->atom.y;
+                    init_z = vis_ctx->mol->atom.z;
+                }
 
-        md_trajectory_frame_header_t header = { 0 };
-        if (vis_ctx->traj) {
-            md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
-        } else {
-            init_x = vis_ctx->mol->atom.x;
-            init_y = vis_ctx->mol->atom.y;
-            init_z = vis_ctx->mol->atom.z;
-        }
+                eval_context_t ctx = {
+                    .ir = ir,
+                    .mol = vis_ctx->mol,
+                    .traj = vis_ctx->traj,
+                    .alloc = temp_alloc,
+                    .temp_alloc = temp_alloc,
+                    .vis = vis,
+                    .vis_flags = flags,
+                    .vis_structure = &vis->atom_mask,
+                    .frame_header = &header,
+                    .initial_configuration = {
+                        .header = &header,
+                        .x = init_x,
+                        .y = init_y,
+                        .z = init_z
+                    },
+                    .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL
+                };
 
-        eval_context_t ctx = {
-            .ir = ir,
-            .mol = vis_ctx->mol,
-            .traj = vis_ctx->traj,
-            .alloc = temp_alloc,
-            .temp_alloc = temp_alloc,
-            .vis = vis,
-            .vis_flags = flags,
-            .vis_structure = &vis->atom_mask,
-            .frame_header = &header,
-            .initial_configuration = {
-                .header = &header,
-                .x = init_x,
-                .y = init_y,
-                .z = init_z
-            },
-            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL | EVAL_FLAG_FLATTEN
-        };
+                for (size_t i = 0; i < num_nodes; ++i) {
+                    ast_node_t* node = ir->type_checked_expressions[i];
+                    if (node) {
+                         visualize_node(node, &ctx);
+                    }
+                }
 
-        if (node->type == AST_ASSIGNMENT) {
-            ASSERT(node->children);
-            ASSERT(md_array_size(node->children) == 2);
-            node = node->children[1];
-        }
-
-        if (static_check_node(node, &ctx)) {
-            visualize_node(node, &ctx);
+                // Append all structures into the 'global' atom mask
+                for (size_t i = 0; i < md_array_size(vis->structures); ++i) {
+                    md_bitfield_or_inplace(&vis->atom_mask, &vis->structures[i]);
+                }
+            }
         }
     }
 
