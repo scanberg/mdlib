@@ -256,6 +256,8 @@ bool md_script_vis_free(md_script_vis_t* vis);
 bool md_script_vis_clear(md_script_vis_t* vis);
 bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payload_o* payload, int subidx, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
 
+bool md_script_vis_eval_string(md_script_vis_t* vis, str_t str, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
+
 // ### MISC ###
 
 bool md_script_identifier_name_valid(str_t ident);

@@ -3425,12 +3425,15 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT(md_array_size(node->children) == 2);
 
     const ast_node_t* expr_node = node->children[0];
-    const ast_node_t* ctx_node  = node->children[1];
+    ast_node_t* ctx_node  = node->children[1];
 
     // No need to reevaluate CTX_NODE here since it has already been done during static type checking and its results should be stored in the data ptr
 
     ASSERT(ctx_node->data.type.base_type == TYPE_BITFIELD);
-    ASSERT(ctx_node->data.ptr);
+    if (!ctx_node->data.ptr) {
+        allocate_data(&ctx_node->data, ctx_node->data.type, ctx->ir->arena);
+        evaluate_node(&ctx_node->data, ctx_node, ctx);
+    }
 
     const int num_ctx = type_info_array_len(ctx_node->data.type);
     if (num_ctx < 0) {
@@ -7049,7 +7052,7 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    int64_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
+    size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
     float* init_x = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
     float* init_y = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
     float* init_z = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
@@ -7102,6 +7105,93 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     FREE_TEMP_ALLOC;
 
     return true;
+}
+
+bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {
+    ASSERT(vis);
+    ASSERT(vis_ctx);
+
+    if (vis->magic != VIS_MAGIC) {
+        MD_LOG_ERROR("Visualize: vis object not initialized.");
+        return false;
+    }
+
+    if (flags == 0) flags = 0xFFFFFFFFU;
+
+    bool success = false;
+
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
+
+    md_script_ir_t* ir = create_ir(temp_alloc);
+    ir->str = str_copy(expr, ir->arena);
+
+    if (vis_ctx->ir) {
+        add_ir_ctx(ir, vis_ctx->ir);
+    }
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+
+    parse_context_t parse_ctx = {
+        .ir = ir,
+        .tokenizer = &tokenizer,
+        .node = 0,
+        .temp_alloc = temp_alloc,
+    };
+
+    ir->stage = "Visualize String";
+    ir->record_log = false;
+
+    ast_node_t* node = parse_expression(&parse_ctx);
+    node = prune_expressions(node);
+    if (node) {
+        md_bitfield_clear(&vis->atom_mask);
+
+        size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
+        float* init_x = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+        float* init_y = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+        float* init_z = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+
+        md_trajectory_frame_header_t header = { 0 };
+        if (vis_ctx->traj) {
+            md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
+        } else {
+            init_x = vis_ctx->mol->atom.x;
+            init_y = vis_ctx->mol->atom.y;
+            init_z = vis_ctx->mol->atom.z;
+        }
+
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = vis_ctx->mol,
+            .traj = vis_ctx->traj,
+            .alloc = temp_alloc,
+            .temp_alloc = temp_alloc,
+            .vis = vis,
+            .vis_flags = flags,
+            .vis_structure = &vis->atom_mask,
+            .frame_header = &header,
+            .initial_configuration = {
+                .header = &header,
+                .x = init_x,
+                .y = init_y,
+                .z = init_z
+            },
+            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL | EVAL_FLAG_FLATTEN
+        };
+
+        if (node->type == AST_ASSIGNMENT) {
+            ASSERT(node->children);
+            ASSERT(md_array_size(node->children) == 2);
+            node = node->children[1];
+        }
+
+        if (static_check_node(node, &ctx)) {
+            visualize_node(node, &ctx);
+        }
+    }
+
+    FREE_TEMP_ALLOC;
+    return success;
 }
 
 void md_script_vis_init(md_script_vis_t* vis, md_allocator_i* alloc) {
