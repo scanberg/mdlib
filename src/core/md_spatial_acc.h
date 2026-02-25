@@ -18,7 +18,7 @@ typedef struct md_spatial_acc_t {
     uint32_t* cell_off;
     uint64_t  cell_mask[3][16];
     uint32_t  cell_dim[3];
-    float     cell_ext[3];
+    float     inv_cell_ext[3];
 
     float G00, G11, G22;
     float H01, H02, H12;
@@ -66,7 +66,7 @@ void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_sp
 // Perform a spatial query for points within the spatial acceleration structure within a bounding box defined by center and extent
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param);
 
-void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param);
+void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param);
 
 #if 0
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
