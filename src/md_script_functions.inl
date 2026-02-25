@@ -2797,9 +2797,11 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
             end = ctx->subscript_ranges[0].end;
         }
 
+		md_spatial_acc_pair_callback_t cb = ctx->vis ? contact_count_vis_callback : contact_count_callback;
+
         for (int i = beg; i < end; ++i) {
 			const md_bitfield_t* bf = &bf_a[i];
-			size_t a_length = md_bitfield_popcount(bf);
+			const size_t a_length = md_bitfield_popcount(bf);
 			md_array_ensure(a_indices, a_length, ctx->temp_alloc);
 			md_bitfield_iter_extract_indices(a_indices, a_length, md_bitfield_iter_create(bf));
 
@@ -2808,10 +2810,8 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->mol, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            if (ctx->vis) {
-                md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_vis_callback, &data);
-            } else {
-                md_spatial_acc_for_each_external_point_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, contact_count_callback, &data);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, cb, &data);
+            if (out_counts) {
                 out_counts[i] = (float)data.count;
             }
 		}
@@ -5591,7 +5591,7 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // In such case we revert to matching Atom labels
 // To resolve this PROPERLY, one needs to determine the topology of each supplied substructure and match it as a graph.
 
-static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_system_t* sys) {
+static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], size_t num_bitfields, const md_system_t* sys) {
     // Number of bits should match.
     // The atomic element of each set bit should match.
 
@@ -5599,7 +5599,7 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
     const int64_t ref_count = md_bitfield_popcount(ref_bf);
 
     // We compare against the first one, which is considered to be the reference
-    for (int64_t i = 1; i < num_bitfields; ++i) {
+    for (size_t i = 1; i < num_bitfields; ++i) {
         const md_bitfield_t* bf = &bitfields[i];
         const int64_t count = md_bitfield_popcount(bf);
         if (count != ref_count) {
@@ -5683,6 +5683,8 @@ typedef struct sdf_payload_t {
 bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
     sdf_payload_t* data = user_param;
     
+	const vec4_t dim = vec4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
+
     while (mask) {
         const int idx = ctz32(mask);
 
@@ -5693,22 +5695,27 @@ bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
             }
         }
 
-        const vec4_t coord = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[idx].xyz, 1.0f));
-
-        // Dwelling into intrinsic land here, is a bit unsure if we should expose these as vec4 operations
-        const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
-        const md_128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
-        const md_128 c = md_mm_and_ps(a, b);
+        vec4_t c = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[idx].xyz, 1.0f));
+		vec4_t v = vec4_and(vec4_cmp_lt(vec4_zero(), c), vec4_cmp_lt(c, dim));
 
         // Count the number of lanes which are not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
-        if (md_mm_movemask_ps(c) == 0x7) {
-            data->vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
+        if (vec4_move_mask(v) == 0x7) {
+            uint32_t idx = (uint32_t)c.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)c.y * MD_VOL_DIM + (uint32_t)c.x;
+            data->vol[idx] += 1.0f;
         }
         mask &= ~(1 << idx);
     }
 
     return true;
+}
+
+// Spatial acceleration callback for point query
+void sdf_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+	const md_256 dim = md_mm256_set1_ps(MD_VOL_DIM);
+    for (size_t i = 0; i < num_pairs; i += 8) {
+
+    }
 }
 
 static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -5717,7 +5724,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
-    const int64_t num_ref_bitfields = element_count(arg[0]);
+    const size_t num_ref_bitfields = element_count(arg[0]);
     const md_bitfield_t* ref_bf_arr = as_bitfield(arg[0]);
     const md_bitfield_t* trg_bf     = as_bitfield(arg[1]);
     float cutoff = as_float(arg[2]);
@@ -5725,7 +5732,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_bitfield_t* ref_bf = &ref_bf_arr[0];
 
     // We currently only support bitfields which represent equivalent structures. 
-    // his each bitfield should contain the same number of atoms, and the n'th atom within the bitfield should match the n'th atom in all other bitfields.
+    // his each bitfield should contain the same number of atoms, and the n'th atom within the bitfield
+    // should match the n'th atom in all other bitfields.
     // This may be loosened in the future to allow aligning structures which are not strictly equivalent.
     int result = 0;
 
@@ -5796,10 +5804,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const bool brute_force = trg_size < 5000;
 
         md_spatial_hash_t* spatial_hash = NULL;
-        const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.
+		md_spatial_acc_t spatial_acc = { .alloc = ctx->temp_alloc };
+		const float spatial_hash_radius = cutoff * 1.732050807f; // cutoff * sqrt(3) to ensure that we capture all points within the cutoff in the corners of the voxel
 
         if (!brute_force) {
+            double cell_ext = spatial_hash_radius;
             spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unitcell, ctx->temp_alloc);
+            md_spatial_acc_init(&spatial_acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, cell_ext, &ctx->mol->unitcell);
         } else {
             trg_xyz = md_vm_arena_push(ctx->temp_alloc, sizeof(vec3_t) * trg_size);
             for (size_t i = 0; i < trg_size; ++i) {
@@ -5823,7 +5834,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->vis->sdf.extent = cutoff;
         }
 
-        for (int64_t i = 0; i < num_ref_bitfields; ++i) {
+        for (size_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
 
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
@@ -5846,6 +5857,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                         .exclusion_mask = bf,
                     };
                     md_spatial_hash_query_batch(spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
+					//md_spatial_acc_for_each_point_within_cutoff(&spatial_acc, ref_com[1].x, ref_com[1].y, ref_com[1].z, spatial_hash_radius, sdf_iter, &payload);
                 }
             }
             if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
@@ -5869,8 +5881,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             return -1;
         }
 
-        const int64_t ref_bit_count = md_bitfield_popcount(ref_bf);
-        if (ref_bit_count <= 0) {
+        const size_t ref_bit_count = md_bitfield_popcount(ref_bf);
+        if (ref_bit_count == 0) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
             return -1;
         }
@@ -5881,8 +5893,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             return -1;
         }
 
-        const int64_t target_bit_count = md_bitfield_popcount(trg_bf);
-        if (target_bit_count <= 0) {
+        const size_t target_bit_count = md_bitfield_popcount(trg_bf);
+        if (target_bit_count == 0) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
             return -1;
         }

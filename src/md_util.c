@@ -2156,7 +2156,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     }
     }
     */
-    md_spatial_acc_for_each_pair_within_cutoff(&acc, 9.0, dssp_hbond_energy_cb, &user_param);
+    md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 9.0, dssp_hbond_energy_cb, &user_param);
 
     // ---- Per-range passes: helices, turns, bends (set flags only) ----
     // Ground-truth DSSP helix assignment:
@@ -3871,7 +3871,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, x, y, z, NULL, num_atoms, cell_ext, cell);
             //md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_pair_callback, &param);
-            md_spatial_acc_for_each_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
+            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
             md_timestamp_t ts_end = md_time_current();
 
             double dt_ms = md_time_as_milliseconds(ts_end - ts_start);

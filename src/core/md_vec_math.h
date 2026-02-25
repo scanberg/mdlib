@@ -143,6 +143,9 @@ typedef struct dvec2_t {
             double x, y;  
         };
         double elem[2];
+#if MD_VEC_MATH_USE_SIMD
+        md_128d m128d;
+#endif
     };
 #ifdef __cplusplus
     double& operator[](size_t i)       { return elem[i]; }
@@ -169,7 +172,10 @@ typedef struct dvec4_t {
             double x, y, z, w;  
         };
         double elem[4];
-};
+#if MD_VEC_MATH_USE_SIMD
+        md_256d m256d;
+#endif
+    };
 #ifdef __cplusplus
     double& operator[](size_t i)       { return elem[i]; }
     const double& operator[](size_t i) const { return elem[i]; }
@@ -1812,10 +1818,6 @@ MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
 MD_VEC_INLINE double dvec4_length(dvec4_t v) {
     return sqrt(dvec4_dot(v, v));
 }
-
-
-
-
 
 // Math misc
 

@@ -435,12 +435,12 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
             mat3_t zero = {0};
             return zero;
         }
-        const double i11 = 1.0 / cell->x;
-        const double i22 = 1.0 / cell->y;
-        const double i33 = 1.0 / cell->z;
-        const double i12 = -cell->xy / (cell->x * cell->y);
-        const double i13 = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
-        const double i23 = -cell->yz / (cell->y * cell->z);
+        const double i11 = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
+        const double i22 = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
+        const double i33 = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
+        const double i12 = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
+        const double i13 = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
+        const double i23 = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
         mat3_t Ai = {(float)i11, (float)i12, (float)i13, 0, (float)i22, (float)i23, 0, 0, (float)i33};
         return Ai;
     }
@@ -454,15 +454,15 @@ static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_u
             MEMSET(out_Ai, 0, sizeof(double) * 9);
             return;
         }
-        out_Ai[0][0] = 1.0 / cell->x;
-        out_Ai[0][1] = -cell->xy / (cell->x * cell->y);
-        out_Ai[0][2] = (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z);
+        out_Ai[0][0] = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
+        out_Ai[1][1] = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
+        out_Ai[2][2] = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
+        out_Ai[0][1] = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
+        out_Ai[0][2] = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
+        out_Ai[1][2] = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
         out_Ai[1][0] = 0;
-        out_Ai[1][1] = 1.0 / cell->y;
-        out_Ai[1][2] = -cell->yz / (cell->y * cell->z);
         out_Ai[2][0] = 0;
         out_Ai[2][1] = 0;
-        out_Ai[2][2] = 1.0 / cell->z;
     }
 }
 
