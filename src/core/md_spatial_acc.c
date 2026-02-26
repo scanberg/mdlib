@@ -281,6 +281,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     double G00 = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); // dot(a, a)
     double G11 = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]); // dot(b, b)
     double G22 = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]); // dot(c, c)
+    double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // dot(a, b)
+    double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // dot(a, c)
+    double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // dot(b, c)
+
     double H01 = 0.0, H02 = 0.0, H12 = 0.0;
 
 	double norm_a = sqrt(G00);
@@ -294,9 +298,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     };
 
     if (flags & MD_UNITCELL_TRICLINIC) {
-        double G01 = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); // dot(a, b)
-        double G02 = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]); // dot(a, c)
-        double G12 = (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]); // dot(b, c)
+
 
         H01 = 2.0 * G01;
         H02 = 2.0 * G02;
@@ -518,7 +520,7 @@ static inline size_t generate_neighbors4(int out[][4], const int ncell[3]) {
     return count;
 }
 
-static inline md_128 distance_squared_tric_sse(md_128 dx, md_128 dy, md_128 dz, md_128 G00, md_128 G11, md_128 G22, md_128 H01, md_128 H02, md_128 H12) {
+static inline md_128 distance_squared_tri_128(md_128 dx, md_128 dy, md_128 dz, md_128 G00, md_128 G11, md_128 G22, md_128 H01, md_128 H02, md_128 H12) {
     md_128 dx2 = md_mm_mul_ps(dx, dx);
     md_128 dy2 = md_mm_mul_ps(dy, dy);
     md_128 dz2 = md_mm_mul_ps(dz, dz);
@@ -532,7 +534,7 @@ static inline md_128 distance_squared_tric_sse(md_128 dx, md_128 dy, md_128 dz, 
     return md_mm_add_ps(acc, cross);
 }
 
-static inline md_256 distance_squared_tric_avx(md_256 dx, md_256 dy, md_256 dz, md_256 G00, md_256 G11, md_256 G22, md_256 H01, md_256 H02, md_256 H12) {
+static inline md_256 distance_squared_tri_256(md_256 dx, md_256 dy, md_256 dz, md_256 G00, md_256 G11, md_256 G22, md_256 H01, md_256 H02, md_256 H12) {
     md_256 dx2 = md_mm256_mul_ps(dx, dx);
     md_256 dy2 = md_mm256_mul_ps(dy, dy);
     md_256 dz2 = md_mm256_mul_ps(dz, dz);
@@ -546,18 +548,149 @@ static inline md_256 distance_squared_tric_avx(md_256 dx, md_256 dy, md_256 dz, 
     return md_mm256_add_ps(acc, cross);
 }
 
-static inline md_128 distance_squared_ortho_sse(md_128 dx, md_128 dy, md_128 dz, md_128 G00, md_128 G11, md_128 G22) {
+static inline md_128 distance_squared_ort_128(md_128 dx, md_128 dy, md_128 dz, md_128 G00, md_128 G11, md_128 G22) {
     md_128 dx2 = md_mm_mul_ps(dx, dx);
     md_128 dy2 = md_mm_mul_ps(dy, dy);
     md_128 dz2 = md_mm_mul_ps(dz, dz);
     return md_mm_fmadd_ps(G00, dx2, md_mm_fmadd_ps(G11, dy2, md_mm_mul_ps(G22, dz2)));
 }
 
-static inline md_256 distance_squared_ortho_avx(md_256 dx, md_256 dy, md_256 dz, md_256 G00, md_256 G11, md_256 G22) {
+static inline md_256 distance_squared_ort_256(md_256 dx, md_256 dy, md_256 dz, md_256 G00, md_256 G11, md_256 G22) {
     md_256 dx2 = md_mm256_mul_ps(dx, dx);
     md_256 dy2 = md_mm256_mul_ps(dy, dy);
     md_256 dz2 = md_mm256_mul_ps(dz, dz);
     return md_mm256_fmadd_ps(G00, dx2, md_mm256_fmadd_ps(G11, dy2, md_mm256_mul_ps(G22, dz2)));
+}
+
+static inline int wrap_coord(int x, int N) {
+    x += (x <  0) ? N : 0;
+    x -= (x >= N) ? N : 0;
+    return x;
+}
+
+static inline int isign(int a) {
+    return (a > 0) - (a < 0);
+}
+
+// Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
+static inline void cart_to_fract(double out_s[3], const double in_x[3], const md_spatial_acc_t* acc) {
+    for (int k = 0; k < 3; k++) {
+        out_s[k] = acc->I[0][k] * in_x[0] + acc->I[1][k] * in_x[1] + acc->I[2][k] * in_x[2];
+    }
+}
+
+static inline vec4_t vec4_cart_to_fract(vec4_t in_c, const md_spatial_acc_t* acc) {
+    vec4_t out_s = {
+        acc->I[0][0] * in_c.x + acc->I[1][0] * in_c.y + acc->I[2][0] * in_c.z,
+        acc->I[0][1] * in_c.x + acc->I[1][1] * in_c.y + acc->I[2][1] * in_c.z,
+        acc->I[0][2] * in_c.x + acc->I[1][2] * in_c.y + acc->I[2][2] * in_c.z,
+        0
+    };
+	return out_s;
+}
+
+static inline void fract_to_cart(double out_x[3], const double in_s[3], const md_spatial_acc_t* acc) {
+    for (int k = 0; k < 3; k++) {
+        out_x[k] = acc->A[k][0] * in_s[0] + acc->A[k][1] * in_s[1] + acc->A[k][2] * in_s[2];
+    }
+}
+
+static inline void fract_to_cart_float(float out_x[3], const float in_s[3], const md_spatial_acc_t* acc) {
+    for (int k = 0; k < 3; k++) {
+        out_x[k] = acc->A[k][0] * in_s[0] + acc->A[k][1] * in_s[1] + acc->A[k][2] * in_s[2];
+    }
+}
+
+static inline void fract_to_cart_ort_256(
+    md_256* out_cx, md_256* out_cy, md_256* out_cz,
+    const md_256 in_sx, const md_256 in_sy, const md_256 in_sz,
+    const md_256 A00, const md_256 A11, const md_256 A22,
+    const md_256 O0,  const md_256 O1,  const md_256 O2)
+{
+    *out_cx = md_mm256_fmsub_ps(in_sx, A00, O0);
+    *out_cy = md_mm256_fmsub_ps(in_sy, A11, O1);
+    *out_cz = md_mm256_fmsub_ps(in_sz, A22, O2);
+}
+
+static inline void fract_to_cart_tri_256(
+    md_256* out_cx, md_256* out_cy, md_256* out_cz,
+    const md_256 in_sx, const md_256 in_sy, const md_256 in_sz,
+    const md_256 A00, const md_256 A10, const md_256 A11, const md_256 A20, const md_256 A21, const md_256 A22,
+    const md_256 O0,  const md_256 O1,  const md_256 O2)
+{
+    *out_cx = md_mm256_fmadd_ps(in_sx, A00, md_mm256_fmadd_ps(in_sy, A10, md_mm256_fmsub_ps(in_sz, A20, O0)));
+    *out_cy = md_mm256_fmadd_ps(in_sy, A11, md_mm256_fmsub_ps(in_sz, A21, O1));
+    *out_cz = md_mm256_fmsub_ps(in_sz, A22, O2);
+}
+
+static inline void cart_to_fract_ort_256(
+    md_256* out_sx, md_256* out_sy, md_256* out_sz,
+    const md_256 in_cx, const md_256 in_cy, const md_256 in_cz,
+    const md_256 I00, const md_256 I11, const md_256 I22,
+    const md_256 O0,  const md_256 O1,  const md_256 O2)
+{
+    *out_sx = md_mm256_fmadd_ps(in_cx, I00, O0);
+    *out_sy = md_mm256_fmadd_ps(in_cy, I11, O1);
+    *out_sz = md_mm256_fmadd_ps(in_cz, I22, O2);
+}
+
+static inline void cart_to_fract_tri_256(
+    md_256* out_sx, md_256* out_sy, md_256* out_sz,
+    const md_256 in_cx, const md_256 in_cy, const md_256 in_cz,
+    const md_256 I00, const md_256 I01, const md_256 I02, const md_256 I11, const md_256 I12, const md_256 I22,
+    const md_256 O0,  const md_256 O1,  const md_256 O2)
+{
+    *out_sx = md_mm256_fmadd_ps(in_cx, I00, O0);
+    *out_sy = md_mm256_fmadd_ps(in_cx, I01, md_mm256_fmadd_ps(in_cy, I11, O1));
+    *out_sz = md_mm256_fmadd_ps(in_cx, I02, md_mm256_fmadd_ps(in_cy, I12, md_mm256_fmadd_ps(in_cz, I22, O2)));
+}
+
+static inline void batch_fract_to_cart_ort_256(float* x, float* y, float* z, size_t count, const md_spatial_acc_t* acc) {
+	const md_256 A00 = md_mm256_set1_ps(acc->A[0][0]);
+	const md_256 A11 = md_mm256_set1_ps(acc->A[1][1]);
+	const md_256 A22 = md_mm256_set1_ps(acc->A[2][2]);
+
+	const md_256 O0  = md_mm256_set1_ps(acc->origin[0]);
+	const md_256 O1  = md_mm256_set1_ps(acc->origin[1]);
+	const md_256 O2  = md_mm256_set1_ps(acc->origin[2]);
+
+    for (size_t i = 0; i < count; i += 8) {
+		md_256 sx = md_mm256_loadu_ps(x + i);
+        md_256 sy = md_mm256_loadu_ps(y + i);
+        md_256 sz = md_mm256_loadu_ps(z + i);
+
+		md_256 cx, cy, cz;
+        fract_to_cart_ort_256(&cx, &cy, &cz, sx, sy, sz, A00, A11, A22, O0, O1, O2);
+
+		md_mm256_store_ps(x + i, cx);
+		md_mm256_store_ps(y + i, cy);
+		md_mm256_store_ps(z + i, cz);
+    }
+}
+
+static inline void batch_fract_to_cart_tri_256(float* x, float* y, float* z, size_t count, const md_spatial_acc_t* acc) {
+    const md_256 A00 = md_mm256_set1_ps(acc->A[0][0]);
+    const md_256 A10 = md_mm256_set1_ps(acc->A[1][0]);
+    const md_256 A11 = md_mm256_set1_ps(acc->A[1][1]);
+    const md_256 A20 = md_mm256_set1_ps(acc->A[2][0]);
+    const md_256 A21 = md_mm256_set1_ps(acc->A[2][1]);
+    const md_256 A22 = md_mm256_set1_ps(acc->A[2][2]);
+    const md_256 O0  = md_mm256_set1_ps(acc->origin[0]);
+    const md_256 O1  = md_mm256_set1_ps(acc->origin[1]);
+    const md_256 O2  = md_mm256_set1_ps(acc->origin[2]);
+
+    for (size_t i = 0; i < count; i += 8) {
+        md_256 sx = md_mm256_loadu_ps(x + i);
+        md_256 sy = md_mm256_loadu_ps(y + i);
+        md_256 sz = md_mm256_loadu_ps(z + i);
+
+        md_256 cx, cy, cz;
+        fract_to_cart_tri_256(&cx, &cy, &cz, sx, sy, sz, A00, A10, A11, A20, A21, A22, O0, O1, O2);
+
+        md_mm256_store_ps(x + i, cx);
+        md_mm256_store_ps(y + i, cy);
+        md_mm256_store_ps(z + i, cz);
+    }
 }
 
 // Macros for cell offsets/lengths in the sorted array
@@ -577,14 +710,32 @@ static inline md_256 distance_squared_ortho_avx(md_256 dx, md_256 dy, md_256 dz,
         count = 0; \
     } \
 
-#define POSSIBLY_INVOKE_CALLBACK_POINT(estimated_count) \
+// The default convention for the callback is that we supply the coordinates as cartesian, not fractional.
+// Therefore we perform the conversion here
+#define POSSIBLY_INVOKE_CALLBACK_POINT_ORT(estimated_count) \
     if (count + (estimated_count) >= SPATIAL_ACC_BUFLEN) { \
+        batch_fract_to_cart_ort_256(buf_x, buf_y, buf_z, count, acc); \
         callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
         count = 0; \
     } \
 
-#define FLUSH_TAIL_POINT() \
+#define POSSIBLY_INVOKE_CALLBACK_POINT_TRI(estimated_count) \
+    if (count + (estimated_count) >= SPATIAL_ACC_BUFLEN) { \
+        batch_fract_to_cart_tri_256(buf_x, buf_y, buf_z, count, acc); \
+        callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
+        count = 0; \
+    } \
+
+#define FLUSH_TAIL_POINT_ORT() \
     if (count) { \
+        batch_fract_to_cart_ort_256(buf_x, buf_y, buf_z, count, acc); \
+        callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
+        count = 0; \
+    } \
+
+#define FLUSH_TAIL_POINT_TRI() \
+    if (count) { \
+        batch_fract_to_cart_tri_256(buf_x, buf_y, buf_z, count, acc); \
         callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
         count = 0; \
     } \
@@ -667,7 +818,7 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                         const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_i_x + j));
                         const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_i_y + j));
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
-                        const md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+                        const md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
 						const md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
 						int mask = md_mm256_movemask_ps(v_mask);
@@ -742,7 +893,7 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                             const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                             const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                            const md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+                            const md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
                             int mask = md_mm256_movemask_ps(v_mask);
 
@@ -841,7 +992,7 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                         const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_i_x + j));
                         const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_i_y + j));
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
-                        const md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                        const md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
 						const md_256i v_idxj = md_mm256_loadu_epi32(elem_i_idx + j);
 						int mask = md_mm256_movemask_ps(v_mask);
@@ -920,7 +1071,7 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                             const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                             const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                            const md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                            const md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
                             int mask = md_mm256_movemask_ps(v_mask);
 
@@ -946,8 +1097,8 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
 static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
+        (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
+        (int)ceil(cutoff * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
     };
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
@@ -1030,7 +1181,7 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                         const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_i_x + j));
                         const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_i_y + j));
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
-                        md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+                        md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
                         const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1116,7 +1267,7 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                             const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                             const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                            md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+                            md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
                             const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1240,7 +1391,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                         const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_i_x + j));
                         const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_i_y + j));
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
-                        md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                        md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
                         const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1330,7 +1481,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                             const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                             const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                            md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                            md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
                             const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1485,7 +1636,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
                 const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                 const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                 const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+                md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
                 const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1645,7 +1796,7 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                 const md_256 v_dx = md_mm256_sub_ps(v_xi, md_mm256_loadu_ps(elem_j_x + j));
                 const md_256 v_dy = md_mm256_sub_ps(v_yi, md_mm256_loadu_ps(elem_j_y + j));
                 const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
-                md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
                 const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1676,29 +1827,6 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     }
 
     FLUSH_TAIL_PAIR();
-}
-
-static inline int wrap_coord(int x, int N) {
-    x += (x <  0) ? N : 0;
-    x -= (x >= N) ? N : 0;
-    return x;
-}
-
-static inline int isign(int a) {
-    return (a > 0) - (a < 0);
-}
-
-// Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
-static inline void cart_to_fract(double out_s[3], const double in_x[3], const md_spatial_acc_t* acc) {
-    for (int k = 0; k < 3; k++) {
-        out_s[k] = acc->I[0][k]*in_x[0] + acc->I[1][k]*in_x[1] + acc->I[2][k]*in_x[2];
-    }
-}
-
-static inline void fract_to_cart(double out_x[3], const double in_s[3], const md_spatial_acc_t* acc) {
-    for (int k = 0; k < 3; k++) {
-        out_x[k] = acc->A[k][0]*in_s[0] + acc->A[k][1]*in_s[1] + acc->A[k][2]*in_s[2];
-    }
 }
 
 static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param) {
@@ -1781,7 +1909,7 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
 
             for (int icx = cmin[0]; icx < cmax[0]; ++icx) {
                 int cx = pbc[0] ? wrap_coord(icx, (int)cdim[0]) : icx;
-                int sx = isign(icx - cz);
+                int sx = isign(icx - cx);
                 const md_256 shift_x = md_mm256_set1_ps((float)sx);
 
                 const uint32_t ci  = CELL_INDEX((uint32_t)cx, (uint32_t)cy, (uint32_t)cz);
@@ -1796,15 +1924,17 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                 const float* elem_z = acc->elem_z + off;
                 const uint32_t* elem_idx = acc->elem_idx + off;
 
-                POSSIBLY_INVOKE_CALLBACK_POINT(ALIGN_TO(len, 8));
+                POSSIBLY_INVOKE_CALLBACK_POINT_ORT(ALIGN_TO(len, 8));
 
                 md_256i v_j = inc;
                 for (uint32_t j = 0; j < len; j += 8) {
                     const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len));
 
-                    md_256 v_xj = md_mm256_loadu_ps(elem_x + j);
-                    md_256 v_yj = md_mm256_loadu_ps(elem_y + j);
-                    md_256 v_zj = md_mm256_loadu_ps(elem_z + j);
+					md_256 v_xj, v_yj, v_zj;
+
+                    v_xj = md_mm256_loadu_ps(elem_x + j);
+                    v_yj = md_mm256_loadu_ps(elem_y + j);
+                    v_zj = md_mm256_loadu_ps(elem_z + j);
 
                     v_xj = md_mm256_add_ps(v_xj, shift_x);
                     v_yj = md_mm256_add_ps(v_yj, shift_y);
@@ -1829,11 +1959,6 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                     if (mask) {
                         md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
-                        // Convert fractional coordinates to Cartesian
-                        v_xj = md_mm256_sub_ps(md_mm256_mul_ps(v_xj, md_mm256_set1_ps(acc->A[0][0])), md_mm256_set1_ps(acc->origin[0]));
-                        v_yj = md_mm256_sub_ps(md_mm256_mul_ps(v_yj, md_mm256_set1_ps(acc->A[1][1])), md_mm256_set1_ps(acc->origin[1]));
-                        v_zj = md_mm256_sub_ps(md_mm256_mul_ps(v_zj, md_mm256_set1_ps(acc->A[2][2])), md_mm256_set1_ps(acc->origin[2]));
-
                         uint64_t key = avx_compress_lut[mask];
                         const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
 
@@ -1842,12 +1967,10 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                         v_yj = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
                         v_zj = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
 
-                        ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
-
-                        md_mm256_storeu_epi32(buf_i  + count,  v_idxj);
-                        md_mm256_storeu_ps   (buf_x  + count,  v_xj);
-                        md_mm256_storeu_ps   (buf_y  + count,  v_yj);
-                        md_mm256_storeu_ps   (buf_z  + count,  v_zj);
+                        md_mm256_storeu_epi32(buf_i + count, v_idxj);
+                        md_mm256_storeu_ps   (buf_x + count, v_xj);
+                        md_mm256_storeu_ps   (buf_y + count, v_yj);
+                        md_mm256_storeu_ps   (buf_z + count, v_zj);
 
                         count += popcnt32(mask);
                     }
@@ -1858,7 +1981,7 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
         }
     }
 
-    FLUSH_TAIL_POINT();
+    FLUSH_TAIL_POINT_ORT();
 }
 
 static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param) {
@@ -1935,7 +2058,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
 
             for (int icx = cmin[0]; icx < cmax[0]; ++icx) {
                 int cx = pbc[0] ? wrap_coord(icx, (int)cdim[0]) : icx;
-                int sx = isign(icx - cz);
+                int sx = isign(icx - cx);
                 const md_256 shift_x = md_mm256_set1_ps((float)sx);
 
                 const uint32_t ci  = CELL_INDEX((uint32_t)cx, (uint32_t)cy, (uint32_t)cz);
@@ -1950,7 +2073,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
                 const float* elem_z = acc->elem_z + off;
                 const uint32_t* elem_idx = acc->elem_idx + off;
 
-                POSSIBLY_INVOKE_CALLBACK_POINT(ALIGN_TO(len, 8));
+                POSSIBLY_INVOKE_CALLBACK_POINT_ORT(ALIGN_TO(len, 8));
 
                 md_256i v_j = inc;
                 for (uint32_t j = 0; j < len; j += 8) {
@@ -1968,7 +2091,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
                     const md_256 v_dy = md_mm256_sub_ps(v_yi, v_yj);
                     const md_256 v_dz = md_mm256_sub_ps(v_zi, v_zj);
 
-                    md_256 v_d2 = distance_squared_ortho_avx(v_dx, v_dy, v_dz, G00, G11, G22);
+                    md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
                     const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
@@ -1976,11 +2099,6 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
                     int mask = md_mm256_movemask_ps(v_mask);
                     if (mask) {
                         md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
-
-                        // Convert fractional coordinates to Cartesian
-                        v_xj = md_mm256_add_ps(md_mm256_mul_ps(v_xj, md_mm256_set1_ps(acc->A[0][0])), md_mm256_set1_ps(acc->origin[0]));
-                        v_yj = md_mm256_add_ps(md_mm256_mul_ps(v_yj, md_mm256_set1_ps(acc->A[1][1])), md_mm256_set1_ps(acc->origin[1]));
-                        v_zj = md_mm256_add_ps(md_mm256_mul_ps(v_zj, md_mm256_set1_ps(acc->A[2][2])), md_mm256_set1_ps(acc->origin[2]));
 
                         uint64_t key = avx_compress_lut[mask];
                         const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
@@ -1992,10 +2110,10 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
 
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
-                        md_mm256_storeu_epi32(buf_i  + count,  v_idxj);
-                        md_mm256_storeu_ps   (buf_x  + count,  v_xj);
-                        md_mm256_storeu_ps   (buf_y  + count,  v_yj);
-                        md_mm256_storeu_ps   (buf_z  + count,  v_zj);
+                        md_mm256_storeu_epi32(buf_i + count, v_idxj);
+                        md_mm256_storeu_ps   (buf_x + count, v_xj);
+                        md_mm256_storeu_ps   (buf_y + count, v_yj);
+                        md_mm256_storeu_ps   (buf_z + count, v_zj);
 
                         count += popcnt32(mask);
                     }
@@ -2006,18 +2124,26 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
         }
     }
 
-    FLUSH_TAIL_POINT();
+    FLUSH_TAIL_POINT_ORT();
 }
 
 static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param) {
-    // Precompute constants
-    const md_256 G00 = md_mm256_set1_ps(acc->G00);
-    const md_256 G11 = md_mm256_set1_ps(acc->G11);
-    const md_256 G22 = md_mm256_set1_ps(acc->G22);
-    const md_256 H01 = md_mm256_set1_ps(acc->H01);
-    const md_256 H02 = md_mm256_set1_ps(acc->H02);
-    const md_256 H12 = md_mm256_set1_ps(acc->H12);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(radius * radius));
+    ASSERT(acc->flags & MD_UNITCELL_TRICLINIC && acc->flags & MD_UNITCELL_PBC_ALL);
+
+    const int ncell[3] = {
+        (int)ceil(radius * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
+        (int)ceil(radius * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
+        (int)ceil(radius * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
+    };
+
+    if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
+        MD_LOG_ERROR("for_each_point_in_sphere_triclinic: radius too large for cell size");
+        return;
+    }
+
+    // Build neighbor offsets once
+    int neighbors[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
+    size_t num_neighbors = generate_neighbors4(neighbors, ncell);
 
     // Allocate intermediate buffers for passing to callback
     uint32_t buf_i[SPATIAL_ACC_BUFLEN];
@@ -2027,148 +2153,116 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
 
     size_t   count = 0;
 
+    // Setup constants
     const uint32_t cdim[3] = { acc->cell_dim[0], acc->cell_dim[1], acc->cell_dim[2] };
     const uint32_t c0  = acc->cell_dim[0];
     const uint32_t c01 = acc->cell_dim[0] * acc->cell_dim[1];
 
+    const md_256 G00 = md_mm256_set1_ps(acc->G00);
+    const md_256 G11 = md_mm256_set1_ps(acc->G11);
+    const md_256 G22 = md_mm256_set1_ps(acc->G22);
+    const md_256 H01 = md_mm256_set1_ps(acc->H01);
+    const md_256 H02 = md_mm256_set1_ps(acc->H02);
+    const md_256 H12 = md_mm256_set1_ps(acc->H12);
+    const md_256 v_r2 = md_mm256_set1_ps((float)(radius * radius));
+
     const md_256i add8 = md_mm256_set1_epi32(8);
     const md_256i inc  = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 
-    ASSERT(acc->flags & MD_UNITCELL_TRICLINIC && acc->flags & MD_UNITCELL_PBC_ALL);
+    // Fractional center and center cell
+	const vec4_t r4 = vec4_set((float)center[0] + acc->origin[0], (float)center[1] + acc->origin[1], (float)center[2] + acc->origin[2], 0);
+	const vec4_t d4 = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
+	const vec4_t f4 = vec4_fract(vec4_cart_to_fract(r4, acc));
+    const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, d4)));
 
-    double cen[3] = {
-        center[0] + acc->origin[0],
-        center[1] + acc->origin[1],
-        center[2] + acc->origin[2],
-    };
-    
-    double fcen[3];
-    cart_to_fract(fcen, cen, acc);
-    fcen[0] = fract(fcen[0]);
-    fcen[1] = fract(fcen[1]);
-    fcen[2] = fract(fcen[2]);
+    const md_256 v_xi = md_mm256_set1_ps(f4.x);
+    const md_256 v_yi = md_mm256_set1_ps(f4.y);
+    const md_256 v_zi = md_mm256_set1_ps(f4.z);
 
-    fract_to_cart(cen, fcen, acc);
+    for (uint32_t n_idx = 0; n_idx < num_neighbors; ++n_idx) {
+        const ivec4_t nbr = ivec4_load(neighbors[n_idx]);
+        ivec4_t cell_v = ivec4_add(c_v, nbr);
 
-    // Derive cell min and max
-    int cmin[3] = {
-        (int)floor((cen[0] - radius) * acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)floor((cen[1] - radius) * acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)floor((cen[2] - radius) * acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
-    int cmax[3] = {
-        (int)ceil((cen[0] + radius) * acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil((cen[1] + radius) * acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil((cen[2] + radius) * acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+        const ivec4_t wrap_upper = ivec4_cmpgt(cell_v, ivec4_sub(ivec4_set((int)cdim[0], (int)cdim[1], (int)cdim[2], 0), ivec4_set1(1)));
+        const ivec4_t wrap_lower = ivec4_cmplt(cell_v, ivec4_set1(0));
 
-    for (int i = 0; i < 3; ++i) {
-        // Clip cmax - cmin to 2*cell_dim to avoid iterating over the same cell more than twice (worst case to consider the same cell in different periods)
-        int cext = cmax[i] - cmin[i];
-        cext = CLAMP(cext, 1, 2*(int)cdim[i]);
-        cmax[i] = cmin[i] + cext;
-    }
+        // Apply wrapping (triclinic -> periodic in all dims)
+        cell_v = ivec4_add(cell_v, ivec4_and(wrap_lower, ivec4_set((int)cdim[0], (int)cdim[1], (int)cdim[2], 0)));
+        cell_v = ivec4_sub(cell_v, ivec4_and(wrap_upper, ivec4_set((int)cdim[0], (int)cdim[1], (int)cdim[2], 0)));
 
-    const md_256 v_xi = md_mm256_set1_ps((float)fcen[0]);
-    const md_256 v_yi = md_mm256_set1_ps((float)fcen[1]);
-    const md_256 v_zi = md_mm256_set1_ps((float)fcen[2]);
+        int c[4];
+        ivec4_store(c, cell_v);
 
-    for (int icz = cmin[2]; icz < cmax[2]; ++icz) {
-        int cz = wrap_coord(icz, (int)cdim[2]);
-        int sz = isign(icz - cz);
-        const md_256 shift_z = md_mm256_set1_ps((float)sz);
+        const uint32_t ci  = CELL_INDEX((uint32_t)c[0], (uint32_t)c[1], (uint32_t)c[2]);
+        const uint32_t off = CELL_OFFSET(ci);
+        const uint32_t len = CELL_LENGTH(ci);
+        if (len == 0) continue;
 
-        for (int icy = cmin[1]; icy < cmax[1]; ++icy) {
-            int cy = wrap_coord(icy, (int)cdim[1]);
-            int sy = isign(icy - cy);
-            const md_256 shift_y = md_mm256_set1_ps((float)sy);
+        const md_256i v_len = md_mm256_set1_epi32(len);
 
-            for (int icx = cmin[0]; icx < cmax[0]; ++icx) {
-                int cx = wrap_coord(icx, (int)cdim[0]);
-                int sx = isign(icx - cz);
-                const md_256 shift_x = md_mm256_set1_ps((float)sx);
+        const float* elem_x = acc->elem_x + off;
+        const float* elem_y = acc->elem_y + off;
+        const float* elem_z = acc->elem_z + off;
+        const uint32_t* elem_idx = acc->elem_idx + off;
 
-                const uint32_t ci  = CELL_INDEX((uint32_t)cx, (uint32_t)cy, (uint32_t)cz);
-                const uint32_t off = CELL_OFFSET(ci);
-                const uint32_t len = CELL_LENGTH(ci);
-                if (len == 0) continue;
+        // shifting due to wrap: compute shift_i (+1 / -1) like other triclinic functions
+        ivec4_t shift_i = ivec4_sub(ivec4_and(wrap_upper, ivec4_set1(1)), ivec4_and(wrap_lower, ivec4_set1(1)));
+        vec4_t  shift_f = vec4_from_ivec4(shift_i);
 
-                const md_256i v_len = md_mm256_set1_epi32(len);
+		const md_256 shift_x = md_mm256_set1_ps((float)shift_f.x);
+		const md_256 shift_y = md_mm256_set1_ps((float)shift_f.y);
+		const md_256 shift_z = md_mm256_set1_ps((float)shift_f.z);
 
-                const float* elem_x = acc->elem_x + off;
-                const float* elem_y = acc->elem_y + off;
-                const float* elem_z = acc->elem_z + off;
-                const uint32_t* elem_idx = acc->elem_idx + off;
+        POSSIBLY_INVOKE_CALLBACK_POINT_TRI(ALIGN_TO(len, 8));
 
-                POSSIBLY_INVOKE_CALLBACK_POINT(ALIGN_TO(len, 8));
+        md_256i v_j = inc;
+        for (uint32_t j = 0; j < len; j += 8) {
+            const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len));
 
-                md_256i v_j = inc;
-                for (uint32_t j = 0; j < len; j += 8) {
-                    const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len));
+            md_256 v_xj = md_mm256_loadu_ps(elem_x + j);
+            md_256 v_yj = md_mm256_loadu_ps(elem_y + j);
+            md_256 v_zj = md_mm256_loadu_ps(elem_z + j);
 
-                    md_256 v_xj = md_mm256_loadu_ps(elem_x + j);
-                    md_256 v_yj = md_mm256_loadu_ps(elem_y + j);
-                    md_256 v_zj = md_mm256_loadu_ps(elem_z + j);
+            v_xj = md_mm256_add_ps(v_xj, shift_x);
+            v_yj = md_mm256_add_ps(v_yj, shift_y);
+            v_zj = md_mm256_add_ps(v_zj, shift_z);
 
-                    v_xj = md_mm256_add_ps(v_xj, shift_x);
-                    v_yj = md_mm256_add_ps(v_yj, shift_y);
-                    v_zj = md_mm256_add_ps(v_zj, shift_z);
+            const md_256 v_dx = md_mm256_sub_ps(v_xi, v_xj);
+            const md_256 v_dy = md_mm256_sub_ps(v_yi, v_yj);
+            const md_256 v_dz = md_mm256_sub_ps(v_zi, v_zj);
 
-                    const md_256 v_dx = md_mm256_sub_ps(v_xi, v_xj);
-                    const md_256 v_dy = md_mm256_sub_ps(v_yi, v_yj);
-                    const md_256 v_dz = md_mm256_sub_ps(v_zi, v_zj);
+            md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-                    md_256 v_d2 = distance_squared_tric_avx(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
+            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
 
-                    const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+            // Fill buffers with results
+            int mask = md_mm256_movemask_ps(v_mask);
+            if (mask) {
+                md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
-                    // Fill buffers with results
-                    int mask = md_mm256_movemask_ps(v_mask);
-                    if (mask) {
-                        md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
+                uint64_t key = avx_compress_lut[mask];
+                const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
 
-                        // Convert fractional coordinates to Cartesian
-                        md_256 rx = md_mm256_mul_ps(md_mm256_set1_ps(acc->A[0][0]), v_xj);
-                        md_256 ry = md_mm256_mul_ps(md_mm256_set1_ps(acc->A[0][1]), v_xj);
-                        md_256 rz = md_mm256_mul_ps(md_mm256_set1_ps(acc->A[0][2]), v_xj);
+                v_idxj  = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
+                v_xj    = simde_mm256_permutevar8x32_ps(v_xj, v_perm_mask);
+                v_yj    = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
+                v_zj    = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
 
-                        rx = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[1][0]), v_yj, rx);
-                        ry = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[1][1]), v_yj, ry);
-                        rz = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[1][2]), v_yj, rz);
+                ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
-                        rx = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[2][0]), v_zj, rx);
-                        ry = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[2][1]), v_zj, ry);
-                        rz = md_mm256_fmadd_ps(md_mm256_set1_ps(acc->A[2][2]), v_zj, rz);
+                md_mm256_storeu_epi32(buf_i + count, v_idxj);
+                md_mm256_storeu_ps   (buf_x + count, v_xj);
+                md_mm256_storeu_ps   (buf_y + count, v_yj);
+                md_mm256_storeu_ps   (buf_z + count, v_zj);
 
-                        v_xj = md_mm256_sub_ps(rx, md_mm256_set1_ps(acc->origin[0]));
-                        v_yj = md_mm256_sub_ps(ry, md_mm256_set1_ps(acc->origin[1]));
-                        v_zj = md_mm256_sub_ps(rz, md_mm256_set1_ps(acc->origin[2]));
-
-                        uint64_t key = avx_compress_lut[mask];
-                        const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                        v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                        v_xj = simde_mm256_permutevar8x32_ps(v_xj, v_perm_mask);
-                        v_yj = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
-                        v_zj = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
-
-                        ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
-
-                        md_mm256_storeu_epi32(buf_i  + count,  v_idxj);
-                        md_mm256_storeu_ps   (buf_x  + count,  v_xj);
-                        md_mm256_storeu_ps   (buf_y  + count,  v_yj);
-                        md_mm256_storeu_ps   (buf_z  + count,  v_zj);
-
-                        count += popcnt32(mask);
-                    }
-
-                    v_j = md_mm256_add_epi32(v_j, add8);
-                }
+                count += popcnt32(mask);
             }
+
+            v_j = md_mm256_add_epi32(v_j, add8);
         }
     }
 
-    FLUSH_TAIL_POINT();
+    FLUSH_TAIL_POINT_TRI();
 }
 
 #undef SPATIAL_ACC_BUFLEN

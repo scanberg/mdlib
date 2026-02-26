@@ -996,13 +996,14 @@ static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* 
 	}
 
 	const char* format = lammps_arg->atom_format_str;
+	md_allocator_i* temp_alloc = md_get_heap_allocator();
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_file(&data, filename, format, md_get_heap_allocator())) {
+	if (md_lammps_data_parse_file(&data, filename, format, temp_alloc)) {
 		success = md_lammps_molecule_init(sys, &data, alloc);
 	}
-	md_lammps_data_free(&data, md_get_heap_allocator());
+	md_lammps_data_free(&data, temp_alloc);
 
 	return success;
 }

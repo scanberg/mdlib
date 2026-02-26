@@ -354,7 +354,7 @@ static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double 
     double x = a;
     double xy = b * cos(gamma);
     double xz = c * cos(beta);
-    double y = b * sin(gamma);
+    double y  = b * sin(gamma);
     double yz = (b * c * cos(alpha) - xy * xz) / y;
     double z = sqrt(c * c - xz * xz - yz * yz);
 

@@ -7,12 +7,11 @@
 #include <core/md_str.h>
 #include <core/md_intrinsics.h>
 #include <core/md_os.h>
-#include <core/md_log.h>
 #include <core/md_hash.h>
 #include <md_pdb.h>
 #include <md_gro.h>
+#include <md_lammps.h>
 #include <md_system.h>
-#include <md_util.h>
 
 #include <float.h>
 
@@ -65,7 +64,7 @@ static void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_
 static void spatial_acc_point_count_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param) {
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_points;
-}   
+}
 
 static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
     (void)elem;
@@ -139,10 +138,10 @@ UTEST(spatial_hash, small_periodic) {
     float y[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    md_unitcell_t unit_cell = md_unitcell_from_extent(10, 0, 0);
+    md_unitcell_t cell = md_unitcell_from_extent(10, 0, 0);
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, x, y, z, NULL, 10, 10.0, &unit_cell);
+    md_spatial_acc_init(&acc, x, y, z, NULL, 10, 10.0, &cell);
     
     uint32_t count = 0;
     double p0[3] = {5, 0, 0};
@@ -225,7 +224,7 @@ UTEST(spatial_hash, n2) {
         const double A[3][3] = {
             {40.0,  0.0,   0.0},
             {10.0, 50.0,   0.0},
-            {20.0, 10.0,  60.0}
+            {-20.0, -10.0,  60.0}
 		};
 
         srand(0);
@@ -411,7 +410,7 @@ static inline float rnd() {
 UTEST_F(spatial_hash, test_correctness_centered) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys;
+    md_system_t sys = { 0 };
     ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc));
 
     md_spatial_acc_t acc = { .alloc = alloc };
@@ -443,13 +442,19 @@ UTEST_F(spatial_hash, test_correctness_centered) {
             }
         }
 
-        uint32_t batch_count = 0;
+        uint32_t sa_count = 0;
         vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, radius, spatial_acc_pair_count_callback, &batch_count);
-        EXPECT_EQ(ref_count, batch_count);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
+        }
 
-        if (batch_count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, batch_count);
+        sa_count = 0;
+		md_spatial_acc_for_each_point_in_sphere(&acc, x0, radius, spatial_acc_point_count_callback, &sa_count);
+		EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
         }
     }
 }
@@ -457,10 +462,8 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 UTEST_F(spatial_hash, test_correctness_ala) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys;
+    md_system_t sys = { 0 };
     ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
-
-    const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
 
     srand(31);
     md_spatial_acc_t acc = { .alloc = alloc };
@@ -490,12 +493,18 @@ UTEST_F(spatial_hash, test_correctness_ala) {
             }
         }
 
-        uint32_t count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &count);
-        EXPECT_EQ(ref_count, count);
+        uint32_t sa_count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
+        }
 
-        if (count != ref_count) {
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, count);
+        sa_count = 0;
+        md_spatial_acc_for_each_point_in_sphere(&acc, x0, radius, spatial_acc_point_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
         }
     }
 }
@@ -503,9 +512,8 @@ UTEST_F(spatial_hash, test_correctness_ala) {
 UTEST_F(spatial_hash, test_correctness_water) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys;
+    md_system_t sys = { 0 };
     ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
-    const vec4_t pbc_ext = md_unitcell_diag_vec4(&sys.unitcell);
 
     srand(31);
 
@@ -536,12 +544,87 @@ UTEST_F(spatial_hash, test_correctness_water) {
             }
         }
 
-        uint32_t count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &count);
-        EXPECT_EQ(ref_count, count);
+        uint32_t sa_count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
+        }
 
-        if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, count);
+        sa_count = 0;
+        md_spatial_acc_for_each_point_in_sphere(&acc, x0, radius, spatial_acc_point_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
+        }
+    }
+}
+
+UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
+    md_allocator_i* alloc = utest_fixture->arena;
+
+    const char** atom_formats = md_lammps_atom_format_strings();
+    const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
+    md_lammps_molecule_loader_arg_t args = md_lammps_molecule_loader_arg(atom_format);
+
+    md_system_t sys = { 0 };
+    ASSERT_TRUE(md_lammps_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), &args, alloc));
+
+    srand(31);
+
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell);
+
+    double G[3][3], A[3][3], I[3][3];
+    md_unitcell_G_extract(G, &sys.unitcell);
+    md_unitcell_basis_extract(A, &sys.unitcell);
+    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+
+    const int num_iter = 100;
+    for (int iter = 0; iter < num_iter; ++iter) {
+        double s0[3] = { rnd(), rnd(), rnd() };
+        double x0[3];
+        fract_to_cart(x0, s0, A);
+        vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
+        double radius = rnd() * 10.0;
+
+        uint32_t ref_count = 0;
+        uint32_t sa_count = 0;
+
+#if 0
+		// Do N^2 test as well to validate the reference implementation
+        ref_count = do_brute_force_double(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, radius, G, I, NULL, NULL);
+		md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_NEAR(ref_count, sa_count, 2);
+#endif
+
+        ref_count = 0;
+        const double rad2 = radius * radius;
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double si[3];
+            cart_to_fract(si, xi, I);
+            if (distance_ref_mic27(G, s0, si) < rad2) {
+                ref_count += 1;
+            }
+        }
+
+        if (iter == 3) {
+            while (0);
+        }
+
+        sa_count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
+        }
+
+        sa_count = 0;
+        md_spatial_acc_for_each_point_in_sphere(&acc, x0, radius, spatial_acc_point_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
         }
     }
 }
