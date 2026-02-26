@@ -9,6 +9,9 @@
 #define RADIUS 10.0
 
 void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;
+    (void)j_idx;
+    (void)ij_dist2;
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_pairs;
 }

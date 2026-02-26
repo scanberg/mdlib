@@ -572,6 +572,11 @@ static inline int isign(int a) {
     return (a > 0) - (a < 0);
 }
 
+static float calc_r2(double cutoff) {
+    float r2 = (float)(cutoff * cutoff);
+    return nextafterf(r2, r2 + 1.0f); // Round up to ensure we don't miss neighbors due to floating point precision
+}
+
 // Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
 static inline void cart_to_fract(double out_s[3], const double in_x[3], const md_spatial_acc_t* acc) {
     for (int k = 0; k < 3; k++) {
@@ -1100,6 +1105,8 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
         return;
     }
 
+    float r2 = calc_r2(cutoff);
+
     // Initialize constants
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
@@ -1107,7 +1114,7 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
     const md_256 H01 = md_mm256_set1_ps(acc->H01);
     const md_256 H02 = md_mm256_set1_ps(acc->H02);
     const md_256 H12 = md_mm256_set1_ps(acc->H12);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(cutoff * cutoff));
+    const md_256 v_r2 = md_mm256_set1_ps(r2);
 
     // Support up to N-cell neighbor searches, optimal is 1-cell
     int neighbors[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
@@ -1306,11 +1313,13 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         return;
     }
 
+    const float r2 = calc_r2(cutoff);
+
     // Precompute constants
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
-	const md_256 v_r2 = md_mm256_set1_ps((float)(cutoff * cutoff));
+	const md_256 v_r2 = md_mm256_set1_ps(r2);
 
 	// Support up to 2-cell neighbor searches, optimal is 1-cell
     int neighbors[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
@@ -1517,6 +1526,8 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
         return;
     }
 
+    const float r2 = calc_r2(cutoff);
+
     // Precompute constants
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
@@ -1524,7 +1535,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     const md_256 H01 = md_mm256_set1_ps(acc->H01);
     const md_256 H02 = md_mm256_set1_ps(acc->H02);
     const md_256 H12 = md_mm256_set1_ps(acc->H12);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(cutoff * cutoff));
+    const md_256 v_r2 = md_mm256_set1_ps(r2);
 
     // For storing neighbor cell coordinates around a single external point
     int neighbors[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
@@ -1670,11 +1681,13 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         return;
     }
 
+    const float r2 = calc_r2(cutoff);
+
     // Precompute constants
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(cutoff * cutoff));
+    const md_256 v_r2 = md_mm256_set1_ps(r2);
 
     // For storing neighbor cell coordinates around a single external point
     int neighbors[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
@@ -2002,10 +2015,12 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const uint32_t c0  = acc->cell_dim[0];
     const uint32_t c01 = acc->cell_dim[0] * acc->cell_dim[1];
 
+    const float r2 = calc_r2(radius);
+
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(radius * radius));
+    const md_256 v_r2 = md_mm256_set1_ps(r2);
 
     const ivec4_t cdim_v  = ivec4_set(cdim[0], cdim[1], cdim[2], 0);
     const ivec4_t cdim_1v = ivec4_sub(cdim_v, ivec4_set(1, 1, 1, 0));
@@ -2163,13 +2178,15 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
     const uint32_t c0  = acc->cell_dim[0];
     const uint32_t c01 = acc->cell_dim[0] * acc->cell_dim[1];
 
+    const float r2 = calc_r2(radius);
+
     const md_256 G00 = md_mm256_set1_ps(acc->G00);
     const md_256 G11 = md_mm256_set1_ps(acc->G11);
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
     const md_256 H01 = md_mm256_set1_ps(acc->H01);
     const md_256 H02 = md_mm256_set1_ps(acc->H02);
     const md_256 H12 = md_mm256_set1_ps(acc->H12);
-    const md_256 v_r2 = md_mm256_set1_ps((float)(radius * radius));
+    const md_256 v_r2 = md_mm256_set1_ps(r2);
 
     const md_256i add8 = md_mm256_set1_epi32(8);
     const md_256i inc  = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
