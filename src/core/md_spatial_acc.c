@@ -662,9 +662,9 @@ static inline void batch_fract_to_cart_ort_256(float* x, float* y, float* z, siz
 		md_256 cx, cy, cz;
         fract_to_cart_ort_256(&cx, &cy, &cz, sx, sy, sz, A00, A11, A22, O0, O1, O2);
 
-		md_mm256_store_ps(x + i, cx);
-		md_mm256_store_ps(y + i, cy);
-		md_mm256_store_ps(z + i, cz);
+		md_mm256_storeu_ps(x + i, cx);
+		md_mm256_storeu_ps(y + i, cy);
+		md_mm256_storeu_ps(z + i, cz);
     }
 }
 
@@ -687,9 +687,9 @@ static inline void batch_fract_to_cart_tri_256(float* x, float* y, float* z, siz
         md_256 cx, cy, cz;
         fract_to_cart_tri_256(&cx, &cy, &cz, sx, sy, sz, A00, A10, A11, A20, A21, A22, O0, O1, O2);
 
-        md_mm256_store_ps(x + i, cx);
-        md_mm256_store_ps(y + i, cy);
-        md_mm256_store_ps(z + i, cz);
+        md_mm256_storeu_ps(x + i, cx);
+        md_mm256_storeu_ps(y + i, cy);
+        md_mm256_storeu_ps(z + i, cz);
     }
 }
 
