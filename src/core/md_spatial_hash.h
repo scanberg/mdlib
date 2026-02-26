@@ -38,7 +38,6 @@ typedef bool (*md_spatial_hash_iterator_fn)(const md_spatial_hash_elem_t* elem, 
 // elem_mask contains the set bits of elements which passed the test for the query.
 // To iterate over the elem_array, just find the set bits and clear them. Or just do a popcount for example if counting occurrences.
 typedef bool (*md_spatial_hash_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, int elem_mask, void* user_param);
-
 typedef bool (*md_spatial_hash_n2_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, md_256 d2, int elem_mask, size_t i, void* user_param);
 
 #ifdef __cplusplus

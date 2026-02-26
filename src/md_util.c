@@ -5294,36 +5294,41 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     md_arena_allocator_destroy(temp_alloc);
 }
 
+// typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
+static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    md_bitfield_t* mask = (md_bitfield_t*)user_param;
+    md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
+}
+
 void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, double radius, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
     ASSERT(sys);
     
     if (radius <= 0.0) return;
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    
-    int32_t* indices = 0;
-    size_t count = sys->atom.count;
-        
-    if (viable_mask) {
-        md_bitfield_t tmp_bf = md_bitfield_create(arena);
-        md_bitfield_andnot(&tmp_bf, viable_mask, mask);
+
+    size_t num_indices = md_bitfield_popcount(mask);
+    if (num_indices > 0) {
+        int32_t* indices = md_vm_arena_push(arena, num_indices * sizeof(int32_t));
+        num_indices = md_bitfield_iter_extract_indices(indices, num_indices, md_bitfield_iter_create(mask));
+
+        int32_t* viable_indices = 0;
+        size_t viable_count = sys->atom.count;
             
-        const size_t num_atoms = md_bitfield_popcount(&tmp_bf);
-        indices = md_vm_arena_push(arena, num_atoms * sizeof(int32_t));
-        count = md_bitfield_iter_extract_indices(indices, num_atoms, md_bitfield_iter_create(&tmp_bf));
-    }
+        if (viable_mask) {
+            md_bitfield_t temp_mask = md_bitfield_create(arena);
+            md_bitfield_andnot(&temp_mask, viable_mask, mask);
+            const size_t count = md_bitfield_popcount(&temp_mask);
+            viable_indices = md_vm_arena_push(arena, count * sizeof(int32_t));
+            viable_count = md_bitfield_iter_extract_indices(viable_indices, count, md_bitfield_iter_create(&temp_mask));
+        }
 
-    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, count, &sys->unitcell, arena);
-
-    md_bitfield_t old_mask = md_bitfield_create(arena);
-    md_bitfield_copy(&old_mask, mask);
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(&old_mask);
-    const float rad = (float)radius;
-    while (md_bitfield_iter_next(&it)) {
-        int idx = (int)md_bitfield_iter_idx(&it);
-        const vec3_t pos = md_atom_coord(&sys->atom, idx);
-        md_spatial_hash_query_bits(mask, ctx, pos, rad);
+        if (viable_count > 0) {
+            md_spatial_acc_t acc = {.alloc = arena};
+            double cutoff = MAX(radius, 6.0); // Avoid small cells
+            md_spatial_acc_init(&acc, sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count, cutoff, &sys->unitcell);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices, radius, spatial_acc_pair_set_bits_callback, mask);
+        }
     }
 
     md_vm_arena_destroy(arena);

@@ -49,7 +49,7 @@ static inline ivec4_t ivec4_from_vec4(vec4_t v) {
 
 static inline vec4_t vec4_from_ivec4(ivec4_t v) {
     vec4_t r;
-    simde_mm_storeu_ps(r.elem, simde_mm_cvtepi32_ps(v));
+    r.m128 = md_mm_cvtepi32_ps(v);
     return r;
 }
 
@@ -861,14 +861,11 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                     const ivec4_t shift_i = ivec4_sub(
                         ivec4_and(wrap_lower, ivec4_set1(1)),
                         ivec4_and(wrap_upper, ivec4_set1(1)));
+                    const vec4_t shift_f = vec4_from_ivec4(shift_i);
 
-                    const float shift_xf = (float)simde_mm_extract_epi32(shift_i, 0);
-                    const float shift_yf = (float)simde_mm_extract_epi32(shift_i, 1);
-                    const float shift_zf = (float)simde_mm_extract_epi32(shift_i, 2);
-
-                    const md_256 shift_x = md_mm256_set1_ps(shift_xf);
-                    const md_256 shift_y = md_mm256_set1_ps(shift_yf);
-                    const md_256 shift_z = md_mm256_set1_ps(shift_zf);
+                    const md_256 shift_x = md_mm256_set1_ps(shift_f.x);
+                    const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
+                    const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
                     const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
@@ -1039,14 +1036,11 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                     const ivec4_t shift_i = ivec4_sub(
                         ivec4_and(wrap_lower, ivec4_set1(1)),
                         ivec4_and(wrap_upper, ivec4_set1(1)));
+                    const vec4_t shift_f = vec4_from_ivec4(shift_i);
 
-                    const float shift_xf = (float)simde_mm_extract_epi32(shift_i, 0);
-                    const float shift_yf = (float)simde_mm_extract_epi32(shift_i, 1);
-                    const float shift_zf = (float)simde_mm_extract_epi32(shift_i, 2);
-
-                    const md_256 shift_x = md_mm256_set1_ps(shift_xf);
-                    const md_256 shift_y = md_mm256_set1_ps(shift_yf);
-                    const md_256 shift_z = md_mm256_set1_ps(shift_zf);
+                    const md_256 shift_x = md_mm256_set1_ps(shift_f.x);
+                    const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
+                    const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
                     const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
@@ -1183,7 +1177,7 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
                         md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-                        const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                        const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                         // Fill buffers with results
                         int mask = md_mm256_movemask_ps(v_mask);
@@ -1236,14 +1230,11 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                     const ivec4_t shift_i = ivec4_sub(
                         ivec4_and(wrap_lower, ivec4_set1(1)),
                         ivec4_and(wrap_upper, ivec4_set1(1)));
+                    const vec4_t shift_f = vec4_from_ivec4(shift_i);
 
-                    const float shift_xf = (float)simde_mm_extract_epi32(shift_i, 0);
-                    const float shift_yf = (float)simde_mm_extract_epi32(shift_i, 1);
-                    const float shift_zf = (float)simde_mm_extract_epi32(shift_i, 2);
-
-                    const md_256 shift_x = md_mm256_set1_ps(shift_xf);// + shift_yf * acc->sxy + shift_zf * acc->sxz);
-                    const md_256 shift_y = md_mm256_set1_ps(shift_yf);// + shift_zf * acc->syz);
-                    const md_256 shift_z = md_mm256_set1_ps(shift_zf);
+                    const md_256 shift_x = md_mm256_set1_ps(shift_f.x);
+                    const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
+                    const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
                     const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
@@ -1269,7 +1260,7 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                             md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-                            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                             // Fill buffers with results
                             int mask = md_mm256_movemask_ps(v_mask);
@@ -1393,7 +1384,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                         const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_i_z + j));
                         md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
-                        const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                        const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
 						// Fill buffers with results
 						int mask = md_mm256_movemask_ps(v_mask);
@@ -1450,14 +1441,11 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                     const ivec4_t shift_i = ivec4_sub(
                         ivec4_and(wrap_lower, ivec4_set1(1)),
                         ivec4_and(wrap_upper, ivec4_set1(1)));
+                    const vec4_t shift_f = vec4_from_ivec4(shift_i);
 
-                    const float shift_xf = (float)simde_mm_extract_epi32(shift_i, 0);
-                    const float shift_yf = (float)simde_mm_extract_epi32(shift_i, 1);
-                    const float shift_zf = (float)simde_mm_extract_epi32(shift_i, 2);
-
-                    const md_256 shift_x = md_mm256_set1_ps(shift_xf);
-                    const md_256 shift_y = md_mm256_set1_ps(shift_yf);
-                    const md_256 shift_z = md_mm256_set1_ps(shift_zf);
+                    const md_256 shift_x = md_mm256_set1_ps(shift_f.x);
+                    const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
+                    const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
                     const md_256i v_len_j = md_mm256_set1_epi32(len_j);
 
@@ -1483,7 +1471,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                             md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
-                            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                             // Fill buffers with results
                             int mask = md_mm256_movemask_ps(v_mask);
@@ -1613,7 +1601,8 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
             // Compute shift vector (+1 for lower wrap, -1 for upper)
             const ivec4_t shift_i = ivec4_sub(
                 ivec4_and(wrap_lower, ivec4_set1(1)),
-                ivec4_and(wrap_upper, ivec4_set1(1)));
+                ivec4_and(wrap_upper, ivec4_set1(1))
+            );
 
             // Shift external point by periodic image offset
 			const vec4_t f_shift = vec4_add(f, vec4_from_ivec4(shift_i));
@@ -1638,7 +1627,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
                 const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                 md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-                const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                 // Fill buffers with results
                 int mask = md_mm256_movemask_ps(v_mask);
@@ -1727,7 +1716,6 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         0, 0, 0, 0,
     };
 
-
     float val;
     MEMSET(&val, 0xFF, sizeof(val));
     const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
@@ -1798,7 +1786,7 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                 const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                 md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
-                const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+                const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                 // Fill buffers with results
                 int mask = md_mm256_movemask_ps(v_mask);
@@ -2019,7 +2007,16 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const md_256 G22 = md_mm256_set1_ps(acc->G22);
     const md_256 v_r2 = md_mm256_set1_ps((float)(radius * radius));
 
-    // Fractional center and center cell (use mat4 to match other paths)
+    const ivec4_t cdim_v  = ivec4_set(cdim[0], cdim[1], cdim[2], 0);
+    const ivec4_t cdim_1v = ivec4_sub(cdim_v, ivec4_set(1, 1, 1, 0));
+    const ivec4_t zero_v  = ivec4_set1(0);
+
+    const ivec4_t pmask_v = ivec4_set(
+        (acc->flags & MD_UNITCELL_PBC_X) ? 0xFFFFFFFF : 0,
+        (acc->flags & MD_UNITCELL_PBC_Y) ? 0xFFFFFFFF : 0,
+        (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
+        0);
+
     const mat4_t I4 = {
         (float)acc->I[0][0], (float)acc->I[0][1], (float)acc->I[0][2], 0,
         (float)acc->I[1][0], (float)acc->I[1][1], (float)acc->I[1][2], 0,
@@ -2027,20 +2024,16 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
         0, 0, 0, 0,
     };
 
-    const vec4_t coord_offset = vec4_set((float)acc->origin[0], (float)acc->origin[1], (float)acc->origin[2], 0);
-    const vec4_t d4 = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
-
     float val;
-	MEMSET(&val, 0xFF, sizeof(val));
-    const vec4_t pbc_mask = vec4_set(
-        (acc->flags & MD_UNITCELL_PBC_X) ? val : 0.0f,
-        (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0.0f,
-        (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0.0f,
-    0);
-
-    vec4_t r4 = vec4_add(vec4_set((float)center[0], (float)center[1], (float)center[2], 0), coord_offset);
-    vec4_t f4 = vec4_blend(vec4_fract(vec4_cart_to_fract(r4, acc)), r4, pbc_mask);
-    ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, d4)));
+    MEMSET(&val, 0xFF, sizeof(val));
+    const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
+    
+    const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
+    const vec4_t coord_offset = { acc->origin[0], acc->origin[1], acc->origin[2], 0 };
+    const vec4_t r4 = vec4_add(vec4_set((float)center[0], (float)center[1], (float)center[2], 0), coord_offset);
+    vec4_t f4 = mat4_mul_vec4(I4, r4);
+    f4 = vec4_blend(vec4_fract(f4), f4, pbc_mask);
+    const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, fcell_dim)));
 
     const md_256 v_xi = md_mm256_set1_ps(f4.x);
     const md_256 v_yi = md_mm256_set1_ps(f4.y);
@@ -2049,22 +2042,23 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     // Iterate neighbor cells
     for (size_t n_idx = 0; n_idx < num_neighbors; ++n_idx) {
         const ivec4_t nbr = ivec4_load(neighbors[n_idx]);
-        ivec4_t cell_v = ivec4_add(c_v, nbr);
-
-        int raw_arr[4]; ivec4_store(raw_arr, cell_v);
-
+        ivec4_t n_v = ivec4_add(c_v, nbr);
+        
         const ivec4_t wrap_upper = ivec4_cmpgt(n_v, cdim_1v);
         const ivec4_t wrap_lower = ivec4_cmplt(n_v, zero_v);
         const ivec4_t wrap_any   = ivec4_or(wrap_upper, wrap_lower);
-
+        
         // Skip nonperiodic wraps
         if (ivec4_any(ivec4_andnot(wrap_any, pmask_v))) continue;
-
+        
         // Apply wrapping
         n_v = ivec4_add(n_v, ivec4_and(wrap_lower, cdim_v));
         n_v = ivec4_sub(n_v, ivec4_and(wrap_upper, cdim_v));
+        
+        int c[4];
+        ivec4_store(c, n_v);
 
-        const uint32_t ci  = CELL_INDEX((uint32_t)wrapped[0], (uint32_t)wrapped[1], (uint32_t)wrapped[2]);
+        const uint32_t ci  = CELL_INDEX((uint32_t)c[0], (uint32_t)c[1], (uint32_t)c[2]);
         const uint32_t off = CELL_OFFSET(ci);
         const uint32_t len = CELL_LENGTH(ci);
         if (len == 0) continue;
@@ -2074,9 +2068,17 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
         const float* elem_z = acc->elem_z + off;
         const uint32_t* elem_idx = acc->elem_idx + off;
 
-        const md_256 shift_x = md_mm256_set1_ps((float)shift_comp[0]);
-        const md_256 shift_y = md_mm256_set1_ps((float)shift_comp[1]);
-        const md_256 shift_z = md_mm256_set1_ps((float)shift_comp[2]);
+        // Compute shift vector (+1 for lower wrap, -1 for upper)
+        const ivec4_t shift_i = ivec4_sub(
+            ivec4_and(wrap_upper, ivec4_set1(1)),
+            ivec4_and(wrap_lower, ivec4_set1(1))
+        );
+
+        const vec4_t f_shift = vec4_from_ivec4(shift_i);
+
+        const md_256 shift_x = md_mm256_set1_ps(f_shift.x);
+        const md_256 shift_y = md_mm256_set1_ps(f_shift.y);
+        const md_256 shift_z = md_mm256_set1_ps(f_shift.z);
 
         POSSIBLY_INVOKE_CALLBACK_POINT_ORT(ALIGN_TO(len, 8));
 
@@ -2099,7 +2101,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
 
             md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
-            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
             int mask = md_mm256_movemask_ps(v_mask);
             if (mask) {
@@ -2209,12 +2211,15 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
         const uint32_t* elem_idx = acc->elem_idx + off;
 
         // shifting due to wrap: compute shift_i (+1 / -1) like other triclinic functions
-        ivec4_t shift_i = ivec4_sub(ivec4_and(wrap_upper, ivec4_set1(1)), ivec4_and(wrap_lower, ivec4_set1(1)));
+        ivec4_t shift_i = ivec4_sub(
+            ivec4_and(wrap_upper, ivec4_set1(1)),
+            ivec4_and(wrap_lower, ivec4_set1(1))
+        );
         vec4_t  shift_f = vec4_from_ivec4(shift_i);
 
-		const md_256 shift_x = md_mm256_set1_ps((float)shift_f.x);
-		const md_256 shift_y = md_mm256_set1_ps((float)shift_f.y);
-		const md_256 shift_z = md_mm256_set1_ps((float)shift_f.z);
+		const md_256 shift_x = md_mm256_set1_ps(shift_f.x);
+		const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
+		const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
         POSSIBLY_INVOKE_CALLBACK_POINT_TRI(ALIGN_TO(len, 8));
 
@@ -2236,7 +2241,7 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
 
             md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmplt_ps(v_d2, v_r2), j_mask);
+            const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
             // Fill buffers with results
             int mask = md_mm256_movemask_ps(v_mask);

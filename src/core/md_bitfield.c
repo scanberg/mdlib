@@ -390,7 +390,7 @@ void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, siz
 
     for (size_t i = 0; i < num_indices; ++i) {
         min_bit_idx = MIN(min_bit_idx, indices[i]);
-        max_bit_idx = MAX(min_bit_idx, indices[i]);
+        max_bit_idx = MAX(max_bit_idx, indices[i]);
     }
 
     ensure_range(bf, min_bit_idx, max_bit_idx+1);
