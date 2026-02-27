@@ -12,7 +12,6 @@
 #include <core/md_vec_math.h>
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
-#include <core/md_spatial_hash.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_bitfield.h>
 #include <core/md_str_builder.h>
@@ -2123,7 +2122,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
     md_spatial_acc_t acc = { .alloc = temp_alloc };
-    md_spatial_acc_init(&acc, res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count, 9.0, cell);
+    md_spatial_acc_init(&acc, res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count, 9.0, cell, 0);
 
     dssp_hbond_energy_user_param_t user_param = {
 		.res_range_id = res_range_id,
@@ -3747,7 +3746,7 @@ static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const floa
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(sys);
     ASSERT(alloc);
@@ -3864,7 +3863,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             // Build candidate list
             md_timestamp_t ts_start = md_time_current();
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, x, y, z, NULL, num_atoms, cell_ext, cell);
+            md_spatial_acc_init(&acc, x, y, z, NULL, num_atoms, cell_ext, cell, 0);
             //md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_pair_callback, &param);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
             md_timestamp_t ts_end = md_time_current();
@@ -4128,10 +4127,12 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
     }
 
     hbond_data->candidate.num_donors = 0;
-    md_array_shrink(hbond_data->candidate.donors, 0);
+    md_array_shrink(hbond_data->candidate.don_idx, 0);
+    md_array_shrink(hbond_data->candidate.don_h_idx, 0);
 
     hbond_data->candidate.num_acceptors = 0;
-    md_array_shrink(hbond_data->candidate.acceptors, 0);
+    md_array_shrink(hbond_data->candidate.acc_idx, 0);
+    md_array_shrink(hbond_data->candidate.acc_lone_pairs, 0);
 
     size_t num_atoms = md_system_atom_count(sys);
 
@@ -4157,8 +4158,10 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
             md_atom_idx_t j = md_bond_iter_atom_index(&it);
             md_atomic_number_t z_j = md_atom_atomic_number(&sys->atom, j);
             if (z_j== MD_Z_H) {
-                md_hydrogen_bond_donor_t donor = {(md_atom_idx_t)i, j};
-                md_array_push(hbond_data->candidate.donors, donor, alloc);
+                md_atom_idx_t don_idx = (md_atom_idx_t)i;
+                md_atom_idx_t hyd_idx = j;
+                md_array_push(hbond_data->candidate.don_idx, don_idx, alloc);
+                md_array_push(hbond_data->candidate.don_h_idx, hyd_idx, alloc);
                 hbond_data->candidate.num_donors += 1;
             }
             md_bond_iter_next(&it);
@@ -4170,8 +4173,9 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
                 num_of_lone_pairs = 4 - num_conn;
             }
 
-            md_hydrogen_bond_acceptor_t acceptor = {(md_atom_idx_t)i, num_of_lone_pairs};
-            md_array_push(hbond_data->candidate.acceptors, acceptor, alloc);
+            md_atom_idx_t acc_idx = (md_atom_idx_t)i;
+            md_array_push(hbond_data->candidate.acc_idx, acc_idx, alloc);
+            md_array_push(hbond_data->candidate.acc_lone_pairs, num_of_lone_pairs, alloc);
             hbond_data->candidate.num_acceptors += 1;
         }
     }
@@ -4179,39 +4183,40 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
     md_array_ensure(hbond_data->bonds, 2 * hbond_data->candidate.num_donors, alloc);
 }
 
-typedef struct hbond_candidate_t {
-    float score;
+typedef struct hbond_donor_energy_t {
     int acc_idx;
-} hbond_candidate_t;
+    float score;
+} hbond_donor_energy_t;
 
-typedef struct hbond_payload_t {
-    vec4_t don;
-    vec4_t hyd;
-    hbond_candidate_t candidates[16];
-    size_t num_candidates;
+typedef struct hbond_candidate_callback_data_t {
+    const vec4_t* don_xyz;
+    const vec4_t* hyd_xyz;
+    const vec4_t* acc_xyz;
+    const md_hydrogen_bond_candidates_t* hbond_candidate_data;
+    hbond_donor_energy_t* donor_energies; // Pre-allocated, one per donor
     float min_angle_in_radians;
-} hbond_payload_t;
+} hbond_candidate_callback_data_t;
 
-static bool hbond_iter(const md_spatial_hash_elem_t* elem, void* param) {
-    hbond_payload_t* data = (hbond_payload_t*)param;
-    if (data->num_candidates == ARRAY_SIZE(data->candidates)) {
-        return false;
+static inline void spatial_acc_hbond_candidate_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t count, void* user_data) {
+    hbond_candidate_callback_data_t* data = (hbond_candidate_callback_data_t*)user_data;
+    const float min_angle = data->min_angle_in_radians;
+
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t d_idx = i_idx[i];
+        uint32_t a_idx = j_idx[i];
+        vec4_t d_xyz = data->don_xyz[d_idx];
+        vec4_t h_xyz = data->hyd_xyz[d_idx];
+        vec4_t a_xyz = data->acc_xyz[a_idx];
+        float angle  = vec4_angle (vec4_sub(d_xyz, h_xyz), vec4_sub(a_xyz, h_xyz));
+        float h_dist = vec4_length(vec4_sub(h_xyz, a_xyz));
+        if (angle > min_angle) {
+            float score = cosf(PI - angle) / h_dist;
+            if (score > data->donor_energies[d_idx].score) {
+                data->donor_energies[d_idx].score = score;
+                data->donor_energies[d_idx].acc_idx = (int)a_idx;
+            }
+        }
     }
-
-    vec4_t acc = vec4_from_vec3(elem->xyz, 0);
-    float angle = vec4_angle(vec4_sub(data->don, data->hyd), vec4_sub(acc, data->hyd));
-    float dist  = vec4_length(vec4_sub(data->don, acc));
-    if (angle > data->min_angle_in_radians) {
-        float h_dist = vec4_length(vec4_sub(data->hyd, acc));
-        float score = cosf(PI - angle) / h_dist;
-        hbond_candidate_t candidate = {
-            .score = score,
-            .acc_idx = elem->idx,
-        };
-        data->candidates[data->num_candidates++] = candidate;
-    }
-
-    return true;
 }
 
 void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
@@ -4224,67 +4229,103 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     hbond_data->num_bonds = 0;
     md_array_shrink(hbond_data->bonds, 0);
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
 
     // Clamp to some form of reasonable value range
-    max_dist = CLAMP(max_dist, 1.0, 7.0);
+    max_dist  = CLAMP(max_dist, 1.0, 7.0);
     min_angle = CLAMP(min_angle, 100.0, 180.0);
 
-    vec3_t*  acc_pos = md_vm_arena_push_array(arena, vec3_t,  hbond_data->candidate.num_acceptors);
-    uint8_t* acc_cap = md_vm_arena_push_array(arena, uint8_t, hbond_data->candidate.num_acceptors);
+    size_t num_acc = hbond_data->candidate.num_acceptors;
+    vec4_t*  acc_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_acc);
+    int32_t* acc_idx = md_vm_arena_push_array(temp_arena, int32_t, num_acc);
 
-    for (size_t i = 0; i < hbond_data->candidate.num_acceptors; ++i) {
-        int atom_idx = hbond_data->candidate.acceptors[i].idx;
-        acc_pos[i] = vec3_set(atom_x[atom_idx], atom_y[atom_idx], atom_z[atom_idx]);
-        acc_cap[i] = (uint8_t)hbond_data->candidate.acceptors[i].num_of_lone_pairs;
+    for (size_t i = 0; i < num_acc; ++i) {
+        int idx = hbond_data->candidate.acc_idx[i];
+        acc_idx[i] = idx;
+        acc_xyz[i] = vec4_set(atom_x[idx], atom_y[idx], atom_z[idx], 0);
     }
 
-    hbond_payload_t payload = {0};
-    payload.min_angle_in_radians = DEG_TO_RAD(min_angle);
-    const float radius = max_dist;
+    size_t num_don = hbond_data->candidate.num_donors;
+    vec4_t*  don_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_don);
+    vec4_t*  hyd_xyz = md_vm_arena_push_array(temp_arena, vec4_t, num_don);
+    int32_t* don_idx = md_vm_arena_push_array(temp_arena, int32_t, num_don);
+    hbond_donor_energy_t* donor_energies = md_vm_arena_push_array(temp_arena, hbond_donor_energy_t, num_don);
+    MEMSET(donor_energies, 0, sizeof(hbond_donor_energy_t) * num_don);
     
-    md_spatial_hash_t* sh = md_spatial_hash_create_vec3(acc_pos, NULL, hbond_data->candidate.num_acceptors, unitcell, arena);
+    for (size_t i = 0; i < num_don; ++i) {
+        int d_idx = hbond_data->candidate.don_idx[i];
+        int h_idx = hbond_data->candidate.don_h_idx[i];
+        don_idx[i] = d_idx;
+        don_xyz[i] = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
+        hyd_xyz[i] = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
+    }
 
-    for (size_t i = 0; i < hbond_data->candidate.num_donors; ++i) {
-        int d_idx = hbond_data->candidate.donors[i].d_idx;
-        int h_idx = hbond_data->candidate.donors[i].h_idx;
-        payload.don = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
-        payload.hyd = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
-        payload.num_candidates = 0;
+    hbond_candidate_callback_data_t payload = {
+        .don_xyz = don_xyz,
+        .hyd_xyz = hyd_xyz,
+        .acc_xyz = acc_xyz,
+        .hbond_candidate_data = &hbond_data->candidate,
+        .donor_energies = donor_energies,
+        .min_angle_in_radians = DEG_TO_RAD(min_angle),
+    };
 
-        md_spatial_hash_query(sh, vec3_from_vec4(payload.don), radius, hbond_iter, &payload);
+    const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
+    
+    md_spatial_acc_t acc = { .alloc = temp_arena };
+    md_spatial_acc_init(&acc, atom_x, atom_y, atom_z, acc_idx, num_acc, cell_ext, unitcell, 0);
 
-        // Pick top candidates
-        if (payload.num_candidates > 0) {
-            hbond_candidate_t* arr = payload.candidates;
-            // Sort them (insertion sort)
-            int n = payload.num_candidates;
-            for (int j = 1; j < n; j++) {
-                int k = j - 1;
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, atom_x, atom_y, atom_z, don_idx, num_don, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
 
-                // descending order
-                while (k >= 0 && arr[k].score < arr[j].score) {
-                    arr[k + 1] = arr[k];
-                    k--;
-                }
-                arr[k + 1] = arr[j];
-            }
+    typedef struct {
+        float score[4];
+        int don_idx[4];
+    } acceptor_assignment_t;
 
-            // Try to form bonds
-            for (int j = 0; j < n ; ++j) {
-                uint32_t a_idx = (uint32_t)arr[j].acc_idx;
-                if (acc_cap[a_idx] > 0) {
-                    md_hydrogen_bond_pair_t bond = { (uint32_t)i, a_idx };
-                    md_array_push_no_grow(hbond_data->bonds, bond);
-                    hbond_data->num_bonds += 1;
-                    acc_cap[a_idx] -= 1;
+    acceptor_assignment_t* assignments = md_vm_arena_push_zero_array(temp_arena, acceptor_assignment_t, num_acc);
+
+    // Try to assign donors to acceptors based on the best score, respecting acceptor capacities
+    for (size_t i = 0; i < num_don; ++i) {
+        float score = donor_energies[i].score;
+        int acc_idx = donor_energies[i].acc_idx;
+        acceptor_assignment_t* assignment = &assignments[acc_idx];
+
+        // Insertion sort into the acceptor's assigned donors if score is good enough
+        if (score > assignment->score[3]) {
+            assignment->score[3] = score;
+            for (int j = 3; j > 0; --j) {
+                if (assignment->score[j] > assignment->score[j - 1]) {
+                    // Swap
+                    float temp_score = assignment->score[j - 1];
+                    int temp_don_idx = assignment->don_idx[j - 1];
+                    assignment->score[j - 1] = assignment->score[j];
+                    assignment->don_idx[j - 1] = assignment->don_idx[j];
+                    assignment->score[j] = temp_score;
+                    assignment->don_idx[j] = temp_don_idx;
+                } else {
                     break;
                 }
             }
         }
     }
 
-    md_vm_arena_destroy(arena);
+    // Now create bonds for the top-scoring donors for each acceptor, respecting capacity
+    for (size_t i = 0; i < num_acc; ++i) {
+        acceptor_assignment_t* assignment = &assignments[i];
+        int capacity = hbond_data->candidate.acc_lone_pairs[i];
+        for (int j = 0; j < capacity; ++j) {
+            if (assignment->score[j] == 0.f) {
+                break;
+            }
+            md_hydrogen_bond_pair_t pair = {
+                .acceptor_idx = (uint32_t)i,
+                .donor_idx = assignment->don_idx[j],
+            };
+            md_array_push_no_grow(hbond_data->bonds, pair);
+            hbond_data->num_bonds += 1;
+        }
+    }
+
+    md_vm_arena_destroy(temp_arena);
 }
 
 // Excel-style chain-id generator: A..Z, AA..ZZ, AAA..
@@ -5326,8 +5367,8 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
-            md_spatial_acc_init(&acc, sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count, cutoff, &sys->unitcell);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices, radius, spatial_acc_pair_set_bits_callback, mask);
+            md_spatial_acc_init(&acc, sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count, cutoff, &sys->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
 
@@ -8820,7 +8861,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
         if (sys->bond.count == 0) {
-            md_util_system_infer_covalent_bonds(sys, alloc);
+            md_util_system_covalent_bond_infer(sys, alloc);
         }
         if (sys->bond.conn.count == 0) {
 			md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
@@ -8882,7 +8923,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                     }
 
                     md_urange_t range = md_inst_comp_range(&sys->inst, inst_idx);
-                    for (md_comp_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
+                    for (size_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
                         md_protein_backbone_atoms_t atoms;
                         md_urange_t atom_range = md_comp_atom_range(&sys->comp, res_idx);
                         bool has_backbone_atoms = md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
@@ -8896,7 +8937,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                             }
 
                             if (comp_base == -1) {
-                                comp_base = res_idx;
+                                comp_base = (md_comp_idx_t)res_idx;
                             }
                             md_array_push(backbone_atoms, atoms, temp_arena);
                             prev_seq_id = seq_id;

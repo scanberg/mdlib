@@ -7,6 +7,14 @@
 struct md_allocator_i;
 struct md_unitcell_t;
 
+typedef enum {
+    MD_SPATIAL_ACC_FLAG_NONE = 0,
+
+    // If this flag is not set, the internal idx is used for the callback, which is a dense range of 0..count-1.
+    // If this flag is set, the supplied idx is used for the callback, which can be any arbitrary integer value per point.
+    MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX = 0x1,
+} md_spatial_acc_flags_t;
+
 typedef struct md_spatial_acc_t {
     size_t num_elems;
     float* elem_x;
@@ -37,6 +45,9 @@ extern "C" {
 #endif
 
 // Callback signatures
+// Internally the query procedures batch up results and pass them in larger chunks to the callback for better performance.
+// The arrays passed to the callback are padded so vectorized loads can safely be performed without worrying about out-of-bounds access,
+// the num_points/num_pairs parameter indicates the actual number of valid points/pairs in the arrays for the callback to process.
 
 // Callback for single point query.
 typedef void (*md_spatial_acc_point_callback_t)(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param);
@@ -44,8 +55,16 @@ typedef void (*md_spatial_acc_point_callback_t)(const uint32_t* idx, const float
 // Callback for pairwise interactions
 typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 
-// It is recommended to use a cell extent that is equal to the maximum search radius
-void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const struct md_unitcell_t* unitcell);
+// Initialize a spatial acceleration structure
+// - in_x, in_y, in_z:  Input positions of points. They are expected to be in cartesian coordinates.
+// - in_idx (optional): Input indices for points to extract. If NULL, it is assumed to be a dense range of 0..count-1.
+// If not NULL, the supplied indices are used for the callback if the flag MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX is set, otherwise the linear idx is used for the callback.
+// - count: Number of points OR number of indices if in_idx is not NULL.
+// - cell_ext (optional): Cell extent for the spatial acceleration structure. If 0, it is automatically determined.
+// - flags: (optional) Flags to control the behavior of the spatial acceleration structure. See md_spatial_acc_init_flags_t for details.
+void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const struct md_unitcell_t* unitcell, md_spatial_acc_flags_t flags);
+
+// Free the data allocated for the spatial acceleration structure. This should be called when the spatial acceleration structure is no longer needed to free the allocated memory.
 void md_spatial_acc_free(md_spatial_acc_t* acc);
 
 // --- INTERNAL PAIR TESTS ---
@@ -61,7 +80,7 @@ void md_spatial_acc_for_each_internal_pair_in_neighboring_cells(const md_spatial
 
 // Test external points against internal points within the spatial acceleration structure for a supplied cutoff
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices in the callback
-void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
+void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags);
 
 // Perform a spatial query for points within the spatial acceleration structure within a bounding box defined by center and extent
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param);

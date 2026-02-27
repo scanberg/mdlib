@@ -1614,10 +1614,10 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
         for (size_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             range = clamp_range(range, ctx_range);
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
+            const int step = ranges[i].step > 0 ? ranges[i].step : 1;
             if (ctx->mol_ctx) {
                 md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
-                int64_t k = 0;
+                int k = 0;
                 while (md_bitfield_iter_next(&it)) {
                     const int idx = (int)md_bitfield_iter_idx(&it);
                     if ((k % step) == 0) {
@@ -1627,9 +1627,9 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
                 }
             }
             else {
-                int64_t len = MAX(0, range.end - range.beg);
+                int len = MAX(0, range.end - range.beg);
                 md_array_ensure(out_indices, md_array_size(out_indices) + (size_t)((len + step - 1) / step), ctx->temp_alloc);
-                for (int64_t j = range.beg; j < range.end; j += step) {
+                for (int j = range.beg; j < range.end; j += step) {
                     md_array_push(out_indices, j, ctx->temp_alloc);
                 }
             }
@@ -2695,6 +2695,8 @@ typedef struct contact_count_callback_data_t {
 } contact_count_callback_data_t;
 
 void contact_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;
+    (void)ij_dist2;
 	contact_count_callback_data_t* data = (contact_count_callback_data_t*)user_param;
     for (size_t k = 0; k < num_pairs; ++k) {
         if (data->exclusion_bf && md_bitfield_test_bit(data->exclusion_bf, j_idx[k])) continue;
@@ -2767,7 +2769,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, num_indices, cutoff, &ctx->mol->unitcell);
+		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, num_indices, cutoff, &ctx->mol->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
 		md_array(int32_t) a_indices = 0;
 
@@ -2810,7 +2812,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->mol, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, cb, &data);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
             }
@@ -5810,7 +5812,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (!brute_force) {
             double cell_ext = spatial_hash_radius;
             spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unitcell, ctx->temp_alloc);
-            md_spatial_acc_init(&spatial_acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, cell_ext, &ctx->mol->unitcell);
+            //md_spatial_acc_init(&spatial_acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, cell_ext, &ctx->mol->unitcell, 0);
         } else {
             trg_xyz = md_vm_arena_push(ctx->temp_alloc, sizeof(vec3_t) * trg_size);
             for (size_t i = 0; i < trg_size; ++i) {

@@ -586,7 +586,7 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
     if (num_unassigned_atom_types > 0) {
         md_util_system_infer_atom_types(sys, atom_name, alloc);
     }
-	md_util_system_infer_covalent_bonds(sys, alloc);
+	md_util_system_covalent_bond_infer(sys, alloc);
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
 

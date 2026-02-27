@@ -24,11 +24,11 @@ UBENCH_EX(spatial_hash, query_n2_centered) {
 
     if (result) {
         md_spatial_acc_t acc = { .alloc = arena };
-        md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell);
+        md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, RADIUS, &sys.unitcell, 0);
 
         uint32_t count = 0;
         UBENCH_DO_BENCHMARK() {
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, RADIUS, spatial_acc_pair_count_callback, &count);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, RADIUS, spatial_acc_pair_count_callback, &count, 0);
             UBENCH_DO_NOTHING(&count);
         }
     }

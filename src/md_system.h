@@ -127,22 +127,16 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
-typedef struct md_hydrogen_bond_donor_t {
-    md_atom_idx_t d_idx; // donor
-    md_atom_idx_t h_idx; // hydrogen
-} md_hydrogen_bond_donor_t;
 
-typedef struct md_hydrogen_bond_acceptor_t {
-    md_atom_idx_t idx;
-    int num_of_lone_pairs;
-} md_hydrogen_bond_acceptor_t;
 
 typedef struct md_hydrogen_bond_candidates_t {
     size_t num_acceptors;
-    md_hydrogen_bond_acceptor_t* acceptors;
+    md_atom_idx_t* acc_idx;
+    int* acc_lone_pairs;
    
     size_t num_donors;
-    md_hydrogen_bond_donor_t* donors;
+    md_atom_idx_t* don_idx;
+    md_atom_idx_t* don_h_idx;
 } md_hydrogen_bond_candidates_t;
 
 typedef struct md_hydrogen_bond_pair_t {
@@ -297,8 +291,7 @@ static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* ato
     ASSERT(atom);
     
     // Try atom type table first if type_idx is available
-    if (atom->type_idx && atom->type_idx[atom_idx] >= 0 && 
-        (size_t)atom->type_idx[atom_idx] < atom->type.count) {
+    if (atom->type_idx && (size_t)atom->type_idx[atom_idx] < atom->type.count) {
         return atom->type.z[atom->type_idx[atom_idx]];
     }
     
@@ -936,7 +929,7 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
 	ASSERT(hbond_cand);
     if (donor_idx < hbond_cand->num_donors) {
-        return hbond_cand->donors[donor_idx].d_idx;
+        return hbond_cand->don_idx[donor_idx];
 	}
     return -1;
 }
@@ -944,7 +937,7 @@ static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bo
 static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t donor_idx) {
     ASSERT(hbond_cand);
     if (donor_idx < hbond_cand->num_donors) {
-        return hbond_cand->donors[donor_idx].h_idx;
+        return hbond_cand->don_h_idx[donor_idx];
     }
     return -1;
 }
@@ -952,9 +945,17 @@ static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hy
 static inline md_atom_idx_t md_hydrogen_bond_acceptor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acceptor_idx) {
     ASSERT(hbond_cand);
     if (acceptor_idx < hbond_cand->num_acceptors) {
-        return hbond_cand->acceptors[acceptor_idx].idx;
+        return hbond_cand->acc_idx[acceptor_idx];
     }
     return -1;
+}
+
+static inline int md_hydrogen_bond_acceptor_lone_pair_count(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acceptor_idx) {
+    ASSERT(hbond_cand);
+    if (acceptor_idx < hbond_cand->num_acceptors) {
+        return hbond_cand->acc_lone_pairs[acceptor_idx];
+    }
+    return 0;
 }
 
 /*

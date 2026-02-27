@@ -96,74 +96,6 @@ static inline bool ivec4_any(ivec4_t v) {
 #endif
 }
 
-static const uint64_t avx_compress_lut[256] = {
-    0x0000000000000000ULL,   0x0000000000000000ULL,   0x0000000000000001ULL,   0x0000000000000100ULL,
-    0x0000000000000002ULL,   0x0000000000000200ULL,   0x0000000000000201ULL,   0x0000000000020100ULL,
-    0x0000000000000003ULL,   0x0000000000000300ULL,   0x0000000000000301ULL,   0x0000000000030100ULL,
-    0x0000000000000302ULL,   0x0000000000030200ULL,   0x0000000000030201ULL,   0x0000000003020100ULL,
-    0x0000000000000004ULL,   0x0000000000000400ULL,   0x0000000000000401ULL,   0x0000000000040100ULL,
-    0x0000000000000402ULL,   0x0000000000040200ULL,   0x0000000000040201ULL,   0x0000000004020100ULL,
-    0x0000000000000403ULL,   0x0000000000040300ULL,   0x0000000000040301ULL,   0x0000000004030100ULL,
-    0x0000000000040302ULL,   0x0000000004030200ULL,   0x0000000004030201ULL,   0x0000000403020100ULL,
-    0x0000000000000005ULL,   0x0000000000000500ULL,   0x0000000000000501ULL,   0x0000000000050100ULL,
-    0x0000000000000502ULL,   0x0000000000050200ULL,   0x0000000000050201ULL,   0x0000000005020100ULL,
-    0x0000000000000503ULL,   0x0000000000050300ULL,   0x0000000000050301ULL,   0x0000000005030100ULL,
-    0x0000000000050302ULL,   0x0000000005030200ULL,   0x0000000005030201ULL,   0x0000000503020100ULL,
-    0x0000000000000504ULL,   0x0000000000050400ULL,   0x0000000000050401ULL,   0x0000000005040100ULL,
-    0x0000000000050402ULL,   0x0000000005040200ULL,   0x0000000005040201ULL,   0x0000000504020100ULL,
-    0x0000000000050403ULL,   0x0000000005040300ULL,   0x0000000005040301ULL,   0x0000000504030100ULL,
-    0x0000000005040302ULL,   0x0000000504030200ULL,   0x0000000504030201ULL,   0x0000050403020100ULL,
-    0x0000000000000006ULL,   0x0000000000000600ULL,   0x0000000000000601ULL,   0x0000000000060100ULL,
-    0x0000000000000602ULL,   0x0000000000060200ULL,   0x0000000000060201ULL,   0x0000000006020100ULL,
-    0x0000000000000603ULL,   0x0000000000060300ULL,   0x0000000000060301ULL,   0x0000000006030100ULL,
-    0x0000000000060302ULL,   0x0000000006030200ULL,   0x0000000006030201ULL,   0x0000000603020100ULL,
-    0x0000000000000604ULL,   0x0000000000060400ULL,   0x0000000000060401ULL,   0x0000000006040100ULL,
-    0x0000000000060402ULL,   0x0000000006040200ULL,   0x0000000006040201ULL,   0x0000000604020100ULL,
-    0x0000000000060403ULL,   0x0000000006040300ULL,   0x0000000006040301ULL,   0x0000000604030100ULL,
-    0x0000000006040302ULL,   0x0000000604030200ULL,   0x0000000604030201ULL,   0x0000060403020100ULL,
-    0x0000000000000605ULL,   0x0000000000060500ULL,   0x0000000000060501ULL,   0x0000000006050100ULL,
-    0x0000000000060502ULL,   0x0000000006050200ULL,   0x0000000006050201ULL,   0x0000000605020100ULL,
-    0x0000000000060503ULL,   0x0000000006050300ULL,   0x0000000006050301ULL,   0x0000000605030100ULL,
-    0x0000000006050302ULL,   0x0000000605030200ULL,   0x0000000605030201ULL,   0x0000060503020100ULL,
-    0x0000000000060504ULL,   0x0000000006050400ULL,   0x0000000006050401ULL,   0x0000000605040100ULL,
-    0x0000000006050402ULL,   0x0000000605040200ULL,   0x0000000605040201ULL,   0x0000060504020100ULL,
-    0x0000000006050403ULL,   0x0000000605040300ULL,   0x0000000605040301ULL,   0x0000060504030100ULL,
-    0x0000000605040302ULL,   0x0000060504030200ULL,   0x0000060504030201ULL,   0x0006050403020100ULL,
-    0x0000000000000007ULL,   0x0000000000000700ULL,   0x0000000000000701ULL,   0x0000000000070100ULL,
-    0x0000000000000702ULL,   0x0000000000070200ULL,   0x0000000000070201ULL,   0x0000000007020100ULL,
-    0x0000000000000703ULL,   0x0000000000070300ULL,   0x0000000000070301ULL,   0x0000000007030100ULL,
-    0x0000000000070302ULL,   0x0000000007030200ULL,   0x0000000007030201ULL,   0x0000000703020100ULL,
-    0x0000000000000704ULL,   0x0000000000070400ULL,   0x0000000000070401ULL,   0x0000000007040100ULL,
-    0x0000000000070402ULL,   0x0000000007040200ULL,   0x0000000007040201ULL,   0x0000000704020100ULL,
-    0x0000000000070403ULL,   0x0000000007040300ULL,   0x0000000007040301ULL,   0x0000000704030100ULL,
-    0x0000000007040302ULL,   0x0000000704030200ULL,   0x0000000704030201ULL,   0x0000070403020100ULL,
-    0x0000000000000705ULL,   0x0000000000070500ULL,   0x0000000000070501ULL,   0x0000000007050100ULL,
-    0x0000000000070502ULL,   0x0000000007050200ULL,   0x0000000007050201ULL,   0x0000000705020100ULL,
-    0x0000000000070503ULL,   0x0000000007050300ULL,   0x0000000007050301ULL,   0x0000000705030100ULL,
-    0x0000000007050302ULL,   0x0000000705030200ULL,   0x0000000705030201ULL,   0x0000070503020100ULL,
-    0x0000000000070504ULL,   0x0000000007050400ULL,   0x0000000007050401ULL,   0x0000000705040100ULL,
-    0x0000000007050402ULL,   0x0000000705040200ULL,   0x0000000705040201ULL,   0x0000070504020100ULL,
-    0x0000000007050403ULL,   0x0000000705040300ULL,   0x0000000705040301ULL,   0x0000070504030100ULL,
-    0x0000000705040302ULL,   0x0000070504030200ULL,   0x0000070504030201ULL,   0x0007050403020100ULL,
-    0x0000000000000706ULL,   0x0000000000070600ULL,   0x0000000000070601ULL,   0x0000000007060100ULL,
-    0x0000000000070602ULL,   0x0000000007060200ULL,   0x0000000007060201ULL,   0x0000000706020100ULL,
-    0x0000000000070603ULL,   0x0000000007060300ULL,   0x0000000007060301ULL,   0x0000000706030100ULL,
-    0x0000000007060302ULL,   0x0000000706030200ULL,   0x0000000706030201ULL,   0x0000070603020100ULL,
-    0x0000000000070604ULL,   0x0000000007060400ULL,   0x0000000007060401ULL,   0x0000000706040100ULL,
-    0x0000000007060402ULL,   0x0000000706040200ULL,   0x0000000706040201ULL,   0x0000070604020100ULL,
-    0x0000000007060403ULL,   0x0000000706040300ULL,   0x0000000706040301ULL,   0x0000070604030100ULL,
-    0x0000000706040302ULL,   0x0000070604030200ULL,   0x0000070604030201ULL,   0x0007060403020100ULL,
-    0x0000000000070605ULL,   0x0000000007060500ULL,   0x0000000007060501ULL,   0x0000000706050100ULL,
-    0x0000000007060502ULL,   0x0000000706050200ULL,   0x0000000706050201ULL,   0x0000070605020100ULL,
-    0x0000000007060503ULL,   0x0000000706050300ULL,   0x0000000706050301ULL,   0x0000070605030100ULL,
-    0x0000000706050302ULL,   0x0000070605030200ULL,   0x0000070605030201ULL,   0x0007060503020100ULL,
-    0x0000000007060504ULL,   0x0000000706050400ULL,   0x0000000706050401ULL,   0x0000070605040100ULL,
-    0x0000000706050402ULL,   0x0000070605040200ULL,   0x0000070605040201ULL,   0x0007060504020100ULL,
-    0x0000000706050403ULL,   0x0000070605040300ULL,   0x0000070605040301ULL,   0x0007060504030100ULL,
-    0x0000070605040302ULL,   0x0007060504030200ULL,   0x0007060504030201ULL,   0x0706050403020100ULL,
-};
-
-
 typedef struct {
     float x, y, z;
     uint32_t idx;
@@ -196,17 +128,24 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     acc->H01 = acc->H02 = acc->H12 = 0.0f;
 
 	MEMSET(acc->cell_mask, 0, sizeof(acc->cell_mask));
-    MEMSET(acc->cell_dim, 0, sizeof(acc->cell_dim));
+    MEMSET(acc->cell_dim,  0, sizeof(acc->cell_dim));
 
 	acc->flags = 0;
 	MEMSET(acc->origin, 0, sizeof(acc->origin));
 }
 
-void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double in_cell_ext, const md_unitcell_t* unitcell) {
+void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
     ASSERT(acc);
     if (!acc->alloc) {
         MD_LOG_ERROR("Must have allocator set within spatial acc");
         return;
+    }
+
+    if (in_flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
+        if (!in_idx) {
+            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_STORE_SUPPLIED_IDX is set, but in_idx is NULL");
+            return;
+        }
     }
 
 	// Reset acc, but to not free memory
@@ -217,18 +156,24 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         return;
     }
 
+    if (in_cell_ext <= 0.0) {
+        // Fallback to some default value
+        in_cell_ext = 6.0;
+    }
+
     // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
     // Using ~cutoff-ish spacing gives good pruning.
-    const double CELL_EXT = in_cell_ext > 0.0 ? in_cell_ext : 3.0;
+    // We protect against too small cell_ext to avoid excessive memory usage and slowdown from too many cells.
+    const double CELL_EXT = MAX(in_cell_ext, 3.0);
 
     double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double I[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     uint32_t flags = 0;
 
-    if (unitcell) {
-        md_unitcell_basis_extract(A, unitcell);
-        md_unitcell_inv_basis_extract(I, unitcell);
-        flags = md_unitcell_flags(unitcell);
+    if (in_unitcell) {
+        md_unitcell_basis_extract(A, in_unitcell);
+        md_unitcell_inv_basis_extract(I, in_unitcell);
+        flags = md_unitcell_flags(in_unitcell);
     }
 
     vec4_t coord_offset = vec4_zero();
@@ -400,8 +345,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         local_idx[i] = acc->cell_off[ci]++;  // count for now
         cell_idx[i]  = (uint32_t)ci;
 
+        uint32_t elem_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)i;
+
         // stash fractional coordinates
-        scratch_s[i] = (elem_t){s.x, s.y, s.z, idx};
+        scratch_s[i] = (elem_t){s.x, s.y, s.z, elem_idx};
     }
 
     // 2) Prefix sum cell offsets
@@ -826,7 +773,7 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                         const md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
 						const md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
-						int mask = md_mm256_movemask_ps(v_mask);
+						const int mask = md_mm256_movemask_ps(v_mask);
 
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -897,7 +844,7 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                             const md_256 v_d2 = distance_squared_tri_256(v_dx, v_dy, v_dz, G00, G11, G22, H01, H02, H12);
 
-                            int mask = md_mm256_movemask_ps(v_mask);
+                            const int mask = md_mm256_movemask_ps(v_mask);
 
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -997,7 +944,7 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                         const md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
 						const md_256i v_idxj = md_mm256_loadu_epi32(elem_i_idx + j);
-						int mask = md_mm256_movemask_ps(v_mask);
+						const int mask = md_mm256_movemask_ps(v_mask);
 
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1072,7 +1019,7 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
                             const md_256 v_dz = md_mm256_sub_ps(v_zi, md_mm256_loadu_ps(elem_j_z + j));
                             const md_256 v_d2 = distance_squared_ort_256(v_dx, v_dy, v_dz, G00, G11, G22);
 
-                            int mask = md_mm256_movemask_ps(v_mask);
+                            const int mask = md_mm256_movemask_ps(v_mask);
 
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1187,16 +1134,13 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                         const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                         // Fill buffers with results
-                        int mask = md_mm256_movemask_ps(v_mask);
-
+                        const int mask = md_mm256_movemask_ps(v_mask);
                         if (mask) {
+                            const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
 						    md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
 
-                            uint64_t key = avx_compress_lut[mask];
-                            md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-						    v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-						    v_d2   = simde_mm256_permutevar8x32_ps(v_d2,      v_perm_mask);
+						    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+						    v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1270,16 +1214,13 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                             const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                             // Fill buffers with results
-                            int mask = md_mm256_movemask_ps(v_mask);
-
+                            const int mask = md_mm256_movemask_ps(v_mask);
                             if (mask) {
+                                const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                                 md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
 
-                                uint64_t key = avx_compress_lut[mask];
-                                md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                                v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                                v_d2   = simde_mm256_permutevar8x32_ps(v_d2,      v_perm_mask);
+                                v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                                v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
                                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1396,16 +1337,13 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                         const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
 						// Fill buffers with results
-						int mask = md_mm256_movemask_ps(v_mask);
-
+						const int mask = md_mm256_movemask_ps(v_mask);
                         if (mask) {
+                            const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
 						    md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
 
-                            uint64_t key = avx_compress_lut[mask];
-                            const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-						    v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj,  v_perm_mask);
-						    v_d2   = simde_mm256_permutevar8x32_ps(v_d2,       v_perm_mask);
+						    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj,  v_idx_mask);
+						    v_d2   = md_mm256_permutevar8x32_ps(v_d2,       v_idx_mask);
 
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1483,16 +1421,13 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                             const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                             // Fill buffers with results
-                            int mask = md_mm256_movemask_ps(v_mask);
-
+                            const int mask = md_mm256_movemask_ps(v_mask);
                             if (mask) {
+                                const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                                 md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
 
-                                uint64_t key = avx_compress_lut[mask];
-                                const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                                v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                                v_d2   = simde_mm256_permutevar8x32_ps(v_d2,      v_perm_mask);
+                                v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                                v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
                                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1514,7 +1449,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     FLUSH_TAIL_PAIR();
 }
 
-static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
+static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
         (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
@@ -1524,6 +1459,13 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: cutoff too large for cell size");
         return;
+    }
+
+    if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
+        if (!ext_idx) {
+            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_idx is NULL");
+            return;
+        }
     }
 
     const float r2 = calc_r2(cutoff);
@@ -1586,7 +1528,8 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
 		vec4_t f = vec4_fract(mat4_mul_vec4(I4, r));
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
-        const md_256i v_idxi = md_mm256_set1_epi32((uint32_t)idx);
+        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
+        const md_256i v_idxi = md_mm256_set1_epi32(idx_i);
 
         for (uint32_t n = 0; n < num_neighbors; ++n) {
             const ivec4_t fwd_v = ivec4_load(neighbors[n]);
@@ -1641,16 +1584,13 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
                 const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                 // Fill buffers with results
-                int mask = md_mm256_movemask_ps(v_mask);
-
+                const int mask = md_mm256_movemask_ps(v_mask);
                 if (mask) {
+                    const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                     md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
 
-                    uint64_t key = avx_compress_lut[mask];
-                    const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                    v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                    v_d2   = simde_mm256_permutevar8x32_ps(v_d2,      v_perm_mask);
+                    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                    v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
                     ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1669,7 +1609,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     FLUSH_TAIL_PAIR();
 }
 
-static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
+static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
         (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
@@ -1679,6 +1619,13 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: cutoff too large for cell size");
         return;
+    }
+
+    if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
+        if (!ext_idx) {
+            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_idx is NULL");
+            return;
+        }
     }
 
     const float r2 = calc_r2(cutoff);
@@ -1744,7 +1691,8 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 		f = vec4_blend(f, vec4_fract(f), pbc_mask);
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
-        const md_256i v_idxi = md_mm256_set1_epi32((uint32_t)idx);
+        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
+        const md_256i v_idxi = md_mm256_set1_epi32(idx_i);
 
         for (uint32_t n = 0; n < num_neighbors; ++n) {
             const ivec4_t fwd_v = ivec4_load(neighbors[n]);
@@ -1802,16 +1750,13 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                 const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
                 // Fill buffers with results
-                int mask = md_mm256_movemask_ps(v_mask);
-
+                const int mask = md_mm256_movemask_ps(v_mask);
                 if (mask) {
+                    const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                     md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_j_idx + j));
 
-                    uint64_t key = avx_compress_lut[mask];
-                    const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                    v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                    v_d2   = simde_mm256_permutevar8x32_ps(v_d2,      v_perm_mask);
+                    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                    v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
                     ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -1956,17 +1901,15 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                     const md_256 v_mask = md_mm256_and_ps(md_mm256_and_ps(v_mask_min, v_mask_max), j_mask);
 
                     // Fill buffers with results
-                    int mask = md_mm256_movemask_ps(v_mask);
+                    const int mask = md_mm256_movemask_ps(v_mask);
                     if (mask) {
+                        const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                         md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
-                        uint64_t key = avx_compress_lut[mask];
-                        const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                        v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                        v_xj = simde_mm256_permutevar8x32_ps(v_xj, v_perm_mask);
-                        v_yj = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
-                        v_zj = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
+                        v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                        v_xj   = md_mm256_permutevar8x32_ps(v_xj, v_idx_mask);
+                        v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
+                        v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
                         md_mm256_storeu_epi32(buf_i + count, v_idxj);
                         md_mm256_storeu_ps   (buf_x + count, v_xj);
@@ -2118,17 +2061,15 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
 
             const md_256 v_mask = md_mm256_and_ps(md_mm256_cmple_ps(v_d2, v_r2), j_mask);
 
-            int mask = md_mm256_movemask_ps(v_mask);
+            const int mask = md_mm256_movemask_ps(v_mask);
             if (mask) {
+                const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                 md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
-                uint64_t key = avx_compress_lut[mask];
-                const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                v_idxj = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                v_xj   = simde_mm256_permutevar8x32_ps(v_xj, v_perm_mask);
-                v_yj   = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
-                v_zj   = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
+                v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                v_xj   = md_mm256_permutevar8x32_ps(v_xj, v_idx_mask);
+                v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
+                v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -2263,15 +2204,13 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
             // Fill buffers with results
             int mask = md_mm256_movemask_ps(v_mask);
             if (mask) {
+                const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                 md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
-                uint64_t key = avx_compress_lut[mask];
-                const md_256i v_perm_mask = simde_mm256_cvtepu8_epi32(simde_mm_cvtsi64_si128((long long)key));
-
-                v_idxj  = simde_mm256_permutevar8x32_epi32(v_idxj, v_perm_mask);
-                v_xj    = simde_mm256_permutevar8x32_ps(v_xj, v_perm_mask);
-                v_yj    = simde_mm256_permutevar8x32_ps(v_yj, v_perm_mask);
-                v_zj    = simde_mm256_permutevar8x32_ps(v_zj, v_perm_mask);
+                v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                v_xj   = md_mm256_permutevar8x32_ps(v_xj, v_idx_mask);
+                v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
+                v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
@@ -2319,7 +2258,7 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t*
 
 // Iterate over external points against points within the spatial acceleration structure for a supplied cutoff
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices
-void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
+void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     ASSERT(acc);
 	ASSERT(ext_x);
     ASSERT(ext_y);
@@ -2327,9 +2266,9 @@ void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_sp
     ASSERT(callback);
 
     if (acc->flags & MD_UNITCELL_TRICLINIC) {
-        for_each_external_pair_within_cutoff_triclinic(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param);
+        for_each_external_pair_within_cutoff_triclinic(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param, flags);
     } else {
-        for_each_external_pair_within_cutoff_ortho(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param);
+        for_each_external_pair_within_cutoff_ortho(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param, flags);
     }
 }
 
