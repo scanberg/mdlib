@@ -211,8 +211,9 @@ const md_script_vis_payload_o*  md_script_ir_property_vis_payload(const md_scrip
 str_t md_script_payload_ident(const md_script_vis_payload_o* payload);
 
 // Returns the major dimension (dim[0]) of the payload
+// This can be -1 if the dimension is not determined (i.e. dynamic length)
 // returns zero if the payload is not valid
-size_t md_script_payload_dim(const md_script_vis_payload_o* payload);
+int md_script_payload_dim(const md_script_vis_payload_o* payload);
 
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.

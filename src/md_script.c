@@ -6463,7 +6463,7 @@ str_t md_script_payload_ident(const md_script_vis_payload_o* payload) {
     return (str_t){0};
 }
 
-size_t md_script_payload_dim(const md_script_vis_payload_o* payload) {
+int md_script_payload_dim(const md_script_vis_payload_o* payload) {
     if (payload) {
         const ast_node_t* node = (const ast_node_t*)payload;
         return node->data.type.dim[0];
