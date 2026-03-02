@@ -413,7 +413,8 @@ static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
     return mat4_ident();
 }
 
-// extracts unit_cell basis matrix (A)
+// extracts unit_cell basis matrix A in the convention A[col][row]
+// (basis vectors a,b,c are columns: A[0]=a, A[1]=b, A[2]=c)
 static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
     if (cell) {
         out_A[0][0] = cell->x;
@@ -428,7 +429,7 @@ static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitce
     }
 }
 
-// returns the unit_cell inverse basis matrix (A^i)
+// extracts the unit_cell inverse basis matrix inv(A) in the convention Ai[col][row]
 static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
     if (cell) {
         if (!cell->flags) {
@@ -441,7 +442,12 @@ static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
         const double i12 = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
         const double i13 = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
         const double i23 = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
-        mat3_t Ai = {(float)i11, (float)i12, (float)i13, 0, (float)i22, (float)i23, 0, 0, (float)i33};
+
+        mat3_t Ai = {
+            (float)i11, 0,          0,
+            (float)i12, (float)i22, 0,
+            (float)i13, (float)i23, (float)i33
+        };
         return Ai;
     }
     return mat3_ident();
@@ -454,18 +460,19 @@ static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_u
             MEMSET(out_Ai, 0, sizeof(double) * 9);
             return;
         }
-        out_Ai[0][0] = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
-        out_Ai[1][1] = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
-        out_Ai[2][2] = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
-        out_Ai[0][1] = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
-        out_Ai[0][2] = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
-        out_Ai[1][2] = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
-        out_Ai[1][0] = 0;
-        out_Ai[2][0] = 0;
-        out_Ai[2][1] = 0;
+
+        const double i11 = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
+        const double i22 = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
+        const double i33 = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
+        const double i12 = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
+        const double i13 = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
+        const double i23 = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
+
+        out_Ai[0][0] = i11; out_Ai[0][1] = 0.0; out_Ai[0][2] = 0.0;
+        out_Ai[1][0] = i12; out_Ai[1][1] = i22; out_Ai[1][2] = 0.0;
+        out_Ai[2][0] = i13; out_Ai[2][1] = i23; out_Ai[2][2] = i33;
     }
 }
-
 // returns the unitcell metric tensor G=(A^T)A
 static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
     if (cell) {
@@ -476,14 +483,18 @@ static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
         const double yz = cell->yz;
         const double z  = cell->z;
 
-        // A = [[x,0,0],[xy,y,0],[xz,yz,z]]
-        // G = A^T A
-        const double g00 = x*x + xy*xy + xz*xz;
-        const double g01 = xy*y + xz*yz;
-        const double g02 = xz*z;
-        const double g11 = y*y + yz*yz;
-        const double g12 = yz*z;
-        const double g22 = z*z;
+        // Basis vectors (cartesian):
+        // a = (x,  0,  0)
+        // b = (xy, y,  0)
+        // c = (xz, yz, z)
+        //
+        // A = [a b c]  (columns), so metric is G = A^T A
+        const double g00 = x * x;
+        const double g01 = x * xy;
+        const double g02 = x * xz;
+        const double g11 = xy * xy + y * y;
+        const double g12 = xy * xz + y * yz;
+        const double g22 = xz * xz + yz * yz + z * z;
 
         mat3_t G = {
             (float)g00, (float)g01, (float)g02,
@@ -505,17 +516,17 @@ static inline void md_unitcell_G_extract(double out_G[3][3], const md_unitcell_t
         const double yz = cell->yz;
         const double z  = cell->z;
 
-        out_G[0][0] = x*x + xy*xy + xz*xz;
-        out_G[0][1] = xy*y + xz*yz;
-        out_G[0][2] = xz*z;
+        out_G[0][0] = x * x;
+        out_G[0][1] = x * xy;
+        out_G[0][2] = x * xz;
 
         out_G[1][0] = out_G[0][1];
-        out_G[1][1] = y*y + yz*yz;
-        out_G[1][2] = yz*z;
+        out_G[1][1] = xy * xy + y * y;
+        out_G[1][2] = xy * xz + y * yz;
 
         out_G[2][0] = out_G[0][2];
         out_G[2][1] = out_G[1][2];
-        out_G[2][2] = z*z;
+        out_G[2][2] = xz * xz + yz * yz + z * z;
     }
 }
 

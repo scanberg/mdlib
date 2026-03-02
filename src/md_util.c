@@ -8223,34 +8223,34 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     ASSERT(y);
     ASSERT(z);
     
-    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
-    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
-    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
+	mat3_t A = md_unitcell_basis_mat3(cell);
+	mat3_t I = md_unitcell_inv_basis_mat3(cell);
+
+    mat4x3_t I4x3 = mat4x3_from_mat3(I);
+    mat4x3_t A4x3 = mat4x3_from_mat3(A);
 
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx = indices[i];
-            vec4_t original = {x[idx], y[idx], z[idx], 0};
-            vec4_t coord = mat4x3_mul_vec4(I, original);
-            coord = vec4_fract(coord);
-            coord = mat4x3_mul_vec4(M, coord);
-            coord = vec4_blend(original, coord, mask);
+            vec4_t cart = {x[idx], y[idx], z[idx], 0};
+            vec4_t frac = mat4x3_mul_vec4(I4x3, cart);
+            vec4_t c    = vec4_fract(frac);
+            c           = mat4x3_mul_vec4(A4x3, c);
 
-            x[idx] = coord.x;
-            y[idx] = coord.y;
-            z[idx] = coord.z;
+            x[idx] = c.x;
+            y[idx] = c.y;
+            z[idx] = c.z;
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            vec4_t original = {x[i], y[i], z[i], 0};
-            vec4_t coord = mat4x3_mul_vec4(I, original);
-            coord = vec4_fract(coord);
-            coord = mat4x3_mul_vec4(M, coord);
-            coord = vec4_blend(original, coord, mask);
+            vec4_t cart = {x[i], y[i], z[i], 0};
+            vec4_t frac = mat4x3_mul_vec4(I4x3, cart);
+            vec4_t c    = vec4_fract(frac);
+            c           = mat4x3_mul_vec4(A4x3, c);
 
-            x[i] = coord.x;
-            y[i] = coord.y;
-            z[i] = coord.z;
+            x[i] = c.x;
+            y[i] = c.y;
+            z[i] = c.z;
         }
     }
 }

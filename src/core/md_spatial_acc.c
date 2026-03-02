@@ -218,11 +218,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         }
     }
 
-	double a[3] = { A[0][0], A[1][0], A[2][0] };
-	double b[3] = { A[0][1], A[1][1], A[2][1] };
-	double c[3] = { A[0][2], A[1][2], A[2][2] };
+    // Basis vectors are the COLUMNS of A (column-major storage: A[col][row])
+    double a[3] = { A[0][0], A[0][1], A[0][2] };
+    double b[3] = { A[1][0], A[1][1], A[1][2] };
+    double c[3] = { A[2][0], A[2][1], A[2][2] };
 
-    // Precompute metric G = A^T A
+    // Metric G = A^T A
     double G00 = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); // dot(a, a)
     double G11 = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]); // dot(b, b)
     double G22 = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]); // dot(c, c)
@@ -232,9 +233,9 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 
     double H01 = 0.0, H02 = 0.0, H12 = 0.0;
 
-	double norm_a = sqrt(G00);
-	double norm_b = sqrt(G11);
-	double norm_c = sqrt(G22);
+    double norm_a = sqrt(G00);
+    double norm_b = sqrt(G11);
+    double norm_c = sqrt(G22);
 
     float inv_cell_ext[3] = {
         (float)(norm_a > 0.0 ? 1.0 / norm_a : 0.0),
@@ -243,14 +244,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     };
 
     if (flags & MD_UNITCELL_TRICLINIC) {
-
-
         H01 = 2.0 * G01;
         H02 = 2.0 * G02;
         H12 = 2.0 * G12;
 
         double det = G00 * (G11 * G22 - G12 * G12) - G01 * (G01 * G22 - G12 * G02) + G02 * (G01 * G12 - G11 * G02);
-        
+
         if (det < DBL_EPSILON) {
             MD_LOG_ERROR("Degenerate unit cell / A matrix provided to spatial acc");
             md_spatial_acc_reset(acc);
@@ -261,7 +260,6 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         double GI11 = (G00 * G22 - G02 * G02) / det;
         double GI22 = (G00 * G11 - G01 * G01) / det;
 
-        // Conservative cell extents along each axis
         inv_cell_ext[0] = (float)sqrt(GI00);
         inv_cell_ext[1] = (float)sqrt(GI11);
         inv_cell_ext[2] = (float)sqrt(GI22);
@@ -304,13 +302,6 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     const ivec4_t icell_min = ivec4_set1(0);
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
 
-    mat4_t I4 = {
-        (float)I[0][0], (float)I[0][1], (float)I[0][2], 0,
-        (float)I[1][0], (float)I[1][1], (float)I[1][2], 0,
-        (float)I[2][0], (float)I[2][1], (float)I[2][2], 0,
-        0, 0, 0, 0,
-    };
-
     float val;
     MEMSET(&val, 0xFF, sizeof(val));
     const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
@@ -325,7 +316,13 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         r = vec4_add(r, coord_offset);
 
         // Fractional coordinates
-        vec4_t s = mat4_mul_vec4(I4, r);
+        vec4_t s = {
+            (float)(I[0][0] * r.x + I[1][0] * r.y + I[2][0] * r.z),
+            (float)(I[0][1] * r.x + I[1][1] * r.y + I[2][1] * r.z),
+            (float)(I[0][2] * r.x + I[1][2] * r.y + I[2][2] * r.z),
+            0,
+        };
+        
         s = vec4_blend(s, vec4_fract(s), pbc_mask);
 
         // Bin to cell indices
@@ -524,13 +521,6 @@ static float calc_r2(double cutoff) {
     return nextafterf(r2, r2 + 1.0f); // Round up to ensure we don't miss neighbors due to floating point precision
 }
 
-// Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
-static inline void cart_to_fract(double out_s[3], const double in_x[3], const md_spatial_acc_t* acc) {
-    for (int k = 0; k < 3; k++) {
-        out_s[k] = acc->I[0][k] * in_x[0] + acc->I[1][k] * in_x[1] + acc->I[2][k] * in_x[2];
-    }
-}
-
 static inline vec4_t vec4_cart_to_fract(vec4_t in_c, const md_spatial_acc_t* acc) {
     vec4_t out_s = {
         acc->I[0][0] * in_c.x + acc->I[1][0] * in_c.y + acc->I[2][0] * in_c.z,
@@ -542,15 +532,19 @@ static inline vec4_t vec4_cart_to_fract(vec4_t in_c, const md_spatial_acc_t* acc
 }
 
 static inline void fract_to_cart(double out_x[3], const double in_s[3], const md_spatial_acc_t* acc) {
-    for (int k = 0; k < 3; k++) {
-        out_x[k] = acc->A[k][0] * in_s[0] + acc->A[k][1] * in_s[1] + acc->A[k][2] * in_s[2];
-    }
+    // A is indexed as A[col][row]
+    // cart = A * fract - origin
+    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] - acc->origin[0];
+    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] - acc->origin[1];
+    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] - acc->origin[2];
 }
 
 static inline void fract_to_cart_float(float out_x[3], const float in_s[3], const md_spatial_acc_t* acc) {
-    for (int k = 0; k < 3; k++) {
-        out_x[k] = acc->A[k][0] * in_s[0] + acc->A[k][1] * in_s[1] + acc->A[k][2] * in_s[2];
-    }
+    // A is indexed as A[col][row]
+    // cart = A * fract - origin
+    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] - acc->origin[0];
+    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] - acc->origin[1];
+    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] - acc->origin[2];
 }
 
 static inline void fract_to_cart_ort_256(
@@ -589,12 +583,14 @@ static inline void cart_to_fract_ort_256(
 static inline void cart_to_fract_tri_256(
     md_256* out_sx, md_256* out_sy, md_256* out_sz,
     const md_256 in_cx, const md_256 in_cy, const md_256 in_cz,
-    const md_256 I00, const md_256 I01, const md_256 I02, const md_256 I11, const md_256 I12, const md_256 I22,
+    const md_256 I00, const md_256 I01, const md_256 I02,
+    const md_256 I10, const md_256 I11, const md_256 I12,
+    const md_256 I20, const md_256 I21, const md_256 I22,
     const md_256 O0,  const md_256 O1,  const md_256 O2)
 {
-    *out_sx = md_mm256_fmadd_ps(in_cx, I00, O0);
-    *out_sy = md_mm256_fmadd_ps(in_cx, I01, md_mm256_fmadd_ps(in_cy, I11, O1));
-    *out_sz = md_mm256_fmadd_ps(in_cx, I02, md_mm256_fmadd_ps(in_cy, I12, md_mm256_fmadd_ps(in_cz, I22, O2)));
+    *out_sx = md_mm256_fmadd_ps(in_cx, I00, md_mm256_fmadd_ps(in_cy, I01, md_mm256_fmadd_ps(in_cz, I02, O0)));
+    *out_sy = md_mm256_fmadd_ps(in_cx, I10, md_mm256_fmadd_ps(in_cy, I11, md_mm256_fmadd_ps(in_cz, I12, O1)));
+    *out_sz = md_mm256_fmadd_ps(in_cx, I20, md_mm256_fmadd_ps(in_cy, I21, md_mm256_fmadd_ps(in_cz, I22, O2)));
 }
 
 static inline void batch_fract_to_cart_ort_256(float* x, float* y, float* z, size_t count, const md_spatial_acc_t* acc) {
@@ -1506,13 +1502,6 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     const ivec4_t cdim_1v = ivec4_sub(cdim_v, ivec4_set(1, 1, 1, 0));
     const ivec4_t zero_v  = ivec4_set1(0);
 
-    const mat4_t I4 = {
-        (float)acc->I[0][0], (float)acc->I[0][1], (float)acc->I[0][2], 0,
-        (float)acc->I[1][0], (float)acc->I[1][1], (float)acc->I[1][2], 0,
-        (float)acc->I[2][0], (float)acc->I[2][1], (float)acc->I[2][2], 0,
-        0, 0, 0, 0,
-    };
-
     // If we have a triclinic cell, the cell must be periodic in all dimensions.
     ASSERT(acc->flags & MD_UNITCELL_TRICLINIC);
     ASSERT((acc->flags & MD_UNITCELL_PBC_ALL) == (MD_UNITCELL_PBC_ALL));
@@ -1525,7 +1514,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
 
         vec4_t r = {ext_x[idx], ext_y[idx], ext_z[idx], 0};
         r = vec4_add(r, coord_offset);
-		vec4_t f = vec4_fract(mat4_mul_vec4(I4, r));
+		vec4_t f = vec4_fract(vec4_cart_to_fract(r, acc));
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
         uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
@@ -1669,13 +1658,6 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
         0);
 
-    const mat4_t I4 = {
-        (float)acc->I[0][0], (float)acc->I[0][1], (float)acc->I[0][2], 0,
-        (float)acc->I[1][0], (float)acc->I[1][1], (float)acc->I[1][2], 0,
-        (float)acc->I[2][0], (float)acc->I[2][1], (float)acc->I[2][2], 0,
-        0, 0, 0, 0,
-    };
-
     float val;
     MEMSET(&val, 0xFF, sizeof(val));
     const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
@@ -1687,7 +1669,7 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 
         vec4_t r = {ext_x[idx], ext_y[idx], ext_z[idx], 0};
         r = vec4_add(r, coord_offset);
-		vec4_t f = mat4_mul_vec4(I4, r);
+		vec4_t f = vec4_cart_to_fract(r, acc);
 		f = vec4_blend(f, vec4_fract(f), pbc_mask);
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
@@ -1975,13 +1957,6 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
         (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
         0);
 
-    const mat4_t I4 = {
-        (float)acc->I[0][0], (float)acc->I[0][1], (float)acc->I[0][2], 0,
-        (float)acc->I[1][0], (float)acc->I[1][1], (float)acc->I[1][2], 0,
-        (float)acc->I[2][0], (float)acc->I[2][1], (float)acc->I[2][2], 0,
-        0, 0, 0, 0,
-    };
-
     float val;
     MEMSET(&val, 0xFF, sizeof(val));
     const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
@@ -1989,7 +1964,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
     const vec4_t coord_offset = { acc->origin[0], acc->origin[1], acc->origin[2], 0 };
     const vec4_t r4 = vec4_add(vec4_set((float)center[0], (float)center[1], (float)center[2], 0), coord_offset);
-    vec4_t f4 = mat4_mul_vec4(I4, r4);
+    vec4_t f4 = vec4_cart_to_fract(r4, acc);
     f4 = vec4_blend(vec4_fract(f4), f4, pbc_mask);
     const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, fcell_dim)));
 

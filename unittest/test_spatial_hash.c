@@ -13,6 +13,9 @@
 #include <md_lammps.h>
 #include <md_system.h>
 
+#include <math.h>
+#include <stdlib.h>
+
 #include <float.h>
 
 typedef struct {
@@ -26,21 +29,21 @@ typedef struct spatial_acc_data_t {
 } spatial_acc_data_t;
 
 static void spatial_acc_neighbor_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;
+    (void)j_idx;
     uint32_t* count = (uint32_t*)user_param;
 
-    const md_256i v_len = md_mm256_set1_epi32((int)num_pairs);
-    const md_256i v_8 = md_mm256_set1_epi32(8);
     const md_256 v_r2 = md_mm256_set1_ps(25.0f);  // 5.0^2
-    md_256i v_k = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 
-    for (size_t k = 0; k < num_pairs; k += 8) {
-        md_256i k_mask = md_mm256_cmplt_epi32(v_k, v_len);
+    const size_t vec_count = num_pairs & ~(size_t)7;
+    for (size_t k = 0; k < vec_count; k += 8) {
         md_256 v_d2 = md_mm256_loadu_ps(ij_dist2 + k);
-        md_256 d2_mask = md_mm256_cmplt_ps(v_d2, v_r2);
-        md_256 v_mask = md_mm256_and_ps(md_mm256_castsi256_ps(k_mask), d2_mask);
-
+        md_256 v_mask = md_mm256_cmplt_ps(v_d2, v_r2);
         *count += popcnt32(md_mm256_movemask_ps(v_mask));
-        v_k = md_mm256_add_epi32(v_k, v_8);
+    }
+
+    for (size_t k = vec_count; k < num_pairs; ++k) {
+        *count += (ij_dist2[k] < 25.0f);
     }
 }
 
@@ -57,58 +60,54 @@ static void spatial_acc_cutoff_callback(const uint32_t* i_idx, const uint32_t* j
 }
 
 static void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {  
+    (void)i_idx;
+    (void)j_idx;
+    (void)ij_dist2;
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_pairs;
 }
 
 static void spatial_acc_point_count_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param) {
+    (void)idx;
+    (void)x;
+    (void)y;
+    (void)z;
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_points;
 }
 
-static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
-    (void)elem;
-    uint32_t* count = (uint32_t*)user_param;
-    *count += 1;
-    return true;
-}
-
-typedef struct {
-    dist_pair_t* pairs;
-    uint32_t count;
-} iter_batch_pair_data_t;
-
-static bool iter_batch_pairs_fn(const md_spatial_hash_elem_t* elem, md_256 d2, int mask, size_t i, void* user_param) {
-    iter_batch_pair_data_t* data = user_param;
-    
-    float d2_raw[8];
-    md_mm256_storeu_ps(d2_raw, d2);
-
-    while (mask) {
-        const int idx = ctz32(mask);
-        mask = mask & ~(1 << idx);
-        uint32_t j = elem[idx].idx;
-        data->pairs[data->count].i = MIN((uint32_t)i,j);
-        data->pairs[data->count].j = MAX((uint32_t)i,j);
-        data->pairs[data->count].d2 = d2_raw[idx];
-        data->count += 1;
+static inline void dmat3_mul(double out[3][3], const double a[3][3], const double b[3][3]) {
+    // Matrices are indexed as [col][row] (column vectors are stored in the first index)
+    // out = a * b
+    // out[col][row] = sum_k a[k][row] * b[col][k]
+    for (int col = 0; col < 3; ++col) {
+        for (int row = 0; row < 3; ++row) {
+            out[col][row] =
+                a[0][row] * b[col][0] +
+                a[1][row] * b[col][1] +
+                a[2][row] * b[col][2];
+        }
     }
-
-    return true;
 }
 
+static inline void dmat3_mul_vec3(double out[3], const double m[3][3], const double v[3]) {
+    // Matrices are indexed as [col][row]
+    // out = m * v
+    for (int row = 0; row < 3; ++row) {
+        out[row] =
+            m[0][row] * v[0] +
+            m[1][row] * v[1] +
+            m[2][row] * v[2];
+    }
+}
 
 // Convert cartesian coordinates to fractional coordinates using the inverse of the unit cell matrix
 static inline void cart_to_fract(double out_s[3], const double in_x[3], const double I[3][3]) {
-    for (int k = 0; k < 3; k++) {
-        out_s[k] = I[0][k]*in_x[0] + I[1][k]*in_x[1] + I[2][k]*in_x[2];
-    }
+	dmat3_mul_vec3(out_s, I, in_x);
 }
 
 static inline void fract_to_cart(double out_x[3], const double in_s[3], const double A[3][3]) {
-    for (int k = 0; k < 3; k++) {
-        out_x[k] = A[k][0]*in_s[0] + A[k][1]*in_s[1] + A[k][2]*in_s[2];
-    }
+    dmat3_mul_vec3(out_x, A, in_s);
 }
 
 static inline double distance_ref_mic27(const double G[3][3], const double s0[3], const double s1[3]) {
@@ -187,19 +186,6 @@ static inline double rnd_rng(double min, double max) {
     return r * (max - min) + min;
 }
 
-static int compare_dist_pair(void const* a, void const* b) {
-    const dist_pair_t* pa = a;
-    const dist_pair_t* pb = b;
-    if (pa->i != pb->i) return pa->i - pb->i;
-    if (pa->j != pb->j) return pa->j - pb->j;
-    return 0;
-}
-
-static void n2_callback(const float* j_x, const float* j_y, const float* j_z, const uint32_t* j_idx, md_256 d2, int mask, uint32_t i, void* user_param) {
-    size_t* count = (size_t*)user_param;
-    *count += popcnt32(mask);
-};
-
 UTEST(spatial_hash, n2) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
@@ -208,11 +194,6 @@ UTEST(spatial_hash, n2) {
 
     md_system_t sys = {0};
     ASSERT_TRUE(md_gro_system_init(&sys, &gro_data, alloc));
-
-    vec3_t* xyz = md_alloc(alloc, sizeof(vec3_t) * sys.atom.count);
-    for (size_t i = 0; i < sys.atom.count; ++i) {
-        xyz[i] = vec3_set(sys.atom.x[i], sys.atom.y[i], sys.atom.z[i]);
-    }
 
     {
 
@@ -234,6 +215,22 @@ UTEST(spatial_hash, n2) {
         double I[3][3];
         md_unitcell_G_extract(G, &test_cell);
         md_unitcell_inv_basis_extract(I, &test_cell);
+
+        double X[3][3];
+		// Ensure that A*I = Identity
+		dmat3_mul(X, A, I);
+
+		EXPECT_NEAR(X[0][0], 1.0, 1.0e-16);
+        EXPECT_NEAR(X[0][1], 0.0, 1.0e-16);
+        EXPECT_NEAR(X[0][2], 0.0, 1.0e-16);
+
+        EXPECT_NEAR(X[1][0], 0.0, 1.0e-16);
+        EXPECT_NEAR(X[1][1], 1.0, 1.0e-16);
+        EXPECT_NEAR(X[1][2], 0.0, 1.0e-16);
+
+        EXPECT_NEAR(X[2][0], 0.0, 1.0e-16);
+        EXPECT_NEAR(X[2][1], 0.0, 1.0e-16);
+        EXPECT_NEAR(X[2][2], 1.0, 1.0e-16);
 
         // Generate random points
         for (size_t i = 0; i < TEST_COUNT; ++i) {
@@ -313,8 +310,6 @@ UTEST(spatial_hash, n2) {
                         double si[3], sj[3];
                         cart_to_fract(si, xi, I);
                         cart_to_fract(sj, xj, I);
-                        float sa_si[3] = { sa.elem_x[i], sa.elem_y[i], sa.elem_z[i] };
-                        float sa_sj[3] = { sa.elem_x[j], sa.elem_y[j], sa.elem_z[j] };
                         double dist_ref = sqrt(distance_ref_mic27(G, si, sj));
                         printf("Reference distance: %f\n", dist_ref);
                     }
@@ -391,8 +386,6 @@ UTEST(spatial_hash, n2) {
 
 struct spatial_hash {
     md_allocator_i* arena;
-    md_system_t sys;
-    vec3_t pbc_ext;
 };
 
 UTEST_F_SETUP(spatial_hash) {
@@ -444,7 +437,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 
         uint32_t sa_count = 0;
         vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {           
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
@@ -501,7 +494,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         }
 
         sa_count = 0;
-        md_spatial_acc_for_each_point_in_sphere(&acc, x0, radius, spatial_acc_point_count_callback, &sa_count);
+        md_spatial_acc_for_each_point_in_sphere(&acc, x0, (float)radius, spatial_acc_point_count_callback, &sa_count);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
@@ -609,8 +602,129 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
             }
         }
 
-        if (iter == 3) {
-            while (0);
+        sa_count = 0;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
+        }
+
+        sa_count = 0;
+        md_spatial_acc_for_each_point_in_sphere(&acc, x0, (float)radius, spatial_acc_point_count_callback, &sa_count);
+        EXPECT_EQ(ref_count, sa_count);
+        if (sa_count != ref_count) {
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
+        }
+    }
+}
+
+
+UTEST_F(spatial_hash, npt_triclinic) {
+    md_allocator_i* alloc = utest_fixture->arena;
+
+    md_system_t sys = { 0 };
+    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL, alloc));
+
+    srand(31);
+
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+
+    double G[3][3], A[3][3], I[3][3];
+    md_unitcell_G_extract(G, &sys.unitcell);
+    md_unitcell_basis_extract(A, &sys.unitcell);
+    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+
+	EXPECT_EQ((float)G[0][0], acc.G00);
+	EXPECT_EQ((float)G[1][1], acc.G11);
+	EXPECT_EQ((float)G[2][2], acc.G22);
+
+	EXPECT_EQ((float)A[0][0], acc.A[0][0]);
+    EXPECT_EQ((float)A[0][1], acc.A[0][1]);
+    EXPECT_EQ((float)A[0][2], acc.A[0][2]);
+
+    EXPECT_EQ((float)A[1][0], acc.A[1][0]);
+    EXPECT_EQ((float)A[1][1], acc.A[1][1]);
+    EXPECT_EQ((float)A[1][2], acc.A[1][2]);
+
+    EXPECT_EQ((float)A[2][0], acc.A[2][0]);
+    EXPECT_EQ((float)A[2][1], acc.A[2][1]);
+    EXPECT_EQ((float)A[2][2], acc.A[2][2]);
+
+	EXPECT_EQ((float)I[0][0], acc.I[0][0]);
+	EXPECT_EQ((float)I[0][1], acc.I[0][1]);
+	EXPECT_EQ((float)I[0][2], acc.I[0][2]);
+
+	EXPECT_EQ((float)I[1][0], acc.I[1][0]);
+	EXPECT_EQ((float)I[1][1], acc.I[1][1]);
+	EXPECT_EQ((float)I[1][2], acc.I[1][2]);
+
+	EXPECT_EQ((float)I[2][0], acc.I[2][0]);
+	EXPECT_EQ((float)I[2][1], acc.I[2][1]);
+	EXPECT_EQ((float)I[2][2], acc.I[2][2]);
+
+    double X[3][3];
+    dmat3_mul(X, A, I);
+
+	EXPECT_NEAR(X[0][0], 1.0, 1.0e-15);
+	EXPECT_NEAR(X[0][1], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[0][2], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[1][0], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[1][1], 1.0, 1.0e-15);
+	EXPECT_NEAR(X[1][2], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[2][0], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[2][1], 0.0, 1.0e-15);
+	EXPECT_NEAR(X[2][2], 1.0, 1.0e-15);
+
+    {
+        int i0 = 835;
+        int i1 = 6160;
+
+        double x0[3] = { sys.atom.x[i0], sys.atom.y[i0], sys.atom.z[i0] };
+		double x1[3] = { sys.atom.x[i1], sys.atom.y[i1], sys.atom.z[i1] };
+
+        double s0[3];
+        double s1[3];
+
+        cart_to_fract(s0, x0, I);
+        cart_to_fract(s1, x1, I);
+
+        double d2_ref = distance_ref_mic27(G, s0, s1);
+
+		vec3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
+        md_util_min_image_vec3(&dx, 1, &sys.unitcell);
+        double d2 = dx.x * dx.x + dx.y * dx.y + dx.z * dx.z;
+
+		EXPECT_NEAR(d2_ref, d2, 1.0e-4);
+    }
+
+    const int num_iter = 100;
+    for (int iter = 0; iter < num_iter; ++iter) {
+        double s0[3] = { rnd(), rnd(), rnd() };
+        double x0[3];
+        fract_to_cart(x0, s0, A);
+        vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
+        double radius = rnd() * 10.0;
+
+        uint32_t ref_count = 0;
+        uint32_t sa_count = 0;
+
+#if 0
+        // Do N^2 test as well to validate the reference implementation
+        ref_count = do_brute_force_double(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, radius, G, I, NULL, NULL);
+        md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
+        EXPECT_NEAR(ref_count, sa_count, 2);
+#endif
+
+        ref_count = 0;
+        const double rad2 = radius * radius;
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double si[3];
+            cart_to_fract(si, xi, I);
+            if (distance_ref_mic27(G, s0, si) < rad2) {
+                ref_count += 1;
+            }
         }
 
         sa_count = 0;
