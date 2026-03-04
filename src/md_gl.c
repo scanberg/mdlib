@@ -911,7 +911,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 
 md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     md_gl_mol_t handle = {0};
-    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
     if (sys) {
         if (sys->atom.count == 0) {
@@ -944,7 +944,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         }
         md_gl_mol_zero_velocity(handle);
 
-        float* radii = md_temp_push(sizeof(float) * sys->atom.count);
+        float* radii = md_vm_arena_push(temp_arena, sizeof(float) * sys->atom.count);
         md_atom_extract_radii(radii, 0, sys->atom.count, &sys->atom);
 
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
@@ -1177,7 +1177,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     }
 
 done:
-    md_temp_set_pos_back(temp_pos);
+    md_vm_arena_destroy(temp_arena);
     return handle;
 }
 

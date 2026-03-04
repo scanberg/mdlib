@@ -8888,10 +8888,12 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     }
 
     if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
+#if 0
         if (sys->atom.count > 0 && sys->bond.count > 0) {
             md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
             md_util_hydrogen_bond_infer(&sys->hydrogen_bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, 3.0, 150.0);
         }
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
