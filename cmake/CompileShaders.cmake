@@ -25,8 +25,13 @@ function(compile_shaders OUT_FILE)
         get_filename_component(NAME ${SRC} NAME_WE)
         get_filename_component(ABS_SRC ${SRC} ABSOLUTE)
 
+        if (NOT EXISTS ${ABS_SRC})
+            message(FATAL_ERROR "Shader source file not found: ${ABS_SRC}")
+        endif()
+
         if (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL")
             set(SPV_FILE "${GEN_DIR}/${NAME}.spv")
+            message(STATUS "Compiling shader ${ABS_SRC} to ${SPV_FILE}")
 
             # Compile GLSL to SPIR-V
             add_custom_command(

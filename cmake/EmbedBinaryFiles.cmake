@@ -34,10 +34,10 @@ extern \"C\" {
 
         file(APPEND ${OUT_HEADER}
 "// From file: ${NAME_WITH_EXT}
-extern const uint8_t ${SYMBOL}_start[];
-extern const uint8_t ${SYMBOL}_end[];
+extern const uint32_t ${SYMBOL}_start[];
+extern const uint32_t ${SYMBOL}_end[];
 static inline size_t ${SYMBOL}_size(void) {
-    return (size_t)(${SYMBOL}_end - ${SYMBOL}_start);
+    return (size_t)(${SYMBOL}_end - ${SYMBOL}_start) * sizeof(uint32_t);
 }
 
 ")
@@ -45,24 +45,16 @@ static inline size_t ${SYMBOL}_size(void) {
         if (MSVC)
             set(C_FILE ${GEN_DIR}/${SYMBOL}.c)
 
-            file(READ ${ABS} HEX_CONTENT HEX)
-            
-            string(LENGTH "${HEX_CONTENT}" HEX_LENGTH)
-            math(EXPR BYTE_COUNT "${HEX_LENGTH} / 2")
-            
-            # Convert hex string to C array format
-            string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," ARRAY_DATA "${HEX_CONTENT}")
-            string(REGEX REPLACE ",$" "" ARRAY_DATA "${ARRAY_DATA}")
-            
-            file(WRITE ${C_FILE}
-"#include <stdint.h>
-
-const uint8_t ${SYMBOL}_start[] = {
-    ${ARRAY_DATA}
-};
-
-const uint8_t * const ${SYMBOL}_end = ${SYMBOL}_start + sizeof(${SYMBOL}_start);
-")
+            add_custom_command(
+            OUTPUT ${C_FILE}
+            COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${ABS}
+                -DOUTPUT=${C_FILE}
+                -DSYMBOL=${SYMBOL}
+                -P ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/BinToC.cmake
+            DEPENDS ${ABS}
+            VERBATIM
+            )
 
             target_sources(${EMBED_TARGET} PRIVATE ${C_FILE})
 
