@@ -3836,7 +3836,28 @@ static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // Property Compute
 
-static void draw_distance(const vec3_t* a, size_t num_a, const vec3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
+static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis) {
+    vec3_t c = vec3_mul_f(vec3_add(c_a, c_b), 0.5f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.2f", value);
+    push_text(c, buf, vis);
+}
+
+// Draw single distance between two points
+static void inline draw_distance(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis, uint32_t vis_flags) {
+    if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+        md_script_vis_vertex_t va = { c_a, COLOR_WHITE };
+        md_script_vis_vertex_t vb = { c_b, COLOR_WHITE };
+        push_point(va, vis);
+        push_point(vb, vis);
+        push_line(va, vb, vis);
+    }
+    if (vis_flags & MD_SCRIPT_VISUALIZE_TEXT) {
+        draw_distance_text(c_a, c_b, value, vis);
+    }
+}
+
+static void draw_distances(const vec3_t* a, size_t num_a, const vec3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
     for (size_t i = 0; i < num_a; ++i) {
         md_script_vis_vertex_t va = {a[i], COLOR_WHITE};
         if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
@@ -3849,10 +3870,8 @@ static void draw_distance(const vec3_t* a, size_t num_a, const vec3_t* b, size_t
                 push_line(va, vb, vis);
             }
             if (vis_flags & MD_SCRIPT_VISUALIZE_TEXT) {
-                vec3_t c = vec3_mul_f(vec3_add(a[i], b[j]), 0.5f);
-                char buf[32];
-                snprintf(buf, sizeof(buf), "%.2f", values[i*num_a + j]);
-                push_text(c, buf, vis);
+                size_t idx = i * num_b + j;
+                draw_distance_text(a[i], b[j], values[idx], vis);
             }
         }
     }
@@ -3880,7 +3899,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-            draw_distance(&a, 1, &b, 1, &dist, ctx->vis, ctx->vis_flags);
+            draw_distance(a, b, dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3920,7 +3939,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-            draw_distance(&a_pos[min_i], 1, &b_pos[min_j], 1, &min_dist, ctx->vis, ctx->vis_flags);
+            draw_distance(a_pos[min_i], b_pos[min_j], min_dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3960,7 +3979,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-            draw_distance(&a_pos[max_i], 1, &b_pos[max_j], 1, &dist, ctx->vis, ctx->vis_flags);
+            draw_distance(a_pos[max_i], b_pos[max_j], dist, ctx->vis, ctx->vis_flags);
 
         }
     } else {
@@ -4000,7 +4019,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
             dst_arr = as_float_arr(*dst);
         } else {
-            dst_arr = md_vm_arena_push(ctx->temp_alloc, a_len * b_len);
+            dst_arr = md_vm_arena_push_array(ctx->temp_alloc, float, a_len * b_len);
         }
         md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
         if (ctx->vis) {
@@ -4014,52 +4033,41 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                 for (size_t ri = 0; ri < md_array_size(ctx->subscript_ranges); ++ri) {
                     irange_t range = ctx->subscript_ranges[ri];
-                    int prev_a = -1;
-                    md_script_vis_vertex_t va = {0};
 
                     for (int i = range.beg; i < range.end; ++i) {
-                        int a = i % (int)a_len;
-                        int b = i / (int)a_len;
+                        // i represents the linear index which we would like to visualize
+                        // But we need to map this back to the corresponding indices in a and b
+                        // As the distances are essentially calculated and stored like dist[a][b]
+                        int a = i / (int)b_len;
+                        int b = i % (int)b_len;
 
                         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
                             if (a_idx) {
                                 visualize_atom_index(a_idx[a], ctx);
                             } else if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 1) {
-                                if (i < (int)element_count(arg[0])) {
+                                if (a < (int)element_count(arg[0])) {
                                     const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
-                                    visualize_atom_mask(&bf_arr[i], ctx);
+                                    visualize_atom_mask(&bf_arr[a], ctx);
                                 }
                             }
 
                             if (b_idx) {
                                 visualize_atom_index(b_idx[b], ctx);
                             } else if (arg[1].type.base_type == TYPE_BITFIELD && element_count(arg[1]) > 1) {
-                                if (i < (int)element_count(arg[1])) {
+                                if (b < (int)element_count(arg[1])) {
                                     const md_bitfield_t* bf_arr = as_bitfield(arg[1]);
-                                    visualize_atom_mask(&bf_arr[i], ctx);
+                                    visualize_atom_mask(&bf_arr[b], ctx);
                                 }
                             }
                         }
 
-#if 0
-                        if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                            if (a != prev_a) {
-                                prev_a = a;
-                                va = vertex(a_pos[a], COLOR_WHITE);
-                                push_point(va, ctx->vis);
-                            }
-                            md_script_vis_vertex_t vb = vertex(b_pos[b], COLOR_WHITE);
-                            push_point(vb, ctx->vis);
-                            push_line(va, vb, ctx->vis);
-                        }
-#endif
-                        draw_distance(&a_pos[a], 1, &b_pos[b], 1, &dst_arr[i], ctx->vis, ctx->vis_flags);
+                        draw_distance(a_pos[a], b_pos[b], dst_arr[i], ctx->vis, ctx->vis_flags);
                     }
                 }
             } else {
                 coordinate_visualize(arg[0], ctx);
                 coordinate_visualize(arg[1], ctx);
-                draw_distance(a_pos, a_len, b_pos, b_len, dst_arr, ctx->vis, ctx->vis_flags);
+                draw_distances(a_pos, a_len, b_pos, b_len, dst_arr, ctx->vis, ctx->vis_flags);
             }
         }
         md_vm_arena_temp_end(temp);

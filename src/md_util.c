@@ -7924,31 +7924,31 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 #   pragma warning( disable : 4244 )
 #endif
 
-void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a, const vec3_t* coord_b, size_t len_b, const md_unitcell_t* cell) {
     if (cell->flags == 0) {
-        for (size_t i = 0; i < num_a; ++i) {
-            for (size_t j = 0; j < num_b; ++j) {
-                out_dist[i * num_b + j] = vec3_distance(coord_a[i], coord_b[j]);
+        for (size_t i = 0; i < len_a; ++i) {
+            for (size_t j = 0; j < len_b; ++j) {
+                out_dist[i * len_b + j] = vec3_distance(coord_a[i], coord_b[j]);
             }
         }
     }
     else if (cell->flags & MD_UNITCELL_ORTHO) {
         const vec4_t box = md_unitcell_diag_vec4(cell);
-        for (size_t i = 0; i < num_a; ++i) {
-            for (size_t j = 0; j < num_b; ++j) {
-                vec4_t a = vec4_from_vec3(coord_a[i], 0);
+        for (size_t i = 0; i < len_a; ++i) {
+            vec4_t a = vec4_from_vec3(coord_a[i], 0);
+            for (size_t j = 0; j < len_b; ++j) {
                 vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                out_dist[i * num_b + j] = vec4_periodic_distance(a, b, box);
+                out_dist[i * len_b + j] = vec4_periodic_distance(a, b, box);
             }
         }
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
         mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
-        for (size_t i = 0; i < num_a; ++i) {
-            for (size_t j = 0; j < num_b; ++j) {
+        for (size_t i = 0; i < len_a; ++i) {
+            for (size_t j = 0; j < len_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
                 minimum_image_triclinic(dx.elem, A.elem);
-                out_dist[i * num_b + j] = vec3_length(dx);
+                out_dist[i * len_b + j] = vec3_length(dx);
             }
         }
     }
