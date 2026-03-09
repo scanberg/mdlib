@@ -336,8 +336,8 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     
     // Check basic structure properties
     EXPECT_GT(mol.atom.count, 0);
-    EXPECT_GT(mol.comp.count, 0);
-    EXPECT_GT(mol.inst.count, 0);
+    EXPECT_GT(mol.component.count, 0);
+    EXPECT_GT(mol.instance.count, 0);
     
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;

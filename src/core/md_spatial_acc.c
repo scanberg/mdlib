@@ -306,6 +306,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     MEMSET(&val, 0xFF, sizeof(val));
     const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
 
+    vec4_t vI[3] = {
+        vec4_set((float)I[0][0], (float)I[0][1], (float)I[0][2], 0),
+        vec4_set((float)I[1][0], (float)I[1][1], (float)I[1][2], 0),
+        vec4_set((float)I[2][0], (float)I[2][1], (float)I[2][2], 0),
+    };
+
 	uint64_t cell_mask[3][16] = { 0 };
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
@@ -316,12 +322,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         r = vec4_add(r, coord_offset);
 
         // Fractional coordinates
-        vec4_t s = {
-            (float)(I[0][0] * r.x + I[1][0] * r.y + I[2][0] * r.z),
-            (float)(I[0][1] * r.x + I[1][1] * r.y + I[2][1] * r.z),
-            (float)(I[0][2] * r.x + I[1][2] * r.y + I[2][2] * r.z),
-            0,
-        };
+        vec4_t s = vec4_linear_combine_3(r, vI);
         
         s = vec4_blend(s, vec4_fract(s), pbc_mask);
 

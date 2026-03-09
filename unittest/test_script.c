@@ -52,7 +52,7 @@ static float atom_type_radius[] = {
 
 #define COMP_COUNT 4
 static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
-static md_seq_id_t  r_id[] = {1, 2, 3, 4};
+static md_sequence_id_t  r_id[] = {1, 2, 3, 4};
 static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 
 #define ENT_COUNT 3
@@ -80,13 +80,13 @@ md_system_t test_mol = {
             .radius = atom_type_radius,
         },
     },
-    .comp = {
+    .component = {
         .count = COMP_COUNT,
         .name = r_name,
         .seq_id = r_id,
         .atom_offset = r_off
     },
-    .inst = {
+    .instance = {
         .count = INST_COUNT,
         .id = i_id,
         .comp_offset = i_off,
@@ -1462,7 +1462,7 @@ UTEST_F(script, visualize) {
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        size_t res_atom_count = md_comp_atom_count(&mol->comp, 4);
+        size_t res_atom_count = md_component_atom_count(&mol->component, 4);
         size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }

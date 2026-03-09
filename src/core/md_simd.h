@@ -1488,33 +1488,33 @@ MD_SIMD_INLINE __m512 md_mm512_exp_ps(__m512 x) {
 #if 0
 #ifdef __cplusplus
 // C++ function overload
-MD_SIMD_INLINE md_128 md_mm_add(md_128 a, md_128 b) { return md_simd_add_ps(a, b); }
-MD_SIMD_INLINE md_256 md_mm256_add(md_256 a, md_256 b) { return md_simd_add_ps(a, b); }
-MD_SIMD_INLINE md_128d md_simd_add(md_128d a, md_128d b) { return md_simd_add_pd(a, b); }
-MD_SIMD_INLINE md_256d md_simd_add(md_256d a, md_256d b) { return md_simd_add_pd(a, b); }
+MD_SIMD_INLINE md_128  md_simd_add(md_128 a,  md_128 b)  { return md_mm_add_ps(a, b); }
+MD_SIMD_INLINE md_256  md_simd_add(md_256 a,  md_256 b)  { return md_mm256_add_ps(a, b); }
+MD_SIMD_INLINE md_128d md_simd_add(md_128d a, md_128d b) { return md_mm_add_pd(a, b); }
+MD_SIMD_INLINE md_256d md_simd_add(md_256d a, md_256d b) { return md_mm256_add_pd(a, b); }
 
-MD_SIMD_INLINE md_128 md_mm_sub(md_128 a, md_128 b) { return md_simd_sub_ps(a, b); }
-MD_SIMD_INLINE md_256 md_mm256_sub(md_256 a, md_256 b) { return md_simd_sub_ps(a, b); }
-MD_SIMD_INLINE md_128d md_simd_sub(md_128d a, md_128d b) { return md_simd_sub_pd(a, b); }
-MD_SIMD_INLINE md_256d md_simd_sub(md_256d a, md_256d b) { return md_simd_sub_pd(a, b); }
+MD_SIMD_INLINE md_128  md_simd_sub(md_128 a,  md_128 b)  { return md_mm_sub_ps(a, b); }
+MD_SIMD_INLINE md_256  md_simd_sub(md_256 a,  md_256 b)  { return md_mm256_sub_ps(a, b); }
+MD_SIMD_INLINE md_128d md_simd_sub(md_128d a, md_128d b) { return md_mm_sub_pd(a, b); }
+MD_SIMD_INLINE md_256d md_simd_sub(md_256d a, md_256d b) { return md_mm256_sub_pd(a, b); }
 
-MD_SIMD_INLINE md_128 md_mm_mul(md_128 a, md_128 b) { return md_simd_mul_ps(a, b); }
-MD_SIMD_INLINE md_256 md_mm256_mul(md_256 a, md_256 b) { return md_simd_mul_ps(a, b); }
-MD_SIMD_INLINE md_128d md_simd_mul(md_128d a, md_128d b) { return md_simd_mul_pd(a, b); }
-MD_SIMD_INLINE md_256d md_simd_mul(md_256d a, md_256d b) { return md_simd_mul_pd(a, b); }
+MD_SIMD_INLINE md_128  md_simd_mul(md_128 a,  md_128 b)  { return md_mm_mul_ps(a, b); }
+MD_SIMD_INLINE md_256  md_simd_mul(md_256 a,  md_256 b)  { return md_mm256_mul_ps(a, b); }
+MD_SIMD_INLINE md_128d md_simd_mul(md_128d a, md_128d b) { return md_mm_mul_pd(a, b); }
+MD_SIMD_INLINE md_256d md_simd_mul(md_256d a, md_256d b) { return md_mm256_mul_pd(a, b); }
 
-MD_SIMD_INLINE md_128 md_mm_div(md_128 a, md_128 b) { return md_simd_div_ps(a, b); }
-MD_SIMD_INLINE md_256 md_mm256_div(md_256 a, md_256 b) { return md_simd_div_ps(a, b); }
-MD_SIMD_INLINE md_128d md_simd_div(md_128d a, md_128d b) { return md_simd_div_pd(a, b); }
-MD_SIMD_INLINE md_256d md_simd_div(md_256d a, md_256d b) { return md_simd_div_pd(a, b); }
+MD_SIMD_INLINE md_128  md_simd_div(md_128 a,  md_128 b)  { return md_mm_div_ps(a, b); }
+MD_SIMD_INLINE md_256  md_simd_div(md_256 a,  md_256 b)  { return md_mm256_div_ps(a, b); }
+MD_SIMD_INLINE md_128d md_simd_div(md_128d a, md_128d b) { return md_mm_div_pd(a, b); }
+MD_SIMD_INLINE md_256d md_simd_div(md_256d a, md_256d b) { return md_mm256_div_pd(a, b); }
 
-MD_SIMD_INLINE md_128i md_simd_cast(md_128 v) { return md_simd_cast_ps(v); }
-MD_SIMD_INLINE md_256i md_simd_cast(md_256 v) { return md_simd_cast_ps(v); }
+MD_SIMD_INLINE md_128i md_simd_cast(md_128 v)  { return md_simd_cast_ps(v); }
+MD_SIMD_INLINE md_256i md_simd_cast(md_256 v)  { return md_simd_cast_ps(v); }
 MD_SIMD_INLINE md_128i md_simd_cast(md_128d v) { return md_simd_cast_pd(v); }
 MD_SIMD_INLINE md_256i md_simd_cast(md_256d v) { return md_simd_cast_pd(v); }
 
-MD_SIMD_INLINE md_128 md_mm_cast(md_128i v) { return md_simd_cast_i32x4(v); }
-MD_SIMD_INLINE md_256 md_mm256_cast(md_256i v) { return md_simd_cast_i32x8(v); }
+MD_SIMD_INLINE md_128  md_simd_cast(md_128i v) { return md_simd_cast_i32x4(v); }
+MD_SIMD_INLINE md_256  md_simd_cast(md_256i v) { return md_simd_cast_i32x8(v); }
 MD_SIMD_INLINE md_128d md_simd_cast(md_128i v) { return md_simd_cast_i64x2(v); }
 MD_SIMD_INLINE md_256d md_simd_cast(md_256i v) { return md_simd_cast_i64x4(v); }
 
@@ -2036,99 +2036,6 @@ MD_SIMD_INLINE md_256d md_simd_convert(md_256i v) { return md_simd_convert_i64x4
             const md_256i : md_simd_shift_right_i32x8, \
             const md_128i : md_simd_shift_right_i64x2, \
             const md_256i : md_simd_shift_right_i64x4)(x, i)
-
-#endif
-
-#if md_simd_width_f32 == 8
-
-// Float
-#define md_mm256_loadu_ps    md_simd_load_ps
-#define md_simd_load_f64    md_simd_load_pd
-
-#define md_simd_store_f32   md_simd_store_ps
-#define md_simd_store_f64   md_simd_store_pd
-
-#define md_simd_set1_f32    md_simd_set1_ps
-#define md_simd_set1_f64    md_simd_set1_pd
-
-#define md_simd_set_f32     md_simd_set_ps
-#define md_simd_set_f64     md_simd_set_pd
-
-#define md_simd_zero_f32    md_simd_zero_ps
-#define md_simd_zero_f64    md_simd_zero_pd
-
-#define md_simd_convert_f32 md_simd_convert_ps
-#define md_simd_convert_f64 md_simd_convert_pd
-
-#define md_simd_cast_f32 md_simd_cast_ps
-#define md_simd_cast_f64 md_simd_cast_pd
-
-// Int
-#define md_simd_load_i32    md_simd_load_i32x8
-#define md_simd_load_i64    md_simd_load_i64x4
-
-#define md_simd_store_i32   md_simd_store_i32x8
-#define md_simd_store_i64   md_simd_store_i64x4
-
-#define md_simd_set1_i32    md_simd_set1_i32x8
-#define md_simd_set1_i64    md_simd_set1_i64x4
-
-#define md_simd_set_i32     md_simd_set_i32x8
-#define md_simd_set_i64     md_simd_set_i64x4
-
-#define md_simd_zero_i32    md_simd_zero_i32x8
-#define md_simd_zero_i64    md_simd_zero_i64x4
-
-#define md_simd_convert_i32 md_simd_convert_i32x8
-#define md_simd_convert_i64 md_simd_convert_i64x4
-
-#define md_simd_cast_i32    md_simd_cast_i32x8
-#define md_simd_cast_i64    md_simd_cast_i64x4
-
-#elif md_simd_width_f32 == 4
-// Float
-#define md_mm256_loadu_ps    md_simd_load_ps
-#define md_simd_load_f64    md_simd_load_pd
-
-#define md_simd_store_f32   md_simd_store_ps
-#define md_simd_store_f64   md_simd_store_pd
-
-#define md_simd_set1_f32    md_simd_set1_ps
-#define md_simd_set1_f64    md_simd_set1_pd
-
-#define md_simd_set_f32     md_simd_set_ps
-#define md_simd_set_f64     md_simd_set_pd
-
-#define md_simd_zero_f32    md_simd_zero_ps
-#define md_simd_zero_f64    md_simd_zero_pd
-
-#define md_simd_convert_f32 md_simd_convert_ps
-#define md_simd_convert_f64 md_simd_convert_pd
-
-#define md_simd_cast_f32 md_simd_cast_ps
-#define md_simd_cast_f64 md_simd_cast_pd
-
-// Int
-#define md_simd_load_i32    md_simd_load_i32x4
-#define md_simd_load_i64    md_simd_load_i64x2
-
-#define md_simd_store_i32   md_simd_store_i32x4
-#define md_simd_store_i64   md_simd_store_i64x2
-
-#define md_simd_set1_i32    md_simd_set1_i32x4
-#define md_simd_set1_i64    md_simd_set1_i64x2
-
-#define md_simd_set_i32     md_simd_set_i32x4
-#define md_simd_set_i64     md_simd_set_i64x2
-
-#define md_simd_zero_i32    md_simd_zero_i32x4
-#define md_simd_zero_i64    md_simd_zero_i64x2
-
-#define md_simd_convert_i32 md_simd_convert_i32x4
-#define md_simd_convert_i64 md_simd_convert_i64x2
-
-#define md_simd_cast_i32    md_simd_cast_i32x4
-#define md_simd_cast_i64    md_simd_cast_i64x2
 
 #endif
 

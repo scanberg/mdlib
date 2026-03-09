@@ -1298,6 +1298,24 @@ MD_VEC_INLINE vec4_t vec4_splat_w(vec4_t v) {
     return result;
 }
 
+// These are workhorses for linear algebra operations, e.g. matrix multiplications
+MD_VEC_INLINE vec4_t vec4_linear_combine_4(vec4_t a, vec4_t B[4]) {
+    vec4_t res;
+    res = vec4_mul(B[0], vec4_splat_x(a));
+    res = vec4_add(res, vec4_mul(B[1], vec4_splat_y(a)));
+    res = vec4_add(res, vec4_mul(B[2], vec4_splat_z(a)));
+    res = vec4_add(res, vec4_mul(B[3], vec4_splat_w(a)));
+    return res;
+}
+
+MD_VEC_INLINE vec4_t vec4_linear_combine_3(vec4_t a, vec4_t B[3]) {
+    vec4_t res;
+    res = vec4_mul(B[0], vec4_splat_x(a));
+    res = vec4_add(res, vec4_mul(B[1], vec4_splat_y(a)));
+    res = vec4_add(res, vec4_mul(B[2], vec4_splat_z(a)));
+    return res;
+}
+
 MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #if MD_VEC_MATH_USE_SIMD
     md_mm_sincos_ps(x.m128, &s->m128, &c->m128);

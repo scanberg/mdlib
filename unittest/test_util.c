@@ -91,8 +91,8 @@ UTEST(util, hbonds) {
     md_hydrogen_bond_data_t hbond_data = {0};
     md_util_hydrogen_bond_init(&hbond_data, &sys, arena);
 
-    EXPECT_LT(0, hbond_data.candidate.num_donors);
-    EXPECT_LT(0, hbond_data.candidate.num_acceptors);
+    EXPECT_LT(0, hbond_data.candidate.donor.count);
+    EXPECT_LT(0, hbond_data.candidate.acceptor.count);
 
     md_util_hydrogen_bond_infer(&hbond_data, sys.atom.x, sys.atom.y, sys.atom.z, &sys.unitcell, 3.0, 150.0);
     EXPECT_LT(0, hbond_data.num_bonds);
@@ -108,17 +108,17 @@ UTEST_F(util, bonds) {
 }
 
 UTEST_F(util, inst) {
-    EXPECT_EQ(1,        utest_fixture->mol_ala.inst.count);
-	EXPECT_EQ(1,        utest_fixture->mol_pftaa.inst.count);
-	EXPECT_EQ(2,        utest_fixture->mol_nucleotides.inst.count);
-	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.inst.count);
+    EXPECT_EQ(1,        utest_fixture->mol_ala.instance.count);
+	EXPECT_EQ(1,        utest_fixture->mol_pftaa.instance.count);
+	EXPECT_EQ(2,        utest_fixture->mol_nucleotides.instance.count);
+	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.instance.count);
 
     const md_system_t* sys = &utest_fixture->mol_centered;
-    ASSERT(sys->inst.count > 253);
+    ASSERT(sys->instance.count > 253);
 
-    size_t ref_size = md_system_inst_atom_count(sys, 0);
+    size_t ref_size = md_system_instance_atom_count(sys, 0);
     for (size_t i = 1; i < 253; ++i) {
-        size_t size = md_system_inst_atom_count(sys, i);
+        size_t size = md_system_instance_atom_count(sys, i);
         EXPECT_EQ(ref_size, size);
     }
 }
@@ -451,7 +451,7 @@ UTEST_F(util, structure_matching_amyloid_chain) {
     {
         // Test for the chains
         const int ref_structure_idx = 0;
-        int*   ref_idx = md_index_range_beg(&mol->structure,  ref_structure_idx);
+        int*   ref_idx = md_index_range_ptr(&mol->structure,  ref_structure_idx);
         size_t ref_len = md_index_range_size(&mol->structure, ref_structure_idx);
 
         // Prune Hydrogen
@@ -755,10 +755,10 @@ UTEST_F(util, structure_matching_smiles) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
         for (const res_t* res = residues; res != residues + ARRAY_SIZE(residues); ++res) {
             const md_system_t* sys = test->sys;
-            md_array(md_comp_idx_t) ref_list = 0;
+            md_array(md_component_idx_t) ref_list = 0;
             
-            for (size_t i = 0; i < sys->comp.count; ++i) {
-                if (str_eq(LBL_TO_STR(sys->comp.name[i]), res->name)) {
+            for (size_t i = 0; i < sys->component.count; ++i) {
+                if (str_eq(LBL_TO_STR(sys->component.name[i]), res->name)) {
                     md_array_push(ref_list, i, alloc);
                 }
             }
@@ -772,7 +772,7 @@ UTEST_F(util, structure_matching_smiles) {
             bool has_ch = false;
 
             for (size_t ref_idx = 0; ref_idx < ref_count; ++ref_idx) {
-                md_urange_t atom_range = md_comp_atom_range(&sys->comp, ref_list[ref_idx]);
+                md_urange_t atom_range = md_component_atom_range(&sys->component, ref_list[ref_idx]);
                 for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
 					md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, i);
                     if (z_i == MD_Z_H) {
@@ -816,7 +816,7 @@ UTEST_F(util, structure_matching_smiles) {
 				size_t num_pattern_matches = md_index_data_num_ranges(&pattern_result);
                 for (size_t i = 0; i < num_pattern_matches; ++i) {
 					const int* atom_idx = md_index_range_beg(&pattern_result, i);
-					md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, atom_idx[0]);
+					md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, atom_idx[0]);
 					md_hashset_add(&match_set, res_idx);
                 }
             }
@@ -971,9 +971,9 @@ UTEST(util, entity_instance) {
         ASSERT_EQ(md_system_entity_count(&sys), 1);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
         
-        ASSERT_EQ(md_system_inst_count(&sys), 1);
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_empty(md_system_inst_auth_id(&sys, 0)));
+        ASSERT_EQ(md_system_instance_count(&sys), 1);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_empty(md_system_instance_auth_id(&sys, 0)));
     }
 
     {
@@ -983,15 +983,15 @@ UTEST(util, entity_instance) {
         ASSERT_EQ(md_system_entity_count(&sys), 1);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
         
-        ASSERT_EQ(md_system_inst_count(&sys), 3);
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
+        ASSERT_EQ(md_system_instance_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("A")));
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("B")));
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 2), STR_LIT("C")));
     }
 
     {
@@ -1003,15 +1003,15 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
         EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER);
         
-        ASSERT_EQ(md_system_inst_count(&sys), 3);
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("E")));
+        ASSERT_EQ(md_system_instance_count(&sys), 3);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("E")));
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1), STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("E")));
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1), STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("E")));
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2), STR_LIT("C")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("E")));
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 2), STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 2), STR_LIT("E")));
     }
 
     {
@@ -1029,50 +1029,50 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_entity_flags(&sys, 6), MD_FLAG_HETERO);
         EXPECT_EQ(md_system_entity_flags(&sys, 7), MD_FLAG_HETERO);
 
-        ASSERT_EQ(md_system_inst_count(&sys), 11);
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 0),      STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 0), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 0),       0);
+        ASSERT_EQ(md_system_instance_count(&sys), 11);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0),      STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 0),       0);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 1),      STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 1), STR_LIT("B")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 1),       1);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1),      STR_LIT("B")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("B")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 1),       1);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 2),      STR_LIT("C")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 2), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 2),       2);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 2),      STR_LIT("C")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 2), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 2),       2);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 3),      STR_LIT("D")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 3), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 3),       3);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 3),      STR_LIT("D")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 3), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 3),       3);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 4),      STR_LIT("E")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 4), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 4),       4);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 4),      STR_LIT("E")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 4), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 4),       4);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 5),      STR_LIT("F")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 5), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 5),       4);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 5),      STR_LIT("F")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 5), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 5),       4);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 6),      STR_LIT("G")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 6), STR_LIT("A")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 6),       5);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 6),      STR_LIT("G")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 6), STR_LIT("A")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 6),       5);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 7),      STR_LIT("H")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 7), STR_LIT("B")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 7),       6);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 7),      STR_LIT("H")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 7), STR_LIT("B")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 7),       6);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 8),      STR_LIT("I")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 8), STR_LIT("B")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 8),       4);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 8),      STR_LIT("I")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 8), STR_LIT("B")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 8),       4);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 9),      STR_LIT("J")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 9), STR_LIT("B")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 9),       5);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 9),      STR_LIT("J")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 9), STR_LIT("B")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 9),       5);
 
-        EXPECT_TRUE(str_eq(md_system_inst_id(&sys, 10),      STR_LIT("K")));
-        EXPECT_TRUE(str_eq(md_system_inst_auth_id(&sys, 10), STR_LIT("C")));
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 10),       7);
+        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 10),      STR_LIT("K")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 10), STR_LIT("C")));
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 10),       7);
     }
 
     {
@@ -1084,12 +1084,12 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_entity_flags(&sys, 0), 0);
         EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_WATER);
 
-        ASSERT_EQ(md_system_inst_count(&sys), 65);
+        ASSERT_EQ(md_system_instance_count(&sys), 65);
         for (size_t i = 0; i < 64; ++i) {
-            EXPECT_EQ(md_system_inst_entity_idx(&sys, i), 0);
+            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 0);
         }
 
-        EXPECT_EQ(md_system_inst_entity_idx(&sys, 64), 1);
+        EXPECT_EQ(md_system_instance_entity_idx(&sys, 64), 1);
     }
 
     md_vm_arena_destroy(alloc);

@@ -46,35 +46,37 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_COARSE_GRAINED      = 0x1,  // Coarse grained representation
+    MD_FLAG_COARSE_GRAINED      = 0x1,      // Coarse grained representation
 
-    // Polymers
-    MD_FLAG_POLYMER             = 0x10,     // Flag for connected polymers
-    MD_FLAG_BACKBONE            = 0x20,     // Backbone atoms
+    MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
+    MD_FLAG_BACKBONE            = 0x4,      // Backbone atoms
+    MD_FLAG_SIDE                = 0x8,      // *Side* atoms (amino acid = side chains), (nucleic acids = nucleoside)
+    MD_FLAG_TERMINAL_BEG        = 0x10,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
+    MD_FLAG_TERMINAL_END        = 0x20,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
 
-    // Proteins
-    MD_FLAG_AMINO_ACID		    = 0x40,
-    MD_FLAG_SIDE_CHAIN          = 0x80,
+    // Proteins, Nucleic acids and their components
+    MD_FLAG_POLYPEPTIDE         = 0x100,    // Top level for connected polypeptide chains (i.e. proteins)
+    MD_FLAG_AMINO_ACID		    = 0x200,    // For expressing a true amino acid monomer in the polypeptide chain
 
-    // RNA DNA
-    MD_FLAG_NUCLEOTIDE	        = 0x100,
-    MD_FLAG_NUCLEOBASE          = 0x200,
-    MD_FLAG_NUCLEOSIDE          = 0x400,
+    MD_FLAG_NUCLEIC_ACID        = 0x400,    // Top level for connected nucleic acid chains (i.e. DNA, RNA)
+    MD_FLAG_NUCLEOTIDE          = 0x800,    // For expressing a true nucleotide monomer in the nucleic acid chain
+    MD_FLAG_NUCLEOBASE          = 0x1000,   // Nucleobase component of a nucleotide
+    MD_FLAG_NUCLEOSIDE          = 0x2000,   // Nucleoside component of a nucleotide
 
     // HETERO types
-    MD_FLAG_HETERO              = 0x1000,
-    MD_FLAG_WATER			    = 0x2000,
-    MD_FLAG_ION			        = 0x4000,
+    MD_FLAG_HETERO              = 0x10000,
+    MD_FLAG_WATER			    = 0x20000,
+    MD_FLAG_ION			        = 0x40000,
 
     // Chirality
-    MD_FLAG_ISOMER_L            = 0x10000,
-    MD_FLAG_ISOMER_D            = 0x20000,
+    MD_FLAG_ISOMER_L            = 0x100000,
+    MD_FLAG_ISOMER_D            = 0x200000,
 
     // Experimental
-    MD_FLAG_SP                  = 0x100000,
-    MD_FLAG_SP2                 = 0x200000,
-    MD_FLAG_SP3                 = 0x400000,
-    MD_FLAG_AROMATIC            = 0x800000,
+    MD_FLAG_SP                  = 0x1000000,
+    MD_FLAG_SP2                 = 0x2000000,
+    MD_FLAG_SP3                 = 0x4000000,
+    MD_FLAG_AROMATIC            = 0x8000000,
 
 //    MD_FLAG_HBOND_DONOR         = 0x1000000,
 //    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
@@ -87,10 +89,9 @@ enum {
     MD_BOND_FLAG_TRIPLE         = 0x4,
     MD_BOND_FLAG_QUADRUPLE      = 0x8,
     MD_BOND_FLAG_AROMATIC       = 0x10,
-    MD_BOND_FLAG_INTER          = 0x20, // Inter residue / component
-    MD_BOND_FLAG_COORDINATE     = 0x40, // Coordinate / Dative
-    MD_BOND_FLAG_METAL          = 0x80, // Involves a metal atom
-	MD_BOND_FLAG_USER_DEFINED   = 0x100, // User defined bond
+    MD_BOND_FLAG_COORDINATE     = 0x20, // Coordinate / Dative
+    MD_BOND_FLAG_METAL          = 0x40, // Involves a metal atom
+	MD_BOND_FLAG_USER_DEFINED   = 0x80, // User defined bond
 };
 
 // Atomic number constants for all elements (Z values)
@@ -218,11 +219,11 @@ enum {
 };
 
 typedef int32_t     md_atom_idx_t;
-typedef int32_t     md_comp_idx_t;
-typedef int32_t     md_inst_idx_t;
+typedef int32_t     md_component_idx_t;
+typedef int32_t     md_instance_idx_t;
 typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
-typedef int32_t     md_seq_id_t;
+typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint16_t    md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
@@ -715,20 +716,30 @@ static inline size_t md_index_data_num_ranges(const md_index_data_t* data) {
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t* data, size_t range_idx) {
+static inline const int32_t* md_index_range_beg(const md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
-    int32_t* ptr = NULL;
+    const int32_t* ptr = NULL;
     if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
         ptr = data->indices + data->offsets[range_idx];
     }
     return ptr;
 }
 
-static inline int32_t* md_index_range_end(const md_index_data_t* data, size_t range_idx) {
+static inline const int32_t* md_index_range_end(const md_index_data_t* data, size_t range_idx) {
+    ASSERT(data);
+    const int32_t* ptr = NULL;
+    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+        ptr = data->indices + data->offsets[range_idx + 1];
+    }
+    return ptr;
+}
+
+// This is a mutable version of md_index_range_beg
+static inline int32_t* md_index_range_ptr(md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
     int32_t* ptr = NULL;
     if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
-        ptr = data->indices + data->offsets[range_idx + 1];
+        ptr = data->indices + data->offsets[range_idx];
     }
     return ptr;
 }

@@ -82,6 +82,7 @@ void md_util_covalent_bond_infer(md_bond_data_t* out_bonds, const float* in_x, c
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 static inline void md_util_system_covalent_bond_infer(md_system_t* sys, struct md_allocator_i* alloc) {
     md_util_covalent_bond_infer(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, alloc);
+    md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
 }
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)

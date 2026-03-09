@@ -950,7 +950,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
-        gl_mol->comp_count = (uint32_t)sys->comp.count;
+        gl_mol->comp_count = (uint32_t)sys->component.count;
         //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->comp_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
         //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->comp_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->comp_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
@@ -994,8 +994,8 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                     uint32_t beg = sys->protein_backbone.range.offset[i];
                     uint32_t end = sys->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
-                        md_comp_idx_t res_idx = sys->protein_backbone.segment.comp_idx[j];
-                        uint32_t comp_atom_offset = sys->comp.atom_offset[res_idx];
+                        md_component_idx_t comp_idx = sys->protein_backbone.segment.comp_idx[j];
+                        uint32_t comp_atom_offset = sys->component.atom_offset[comp_idx];
 
                         backbone_data[idx].bb_seg_idx = j;
                         backbone_data[idx].atom_base_idx = comp_atom_offset;

@@ -1519,8 +1519,7 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
 
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
     uint32_t bits = 0;
-    md_protein_backbone_atoms_t bb;
-    MEMSET(&bb, -1, sizeof(bb));
+    md_protein_backbone_atoms_t bb = {-1, -1, -1, -1, -1};
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
@@ -1565,7 +1564,7 @@ static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* 
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
 
     uint32_t bits = 0;
-    md_nucleic_backbone_atoms_t bb = {0};
+    md_nucleic_backbone_atoms_t bb = {-1,-1,-1,-1,-1,-1};
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
@@ -2062,12 +2061,17 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     ASSERT(cell);
     ASSERT(backbone);
 
-    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
-
     size_t backbone_segment_count = backbone->segment.count;
     size_t backbone_range_count   = backbone->range.count;
     const uint32_t* backbone_range_offsets = backbone->range.offset;
     const md_protein_backbone_atoms_t* backbone_atoms = backbone->segment.atoms;
+
+    if (capacity < backbone_segment_count) {
+        MD_LOG_ERROR("Capacity of out_secondary_structure is insufficient to hold the results");
+        return;
+    }
+
+    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
 
     dssp_res_coords_t* res_coords = md_vm_arena_push(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
     dssp_res_hbonds_t* res_hbonds = md_vm_arena_push(temp_alloc, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
@@ -2295,7 +2299,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 		uint32_t ri = res_range_id[i];
 		uint32_t rj = res_range_id[j];
 
-		uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
+		uint64_t res_range_packed = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
 
         uint32_t idx = (uint32_t)(num_bridges++);
 
@@ -2303,7 +2307,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         bridges[idx] = (dssp_bridge_t){
             .i = i,
             .j = j,
-            .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
+            .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_packed,
         };
 
         // DSSP marks both residues as "bridge" even before ladder/sheet conversion
@@ -2401,7 +2405,6 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         // Chain pair and type
         const uint64_t chain_pair_id_and_type = seed.chain_pair_id_and_type;
         const bool is_parallel = (chain_pair_id_and_type >> 63) != 0;
-        const uint64_t chain_pair_id = chain_pair_id_and_type & 0x7FFFFFFFFFFFFFFF;
         md_hashmap32_t* bridge_map = is_parallel ? &parallel_bridge_map : &antiparallel_bridge_map;
 
         bool grew = true;
@@ -2629,9 +2632,9 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
     if (capacity == 0) return false;
     if (sys->protein_backbone.segment.count == 0) return false;
-    if (sys->comp.count == 0) return false;
+    if (sys->component.count == 0) return false;
 
-    ASSERT(sys->comp.name);
+    ASSERT(sys->component.name);
     ASSERT(sys->protein_backbone.segment.comp_idx);
 
     size_t size = MIN(capacity, sys->protein_backbone.segment.count);
@@ -2639,7 +2642,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     for (size_t i = 0; i < size; ++i) {
         size_t comp_idx = sys->protein_backbone.segment.comp_idx[i];
 
-        str_t name = md_comp_name(&sys->comp, comp_idx);
+        str_t name = md_component_name(&sys->component, comp_idx);
         if (str_eq(name, STR_LIT("GLY"))) {
             ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
         } else if (str_eq(name, STR_LIT("PRO"))) {
@@ -3692,7 +3695,10 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
         md_256i vi_idx = md_mm256_loadu_epi32(i_idx + i);
         md_256i vj_idx = md_mm256_loadu_epi32(j_idx + i);
         md_256 v_dist2 = md_mm256_loadu_ps(ij_dist2 + i);
-        //md_256 v_dist  = md_mm256_sqrt_ps(v_dist2);  // There are alot of gathers here, so we can afford latency of sqrt
+        md_256 v_dist  = md_mm256_sqrt_ps(v_dist2);  // There are alot of gathers here, so we can afford latency of sqrt
+
+        float dist[8];
+        md_mm256_storeu_ps(dist, v_dist);
 
         md_256 rad_i   = md_mm256_mask_i32gather_ps(v0, data->radius, vi_idx, vmask, 4);
         md_256 rad_j   = md_mm256_mask_i32gather_ps(v0, data->radius, vj_idx, vmask, 4);
@@ -3701,11 +3707,8 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
         md_256 r_min_cov = md_mm256_mul_ps(vk_min, rad_sum);
         md_256 r_max_cov = md_mm256_mul_ps(vk_max, rad_sum);
 
-        md_256 r2_min_cov = md_mm256_mul_ps(r_min_cov, r_min_cov);
-        md_256 r2_max_cov = md_mm256_mul_ps(r_max_cov, r_max_cov);
-
-        md_256 cmp_min = md_mm256_cmpgt_ps(v_dist2, r2_min_cov);
-        md_256 cmp_max = md_mm256_cmplt_ps(v_dist2, r2_max_cov);
+        md_256 cmp_min = md_mm256_cmpgt_ps(v_dist, r_min_cov);
+        md_256 cmp_max = md_mm256_cmplt_ps(v_dist, r_max_cov);
 
         int mask = md_mm256_movemask_ps(md_mm256_and_ps(cmp_min, cmp_max));
         if (mask) {
@@ -3713,13 +3716,13 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
             md_array_ensure(*data->candidates, new_size, data->alloc);
 
             while (mask) {
-                const int bit_idx = ctz32(mask);
+                int bit_idx = ctz32(mask);
                 mask = mask & ~(1 << bit_idx);
-                const int idx = i + bit_idx;
+                int idx = (int)i + bit_idx;
                 bond_pair_t cp = {
                     .atom_i = i_idx[idx],
                     .atom_j = j_idx[idx],
-                    .dist   = sqrtf(ij_dist2[idx]),
+                    .dist   = dist[bit_idx],
                 };
                 md_array_push_no_grow(*data->candidates, cp);
             }
@@ -3777,10 +3780,10 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
     if (is_coarse_grained) {
 		// In coarse-grained systems, use a simple distance cutoff and only check the backbone atoms in component sequence
         int bb_prev = -1;
-		md_flags_t comp_i_flags = md_comp_flags(&sys->comp, 0);
+		md_flags_t comp_i_flags = md_component_flags(&sys->component, 0);
         if ((comp_i_flags & MD_FLAG_AMINO_ACID)) {
 			// Get the backbone atom index of the first component
-			md_urange_t atom_range = md_comp_atom_range(&sys->comp, 0);
+			md_urange_t atom_range = md_component_atom_range(&sys->component, 0);
 			for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
 				md_flags_t atom_flags = md_atom_flags(&sys->atom, i);
 				if (atom_flags & MD_FLAG_BACKBONE) {
@@ -3790,12 +3793,12 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
             }
         }
         // Test consecutive components
-        for (size_t ci = 1; ci < sys->comp.count; ++ci) {
+        for (size_t ci = 1; ci < sys->component.count; ++ci) {
 			int bb_i = -1;
-			md_flags_t comp_j_flags = md_comp_flags(&sys->comp, ci);
+			md_flags_t comp_j_flags = md_component_flags(&sys->component, ci);
             if ((comp_j_flags & MD_FLAG_AMINO_ACID)) {
 			    // Get the backbone atom index of the first component
-			    md_urange_t atom_range = md_comp_atom_range(&sys->comp, ci);
+			    md_urange_t atom_range = md_component_atom_range(&sys->component, ci);
 			    for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
 				    md_flags_t atom_i_flags = md_atom_flags(&sys->atom, i);
 				    if (atom_i_flags & MD_FLAG_BACKBONE) {
@@ -3844,7 +3847,18 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
         for (size_t i = 0; i < num_atoms; ++i) {
             atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
             cov_radius[i] = element_covalent_radius(atomic_nr[i]);
-            max_cov_rad = MAX(max_cov_rad, cov_radius[i]);
+            max_cov_rad = MAX(max_cov_rad, cov_radius[i]);            
+        }
+
+        int* comp_id = md_vm_arena_push_array(temp_arena, int, num_atoms);
+        MEMSET(comp_id, -1, sizeof(int) * num_atoms);
+        size_t num_comp = md_system_component_count(sys);
+
+        for (size_t i = 0; i < num_comp; ++i) {
+            md_urange_t range = md_system_component_atom_range(sys, i);
+            for (uint32_t j = range.beg; j < range.end; ++j) {
+                comp_id[j] = (int)i;
+            }
         }
 
         {
@@ -3858,7 +3872,7 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
             };
 
             // Compute a cell size based on the max cov radius within the set
-            const double cell_ext = 2.0 * max_cov_rad * k_coord;
+            const double cell_ext = MAX(6.0, 2.0 * max_cov_rad * k_coord);
 
             // Build candidate list
             md_timestamp_t ts_start = md_time_current();
@@ -3876,11 +3890,9 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
 
         //MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
-        bond_pair_t* temp_bond_pairs = 0;
-        md_flags_t*  temp_bond_flags = 0;
-        md_array_ensure(temp_bond_pairs, num_candidates, temp_arena);
-        md_array_ensure(temp_bond_flags, num_candidates, temp_arena);
-        size_t temp_bond_count = 0;
+        md_bond_data_t temp_bond = { 0 };
+        // We are lazy and propagate the correct periodic distance for each bond, so we can do more informed pruning later (e.g. for coordination bonds)
+        md_array(float) temp_bond_dist = 0;
 
         for (size_t i = 0; i < num_candidates; ++i) {
             int ai = candidates[i].atom_i;
@@ -3890,69 +3902,115 @@ void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const flo
             int ej = atomic_nr[aj];
             int mi = is_metal(ei);
             int mj = is_metal(ej);
+            int ci = comp_id[ai];
+            int cj = comp_id[aj];
             float sum_r = cov_radius[ai] + cov_radius[aj];
 
             if (!mi && !mj) {
                 // Both non-metals, check against k_cov
-                if (d < k_cov * sum_r) {
-                    md_array_push(temp_bond_pairs, candidates[i], temp_arena);
-                    md_array_push(temp_bond_flags, MD_BOND_FLAG_COVALENT, temp_arena);
-                    temp_bond_count += 1;
+# if 0
+                const float extra = (ci >= 0 && cj >= 0 && ci == cj) ? 1.05f : 1.0f; // Slightly more lenient cutoff for intra-component bonds
+                const float d_cov = k_cov * extra * sum_r;
+#else
+                const float d_cov = k_cov * sum_r;
+#endif
+                if (d < d_cov) {
+                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT, temp_arena);
+                    md_array_push(temp_bond_dist, d, temp_arena);
                 }
             } else if (mi ^ mj) { // XOR here (either is metal, but not both)
                 int non_metal_e = mi ? ej : ei;
-                if (is_metal_donor(non_metal_e) && d < k_coord * sum_r) {
-                    md_array_push(temp_bond_pairs, candidates[i], temp_arena);
-                    md_array_push(temp_bond_flags, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
-                    temp_bond_count += 1;
+                const float d_coord = k_coord * sum_r;
+                if (is_metal_donor(non_metal_e) && d < d_coord) {
+                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
+                    md_array_push(temp_bond_dist, d, temp_arena);
                     // Potentially strong / partially covalent if d < ~1.2
                     // Coordination bond (@TODO validate by geometrical matching)
                 }
             } else {
+                const float d_met = k_metal * sum_r;
                 // Both metals
-                if (d < k_metal * sum_r) {
-                    md_array_push(temp_bond_pairs, candidates[i], temp_arena);
-                    md_array_push(temp_bond_flags, MD_BOND_FLAG_METAL, temp_arena);
-                    temp_bond_count += 1;
+                if (d < d_met) {
+                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL, temp_arena);
+                    md_array_push(temp_bond_dist, d, temp_arena);
                 }
             }
         }
 
-            // Populate real bond data
-        md_array_ensure(bond->pairs, temp_bond_count, alloc);
-        md_array_ensure(bond->flags, temp_bond_count, alloc);
-        for (size_t i = 0; i < temp_bond_count; ++i) {
-            if (temp_bond_flags[i] == 0) continue;
+        // Create bitfield to keep track of valid bonds during pruning (we do not remove bonds to ensure index stability)
+        md_array(uint64_t) temp_bond_valid = make_bitfield(temp_bond.count, temp_arena);
+        bitfield_set_all(temp_bond_valid, temp_bond.count); // Set all bits to 1 (valid)
 
-            md_atom_pair_t pair = {
-                temp_bond_pairs[i].atom_i,
-                temp_bond_pairs[i].atom_j,
-            };
-            md_array_push_no_grow(bond->pairs, pair);
-            md_array_push_no_grow(bond->flags, temp_bond_flags[i]);
-            bond->count += 1;
+        // ### PRUNE ###
+        // Build temporary connectivity data for pruning
+        md_bond_build_connectivity(&temp_bond, sys->atom.count, temp_arena);
+
+# if 0
+        // @NOTE(Robin): If this is to be re-enabled, it needs to be verified as it did not produce exactly the expected results
+        // without side effects in some dataset
+        // 
+        // Remove *triangles* i.e. if A-B and B-C are covalent, then A-C should not be covalent, (unless all carbon)
+        // In such case remove the longest bond
+        for (int bij = 0; bij < (int)temp_bond.count; ++bij) {
+            if (!bitfield_test_bit(temp_bond_valid, bij)) {
+                continue; // Skip invalidated bonds
+            }
+
+            int i = temp_bond.pairs[bij].idx[0];
+            int j = temp_bond.pairs[bij].idx[1];
+            float dij = temp_bond_dist[bij];
+
+            // Check if atoms i and j have a common neighbor k
+            md_bond_iter_t iter_i = md_bond_iter(&temp_bond, i);
+            while (md_bond_iter_has_next(&iter_i)) {
+                int k = md_bond_iter_atom_index(&iter_i);
+                bool all_carbon = (atomic_nr[i] == 6 && atomic_nr[j] == 6 && atomic_nr[k] == 6);
+
+                if (k != j && !all_carbon) {
+                    int bik = md_bond_iter_bond_index(&iter_i);
+                    float dik = temp_bond_dist[bik];
+
+                    // Find other path between i and j, through k
+                    int bjk = md_bond_find(&temp_bond, j, k);
+                    if (bjk != -1) {
+                        float djk = temp_bond_dist[bjk];
+                    
+                        // Compare all three distances and flag the longest bond for removal
+                        if (dij >= dik && dij >= djk) {
+                            bitfield_clear_bit(temp_bond_valid, bij);
+                        } else if (dik >= dij && dik >= djk) {
+                            bitfield_clear_bit(temp_bond_valid, bik);
+                        } else {
+                            bitfield_clear_bit(temp_bond_valid, bjk);
+                        }
+                    }
+                }
+                md_bond_iter_next(&iter_i);
+            }
+        }
+#endif
+
+        size_t num_valid_bonds = bitfield_popcount(temp_bond_valid, temp_bond.count);
+
+        // Populate real bond data
+        md_array_ensure(bond->pairs, num_valid_bonds, alloc);
+        md_array_ensure(bond->flags, num_valid_bonds, alloc);
+
+        for (size_t i = 0; i < temp_bond.count; ++i) {
+            if (bitfield_test_bit(temp_bond_valid, i)) {
+                md_bond_insert(bond, temp_bond.pairs[i].idx[0], temp_bond.pairs[i].idx[1], temp_bond.flags[i], alloc);
+            }
         }
     }
 
-    size_t num_comp = md_system_comp_count(sys);
+    size_t num_comp = md_system_component_count(sys);
     if (num_comp > 0) {
         // Create map from atom to component index
-        md_comp_idx_t* atom_comp_idx = md_vm_arena_push(temp_arena, sizeof(md_comp_idx_t) * num_atoms);
+        md_component_idx_t* atom_comp_idx = md_vm_arena_push(temp_arena, sizeof(md_component_idx_t) * num_atoms);
         for (size_t i = 0; i < num_comp; ++i) {
-            md_urange_t range = md_system_comp_atom_range(sys, i);
+            md_urange_t range = md_system_component_atom_range(sys, i);
             for (uint32_t j = range.beg; j < range.end; ++j) {
-                atom_comp_idx[j] = (md_comp_idx_t)i;
-            }
-        }
-
-        // Mark interresidual bonds
-        for (size_t i = 0; i < bond->count; ++i) {
-            md_comp_idx_t comp_idx[2] = {
-                atom_comp_idx[bond->pairs[i].idx[0]],
-                atom_comp_idx[bond->pairs[i].idx[1]],
-            };
-            if (comp_idx[0] != comp_idx[1]) {
-                bond->flags[i] |= MD_BOND_FLAG_INTER;
+                atom_comp_idx[j] = (md_component_idx_t)i;
             }
         }
     }
@@ -4021,68 +4079,84 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
     md_array(int) ambigous_amino_acid_indices = 0;
     md_array(int) ambigous_nucleotide_indices = 0;
 
-    for (size_t i = 0; i < sys->comp.count; ++i) {
-        str_t comp_name = md_comp_name(&sys->comp, i);
-		md_flags_t comp_flags = md_comp_flags(&sys->comp, i);
-        md_urange_t range = md_comp_atom_range(&sys->comp, i);
+    for (size_t i = 0; i < sys->component.count; ++i) {
+        str_t comp_name = md_component_name(&sys->component, i);
+		md_flags_t comp_flags = md_component_flags(&sys->component, i);
+        md_urange_t range = md_component_atom_range(&sys->component, i);
         size_t len = (size_t)(range.end - range.beg);
 
-        if (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ION)) {
+        if (comp_flags & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION)) {
             // Already assigned
             continue;
 		}
 
-        md_protein_backbone_atoms_t prot_atoms = {0};
-        md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (!(sys->comp.flags[i] & MD_FLAG_HETERO)) {
-            if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, &sys->atom, range)) {
-                sys->comp.flags[i] |= MD_FLAG_AMINO_ACID;
-                sys->atom.flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
-                sys->atom.flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
-                sys->atom.flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
-                sys->atom.flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
-                if (prot_atoms.hn != -1) {
-                    sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
-                }
-                goto done;
-            } else if (md_util_resname_amino_acid(comp_name)) {
-                sys->comp.flags[i] |= MD_FLAG_AMINO_ACID;
-                md_array_push(ambigous_amino_acid_indices, (int)i, temp_alloc);
+        md_protein_backbone_atoms_t prot_atoms = {-1,-1,-1,-1,-1};
+        md_nucleic_backbone_atoms_t nucl_atoms = {-1,-1,-1,-1,-1,-1};
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, &sys->atom, range)) {
+            sys->component.flags[i] |= MD_FLAG_AMINO_ACID;
+            sys->atom.flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
+            sys->atom.flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
+            sys->atom.flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
+#if 0
+            // These are not really part of the backbone
+            sys->atom.flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
+            if (prot_atoms.hn != -1) {
+                sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
+            }
+#endif
+            goto done;
+        } else if (md_util_resname_amino_acid(comp_name)) {
+            sys->component.flags[i] |= MD_FLAG_AMINO_ACID;
+            md_array_push(ambigous_amino_acid_indices, (int)i, temp_alloc);
+            goto done;
+        }
+
+        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, &sys->atom, range)) {
+
+            // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
+            // O3 - C3 - C4 - C5 - O5  (and P for nucleotides if not terminal)
+
+            int b_o3_c3 = md_bond_find(&sys->bond, nucl_atoms.o3, nucl_atoms.c3);
+            int b_c3_c4 = md_bond_find(&sys->bond, nucl_atoms.c3, nucl_atoms.c4);
+            int b_c4_c5 = md_bond_find(&sys->bond, nucl_atoms.c4, nucl_atoms.c5);
+            int b_c5_o5 = md_bond_find(&sys->bond, nucl_atoms.c5, nucl_atoms.o5);
+            int b_o5_p  = md_bond_find(&sys->bond, nucl_atoms.o5, nucl_atoms.p);
+
+            if (b_o3_c3 == -1 || b_c3_c4 == -1 || b_c4_c5 == -1 || b_c5_o5 == -1 || (nucl_atoms.p != -1 && b_o5_p == -1)) {
+                // Not a nucleotide
                 goto done;
             }
 
-            if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, &sys->atom, range)) {
-                sys->comp.flags[i] |= MD_FLAG_NUCLEOTIDE;
-                if (sys->atom.flags) {
-                    if (nucl_atoms.p != -1) {
-                        sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
-                    }
-                    sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
-                    sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
+            sys->component.flags[i] |= MD_FLAG_NUCLEOTIDE;
+            if (sys->atom.flags) {
+                if (nucl_atoms.p != -1) {
+                    sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
                 }
-                goto done;
-            } else if (md_util_resname_nucleotide(comp_name)) {
-                sys->comp.flags[i] |= MD_FLAG_NUCLEOTIDE;
-                md_array_push(ambigous_nucleotide_indices, (int)i, temp_alloc);
-                goto done;
+                sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
+                sys->atom.flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
+                sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
+                sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
+                sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
             }
+            goto done;
+        } else if (md_util_resname_nucleotide(comp_name)) {
+            sys->component.flags[i] |= MD_FLAG_NUCLEOTIDE;
+            md_array_push(ambigous_nucleotide_indices, (int)i, temp_alloc);
+            goto done;
         }
 
         if (((len == 1 || len == 3) && md_util_resname_water(comp_name)) ||
            (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, range.beg))))
         {
-            sys->comp.flags[i] |= MD_FLAG_WATER;
+            sys->component.flags[i] |= MD_FLAG_WATER;
         } else if (len == 1 && (md_util_resname_ion(comp_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, range.beg)))) {
-            sys->comp.flags[i] |= MD_FLAG_ION;
+            sys->component.flags[i] |= MD_FLAG_ION;
         }
 
 done:
         // Propagate flags to atoms
         for (unsigned j = range.beg; j < range.end; ++j) {
-            sys->atom.flags[j] |= sys->comp.flags[i];
+            sys->atom.flags[j] |= sys->component.flags[i];
         }
     }
 
@@ -4094,7 +4168,7 @@ done:
         MD_LOG_DEBUG("Structure contains %zu amino acid residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_amino_acids);
         for (size_t i = 0; i < MIN(num_ambigous_amino_acids, max_warnings); ++i) {
             int res_idx = ambigous_amino_acid_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_comp_name(&sys->comp, res_idx)), md_comp_seq_id(&sys->comp, res_idx));
+            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_component_name(&sys->component, res_idx)), md_component_seq_id(&sys->component, res_idx));
         }
         if (num_ambigous_amino_acids > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_amino_acids - max_warnings);
@@ -4106,7 +4180,7 @@ done:
         MD_LOG_DEBUG("Structure contains %zu nucleotide residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_nucleotides);
         for (size_t i = 0; i < MIN(num_ambigous_nucleotides, max_warnings); ++i) {
             int res_idx = ambigous_nucleotide_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_comp_name(&sys->comp, res_idx)), md_comp_seq_id(&sys->comp, res_idx));
+            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_component_name(&sys->component, res_idx)), md_component_seq_id(&sys->component, res_idx));
         }
         if (num_ambigous_nucleotides > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_nucleotides - max_warnings);
@@ -4126,20 +4200,19 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
         return;
     }
 
-    hbond_data->candidate.num_donors = 0;
-    md_array_shrink(hbond_data->candidate.don_idx, 0);
-    md_array_shrink(hbond_data->candidate.don_h_idx, 0);
+    hbond_data->candidate.donor.count = 0;
+    md_array_shrink(hbond_data->candidate.donor.d_idx, 0);
+    md_array_shrink(hbond_data->candidate.donor.h_idx, 0);
 
-    hbond_data->candidate.num_acceptors = 0;
-    md_array_shrink(hbond_data->candidate.acc_idx, 0);
-    md_array_shrink(hbond_data->candidate.acc_lone_pairs, 0);
-
+    hbond_data->candidate.acceptor.count = 0;
+    md_array_shrink(hbond_data->candidate.acceptor.idx, 0);
+    md_array_shrink(hbond_data->candidate.acceptor.num_lone_pairs, 0);
     size_t num_atoms = md_system_atom_count(sys);
 
     // Identify donors and acceptors
     for (size_t i = 0; i < num_atoms; ++i) {
         int max_conn = 0;
-        int num_of_lone_pairs = 2;
+        int num_lone_pairs = 2;
         md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, i);
         switch (z_i) {
         case MD_Z_N:
@@ -4158,11 +4231,11 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
             md_atom_idx_t j = md_bond_iter_atom_index(&it);
             md_atomic_number_t z_j = md_atom_atomic_number(&sys->atom, j);
             if (z_j== MD_Z_H) {
-                md_atom_idx_t don_idx = (md_atom_idx_t)i;
-                md_atom_idx_t hyd_idx = j;
-                md_array_push(hbond_data->candidate.don_idx, don_idx, alloc);
-                md_array_push(hbond_data->candidate.don_h_idx, hyd_idx, alloc);
-                hbond_data->candidate.num_donors += 1;
+                md_atom_idx_t d_idx = (md_atom_idx_t)i;
+                md_atom_idx_t h_idx = j;
+                md_array_push(hbond_data->candidate.donor.d_idx, d_idx, alloc);
+                md_array_push(hbond_data->candidate.donor.h_idx, h_idx, alloc);
+                hbond_data->candidate.donor.count += 1;
             }
             md_bond_iter_next(&it);
         }
@@ -4170,17 +4243,17 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
         size_t num_conn = md_bond_conn_count(&sys->bond, i);
         if (num_conn <= max_conn) {
             if (z_i == MD_Z_S) {
-                num_of_lone_pairs = 4 - num_conn;
+                num_lone_pairs = MAX(0, 4 - (int)num_conn);
             }
 
             md_atom_idx_t acc_idx = (md_atom_idx_t)i;
-            md_array_push(hbond_data->candidate.acc_idx, acc_idx, alloc);
-            md_array_push(hbond_data->candidate.acc_lone_pairs, num_of_lone_pairs, alloc);
-            hbond_data->candidate.num_acceptors += 1;
+            md_array_push(hbond_data->candidate.acceptor.idx, acc_idx, alloc);
+            md_array_push(hbond_data->candidate.acceptor.num_lone_pairs, num_lone_pairs, alloc);
+            hbond_data->candidate.acceptor.count += 1;
         }
     }
 
-    md_array_ensure(hbond_data->bonds, 2 * hbond_data->candidate.num_donors, alloc);
+    md_array_ensure(hbond_data->bonds, 2 * hbond_data->candidate.donor.count, alloc);
 }
 
 typedef struct hbond_donor_energy_t {
@@ -4235,17 +4308,17 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     max_dist  = CLAMP(max_dist, 1.0, 7.0);
     min_angle = CLAMP(min_angle, 100.0, 180.0);
 
-    size_t num_acc = hbond_data->candidate.num_acceptors;
+    size_t num_acc = hbond_data->candidate.acceptor.count;
     vec4_t*  acc_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_acc);
     int32_t* acc_idx = md_vm_arena_push_array(temp_arena, int32_t, num_acc);
 
     for (size_t i = 0; i < num_acc; ++i) {
-        int idx = hbond_data->candidate.acc_idx[i];
+        int idx = hbond_data->candidate.acceptor.idx[i];
         acc_idx[i] = idx;
         acc_xyz[i] = vec4_set(atom_x[idx], atom_y[idx], atom_z[idx], 0);
     }
 
-    size_t num_don = hbond_data->candidate.num_donors;
+    size_t num_don = hbond_data->candidate.donor.count;
     vec4_t*  don_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_don);
     vec4_t*  hyd_xyz = md_vm_arena_push_array(temp_arena, vec4_t, num_don);
     int32_t* don_idx = md_vm_arena_push_array(temp_arena, int32_t, num_don);
@@ -4253,8 +4326,8 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     MEMSET(donor_energies, 0, sizeof(hbond_donor_energy_t) * num_don);
     
     for (size_t i = 0; i < num_don; ++i) {
-        int d_idx = hbond_data->candidate.don_idx[i];
-        int h_idx = hbond_data->candidate.don_h_idx[i];
+        int d_idx = hbond_data->candidate.donor.d_idx[i];
+        int h_idx = hbond_data->candidate.donor.h_idx[i];
         don_idx[i] = d_idx;
         don_xyz[i] = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
         hyd_xyz[i] = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
@@ -4266,7 +4339,7 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
         .acc_xyz = acc_xyz,
         .hbond_candidate_data = &hbond_data->candidate,
         .donor_energies = donor_energies,
-        .min_angle_in_radians = DEG_TO_RAD(min_angle),
+        .min_angle_in_radians = (float)DEG_TO_RAD(min_angle),
     };
 
     const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
@@ -4286,8 +4359,8 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     // Try to assign donors to acceptors based on the best score, respecting acceptor capacities
     for (size_t i = 0; i < num_don; ++i) {
         float score = donor_energies[i].score;
-        int acc_idx = donor_energies[i].acc_idx;
-        acceptor_assignment_t* assignment = &assignments[acc_idx];
+        int   a_idx = donor_energies[i].acc_idx;
+        acceptor_assignment_t* assignment = &assignments[a_idx];
 
         // Insertion sort into the acceptor's assigned donors if score is good enough
         if (score > assignment->score[3]) {
@@ -4311,14 +4384,14 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     // Now create bonds for the top-scoring donors for each acceptor, respecting capacity
     for (size_t i = 0; i < num_acc; ++i) {
         acceptor_assignment_t* assignment = &assignments[i];
-        int capacity = hbond_data->candidate.acc_lone_pairs[i];
+        int capacity = hbond_data->candidate.acceptor.num_lone_pairs[i];
         for (int j = 0; j < capacity; ++j) {
             if (assignment->score[j] == 0.f) {
                 break;
             }
             md_hydrogen_bond_pair_t pair = {
-                .acceptor_idx = (uint32_t)i,
-                .donor_idx = assignment->don_idx[j],
+                .acc_idx = (uint32_t)i,
+                .don_idx = assignment->don_idx[j],
             };
             md_array_push_no_grow(hbond_data->bonds, pair);
             hbond_data->num_bonds += 1;
@@ -4407,7 +4480,7 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
 #define MAX_GROUPED_COMP_SIZE 4
 
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[], struct md_allocator_i* alloc) {
-    if (!sys || sys->comp.count == 0) {
+    if (!sys || sys->component.count == 0) {
         MD_LOG_ERROR("Missing system or components");
         return false;
     }
@@ -4415,26 +4488,26 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
-    bool* connected_to_prev = (bool*)md_vm_arena_push_zero(temp_arena, sys->comp.count * sizeof(bool));
+    uint64_t* connected_to_prev = make_bitfield(sys->component.count, temp_arena);
     if (sys->bond.count > 0) {
         // Pass 1: map atoms to components
-        md_comp_idx_t* atom_comp_idx = md_vm_arena_push_array(temp_arena, md_comp_idx_t, sys->atom.count);
-        MEMSET(atom_comp_idx, 0, sizeof(md_comp_idx_t) * sys->atom.count);
-        for (size_t i = 0; i < sys->comp.count; ++i) {
-            md_urange_t atom_range = md_comp_atom_range(&sys->comp, i);
+        md_component_idx_t* atom_comp_idx = md_vm_arena_push_array(temp_arena, md_component_idx_t, sys->atom.count);
+        MEMSET(atom_comp_idx, 0, sizeof(md_component_idx_t) * sys->atom.count);
+        for (size_t i = 0; i < sys->component.count; ++i) {
+            md_urange_t atom_range = md_component_atom_range(&sys->component, i);
             for (uint32_t j = atom_range.beg; j < atom_range.end; ++j) {
-                atom_comp_idx[j] = (md_comp_idx_t)i;
+                atom_comp_idx[j] = (md_component_idx_t)i;
             }
         }
 
         // Pass 2: find connected residues
         for (size_t i = 0; i < sys->bond.count; ++i) {
             md_atom_pair_t pair = sys->bond.pairs[i];
-            md_comp_idx_t res_a = atom_comp_idx[pair.idx[0]];
-            md_comp_idx_t res_b = atom_comp_idx[pair.idx[1]];
+            md_component_idx_t res_a = atom_comp_idx[pair.idx[0]];
+            md_component_idx_t res_b = atom_comp_idx[pair.idx[1]];
             if (abs(res_a - res_b) == 1) {
                 int res_max = MAX(res_a, res_b);
-                connected_to_prev[res_max] = true;
+                bitfield_set_bit(connected_to_prev, res_max);
             }
         }
     }
@@ -4445,25 +4518,24 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
     // Pass 3: Construct instances (sequential ranges of components) either from connected components (== Polymer?) or from just sequential components with the same name
     {
         size_t i = 0;
-        while (i < sys->comp.count) {
+        while (i < sys->component.count) {
             size_t j = i + 1;
 
-            str_t  comp_name = md_comp_name(&sys->comp, i);
-            md_seq_id_t comp_seq_id = md_comp_seq_id(&sys->comp, i);
-            size_t comp_size = md_comp_atom_count(&sys->comp, i);
-            md_flags_t comp_flags = md_comp_flags(&sys->comp, i);
-            uint64_t entity_key = md_hash64_str(comp_name, 0);
-            str_t  comp_auth_id = comp_auth_asym_id ? str_trim(comp_auth_asym_id[i]) : STR_LIT("");
+            str_t            comp_name      = md_component_name(&sys->component, i);
+            md_sequence_id_t comp_seq_id    = md_component_seq_id(&sys->component, i);
+            size_t           comp_size      = md_component_atom_count(&sys->component, i);
+            md_flags_t       comp_flags     = md_component_flags(&sys->component, i);
+            str_t            comp_auth_id   = comp_auth_asym_id ? str_trim(comp_auth_asym_id[i]) : STR_LIT("");
 
+            uint64_t entity_key = md_hash64_str(comp_name, 0);
             md_flags_t entity_flags = comp_flags;
 
-            bool is_amino_or_nucleotide = (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) != 0;
+            bool is_amino_or_nucleotide = (bool)(comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
 
             bool test_name      = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
-            bool test_seq_id    = !is_amino_or_nucleotide && comp_size > MAX_GROUPED_COMP_SIZE;
             bool test_auth_id   = comp_auth_asym_id && !str_empty(comp_auth_id);
-            bool test_bond      = !test_auth_id && is_amino_or_nucleotide && connected_to_prev[j];
-
+            bool test_bond      = !test_auth_id && bitfield_test_bit(connected_to_prev, j);
+            bool test_seq_id    = !test_bond && !is_amino_or_nucleotide && comp_size > MAX_GROUPED_COMP_SIZE;
 #if 0
             MD_LOG_DEBUG("Identifying new instance");
             MD_LOG_DEBUG("\t test_name: %i",    (int)test_name);
@@ -4477,18 +4549,21 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             }
 
             if (test_name || test_seq_id || test_bond || test_auth_id) {
-                while (j < sys->comp.count) {
-                    str_t comp_name_j = md_comp_name(&sys->comp, j);
+                while (j < sys->component.count) {
+                    str_t comp_name_j = md_component_name(&sys->component, j);
+
                     if (test_name && !str_eq(comp_name, comp_name_j)) break;
-                    if (test_seq_id && comp_seq_id != md_comp_seq_id(&sys->comp, j)) break;
-                    if (test_bond && !connected_to_prev[j]) break;
+                    if (test_seq_id && comp_seq_id != md_component_seq_id(&sys->component, j)) break;
+                    if (test_bond && !bitfield_test_bit(connected_to_prev, j)) break;
                     if (test_auth_id && !str_eq(comp_auth_id, comp_auth_asym_id[j])) break;
 
-                    md_flags_t flags = md_comp_flags(&sys->comp, j);
-                    if ((flags ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
+                    md_flags_t flags_j = md_component_flags(&sys->component, j);
+                    if ((flags_j ^ comp_flags) & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) break;
+
                     if (!test_name) {
                         entity_key = md_hash64_str(comp_name_j, entity_key);
                     }
+
                     ++j;
                 }
             }
@@ -4506,7 +4581,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             if (entity_idx == -1) {
                 entity_idx = (md_entity_idx_t)sys->entity.count;
                 md_label_t entity_id;
-                entity_id.len = snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
+                entity_id.len = (uint8_t)snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
 
                 const char* entity_type_str = "";
                 if (entity_flags & MD_FLAG_POLYMER) {
@@ -4542,7 +4617,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             md_label_t inst_id = {0};
 			// Create unique instance id
             {
-				str_t last = sys->inst.count > 0 ? md_system_inst_id(sys, sys->inst.count - 1) : STR_LIT("");
+				str_t last = sys->instance.count > 0 ? md_system_instance_id(sys, sys->instance.count - 1) : STR_LIT("");
                 inst_id = md_util_next_inst_id(last);
                 str_t id_str = LBL_TO_STR(inst_id);
 				uint64_t key = md_hash64_str(id_str, 0);
@@ -4554,11 +4629,11 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                 }
             }
 
-            md_array_push(sys->inst.id, inst_id, alloc);
-            md_array_push(sys->inst.auth_id, make_label(str_trim(comp_auth_id)), alloc);  // No auth id info as its generated
-            md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
-            md_array_push(sys->inst.entity_idx, entity_idx, alloc);
-            sys->inst.count += 1;
+            md_array_push(sys->instance.id, inst_id, alloc);
+            md_array_push(sys->instance.auth_id, make_label(str_trim(comp_auth_id)), alloc);  // No auth id info as its generated
+            md_array_push(sys->instance.comp_offset, (uint32_t)i, alloc);
+            md_array_push(sys->instance.entity_idx, entity_idx, alloc);
+            sys->instance.count += 1;
 
 			md_hashset_add(&inst_id_set, md_hash64_str(LBL_TO_STR(inst_id), 0));
 #if 0
@@ -4566,25 +4641,10 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 #endif
             i = j;
         }
-        md_array_push(sys->inst.comp_offset, (uint32_t)i, alloc);
+        md_array_push(sys->instance.comp_offset, (uint32_t)i, alloc);
     }
 
     md_vm_arena_destroy(temp_arena);
-    return true;
-}
-
-bool md_util_set_ion_flags(md_flags_t* out_flags, const md_atom_data_t* atom, const md_bond_data_t* bond) {
-    ASSERT(atom);
-    ASSERT(bond);
-
-    for (size_t i = 0; i < atom->count; ++i) {
-        // Check if it has no bonds
-        md_atomic_number_t z = md_atom_atomic_number(atom, i);
-
-        if (md_bond_conn_count(bond, i) == 0 && monatomic_ion_element(z) && !(atom->flags[i] & MD_FLAG_WATER)) {
-            atom->flags[i] |= MD_FLAG_ION;
-        }
-    }
     return true;
 }
 
@@ -4962,52 +5022,52 @@ static const atom_type_t predefined_atom_types[] = {
     // Martini CG types (BB) + (SC*)
     {"ALA", "BB",  0,   89.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"ARG", "BB",  0,  174.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"ASN", "BB",  0,  132.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"ASP", "BB",  0,  133.10f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
 	{"CYS", "BB",  0,  121.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"GLN", "BB",  0,  146.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"GLU", "BB",  0,  147.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"GLY", "BB",  0,   75.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"HIS", "BB",  0,  155.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"ILE", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"LEU", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"LYS", "BB",  0,  146.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
 	{"MET", "BB",  0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"MET", "SC1", 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"MET", "SC1", 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"PHE", "BB",  0,  165.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"PRO", "BB",  0,  115.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"SER", "BB",  0,  105.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"SER", "SC1", 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"SER", "SC1", 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"THR", "BB",  0,  119.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"THR", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"THR", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"TRP", "BB",  0,  204.23f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
 	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"TYR", "BB",  0,  181.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
-	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
     {"VAL", "BB",  0,  117.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
 
 	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
 	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
@@ -5191,13 +5251,11 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
 
     md_hashmap32_t atom_type_cache = {.allocator = md_get_temp_allocator() };
     md_hashmap_reserve(&atom_type_cache, 256);
-    
-    size_t num_success = 0;
 
-    if (sys->comp.count > 0) {
-        for (size_t comp_idx = 0; comp_idx < sys->comp.count; ++comp_idx) {
-            str_t comp_name        = md_comp_name(&sys->comp, comp_idx);
-            md_urange_t comp_range = md_comp_atom_range(&sys->comp, comp_idx);
+    if (sys->component.count > 0) {
+        for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
+            str_t comp_name        = md_component_name(&sys->component, comp_idx);
+            md_urange_t comp_range = md_component_atom_range(&sys->component, comp_idx);
             size_t comp_size       = comp_range.end - comp_range.beg;
             uint64_t comp_key      = md_hash64_str(comp_name, comp_size);
 
@@ -5209,7 +5267,9 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 uint64_t key = md_hash64_str(atom_labels[i], comp_key);
                 uint32_t* cached_type = md_hashmap_get(&atom_type_cache, key);
                 if (cached_type) {
-                    sys->atom.type_idx[i] = *cached_type;
+                    md_atom_type_idx_t atom_type = (md_atom_type_idx_t)*cached_type;
+                    sys->atom.type_idx[i] = atom_type;
+                    comp_flags |= sys->atom.type.flags[atom_type];
                 } else {
                     str_t atom_name = atom_labels[i];
                     md_atomic_number_t z = 0;
@@ -5221,7 +5281,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                     // Try to find in predefined set
                     atom_type_t* predef_type = find_predefined_atom_type(comp_name, atom_name);
                     if (predef_type) {
-                        z       = predef_type->atomic_nr;
+                        z       = (md_atomic_number_t)predef_type->atomic_nr;
                         mass    = predef_type->mass;
                         radius  = predef_type->radius;
                         color   = z == 0 ? 0 : md_atomic_number_cpk_color(z);
@@ -5242,7 +5302,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 }
                 sys->atom.flags[i] |= sys->atom.type.flags[sys->atom.type_idx[i]];
             }
-            sys->comp.flags[comp_idx] |= comp_flags;
+            sys->component.flags[comp_idx] |= comp_flags;
         }
     } else {
         for (size_t i = 0; i < sys->atom.count; ++i) {
@@ -5251,7 +5311,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
             uint64_t key = md_hash64_str(atom_labels[i], 0);
             uint32_t* cached_type = md_hashmap_get(&atom_type_cache, key);
             if (cached_type) {
-                sys->atom.type_idx[i] = *cached_type;
+                sys->atom.type_idx[i] = (md_atom_type_idx_t)*cached_type;
             } else {
                 md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], (str_t){0}, 0);
                 float mass   = md_atomic_number_mass(z);
@@ -8733,7 +8793,7 @@ static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_inst_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t comp_idx = (int32_t)(comp_base_idx + i);
@@ -8741,7 +8801,7 @@ static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms
     }
 }
 
-static inline void flush_protein_backbone_segment(md_protein_backbone_atoms_t* backbone_atoms, md_comp_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+static inline void flush_protein_backbone_segment(md_protein_backbone_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
         commit_protein_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
@@ -8754,7 +8814,7 @@ static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_inst_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
         int32_t comp_idx = (int32_t)(comp_base_idx + i);
@@ -8762,7 +8822,7 @@ static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms
     }
 }
 
-static inline void flush_nucleic_backbone_segment(md_nucleic_backbone_atoms_t* backbone_atoms, md_comp_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+static inline void flush_nucleic_backbone_segment(md_nucleic_backbone_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
         commit_nucleic_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
@@ -8863,9 +8923,6 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
         if (sys->bond.count == 0) {
             md_util_system_covalent_bond_infer(sys, alloc);
         }
-        if (sys->bond.conn.count == 0) {
-			md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
-        }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
@@ -8882,7 +8939,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 #endif
 
     if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
-        if (sys->inst.count == 0 && sys->comp.count > 0 && sys->bond.pairs) {
+        if (sys->instance.count == 0) {
             md_util_system_infer_entity_and_instance(sys, NULL, alloc);
         }
     }
@@ -8897,7 +8954,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
     }
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
-        if (sys->inst.count && sys->atom.type_idx) {
+        if (sys->instance.count && sys->atom.type_idx) {
             // Compute backbone data
             // 
             // @NOTE: We should only attempt to compute backbone data for valid components (e.g. amino acids / dna / rna)
@@ -8913,25 +8970,25 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID;
                 md_array(md_protein_backbone_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
-                md_comp_idx_t comp_base = -1;
-                md_seq_id_t prev_seq_id = -1;
+                md_component_idx_t comp_base = -1;
+                md_sequence_id_t prev_seq_id = -1;
 
-                for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
-                    md_flags_t inst_flags = md_system_inst_flags(sys, inst_idx);
+                for (size_t inst_idx = 0; inst_idx < sys->instance.count; ++inst_idx) {
+                    md_flags_t inst_flags = md_system_instance_flags(sys, inst_idx);
                     
                     // Check for polymer and amino acid otherwise skip
                     if ((inst_flags & req_flags) != req_flags) {
                         continue;
                     }
 
-                    md_urange_t range = md_inst_comp_range(&sys->inst, inst_idx);
-                    for (size_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
+                    md_urange_t range = md_instance_component_range(&sys->instance, inst_idx);
+                    for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
                         md_protein_backbone_atoms_t atoms;
-                        md_urange_t atom_range = md_comp_atom_range(&sys->comp, res_idx);
+                        md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
 
                         if (has_backbone_atoms) {
-                            md_seq_id_t seq_id = md_system_comp_seq_id(sys, res_idx);
+                            md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
                             if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
@@ -8939,7 +8996,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                             }
 
                             if (comp_base == -1) {
-                                comp_base = (md_comp_idx_t)res_idx;
+                                comp_base = (md_component_idx_t)comp_idx;
                             }
                             md_array_push(backbone_atoms, atoms, temp_arena);
                             prev_seq_id = seq_id;
@@ -8977,25 +9034,25 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEOTIDE;
                 md_array(md_nucleic_backbone_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
-                md_comp_idx_t comp_base = -1;
-                md_seq_id_t prev_seq_id = -1;
+                md_component_idx_t comp_base = -1;
+                md_sequence_id_t prev_seq_id = -1;
 
-                for (size_t inst_idx = 0; inst_idx < sys->inst.count; ++inst_idx) {
-                    md_flags_t inst_flags = md_system_inst_flags(sys, inst_idx);
+                for (size_t inst_idx = 0; inst_idx < sys->instance.count; ++inst_idx) {
+                    md_flags_t inst_flags = md_system_instance_flags(sys, inst_idx);
 
                     // Check for polymer and nucleotide otherwise skip
                     if ((inst_flags & req_flags) != req_flags) {
                         continue;
                     }
 
-                    md_urange_t range = md_inst_comp_range(&sys->inst, inst_idx);
-                    for (md_comp_idx_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
+                    md_urange_t range = md_instance_component_range(&sys->instance, inst_idx);
+                    for (md_component_idx_t comp_idx = (int)range.beg; comp_idx < (int)range.end; ++comp_idx) {
                         md_nucleic_backbone_atoms_t atoms;
-                        md_urange_t atom_range = md_comp_atom_range(&sys->comp, comp_idx);
+                        md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
 
                         if (has_backbone_atoms) {
-                            md_seq_id_t seq_id = md_system_comp_seq_id(sys, comp_idx);
+                            md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
                             if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
@@ -9034,11 +9091,13 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
         }
     }
 
+#if 0
     if ((flags & MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT) && 
         (sys->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
     {
         md_util_system_unwrap(sys);
     }
+#endif
 
 	md_vm_arena_destroy(temp_arena);
     return true;
@@ -9503,7 +9562,7 @@ static bool store_unique_callback(const int map[], size_t length, void* user) {
         if (entry->value < fit) {
             // Update result if the new value is lower (more strictly sorted)
             entry->value = fit;
-            int* ptr = md_index_range_beg(data->result, entry->index);
+            int* ptr = md_index_range_ptr(data->result, entry->index);
             MEMCPY(ptr, map, sizeof(int) * length);
         }
     } else {
@@ -9811,7 +9870,9 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
                     continue;
                 }
                 idx_range_t range = idx_range_create(out_structures);
-                for (int* it = md_index_range_beg(&sys->structure, s_idx); it < md_index_range_end(&sys->structure, s_idx); ++it) {
+                const int* beg = md_index_range_beg(&sys->structure, s_idx);
+                const int* end = md_index_range_end(&sys->structure, s_idx);
+                for (const int* it = beg; it != end; ++it) {
                     int i = *it;
                     if (filter_atom(sys, i, filter)) {
                         idx_range_push(range, i);
@@ -9829,13 +9890,13 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
         }
         break;
     case MD_UTIL_MATCH_LEVEL_COMPONENT:
-        for (size_t r_idx = 0; r_idx < sys->comp.count; ++r_idx) {
-            if (md_comp_atom_count(&sys->comp, r_idx) < min_size) {
+        for (size_t r_idx = 0; r_idx < sys->component.count; ++r_idx) {
+            if (md_component_atom_count(&sys->component, r_idx) < min_size) {
                 continue;
             }
             idx_range_t range = idx_range_create(out_structures);
-            md_urange_t comp_range = md_comp_atom_range(&sys->comp, r_idx);
-            for (int i = comp_range.beg; i < comp_range.end; ++i) {
+            md_urange_t comp_range = md_component_atom_range(&sys->component, r_idx);
+            for (int i = (int)comp_range.beg; i < (int)comp_range.end; ++i) {
                 if (filter_atom(sys, i, filter)) {
                     idx_range_push(range, i);
                 }
@@ -9844,13 +9905,13 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
         }
         break;
     case MD_UTIL_MATCH_LEVEL_INSTANCE:
-        for (size_t i_idx = 0; i_idx < sys->inst.count; ++i_idx) {
-            md_urange_t inst_range = md_system_inst_atom_range(sys, i_idx);
+        for (size_t i_idx = 0; i_idx < sys->instance.count; ++i_idx) {
+            md_urange_t inst_range = md_system_instance_atom_range(sys, i_idx);
             if (inst_range.end - inst_range.beg < min_size) {
                 continue;
             }
             idx_range_t range = idx_range_create(out_structures);
-            for (int i = inst_range.beg; i < inst_range.end; ++i) {
+            for (int i = (int)inst_range.beg; i < (int)inst_range.end; ++i) {
                 if (filter_atom(sys, i, filter)) {
                     idx_range_push(range, i);
                 }
@@ -9878,9 +9939,9 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     md_array(int) structure_idx = md_vm_arena_push_array(temp_arena, int, atom_count);
 
     for (size_t i = 0; i < md_structure_count(&sys->structure); ++i) {
-        int* beg = md_index_range_beg(&sys->structure, i);
-        int* end = md_index_range_end(&sys->structure, i);
-        for (int* it = beg; it != end; ++it) {
+        const int* beg = md_index_range_beg(&sys->structure, i);
+        const int* end = md_index_range_end(&sys->structure, i);
+        for (const int* it = beg; it != end; ++it) {
             structure_idx[*it] = (int)i;
         }
     }
@@ -9992,8 +10053,8 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
 
         // Remap indices to global indices in result
         for (size_t j = pre_count; j < post_count; ++j) {
-            int* beg = md_index_range_beg(&result, j);
-            int* end = md_index_range_end(&result, j);
+            int* beg = md_index_range_ptr(&result, j);
+            const int* end = md_index_range_end(&result, j);
             for (int* it = beg; it != end; ++it) {
                 *it = s_idx[*it];
             }
@@ -10101,8 +10162,8 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         if (idx_data && count > 0) {
             ASSERT(post_count - pre_count == count);
             for (size_t j = pre_count; j < post_count; ++j) {
-                int* beg = md_index_range_beg(idx_data, j);
-                int* end = md_index_range_end(idx_data, j);
+                int* beg = md_index_range_ptr(idx_data, j);
+                const int* end = md_index_range_end(idx_data, j);
                 for (int* it = beg; it != end; ++it) {
                     *it = s_idx[*it];
                 }

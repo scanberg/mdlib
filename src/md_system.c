@@ -34,16 +34,16 @@ extern "C" {
     SAFE_FREE(mol->atom.type.color);
 
     // Component
-    SAFE_FREE(mol->comp.name);
-    SAFE_FREE(mol->comp.seq_id);
-    SAFE_FREE(mol->comp.atom_offset);
-    SAFE_FREE(mol->comp.flags);
+    SAFE_FREE(mol->component.name);
+    SAFE_FREE(mol->component.seq_id);
+    SAFE_FREE(mol->component.atom_offset);
+    SAFE_FREE(mol->component.flags);
 
     // Instance
-    SAFE_FREE(mol->inst.id);
-    SAFE_FREE(mol->inst.auth_id);
-    SAFE_FREE(mol->inst.entity_idx);
-    SAFE_FREE(mol->inst.comp_offset);
+    SAFE_FREE(mol->instance.id);
+    SAFE_FREE(mol->instance.auth_id);
+    SAFE_FREE(mol->instance.entity_idx);
+    SAFE_FREE(mol->instance.comp_offset);
 
     // Protein Backbone
     SAFE_FREE(mol->protein_backbone.range.offset);
@@ -124,9 +124,9 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     md_array_push_array(dst->nucleic_backbone.range.offset, src->nucleic_backbone.range.offset, src->nucleic_backbone.range.count, alloc);
     md_array_push_array(dst->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.count, alloc);
 
-    ARRAY_PUSH(inst, id);
-    ARRAY_PUSH(inst, auth_id);
-    ARRAY_PUSH(inst, comp_offset);
+    ARRAY_PUSH(instance, id);
+    ARRAY_PUSH(instance, auth_id);
+    ARRAY_PUSH(instance, comp_offset);
 
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
     md_array_push_array(dst->bond.flags, src->bond.flags, src->bond.count, alloc);
@@ -134,10 +134,10 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     md_array_push_array(dst->bond.conn.bond_idx, src->bond.conn.bond_idx, src->bond.conn.count, alloc);
     md_array_push_array(dst->bond.conn.offset, src->bond.conn.offset, src->bond.conn.offset_count, alloc);
 
-    ARRAY_PUSH(comp, name);
-    ARRAY_PUSH(comp, seq_id);
-    ARRAY_PUSH(comp, atom_offset);
-    ARRAY_PUSH(comp, flags);
+    ARRAY_PUSH(component, name);
+    ARRAY_PUSH(component, seq_id);
+    ARRAY_PUSH(component, atom_offset);
+    ARRAY_PUSH(component, flags);
 
     dst->atom.count           = src->atom.count;
     dst->atom.type.count      = src->atom.type.count;
@@ -145,8 +145,8 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     dst->protein_backbone.range.count   = src->protein_backbone.range.count;
     dst->nucleic_backbone.segment.count = src->nucleic_backbone.segment.count;
     dst->nucleic_backbone.range.count   = src->nucleic_backbone.range.count;
-    dst->inst.count           = src->inst.count;
-    dst->comp.count           = src->comp.count;
+    dst->instance.count       = src->instance.count;
+    dst->component.count      = src->component.count;
     dst->bond.count           = src->bond.count;
     dst->bond.conn.count      = src->bond.conn.count;
     dst->bond.conn.offset_count = src->bond.conn.offset_count;
@@ -223,6 +223,21 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
     }
 
     free(local_offset);
+}
+
+void md_atom_coordinate_init(md_atom_coordinate_data_t* coord, size_t num_atoms, md_allocator_i* alloc) {
+    coord->num_chunks = (num_atoms + 3) / 4;
+    md_array_resize(coord->chunks, coord->num_chunks, alloc);
+}
+
+void md_atom_coordinate_free(md_atom_coordinate_data_t* coord, md_allocator_i* alloc) {
+    ASSERT(coord);
+    ASSERT(alloc);
+    if (coord->chunks) {
+        md_array_free(coord->chunks, alloc);
+        coord->chunks = NULL;
+        coord->num_chunks = 0;
+    }
 }
 
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {

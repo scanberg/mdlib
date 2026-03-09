@@ -933,10 +933,10 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
                 md_flags_t comp_flags = flags & comp_flag_filter;
 
                 // Start residue (store atom offset before adding any residue atoms)
-                md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
-                md_array_push(sys->comp.name,   make_label(comp_id), alloc);
-                md_array_push(sys->comp.seq_id, seq_id, alloc);
-                md_array_push(sys->comp.flags,  comp_flags, alloc);
+                md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
+                md_array_push(sys->component.name,   make_label(comp_id), alloc);
+                md_array_push(sys->component.seq_id, seq_id, alloc);
+                md_array_push(sys->component.flags,  comp_flags, alloc);
 
                 // Instance handling
                 if (inst_key != prev_inst_key) {
@@ -944,13 +944,13 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
                     md_label_t inst_id      = make_label(label_asym_id);
                     md_label_t inst_auth_id = make_label(auth_asym_id);
 
-                    md_array_push(sys->inst.id, inst_id, alloc);
-                    md_array_push(sys->inst.auth_id, inst_auth_id, alloc);
-                    md_array_push(sys->inst.comp_offset, (uint32_t)sys->comp.count, alloc);
-                    md_array_push(sys->inst.entity_idx, entity_idx, alloc);
-                    sys->inst.count += 1;
+                    md_array_push(sys->instance.id, inst_id, alloc);
+                    md_array_push(sys->instance.auth_id, inst_auth_id, alloc);
+                    md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
+                    md_array_push(sys->instance.entity_idx, entity_idx, alloc);
+                    sys->instance.count += 1;
                 }
-                sys->comp.count += 1;
+                sys->component.count += 1;
             }
  
             prev_inst_key = inst_key;
@@ -964,11 +964,11 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             md_array_push_no_grow(sys->atom.flags, flags);
         }
 
-        if (sys->comp.atom_offset) {
-            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+        if (sys->component.atom_offset) {
+            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
         }
-        if (sys->inst.comp_offset) {
-            md_array_push(sys->inst.comp_offset, (uint32_t)sys->comp.count, alloc);  // Final sentinel
+        if (sys->instance.comp_offset) {
+            md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);  // Final sentinel
         }
     }
 
@@ -977,6 +977,9 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     } else {
         sys->unitcell = md_unitcell_none();
     }
+
+	md_util_system_covalent_bond_infer(sys, alloc);
+    md_util_system_infer_comp_flags(sys);
 
     return sys->atom.count > 0;
 }

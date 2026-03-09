@@ -514,10 +514,10 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         
         str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
         str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
-        md_seq_id_t seq_id = data->atom_coordinates[i].res_seq;
+        md_sequence_id_t seq_id = data->atom_coordinates[i].res_seq;
         if (seq_id == INT_MAX) {
 			// Missing residue sequence id, assign one based on previous residue
-			seq_id = sys->comp.seq_id ? sys->comp.seq_id[sys->comp.count - 1] + 1 : 1;
+			seq_id = sys->component.seq_id ? sys->component.seq_id[sys->component.count - 1] + 1 : 1;
 		}
         char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
@@ -543,11 +543,11 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             // Propagate HETERO flag to residue
             md_flags_t comp_flags = flags;
 
-            sys->comp.count += 1;
-            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
-            md_array_push(sys->comp.name,   make_label(res_name), alloc);
-            md_array_push(sys->comp.seq_id, seq_id, alloc);
-            md_array_push(sys->comp.flags,  comp_flags, alloc);
+            sys->component.count += 1;
+            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
+            md_array_push(sys->component.name,   make_label(res_name), alloc);
+            md_array_push(sys->component.seq_id, seq_id, alloc);
+            md_array_push(sys->component.flags,  comp_flags, alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
             if (terminator) {
@@ -570,7 +570,7 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
     if (data->num_cryst1 > 0) {
         // Use first crystal

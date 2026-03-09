@@ -900,11 +900,11 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 				char buf[8];
 				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
-				md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
-				md_array_push(sys->comp.seq_id, resid, alloc);
-				md_array_push(sys->comp.name, make_label(name), alloc);
-				md_array_push(sys->comp.flags, 0, alloc);
-				sys->comp.count += 1;
+				md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
+				md_array_push(sys->component.seq_id, resid, alloc);
+				md_array_push(sys->component.name, make_label(name), alloc);
+				md_array_push(sys->component.flags, 0, alloc);
+				sys->component.count += 1;
 			}
 		}
 
@@ -919,7 +919,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	}
 
 	if (has_resid) {
-		md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc); // Final sentinel
+		md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc); // Final sentinel
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 

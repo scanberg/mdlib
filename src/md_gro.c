@@ -198,17 +198,17 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
         const float z = data->atom_data[i].z * NM_TO_ANGSTROM; 
         str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
-        md_seq_id_t res_id = data->atom_data[i].res_id;
+        md_sequence_id_t res_id = data->atom_data[i].res_id;
 
 		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
         if (comp_key != prev_comp_key) {
             // New residue
             md_flags_t res_flags = 0;
-            sys->comp.count += 1;
-            md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);
-            md_array_push(sys->comp.name,  make_label(res_name), alloc);
-            md_array_push(sys->comp.seq_id,    res_id, alloc);
-            md_array_push(sys->comp.flags,  res_flags, alloc);
+            sys->component.count += 1;
+            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
+            md_array_push(sys->component.name,  make_label(res_name), alloc);
+            md_array_push(sys->component.seq_id,    res_id, alloc);
+            md_array_push(sys->component.flags,  res_flags, alloc);
 		}
 
         sys->atom.count += 1;
@@ -221,15 +221,14 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
 		prev_comp_key = comp_key;
     }
-	md_array_push(sys->comp.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+	md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
 
-    float box[3][3];
-    MEMCPY(&box, data->box, sizeof(mat3_t));
+    float box[3][3] = {0};
     // convert from nm to Ångström
     for (int i = 0; i < 3; ++i) {
-        box[i][0] *= 10.0f;
-        box[i][1] *= 10.0f;
-        box[i][2] *= 10.0f;
+        box[i][0] = data->box[i][0] * NM_TO_ANGSTROM;
+        box[i][1] = data->box[i][1] * NM_TO_ANGSTROM;
+        box[i][2] = data->box[i][2] * NM_TO_ANGSTROM;
     }
 
     sys->unitcell = md_unitcell_from_matrix_float(box);

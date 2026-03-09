@@ -121,8 +121,8 @@ UTEST(pdb, create_system) {
     EXPECT_TRUE(md_pdb_system_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 
-    EXPECT_EQ(1185, mol.comp.count);
-    EXPECT_EQ(3, mol.inst.count);
+    EXPECT_EQ(1185, mol.component.count);
+    EXPECT_EQ(3, mol.instance.count);
     EXPECT_EQ(1, mol.entity.count);
 
     for (size_t i = 0; i < mol.atom.count; ++i) {
