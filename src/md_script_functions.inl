@@ -349,13 +349,18 @@ static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ion             (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _backbone        (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _side            (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _sidechain       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 // Residue level selectors
-static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _protein (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _nucleic (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -620,23 +625,28 @@ static procedure_t procedures[] = {
     // --- SELECTORS ---
 
     // Atom level
-    {CSTR("all"),       TI_BITFIELD, 0, {0},                _all},
-    {CSTR("ion"),       TI_BITFIELD, 0, {0},                _ion},
-    {CSTR("backbone"),  TI_BITFIELD, 0, {0},                _backbone},
+    {CSTR("all"),           TI_BITFIELD, 0, {0},                _all},
+    {CSTR("ion"),           TI_BITFIELD, 0, {0},                _ion},
+    {CSTR("backbone"),      TI_BITFIELD, 0, {0},                _backbone},
+    {CSTR("side"),          TI_BITFIELD, 0, {0},                _side},
+    {CSTR("sidechain"),     TI_BITFIELD, 0, {0},                _sidechain},
+    {CSTR("nucleoside"),    TI_BITFIELD, 0, {0},                _nucleoside},
+    {CSTR("nucleobase"),    TI_BITFIELD, 0, {0},                _nucleobase},
 
-    {CSTR("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
-    {CSTR("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
-    {CSTR("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
-    {CSTR("element"),   TI_BITFIELD, 1, {TI_STRING_ARR},    _element_str,       FLAG_STATIC_VALIDATION},
-    {CSTR("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},    _element_irng,      FLAG_STATIC_VALIDATION},
-    {CSTR("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},    _atom_irng,         FLAG_STATIC_VALIDATION},
-    {CSTR("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},       _atom_int,          FLAG_STATIC_VALIDATION},
+    {CSTR("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {CSTR("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {CSTR("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {CSTR("element"),   TI_BITFIELD, 1, {TI_STRING_ARR},        _element_str,   FLAG_STATIC_VALIDATION},
+    {CSTR("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},        _element_irng,  FLAG_STATIC_VALIDATION},
+    {CSTR("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
+    {CSTR("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
-    {CSTR("ring"),      TI_BITFIELD_ARR, 0, {0},            _ring,              FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("ring"),      TI_BITFIELD_ARR, 0, {0},                _ring,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Residue level
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
     {CSTR("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
+    {CSTR("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {CSTR("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
     {CSTR("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -2998,155 +3008,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
-    (void)arg;
-
-    if (!ctx->mol->component.atom_offset || !ctx->mol->component.flags) {
-        return 0;
-    }
-
-    int result = 0;
-    int32_t* res_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-
-    if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        const int64_t cap = type_info_array_len(dst->type);
-        if (cap == 0) return 0;
-
-        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        int64_t dst_idx = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            const md_flags_t flags  = ctx->mol->component.flags[res_idx];
-            const md_urange_t range = md_component_atom_range(&ctx->mol->component, i);
-            if (flags & MD_FLAG_WATER) {
-                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
-                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-            }
-        }
-    } else {
-        // Length query
-        int count = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            const md_flags_t flags = ctx->mol->component.flags[res_idx];
-            count += (flags & MD_FLAG_WATER) ? 1 : 0;
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    md_array_free(res_indices, ctx->temp_alloc);
-    
-    return result;
-}
-
-static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
-    (void)arg;
-
-    int result = 0;
-
-    int32_t* res_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-
-    if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        const int64_t cap = type_info_array_len(dst->type);
-        if (cap == 0) return 0;
-
-        // Its a pretty good guess that the bitfield should be in the ballpark of the size of the entire thing.
-        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
-        
-        int64_t dst_idx = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            if (ctx->mol->component.flags[res_idx] & MD_FLAG_AMINO_ACID) {
-                const md_urange_t range = md_component_atom_range(&ctx->mol->component, res_idx);
-                ASSERT(dst_idx < cap);
-                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-            }
-        }
-    }
-    else {
-        if (!ctx->mol->component.count) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
-            return -1;
-        }
-
-        int count = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            if (ctx->mol->component.flags[res_idx] & MD_FLAG_AMINO_ACID) {
-                count += 1;
-            }
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    md_array_free(res_indices, ctx->temp_alloc);
-
-    return result;
-}
-
-static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
-    (void)arg;
-
-    int result = 0;
-
-    int32_t* res_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-
-    if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        const int64_t cap = type_info_array_len(dst->type);
-        if (cap == 0) return 0;
-
-        int64_t dst_idx = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            if (ctx->mol->component.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
-                const md_urange_t range = md_component_atom_range(&ctx->mol->component, res_idx);
-                ASSERT(dst_idx < cap);
-                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
-            }
-        }
-    }
-    else {
-        if (!ctx->mol->component.count) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
-            return -1;
-        }
-
-        int count = 0;
-        for (size_t i = 0; i < md_array_size(res_indices); ++i) {
-            int32_t res_idx = res_indices[i];
-            if (ctx->mol->component.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
-                count += 1;
-            }
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    md_array_free(res_indices, ctx->temp_alloc);
-
-    return result;
-}
-
-static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, int flags) {
+static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
@@ -3176,12 +3038,97 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
     return result;
 }
 
+static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
+    ASSERT(ctx && ctx->mol);
+    (void)arg;
+
+    int result = 0;
+
+    int* comp_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+	size_t num_comp = md_array_size(comp_indices);
+
+    if (dst) {
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
+        const int cap = type_info_array_len(dst->type);
+        if (cap == 0) return 0;
+
+        // Its a pretty good guess that the bitfield should be in the ballpark of the size of the entire thing.
+        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
+
+        int dst_idx = 0;
+        for (size_t i = 0; i < num_comp; ++i) {
+            int comp_idx = comp_indices[i];
+            if (ctx->mol->component.flags[comp_idx] & flags) {
+                const md_urange_t range = md_component_atom_range(&ctx->mol->component, comp_idx);
+                ASSERT(dst_idx < cap);
+                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
+                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
+            }
+        }
+    }
+    else {
+        if (!ctx->mol->component.count) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any components");
+            return -1;
+        }
+
+        int count = 0;
+        for (size_t i = 0; i < num_comp; ++i) {
+            int32_t comp_idx = comp_indices[i];
+            if (ctx->mol->component.flags[comp_idx] & flags) {
+                count += 1;
+            }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        result = count;
+    }
+
+    md_array_free(comp_indices, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_WATER);
+}
+
+static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
+	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_AMINO_ACID);
+}
+
+static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
+	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEIC_ACID);
+}
+
+static int _nucleotide(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOTIDE);
+}
+
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_ION);
+    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_ION);
 }
 
 static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
+}
+
+static int _side(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN | MD_FLAG_NUCLEOSIDE);
+}
+
+static int _sidechain(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN);
+}
+
+static int _nucleoside(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOSIDE);
+}
+
+static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOBASE);
 }
 
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {

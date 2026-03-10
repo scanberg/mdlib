@@ -50,18 +50,18 @@ enum {
 
     MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x4,      // Backbone atoms
-    MD_FLAG_SIDE                = 0x8,      // *Side* atoms (amino acid = side chains), (nucleic acids = nucleoside)
     MD_FLAG_TERMINAL_BEG        = 0x10,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
     MD_FLAG_TERMINAL_END        = 0x20,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
 
     // Proteins, Nucleic acids and their components
     MD_FLAG_POLYPEPTIDE         = 0x100,    // Top level for connected polypeptide chains (i.e. proteins)
     MD_FLAG_AMINO_ACID		    = 0x200,    // For expressing a true amino acid monomer in the polypeptide chain
+    MD_FLAG_SIDE_CHAIN          = 0x400,    // Amino acid side chain atoms
 
-    MD_FLAG_NUCLEIC_ACID        = 0x400,    // Top level for connected nucleic acid chains (i.e. DNA, RNA)
-    MD_FLAG_NUCLEOTIDE          = 0x800,    // For expressing a true nucleotide monomer in the nucleic acid chain
-    MD_FLAG_NUCLEOBASE          = 0x1000,   // Nucleobase component of a nucleotide
+    MD_FLAG_NUCLEIC_ACID        = 0x800,    // Top level for connected nucleic acid chains (i.e. DNA, RNA)
+    MD_FLAG_NUCLEOTIDE          = 0x1000,   // For expressing a true nucleotide monomer in the nucleic acid chain
     MD_FLAG_NUCLEOSIDE          = 0x2000,   // Nucleoside component of a nucleotide
+    MD_FLAG_NUCLEOBASE          = 0x4000,   // Nucleobase component of a nucleotide
 
     // HETERO types
     MD_FLAG_HETERO              = 0x10000,
@@ -546,13 +546,16 @@ typedef struct md_atom_pair_t {
     md_atom_idx_t idx[2];
 } md_atom_pair_t;
 
-typedef struct md_protein_backbone_atoms_t {
+typedef struct md_amino_acid_atoms_t {
+    // Backbone
     md_atom_idx_t n;
     md_atom_idx_t ca;
     md_atom_idx_t c;
+	// Side chain and appendages
     md_atom_idx_t o;
+    md_atom_idx_t cb;
     md_atom_idx_t hn;
-} md_protein_backbone_atoms_t;
+} md_amino_acid_atoms_t;
 
 // Backbone angles
 // φ (phi) is the angle in the chain C' − N − Cα − C'
@@ -563,14 +566,19 @@ typedef struct md_backbone_angles_t {
     float psi;
 } md_backbone_angles_t;
 
-typedef struct md_nucleic_backbone_atoms_t {
+typedef struct md_nucleic_acid_atoms_t {
+    // Backbone
     md_atom_idx_t p;
     md_atom_idx_t o5;
     md_atom_idx_t c5;
     md_atom_idx_t c4;
     md_atom_idx_t c3;
     md_atom_idx_t o3;
-} md_nucleic_backbone_atoms_t;
+    // Nucleoside
+    md_atom_idx_t c1;
+    md_atom_idx_t c2;
+    md_atom_idx_t o4;
+} md_nucleic_acid_atoms_t;
 
 // Miniature string buffer with explicit length
 // It can store up to 6 characters + null terminator which makes it compatible as a C-string

@@ -69,7 +69,7 @@ typedef struct md_protein_backbone_data_t {
     // These fields share the same length 'count'
     struct {
         size_t count;
-        md_protein_backbone_atoms_t* atoms;
+        md_amino_acid_atoms_t* atoms;
         md_backbone_angles_t* angle;
         md_secondary_structure_t* secondary_structure;
         md_ramachandran_type_t* rama_type;
@@ -88,7 +88,7 @@ typedef struct md_nucleic_backbone_data_t {
     // These fields share the same length 'count'
     struct {
         size_t count;
-        md_nucleic_backbone_atoms_t* atoms;
+        md_nucleic_acid_atoms_t* atoms;
         md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone segment
     } segment;
 } md_nucleic_backbone_data_t;
@@ -853,6 +853,11 @@ static inline size_t md_system_atom_count(const md_system_t* sys) {
     return md_atom_count(&sys->atom);
 }
 
+static inline md_flags_t md_system_atom_flags(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    return md_atom_flags(&sys->atom, atom_idx);
+}
+
 static inline size_t md_system_atom_type_count(const md_system_t* sys) {
     ASSERT(sys);
     return md_atom_type_count(&sys->atom.type);
@@ -861,6 +866,11 @@ static inline size_t md_system_atom_type_count(const md_system_t* sys) {
 static inline size_t md_system_component_count(const md_system_t* sys) {
     ASSERT(sys);
     return md_component_count(&sys->component);
+}
+
+static inline md_flags_t md_system_component_flags(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    return md_component_flags(&sys->component, comp_idx);
 }
 
 static inline size_t md_system_instance_count(const md_system_t* sys) {

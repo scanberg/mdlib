@@ -1512,29 +1512,31 @@ static inline bool cmp(str_t str, const char* ref, int len) {
     return MEMCMP(str.ptr, ref, len + 1) == 0;
 }
 
-static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* out_backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
+static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
     ASSERT(atom_data);
     int len = atom_range.end - atom_range.beg;
     if (len < 4) return false;
 
-    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
+    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
     uint32_t bits = 0;
-    md_protein_backbone_atoms_t bb = {-1, -1, -1, -1, -1};
+    md_amino_acid_atoms_t aa;
+	MEMSET(&aa, -1, sizeof(md_amino_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
-        if (!(bits & 1)  && cmp(id, "N",  1)) { bb.n  = (md_atom_idx_t)i; bits |= 1;  continue; }
-        if (!(bits & 16) && cmp(id, "HN", 2)) { bb.hn = (md_atom_idx_t)i; bits |= 16; continue; }
-        if (!(bits & 2)  && cmp(id, "CA", 2)) { bb.ca = (md_atom_idx_t)i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp(id, "C",  1)) { bb.c  = (md_atom_idx_t)i; bits |= 4;  continue; }
+        if (!(bits & 1)  && cmp(id, "N",  1)) { aa.n  = (md_atom_idx_t)i; bits |= 1;  continue; }
+        if (!(bits & 16) && cmp(id, "HN", 2)) { aa.hn = (md_atom_idx_t)i; bits |= 16; continue; }
+        if (!(bits & 2)  && cmp(id, "CA", 2)) { aa.ca = (md_atom_idx_t)i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp(id, "C",  1)) { aa.c  = (md_atom_idx_t)i; bits |= 4;  continue; }
+        if (!(bits & 32) && cmp(id, "CB", 2)) { aa.cb = (md_atom_idx_t)i; bits |= 32; continue; }
         if (!(bits & 8)) {
             if (cmp(id, "O", 1)     ||
                 cmp(id, "O1", 2)    ||
                 cmp(id, "OT1", 3)   ||
                 cmp(id, "OC1", 3))
             {
-                bb.o = (md_atom_idx_t)i; bits |= 8; continue;
+                aa.o = (md_atom_idx_t)i; bits |= 8; continue;
             }
         }
 
@@ -1543,10 +1545,10 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
     }
 
     // HN is optional
-    static const uint32_t req_bits = 1 | 2 | 4 | 8;
+    static const uint32_t backbone_bits = 1 | 2 | 4 | 8;
 
-    if (out_backbone_atoms) *out_backbone_atoms = bb;
-    return (bits & req_bits) == req_bits;
+    if (out_atoms) *out_atoms = aa;
+    return (bits & backbone_bits) == backbone_bits;
 }
 
 // There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3)
@@ -1556,27 +1558,32 @@ static bool cmp_nuc_atom(str_t id, const char* base, size_t len) {
     return next == 0 || next == '\'' || next == '*';
 }
 
-static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* out_backbone_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
+static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
     ASSERT(atom_data);
     int len = atom_range.end - atom_range.beg;
     if (len < 6) return false;
 
-    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
+    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256;
 
     uint32_t bits = 0;
-    md_nucleic_backbone_atoms_t bb = {-1,-1,-1,-1,-1,-1};
+    md_nucleic_acid_atoms_t na;
+	MEMSET(&na, -1, sizeof(md_nucleic_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         str_t id = md_atom_name(atom_data, i);
         if (str_empty(id)) continue;
 
-        if (!(bits & 1)  && cmp(id, "P",   1))               { bb.p  = i; bits |= 1;  continue; }
-        if (!(bits & 2)  && cmp_nuc_atom(id, "O5", 2))       { bb.o5 = i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp_nuc_atom(id, "C5", 2))       { bb.c5 = i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp_nuc_atom(id, "C4", 2))       { bb.c4 = i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp_nuc_atom(id, "C3", 2))       { bb.c3 = i; bits |= 16; continue; }
+        if (!(bits & 1)  && cmp(id, "P",   1))               { na.p  = i; bits |= 1;  continue; }
+        if (!(bits & 2)  && cmp_nuc_atom(id, "O5", 2))       { na.o5 = i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp_nuc_atom(id, "C5", 2))       { na.c5 = i; bits |= 4;  continue; }
+        if (!(bits & 8)  && cmp_nuc_atom(id, "C4", 2))       { na.c4 = i; bits |= 8;  continue; }
+        if (!(bits & 16) && cmp_nuc_atom(id, "C3", 2))       { na.c3 = i; bits |= 16; continue; }
         if (!(bits & 32) && (cmp_nuc_atom(id, "O3", 2) || cmp(id, "O3P", 3))) {
-            bb.o3 = i; bits |= 32; continue;
+            na.o3 = i; bits |= 32; continue;
         }
+
+        if (!(bits & 64)  && cmp_nuc_atom(id, "C1", 2))      { na.c1 = i; bits |= 64;  continue; }
+        if (!(bits & 128) && cmp_nuc_atom(id, "C2", 2))      { na.c2 = i; bits |= 128; continue; }
+        if (!(bits & 256) && cmp_nuc_atom(id, "O4", 2))      { na.o4 = i; bits |= 256; continue; }
 
         // Check if done
         if (bits == all_bits) break;
@@ -1584,7 +1591,7 @@ static bool md_util_nucleic_backbone_atoms_extract(md_nucleic_backbone_atoms_t* 
 
     static const uint32_t req_bits = 2 | 4 | 8 | 16 | 32; // No phosphor in first terminal component (starts with O5)
 
-    if (out_backbone_atoms) *out_backbone_atoms = bb;
+    if (out_atoms) *out_atoms = na;
     return (bits & req_bits) == req_bits;
 }
 
@@ -2064,7 +2071,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     size_t backbone_segment_count = backbone->segment.count;
     size_t backbone_range_count   = backbone->range.count;
     const uint32_t* backbone_range_offsets = backbone->range.offset;
-    const md_protein_backbone_atoms_t* backbone_atoms = backbone->segment.atoms;
+    const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
 
     if (capacity < backbone_segment_count) {
         MD_LOG_ERROR("Capacity of out_secondary_structure is insufficient to hold the results");
@@ -3749,7 +3756,7 @@ static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const floa
     }
 }
 
-void md_util_covalent_bond_infer(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(sys);
     ASSERT(alloc);
@@ -4068,6 +4075,46 @@ static bool monatomic_ion_element(md_element_t elem) {
     }
 }
 
+// helper function to get atom indices within a 'tree branch' of the connectivity graph of a system.
+static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_bond_data_t* bond, int start_atom, int exclude_atom, md_allocator_i* alloc) {
+    md_array_push(*out_indices, start_atom, alloc);
+    md_bond_iter_t iter = md_bond_iter(bond, start_atom);
+    while (md_bond_iter_has_next(&iter)) {
+        int neighbor = md_bond_iter_atom_index(&iter);
+        if (neighbor != exclude_atom) {
+            if (!get_branch_atom_indices(out_indices, bond, neighbor, start_atom, alloc)) {
+                return false;
+            }
+        }
+        md_bond_iter_next(&iter);
+    }
+    return true;
+}
+
+static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_flags_t flag) {
+	size_t temp_pos = md_temp_get_pos();
+	md_allocator_i* alloc = md_get_temp_allocator();
+    md_array(int) stack = 0;
+    md_array_push(stack, start_atom, alloc);
+    while (md_array_size(stack) > 0) {
+        int atom_idx = stack[md_array_size(stack) - 1];
+        md_array_pop(stack);
+        if ((sys->atom.flags[atom_idx] & flag) == 0) {
+            sys->atom.flags[atom_idx] |= flag;
+            md_bond_iter_t iter = md_bond_iter(&sys->bond, atom_idx);
+            while (md_bond_iter_has_next(&iter)) {
+                int nbr = md_bond_iter_atom_index(&iter);
+                if (nbr != exclude_atom && (sys->atom.flags[nbr] & flag) == 0) {
+                     md_array_push(stack, nbr, alloc);
+				}
+                md_bond_iter_next(&iter);
+            }
+        }
+    }
+	md_temp_set_pos_back(temp_pos);
+}
+
+// infer component types (e.g. amino acid, nucleotide, water, ion) based on heuristics such as:
 bool md_util_system_infer_comp_flags(md_system_t* sys) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
@@ -4079,21 +4126,34 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
     md_array(int) ambigous_amino_acid_indices = 0;
     md_array(int) ambigous_nucleotide_indices = 0;
 
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        str_t comp_name = md_component_name(&sys->component, i);
-		md_flags_t comp_flags = md_component_flags(&sys->component, i);
-        md_urange_t range = md_component_atom_range(&sys->component, i);
-        size_t len = (size_t)(range.end - range.beg);
+    for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
+        str_t comp_name = md_component_name(&sys->component, comp_idx);
+		md_flags_t comp_flags = md_component_flags(&sys->component, comp_idx);
+        md_urange_t comp_range = md_component_atom_range(&sys->component, comp_idx);
+        size_t len = (size_t)(comp_range.end - comp_range.beg);
 
+        // Do not skip amino and nucleic acids here, we want to assign subportions of those
         if (comp_flags & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION)) {
             // Already assigned
             continue;
 		}
 
-        md_protein_backbone_atoms_t prot_atoms = {-1,-1,-1,-1,-1};
-        md_nucleic_backbone_atoms_t nucl_atoms = {-1,-1,-1,-1,-1,-1};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_protein_backbone_atoms_extract(&prot_atoms, &sys->atom, range)) {
-            sys->component.flags[i] |= MD_FLAG_AMINO_ACID;
+        md_amino_acid_atoms_t prot_atoms = {0};
+        md_nucleic_acid_atoms_t nucl_atoms = {0};
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, comp_range)) {
+			// Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
+            // ca, c, n, o are the required atoms which should be present in prot_atoms
+
+			int b_n_ca = md_bond_find(&sys->bond, prot_atoms.n,  prot_atoms.ca);
+			int b_ca_c = md_bond_find(&sys->bond, prot_atoms.ca, prot_atoms.c);
+			int b_c_o  = md_bond_find(&sys->bond, prot_atoms.c,  prot_atoms.o);
+
+            if (b_n_ca == -1 || b_ca_c == -1 || b_c_o == -1) {
+                // Not an amino acid
+                goto done;
+			}
+
+            sys->component.flags[comp_idx] |= MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID;
             sys->atom.flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
             sys->atom.flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
             sys->atom.flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
@@ -4104,14 +4164,54 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
                 sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
             }
 #endif
+			if (prot_atoms.cb != -1) {
+				// Flood fill sidechain from CB, this will mark all connected atoms as sidechain
+				topo_floodfill_flag(sys, prot_atoms.cb, prot_atoms.ca, MD_FLAG_SIDE_CHAIN);
+            }
+
+			// Check and mark terminus atoms (if they exist)
+            {
+				bool is_n_term = true;
+				md_bond_iter_t iter_n = md_bond_iter(&sys->bond, prot_atoms.n);
+                while (md_bond_iter_has_next(&iter_n)) {
+                    int nbr = md_bond_iter_atom_index(&iter_n);
+					md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                    if (z != MD_Z_H && nbr != prot_atoms.ca) {
+                        is_n_term = false;
+                        break;
+                    }
+					md_bond_iter_next(&iter_n);
+                }
+                if (is_n_term) {
+                    topo_floodfill_flag(sys, prot_atoms.n, prot_atoms.ca, MD_FLAG_TERMINAL_BEG);
+                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
+                }
+
+				bool is_c_term = true;
+				md_bond_iter_t iter_c = md_bond_iter(&sys->bond, prot_atoms.c);
+                while (md_bond_iter_has_next(&iter_c)) {
+                    int nbr = md_bond_iter_atom_index(&iter_c);
+                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                    if (z != MD_Z_O && nbr != prot_atoms.ca) {
+						is_c_term = false;
+                        break;
+                    }
+                    md_bond_iter_next(&iter_c);
+                }
+                if (is_c_term) {
+                    topo_floodfill_flag(sys, prot_atoms.c, prot_atoms.ca, MD_FLAG_TERMINAL_END);
+                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
+                }
+            }
+
             goto done;
         } else if (md_util_resname_amino_acid(comp_name)) {
-            sys->component.flags[i] |= MD_FLAG_AMINO_ACID;
-            md_array_push(ambigous_amino_acid_indices, (int)i, temp_alloc);
+            sys->component.flags[comp_idx] |= MD_FLAG_AMINO_ACID;
+            md_array_push(ambigous_amino_acid_indices, (int)comp_idx, temp_alloc);
             goto done;
         }
 
-        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, &sys->atom, range)) {
+        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
 
             // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
             // O3 - C3 - C4 - C5 - O5  (and P for nucleotides if not terminal)
@@ -4127,7 +4227,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
                 goto done;
             }
 
-            sys->component.flags[i] |= MD_FLAG_NUCLEOTIDE;
+            sys->component.flags[comp_idx] |= MD_FLAG_NUCLEIC_ACID;
             if (sys->atom.flags) {
                 if (nucl_atoms.p != -1) {
                     sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
@@ -4138,25 +4238,87 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
                 sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
                 sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
             }
+
+            if (nucl_atoms.c1 != -1 && nucl_atoms.c2 != -1 && nucl_atoms.o4 != -1) {
+                sys->component.flags[comp_idx] |= MD_FLAG_NUCLEOTIDE;
+
+                sys->atom.flags[nucl_atoms.c1] |= MD_FLAG_NUCLEOSIDE;
+                sys->atom.flags[nucl_atoms.c2] |= MD_FLAG_NUCLEOSIDE;
+                sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_NUCLEOSIDE;
+                sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_NUCLEOSIDE;
+                sys->atom.flags[nucl_atoms.o4] |= MD_FLAG_NUCLEOSIDE;
+
+                // find the atom index which connects to the sugar (C1'), this will be the starting point for a floodfill to mark as nucleobase.
+                int base_start_atom = -1;
+                md_bond_iter_t it = md_bond_iter(&sys->bond, nucl_atoms.c1);
+                while (md_bond_iter_has_next(&it)) {
+                    int n = md_bond_iter_atom_index(&it);
+                    if (n != nucl_atoms.c2 && n != nucl_atoms.o4) {
+                        base_start_atom = n;
+                        break;
+                    }
+                    md_bond_iter_next(&it);
+                }
+
+                if (base_start_atom != -1) {
+                    // Flood fill the base from the starting atom, this will mark all connected atoms as part of the base
+                    topo_floodfill_flag(sys, base_start_atom, nucl_atoms.c1, MD_FLAG_NUCLEOBASE | MD_FLAG_NUCLEOSIDE);
+                }
+
+                // Check terminus
+				md_bond_iter_t iter_o3 = md_bond_iter(&sys->bond, nucl_atoms.o3);
+                bool is_3_term = true;
+                while (md_bond_iter_has_next(&iter_o3)) {
+                    int nbr = md_bond_iter_atom_index(&iter_o3);
+                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                    if (z != MD_Z_H && nbr != nucl_atoms.c3) {
+                        is_3_term = false;
+                        break;
+                    }
+                    md_bond_iter_next(&iter_o3);
+                }
+                if (is_3_term) {
+                    topo_floodfill_flag(sys, nucl_atoms.o3, nucl_atoms.c3, MD_FLAG_TERMINAL_END);
+                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
+                }
+
+                md_bond_iter_t iter_o5 = md_bond_iter(&sys->bond, nucl_atoms.o5);
+                bool is_5_term = true;
+                while (md_bond_iter_has_next(&iter_o5)) {
+                    int nbr = md_bond_iter_atom_index(&iter_o5);
+                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                    if (z != MD_Z_H && nbr != nucl_atoms.c5) {
+                        is_5_term = false;
+                        break;
+                    }
+                    md_bond_iter_next(&iter_o5);
+                }
+                if (is_5_term) {
+                    topo_floodfill_flag(sys, nucl_atoms.o5, nucl_atoms.c5, MD_FLAG_TERMINAL_BEG);
+                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
+                }
+            }
+
             goto done;
         } else if (md_util_resname_nucleotide(comp_name)) {
-            sys->component.flags[i] |= MD_FLAG_NUCLEOTIDE;
-            md_array_push(ambigous_nucleotide_indices, (int)i, temp_alloc);
+            sys->component.flags[comp_idx] |= MD_FLAG_NUCLEOTIDE;
+            md_array_push(ambigous_nucleotide_indices, (int)comp_idx, temp_alloc);
             goto done;
         }
 
         if (((len == 1 || len == 3) && md_util_resname_water(comp_name)) ||
-           (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, range.beg))))
+           (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, comp_range.beg))))
         {
-            sys->component.flags[i] |= MD_FLAG_WATER;
-        } else if (len == 1 && (md_util_resname_ion(comp_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, range.beg)))) {
-            sys->component.flags[i] |= MD_FLAG_ION;
+            sys->component.flags[comp_idx] |= MD_FLAG_WATER;
+        } else if (len == 1 && (md_util_resname_ion(comp_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, comp_range.beg)))) {
+            sys->component.flags[comp_idx] |= MD_FLAG_ION;
         }
 
 done:
         // Propagate flags to atoms
-        for (unsigned j = range.beg; j < range.end; ++j) {
-            sys->atom.flags[j] |= sys->component.flags[i];
+		const uint32_t mask = MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEIC_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ION;
+        for (unsigned i = comp_range.beg; i < comp_range.end; ++i) {
+            sys->atom.flags[i] |= sys->component.flags[comp_idx] & mask;
         }
     }
 
@@ -5022,52 +5184,52 @@ static const atom_type_t predefined_atom_types[] = {
     // Martini CG types (BB) + (SC*)
     {"ALA", "BB",  0,   89.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"ARG", "BB",  0,  174.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"ASN", "BB",  0,  132.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"ASP", "BB",  0,  133.10f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
 	{"CYS", "BB",  0,  121.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"GLN", "BB",  0,  146.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"GLU", "BB",  0,  147.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"GLY", "BB",  0,   75.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"HIS", "BB",  0,  155.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"ILE", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"LEU", "BB",  0,  131.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"LYS", "BB",  0,  146.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
 	{"MET", "BB",  0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"MET", "SC1", 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"MET", "SC1", 0,  149.21f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"PHE", "BB",  0,  165.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"PRO", "BB",  0,  115.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"SER", "BB",  0,  105.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"SER", "SC1", 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"SER", "SC1", 0,   73.06f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"THR", "BB",  0,  119.12f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"THR", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"THR", "SC1", 0,   87.09f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"TRP", "BB",  0,  204.23f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
 	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
     {"TYR", "BB",  0,  181.19f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
-	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
+	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
     {"VAL", "BB",  0,  117.15f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_BACKBONE},
-	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE},
+	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_AMINO_ACID | MD_FLAG_SIDE_CHAIN},
 
 	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
 	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_FLAG_COARSE_GRAINED},
@@ -8789,7 +8951,7 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
     return true;
 }
 
-static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc) {
+static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc) {
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
@@ -8801,7 +8963,7 @@ static inline void commit_protein_backbone(md_protein_backbone_atoms_t* bb_atoms
     }
 }
 
-static inline void flush_protein_backbone_segment(md_protein_backbone_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+static inline void flush_protein_backbone_segment(md_amino_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
         commit_protein_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
@@ -8810,7 +8972,7 @@ static inline void flush_protein_backbone_segment(md_protein_backbone_atoms_t* b
     *comp_base = -1;
 }
 
-static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc) {
+static inline void commit_nucleic_backbone(md_nucleic_acid_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc) {
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
@@ -8822,7 +8984,7 @@ static inline void commit_nucleic_backbone(md_nucleic_backbone_atoms_t* bb_atoms
     }
 }
 
-static inline void flush_nucleic_backbone_segment(md_nucleic_backbone_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
+static inline void flush_nucleic_backbone_segment(md_nucleic_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
         commit_nucleic_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
@@ -8921,7 +9083,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
         if (sys->bond.count == 0) {
-            md_util_system_covalent_bond_infer(sys, alloc);
+            md_util_system_infer_covalent_bonds(sys, alloc);
         }
     }
 
@@ -8968,7 +9130,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
             {
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID;
-                md_array(md_protein_backbone_atoms_t) backbone_atoms = 0;
+                md_array(md_amino_acid_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_component_idx_t comp_base = -1;
                 md_sequence_id_t prev_seq_id = -1;
@@ -8983,9 +9145,9 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
                     md_urange_t range = md_instance_component_range(&sys->instance, inst_idx);
                     for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
-                        md_protein_backbone_atoms_t atoms;
+                        md_amino_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
-                        bool has_backbone_atoms = md_util_protein_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
+                        bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
@@ -9032,7 +9194,7 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
             {
                 md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEOTIDE;
-                md_array(md_nucleic_backbone_atoms_t) backbone_atoms = 0;
+                md_array(md_nucleic_acid_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_component_idx_t comp_base = -1;
                 md_sequence_id_t prev_seq_id = -1;
@@ -9047,9 +9209,9 @@ bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_ut
 
                     md_urange_t range = md_instance_component_range(&sys->instance, inst_idx);
                     for (md_component_idx_t comp_idx = (int)range.beg; comp_idx < (int)range.end; ++comp_idx) {
-                        md_nucleic_backbone_atoms_t atoms;
+                        md_nucleic_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
-                        bool has_backbone_atoms = md_util_nucleic_backbone_atoms_extract(&atoms, &sys->atom, atom_range);
+                        bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);

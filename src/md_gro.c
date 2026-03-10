@@ -234,6 +234,7 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
     sys->unitcell = md_unitcell_from_matrix_float(box);
 
     md_util_system_infer_atom_types(sys, atom_names, alloc);
+    md_util_system_infer_covalent_bonds(sys, alloc);
     md_util_system_infer_comp_flags(sys);
 
     md_vm_arena_destroy(temp_arena);
