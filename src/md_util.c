@@ -9141,7 +9141,7 @@ bool md_util_system_postprocess(md_system_t* sys, md_allocator_i* alloc, md_post
             size_t temp_pos = md_vm_arena_get_pos(temp_arena);
 
             {
-                md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID;
+                md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE;
                 md_array(md_amino_acid_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_component_idx_t comp_base = -1;
@@ -9205,7 +9205,7 @@ bool md_util_system_postprocess(md_system_t* sys, md_allocator_i* alloc, md_post
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
 
             {
-                md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEOTIDE;
+                md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_NUCLEIC_ACID;
                 md_array(md_nucleic_acid_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_component_idx_t comp_base = -1;
