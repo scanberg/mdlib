@@ -969,7 +969,7 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
         
         ASSERT_EQ(md_system_instance_count(&sys), 1);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
@@ -981,7 +981,7 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
         
         ASSERT_EQ(md_system_instance_count(&sys), 3);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
@@ -999,7 +999,7 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), alloc));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 3);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
         EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
         EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER);
         
@@ -1020,8 +1020,8 @@ UTEST(util, entity_instance) {
         EXPECT_GT(md_system_atom_count(&sys),   0);
 
         ASSERT_EQ(md_system_entity_count(&sys), 8);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_AMINO_ACID);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
         EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO);
         EXPECT_EQ(md_system_entity_flags(&sys, 3), MD_FLAG_HETERO | MD_FLAG_ION);
         EXPECT_EQ(md_system_entity_flags(&sys, 4), MD_FLAG_HETERO);

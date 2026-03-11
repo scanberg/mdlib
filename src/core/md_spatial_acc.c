@@ -2196,7 +2196,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
     
     const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
-  const vec4_t r4 = vec4_set((float)center[0], (float)center[1], (float)center[2], 0);
+    const vec4_t r4 = vec4_set((float)center[0], (float)center[1], (float)center[2], 0);
     vec4_t f4 = vec4_cart_to_fract(r4, acc);
     f4 = vec4_blend(vec4_fract(f4), f4, pbc_mask);
     const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, fcell_dim)));

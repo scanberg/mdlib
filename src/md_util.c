@@ -4694,7 +4694,10 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             str_t            comp_auth_id   = comp_auth_asym_id ? str_trim(comp_auth_asym_id[i]) : STR_LIT("");
 
             uint64_t entity_key = md_hash64_str(comp_name, 0);
-            md_flags_t entity_flags = comp_flags;
+
+            // Mask which controls what flags should be propagated to entities
+            const md_flags_t entity_mask = MD_FLAG_COARSE_GRAINED | MD_FLAG_POLYPEPTIDE | MD_FLAG_NUCLEOTIDE | MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION;
+            md_flags_t entity_flags = comp_flags & entity_mask;
 
             bool is_amino_or_nucleotide = (bool)(comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
 
@@ -4751,9 +4754,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
                 const char* entity_type_str = "";
                 if (entity_flags & MD_FLAG_POLYMER) {
-                    if (entity_flags & MD_FLAG_AMINO_ACID) {
+                    if (entity_flags & MD_FLAG_POLYPEPTIDE) {
                         entity_type_str = "polypeptide";
-                    } else if (entity_flags & MD_FLAG_NUCLEOTIDE) {
+                    } else if (entity_flags & MD_FLAG_NUCLEIC_ACID) {
                         entity_type_str = "nucleic acid";
                     } else {
                         entity_type_str = "polymer";
