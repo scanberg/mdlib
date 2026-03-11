@@ -1186,6 +1186,18 @@ MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
     return r;
 }
 
+// Construct a blend mask
+MD_VEC_INLINE vec4_t vec4_mask(bool x, bool y, bool z, bool w) {
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    vec4_t r = {
+        x ? val : 0.0f,
+        y ? val : 0.0f,
+        z ? val : 0.0f,
+        w ? val : 0.0f,
+    };
+    return r;
+}
 
 MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     vec4_t r;
@@ -1299,7 +1311,7 @@ MD_VEC_INLINE vec4_t vec4_splat_w(vec4_t v) {
 }
 
 // These are workhorses for linear algebra operations, e.g. matrix multiplications
-MD_VEC_INLINE vec4_t vec4_linear_combine_4(vec4_t a, vec4_t B[4]) {
+MD_VEC_INLINE vec4_t vec4_linear_combine_4(vec4_t a, const vec4_t B[4]) {
     vec4_t res;
     res = vec4_mul(B[0], vec4_splat_x(a));
     res = vec4_add(res, vec4_mul(B[1], vec4_splat_y(a)));
@@ -1308,7 +1320,7 @@ MD_VEC_INLINE vec4_t vec4_linear_combine_4(vec4_t a, vec4_t B[4]) {
     return res;
 }
 
-MD_VEC_INLINE vec4_t vec4_linear_combine_3(vec4_t a, vec4_t B[3]) {
+MD_VEC_INLINE vec4_t vec4_linear_combine_3(vec4_t a, const vec4_t B[3]) {
     vec4_t res;
     res = vec4_mul(B[0], vec4_splat_x(a));
     res = vec4_add(res, vec4_mul(B[1], vec4_splat_y(a)));

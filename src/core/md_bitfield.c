@@ -210,6 +210,7 @@ static inline md_bitblock_t get_block(const md_bitfield_t* bf, uint64_t idx) {
 
 static inline void free_blocks(md_allocator_i* alloc, md_bitblock_t* ptr, size_t num_blocks) {
     if (ptr) {
+        (void)num_blocks;
         md_array_free(ptr, alloc);
         //md_free(alloc, ptr, num_blocks * sizeof(md_bitblock_t));
     }
@@ -514,8 +515,8 @@ void md_bitfield_and_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
         return;
     }
 
-    a->beg_bit = beg_bit;
-    a->end_bit = end_bit;
+    a->beg_bit = (uint32_t)beg_bit;
+    a->end_bit = (uint32_t)end_bit;
 
     if (a->bits) {
         for (uint64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {

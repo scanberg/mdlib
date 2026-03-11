@@ -46,7 +46,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_unit.h>
-#include <core/md_spatial_hash.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_vec_math.h>
 #include <core/md_str_builder.h>
@@ -327,7 +326,9 @@ typedef struct eval_context_t {
         const float* z;
     } initial_configuration;
 
-    md_spatial_hash_t* spatial_hash;
+    // A common spatial acceleration structure which is built lazily.
+    // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
+    md_spatial_acc_t* spatial_acc;
 
     // During evaluations, whenever we hit a array subscript operator, we store the indices
     // In order to propagate what will be visible and or used by the array subscript operator
@@ -5808,8 +5809,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
         MEMCPY(&mutable_mol.unitcell, &curr_header.unitcell, sizeof(md_unitcell_t));
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
-        ctx.identifiers = 0;
-        ctx.spatial_hash = 0;
+        ctx.identifiers = NULL;
+        ctx.spatial_acc = NULL;
 
         for (size_t i = 0; i < num_expr; ++i) {
             type_info_t type = expr[i]->data.type;
@@ -7128,15 +7129,6 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
     if (vis_ctx->ir) {
         add_ir_ctx(ir, vis_ctx->ir);
     }
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-
-    parse_context_t parse_ctx = {
-        .ir = ir,
-        .tokenizer = &tokenizer,
-        .node = 0,
-        .temp_alloc = temp_alloc,
-    };
 
     if (parse_script(ir, temp_alloc)) {
         if (static_type_check(ir, vis_ctx->mol, vis_ctx->traj, temp_alloc)) {

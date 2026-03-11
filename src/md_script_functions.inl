@@ -731,13 +731,18 @@ static procedure_t procedures[] = {
 
 #undef CSTR
 
-static inline md_spatial_hash_t* get_spatial_hash(eval_context_t* ctx) {
+static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx) {
     ASSERT(ctx);
-    if (!ctx->spatial_hash) {
-        // Lazily generate the spatial hash if needed
-        ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unitcell, ctx->temp_alloc);
+    if (!ctx->spatial_acc) {
+        ctx->spatial_acc = md_vm_arena_push_zero(ctx->temp_alloc, sizeof(md_spatial_acc_t));
+        ctx->spatial_acc->alloc = ctx->temp_alloc;
+
+        md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, NULL, ctx->mol->atom.count);
+        // Currently we leave this to the internal default, but could in the future be tweaked for the dataset at hand.
+        double cell_ext = 0.0;
+        md_spatial_acc_init(ctx->spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, 0);
     }
-    return ctx->spatial_hash;
+    return ctx->spatial_acc;
 }
 
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
@@ -1602,7 +1607,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
 
 static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    md_array(int) out_indices = 0;
+    md_array(int) out_indices = NULL;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
@@ -2450,14 +2455,11 @@ static int _within_xyz(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, ctx, as_frange(arg[0]), as_frange(arg[1]), as_frange(arg[2]));
 }
 
-static bool within_float_iter(const md_spatial_hash_elem_t* elem, int mask, void* user_data) {
-    md_bitfield_t* bf = (md_bitfield_t*)user_data;
-    while (mask) {
-        const int idx = ctz32(mask);
-        md_bitfield_set_bit(bf, elem[idx].idx);
-        mask &= ~(1 << idx);
-    }
-    return true;
+static void within_float_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;    // i idx is external point indcies
+    (void)ij_dist2;
+    md_bitfield_t* bf = (md_bitfield_t*)user_param;
+    md_bitfield_set_indices_u32(bf, j_idx, num_pairs);
 }
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -2470,7 +2472,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
-        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
@@ -2478,12 +2480,10 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_mask = as_bitfield(arg[1]);
         }
 
+        md_coord_stream_t stream = md_coord_stream_create_aos((const float*)in_pos, sizeof(vec3_t), NULL, num_pos);
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
-            for (size_t i = 0; i < num_pos; ++i) {
-                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
-            }
         } else {
             // Visualize
             ASSERT(ctx->vis);
@@ -2492,9 +2492,11 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             
             for (size_t i = 0; i < num_pos; ++i) {
                 push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
-                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
             }
         }
+
+        // Fill bitfield with indices
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, radius, within_float_cb, bf_dst, 0);
             
         if (bf_mask) {
             ASSERT(bf_dst);
@@ -2521,29 +2523,34 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
-        const vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
-        const size_t num_pos = md_array_size(in_pos);
+        const md_spatial_acc_t* acc = get_spatial_acc(ctx);
+
+        size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
+        int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);
+        size_t num_written = md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(ctx->mol_ctx));
+        (void)num_written;
+        ASSERT(num_written == num_idx);
             
         md_bitfield_t* bf_dst = 0;
 
+        md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, idx, num_idx);
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
-            for (size_t i = 0; i < num_pos; ++i) {
-                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
-            }
         }
         else {
             // Visualize
             ASSERT(ctx->vis);
             bf_dst = ctx->vis_structure;
             visualize_atom_mask(ctx->mol_ctx, ctx);
-            for (size_t i = 0; i < num_pos; ++i) {
-                push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
-                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
+            for (size_t i = 0; i < num_idx; ++i) {
+                vec3_t pos = vec3_set(ctx->mol->atom.x[idx[i]], ctx->mol->atom.y[idx[i]], ctx->mol->atom.z[idx[i]]);
+                push_sphere(pos, radius, COLOR_WHITE, ctx->vis);
             }
         }
+        
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(acc, &stream, radius, within_float_cb, bf_dst, 0);
+
         // Exclude the input atoms from the result
         md_bitfield_andnot_inplace(bf_dst, ctx->mol_ctx);
     }
@@ -2563,20 +2570,17 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 typedef struct within_frng_payload_t {
     md_bitfield_t* bf;
-    const float min_r2;
-    const float max_r2;
-    vec4_t ref_pos;
-    vec4_t pbc_ext;
+    float min_r2;
 } within_frng_payload_t;
 
-static bool within_frng_iter(const md_spatial_hash_elem_t* elem, void* user_data) {
-    within_frng_payload_t* data = (within_frng_payload_t*)user_data;
-    
-    const float d2 = vec4_periodic_distance_squared(data->ref_pos, vec4_from_vec3(elem->xyz, 0), data->pbc_ext);
-    if (data->min_r2 < d2 && d2 < data->max_r2) {
-        md_bitfield_set_bit(data->bf, elem->idx);
+static void within_frng_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;    // i idx is external point indcies
+    within_frng_payload_t* data = (within_frng_payload_t*)user_param;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        if (ij_dist2[k] >= data->min_r2) {
+            md_bitfield_set_bit(data->bf, j_idx[k]);
+        }
     }
-    return true;
 }
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -2587,7 +2591,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const frange_t rad_range = as_frange(arg[0]);
 
     if (dst || ctx->vis) {
-        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
@@ -2597,34 +2601,25 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_mask = as_bitfield(arg[1]);
         }
         
-        mat3_t A = md_unitcell_basis_mat3(&ctx->mol->unitcell);
-        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
-        within_frng_payload_t payload = {
-            .min_r2 = rad_range.beg * rad_range.beg,
-            .max_r2 = rad_range.end * rad_range.end,
-            .pbc_ext = pbc_ext,
-        };
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
-            payload.bf = bf_dst;
-            for (size_t i = 0; i < num_pos; ++i) {
-                const float rad = rad_range.end;
-                payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
-            }
         }
         else {
             // Visualize
             bf_dst = ctx->vis_structure;
-            payload.bf = bf_dst;
+            const float rad = rad_range.end;
             for (size_t i = 0; i < num_pos; ++i) {
-                const float rad = rad_range.end;
-                payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
                 push_sphere(in_pos[i], rad, COLOR_WHITE, ctx->vis);
             }
         }
+        within_frng_payload_t payload = {
+            .bf = bf_dst,
+            .min_r2 = rad_range.beg * rad_range.beg,
+        };
+        md_coord_stream_t stream = md_coord_stream_create_aos((const float*)in_pos, sizeof(vec3_t), NULL, num_pos);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
+
         if (bf_mask) {
             ASSERT(bf_dst);
             // Exclude the input atoms from the result
@@ -2650,39 +2645,39 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
-        const vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
-        const size_t num_pos = md_array_size(in_pos);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+
+        size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
+        int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);
+        size_t num_written = md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(ctx->mol_ctx));
+        (void)num_written;
+        ASSERT(num_written == num_idx);
+
+        md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, idx, num_idx);
         md_bitfield_t* bf_dst = 0;
-          
-        mat3_t A = md_unitcell_basis_mat3(&ctx->mol->unitcell);
-        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
-        within_frng_payload_t payload = {
-            .min_r2 = rad_range.beg * rad_range.beg,
-            .max_r2 = rad_range.end * rad_range.end,
-            .pbc_ext = pbc_ext,
-        };
+        
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
-            payload.bf = bf_dst;
-            for (size_t i = 0; i < num_pos; ++i) {
-                const float rad = rad_range.end;
-                payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
-            }
         }
         else {
             // Visualize
             bf_dst = ctx->vis_structure;
-            payload.bf = bf_dst;
-            for (size_t i = 0; i < num_pos; ++i) {
-                const float rad = rad_range.end;
-                payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
-                push_sphere(in_pos[i], rad, COLOR_WHITE, ctx->vis);
+            const float rad = rad_range.end;
+            for (size_t i = 0; i < num_idx; ++i) {
+                vec3_t pos = vec3_set(ctx->mol->atom.x[idx[i]], ctx->mol->atom.y[idx[i]], ctx->mol->atom.z[idx[i]]);
+                push_sphere(pos, rad, COLOR_WHITE, ctx->vis);
             }
         }
+
+        within_frng_payload_t payload = {
+            .bf = bf_dst,
+            .min_r2 = rad_range.beg * rad_range.beg,
+        };
+
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
+        
+        // Exclude the input atoms from the result
         md_bitfield_andnot_inplace(bf_dst, ctx->mol_ctx);
     } else {
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
@@ -2779,8 +2774,9 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitfield_iter_t it = md_bitfield_iter_create(bf_b);
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
+        md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, num_indices, cutoff, &ctx->mol->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->mol->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
 		md_array(int32_t) a_indices = 0;
 
@@ -2823,7 +2819,8 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->mol, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_coord_stream_t a_stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, a_indices, a_length);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
             }
@@ -5136,20 +5133,15 @@ static int _coordinate_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 typedef struct {
-    vec4_t pos;
-    vec4_t pbc_ext;
-    const md_bitfield_t* exclusion_mask;
+    const md_bitfield_t* exclusion_masks;
     float min_cutoff;
-    float min_cutoff2;
-    float max_cutoff;
-    float max_cutoff2;
     float inv_cutoff_range;
     float* bins;
     int32_t num_bins;
-    uint32_t idx;
     uint64_t total_count;
 } rdf_payload_t;
 
+#if 0
 bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
     rdf_payload_t* data = user_param;
     
@@ -5162,27 +5154,6 @@ bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
             bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
             data->bins[bin_idx] += 1.0f;
             data->total_count += 1;
-        }
-        mask &= ~(1 << idx);
-    }
-    return true;
-}
-
-// iterator version which excludes the supplied index
-bool rdf_iter_excl_idx(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
-    rdf_payload_t* data = user_param;
-
-    while (mask) {
-        const int idx = ctz32(mask);
-        if (elem_arr[idx].idx != data->idx) {
-            const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
-            if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
-                const float d = sqrtf(d2);
-                int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
-                bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
-                data->bins[bin_idx] += 1.0f;
-                data->total_count += 1;
-            }
         }
         mask &= ~(1 << idx);
     }
@@ -5209,91 +5180,106 @@ bool rdf_iter_excl_mask(const md_spatial_hash_elem_t* elem_arr, int mask, void* 
     }
     return true;
 }
+#endif
 
-#define RDF_BRUTE_FORCE_LIMIT (3000)
+static inline void rdf_increment_bin(rdf_payload_t* data, float d) {
+    int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
+    bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+    data->bins[bin_idx] += 1.0f;
+    data->total_count += 1;
+}
+
+// @NOTE: This can be vectorized
+void rdf_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)i_idx;
+    (void)j_idx;
+    rdf_payload_t* data = user_param;
+    const float min_r2 = data->min_cutoff * data->min_cutoff;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        if (ij_dist2[k] < min_r2) {
+            continue;
+        }
+        const float d = sqrtf(ij_dist2[k]);
+        rdf_increment_bin(data, d);
+    }
+}
+
+void rdf_cb_excl_mask(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    rdf_payload_t* data = user_param;
+    const float min_r2 = data->min_cutoff * data->min_cutoff;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        if (ij_dist2[k] < min_r2) {
+            continue;
+        }
+        uint32_t i = i_idx[k];
+        uint32_t j = j_idx[k];
+        if (!md_bitfield_test_bit(&data->exclusion_masks[i], j)) {
+            const float d = sqrtf(ij_dist2[k]);
+            rdf_increment_bin(data, d);
+        }
+    }
+}
 
 static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, float* weights, int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, const md_unitcell_t* unit_cell, md_allocator_i* alloc, eval_context_t* ctx) {
+static void compute_rdf(float bins[], float weights[], int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
-    uint64_t total_count = 0;
+    size_t total_count = 0;
 
-    // Add a small bias to avoid adding 'zero' distances
-    if (min_cutoff == 0) {
-        min_cutoff = 1.0e-3f;
-    }
+    // Add a small bias to avoid adding 'zero' distances, also to remove *self* when counting atomic RDFs
+    min_cutoff = MAX(min_cutoff, 1e-3f);
 
-    const md_array(int32_t) ref_idx = coordinate_extract_indices(arg[0], ctx);
-    md_array(vec3_t) ref_pos = 0;
+    md_array(int32_t) ref_idx = coordinate_extract_indices(arg[0], ctx);
+    size_t ref_len  = 0;
 
+    // IF we have multiple bitfields supplied as reference, we calculate a RDF based on the COM of each bitfield and excluded *self* when counting.
     const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_BITFIELD) && (element_count(arg[0]) > 1);
-    const bool use_exclusion_indices = (ref_idx != NULL);
 
+    md_coord_stream_t ref_stream = { 0 };
+    md_spatial_acc_flags_t ref_flags = 0;
     if (ref_idx) {
-        md_array_resize(ref_pos, md_array_size(ref_idx), ctx->temp_alloc);
-        for (size_t i = 0; i < md_array_size(ref_idx); ++i) {
-            const int64_t idx = ref_idx[i];
-            ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-        }
+        ref_len = md_array_size(ref_idx);
+        ref_stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ref_idx, ref_len);
+        ref_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
     } else {
-        ref_pos = coordinate_extract(arg[0], ctx);
+        md_array(vec3_t) ref_pos = coordinate_extract(arg[0], ctx);
+        ref_len = md_array_size(ref_pos);
+        ref_stream = md_coord_stream_create_aos((const float*)ref_pos, sizeof(vec3_t), NULL, ref_len);
     }
-    const size_t ref_len = md_array_size(ref_pos);
 
-    md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
-    const size_t trg_len = md_array_size(trg_pos);
+    md_array(int32_t) trg_idx = coordinate_extract_indices(arg[1], ctx);
+    size_t trg_len = 0;
 
-    mat3_t A = md_unitcell_basis_mat3(unit_cell);
-    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0) : vec4_zero();
-    if ((ref_len * trg_len) < RDF_BRUTE_FORCE_LIMIT) {
-        for (size_t i = 0; i < ref_len; ++i) {
-            for (size_t j = 0; j < trg_len; ++j) {
-                const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(ref_pos[i], 0), vec4_from_vec3(trg_pos[j], 0), ext);
-                if (min_cutoff * min_cutoff < d2 && d2 < max_cutoff * max_cutoff) {
-                    const float d = sqrtf(d2);
-                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
-                    bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
-                    bins[bin_idx] += 1.0f;
-                    total_count += 1;
-                }
-            }
-        }
+    md_coord_stream_t trg_stream = { 0 };
+    md_spatial_acc_flags_t trg_flags = 0;
+    if (trg_idx) {
+        trg_len = md_array_size(trg_idx);
+        trg_stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_len);
+        trg_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
     } else {
-        md_spatial_hash_t* hash = md_spatial_hash_create_vec3(trg_pos, NULL, trg_len, unit_cell, alloc);
+        md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
+        trg_len = md_array_size(trg_pos);
+        trg_stream = md_coord_stream_create_aos((const float*)trg_pos, sizeof(vec3_t), NULL, trg_len);
+    }
+
+    {
+        md_spatial_acc_t sa = { .alloc = ctx->temp_alloc };
+        md_spatial_acc_init(&sa, &trg_stream, max_cutoff, &ctx->mol->unitcell, trg_flags);
 
         rdf_payload_t payload = {
-            .pbc_ext = ext,
+            .exclusion_masks = as_bitfield(arg[0]),
             .min_cutoff = min_cutoff,
-            .min_cutoff2 = min_cutoff * min_cutoff,
-            .max_cutoff = max_cutoff,
-            .max_cutoff2 = max_cutoff * max_cutoff,
             .inv_cutoff_range = inv_cutoff_range,
             .bins = bins,
             .num_bins = num_bins,
             .total_count = 0,
         };
 
-        if (use_exclusion_indices) {
-            for (size_t i = 0; i < ref_len; ++i) {
-                payload.pos = vec4_from_vec3(ref_pos[i], 0);
-                payload.idx = (uint32_t)i;
-                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter_excl_idx, &payload);
-            }
-        } else if (use_exclusion_masks) {
-            for (size_t i = 0; i < ref_len; ++i) {
-                payload.pos = vec4_from_vec3(ref_pos[i], 0);
-                payload.exclusion_mask = as_bitfield(arg[0]) + i;
-                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter_excl_mask, &payload);
-            }
-        } else {
-            for (size_t i = 0; i < ref_len; ++i) {
-                payload.pos = vec4_from_vec3(ref_pos[i], 0);
-                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
-            }
-        }
+        md_spatial_acc_pair_callback_t cb = use_exclusion_masks ? rdf_cb_excl_mask : rdf_cb;
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, &ref_stream, max_cutoff, cb, &payload, ref_flags);
 
         total_count = payload.total_count;
     }
@@ -5359,7 +5345,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(dst->ptr);
             float* bins    = as_float_arr(*dst);
             float* weights = as_float_arr(*dst) + num_bins;
-            compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unitcell, ctx->temp_alloc, ctx);
+            compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, ctx);
         }
         if (ctx->vis) {
             //return visualize_rdf(arg, min_cutoff, max_cutoff, ctx);
@@ -5406,8 +5392,8 @@ static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
 
     const frange_t cutoff = as_frange(arg[2]);
@@ -5638,43 +5624,39 @@ typedef struct sdf_payload_t {
     const md_bitfield_t* exclusion_mask;
 } sdf_payload_t;
 
-bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
+// Spatial acceleration callback for point query
+void sdf_cb(const uint32_t in_idx[], const float in_x[], const float in_y[], const float in_z[], size_t num_points, void* user_param) {
+    // The coordiantes should have been pruned here and only the points which reside within the AABB should have been returned.
+    // They should also have been deperiodized with respect to the center of the AABB, meaning that the coordinates should be directly mappable to the volume grid.
+    // This means we should just transform the given coordinate to volume space and increment the corresponding voxel.
+
     sdf_payload_t* data = user_param;
-    
-	const vec4_t dim = vec4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
 
-    while (mask) {
-        const int bit_idx = ctz32(mask);
-        const int bit = 1 << bit_idx;
-
-        if (data->exclusion_mask) {
-            if (md_bitfield_test_bit(data->exclusion_mask, elem_arr[bit_idx].idx)) {
-                mask &= ~bit;
+    if (data->exclusion_mask) {
+        for (size_t i = 0; i < num_points; ++i) {
+            uint32_t idx = in_idx[i];
+            if (md_bitfield_test_bit(data->exclusion_mask, idx)) {
                 continue;
             }
+
+            vec4_t c = mat4_mul_vec4(data->M, vec4_set(in_x[i], in_y[i], in_z[i], 1.0f));
+            uint32_t ix = (uint32_t)CLAMP((int32_t)c.x, 0, MD_VOL_DIM - 1);
+            uint32_t iy = (uint32_t)CLAMP((int32_t)c.y, 0, MD_VOL_DIM - 1);
+            uint32_t iz = (uint32_t)CLAMP((int32_t)c.z, 0, MD_VOL_DIM - 1);
+            size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
+            ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
+            data->vol[vol_idx] += 1.0f;
         }
-
-        vec4_t c = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[bit_idx].xyz, 1.0f));
-		vec4_t v = vec4_and(vec4_cmp_lt(vec4_zero(), c), vec4_cmp_lt(c, dim));
-
-        // Count the number of lanes which are not zero
-        // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
-        if (vec4_move_mask(v) == 0x7) {
-            uint32_t i = (uint32_t)c.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)c.y * MD_VOL_DIM + (uint32_t)c.x;
-            data->vol[i] += 1.0f;
+    } else {
+        for (size_t i = 0; i < num_points; ++i) {
+            vec4_t c = mat4_mul_vec4(data->M, vec4_set(in_x[i], in_y[i], in_z[i], 1.0f));
+            uint32_t ix = (uint32_t)CLAMP((int32_t)c.x, 0, MD_VOL_DIM - 1);
+            uint32_t iy = (uint32_t)CLAMP((int32_t)c.y, 0, MD_VOL_DIM - 1);
+            uint32_t iz = (uint32_t)CLAMP((int32_t)c.z, 0, MD_VOL_DIM - 1);
+            size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
+            ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
+            data->vol[vol_idx] += 1.0f;
         }
-        mask &= ~bit;
-    }
-
-    return true;
-}
-
-// Spatial acceleration callback for point query
-void sdf_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
-    (void)ij_dist2;
-	const md_256 dim = md_mm256_set1_ps(MD_VOL_DIM);
-    for (size_t i = 0; i < num_pairs; i += 8) {
-
     }
 }
 
@@ -5734,15 +5716,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Extract indices
         md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
 
-        /*
-        const int64_t mem_size = sizeof(float) * (ref_size * 7);
-        float* mem = md_alloc(ctx->temp_alloc, mem_size);
-
-        float* ref_x[2] = { mem + ref_size * 0, mem + ref_size * 1 };
-        float* ref_y[2] = { mem + ref_size * 2, mem + ref_size * 3 };
-        float* ref_z[2] = { mem + ref_size * 4, mem + ref_size * 5 };
-        float* ref_w = mem + ref_size * 6;
-        */
         const float* const ref_x[2] = {ctx->initial_configuration.x, (const float*)ctx->mol->atom.x};
         const float* const ref_y[2] = {ctx->initial_configuration.y, (const float*)ctx->mol->atom.y};
         const float* const ref_z[2] = {ctx->initial_configuration.z, (const float*)ctx->mol->atom.z};
@@ -5755,32 +5728,14 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Fetch target positions
         int*    trg_idx = md_vm_arena_push(ctx->temp_alloc, sizeof(int) * trg_size);
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
-        vec3_t* trg_xyz = NULL;
 
         md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unitcell);
         ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
 
-        // @TODO(Robin): This should be measured
-        const bool brute_force = trg_size < 5000;
-
-        md_spatial_hash_t* spatial_hash = NULL;
+        const double cell_ext = cutoff;
+        md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = ctx->temp_alloc };
-		const float spatial_hash_radius = cutoff * 1.732050807f; // cutoff * sqrt(3) to ensure that we capture all points within the cutoff in the corners of the voxel
-
-        if (!brute_force) {
-            double cell_ext = spatial_hash_radius;
-            spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unitcell, ctx->temp_alloc);
-            //md_spatial_acc_init(&spatial_acc, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, cell_ext, &ctx->mol->unitcell, 0);
-        } else {
-            trg_xyz = md_vm_arena_push(ctx->temp_alloc, sizeof(vec3_t) * trg_size);
-            for (size_t i = 0; i < trg_size; ++i) {
-                const int idx = trg_idx[i];
-                const float x = ctx->mol->atom.x[idx];
-                const float y = ctx->mol->atom.y[idx];
-                const float z = ctx->mol->atom.z[idx];
-                trg_xyz[i] = vec3_set(x, y, z);
-            }
-        }
+        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));
@@ -5801,24 +5756,18 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unitcell);
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
-
-            //md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
-            //ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unitcell);
-            //mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {
-                if (brute_force) {
-                    populate_volume(vol, trg_xyz, trg_idx, trg_size, bf, mat4_mul(VA, RT));
-                } else {
-                    sdf_payload_t payload = {
-                        .M = mat4_mul(VA, RT),
-                        .vol = vol,
-                        .exclusion_mask = bf,
-                    };
-                    md_spatial_hash_query_batch(spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
-					//md_spatial_acc_for_each_point_within_cutoff(&spatial_acc, ref_com[1].x, ref_com[1].y, ref_com[1].z, spatial_hash_radius, sdf_iter, &payload);
-                }
+                sdf_payload_t payload = {
+                    .M = mat4_mul(VA, RT),
+                    .vol = vol,
+                    .exclusion_mask = bf,
+                };
+
+                const double aabb_cen[3] = { ref_com[1].x, ref_com[1].y, ref_com[1].z };
+                const double aabb_rad[3] = { cutoff, cutoff, cutoff };
+				md_spatial_acc_for_each_point_in_aabb(&spatial_acc, aabb_cen, aabb_rad, sdf_cb, &payload);
             }
             if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
                 md_allocator_i* alloc = ctx->vis->alloc;
@@ -6086,6 +6035,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cmp_lt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
 
@@ -6124,6 +6074,7 @@ static int _cmp_lt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cmp_gt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
 

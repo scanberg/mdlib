@@ -2,7 +2,6 @@
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_spatial_hash.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_str.h>
 #include <core/md_intrinsics.h>
@@ -139,8 +138,9 @@ UTEST(spatial_hash, small_periodic) {
 
     md_unitcell_t cell = md_unitcell_from_extent(10, 0, 0);
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, 10);
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, x, y, z, NULL, 10, 10.0, &cell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &cell, 0);
     
     uint32_t count = 0;
     double p0[3] = {5, 0, 0};
@@ -243,8 +243,9 @@ UTEST(spatial_hash, n2) {
             z[i] = cz;
         }
 
+        md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, TEST_COUNT);
         md_spatial_acc_t sa = { .alloc = alloc };
-		md_spatial_acc_init(&sa, x, y, z, NULL, TEST_COUNT, 6.0, &test_cell, 0);
+		md_spatial_acc_init(&sa, &stream, 6.0, &test_cell, 0);
 
         EXPECT_EQ(sa.G00, (float)G[0][0]);
         EXPECT_EQ(sa.G11, (float)G[1][1]);
@@ -343,8 +344,9 @@ UTEST(spatial_hash, n2) {
 
     // Spatial acc implementation
     start = md_time_current();
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, &cell, 0);
+    md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
     md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
     end = md_time_current();
@@ -358,7 +360,7 @@ UTEST(spatial_hash, n2) {
 
     start = md_time_current();
     count = 0;
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 5.0, spatial_acc_neighbor_callback, &count, 0);
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, 5.0, spatial_acc_neighbor_callback, &count, 0);
 	end = md_time_current();
     sa_count = count;
 	printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
@@ -406,8 +408,9 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     md_system_t sys = { 0 };
     ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc));
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
     
     srand(31);
 
@@ -437,7 +440,8 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 
         uint32_t sa_count = 0;
         vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {           
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, sa_count);
@@ -459,8 +463,9 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     srand(31);
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract(G, &sys.unitcell);
@@ -487,7 +492,8 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         }
 
         uint32_t sa_count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
@@ -510,8 +516,9 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
     srand(31);
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract(G, &sys.unitcell);
@@ -538,7 +545,8 @@ UTEST_F(spatial_hash, test_correctness_water) {
         }
 
         uint32_t sa_count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {           
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
@@ -565,8 +573,9 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     srand(31);
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract(G, &sys.unitcell);
@@ -603,7 +612,8 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
         }
 
         sa_count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);
@@ -627,8 +637,9 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
     srand(31);
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract(G, &sys.unitcell);
@@ -728,7 +739,8 @@ UTEST_F(spatial_hash, npt_triclinic) {
         }
 
         sa_count = 0;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &pos.x, &pos.y, &pos.z, NULL, 1, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
+        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
             printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, (float)radius, ref_count, sa_count);

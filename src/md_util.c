@@ -2132,8 +2132,9 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
+    md_coord_stream_t stream = md_coord_stream_create_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
-    md_spatial_acc_init(&acc, res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count, 9.0, cell, 0);
+    md_spatial_acc_init(&acc, &stream, 9.0, cell, 0);
 
     dssp_hbond_energy_user_param_t user_param = {
 		.res_range_id = res_range_id,
@@ -3883,9 +3884,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
             // Build candidate list
             md_timestamp_t ts_start = md_time_current();
+
+            md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, x, y, z, NULL, num_atoms, cell_ext, cell, 0);
-            //md_spatial_acc_for_each_pair_in_neighboring_cells(&acc, test_cov_bond_pair_callback, &param);
+            md_spatial_acc_init(&acc, &stream, cell_ext, cell, 0);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
             md_timestamp_t ts_end = md_time_current();
 
@@ -4506,10 +4508,12 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
 
     const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
     
+    md_coord_stream_t acc_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
     md_spatial_acc_t acc = { .alloc = temp_arena };
-    md_spatial_acc_init(&acc, atom_x, atom_y, atom_z, acc_idx, num_acc, cell_ext, unitcell, 0);
+    md_spatial_acc_init(&acc, &acc_stream, cell_ext, unitcell, 0);
 
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, atom_x, atom_y, atom_z, don_idx, num_don, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
+    md_coord_stream_t don_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, don_idx, num_don);
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
 
     typedef struct {
         float score[4];
@@ -5589,8 +5593,11 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
-            md_spatial_acc_init(&acc, sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count, cutoff, &sys->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices, radius, spatial_acc_pair_set_bits_callback, mask, 0);
+            md_coord_stream_t stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count);
+            md_spatial_acc_init(&acc, &stream, cutoff, &sys->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+
+            md_coord_stream_t ext_stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
 

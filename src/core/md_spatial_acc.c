@@ -101,6 +101,23 @@ typedef struct {
     uint32_t idx;
 } elem_t;
 
+static inline vec4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_t i) {
+    const size_t src = s->idx ? (size_t)s->idx[i] : i;
+
+    if (s->layout == MD_COORD_STREAM_LAYOUT_SOA) {
+        return vec4_set(s->soa.x[src], s->soa.y[src], s->soa.z[src], 0.0f);
+    } else {
+        const char* p = (const char*)s->aos.base + src * s->aos.stride;
+        vec4_t v = {0};
+        MEMCPY(&v, p, sizeof(float) * 3);
+        return v;
+    }
+}
+
+static inline int32_t md_coord_stream_load_idx(const md_coord_stream_t* s, size_t i) {
+    return s->idx ? s->idx[i] : (int32_t)i;
+}
+
 void md_spatial_acc_free(md_spatial_acc_t* acc) {
     ASSERT(acc);
     if (acc->alloc) {
@@ -134,16 +151,18 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
 	MEMSET(acc->origin, 0, sizeof(acc->origin));
 }
 
-void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
+void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
     ASSERT(acc);
+    ASSERT(stream);
+
     if (!acc->alloc) {
         MD_LOG_ERROR("Must have allocator set within spatial acc");
         return;
     }
 
     if (in_flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
-        if (!in_idx) {
-            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_STORE_SUPPLIED_IDX is set, but in_idx is NULL");
+        if (!stream->idx) {
+            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_STORE_SUPPLIED_IDX is set, but coordinate stream index is not supplied");
             return;
         }
     }
@@ -151,7 +170,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 	// Reset acc, but to not free memory
     md_spatial_acc_reset(acc);
 
-    if (count == 0) {
+    if (stream->count == 0) {
 		// Not a real error, but nothing to build. Leave acc in a valid empty state.
         return;
     }
@@ -176,13 +195,17 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         flags = md_unitcell_flags(in_unitcell);
     }
 
-    vec4_t coord_offset = vec4_zero();
+    vec4_t origin = vec4_zero();
 
     if ((flags & MD_UNITCELL_PBC_ALL) != MD_UNITCELL_PBC_ALL) {
         ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
         // Unit cell either missing or not periodic along one or more axis
         vec4_t aabb_min = {0}, aabb_max = {0};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, in_x, in_y, in_z, NULL, NULL, count);
+        for (size_t i = 0; i < stream->count; i++) {
+            vec4_t v = md_coord_stream_load_vec4(stream, i);
+            aabb_min = vec4_min(aabb_min, v);
+            aabb_max = vec4_max(aabb_max, v);
+        }
 
         // Construct A and I from aabb extent
         vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
@@ -196,21 +219,21 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         aabb_max = vec4_add(aabb_center, vec4_mul_f(aabb_ext, 0.5f));
 
         if ((flags & MD_UNITCELL_PBC_X) == 0) {
-            coord_offset.x = -aabb_min.x;
+            origin.x = aabb_min.x;
             if (aabb_ext.x > 0.0f) {
                 A[0][0] = aabb_ext.x;
                 I[0][0] = 1.0 / aabb_ext.x;
             }
         }
         if ((flags & MD_UNITCELL_PBC_Y) == 0) {
-            coord_offset.y = -aabb_min.y;
+            origin.y = aabb_min.y;
             if (aabb_ext.y > 0.0f) {
                 A[1][1] = aabb_ext.y;
                 I[1][1] = 1.0 / aabb_ext.y;
             }
         }
         if ((flags & MD_UNITCELL_PBC_Z) == 0) {
-            coord_offset.z = -aabb_min.z;
+            origin.z = aabb_min.z;
             if (aabb_ext.z > 0.0f) {
                 A[2][2] = aabb_ext.z;
                 I[2][2] = 1.0 / aabb_ext.z;
@@ -284,12 +307,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     // Temporary arrays
     const size_t temp_arena_page_size = MEGABYTES(4);
     md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), temp_arena_page_size);
-    uint32_t* local_idx = (uint32_t*)md_arena_allocator_push(temp_arena, count * sizeof(uint32_t));
-    uint32_t* cell_idx  = (uint32_t*)md_arena_allocator_push(temp_arena, count * sizeof(uint32_t));
-    elem_t* scratch_s   = (elem_t*)  md_arena_allocator_push(temp_arena, count * sizeof(elem_t));  // unsorted fractional coords
+    uint32_t* local_idx = (uint32_t*)md_arena_allocator_push(temp_arena, stream->count * sizeof(uint32_t));
+    uint32_t* cell_idx  = (uint32_t*)md_arena_allocator_push(temp_arena, stream->count * sizeof(uint32_t));
+    elem_t* scratch_s   = (elem_t*)  md_arena_allocator_push(temp_arena, stream->count * sizeof(elem_t));  // unsorted fractional coords
 
     // Resize / allocate persistent arrays
-    size_t alloc_len = ALIGN_TO(count, 16);
+    size_t alloc_len = ALIGN_TO(stream->count, 16);
 
     md_array_resize(acc->elem_x, alloc_len, acc->alloc);
     md_array_resize(acc->elem_y, alloc_len, acc->alloc);
@@ -315,14 +338,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
 	uint64_t cell_mask[3][16] = { 0 };
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
-    for (size_t i = 0; i < count; ++i) {
-		uint32_t idx = (in_idx) ? (uint32_t)in_idx[i] : (uint32_t)i;
-
-        vec4_t r = {in_x[idx], in_y[idx], in_z[idx], 0};
-        r = vec4_add(r, coord_offset);
+    for (size_t i = 0; i < stream->count; ++i) {
+        uint32_t idx = md_coord_stream_load_idx(stream, i);
+        vec4_t r     = md_coord_stream_load_vec4(stream, i);
 
         // Fractional coordinates
-        vec4_t s = vec4_linear_combine_3(r, vI);
+        vec4_t s = vec4_linear_combine_3(vec4_sub(r, origin), vI);
         
         s = vec4_blend(s, vec4_fract(s), pbc_mask);
 
@@ -356,19 +377,19 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
         acc->cell_off[ci] = sum;
         sum += len;
     }
-    ASSERT(sum == count);
+    ASSERT(sum == stream->count);
 
     // 3) Scatter fractional coords into 'elements' in cell order
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < stream->count; ++i) {
         uint32_t dst = acc->cell_off[cell_idx[i]] + local_idx[i];
-        ASSERT(dst < count);
+        ASSERT(dst < stream->count);
         acc->elem_x[dst] = scratch_s[i].x;
         acc->elem_y[dst] = scratch_s[i].y;
         acc->elem_z[dst] = scratch_s[i].z;
         acc->elem_idx[dst] = scratch_s[i].idx;
     }
 
-    acc->num_elems = count;
+    acc->num_elems = stream->count;
 
     MEMCPY(acc->cell_mask, cell_mask, sizeof(acc->cell_mask));
     MEMCPY(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
@@ -407,9 +428,9 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* 
     acc->I[2][2] = (float)I[2][2];
 
     // Persist origin offset used to construct fractional frame
-    acc->origin[0] = coord_offset.x;
-    acc->origin[1] = coord_offset.y;
-    acc->origin[2] = coord_offset.z;
+    acc->origin[0] = origin.x;
+    acc->origin[1] = origin.y;
+    acc->origin[2] = origin.z;
 
     acc->flags = flags;
 
@@ -523,29 +544,40 @@ static float calc_r2(double cutoff) {
 }
 
 static inline vec4_t vec4_cart_to_fract(vec4_t in_c, const md_spatial_acc_t* acc) {
-    vec4_t out_s = {
-        acc->I[0][0] * in_c.x + acc->I[1][0] * in_c.y + acc->I[2][0] * in_c.z,
-        acc->I[0][1] * in_c.x + acc->I[1][1] * in_c.y + acc->I[2][1] * in_c.z,
-        acc->I[0][2] * in_c.x + acc->I[1][2] * in_c.y + acc->I[2][2] * in_c.z,
-        0
+    const vec4_t t = vec4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
+    const vec4_t I[3] = {
+        vec4_set(acc->I[0][0], acc->I[0][1], acc->I[0][2], 0),
+        vec4_set(acc->I[1][0], acc->I[1][1], acc->I[1][2], 0),
+        vec4_set(acc->I[2][0], acc->I[2][1], acc->I[2][2], 0),
     };
-	return out_s;
+    return vec4_linear_combine_3(vec4_sub(in_c, t), I);
+}
+
+static inline void cart_to_fract(double out_s[3], const double in_c[3], const md_spatial_acc_t* acc) {
+    // I is indexed as I[col][row]
+    // fract = I * (cart - origin)
+    const double x = in_c[0] - acc->origin[0];
+    const double y = in_c[1] - acc->origin[1];
+    const double z = in_c[2] - acc->origin[2];
+    out_s[0] = acc->I[0][0] * x + acc->I[1][0] * y + acc->I[2][0] * z;
+    out_s[1] = acc->I[0][1] * x + acc->I[1][1] * y + acc->I[2][1] * z;
+    out_s[2] = acc->I[0][2] * x + acc->I[1][2] * y + acc->I[2][2] * z;
 }
 
 static inline void fract_to_cart(double out_x[3], const double in_s[3], const md_spatial_acc_t* acc) {
     // A is indexed as A[col][row]
-    // cart = A * fract - origin
-    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] - acc->origin[0];
-    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] - acc->origin[1];
-    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] - acc->origin[2];
+    // cart = A * fract + origin
+    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] + acc->origin[0];
+    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] + acc->origin[1];
+    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] + acc->origin[2];
 }
 
 static inline void fract_to_cart_float(float out_x[3], const float in_s[3], const md_spatial_acc_t* acc) {
     // A is indexed as A[col][row]
-    // cart = A * fract - origin
-    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] - acc->origin[0];
-    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] - acc->origin[1];
-    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] - acc->origin[2];
+    // cart = A * fract + origin
+    out_x[0] = acc->A[0][0] * in_s[0] + acc->A[1][0] * in_s[1] + acc->A[2][0] * in_s[2] + acc->origin[0];
+    out_x[1] = acc->A[0][1] * in_s[0] + acc->A[1][1] * in_s[1] + acc->A[2][1] * in_s[2] + acc->origin[1];
+    out_x[2] = acc->A[0][2] * in_s[0] + acc->A[1][2] * in_s[1] + acc->A[2][2] * in_s[2] + acc->origin[2];
 }
 
 static inline void fract_to_cart_ort_256(
@@ -554,9 +586,9 @@ static inline void fract_to_cart_ort_256(
     const md_256 A00, const md_256 A11, const md_256 A22,
     const md_256 O0,  const md_256 O1,  const md_256 O2)
 {
-    *out_cx = md_mm256_fmsub_ps(in_sx, A00, O0);
-    *out_cy = md_mm256_fmsub_ps(in_sy, A11, O1);
-    *out_cz = md_mm256_fmsub_ps(in_sz, A22, O2);
+    *out_cx = md_mm256_fmadd_ps(in_sx, A00, O0);
+    *out_cy = md_mm256_fmadd_ps(in_sy, A11, O1);
+    *out_cz = md_mm256_fmadd_ps(in_sz, A22, O2);
 }
 
 static inline void fract_to_cart_tri_256(
@@ -565,9 +597,9 @@ static inline void fract_to_cart_tri_256(
     const md_256 A00, const md_256 A10, const md_256 A11, const md_256 A20, const md_256 A21, const md_256 A22,
     const md_256 O0,  const md_256 O1,  const md_256 O2)
 {
-    *out_cx = md_mm256_fmadd_ps(in_sx, A00, md_mm256_fmadd_ps(in_sy, A10, md_mm256_fmsub_ps(in_sz, A20, O0)));
-    *out_cy = md_mm256_fmadd_ps(in_sy, A11, md_mm256_fmsub_ps(in_sz, A21, O1));
-    *out_cz = md_mm256_fmsub_ps(in_sz, A22, O2);
+    *out_cx = md_mm256_fmadd_ps(in_sx, A00, md_mm256_fmadd_ps(in_sy, A10, md_mm256_fmadd_ps(in_sz, A20, O0)));
+    *out_cy = md_mm256_fmadd_ps(in_sy, A11, md_mm256_fmadd_ps(in_sz, A21, O1));
+    *out_cz = md_mm256_fmadd_ps(in_sz, A22, O2);
 }
 
 static inline void cart_to_fract_ort_256(
@@ -576,9 +608,10 @@ static inline void cart_to_fract_ort_256(
     const md_256 I00, const md_256 I11, const md_256 I22,
     const md_256 O0,  const md_256 O1,  const md_256 O2)
 {
-    *out_sx = md_mm256_fmadd_ps(in_cx, I00, O0);
-    *out_sy = md_mm256_fmadd_ps(in_cy, I11, O1);
-    *out_sz = md_mm256_fmadd_ps(in_cz, I22, O2);
+    // fract = I * (cart - origin)
+    *out_sx = md_mm256_mul_ps(md_mm256_sub_ps(in_cx, O0), I00);
+    *out_sy = md_mm256_mul_ps(md_mm256_sub_ps(in_cy, O1), I11);
+    *out_sz = md_mm256_mul_ps(md_mm256_sub_ps(in_cz, O2), I22);
 }
 
 static inline void cart_to_fract_tri_256(
@@ -589,9 +622,13 @@ static inline void cart_to_fract_tri_256(
     const md_256 I20, const md_256 I21, const md_256 I22,
     const md_256 O0,  const md_256 O1,  const md_256 O2)
 {
-    *out_sx = md_mm256_fmadd_ps(in_cx, I00, md_mm256_fmadd_ps(in_cy, I01, md_mm256_fmadd_ps(in_cz, I02, O0)));
-    *out_sy = md_mm256_fmadd_ps(in_cx, I10, md_mm256_fmadd_ps(in_cy, I11, md_mm256_fmadd_ps(in_cz, I12, O1)));
-    *out_sz = md_mm256_fmadd_ps(in_cx, I20, md_mm256_fmadd_ps(in_cy, I21, md_mm256_fmadd_ps(in_cz, I22, O2)));
+    // fract = I * (cart - origin)
+    const md_256 cx = md_mm256_sub_ps(in_cx, O0);
+    const md_256 cy = md_mm256_sub_ps(in_cy, O1);
+    const md_256 cz = md_mm256_sub_ps(in_cz, O2);
+    *out_sx = md_mm256_fmadd_ps(cx, I00, md_mm256_fmadd_ps(cy, I01, md_mm256_mul_ps(cz, I02)));
+    *out_sy = md_mm256_fmadd_ps(cx, I10, md_mm256_fmadd_ps(cy, I11, md_mm256_mul_ps(cz, I12)));
+    *out_sz = md_mm256_fmadd_ps(cx, I20, md_mm256_fmadd_ps(cy, I21, md_mm256_mul_ps(cz, I22)));
 }
 
 static inline void batch_fract_to_cart_ort_256(float* x, float* y, float* z, size_t count, const md_spatial_acc_t* acc) {
@@ -668,9 +705,15 @@ static inline void batch_fract_to_cart_tri_256(float* x, float* y, float* z, siz
         count = 0; \
     } \
 
-#define POSSIBLY_INVOKE_CALLBACK_POINT_TRI(estimated_count) \
+#define POSSIBLY_INVOKE_CALLBACK_POINT_FRACT_TRI(estimated_count) \
     if (count + (estimated_count) >= SPATIAL_ACC_BUFLEN) { \
         batch_fract_to_cart_tri_256(buf_x, buf_y, buf_z, count, acc); \
+        callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
+        count = 0; \
+    } \
+
+#define POSSIBLY_INVOKE_CALLBACK_POINT_CART_TRI(estimated_count) \
+    if (count + (estimated_count) >= SPATIAL_ACC_BUFLEN) { \
         callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
         count = 0; \
     } \
@@ -682,9 +725,15 @@ static inline void batch_fract_to_cart_tri_256(float* x, float* y, float* z, siz
         count = 0; \
     } \
 
-#define FLUSH_TAIL_POINT_TRI() \
+#define FLUSH_TAIL_POINT_FRACT_TRI() \
     if (count) { \
         batch_fract_to_cart_tri_256(buf_x, buf_y, buf_z, count, acc); \
+        callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
+        count = 0; \
+    } \
+
+#define FLUSH_TAIL_POINT_CART_TRI() \
+    if (count) { \
         callback(buf_i, buf_x, buf_y, buf_z, count, user_param); \
         count = 0; \
     } \
@@ -1446,7 +1495,7 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     FLUSH_TAIL_PAIR();
 }
 
-static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
+static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
         (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
@@ -1459,8 +1508,8 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     }
 
     if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
-        if (!ext_idx) {
-            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_idx is NULL");
+        if (!ext_stream->idx) {
+            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_stream->idx is NULL");
             return;
         }
     }
@@ -1507,16 +1556,14 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     ASSERT(acc->flags & MD_UNITCELL_TRICLINIC);
     ASSERT((acc->flags & MD_UNITCELL_PBC_ALL) == (MD_UNITCELL_PBC_ALL));
 
-	const vec4_t coord_offset = { acc->origin[0], acc->origin[1], acc->origin[2], 0 };
-	const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
+	const vec4_t cell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
 
-    for (size_t ei = 0; ei < ext_count; ++ei) {
-        uint32_t idx = ext_idx ? (uint32_t)ext_idx[ei] : (uint32_t)ei;
+    for (size_t ei = 0; ei < ext_stream->count; ++ei) {
+        uint32_t idx = md_coord_stream_load_idx(ext_stream, ei);
+        vec4_t r     = md_coord_stream_load_vec4(ext_stream, ei);
 
-        vec4_t r = {ext_x[idx], ext_y[idx], ext_z[idx], 0};
-        r = vec4_add(r, coord_offset);
-		vec4_t f = vec4_fract(vec4_cart_to_fract(r, acc));
-		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
+        vec4_t f = vec4_cart_to_fract(r, acc);
+		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, cell_dim)));
 
         uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
         const md_256i v_idxi = md_mm256_set1_epi32(idx_i);
@@ -1599,7 +1646,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
     FLUSH_TAIL_PAIR();
 }
 
-static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
+static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     const int ncell[3] = {
         (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
         (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
@@ -1612,8 +1659,8 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     }
 
     if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
-        if (!ext_idx) {
-            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_idx is NULL");
+        if (!ext_stream->idx) {
+            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_stream->idx is NULL");
             return;
         }
     }
@@ -1659,19 +1706,16 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         (acc->flags & MD_UNITCELL_PBC_Z) ? 0xFFFFFFFF : 0,
         0);
 
-    float val;
-    MEMSET(&val, 0xFF, sizeof(val));
-    const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
-	const vec4_t coord_offset = { acc->origin[0], acc->origin[1], acc->origin[2], 0 };
+    vec4_t fract_mask;
+    MEMCPY(&fract_mask, &pmask_v, sizeof(ivec4_t));  // avoid strict aliasing issues
 	const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
 
-    for (size_t ei = 0; ei < ext_count; ++ei) {
-		uint32_t idx = ext_idx ? (uint32_t)ext_idx[ei] : (uint32_t)ei;
+    for (size_t ei = 0; ei < ext_stream->count; ++ei) {
+        uint32_t idx = md_coord_stream_load_idx(ext_stream, ei);
+        vec4_t r     = md_coord_stream_load_vec4(ext_stream, ei);
 
-        vec4_t r = {ext_x[idx], ext_y[idx], ext_z[idx], 0};
-        r = vec4_add(r, coord_offset);
 		vec4_t f = vec4_cart_to_fract(r, acc);
-		f = vec4_blend(f, vec4_fract(f), pbc_mask);
+		f = vec4_blend(f, vec4_fract(f), fract_mask);
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
         uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
@@ -1759,8 +1803,10 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 }
 
 static inline void cell_range_from_aabb_center_radius(
-    int cmin_out[3],                 // inclusive
-    int cmax_out[3],                 // exclusive (loop while ic < cmax)
+    int out_cmin[3],                 // inclusive
+    int out_cmax[3],                 // exclusive (loop while ic < cmax)
+    double out_fcen[3],              // fractional center (wrapped to [0,1) on periodic axes)
+    double out_frad[3],              // fractional half-extents
     const double center[3],          // cartesian center
     const double radius[3],          // cartesian half-extents
     const md_spatial_acc_t* acc)
@@ -1770,44 +1816,31 @@ static inline void cell_range_from_aabb_center_radius(
         (acc->flags & MD_UNITCELL_PBC_Y) != 0,
         (acc->flags & MD_UNITCELL_PBC_Z) != 0,
     };
-
-    // 1) Fractional center (wrapped to [0,1) on periodic axes)
-    vec4_t rc = { (float)(center[0] + acc->origin[0]),
-                  (float)(center[1] + acc->origin[1]),
-                  (float)(center[2] + acc->origin[2]), 0.0f };
-
-    vec4_t fc_v = vec4_cart_to_fract(rc, acc);
-    double fc[3] = { fc_v.x, fc_v.y, fc_v.z };
+    
+    double sc[3];
+    cart_to_fract(sc, center, acc);
 
     for (int a = 0; a < 3; ++a) {
-        if (pbc[a]) fc[a] = fract(fc[a]);
+        if (pbc[a]) sc[a] = fract(sc[a]);
     }
+
+    double cc[3];
+    fract_to_cart(cc, sc, acc);
 
     // 2) Convert 8 corners to fractional, unwrap them near the center image, take component-wise min/max.
     double fmin[3] = { +DBL_MAX, +DBL_MAX, +DBL_MAX };
     double fmax[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
 
     for (int iz = 0; iz < 2; ++iz) {
-        const double z = center[2] + (iz ? +radius[2] : -radius[2]);
+        const double z = cc[2] + (iz ? +radius[2] : -radius[2]);
         for (int iy = 0; iy < 2; ++iy) {
-            const double y = center[1] + (iy ? +radius[1] : -radius[1]);
+            const double y = cc[1] + (iy ? +radius[1] : -radius[1]);
             for (int ix = 0; ix < 2; ++ix) {
-                const double x = center[0] + (ix ? +radius[0] : -radius[0]);
+                const double x = cc[0] + (ix ? +radius[0] : -radius[0]);
+                const double c[3] = { x, y, z };
 
-                vec4_t r = { (float)(x + acc->origin[0]),
-                             (float)(y + acc->origin[1]),
-                             (float)(z + acc->origin[2]), 0.0f };
-
-                vec4_t s_v = vec4_cart_to_fract(r, acc);
-                double s[3] = { s_v.x, s_v.y, s_v.z };
-
-                // Unwrap corner into the same image as fc on periodic axes:
-                // subtract nearest integer so (s - fc) is in ~[-0.5, 0.5].
-                for (int a = 0; a < 3; ++a) {
-                    if (pbc[a]) {
-                        s[a] -= nearbyint(s[a] - fc[a]);
-                    }
-                }
+                double s[3];
+                cart_to_fract(s, c, acc);
 
                 for (int a = 0; a < 3; ++a) {
                     fmin[a] = MIN(fmin[a], s[a]);
@@ -1816,6 +1849,14 @@ static inline void cell_range_from_aabb_center_radius(
             }
         }
     }
+
+    out_fcen[0] = sc[0];
+    out_fcen[1] = sc[1];
+    out_fcen[2] = sc[2];
+
+    out_frad[0] = 0.5 * (fmax[0] - fmin[0]);
+    out_frad[1] = 0.5 * (fmax[1] - fmin[1]);
+    out_frad[2] = 0.5 * (fmax[2] - fmin[2]);
 
     // 3) Convert fractional bounds to cell index bounds in the (fractional) grid.
     for (int a = 0; a < 3; ++a) {
@@ -1832,12 +1873,15 @@ static inline void cell_range_from_aabb_center_radius(
             if (cmax <= cmin) cmax = MIN(cmin + 1, dim);
         }
 
-        cmin_out[a] = cmin;
-        cmax_out[a] = cmax;
+        out_cmin[a] = cmin;
+        out_cmax[a] = cmax;
     }
 }
-
 static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {
+    ASSERT(acc);
+    ASSERT(callback);
+    ASSERT((acc->flags & MD_UNITCELL_TRICLINIC) == 0);
+
     // Allocate intermediate buffers for passing to callback
     uint32_t buf_i[SPATIAL_ACC_BUFLEN];
     float    buf_x[SPATIAL_ACC_BUFLEN];
@@ -1847,36 +1891,36 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
     size_t   count = 0;
 
     const uint32_t cdim[3] = { acc->cell_dim[0], acc->cell_dim[1], acc->cell_dim[2] };
+    ASSERT(cdim[0] > 0 && cdim[1] > 0 && cdim[2] > 0);
+
     const uint32_t c0  = acc->cell_dim[0];
     const uint32_t c01 = acc->cell_dim[0] * acc->cell_dim[1];
 
     const md_256i add8 = md_mm256_set1_epi32(8);
     const md_256i inc  = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 
-    const int pbc[3] = {acc->flags & MD_UNITCELL_PBC_X, acc->flags & MD_UNITCELL_PBC_Y, acc->flags & MD_UNITCELL_PBC_Z};
+    const int pbc[3] = {
+        (acc->flags & MD_UNITCELL_PBC_X) != 0,
+        (acc->flags & MD_UNITCELL_PBC_Y) != 0,
+        (acc->flags & MD_UNITCELL_PBC_Z) != 0,
+    };
 
     int cmin[3], cmax[3];
-    cell_range_from_aabb_center_radius(cmin, cmax, aabb_cen, aabb_rad, acc);
+    double fcen[3], frad[3];
+    cell_range_from_aabb_center_radius(cmin, cmax, fcen, frad, aabb_cen, aabb_rad, acc);
 
-    // Fractional min coordinates to compare against
-    double fmin[3] = {
-        (aabb_cen[0] - aabb_rad[0] + acc->origin[0]),
-        (aabb_cen[1] - aabb_rad[1] + acc->origin[1]),
-        (aabb_cen[2] - aabb_rad[2] + acc->origin[2]),
-    };
-    double fmax[3] = {
-        (aabb_cen[0] + aabb_rad[0] + acc->origin[0]),
-        (aabb_cen[1] + aabb_rad[1] + acc->origin[1]),
-        (aabb_cen[2] + aabb_rad[2] + acc->origin[2]),
-    };
+    // Clamp the fractional cell extent
+    for (int i = 0; i < 3; ++i) {
+        frad[i] = MIN(frad[i], 0.5);
+    }
 
-    const md_256 v_fminx = md_mm256_set1_ps((float)fmin[0]);
-    const md_256 v_fminy = md_mm256_set1_ps((float)fmin[1]);
-    const md_256 v_fminz = md_mm256_set1_ps((float)fmin[2]);
+    const md_256 v_fminx = md_mm256_set1_ps((float)(fcen[0] - frad[0]));
+    const md_256 v_fminy = md_mm256_set1_ps((float)(fcen[1] - frad[1]));
+    const md_256 v_fminz = md_mm256_set1_ps((float)(fcen[2] - frad[2]));
 
-    const md_256 v_fmaxx = md_mm256_set1_ps((float)fmax[0]);
-    const md_256 v_fmaxy = md_mm256_set1_ps((float)fmax[1]);
-    const md_256 v_fmaxz = md_mm256_set1_ps((float)fmax[2]);
+    const md_256 v_fmaxx = md_mm256_set1_ps((float)(fcen[0] + frad[0]));
+    const md_256 v_fmaxy = md_mm256_set1_ps((float)(fcen[1] + frad[1]));
+    const md_256 v_fmaxz = md_mm256_set1_ps((float)(fcen[2] + frad[2]));
 
     for (int icz = cmin[2]; icz < cmax[2]; ++icz) {
         int cz = pbc[2] ? wrap_coord(icz, (int)cdim[2]) : icz;
@@ -1911,11 +1955,9 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                 for (uint32_t j = 0; j < len; j += 8) {
                     const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len));
 
-					md_256 v_xj, v_yj, v_zj;
-
-                    v_xj = md_mm256_loadu_ps(elem_x + j);
-                    v_yj = md_mm256_loadu_ps(elem_y + j);
-                    v_zj = md_mm256_loadu_ps(elem_z + j);
+                    md_256 v_xj = md_mm256_loadu_ps(elem_x + j);
+                    md_256 v_yj = md_mm256_loadu_ps(elem_y + j);
+                    md_256 v_zj = md_mm256_loadu_ps(elem_z + j);
 
                     v_xj = md_mm256_add_ps(v_xj, shift_x);
                     v_yj = md_mm256_add_ps(v_yj, shift_y);
@@ -1935,7 +1977,6 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
 
                     const md_256 v_mask = md_mm256_and_ps(md_mm256_and_ps(v_mask_min, v_mask_max), j_mask);
 
-                    // Fill buffers with results
                     const int mask = md_mm256_movemask_ps(v_mask);
                     if (mask) {
                         const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
@@ -1945,6 +1986,8 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                         v_xj   = md_mm256_permutevar8x32_ps(v_xj, v_idx_mask);
                         v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
                         v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
+
+                        ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                         md_mm256_storeu_epi32(buf_i + count, v_idxj);
                         md_mm256_storeu_ps   (buf_x + count, v_xj);
@@ -1961,6 +2004,144 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
     }
 
     FLUSH_TAIL_POINT_ORT();
+}
+
+static void for_each_point_in_aabb_triclinic(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {
+    ASSERT(acc);
+    ASSERT(callback);
+    ASSERT(acc->flags & MD_UNITCELL_TRICLINIC);
+    ASSERT((acc->flags & MD_UNITCELL_PBC_ALL) == MD_UNITCELL_PBC_ALL);
+
+    // Allocate intermediate buffers for passing to callback
+    uint32_t buf_i[SPATIAL_ACC_BUFLEN];
+    float    buf_x[SPATIAL_ACC_BUFLEN];
+    float    buf_y[SPATIAL_ACC_BUFLEN];
+    float    buf_z[SPATIAL_ACC_BUFLEN];
+    size_t   count = 0;
+
+    const uint32_t cdim[3] = { acc->cell_dim[0], acc->cell_dim[1], acc->cell_dim[2] };
+    ASSERT(cdim[0] > 0 && cdim[1] > 0 && cdim[2] > 0);
+
+    const uint32_t c0  = acc->cell_dim[0];
+    const uint32_t c01 = acc->cell_dim[0] * acc->cell_dim[1];
+
+    const md_256i add8 = md_mm256_set1_epi32(8);
+    const md_256i inc  = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+
+    int cmin[3], cmax[3];
+    double fcen[3], frad[3];
+    cell_range_from_aabb_center_radius(cmin, cmax, fcen, frad, aabb_cen, aabb_rad, acc);
+
+    // Exact cartesian bounds (in the wrapped "center image")
+    double cc[3];
+    fract_to_cart(cc, fcen, acc);
+
+    const md_256 v_cminx = md_mm256_set1_ps((float)(cc[0] - aabb_rad[0]));
+    const md_256 v_cminy = md_mm256_set1_ps((float)(cc[1] - aabb_rad[1]));
+    const md_256 v_cminz = md_mm256_set1_ps((float)(cc[2] - aabb_rad[2]));
+
+    const md_256 v_cmaxx = md_mm256_set1_ps((float)(cc[0] + aabb_rad[0]));
+    const md_256 v_cmaxy = md_mm256_set1_ps((float)(cc[1] + aabb_rad[1]));
+    const md_256 v_cmaxz = md_mm256_set1_ps((float)(cc[2] + aabb_rad[2]));
+
+    // Precompute frac->cart constants for triclinic conversion
+    const md_256 A00 = md_mm256_set1_ps(acc->A[0][0]);
+    const md_256 A10 = md_mm256_set1_ps(acc->A[1][0]);
+    const md_256 A11 = md_mm256_set1_ps(acc->A[1][1]);
+    const md_256 A20 = md_mm256_set1_ps(acc->A[2][0]);
+    const md_256 A21 = md_mm256_set1_ps(acc->A[2][1]);
+    const md_256 A22 = md_mm256_set1_ps(acc->A[2][2]);
+
+    const md_256 O0  = md_mm256_set1_ps(acc->origin[0]);
+    const md_256 O1  = md_mm256_set1_ps(acc->origin[1]);
+    const md_256 O2  = md_mm256_set1_ps(acc->origin[2]);
+
+    for (int icz = cmin[2]; icz < cmax[2]; ++icz) {
+        int cz = wrap_coord(icz, (int)cdim[2]);
+        int sz = isign(icz - cz);
+        const md_256 shift_z = md_mm256_set1_ps((float)sz);
+
+        for (int icy = cmin[1]; icy < cmax[1]; ++icy) {
+            int cy = wrap_coord(icy, (int)cdim[1]);
+            int sy = isign(icy - cy);
+            const md_256 shift_y = md_mm256_set1_ps((float)sy);
+
+            for (int icx = cmin[0]; icx < cmax[0]; ++icx) {
+                int cx = wrap_coord(icx, (int)cdim[0]);
+                int sx = isign(icx - cx);
+                const md_256 shift_x = md_mm256_set1_ps((float)sx);
+
+                const uint32_t ci  = CELL_INDEX((uint32_t)cx, (uint32_t)cy, (uint32_t)cz);
+                const uint32_t off = CELL_OFFSET(ci);
+                const uint32_t len = CELL_LENGTH(ci);
+                if (len == 0) continue;
+
+                const md_256i v_len = md_mm256_set1_epi32(len);
+
+                const float* elem_x = acc->elem_x + off;
+                const float* elem_y = acc->elem_y + off;
+                const float* elem_z = acc->elem_z + off;
+                const uint32_t* elem_idx = acc->elem_idx + off;
+
+                POSSIBLY_INVOKE_CALLBACK_POINT_CART_TRI(ALIGN_TO(len, 8));
+
+                md_256i v_j = inc;
+                for (uint32_t j = 0; j < len; j += 8) {
+                    const md_256 j_mask = md_mm256_castsi256_ps(md_mm256_cmplt_epi32(v_j, v_len));
+
+                    // Fractional coords (stored) + periodic image shift
+                    md_256 v_sx = md_mm256_loadu_ps(elem_x + j);
+                    md_256 v_sy = md_mm256_loadu_ps(elem_y + j);
+                    md_256 v_sz = md_mm256_loadu_ps(elem_z + j);
+
+                    v_sx = md_mm256_add_ps(v_sx, shift_x);
+                    v_sy = md_mm256_add_ps(v_sy, shift_y);
+                    v_sz = md_mm256_add_ps(v_sz, shift_z);
+
+                    md_256 v_cx, v_cy, v_cz;
+                    fract_to_cart_tri_256(&v_cx, &v_cy, &v_cz, v_sx, v_sy, v_sz, A00, A10, A11, A20, A21, A22, O0, O1, O2);
+
+                    const md_256 v_cmask_min = md_mm256_and_ps(
+                        md_mm256_cmpge_ps(v_cx, v_cminx),
+                        md_mm256_and_ps(
+                            md_mm256_cmpge_ps(v_cy, v_cminy),
+                            md_mm256_cmpge_ps(v_cz, v_cminz)));
+
+                    const md_256 v_cmask_max = md_mm256_and_ps(
+                        md_mm256_cmple_ps(v_cx, v_cmaxx),
+                        md_mm256_and_ps(
+                            md_mm256_cmple_ps(v_cy, v_cmaxy),
+                            md_mm256_cmple_ps(v_cz, v_cmaxz)));
+
+                    const md_256 v_mask = md_mm256_and_ps(md_mm256_and_ps(v_cmask_min, v_cmask_max), j_mask);
+
+                    const int mask = md_mm256_movemask_ps(v_mask);
+                    if (mask) {
+                        const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
+                        md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
+
+                        v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
+                        v_sx   = md_mm256_permutevar8x32_ps(v_sx, v_idx_mask);
+                        v_sy   = md_mm256_permutevar8x32_ps(v_sy, v_idx_mask);
+                        v_sz   = md_mm256_permutevar8x32_ps(v_sz, v_idx_mask);
+
+                        ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
+
+                        md_mm256_storeu_epi32(buf_i + count, v_idxj);
+                        md_mm256_storeu_ps   (buf_x + count, v_sx);
+                        md_mm256_storeu_ps   (buf_y + count, v_sy);
+                        md_mm256_storeu_ps   (buf_z + count, v_sz);
+
+                        count += popcnt32(mask);
+                    }
+
+                    v_j = md_mm256_add_epi32(v_j, add8);
+                }
+            }
+        }
+    }
+
+    FLUSH_TAIL_POINT_CART_TRI();
 }
 
 static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param) {
@@ -2015,8 +2196,7 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const vec4_t pbc_mask = vec4_set((acc->flags & MD_UNITCELL_PBC_X) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Y) ? val : 0, (acc->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
     
     const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
-    const vec4_t coord_offset = { acc->origin[0], acc->origin[1], acc->origin[2], 0 };
-    const vec4_t r4 = vec4_add(vec4_set((float)center[0], (float)center[1], (float)center[2], 0), coord_offset);
+  const vec4_t r4 = vec4_set((float)center[0], (float)center[1], (float)center[2], 0);
     vec4_t f4 = vec4_cart_to_fract(r4, acc);
     f4 = vec4_blend(vec4_fract(f4), f4, pbc_mask);
     const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, fcell_dim)));
@@ -2161,7 +2341,7 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
     const md_256i inc  = md_mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 
     // Fractional center and center cell
-	const vec4_t r4 = vec4_set((float)center[0] + acc->origin[0], (float)center[1] + acc->origin[1], (float)center[2] + acc->origin[2], 0);
+ const vec4_t r4 = vec4_set((float)center[0], (float)center[1], (float)center[2], 0);
 	const vec4_t d4 = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
 	const vec4_t f4 = vec4_fract(vec4_cart_to_fract(r4, acc));
     const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, d4)));
@@ -2207,7 +2387,7 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
 		const md_256 shift_y = md_mm256_set1_ps(shift_f.y);
 		const md_256 shift_z = md_mm256_set1_ps(shift_f.z);
 
-        POSSIBLY_INVOKE_CALLBACK_POINT_TRI(ALIGN_TO(len, 8));
+        POSSIBLY_INVOKE_CALLBACK_POINT_FRACT_TRI(ALIGN_TO(len, 8));
 
         md_256i v_j = inc;
         for (uint32_t j = 0; j < len; j += 8) {
@@ -2254,7 +2434,7 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
         }
     }
 
-    FLUSH_TAIL_POINT_TRI();
+    FLUSH_TAIL_POINT_CART_TRI();
 }
 
 #undef SPATIAL_ACC_BUFLEN
@@ -2286,30 +2466,33 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t*
 
 // Iterate over external points against points within the spatial acceleration structure for a supplied cutoff
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices
-void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
+void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     ASSERT(acc);
-	ASSERT(ext_x);
-    ASSERT(ext_y);
-    ASSERT(ext_z);
     ASSERT(callback);
 
     if (acc->flags & MD_UNITCELL_TRICLINIC) {
-        for_each_external_pair_within_cutoff_triclinic(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param, flags);
+        for_each_external_pair_within_cutoff_triclinic(acc, ext_stream, cutoff, callback, user_param, flags);
     } else {
-        for_each_external_pair_within_cutoff_ortho(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, cutoff, callback, user_param, flags);
+        for_each_external_pair_within_cutoff_ortho(acc, ext_stream, cutoff, callback, user_param, flags);
     }
 }
 
-#if 1
-void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param) {
+void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {
     ASSERT(acc);
     ASSERT(callback);
+
+    for (int i = 0; i < 3; ++i) {
+        if (aabb_rad[i] < 0) {
+            MD_LOG_ERROR("md_spatial_acc_for_each_point_in_aabb: negative radius not allowed");
+            return;
+        }
+    }
 	
     if (acc->flags & MD_UNITCELL_TRICLINIC) {
-
+        for_each_point_in_aabb_triclinic(acc, aabb_cen, aabb_rad, callback, user_param);
     }
     else {
-        for_each_point_in_aabb_ortho(acc, aabb_min, aabb_max, callback, user_param);
+        for_each_point_in_aabb_ortho(acc, aabb_cen, aabb_rad, callback, user_param);
     }
 }
 
@@ -2323,8 +2506,6 @@ void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, const 
         for_each_point_in_sphere_ortho(acc, center, radius, callback, user_param);
     }
 }
-
-#endif
 
 # if 0
 // Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)

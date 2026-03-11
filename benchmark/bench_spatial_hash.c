@@ -16,19 +16,22 @@ void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_id
     *count += (uint32_t)num_pairs;
 }
 
-UBENCH_EX(spatial_hash, query_n2_centered) {
+// This makes little sense logically
+// There are specialized routines for internal pair checks within a radius which should be favored over this.
+UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     md_system_t sys = { 0 };
     bool result = (md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), NULL, arena));
 
     if (result) {
+        md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
         md_spatial_acc_t acc = { .alloc = arena };
-        md_spatial_acc_init(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, RADIUS, &sys.unitcell, 0);
+        md_spatial_acc_init(&acc, &stream, RADIUS, &sys.unitcell, 0);
 
         uint32_t count = 0;
         UBENCH_DO_BENCHMARK() {
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count, RADIUS, spatial_acc_pair_count_callback, &count, 0);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, RADIUS, spatial_acc_pair_count_callback, &count, 0);
             UBENCH_DO_NOTHING(&count);
         }
     }

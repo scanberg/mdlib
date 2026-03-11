@@ -620,8 +620,6 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     MEMSET(table, -1, sizeof(table));
     size_t num_cols = 0;
 
-    bool success = false;
-
     // Read category headers
     str_t item;
     while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && str_eq_cstr_n(item, "_atom_site.", 11)) {

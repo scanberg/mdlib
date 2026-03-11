@@ -250,8 +250,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         uint64_t asc_hash  = md_hash64(asc_data,  num_points * sizeof(uint32_t), 0);
         uint64_t desc_hash = md_hash64(desc_data, num_points * sizeof(uint32_t), 0);
         MD_LOG_INFO("Volume              hash: 0x%016llX", (unsigned long long)vol_hash);
-        //MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
-        //MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
+        MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
+        MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
         md_free(temp_alloc, vol_data,  num_points * sizeof(float));
         md_free(temp_alloc, asc_data,  num_points * sizeof(uint32_t));
         md_free(temp_alloc, desc_data, num_points * sizeof(uint32_t));
