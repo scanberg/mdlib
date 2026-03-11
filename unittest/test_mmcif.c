@@ -63,7 +63,7 @@ UTEST(mmcif, 8g7u) {
     md_system_t mol;
     bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
-    md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
+    md_util_system_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
     if (result) {
         EXPECT_EQ(14229, mol.atom.count);

@@ -13,7 +13,7 @@ typedef struct md_atom_type_data_t {
     float*          mass;
     float*          radius;
     uint32_t*       color;
-    uint32_t*       flags;
+    md_flags_t*     flags;
 } md_atom_type_data_t;
 
 typedef struct md_atom_data_t {
@@ -116,8 +116,8 @@ typedef struct md_bond_conn_data_t {
 // Bond centric representation
 typedef struct md_bond_data_t {
     size_t count;
-    md_atom_pair_t* pairs;
-    md_flags_t*     flags;
+    md_atom_pair_t*  pairs;
+    md_bond_flags_t* flags;
     md_bond_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
 
@@ -488,7 +488,7 @@ static inline md_flags_t md_atom_type_flags(const md_atom_type_data_t* type_data
     if (type_idx < type_data->count) {
         return type_data->flags[type_idx];
     }
-    return 0;
+    return MD_FLAG_NONE;
 }
 
 static inline float md_atom_type_radius(const md_atom_type_data_t* type_data, size_t type_idx) {
@@ -580,7 +580,7 @@ static inline md_flags_t md_atom_flags(const md_atom_data_t* atom, size_t atom_i
     if (atom_idx < atom->count && atom->flags) {
         return atom->flags[atom_idx];
 	}
-    return 0;
+    return MD_FLAG_NONE;
 }
 
 // Component
@@ -620,7 +620,7 @@ static inline md_urange_t md_component_atom_range(const md_component_data_t* com
 
 static inline md_flags_t md_component_flags(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
-    md_flags_t flags = 0;
+    md_flags_t flags = MD_FLAG_NONE;
     if (comp->flags && comp_idx < comp->count) {
         flags = comp->flags[comp_idx];
     }
@@ -822,7 +822,7 @@ static inline str_t md_entity_description(const md_entity_data_t* entity, size_t
 
 static inline md_flags_t md_entity_flags(const md_entity_data_t* entity, size_t entity_idx) {
     ASSERT(entity);
-    md_flags_t flags = 0;
+    md_flags_t flags = MD_FLAG_NONE;
     if (entity->flags && entity_idx < entity->count) {
         flags = entity->flags[entity_idx];
     }
@@ -898,7 +898,7 @@ static inline md_flags_t md_system_instance_flags(const md_system_t* sys, size_t
     if (sys->instance.entity_idx && inst_idx < sys->instance.count) {
         return md_entity_flags(&sys->entity, sys->instance.entity_idx[inst_idx]);
     }
-    return 0;
+    return MD_FLAG_NONE;
 }
 
 static inline str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
@@ -1081,7 +1081,7 @@ static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_ato
 	return -1;
 }
 
-static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_flags_t flags, md_allocator_i* alloc) {
+static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
     ASSERT(bond_data);
     ASSERT(alloc);
 
@@ -1128,7 +1128,7 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
     return md_bond_find(&sys->bond, atom_idx_a, atom_idx_b);
 }
 
-static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_flags_t flags, md_allocator_i* alloc) {
+static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(alloc);
     md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, alloc);

@@ -298,4 +298,14 @@ struct ExitScopeHelp {
 #define defer [[maybe_unused]] const auto& CONCAT(defer__, __LINE__) = ExitScopeHelp() + [&]()
 #endif
 
+#define ENUM_FLAGS(T) \
+inline T operator|(T a, T b) { return (T)((int)a | (int)b); } \
+inline T operator&(T a, T b) { return (T)((int)a & (int)b); } \
+inline T operator^(T a, T b) { return (T)((int)a ^ (int)b); } \
+inline T operator~(T a) { return (T)(~(int)a); } \
+inline T& operator|=(T& a, T b) { return a = a | b; } \
+inline T& operator&=(T& a, T b) { return a = a & b; } \
+inline T& operator^=(T& a, T b) { return a = a ^ b; }
+#else  //  __cplusplus
+#define ENUM_FLAGS(T)
 #endif //  __cplusplus

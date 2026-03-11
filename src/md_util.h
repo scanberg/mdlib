@@ -12,22 +12,22 @@ struct md_bitfield_t;
 extern "C" {
 #endif
 
-enum {
+typedef enum {
     MD_UTIL_POSTPROCESS_NONE                = 0,
-    MD_UTIL_POSTPROCESS_COLOR_BIT           = 0x0001,
-    MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
-    MD_UTIL_POSTPROCESS_INSTANCE_BIT        = 0x0010,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
-    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0080,
+    MD_UTIL_POSTPROCESS_COLOR_BIT           = 1u << 1,
+    MD_UTIL_POSTPROCESS_BOND_BIT            = 1u << 2,
+    MD_UTIL_POSTPROCESS_INSTANCE_BIT        = 1u << 3,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 1u << 4,
+    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 1u << 5,
     //MD_UTIL_POSTPROCESS_ORDER_BIT           = 0x0200,
 	//MD_UTIL_POSTPROCESS_SECONDARY_STRUCTURE_BIT = 0x0400,
-    MD_UTIL_POSTPROCESS_HBOND_BIT           = 0x0100,
-	MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT = 0x0800,
+    MD_UTIL_POSTPROCESS_HBOND_BIT           = 1u << 6,
+	MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT = 1u << 7,
 
-    MD_UTIL_POSTPROCESS_ALL                 = -1,
-};
+    MD_UTIL_POSTPROCESS_ALL                 = ~0u,
+} md_postprocess_flags_t;
 
-typedef uint32_t md_util_postprocess_flags_t;
+ENUM_FLAGS(md_postprocess_flags_t);
 
 // Access to the static arrays (preserved for direct access)
 const str_t* md_util_element_symbols(void);
@@ -109,7 +109,7 @@ bool md_util_system_infer_structures(md_system_t* sys, struct md_allocator_i* al
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_molecule_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
+bool md_util_system_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_postprocess_flags_t flags);
 
 
 // ### UNIT CELL ###

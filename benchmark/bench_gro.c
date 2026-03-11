@@ -37,11 +37,11 @@ UBENCH_EX(gro, postprocess) {
 
     md_system_t mol = {0};
     md_gro_system_loader()->init_from_file(&mol, path, 0, alloc);
-    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     size_t reset_pos = md_linear_allocator_get_pos(alloc);
     UBENCH_DO_BENCHMARK() {
-        md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_BOND_BIT);
+        md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_BOND_BIT);
         md_linear_allocator_set_pos_back(alloc, reset_pos);
     }
 

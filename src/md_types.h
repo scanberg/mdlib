@@ -33,7 +33,7 @@ enum {
 };
 
 // Cell information
-enum {
+typedef enum {
     MD_UNITCELL_NONE          = 0,
     MD_UNITCELL_ORTHO         = 1,
     MD_UNITCELL_TRICLINIC     = 2,
@@ -41,11 +41,14 @@ enum {
     MD_UNITCELL_PBC_Y         = 8,
     MD_UNITCELL_PBC_Z         = 16,
     MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
-};
+} md_unitcell_flags_t;
 
-// These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
+ENUM_FLAGS(md_unitcell_flags_t);
+
+// These flags are not specific to any distinct subtype, but can appear in both atoms, residues and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
-enum {
+typedef enum {
+    MD_FLAG_NONE                = 0,
     MD_FLAG_COARSE_GRAINED      = 0x1,      // Coarse grained representation
 
     MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
@@ -55,11 +58,11 @@ enum {
 
     // Proteins, Nucleic acids and their components
     MD_FLAG_POLYPEPTIDE         = 0x100,    // Top level for connected polypeptide chains (i.e. proteins)
-    MD_FLAG_AMINO_ACID		    = 0x200,    // For expressing a true amino acid monomer in the polypeptide chain
+    MD_FLAG_AMINO_ACID		    = 0x200,    // For expressing an amino acid monomer in the polypeptide chain
     MD_FLAG_SIDE_CHAIN          = 0x400,    // Amino acid side chain atoms
 
     MD_FLAG_NUCLEIC_ACID        = 0x800,    // Top level for connected nucleic acid chains (i.e. DNA, RNA)
-    MD_FLAG_NUCLEOTIDE          = 0x1000,   // For expressing a true nucleotide monomer in the nucleic acid chain
+    MD_FLAG_NUCLEOTIDE          = 0x1000,   // For expressing a nucleotide monomer in the nucleic acid chain
     MD_FLAG_NUCLEOSIDE          = 0x2000,   // Nucleoside component of a nucleotide
     MD_FLAG_NUCLEOBASE          = 0x4000,   // Nucleobase component of a nucleotide
 
@@ -80,10 +83,12 @@ enum {
 
 //    MD_FLAG_HBOND_DONOR         = 0x1000000,
 //    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
-};
+} md_flags_t;
+
+ENUM_FLAGS(md_flags_t);
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
-enum {
+typedef enum {
     MD_BOND_FLAG_COVALENT       = 0x1,
     MD_BOND_FLAG_DOUBLE         = 0x2,
     MD_BOND_FLAG_TRIPLE         = 0x4,
@@ -92,7 +97,9 @@ enum {
     MD_BOND_FLAG_COORDINATE     = 0x20, // Coordinate / Dative
     MD_BOND_FLAG_METAL          = 0x40, // Involves a metal atom
 	MD_BOND_FLAG_USER_DEFINED   = 0x80, // User defined bond
-};
+} md_bond_flags_t;
+
+ENUM_FLAGS(md_bond_flags_t);
 
 // Atomic number constants for all elements (Z values)
 enum {
@@ -227,7 +234,7 @@ typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint16_t    md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
-typedef uint32_t    md_flags_t;
+//typedef uint32_t    md_flags_t;
 typedef uint8_t     md_atomic_number_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_valence_t;
@@ -251,7 +258,7 @@ typedef struct md_unitcell_t {
     double x, xy, xz;
     double y, yz;
     double z;
-    uint32_t flags;
+    md_unitcell_flags_t flags;
 } md_unitcell_t;
 
 static inline size_t md_unitcell_print(char* out_buf, size_t buf_cap, const md_unitcell_t* cell) {
@@ -267,7 +274,7 @@ static inline md_unitcell_t md_unitcell_none(void) {
 }
 
 static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {
-    uint32_t flags = 0;
+    md_unitcell_flags_t flags = MD_UNITCELL_NONE;
 
     if (xy == 0.0 && xz == 0.0 && yz == 0.0) {
         if (!(x == 0.0 && y == 0.0 && z == 0.0) && !(x == 1.0 && y == 1.0 && z == 1.0)) {

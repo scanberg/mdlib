@@ -947,7 +947,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 				(uint32_t)(MIN(atom_id0, atom_id1) - 1),
 				(uint32_t)(MAX(atom_id0, atom_id1) - 1),
 			};
-			md_flags_t flag = 0;
+			md_bond_flags_t flag = 0;
             md_array_push_no_grow(sys->bond.pairs, pair);
             md_array_push_no_grow(sys->bond.flags, flag);
 

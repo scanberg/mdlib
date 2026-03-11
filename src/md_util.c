@@ -3073,7 +3073,7 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
 
     //md_atom_idx_t na = map[0];
     for (uint32_t i = p_edge_beg; i < p_edge_end; ++i) {
-        md_flags_t flags = (md_flags_t)graph_edge_type(data->pattern, i);
+        md_bond_flags_t flags = (md_bond_flags_t)graph_edge_type(data->pattern, i);
         if (flags) {
             md_atom_idx_t nb = map[graph_edge_vertex_idx(data->pattern, i)];
             uint32_t n_edge_beg = data->neighborhood->edge_offset[0];
@@ -4135,177 +4135,179 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         size_t len = (size_t)(comp_range.end - comp_range.beg);
 
         // Do not skip amino and nucleic acids here, we want to assign subportions of those
-        if (comp_flags & (MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION)) {
+        if (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) {
             // Already assigned
             continue;
 		}
 
-        md_amino_acid_atoms_t prot_atoms = {0};
-        md_nucleic_acid_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, comp_range)) {
-			// Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
-            // ca, c, n, o are the required atoms which should be present in prot_atoms
+        if (!(comp_flags & MD_FLAG_HETERO)) {
+            md_amino_acid_atoms_t prot_atoms = {0};
+            md_nucleic_acid_atoms_t nucl_atoms = {0};
+            if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, comp_range)) {
+			    // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
+                // ca, c, n, o are the required atoms which should be present in prot_atoms
 
-			int b_n_ca = md_bond_find(&sys->bond, prot_atoms.n,  prot_atoms.ca);
-			int b_ca_c = md_bond_find(&sys->bond, prot_atoms.ca, prot_atoms.c);
-			int b_c_o  = md_bond_find(&sys->bond, prot_atoms.c,  prot_atoms.o);
+			    int b_n_ca = md_bond_find(&sys->bond, prot_atoms.n,  prot_atoms.ca);
+			    int b_ca_c = md_bond_find(&sys->bond, prot_atoms.ca, prot_atoms.c);
+			    int b_c_o  = md_bond_find(&sys->bond, prot_atoms.c,  prot_atoms.o);
 
-            if (b_n_ca == -1 || b_ca_c == -1 || b_c_o == -1) {
-                // Not an amino acid
+                if (b_n_ca == -1 || b_ca_c == -1 || b_c_o == -1) {
+                    // Not an amino acid
+                    goto done;
+			    }
+
+                sys->component.flags[comp_idx] |= MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID;
+                sys->atom.flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
+                sys->atom.flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
+                sys->atom.flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
+    #if 0
+                // These are not really part of the backbone
+                sys->atom.flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
+                if (prot_atoms.hn != -1) {
+                    sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
+                }
+    #endif
+			    if (prot_atoms.cb != -1) {
+				    // Flood fill sidechain from CB, this will mark all connected atoms as sidechain
+				    topo_floodfill_flag(sys, prot_atoms.cb, prot_atoms.ca, MD_FLAG_SIDE_CHAIN);
+                }
+
+			    // Check and mark terminus atoms (if they exist)
+                {
+				    bool is_n_term = true;
+				    md_bond_iter_t iter_n = md_bond_iter(&sys->bond, prot_atoms.n);
+                    while (md_bond_iter_has_next(&iter_n)) {
+                        int nbr = md_bond_iter_atom_index(&iter_n);
+					    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                        if (z != MD_Z_H && nbr != prot_atoms.ca) {
+                            is_n_term = false;
+                            break;
+                        }
+					    md_bond_iter_next(&iter_n);
+                    }
+                    if (is_n_term) {
+                        topo_floodfill_flag(sys, prot_atoms.n, prot_atoms.ca, MD_FLAG_TERMINAL_BEG);
+                        sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
+                    }
+
+				    bool is_c_term = true;
+				    md_bond_iter_t iter_c = md_bond_iter(&sys->bond, prot_atoms.c);
+                    while (md_bond_iter_has_next(&iter_c)) {
+                        int nbr = md_bond_iter_atom_index(&iter_c);
+                        md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                        if (z != MD_Z_O && nbr != prot_atoms.ca) {
+						    is_c_term = false;
+                            break;
+                        }
+                        md_bond_iter_next(&iter_c);
+                    }
+                    if (is_c_term) {
+                        topo_floodfill_flag(sys, prot_atoms.c, prot_atoms.ca, MD_FLAG_TERMINAL_END);
+                        sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
+                    }
+                }
+
                 goto done;
-			}
-
-            sys->component.flags[comp_idx] |= MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID;
-            sys->atom.flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
-            sys->atom.flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
-            sys->atom.flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
-#if 0
-            // These are not really part of the backbone
-            sys->atom.flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
-            if (prot_atoms.hn != -1) {
-                sys->atom.flags[prot_atoms.hn]  |= MD_FLAG_BACKBONE;
-            }
-#endif
-			if (prot_atoms.cb != -1) {
-				// Flood fill sidechain from CB, this will mark all connected atoms as sidechain
-				topo_floodfill_flag(sys, prot_atoms.cb, prot_atoms.ca, MD_FLAG_SIDE_CHAIN);
-            }
-
-			// Check and mark terminus atoms (if they exist)
-            {
-				bool is_n_term = true;
-				md_bond_iter_t iter_n = md_bond_iter(&sys->bond, prot_atoms.n);
-                while (md_bond_iter_has_next(&iter_n)) {
-                    int nbr = md_bond_iter_atom_index(&iter_n);
-					md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
-                    if (z != MD_Z_H && nbr != prot_atoms.ca) {
-                        is_n_term = false;
-                        break;
-                    }
-					md_bond_iter_next(&iter_n);
-                }
-                if (is_n_term) {
-                    topo_floodfill_flag(sys, prot_atoms.n, prot_atoms.ca, MD_FLAG_TERMINAL_BEG);
-                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
-                }
-
-				bool is_c_term = true;
-				md_bond_iter_t iter_c = md_bond_iter(&sys->bond, prot_atoms.c);
-                while (md_bond_iter_has_next(&iter_c)) {
-                    int nbr = md_bond_iter_atom_index(&iter_c);
-                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
-                    if (z != MD_Z_O && nbr != prot_atoms.ca) {
-						is_c_term = false;
-                        break;
-                    }
-                    md_bond_iter_next(&iter_c);
-                }
-                if (is_c_term) {
-                    topo_floodfill_flag(sys, prot_atoms.c, prot_atoms.ca, MD_FLAG_TERMINAL_END);
-                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
-                }
-            }
-
-            goto done;
-        } else if (md_util_resname_amino_acid(comp_name)) {
-            sys->component.flags[comp_idx] |= MD_FLAG_AMINO_ACID;
-            md_array_push(ambigous_amino_acid_indices, (int)comp_idx, temp_alloc);
-            goto done;
-        }
-
-        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
-
-            // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
-            // O3 - C3 - C4 - C5 - O5  (and P for nucleotides if not terminal)
-
-            int b_o3_c3 = md_bond_find(&sys->bond, nucl_atoms.o3, nucl_atoms.c3);
-            int b_c3_c4 = md_bond_find(&sys->bond, nucl_atoms.c3, nucl_atoms.c4);
-            int b_c4_c5 = md_bond_find(&sys->bond, nucl_atoms.c4, nucl_atoms.c5);
-            int b_c5_o5 = md_bond_find(&sys->bond, nucl_atoms.c5, nucl_atoms.o5);
-            int b_o5_p  = md_bond_find(&sys->bond, nucl_atoms.o5, nucl_atoms.p);
-
-            if (b_o3_c3 == -1 || b_c3_c4 == -1 || b_c4_c5 == -1 || b_c5_o5 == -1 || (nucl_atoms.p != -1 && b_o5_p == -1)) {
-                // Not a nucleotide
+            } else if (md_util_resname_amino_acid(comp_name)) {
+                sys->component.flags[comp_idx] |= MD_FLAG_AMINO_ACID;
+                md_array_push(ambigous_amino_acid_indices, (int)comp_idx, temp_alloc);
                 goto done;
             }
 
-            sys->component.flags[comp_idx] |= MD_FLAG_NUCLEIC_ACID;
-            if (sys->atom.flags) {
-                if (nucl_atoms.p != -1) {
-                    sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
-                }
-                sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
-                sys->atom.flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
-                sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
-                sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
-                sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
-            }
+            if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
 
-            if (nucl_atoms.c1 != -1 && nucl_atoms.c2 != -1 && nucl_atoms.o4 != -1) {
+                // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
+                // O3 - C3 - C4 - C5 - O5  (and P for nucleotides if not terminal)
+
+                int b_o3_c3 = md_bond_find(&sys->bond, nucl_atoms.o3, nucl_atoms.c3);
+                int b_c3_c4 = md_bond_find(&sys->bond, nucl_atoms.c3, nucl_atoms.c4);
+                int b_c4_c5 = md_bond_find(&sys->bond, nucl_atoms.c4, nucl_atoms.c5);
+                int b_c5_o5 = md_bond_find(&sys->bond, nucl_atoms.c5, nucl_atoms.o5);
+                int b_o5_p  = md_bond_find(&sys->bond, nucl_atoms.o5, nucl_atoms.p);
+
+                if (b_o3_c3 == -1 || b_c3_c4 == -1 || b_c4_c5 == -1 || b_c5_o5 == -1 || (nucl_atoms.p != -1 && b_o5_p == -1)) {
+                    // Not a nucleotide
+                    goto done;
+                }
+
+                sys->component.flags[comp_idx] |= MD_FLAG_NUCLEIC_ACID;
+                if (sys->atom.flags) {
+                    if (nucl_atoms.p != -1) {
+                        sys->atom.flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
+                    }
+                    sys->atom.flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
+                    sys->atom.flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
+                    sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
+                    sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
+                    sys->atom.flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
+                }
+
+                if (nucl_atoms.c1 != -1 && nucl_atoms.c2 != -1 && nucl_atoms.o4 != -1) {
+                    sys->component.flags[comp_idx] |= MD_FLAG_NUCLEOTIDE;
+
+                    sys->atom.flags[nucl_atoms.c1] |= MD_FLAG_NUCLEOSIDE;
+                    sys->atom.flags[nucl_atoms.c2] |= MD_FLAG_NUCLEOSIDE;
+                    sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_NUCLEOSIDE;
+                    sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_NUCLEOSIDE;
+                    sys->atom.flags[nucl_atoms.o4] |= MD_FLAG_NUCLEOSIDE;
+
+                    // find the atom index which connects to the sugar (C1'), this will be the starting point for a floodfill to mark as nucleobase.
+                    int base_start_atom = -1;
+                    md_bond_iter_t it = md_bond_iter(&sys->bond, nucl_atoms.c1);
+                    while (md_bond_iter_has_next(&it)) {
+                        int n = md_bond_iter_atom_index(&it);
+                        if (n != nucl_atoms.c2 && n != nucl_atoms.o4) {
+                            base_start_atom = n;
+                            break;
+                        }
+                        md_bond_iter_next(&it);
+                    }
+
+                    if (base_start_atom != -1) {
+                        // Flood fill the base from the starting atom, this will mark all connected atoms as part of the base
+                        topo_floodfill_flag(sys, base_start_atom, nucl_atoms.c1, MD_FLAG_NUCLEOBASE | MD_FLAG_NUCLEOSIDE);
+                    }
+
+                    // Check terminus
+				    md_bond_iter_t iter_o3 = md_bond_iter(&sys->bond, nucl_atoms.o3);
+                    bool is_3_term = true;
+                    while (md_bond_iter_has_next(&iter_o3)) {
+                        int nbr = md_bond_iter_atom_index(&iter_o3);
+                        md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                        if (z != MD_Z_H && nbr != nucl_atoms.c3) {
+                            is_3_term = false;
+                            break;
+                        }
+                        md_bond_iter_next(&iter_o3);
+                    }
+                    if (is_3_term) {
+                        topo_floodfill_flag(sys, nucl_atoms.o3, nucl_atoms.c3, MD_FLAG_TERMINAL_END);
+                        sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
+                    }
+
+                    md_bond_iter_t iter_o5 = md_bond_iter(&sys->bond, nucl_atoms.o5);
+                    bool is_5_term = true;
+                    while (md_bond_iter_has_next(&iter_o5)) {
+                        int nbr = md_bond_iter_atom_index(&iter_o5);
+                        md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
+                        if (z != MD_Z_H && nbr != nucl_atoms.c5) {
+                            is_5_term = false;
+                            break;
+                        }
+                        md_bond_iter_next(&iter_o5);
+                    }
+                    if (is_5_term) {
+                        topo_floodfill_flag(sys, nucl_atoms.o5, nucl_atoms.c5, MD_FLAG_TERMINAL_BEG);
+                        sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
+                    }
+                }
+
+                goto done;
+            } else if (md_util_resname_nucleotide(comp_name)) {
                 sys->component.flags[comp_idx] |= MD_FLAG_NUCLEOTIDE;
-
-                sys->atom.flags[nucl_atoms.c1] |= MD_FLAG_NUCLEOSIDE;
-                sys->atom.flags[nucl_atoms.c2] |= MD_FLAG_NUCLEOSIDE;
-                sys->atom.flags[nucl_atoms.c3] |= MD_FLAG_NUCLEOSIDE;
-                sys->atom.flags[nucl_atoms.c4] |= MD_FLAG_NUCLEOSIDE;
-                sys->atom.flags[nucl_atoms.o4] |= MD_FLAG_NUCLEOSIDE;
-
-                // find the atom index which connects to the sugar (C1'), this will be the starting point for a floodfill to mark as nucleobase.
-                int base_start_atom = -1;
-                md_bond_iter_t it = md_bond_iter(&sys->bond, nucl_atoms.c1);
-                while (md_bond_iter_has_next(&it)) {
-                    int n = md_bond_iter_atom_index(&it);
-                    if (n != nucl_atoms.c2 && n != nucl_atoms.o4) {
-                        base_start_atom = n;
-                        break;
-                    }
-                    md_bond_iter_next(&it);
-                }
-
-                if (base_start_atom != -1) {
-                    // Flood fill the base from the starting atom, this will mark all connected atoms as part of the base
-                    topo_floodfill_flag(sys, base_start_atom, nucl_atoms.c1, MD_FLAG_NUCLEOBASE | MD_FLAG_NUCLEOSIDE);
-                }
-
-                // Check terminus
-				md_bond_iter_t iter_o3 = md_bond_iter(&sys->bond, nucl_atoms.o3);
-                bool is_3_term = true;
-                while (md_bond_iter_has_next(&iter_o3)) {
-                    int nbr = md_bond_iter_atom_index(&iter_o3);
-                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
-                    if (z != MD_Z_H && nbr != nucl_atoms.c3) {
-                        is_3_term = false;
-                        break;
-                    }
-                    md_bond_iter_next(&iter_o3);
-                }
-                if (is_3_term) {
-                    topo_floodfill_flag(sys, nucl_atoms.o3, nucl_atoms.c3, MD_FLAG_TERMINAL_END);
-                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_END;
-                }
-
-                md_bond_iter_t iter_o5 = md_bond_iter(&sys->bond, nucl_atoms.o5);
-                bool is_5_term = true;
-                while (md_bond_iter_has_next(&iter_o5)) {
-                    int nbr = md_bond_iter_atom_index(&iter_o5);
-                    md_atomic_number_t z = md_atom_atomic_number(&sys->atom, nbr);
-                    if (z != MD_Z_H && nbr != nucl_atoms.c5) {
-                        is_5_term = false;
-                        break;
-                    }
-                    md_bond_iter_next(&iter_o5);
-                }
-                if (is_5_term) {
-                    topo_floodfill_flag(sys, nucl_atoms.o5, nucl_atoms.c5, MD_FLAG_TERMINAL_BEG);
-                    sys->component.flags[comp_idx] |= MD_FLAG_TERMINAL_BEG;
-                }
+                md_array_push(ambigous_nucleotide_indices, (int)comp_idx, temp_alloc);
+                goto done;
             }
-
-            goto done;
-        } else if (md_util_resname_nucleotide(comp_name)) {
-            sys->component.flags[comp_idx] |= MD_FLAG_NUCLEOTIDE;
-            md_array_push(ambigous_nucleotide_indices, (int)comp_idx, temp_alloc);
-            goto done;
         }
 
         if (((len == 1 || len == 3) && md_util_resname_water(comp_name)) ||
@@ -8556,7 +8558,7 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 bool md_util_system_pbc(md_system_t* sys) {
     ASSERT(sys);
 
-	md_flags_t cell_flags = sys->unitcell.flags;
+	md_unitcell_flags_t cell_flags = sys->unitcell.flags;
 
     if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
         vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
@@ -8702,7 +8704,7 @@ bool md_util_system_unwrap(md_system_t* sys) {
 	float* y = sys->atom.y;
 	float* z = sys->atom.z;
 
-    md_flags_t cell_flags = sys->unitcell.flags;
+    md_unitcell_flags_t cell_flags = sys->unitcell.flags;
     if (cell_flags & MD_UNITCELL_ORTHO) {
         vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
         for (size_t i = 0; i < num_structures; ++i) {
@@ -9039,7 +9041,7 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_molecule_postprocess(md_system_t* sys, md_allocator_i* alloc, md_util_postprocess_flags_t flags) {
+bool md_util_system_postprocess(md_system_t* sys, md_allocator_i* alloc, md_postprocess_flags_t flags) {
     ASSERT(sys);
     ASSERT(alloc);
 

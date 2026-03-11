@@ -18,7 +18,7 @@ UTEST(filter, centered) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     ASSERT_TRUE(md_gro_system_loader()->init_from_file(&mol, gro_file, NULL, alloc));
-    ASSERT_TRUE(md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL));
+    ASSERT_TRUE(md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL));
     
     md_bitfield_t bf = md_bitfield_create(alloc);
     char err[256];
