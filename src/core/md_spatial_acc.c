@@ -1758,7 +1758,86 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     FLUSH_TAIL_PAIR();
 }
 
-static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const double aabb_min[3], const double aabb_max[3], md_spatial_acc_point_callback_t callback, void* user_param) {
+static inline void cell_range_from_aabb_center_radius(
+    int cmin_out[3],                 // inclusive
+    int cmax_out[3],                 // exclusive (loop while ic < cmax)
+    const double center[3],          // cartesian center
+    const double radius[3],          // cartesian half-extents
+    const md_spatial_acc_t* acc)
+{
+    const int pbc[3] = {
+        (acc->flags & MD_UNITCELL_PBC_X) != 0,
+        (acc->flags & MD_UNITCELL_PBC_Y) != 0,
+        (acc->flags & MD_UNITCELL_PBC_Z) != 0,
+    };
+
+    // 1) Fractional center (wrapped to [0,1) on periodic axes)
+    vec4_t rc = { (float)(center[0] + acc->origin[0]),
+                  (float)(center[1] + acc->origin[1]),
+                  (float)(center[2] + acc->origin[2]), 0.0f };
+
+    vec4_t fc_v = vec4_cart_to_fract(rc, acc);
+    double fc[3] = { fc_v.x, fc_v.y, fc_v.z };
+
+    for (int a = 0; a < 3; ++a) {
+        if (pbc[a]) fc[a] = fract(fc[a]);
+    }
+
+    // 2) Convert 8 corners to fractional, unwrap them near the center image, take component-wise min/max.
+    double fmin[3] = { +DBL_MAX, +DBL_MAX, +DBL_MAX };
+    double fmax[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+
+    for (int iz = 0; iz < 2; ++iz) {
+        const double z = center[2] + (iz ? +radius[2] : -radius[2]);
+        for (int iy = 0; iy < 2; ++iy) {
+            const double y = center[1] + (iy ? +radius[1] : -radius[1]);
+            for (int ix = 0; ix < 2; ++ix) {
+                const double x = center[0] + (ix ? +radius[0] : -radius[0]);
+
+                vec4_t r = { (float)(x + acc->origin[0]),
+                             (float)(y + acc->origin[1]),
+                             (float)(z + acc->origin[2]), 0.0f };
+
+                vec4_t s_v = vec4_cart_to_fract(r, acc);
+                double s[3] = { s_v.x, s_v.y, s_v.z };
+
+                // Unwrap corner into the same image as fc on periodic axes:
+                // subtract nearest integer so (s - fc) is in ~[-0.5, 0.5].
+                for (int a = 0; a < 3; ++a) {
+                    if (pbc[a]) {
+                        s[a] -= nearbyint(s[a] - fc[a]);
+                    }
+                }
+
+                for (int a = 0; a < 3; ++a) {
+                    fmin[a] = MIN(fmin[a], s[a]);
+                    fmax[a] = MAX(fmax[a], s[a]);
+                }
+            }
+        }
+    }
+
+    // 3) Convert fractional bounds to cell index bounds in the (fractional) grid.
+    for (int a = 0; a < 3; ++a) {
+        const int dim = (int)acc->cell_dim[a];
+
+        int cmin = (int)floor(fmin[a] * (double)dim);
+        int cmax = (int)ceil (fmax[a] * (double)dim);
+
+        if (cmax <= cmin) cmax = cmin + 1;  // ensure at least one cell
+
+        if (!pbc[a]) {
+            cmin = CLAMP(cmin, 0, dim);
+            cmax = CLAMP(cmax, 0, dim);
+            if (cmax <= cmin) cmax = MIN(cmin + 1, dim);
+        }
+
+        cmin_out[a] = cmin;
+        cmax_out[a] = cmax;
+    }
+}
+
+static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {
     // Allocate intermediate buffers for passing to callback
     uint32_t buf_i[SPATIAL_ACC_BUFLEN];
     float    buf_x[SPATIAL_ACC_BUFLEN];
@@ -1776,47 +1855,20 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
 
     const int pbc[3] = {acc->flags & MD_UNITCELL_PBC_X, acc->flags & MD_UNITCELL_PBC_Y, acc->flags & MD_UNITCELL_PBC_Z};
 
-    double hext[3] = {
-        (aabb_max[0] - aabb_min[0]) * 0.5f,
-        (aabb_max[1] - aabb_min[1]) * 0.5f,
-        (aabb_max[2] - aabb_min[2]) * 0.5f,
-    };
+    int cmin[3], cmax[3];
+    cell_range_from_aabb_center_radius(cmin, cmax, aabb_cen, aabb_rad, acc);
 
-    double fmin[3];
-    double fmax[3];
-    for (int i = 0; i < 3; ++i) {
-        fmin[i] = (aabb_min[i] + acc->origin[i]) * acc->I[i][i];
-        if (pbc[i]) {
-            fmin[i] = fract(fmin[i]);
-        }
-        fmax[i] = fmin[i] + hext[i] * acc->I[i][i];
-    }
-
-    // Derive cell min and max
-    int cmin[3] = {
-        (int)floor((fmin[0] * acc->A[0][0]) * acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)floor((fmin[1] * acc->A[1][1]) * acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)floor((fmin[2] * acc->A[2][2]) * acc->inv_cell_ext[2] * acc->cell_dim[2]),
+    // Fractional min coordinates to compare against
+    double fmin[3] = {
+        (aabb_cen[0] - aabb_rad[0] + acc->origin[0]),
+        (aabb_cen[1] - aabb_rad[1] + acc->origin[1]),
+        (aabb_cen[2] - aabb_rad[2] + acc->origin[2]),
     };
-    int cmax[3] = {
-        (int)ceil( (fmax[0] * acc->A[0][0]) * acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil( (fmax[1] * acc->A[1][1]) * acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil( (fmax[2] * acc->A[2][2]) * acc->inv_cell_ext[2] * acc->cell_dim[2]),
+    double fmax[3] = {
+        (aabb_cen[0] + aabb_rad[0] + acc->origin[0]),
+        (aabb_cen[1] + aabb_rad[1] + acc->origin[1]),
+        (aabb_cen[2] + aabb_rad[2] + acc->origin[2]),
     };
-
-    for (int i = 0; i < 3; ++i) {
-        if (pbc[i]) {
-            // Clip cmax - cmin to 2*cell_dim to avoid iterating over the same cell more than twice (worst case to consider the same cell in different periods)
-            int cext = cmax[i] - cmin[i];
-            cext = CLAMP(cext, 1, 2*(int)cdim[i]);
-            cmax[i] = cmin[i] + cext;
-        } else {
-            cmin[i] = MAX(cmin[i], 0);
-            int cext = cmax[i] - cmin[i];
-            cext = MAX(cext, 1);
-            cmax[i] = CLAMP(cmin[i] + cext, 1, (int)cdim[i]);
-        }
-    }
 
     const md_256 v_fminx = md_mm256_set1_ps((float)fmin[0]);
     const md_256 v_fminy = md_mm256_set1_ps((float)fmin[1]);
