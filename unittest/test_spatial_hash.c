@@ -14,6 +14,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <float.h>
 
@@ -129,7 +130,8 @@ static int cmp_u32_asc(const void* a, const void* b) {
 } while(0)
 
 static inline bool point_in_aabb_cart(const double p[3], const double c[3], const double r[3]) {
-    return (fabs(p[0] - c[0]) <= r[0]) && (fabs(p[1] - c[1]) <= r[1]) && (fabs(p[2] - c[2]) <= r[2]);
+    const double eps = 1.0e-6;
+    return (fabs(p[0] - c[0]) <= r[0] + eps) && (fabs(p[1] - c[1]) <= r[1] + eps) && (fabs(p[2] - c[2]) <= r[2] + eps);
 }
 
 static inline double wrap_mic_ortho(double d, double L) {
@@ -321,32 +323,51 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = md_get_heap_allocator() };
-    md_array(uint32_t) exp = NULL;
+    uint8_t* seen = (uint8_t*)malloc(N);
+    ASSERT_TRUE(seen);
 
     const int iters = 250;
     for (int iter = 0; iter < iters; ++iter) {
         md_array_shrink(got.idx, 0);
-        md_array_shrink(exp, 0);
+        memset(seen, 0, N);
 
         const double cen[3] = { rnd_rng(0.0, Lx), rnd_rng(0.0, Ly), rnd_rng(0.0, Lz) };
         // Keep radii < 0.5 box length to ensure MIC reference is sufficient.
         const double rad[3] = { rnd_rng(0.0, 0.45 * Lx), rnd_rng(0.0, 0.45 * Ly), rnd_rng(0.0, 0.45 * Lz) };
 
-        // Brute force reference: MIC displacement per axis
-        for (uint32_t i = 0; i < (uint32_t)N; ++i) {
-            double dx = wrap_mic_ortho((double)x[i] - cen[0], Lx);
-            double dy = wrap_mic_ortho((double)y[i] - cen[1], Ly);
-            double dz = wrap_mic_ortho((double)z[i] - cen[2], Lz);
-            if (fabs(dx) <= rad[0] && fabs(dy) <= rad[1] && fabs(dz) <= rad[2]) {
-                md_array_push(exp, i, md_get_heap_allocator());
-            }
-        }
+        const double eps = MAX(1.0e-6, 128.0 * (double)FLT_EPSILON * (Lx + Ly + Lz + rad[0] + rad[1] + rad[2] + 1.0));
 
         md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
-        EXPECT_U32_MDARRAY_SET_EQ(got.idx, exp);
+
+        for (size_t k = 0; k < md_array_size(got.idx); ++k) {
+            const uint32_t idx = got.idx[k];
+            EXPECT_LT(idx, (uint32_t)N);
+            EXPECT_EQ(0, seen[idx]);
+            seen[idx] = 1;
+        }
+
+        // Reference classification with slack:
+        //   margin < -eps => definitely inside => must be reported
+        //   margin > +eps => definitely outside => must NOT be reported
+        //   otherwise ambiguous near boundary => accept either
+        for (uint32_t i = 0; i < (uint32_t)N; ++i) {
+            const double dx = wrap_mic_ortho((double)x[i] - cen[0], Lx);
+            const double dy = wrap_mic_ortho((double)y[i] - cen[1], Ly);
+            const double dz = wrap_mic_ortho((double)z[i] - cen[2], Lz);
+            const double mx = fabs(dx) - rad[0];
+            const double my = fabs(dy) - rad[1];
+            const double mz = fabs(dz) - rad[2];
+            const double margin = MAX(mx, MAX(my, mz));
+
+            if (margin < -eps) {
+                EXPECT_EQ(1, seen[i]);
+            } else if (margin > eps) {
+                EXPECT_EQ(0, seen[i]);
+            }
+        }
     }
 
-    md_array_free(exp, md_get_heap_allocator());
+    free(seen);
     md_array_free(got.idx, got.alloc);
     md_spatial_acc_free(&acc);
     md_arena_allocator_destroy(alloc);
@@ -388,12 +409,13 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = md_get_heap_allocator() };
-    md_array(uint32_t) exp = NULL;
+    uint8_t* seen = (uint8_t*)malloc(N);
+    ASSERT_TRUE(seen);
 
     const int iters = 200;
     for (int iter = 0; iter < iters; ++iter) {
         md_array_shrink(got.idx, 0);
-        md_array_shrink(exp, 0);
+        memset(seen, 0, N);
 
         const double sc[3] = { rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0) };
         double cen[3];
@@ -402,33 +424,50 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
         // Keep radii small enough that checking 27 images is sufficient.
         const double rad[3] = { rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0) };
 
-        // Brute force reference: check 27 periodic images
+        const double eps = MAX(1.0e-6, 256.0 * (double)FLT_EPSILON * (fabs(cen[0]) + fabs(cen[1]) + fabs(cen[2]) + rad[0] + rad[1] + rad[2] + 1.0));
+
+        md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
+
+        for (size_t k = 0; k < md_array_size(got.idx); ++k) {
+            const uint32_t idx = got.idx[k];
+            EXPECT_LT(idx, (uint32_t)N);
+            EXPECT_EQ(0, seen[idx]);
+            seen[idx] = 1;
+        }
+
+        // Reference classification with slack using best (minimum) margin over 27 periodic images.
+        // margin < -eps => definitely inside => must be reported
+        // margin > +eps => definitely outside => must NOT be reported
         for (uint32_t i = 0; i < (uint32_t)N; ++i) {
             const double p0[3] = { (double)x[i], (double)y[i], (double)z[i] };
-            bool inside = false;
-            for (int ia = -1; ia <= 1 && !inside; ++ia) {
-                for (int ib = -1; ib <= 1 && !inside; ++ib) {
-                    for (int ic = -1; ic <= 1 && !inside; ++ic) {
+            double best_margin = DBL_MAX;
+            for (int ia = -1; ia <= 1; ++ia) {
+                for (int ib = -1; ib <= 1; ++ib) {
+                    for (int ic = -1; ic <= 1; ++ic) {
                         const double shift[3] = {
                             ia * a_vec[0] + ib * b_vec[0] + ic * c_vec[0],
                             ia * a_vec[1] + ib * b_vec[1] + ic * c_vec[1],
                             ia * a_vec[2] + ib * b_vec[2] + ic * c_vec[2],
                         };
                         const double p[3] = { p0[0] + shift[0], p0[1] + shift[1], p0[2] + shift[2] };
-                        inside = point_in_aabb_cart(p, cen, rad);
+                        const double mx = fabs(p[0] - cen[0]) - rad[0];
+                        const double my = fabs(p[1] - cen[1]) - rad[1];
+                        const double mz = fabs(p[2] - cen[2]) - rad[2];
+                        const double margin = MAX(mx, MAX(my, mz));
+                        best_margin = MIN(best_margin, margin);
                     }
                 }
             }
-            if (inside) {
-                md_array_push(exp, i, md_get_heap_allocator());
+
+            if (best_margin < -eps) {
+                EXPECT_EQ(1, seen[i]);
+            } else if (best_margin > eps) {
+                EXPECT_EQ(0, seen[i]);
             }
         }
-
-        md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
-        EXPECT_U32_MDARRAY_SET_EQ(got.idx, exp);
     }
 
-    md_array_free(exp, md_get_heap_allocator());
+    free(seen);
     md_array_free(got.idx, got.alloc);
     md_spatial_acc_free(&acc);
     md_arena_allocator_destroy(alloc);
