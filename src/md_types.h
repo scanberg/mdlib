@@ -43,7 +43,7 @@ typedef enum {
     MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
 } md_unitcell_flags_t;
 
-ENUM_FLAGS(md_unitcell_flags_t);
+ENUM_FLAGS(md_unitcell_flags_t)
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
@@ -85,7 +85,7 @@ typedef enum {
 //    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
 } md_flags_t;
 
-ENUM_FLAGS(md_flags_t);
+ENUM_FLAGS(md_flags_t)
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
 typedef enum {
@@ -99,7 +99,7 @@ typedef enum {
 	MD_BOND_FLAG_USER_DEFINED   = 0x80, // User defined bond
 } md_bond_flags_t;
 
-ENUM_FLAGS(md_bond_flags_t);
+ENUM_FLAGS(md_bond_flags_t)
 
 // Atomic number constants for all elements (Z values)
 enum {

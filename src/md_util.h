@@ -27,7 +27,7 @@ typedef enum {
     MD_UTIL_POSTPROCESS_ALL                 = ~0u,
 } md_postprocess_flags_t;
 
-ENUM_FLAGS(md_postprocess_flags_t);
+ENUM_FLAGS(md_postprocess_flags_t)
 
 // Access to the static arrays (preserved for direct access)
 const str_t* md_util_element_symbols(void);
