@@ -77,6 +77,23 @@ static const uint8_t element_covalent_radii_u8[] = {
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
+// Approximate ionic radii (Å ×100), mostly Shannon radii (CN≈6, common oxidation state)
+static const uint8_t element_ionic_radii_u8[] = {
+    0,
+    0,   0,  76,  45,  27,  16, 146, 140, 133,   0,
+    102,  72,  54,  40, 212, 184, 181,   0, 138, 100,
+    75,  61,  54,  62,  83,  78,  74,  69,  73,  74,
+    62,  53, 222, 198, 196,   0, 152, 118,  90,  72,
+    64,  59,  56,  68,  67,  86, 115,  95,  80,  69,
+    245, 221, 220,   0, 167, 135, 103, 101,  99,  98,
+    97,  96,  95,  94,  92,  91,  90,  89,  88,  87,
+    86,  71,  64,  60,  56,  77,  77,  80, 137, 102,
+    150, 119, 103, 230, 227,   0, 180, 148, 112,  94,
+    89, 100,  98,  96, 109, 108, 107, 106, 105, 104,
+    103, 110, 103,  78,  74,  69,  67,  66,   0,   0,
+    0, 100,   0, 120,   0, 240, 230,   0
+};
+
 // Covalent radii for elements (single, double, triple) bonds in pikometers
 // https://en.wikipedia.org/wiki/Covalent_radius
 static const uint8_t element_covalent_radii3[][3] = {
@@ -442,6 +459,11 @@ static const uint64_t element_alkali_mask[2] = {
     0x0000000000800000,
 };
 
+static const uint64_t element_transition_metal_mask[2] = {
+    0x00007FC0001FF800ULL,
+    0x0000000001FF01FFULL,
+};
+
 static const uint64_t element_alkaline_earth[2] = {
     0x0100004000101010,
     0x0000000001000000,
@@ -475,80 +497,24 @@ static inline bool name(uint32_t elem) { \
 
 GENERATE_MASK_FUNC(is_metal, element_metal_mask)
 
+GENERATE_MASK_FUNC(is_alkali, element_alkali_mask)
+
+GENERATE_MASK_FUNC(is_transition_metal, element_transition_metal_mask)
+
 GENERATE_MASK_FUNC(is_halogen, element_halogen_mask)
 
 GENERATE_MASK_FUNC(is_aromatic, element_aromatic_ring)
-
-static inline bool can_form_covalent_bond(size_t atomic_nr) {
-    // 1, 2, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 32, 33, 34, 35, 36, 51, 52, 53, 54
-    switch (atomic_nr) {
-        // Nonmetals
-        case H:
-        case C:
-        case N:
-        case O:
-        case F:
-        case P:
-        case S:
-        case Cl:
-        case Se:
-        case Br:
-        case I:
-
-        // Noble gases
-        case He:
-        case Ne:
-        case Ar:
-        case Kr:
-        case Xe:
-
-        // Metalloids
-        case B:
-        case Si:
-        case Ge:
-        case As:
-        case Sb:
-        case Te:
-
-        // Transition metals
-        case Ti:
-        case V:
-        case Cr:
-        case Mn:
-        case Fe:
-        case Co:
-        case Ni:
-        case Cu:
-        case Zn:
-        case Nb:
-        case Mo:
-        case Tc:
-        case Ru:
-        case Rh:
-        case Pd:
-        case Ag:
-        case Ta:
-        case W:
-        case Re:
-        case Os:
-        case Ir:
-        case Pt:
-        case Au:
-
-            return true;
-        default:
-            return false;
-    }
-}
 
 static inline bool is_metal_donor(size_t atomic_nr) {
     switch(atomic_nr) {
     case O:
     case N:
     case S:
+    case P:
+    case F:
     case Cl:
     case Br:
-    case F:
+    case I:
         return true;
     default:
         return false;
@@ -1649,6 +1615,10 @@ float md_util_element_vdw_radius(md_element_t element) {
 
 static inline float element_covalent_radius(md_element_t element) {
     return element < Num_Elements ? element_covalent_radii_u8[element] * 0.01f : 0;
+}
+
+static inline float element_ionic_radius(md_element_t element) {
+    return element < Num_Elements ? element_ionic_radii_u8[element] * 0.01f : 0;
 }
 
 float md_util_element_covalent_radius(md_element_t element) {
@@ -3830,17 +3800,17 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         static const float k_min   = 0.65f;
         static const float k_cov   = 1.15f;
         static const float k_tight = 1.05f;
-        static const float k_coord = 1.35f;
+        static const float k_coord = 1.30f;
         static const float k_metal = 0.90f;
 
-        double max_cov_rad = 0.0;
+        double max_atom_rad = 0.0;
 
-        float* cov_radius = md_vm_arena_push_array(temp_arena, float, num_atoms);
+        float* atom_radius = md_vm_arena_push_array(temp_arena, float, num_atoms);
         md_atomic_number_t* atomic_nr = md_vm_arena_push_array(temp_arena, md_atomic_number_t, num_atoms);
         for (size_t i = 0; i < num_atoms; ++i) {
             atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
-            cov_radius[i] = element_covalent_radius(atomic_nr[i]);
-            max_cov_rad = MAX(max_cov_rad, cov_radius[i]);            
+            atom_radius[i] = is_metal(atomic_nr[i]) ? element_ionic_radius(atomic_nr[i]) : element_covalent_radius(atomic_nr[i]);
+            max_atom_rad = MAX(max_atom_rad, atom_radius[i]);
         }
 
         int* comp_id = md_vm_arena_push_array(temp_arena, int, num_atoms);
@@ -3882,7 +3852,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         {
             // Find connections for all atoms
             cov_bond_callback_param_t param = {
-                .radius = cov_radius,
+                .radius = atom_radius,
                 .k_min = k_min,
                 .k_max = k_coord,
                 .candidates = &candidates,
@@ -3890,7 +3860,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             };
 
             // Compute a cell size based on the max cov radius within the set
-            const double cell_ext = MAX(6.0, 2.0 * max_cov_rad * k_coord);
+            const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
             md_timestamp_t ts_start = md_time_current();
@@ -3925,23 +3895,18 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             int cj = comp_id[aj];
             md_flags_t comp_flags_i = (ci >= 0) ? comp_flags[ci] : 0;
             md_flags_t comp_flags_j = (cj >= 0) ? comp_flags[cj] : 0;
-            float sum_r = cov_radius[ai] + cov_radius[aj];
+            float sum_r = atom_radius[ai] + atom_radius[aj];
 
             if (!mi && !mj) {
                 // Both non-metals, check against k_cov
-# if 0
-                const float extra = (ci >= 0 && cj >= 0 && ci == cj) ? 1.05f : 1.0f; // Slightly more lenient cutoff for intra-component bonds
-                const float d_cov = k_cov * extra * sum_r;
-#else
                 const float d_cov = k_cov * sum_r;
-#endif
                 if (d < d_cov) {
                     md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
                 }
             } else if (mi ^ mj) { // XOR here (either is metal, but not both)
-                int non_metal_e = mi ? ej : ei;
                 const float d_coord = k_coord * sum_r;
+                int non_metal_e = mi ? ej : ei;
                 bool is_water = (comp_flags_i & MD_FLAG_WATER) || (comp_flags_j & MD_FLAG_WATER);
                 if (is_metal_donor(non_metal_e) && !is_water && d < d_coord) {
                     md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
@@ -3950,12 +3915,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
                     // Coordination bond (@TODO validate by geometrical matching)
                 }
             } else {
+                // metal-metal
                 const float d_met = k_metal * sum_r;
-                // Both metals
-                if (d < d_met) {
-                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL, temp_arena);
-                    md_array_push(temp_bond_dist, d, temp_arena);
-                }
+                if (is_transition_metal(ei) && is_transition_metal(ej)) {
+                    if (d < d_met) {
+                        md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL, temp_arena);
+                        md_array_push(temp_bond_dist, d, temp_arena);
+                    }
+				}
             }
         }
 
