@@ -22,6 +22,8 @@ typedef struct {
     double d2;
 } dist_pair_t;
 
+static inline double rnd_rng(double min, double max);
+
 typedef struct spatial_acc_data_t {
     md_array(dist_pair_t)* pairs;
     md_allocator_i* alloc;
@@ -73,6 +75,66 @@ static void spatial_acc_point_count_callback(const uint32_t* idx, const float* x
     (void)z;
     uint32_t* count = (uint32_t*)user_param;
     *count += (uint32_t)num_points;
+}
+
+typedef struct spatial_acc_point_collect_t {
+    md_array(uint32_t) idx;
+    md_allocator_i* alloc;
+} spatial_acc_point_collect_t;
+
+static void spatial_acc_point_collect_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param) {
+    (void)x;
+    (void)y;
+    (void)z;
+    spatial_acc_point_collect_t* data = (spatial_acc_point_collect_t*)user_param;
+    for (size_t i = 0; i < num_points; ++i) {
+        md_array_push(data->idx, idx[i], data->alloc);
+    }
+}
+
+static int cmp_u32_asc(const void* a, const void* b) {
+    const uint32_t va = *(const uint32_t*)a;
+    const uint32_t vb = *(const uint32_t*)b;
+    return (va > vb) - (va < vb);
+}
+
+#define EXPECT_U32_SET_EQ(got_arr, exp_ptr, exp_count) do { \
+    const size_t got_count__ = md_array_size(got_arr); \
+    EXPECT_EQ((size_t)(exp_count), got_count__); \
+    if (got_count__ == (size_t)(exp_count)) { \
+        qsort((got_arr), got_count__, sizeof(uint32_t), cmp_u32_asc); \
+        for (size_t i__ = 1; i__ < got_count__; ++i__) { \
+            EXPECT_NE((got_arr)[i__ - 1], (got_arr)[i__]); \
+        } \
+        for (size_t i__ = 0; i__ < got_count__; ++i__) { \
+            EXPECT_EQ((exp_ptr)[i__], (got_arr)[i__]); \
+        } \
+    } \
+} while(0)
+
+#define EXPECT_U32_MDARRAY_SET_EQ(got_arr, exp_arr) do { \
+    const size_t got_count__ = md_array_size(got_arr); \
+    const size_t exp_count__ = md_array_size(exp_arr); \
+    EXPECT_EQ(exp_count__, got_count__); \
+    if (got_count__ == exp_count__) { \
+        qsort((got_arr), got_count__, sizeof(uint32_t), cmp_u32_asc); \
+        qsort((exp_arr), exp_count__, sizeof(uint32_t), cmp_u32_asc); \
+        for (size_t i__ = 1; i__ < got_count__; ++i__) { \
+            EXPECT_NE((got_arr)[i__ - 1], (got_arr)[i__]); \
+        } \
+        for (size_t i__ = 0; i__ < got_count__; ++i__) { \
+            EXPECT_EQ((exp_arr)[i__], (got_arr)[i__]); \
+        } \
+    } \
+} while(0)
+
+static inline bool point_in_aabb_cart(const double p[3], const double c[3], const double r[3]) {
+    return (fabs(p[0] - c[0]) <= r[0]) && (fabs(p[1] - c[1]) <= r[1]) && (fabs(p[2] - c[2]) <= r[2]);
+}
+
+static inline double wrap_mic_ortho(double d, double L) {
+    // Wrap into [-L/2, L/2] using nearest-integer convention
+    return d - round(d / L) * L;
 }
 
 static inline void dmat3_mul(double out[3][3], const double a[3][3], const double b[3][3]) {
@@ -153,6 +215,223 @@ UTEST(spatial_hash, small_periodic) {
     EXPECT_EQ(6, count);
 
     md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_hash, aabb_periodic_ortho) {
+    // Ortho periodic unit cell. Query an AABB that crosses x=0 seam.
+    // Expected: points close to x=0 and x=L are both reported.
+    float x[] = {0.10f, 9.90f, 9.80f, 5.00f};
+    float y[] = {5.00f, 5.00f, 5.00f, 5.00f};
+    float z[] = {5.00f, 5.00f, 5.00f, 5.00f};
+
+    md_unitcell_t cell = md_unitcell_from_extent(10.0, 10.0, 10.0);
+    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, ARRAY_SIZE(x));
+
+    md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+
+    spatial_acc_point_collect_t data = {
+        .idx = NULL,
+        .alloc = md_get_heap_allocator(),
+    };
+
+    const double aabb_cen[3] = {0.20, 5.00, 5.00};
+    const double aabb_rad[3] = {0.35, 0.20, 0.20};
+    md_spatial_acc_for_each_point_in_aabb(&acc, aabb_cen, aabb_rad, spatial_acc_point_collect_callback, &data);
+
+    const uint32_t exp[] = {0, 1};
+    EXPECT_U32_SET_EQ(data.idx, exp, ARRAY_SIZE(exp));
+
+    md_array_free(data.idx, data.alloc);
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_hash, aabb_periodic_triclinic) {
+    // Triclinic periodic unit cell. Query an AABB that crosses the periodic seam
+    // in fractional Y (which corresponds to a slanted shift in cartesian space).
+    const double A[3][3] = {
+        {10.0, 0.0, 0.0},
+        {3.0,  9.0, 0.0},
+        {2.0,  1.0, 8.0},
+    };
+
+    md_unitcell_t cell = md_unitcell_from_matrix_double(A);
+
+    double s0[3] = {0.50, 0.02, 0.50};
+    double s1[3] = {0.50, 0.98, 0.50};
+    double s2[3] = {0.50, 0.50, 0.50};
+
+    double x0[3];
+    double x1[3];
+    double x2[3];
+    fract_to_cart(x0, s0, A);
+    fract_to_cart(x1, s1, A);
+    fract_to_cart(x2, s2, A);
+
+    float x[3] = {(float)x0[0], (float)x1[0], (float)x2[0]};
+    float y[3] = {(float)x0[1], (float)x1[1], (float)x2[1]};
+    float z[3] = {(float)x0[2], (float)x1[2], (float)x2[2]};
+
+    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, 3);
+    md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+
+    spatial_acc_point_collect_t data = {
+        .idx = NULL,
+        .alloc = md_get_heap_allocator(),
+    };
+
+    // AABB around x0. s1 is far in cartesian, but its periodic image (shifted by -b)
+    // is close to x0 and must be reported.
+    const double aabb_cen[3] = {x0[0], x0[1], x0[2]};
+    const double aabb_rad[3] = {0.25, 0.50, 0.25};
+    md_spatial_acc_for_each_point_in_aabb(&acc, aabb_cen, aabb_rad, spatial_acc_point_collect_callback, &data);
+
+    const uint32_t exp[] = {0, 1};
+    EXPECT_U32_SET_EQ(data.idx, exp, ARRAY_SIZE(exp));
+
+    md_array_free(data.idx, data.alloc);
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
+    // Robust randomized test for periodic ortho AABB queries.
+    // Compares `md_spatial_acc_for_each_point_in_aabb` against a brute-force MIC reference.
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+
+    const double Lx = 50.0;
+    const double Ly = 60.0;
+    const double Lz = 70.0;
+    md_unitcell_t cell = md_unitcell_from_extent(Lx, Ly, Lz);
+
+    const size_t N = 4096;
+    float* x = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+    float* y = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+    float* z = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+
+    srand(1337);
+    for (size_t i = 0; i < N; ++i) {
+        x[i] = (float)rnd_rng(0.0, Lx);
+        y[i] = (float)rnd_rng(0.0, Ly);
+        z[i] = (float)rnd_rng(0.0, Lz);
+    }
+
+    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, N);
+    md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+
+    spatial_acc_point_collect_t got = { .idx = NULL, .alloc = md_get_heap_allocator() };
+    md_array(uint32_t) exp = NULL;
+
+    const int iters = 250;
+    for (int iter = 0; iter < iters; ++iter) {
+        md_array_shrink(got.idx, 0);
+        md_array_shrink(exp, 0);
+
+        const double cen[3] = { rnd_rng(0.0, Lx), rnd_rng(0.0, Ly), rnd_rng(0.0, Lz) };
+        // Keep radii < 0.5 box length to ensure MIC reference is sufficient.
+        const double rad[3] = { rnd_rng(0.0, 0.45 * Lx), rnd_rng(0.0, 0.45 * Ly), rnd_rng(0.0, 0.45 * Lz) };
+
+        // Brute force reference: MIC displacement per axis
+        for (uint32_t i = 0; i < (uint32_t)N; ++i) {
+            double dx = wrap_mic_ortho((double)x[i] - cen[0], Lx);
+            double dy = wrap_mic_ortho((double)y[i] - cen[1], Ly);
+            double dz = wrap_mic_ortho((double)z[i] - cen[2], Lz);
+            if (fabs(dx) <= rad[0] && fabs(dy) <= rad[1] && fabs(dz) <= rad[2]) {
+                md_array_push(exp, i, md_get_heap_allocator());
+            }
+        }
+
+        md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
+        EXPECT_U32_MDARRAY_SET_EQ(got.idx, exp);
+    }
+
+    md_array_free(exp, md_get_heap_allocator());
+    md_array_free(got.idx, got.alloc);
+    md_spatial_acc_free(&acc);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
+    // Robust randomized test for periodic triclinic AABB queries.
+    // Reference uses brute-force over 27 periodic images (sufficient for chosen small radii).
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+
+    const double A[3][3] = {
+        {30.0,  0.0,  0.0},
+        {10.0, 28.0,  0.0},
+        {-5.0,  7.0, 22.0},
+    };
+    md_unitcell_t cell = md_unitcell_from_matrix_double(A);
+
+    const double a_vec[3] = {A[0][0], A[0][1], A[0][2]};
+    const double b_vec[3] = {A[1][0], A[1][1], A[1][2]};
+    const double c_vec[3] = {A[2][0], A[2][1], A[2][2]};
+
+    const size_t N = 2048;
+    float* x = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+    float* y = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+    float* z = (float*)md_arena_allocator_push(alloc, N * sizeof(float));
+
+    srand(7331);
+    for (size_t i = 0; i < N; ++i) {
+        const double s[3] = { rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0) };
+        double p[3];
+        fract_to_cart(p, s, A);
+        x[i] = (float)p[0];
+        y[i] = (float)p[1];
+        z[i] = (float)p[2];
+    }
+
+    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, N);
+    md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+
+    spatial_acc_point_collect_t got = { .idx = NULL, .alloc = md_get_heap_allocator() };
+    md_array(uint32_t) exp = NULL;
+
+    const int iters = 200;
+    for (int iter = 0; iter < iters; ++iter) {
+        md_array_shrink(got.idx, 0);
+        md_array_shrink(exp, 0);
+
+        const double sc[3] = { rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0) };
+        double cen[3];
+        fract_to_cart(cen, sc, A);
+
+        // Keep radii small enough that checking 27 images is sufficient.
+        const double rad[3] = { rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0) };
+
+        // Brute force reference: check 27 periodic images
+        for (uint32_t i = 0; i < (uint32_t)N; ++i) {
+            const double p0[3] = { (double)x[i], (double)y[i], (double)z[i] };
+            bool inside = false;
+            for (int ia = -1; ia <= 1 && !inside; ++ia) {
+                for (int ib = -1; ib <= 1 && !inside; ++ib) {
+                    for (int ic = -1; ic <= 1 && !inside; ++ic) {
+                        const double shift[3] = {
+                            ia * a_vec[0] + ib * b_vec[0] + ic * c_vec[0],
+                            ia * a_vec[1] + ib * b_vec[1] + ic * c_vec[1],
+                            ia * a_vec[2] + ib * b_vec[2] + ic * c_vec[2],
+                        };
+                        const double p[3] = { p0[0] + shift[0], p0[1] + shift[1], p0[2] + shift[2] };
+                        inside = point_in_aabb_cart(p, cen, rad);
+                    }
+                }
+            }
+            if (inside) {
+                md_array_push(exp, i, md_get_heap_allocator());
+            }
+        }
+
+        md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
+        EXPECT_U32_MDARRAY_SET_EQ(got.idx, exp);
+    }
+
+    md_array_free(exp, md_get_heap_allocator());
+    md_array_free(got.idx, got.alloc);
+    md_spatial_acc_free(&acc);
+    md_arena_allocator_destroy(alloc);
 }
 
 static size_t do_brute_force_double(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const double G[3][3], const double I[3][3], md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
@@ -282,8 +561,6 @@ UTEST(spatial_hash, n2) {
             size_t bf_count = do_brute_force_double(x, y, z, TEST_COUNT, rad, G, I, &bf_pairs, alloc);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&sa, rad, spatial_acc_cutoff_callback, &usr_data);
 
-            printf("bf_count: %zu\n", bf_count);
-
             size_t sa_count = md_array_size(sa_pairs);
             //EXPECT_EQ(bf_count, sa_count);
             if (bf_count != sa_count) {
@@ -352,7 +629,7 @@ UTEST(spatial_hash, n2) {
     end = md_time_current();
     size_t sa_count = count;
     //end = md_time_current();
-    printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));
+    //printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_NEAR(expected_count, sa_count, 5);
     if (sa_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, sa_count);
@@ -363,7 +640,7 @@ UTEST(spatial_hash, n2) {
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, 5.0, spatial_acc_neighbor_callback, &count, 0);
 	end = md_time_current();
     sa_count = count;
-	printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
+	//printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
 	size_t ext_expected_count = expected_count * 2 + sys.atom.count;
 	if (sa_count != ext_expected_count) {
 		printf("Count mismatch: expected %zu, got %zu\n", ext_expected_count, sa_count);
