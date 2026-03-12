@@ -686,28 +686,13 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
-static void sort_arr_masked(int* arr, int n, int mask) {
-    bool swapped = true;
-    while (swapped) {
-        swapped = false;
-        for (int i = 0; i < n - 1; ++i) {
-            if ((arr[i] & mask) > (arr[i + 1] & mask)) {
-                int tmp = arr[i];
-                arr[i] = arr[i + 1];
-                arr[i + 1] = tmp;
-                swapped = true;
-            }
-        }
-    }
-}
-
-static void sort_arr_masked64(int64_t* arr, size_t n, int64_t mask) {
+static void sort_arr_masked64(uint64_t* arr, size_t n, uint64_t mask) {
     bool swapped = true;
     while (swapped) {
         swapped = false;
         for (size_t i = 0; i < n - 1; ++i) {
             if ((arr[i] & mask) > (arr[i + 1] & mask)) {
-                int64_t tmp = arr[i];
+                uint64_t tmp = arr[i];
                 arr[i] = arr[i + 1];
                 arr[i + 1] = tmp;
                 swapped = true;
@@ -1176,7 +1161,7 @@ static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t
 
         if (length > 0) {
             // Sort on indices
-            sort_arr_masked64((int64_t*)edge_data_arr, length, 0x00FFFFFF);
+            sort_arr_masked64(edge_data_arr, length, 0x00FFFFFF);
 
             // Note that this is not the true offset yet, only the number of local edges
             graph.edge_offset[i] = length;

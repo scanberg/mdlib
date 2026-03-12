@@ -688,7 +688,7 @@ static inline md_instance_idx_t md_instance_find_by_comp_idx(const md_instance_d
                 inst_idx = (md_instance_idx_t)i;
                 break;
             }
-            if (inst_beg > i) {
+            if (inst_beg > comp_idx) {
                 break;
             }
         }
