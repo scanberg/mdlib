@@ -3854,6 +3854,31 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             }
         }
 
+        // The component flags have not been resolved yet, so we do not know if for example if a component is a water molecule or not.
+        // There are some occasions where this is required to ensure correct bond perception.
+        md_flags_t* comp_flags = md_vm_arena_push_array(temp_arena, md_flags_t, num_comp);
+        for (size_t i = 0; i < num_comp; ++i) {
+            comp_flags[i] = md_component_flags(&sys->component, i);
+            // Check if water component (2 hydrogen + 1 oxygen)
+            size_t comp_len = md_component_atom_count(&sys->component, i);
+            if (comp_len == 3) {
+                uint32_t h_count = 0;
+                uint32_t o_count = 0;
+                md_urange_t atom_range = md_component_atom_range(&sys->component, i);
+                for (uint32_t j = atom_range.beg; j < atom_range.end; ++j) {
+                    md_element_t elem = atomic_nr[j];
+                    if (elem == H) {
+                        h_count += 1;
+                    } else if (elem == O) {
+                        o_count += 1;
+                    }
+                }
+                if (h_count == 2 && o_count == 1) {
+                    comp_flags[i] |= MD_FLAG_WATER;
+                }
+            }
+        }
+
         {
             // Find connections for all atoms
             cov_bond_callback_param_t param = {
@@ -3898,6 +3923,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             int mj = is_metal(ej);
             int ci = comp_id[ai];
             int cj = comp_id[aj];
+            md_flags_t comp_flags_i = (ci >= 0) ? comp_flags[ci] : 0;
+            md_flags_t comp_flags_j = (cj >= 0) ? comp_flags[cj] : 0;
             float sum_r = cov_radius[ai] + cov_radius[aj];
 
             if (!mi && !mj) {
@@ -3915,7 +3942,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             } else if (mi ^ mj) { // XOR here (either is metal, but not both)
                 int non_metal_e = mi ? ej : ei;
                 const float d_coord = k_coord * sum_r;
-                if (is_metal_donor(non_metal_e) && d < d_coord) {
+                bool is_water = (comp_flags_i & MD_FLAG_WATER) || (comp_flags_j & MD_FLAG_WATER);
+                if (is_metal_donor(non_metal_e) && !is_water && d < d_coord) {
                     md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
                     // Potentially strong / partially covalent if d < ~1.2
