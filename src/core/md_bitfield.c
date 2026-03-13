@@ -356,7 +356,7 @@ void md_bitfield_reserve_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t end
 }
 
 bool md_bitfield_empty(const md_bitfield_t* bf) {
-    return bf->bits == NULL || (bf->beg_bit == bf->end_bit);
+    return bf->bits == NULL || (bf->beg_bit == bf->end_bit) || md_bitfield_popcount(bf) == 0;
 }
 
 uint64_t md_bitfield_beg_bit(const md_bitfield_t* bf) {
@@ -418,6 +418,8 @@ void md_bitfield_clear(md_bitfield_t* bf) {
     if (bf->bits) {
         MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(md_bitblock_t));
     }
+    bf->beg_bit = 0;
+    bf->end_bit = 0;
 }
 
 void md_bitfield_clear_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {

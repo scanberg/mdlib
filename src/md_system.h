@@ -94,7 +94,7 @@ typedef struct md_nucleic_backbone_data_t {
 } md_nucleic_backbone_data_t;
 
 // This represents symmetries which are instanced, commonly found
-// in PDB data. It is up to the renderer to properly render this instanced data.
+// in PDB and mmcif data. It is up to the renderer to properly render this instanced data.
 typedef struct md_assembly_data_t {
     size_t count;
     md_urange_t* atom_range;
@@ -190,7 +190,7 @@ typedef struct md_system_t {
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
-    md_assembly_data_t          assembly;           // Instances of the molecule (duplications of ranges with new transforms)
+    md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
 
     str_t                       description;
 } md_system_t;

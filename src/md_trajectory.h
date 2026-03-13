@@ -6,12 +6,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-enum {
+typedef enum {
 	MD_TRAJECTORY_FLAG_NONE					= 0,
 	MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE	= 1,	
-};
+} md_trajectory_flags_t;
 
-typedef uint32_t md_trajectory_flags_t;
+ENUM_FLAGS(md_trajectory_flags_t)
 
 struct md_trajectory_o;
 
