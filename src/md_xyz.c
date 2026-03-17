@@ -446,7 +446,8 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         angle[2] = (float)parse_float(tokens[5]);
 
         md_unitcell_t cell = md_unitcell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
-        mat3_t A = md_unitcell_basis_mat3(&cell);
+        mat3_t A = { 0 };
+        md_unitcell_A_extract_float(A.elem, &cell);
         MEMCPY(model->cell, A.elem, sizeof(model->cell));
     } else if (flags & XYZ_EXTENDED) {
         // Extract cell data from line

@@ -5759,7 +5759,8 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
         if (cell->flags & MD_UNITCELL_ORTHO) {
-            vec4_t ext = md_unitcell_diag_vec4(cell);
+            vec4_t ext = { 0 };
+            md_unitcell_diag_extract_float(ext.elem, cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -5776,11 +5777,12 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
                 cov[2][2] += c.z * c.z;
             }
         } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t basis = md_unitcell_basis_mat3(cell);
+            float A[3][3] = {0};
+            md_unitcell_A_extract_float(A, cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
-                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, A);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -5840,7 +5842,8 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
         if (cell->flags & MD_UNITCELL_ORTHO) {
-            vec4_t ext = md_unitcell_diag_vec4(cell);
+            vec4_t ext = { 0 };
+            md_unitcell_diag_extract_float(ext.elem, cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -5857,11 +5860,12 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
                 cov[2][2] += c.z * c.z;
             }
         } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t basis = md_unitcell_basis_mat3(cell);
+            float A[3][3] = {0};
+            md_unitcell_A_extract_float(A, cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = in_xyzr[idx];
-                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, A);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -7958,10 +7962,13 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
 }
 
 // This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+static void com_pbc(float out_com[3], const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
 
-    mat3_t A  = md_unitcell_basis_mat3(cell);
-    mat3_t Ai = md_unitcell_inv_basis_mat3(cell);
+    mat3_t A = { 0 };
+    md_unitcell_A_extract_float(A.elem, cell);
+
+    mat3_t Ai = { 0 };
+    md_unitcell_I_extract_float(Ai.elem, cell);
 
     // Should transform cartesian coordinates to fractional coordinates and scale by 2 pi
     mat3_t M = mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai);
@@ -7984,7 +7991,7 @@ static void com_pbc(float* out_com, const float* in_x, const float* in_y, const 
     }
 }
 
-static void com_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count) {
+static void com_vec4(float out_com[3], const vec4_t* in_xyzw, const int32_t* in_idx, size_t count) {
     // Use vec4 here so we can utilize SSE vectorization if applicable
     // @TODO: Vectorize with full register width
     vec4_t acc = {0,0,0,0};
@@ -8010,7 +8017,8 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        const vec3_t ext = md_unitcell_diag_vec3(cell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         const vec4_t scl = vec4_div(vec4_set1(TWO_PI), vec4_from_vec3(ext, TWO_PI));
 
         if (in_idx) {
@@ -8051,11 +8059,14 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         }
     } else {
         ASSERT(flags & MD_UNITCELL_TRICLINIC);
-        const mat3_t A  = md_unitcell_inv_basis_mat3(cell);
-        const mat3_t Ai = md_unitcell_basis_mat3(cell);
+        mat3_t Ai = { 0 };
+        md_unitcell_I_extract_float(Ai.elem, cell);
 
-        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai));
-        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), A));
+        mat3_t A = { 0 };
+        md_unitcell_A_extract_float(A.elem, cell);
+
+        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), A));
+        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), Ai));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
@@ -8151,21 +8162,23 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a
         }
     }
     else if (cell->flags & MD_UNITCELL_ORTHO) {
-        const vec4_t box = md_unitcell_diag_vec4(cell);
+		vec4_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         for (size_t i = 0; i < len_a; ++i) {
             vec4_t a = vec4_from_vec3(coord_a[i], 0);
             for (size_t j = 0; j < len_b; ++j) {
                 vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                out_dist[i * len_b + j] = vec4_periodic_distance(a, b, box);
+                out_dist[i * len_b + j] = vec4_periodic_distance(a, b, ext);
             }
         }
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        mat3_t A = md_unitcell_basis_mat3(cell);
+        float A[3][3] = {0};
+        md_unitcell_A_extract_float(A, cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A.elem);
+                minimum_image_triclinic(dx.elem, A);
                 out_dist[i * len_b + j] = vec3_length(dx);
             }
         }
@@ -8190,12 +8203,13 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         }
     }
     else if (cell->flags & MD_UNITCELL_ORTHO) {
-        const vec4_t box = md_unitcell_diag_vec4(cell);
+        vec4_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
                 vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                const float d = vec4_periodic_distance(a, b, box);
+                const float d = vec4_periodic_distance(a, b, ext);
                 if (d < min_dist) {
                     min_dist = d;
                     min_i = i;
@@ -8204,12 +8218,13 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
             }
         }
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        const mat3_t A = md_unitcell_basis_mat3(cell);
+        float A[3][3] = {0};
+        md_unitcell_A_extract_float(A, cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A.elem);
+                minimum_image_triclinic(dx.elem, A);
                 const float d = vec3_length(dx);
                 if (d < min_dist) {
                     min_dist = d;
@@ -8244,12 +8259,13 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         }
     }
     else if (cell->flags & MD_UNITCELL_ORTHO) {
-        const vec4_t box = md_unitcell_diag_vec4(cell);
+        vec4_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
                 vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                const float d = vec4_periodic_distance(a, b, box);
+                const float d = vec4_periodic_distance(a, b, ext);
                 if (d > max_dist) {
                     max_dist = d;
                     max_i = i;
@@ -8258,12 +8274,13 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
             }
         }
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        const mat3_t A = md_unitcell_basis_mat3(cell);
+        float A[3][3] = {0};
+        md_unitcell_A_extract_float(A, cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A.elem);
+                minimum_image_triclinic(dx.elem, A);
                 const float d = vec3_length(dx);
                 if (d > max_dist) {
                     max_dist = d;
@@ -8366,7 +8383,8 @@ static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3])
 
 void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
     if (cell) {
-        vec3_t diag = md_unitcell_diag_vec3(cell);
+        vec3_t diag = { 0 };
+        md_unitcell_diag_extract_float(diag.elem, cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
@@ -8374,7 +8392,8 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t A = md_unitcell_basis_mat3(cell);
+            mat3_t A = { 0 };
+            md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
@@ -8384,7 +8403,8 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
 
 void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell) {
     if (cell) {
-        vec3_t diag = md_unitcell_diag_vec3(cell);
+        vec3_t diag = { 0 };
+        md_unitcell_diag_extract_float(diag.elem, cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
@@ -8392,7 +8412,8 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t A = md_unitcell_basis_mat3(cell);
+            mat3_t A = { 0 };
+            md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
@@ -8441,8 +8462,11 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     ASSERT(y);
     ASSERT(z);
     
-	mat3_t A = md_unitcell_basis_mat3(cell);
-	mat3_t I = md_unitcell_inv_basis_mat3(cell);
+    mat3_t A = { 0 };
+    md_unitcell_A_extract_float(A.elem, cell);
+
+    mat3_t I = { 0 };
+    md_unitcell_I_extract_float(I.elem, cell);
 
     mat4x3_t I4x3 = mat4x3_from_mat3(I);
     mat4x3_t A4x3 = mat4x3_from_mat3(A);
@@ -8474,15 +8498,23 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
 }
 
 static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
-    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
-    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
-    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
+    vec4_t mask = { 0 };
+    md_unitcell_pbc_mask_extract((int*)mask.elem, cell);
+
+	mat3_t A = { 0 };
+	md_unitcell_A_extract_float(A.elem, cell);
+
+	mat3_t I = { 0 };
+	md_unitcell_I_extract_float(I.elem, cell);
+
+    mat4x3_t A4x3 = mat4x3_from_mat3(A);
+    mat4x3_t I4x3 = mat4x3_from_mat3(I);
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = xyzw[i];
-        c = mat4x3_mul_vec4(I, c);
+        c = mat4x3_mul_vec4(I4x3, c);
         c = vec4_fract(c);
-        c = mat4x3_mul_vec4(M, c);
+        c = mat4x3_mul_vec4(A4x3, c);
         xyzw[i] = vec4_blend(xyzw[i], c, mask);
     }
 }
@@ -8500,7 +8532,8 @@ bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t co
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = md_unitcell_diag_vec3(cell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho(x, y, z, indices, count, ext);
         return true;
     } else if (flags & MD_UNITCELL_TRICLINIC) {
@@ -8526,7 +8559,8 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = md_unitcell_diag_vec3(cell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho_vec4(in_out_xyzw, count, ext);
         return true;
     } else if (flags & MD_UNITCELL_TRICLINIC) {
@@ -8545,7 +8579,8 @@ bool md_util_system_pbc(md_system_t* sys) {
 	md_unitcell_flags_t cell_flags = sys->unitcell.flags;
 
     if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
-        vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, &sys->unitcell);
         pbc_ortho(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, ext);
     } else if (md_unitcell_is_triclinic(&sys->unitcell)) {
 		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unitcell);
@@ -8595,7 +8630,9 @@ static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
 }
 
 static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    mat3_t A = md_unitcell_basis_mat3(cell);
+    mat3_t A = { 0 };
+    md_unitcell_A_extract_float(A.elem, cell);
+
     if (indices) {
         int idx = indices[0];
         vec3_t ref_pos = {x[idx], y[idx], z[idx]};
@@ -8622,7 +8659,9 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
 }
 
 static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
-    mat3_t A = md_unitcell_basis_mat3(cell);
+    mat3_t A = { 0 };
+    md_unitcell_A_extract_float(A.elem, cell);
+
     vec4_t ref_pos = xyzw[0];
     for (size_t i = 1; i < count; ++i) {
         vec4_t pos = xyzw[i];
@@ -8645,7 +8684,8 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
     }
 
     if (cell->flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = md_unitcell_diag_vec3(cell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         unwrap_ortho(x, y, z, indices, count, ext);
         return true;
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
@@ -8669,7 +8709,8 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) 
     }
 
     if (md_unitcell_is_orthorhombic(cell)) {
-        vec3_t ext = md_unitcell_diag_vec3(cell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         unwrap_ortho_vec4(xyzw, count, ext);
         return true;
     } else if (md_unitcell_is_triclinic(cell)) {
@@ -8688,9 +8729,10 @@ bool md_util_system_unwrap(md_system_t* sys) {
 	float* y = sys->atom.y;
 	float* z = sys->atom.z;
 
-    md_unitcell_flags_t cell_flags = sys->unitcell.flags;
+	md_unitcell_flags_t cell_flags = md_unitcell_flags(&sys->unitcell);
     if (cell_flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = md_unitcell_diag_vec3(&sys->unitcell);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, &sys->unitcell);
         for (size_t i = 0; i < num_structures; ++i) {
             const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
             const size_t   s_len = md_index_range_size(&sys->structure, i);
@@ -8720,14 +8762,17 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 
     if (cell->flags & MD_UNITCELL_ORTHO) {
         vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
-        vec4_t ext = md_unitcell_diag_vec4(cell);
+        vec4_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, cell);
         for (size_t i = 0; i < count; ++i) {
             const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
             xyzw[i] = pos;
         }
         return true;
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        mat3_t A = md_unitcell_basis_mat3(cell);
+        mat3_t A = { 0 };
+        md_unitcell_A_extract_float(A.elem, cell);
+
         for (size_t i = 1; i < count; ++i) {
             vec4_t pos = xyzw[i];
             deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
@@ -8824,7 +8869,8 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
     bool tricl = md_unitcell_is_triclinic(cell);
     
     if (ortho | tricl) {
-        mat3_t A = md_unitcell_basis_mat3(cell);
+        mat3_t A = { 0 };
+        md_unitcell_A_extract_float(A.elem, cell);
         for (size_t i = 0; i < count; i += 8) {
             md_256 x0[3] = {
                 md_mm256_loadu_ps(in_x[0] + i),
@@ -8891,8 +8937,10 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
 
     bool ortho = md_unitcell_is_orthorhombic(cell);
     bool tricl = md_unitcell_is_triclinic(cell);
-    mat3_t A   = md_unitcell_basis_mat3(cell);
-    mat3_t Ai  = md_unitcell_inv_basis_mat3(cell);
+    mat3_t A = { 0 };
+    md_unitcell_A_extract_float(A.elem, cell);
+    mat3_t I = { 0 };
+    md_unitcell_I_extract_float(I.elem, cell);
 
     for (size_t i = 0; i < count; i += 8) {
         md_256 x0[3] = {
@@ -8920,15 +8968,15 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
         };
 
         if (ortho) {
-            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
-            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
-            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
-            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
-            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
-            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
-            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
-            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
-            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
+            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
+            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
+            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
+            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
+            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
+            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
+            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
+            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
         } else if (tricl) {
             simd_deperiodize_triclinic(x0, x1, A.elem);
             simd_deperiodize_triclinic(x2, x1, A.elem);

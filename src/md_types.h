@@ -1,6 +1,5 @@
 ﻿#pragma once
 
-
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
@@ -25,11 +24,11 @@ enum {
 };
 
 enum {
-    MD_RAMACHANDRAN_TYPE_UNKNOWN    = 0,
-    MD_RAMACHANDRAN_TYPE_GENERAL    = 1,
-    MD_RAMACHANDRAN_TYPE_GLYCINE    = 2,
-    MD_RAMACHANDRAN_TYPE_PROLINE    = 3,
-    MD_RAMACHANDRAN_TYPE_PREPROL    = 4,
+    MD_RAMACHANDRAN_TYPE_UNKNOWN = 0,
+    MD_RAMACHANDRAN_TYPE_GENERAL,
+    MD_RAMACHANDRAN_TYPE_GLYCINE,
+    MD_RAMACHANDRAN_TYPE_PROLINE,
+    MD_RAMACHANDRAN_TYPE_PREPROL,
 };
 
 // Cell information
@@ -260,294 +259,6 @@ typedef struct md_unitcell_t {
     double z;
     md_unitcell_flags_t flags;
 } md_unitcell_t;
-
-static inline size_t md_unitcell_print(char* out_buf, size_t buf_cap, const md_unitcell_t* cell) {
-    int len = snprintf(out_buf, buf_cap, "x: %f, y: %f, z: %f \nxy: %f, xz: %f, yz: %f \nflags: %i", cell->x, cell->y, cell->z, cell->xy, cell->xz, cell->yz, cell->flags);
-    return len;
-}
-
-// constructors for unitcell
-
-static inline md_unitcell_t md_unitcell_none(void) {
-    md_unitcell_t cell = {0};
-    return cell;
-}
-
-static inline md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {
-    md_unitcell_flags_t flags = MD_UNITCELL_NONE;
-
-    if (xy == 0.0 && xz == 0.0 && yz == 0.0) {
-        if (!(x == 0.0 && y == 0.0 && z == 0.0) && !(x == 1.0 && y == 1.0 && z == 1.0)) {
-            flags |= MD_UNITCELL_ORTHO;
-        }
-    } else {
-        flags |= MD_UNITCELL_TRICLINIC;
-    }
-
-    if (flags) {
-        if (x != 0.0) flags |= MD_UNITCELL_PBC_X;
-        if (y != 0.0) flags |= MD_UNITCELL_PBC_Y;
-        if (z != 0.0) flags |= MD_UNITCELL_PBC_Z;
-    }
-
-    md_unitcell_t cell = {.x = x, .xy = xy, .xz = xz, .y = y, .yz = yz, .z = z, .flags = flags};
-    return cell;
-}
-
-static inline md_unitcell_t md_unitcell_from_extent(double x, double y, double z) {
-    return md_unitcell_from_basis_parameters(x, y, z, 0, 0, 0);    
-}
-
-static inline void md_unitcell_extract_extent_angles(double* out_a, double* out_b, double* out_c, double* out_alpha, double* out_beta, double* out_gamma, const md_unitcell_t* cell) {
-    if (!cell) {
-        if (out_a) *out_a = 0;
-        if (out_b) *out_b = 0;
-        if (out_c) *out_c = 0;
-        if (out_alpha) *out_alpha = 0;
-        if (out_beta) *out_beta = 0;
-        if (out_gamma) *out_gamma = 0;
-        return;
-    }
-
-    double a = cell->x;
-    double b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
-    double c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
-
-    double alpha = RAD_TO_DEG(acos((cell->yz * cell->xy - cell->y * cell->xz) / (b * c)));
-    double beta  = RAD_TO_DEG(acos((cell->xz) / c));
-    double gamma = RAD_TO_DEG(acos((cell->xy) / b));
-
-    if (out_a) *out_a = a;
-    if (out_b) *out_b = b;
-    if (out_c) *out_c = c;
-    if (out_alpha) *out_alpha = alpha;
-    if (out_beta) *out_beta = beta;
-    if (out_gamma) *out_gamma = gamma;
-}
-
-static inline void md_unitcell_extract_basis_parameters(double* out_x, double* out_y, double* out_z, double* out_xy, double* out_xz, double* out_yz, const md_unitcell_t* cell) {
-    if (!cell) {
-        if (out_x) *out_x = 0;
-        if (out_y) *out_y = 0;
-        if (out_z) *out_z = 0;
-        if (out_xy) *out_xy = 0;
-        if (out_xz) *out_xz = 0;
-        if (out_yz) *out_yz = 0;
-        return;
-    }
-    if (out_x) *out_x = cell->x;
-    if (out_y) *out_y = cell->y;
-    if (out_z) *out_z = cell->z;
-    if (out_xy) *out_xy = cell->xy;
-    if (out_xz) *out_xz = cell->xz;
-    if (out_yz) *out_yz = cell->yz;
-}
-
-// From here: https://www.arianarab.com/post/crystal-structure-software
-// Assumes that all input angles (alpha, beta, gamma) are given in degrees
-static inline md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
-    if (a == 0 && b == 0 && c == 0 && alpha == 0 && beta == 0 && gamma == 0) {
-        return md_unitcell_none();
-    }
-
-    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
-        return md_unitcell_from_basis_parameters(a, b, c, 0, 0, 0);
-    }
-
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
-
-    // https://docs.lammps.org/Howto_triclinic.html
-    double x = a;
-    double xy = b * cos(gamma);
-    double xz = c * cos(beta);
-    double y  = b * sin(gamma);
-    double yz = (b * c * cos(alpha) - xy * xz) / y;
-    double z = sqrt(c * c - xz * xz - yz * yz);
-
-    return md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-}
-
-// Construct unitcell from float matrix [3][3] (column major)
-static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
-    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
-}
-
-// Construct unitcell from double matrix [3][3] (column major)
-static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3]) {
-    return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
-}
-
-// Getters and helper functionality
-static inline uint32_t md_unitcell_flags(const md_unitcell_t* cell) {
-    if (cell) return cell->flags;
-    return 0;
-}
-
-static inline bool md_unitcell_is_triclinic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_TRICLINIC; }
-static inline bool md_unitcell_is_orthorhombic(const md_unitcell_t* cell) { return cell->flags & MD_UNITCELL_ORTHO; }
-
-static inline vec3_t md_unitcell_diag_vec3(const md_unitcell_t* cell) {
-    if (cell) return vec3_set((float)cell->x, (float)cell->y, (float)cell->z);
-    return vec3_zero();
-}
-
-static inline vec4_t md_unitcell_diag_vec4(const md_unitcell_t* cell) {
-    if (cell) return vec4_set((float)cell->x, (float)cell->y, (float)cell->z, 0);
-    return vec4_zero();
-}
-
-// returns the unit_cell basis matrix (A)
-static inline mat3_t md_unitcell_basis_mat3(const md_unitcell_t* cell) {
-    if (cell) {
-        mat3_t A = {(float)cell->x, 0, 0, (float)cell->xy, (float)cell->y, 0, (float)cell->xz, (float)cell->yz, (float)cell->z};
-        return A;
-    }
-    return mat3_ident();
-}
-
-// returns the unit_cell basis matrix (A) as mat4
-static inline mat4_t md_unitcell_basis_mat4(const md_unitcell_t* cell) {
-    if (cell) {
-        mat4_t A = {
-            (float)cell->x, 0, 0, 0,
-            (float)cell->xy, (float)cell->y, 0, 0,
-            (float)cell->xz, (float)cell->yz, (float)cell->z, 0,
-            0, 0, 0, 0
-        };
-        return A;
-    }
-    return mat4_ident();
-}
-
-// extracts unit_cell basis matrix A in the convention A[col][row]
-// (basis vectors a,b,c are columns: A[0]=a, A[1]=b, A[2]=c)
-static inline void md_unitcell_basis_extract(double out_A[3][3], const md_unitcell_t* cell) {
-    if (cell) {
-        out_A[0][0] = cell->x;
-        out_A[0][1] = 0;
-        out_A[0][2] = 0;
-        out_A[1][0] = cell->xy;
-        out_A[1][1] = cell->y;
-        out_A[1][2] = 0;
-        out_A[2][0] = cell->xz;
-        out_A[2][1] = cell->yz;
-        out_A[2][2] = cell->z;
-    }
-}
-
-// extracts the unit_cell inverse basis matrix inv(A) in the convention Ai[col][row]
-static inline mat3_t md_unitcell_inv_basis_mat3(const md_unitcell_t* cell) {
-    if (cell) {
-        if (!cell->flags) {
-            mat3_t zero = {0};
-            return zero;
-        }
-        const double i11 = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
-        const double i22 = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
-        const double i33 = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
-        const double i12 = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
-        const double i13 = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
-        const double i23 = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
-
-        mat3_t Ai = {
-            (float)i11, 0,          0,
-            (float)i12, (float)i22, 0,
-            (float)i13, (float)i23, (float)i33
-        };
-        return Ai;
-    }
-    return mat3_ident();
-}
-
-// extracts the unit_cell inverse basis matrix (A^i)
-static inline void md_unitcell_inv_basis_extract(double out_Ai[3][3], const md_unitcell_t* cell) {
-    if (cell) {
-        if (!cell->flags) {
-            MEMSET(out_Ai, 0, sizeof(double) * 9);
-            return;
-        }
-
-        const double i11 = cell->x > 0.0 ? 1.0 / cell->x : 0.0;
-        const double i22 = cell->y > 0.0 ? 1.0 / cell->y : 0.0;
-        const double i33 = cell->z > 0.0 ? 1.0 / cell->z : 0.0;
-        const double i12 = (cell->x * cell->y) > 0.0 ? -cell->xy / (cell->x * cell->y) : 0.0;
-        const double i13 = (cell->x * cell->y * cell->z) > 0.0 ? (cell->xy * cell->yz - cell->xz * cell->y) / (cell->x * cell->y * cell->z) : 0.0;
-        const double i23 = (cell->y * cell->z) > 0.0 ? -cell->yz / (cell->y * cell->z) : 0.0;
-
-        out_Ai[0][0] = i11; out_Ai[0][1] = 0.0; out_Ai[0][2] = 0.0;
-        out_Ai[1][0] = i12; out_Ai[1][1] = i22; out_Ai[1][2] = 0.0;
-        out_Ai[2][0] = i13; out_Ai[2][1] = i23; out_Ai[2][2] = i33;
-    }
-}
-// returns the unitcell metric tensor G=(A^T)A
-static inline mat3_t md_unitcell_G_mat3(const md_unitcell_t* cell) {
-    if (cell) {
-        const double x  = cell->x;
-        const double xy = cell->xy;
-        const double xz = cell->xz;
-        const double y  = cell->y;
-        const double yz = cell->yz;
-        const double z  = cell->z;
-
-        // Basis vectors (cartesian):
-        // a = (x,  0,  0)
-        // b = (xy, y,  0)
-        // c = (xz, yz, z)
-        //
-        // A = [a b c]  (columns), so metric is G = A^T A
-        const double g00 = x * x;
-        const double g01 = x * xy;
-        const double g02 = x * xz;
-        const double g11 = xy * xy + y * y;
-        const double g12 = xy * xz + y * yz;
-        const double g22 = xz * xz + yz * yz + z * z;
-
-        mat3_t G = {
-            (float)g00, (float)g01, (float)g02,
-            (float)g01, (float)g11, (float)g12,
-            (float)g02, (float)g12, (float)g22
-        };
-        return G;
-    }
-    return mat3_ident();
-}
-
-// extracts the unitcell metric tensor G=(A^T)A
-static inline void md_unitcell_G_extract(double out_G[3][3], const md_unitcell_t* cell) {
-    if (cell) {
-        const double x  = cell->x;
-        const double xy = cell->xy;
-        const double xz = cell->xz;
-        const double y  = cell->y;
-        const double yz = cell->yz;
-        const double z  = cell->z;
-
-        out_G[0][0] = x * x;
-        out_G[0][1] = x * xy;
-        out_G[0][2] = x * xz;
-
-        out_G[1][0] = out_G[0][1];
-        out_G[1][1] = xy * xy + y * y;
-        out_G[1][2] = xy * xz + y * yz;
-
-        out_G[2][0] = out_G[0][2];
-        out_G[2][1] = out_G[1][2];
-        out_G[2][2] = xz * xz + yz * yz + z * z;
-    }
-}
-
-// Create a vec4 mask which represents the periodic dimensions from a unit cell.
-// I.e. [0,1,1,0] -> periodic in y and z, but not x
-static inline vec4_t md_unitcell_pbc_mask_vec4(const md_unitcell_t* unit_cell) {
-    float val;
-    MEMSET(&val, 0xFF, sizeof(val));
-    return vec4_set((unit_cell->flags & MD_UNITCELL_PBC_X) ? val : 0, (unit_cell->flags & MD_UNITCELL_PBC_Y) ? val : 0,
-                    (unit_cell->flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
-}
-
-static inline uint32_t md_unit_cell_flags(const md_unitcell_t* unit_cell) { return unit_cell->flags; }
 
 typedef struct md_atom_pair_t {
     md_atom_idx_t idx[2];
@@ -789,3 +500,277 @@ static inline void md_index_data_merge(md_index_data_t* dest, const md_index_dat
         dest_num_indices += range_size;
     }
 }
+
+
+// Atom coordinate helper functions
+
+#define MD_COORD_CHUNK_SIZE 4
+
+// Store atom coordinates in chunks of 4 to strike a good balance between cache locality for fetching individual atoms and SIMD processing
+typedef struct md_coord_chunk_t {
+    ALIGNAS(16) float x[MD_COORD_CHUNK_SIZE], y[MD_COORD_CHUNK_SIZE], z[MD_COORD_CHUNK_SIZE];
+} md_coord_chunk_t;
+
+// This represents the atom coordinates for a given state (frame) of the system.
+typedef struct md_atom_coord_data_t {
+    size_t num_chunks;
+    md_coord_chunk_t* chunks;
+} md_atom_coord_data_t;
+
+// This represents the transient portion of a system which change over time, such as the atom coordinates, bonds, etc.
+typedef struct md_system_state_t {
+    md_atom_coord_data_t coord;
+    md_unitcell_t unitcell;
+    // Add other dynamic properties here such as e.g. hydrogen bonds, etc. which may change over time.
+} md_system_state_t;
+
+static inline void md_atom_coord_init(md_atom_coord_data_t* coord, size_t num_atoms, md_allocator_i* alloc) {
+    ASSERT(coord);
+    ASSERT(alloc);
+    coord->num_chunks = DIV_UP(num_atoms, MD_COORD_CHUNK_SIZE);
+    md_array_resize(coord->chunks, coord->num_chunks, alloc);
+}
+
+static inline void md_atom_coord_free(md_atom_coord_data_t* coord, md_allocator_i* alloc) {
+    ASSERT(coord);
+    ASSERT(alloc);
+    if (coord->chunks) {
+        md_array_free(coord->chunks, alloc);
+        coord->chunks = NULL;
+        coord->num_chunks = 0;
+    }
+}
+
+static inline vec3_t md_atom_coord_vec3(const md_atom_coord_data_t* coord, size_t atom_idx) {
+    ASSERT(coord);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+
+    size_t chunk_idx = atom_idx >> 2;
+    size_t within_chunk_idx = atom_idx & 3;
+    if (chunk_idx < coord->num_chunks) {
+        const md_coord_chunk_t* chunk = &coord->chunks[chunk_idx];
+        return vec3_set(chunk->x[within_chunk_idx], chunk->y[within_chunk_idx], chunk->z[within_chunk_idx]);
+    }
+    return vec3_zero();
+}
+
+static inline vec4_t md_atom_coord_vec4(const md_atom_coord_data_t* coord, float w, size_t atom_idx) {
+    ASSERT(coord);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+
+    size_t chunk_idx = atom_idx >> 2;
+    size_t within_chunk_idx = atom_idx & 3;
+    if (chunk_idx < coord->num_chunks) {
+        const md_coord_chunk_t* chunk = &coord->chunks[chunk_idx];
+        return vec4_set(chunk->x[within_chunk_idx], chunk->y[within_chunk_idx], chunk->z[within_chunk_idx], w);
+    }
+    return vec4_zero();
+}
+
+static inline void md_atom_coord_set(md_atom_coord_data_t* coord, size_t atom_idx, float x, float y, float z) {
+    ASSERT(coord);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+
+    size_t chunk_idx = atom_idx >> 2;
+    size_t within_chunk_idx = atom_idx & 3;
+    if (chunk_idx < coord->num_chunks) {
+        md_coord_chunk_t* chunk = &coord->chunks[chunk_idx];
+        chunk->x[within_chunk_idx] = x;
+        chunk->y[within_chunk_idx] = y;
+        chunk->z[within_chunk_idx] = z;
+    }
+}
+
+// Atom coordinate iterators (vec4_t, md_128, md_256)
+// These are useful for iterating over atom coordinates in a SIMD friendly way
+
+typedef struct md_atom_coord_iter_linear_t {
+    const md_atom_coord_data_t* coord;
+    size_t it;
+    size_t count;
+} md_atom_coord_iter_linear_t;
+
+typedef struct md_atom_coord_iter_indexed_t {
+    const md_atom_coord_data_t* coord;
+    size_t count;
+    const int32_t* idx;
+    size_t it;
+} md_atom_coord_iter_indexed_t;
+
+static inline md_atom_coord_iter_linear_t md_atom_coord_iter_linear_create(const md_atom_coord_data_t* coord, size_t count) {
+    ASSERT(coord);
+    md_atom_coord_iter_linear_t iter = {
+        .coord = coord,
+        .it = 0,
+        .count = count,
+    };
+    return iter;
+}
+
+static inline md_atom_coord_iter_indexed_t md_atom_coord_iter_indexed_create(const md_atom_coord_data_t* coord, const int32_t* idx, size_t count) {
+    ASSERT(coord);
+    ASSERT(idx);
+    md_atom_coord_iter_indexed_t iter = {
+        .coord = coord,
+        .count = count,
+        .idx = idx,
+        .it = 0,
+    };
+    return iter;
+}
+
+static inline bool md_atom_coord_iter_linear_next_xyz(float* out_xyz, md_atom_coord_iter_linear_t* iter) {
+    ASSERT(iter);
+    ASSERT(out_xyz);
+    if (iter->it < iter->count) {
+        size_t idx = iter->it;
+        size_t chunk_idx = idx >> 2;
+        size_t within_chunk_idx = idx & 3;
+        ASSERT(chunk_idx < iter->coord->num_chunks);
+        const md_coord_chunk_t* chunk = &iter->coord->chunks[chunk_idx];
+        out_xyz[0] = chunk->x[within_chunk_idx];
+        out_xyz[1] = chunk->y[within_chunk_idx];
+        out_xyz[2] = chunk->z[within_chunk_idx];
+        iter->it++;
+        return true;
+    }
+    return false;
+}
+
+static inline bool md_atom_coord_iter_indexed_next_xyz(float* out_xyz, md_atom_coord_iter_indexed_t* iter) {
+    ASSERT(iter);
+    ASSERT(out_xyz);
+    if (iter->it < iter->count) {
+        int idx = iter->idx[iter->it];
+        int chunk_idx = idx / 4;
+        int within_chunk_idx = idx % 4;
+        ASSERT(0 <= chunk_idx && chunk_idx < iter->coord->num_chunks);
+        const md_coord_chunk_t* chunk = &iter->coord->chunks[chunk_idx];
+        out_xyz[0] = chunk->x[within_chunk_idx];
+        out_xyz[1] = chunk->y[within_chunk_idx];
+        out_xyz[2] = chunk->z[within_chunk_idx];
+        iter->it++;
+        return true;
+    }
+    return false;
+}
+
+// Returns number of valid lanes [0..4]. Assumes coordinate data is padded so loads are always safe.
+// The caller uses the returned lane count for tail handling.
+static inline int md_atom_coord_iter_linear_next_chunk_128(md_128* out_x, md_128* out_y, md_128* out_z,
+    md_atom_coord_iter_linear_t* iter) {
+    ASSERT(iter && out_x && out_y && out_z);
+
+    if (iter->it >= iter->count) {
+        return 0;
+    }
+
+    ASSERT((iter->it & 3) == 0); // chunk aligned (since offsets are disallowed)
+
+    const size_t remaining = iter->count - iter->it;
+    const int lanes = MIN(4, (int)remaining);
+
+    const size_t chunk_idx = iter->it >> 2;
+    ASSERT(chunk_idx < iter->coord->num_chunks);
+    const md_coord_chunk_t* c = &iter->coord->chunks[chunk_idx];
+
+    // Always safe due to padding (even for lanes < 4)
+    *out_x = md_mm_load_ps(c->x);
+    *out_y = md_mm_load_ps(c->y);
+    *out_z = md_mm_load_ps(c->z);
+
+    iter->it += 4;
+    return lanes;
+}
+
+static inline int md_atom_coord_iter_linear_next_chunk_256(md_256* out_x, md_256* out_y, md_256* out_z,
+    md_atom_coord_iter_linear_t* iter) {
+    ASSERT(iter && out_x && out_y && out_z);
+
+    if (iter->it >= iter->count) {
+        return 0;
+    }
+
+    ASSERT((iter->it & 7) == 0); // 8-wide aligned
+    const size_t remaining = iter->count - iter->it;
+    const int lanes = MIN(8, (int)remaining);
+
+    // Two 128-bit chunks (each chunk is 4 atoms)
+    const size_t chunk_idx0 = iter->it >> 2;        // /4
+    const size_t chunk_idx1 = chunk_idx0 + 1;
+
+    ASSERT(chunk_idx1 < iter->coord->num_chunks);   // requires padding for the +1 read
+    const md_coord_chunk_t* c0 = &iter->coord->chunks[chunk_idx0];
+    const md_coord_chunk_t* c1 = &iter->coord->chunks[chunk_idx1];
+
+    // Equivalent to _mm256_loadu2_m128(high, low):
+    // low  128 = c0.{x,y,z}, high 128 = c1.{x,y,z}
+    const md_128 x0 = md_mm_load_ps(c0->x);
+    const md_128 y0 = md_mm_load_ps(c0->y);
+    const md_128 z0 = md_mm_load_ps(c0->z);
+
+    const md_128 x1 = md_mm_load_ps(c1->x);
+    const md_128 y1 = md_mm_load_ps(c1->y);
+    const md_128 z1 = md_mm_load_ps(c1->z);
+
+    *out_x = simde_mm256_set_m128(x1, x0);
+    *out_y = simde_mm256_set_m128(y1, y0);
+    *out_z = simde_mm256_set_m128(z1, z0);
+
+    iter->it += 8;
+    return lanes;
+}
+
+static inline int md_atom_coord_iter_indexed_next_chunk_128(md_128* out_x, md_128* out_y, md_128* out_z,
+    md_atom_coord_iter_indexed_t* iter) {
+    ASSERT(iter && out_x && out_y && out_z);
+
+    if (iter->it >= iter->count) return 0;
+
+    const int remaining = (int)iter->count - (int)iter->it;
+    const int lanes = MIN(4, remaining);
+
+    // Base for gathers: treat the entire `chunks` array as a flat float array.
+    const float* base = (const float*)&iter->coord->chunks[0].x[0];
+    ASSERT(sizeof(md_coord_chunk_t) / sizeof(float) == 12); // x[4],y[4],z[4] => 12 floats
+
+    md_128i a;
+
+    if (remaining >= 4) {
+        // Fast path: we can safely read 4 indices
+        a = md_mm_loadu_si128((const md_128i*)(iter->idx + iter->it));
+    } else {
+        // Tail: construct a 4-wide index vector using a sentinel atom index in unused lanes.
+        const size_t last_idx = iter->count - 1;
+        a = md_mm_set_epi32(
+            iter->idx[MIN(iter->it + 3, last_idx)],
+            iter->idx[MIN(iter->it + 2, last_idx)],
+            iter->idx[MIN(iter->it + 1, last_idx)],
+            iter->idx[iter->it]
+        );
+    }
+
+    // base offset is computed using shifts and additions rather than multiplication
+    md_128i lane = simde_mm_and_si128(a, simde_mm_set1_epi32(3));
+
+    // three_a = 3*a = a + 2*a
+    md_128i two_a   = simde_mm_slli_epi32(a, 1);
+    md_128i three_a = simde_mm_add_epi32(two_a, a);
+
+    // base_off = 3*a - 2*lane
+    md_128i two_lane = simde_mm_slli_epi32(lane, 1);
+    md_128i base_off = simde_mm_sub_epi32(three_a, two_lane);
+
+    md_128i off_x = simde_mm_add_epi32(base_off, simde_mm_set1_epi32(0));
+    md_128i off_y = simde_mm_add_epi32(base_off, simde_mm_set1_epi32(4));
+    md_128i off_z = simde_mm_add_epi32(base_off, simde_mm_set1_epi32(8));
+
+    *out_x = md_mm_i32gather_ps(base, off_x, 4);
+    *out_y = md_mm_i32gather_ps(base, off_y, 4);
+    *out_z = md_mm_i32gather_ps(base, off_z, 4);
+
+    iter->it += lanes;
+    return lanes;
+}
+
+#include <md_unitcell.inl>

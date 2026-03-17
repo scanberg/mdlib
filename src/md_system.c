@@ -225,21 +225,6 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
     free(local_offset);
 }
 
-void md_atom_coordinate_init(md_atom_coordinate_data_t* coord, size_t num_atoms, md_allocator_i* alloc) {
-    coord->num_chunks = (num_atoms + 3) / 4;
-    md_array_resize(coord->chunks, coord->num_chunks, alloc);
-}
-
-void md_atom_coordinate_free(md_atom_coordinate_data_t* coord, md_allocator_i* alloc) {
-    ASSERT(coord);
-    ASSERT(alloc);
-    if (coord->chunks) {
-        md_array_free(coord->chunks, alloc);
-        coord->chunks = NULL;
-        coord->num_chunks = 0;
-    }
-}
-
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
     ASSERT(in_out_bond);
     ASSERT(alloc);

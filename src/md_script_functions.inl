@@ -4838,7 +4838,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = tmp_bf;
         }
 
-        mat3_t A = md_unitcell_basis_mat3(&ctx->initial_configuration.header->unitcell);
+        mat3_t A;
+        md_unitcell_A_extract(A.elem, &ctx->initial_configuration.header->unitcell);
 
         // Reference point
         vec3_t rc = mat3_mul_vec3(A, vec3_set1(0.5f));
@@ -4943,7 +4944,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         }
         if (ctx->backchannel) {
             // Reference half extent
-            mat3_t A = md_unitcell_basis_mat3(unit_cell);
+            mat3_t A = { 0 };
+            md_unitcell_A_extract_float(&A, unit_cell);
             vec3_t re = vec3_mul_f(mat3_diag(A), 0.5f);
 
             // We use the max axis half ext as we cannot output three individual value_ranges
