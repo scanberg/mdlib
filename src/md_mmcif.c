@@ -992,9 +992,9 @@ static bool mmcif_init_from_str(md_system_t* sys, str_t str, const void* arg, md
 static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(filename, MD_FILE_READ);
 
-    if (file) {
+    if (md_file_valid(file)) {
         const size_t pos = md_temp_get_pos();
         const size_t cap = MEGABYTES(1);
         void* buf = md_temp_push(cap);
@@ -1004,7 +1004,7 @@ static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* a
         result = mmcif_parse(sys, &reader, alloc);
 
         md_temp_set_pos_back(pos);
-        md_file_close(file);
+        md_file_close(&file);
     }
     return result;
 }

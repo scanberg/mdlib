@@ -21,7 +21,7 @@ UTEST(xyz, xyz_standard) {
     EXPECT_NEAR(36.568f, data.coordinates[0].y, 1.0e-5f);
     EXPECT_NEAR(62.491f, data.coordinates[0].z, 1.0e-5f);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
@@ -29,7 +29,7 @@ UTEST(xyz, xyz_standard) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "2280", 4), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -63,7 +63,7 @@ UTEST(xyz, xyz_xmol) {
     EXPECT_NEAR( 1.246472f, data.coordinates[0].y, 1.0e-5f);
     EXPECT_NEAR( 3.629187f, data.coordinates[0].z, 1.0e-5f);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
@@ -71,7 +71,7 @@ UTEST(xyz, xyz_xmol) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "   540", 6), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -94,7 +94,7 @@ UTEST(xyz, xyz_tinker) {
     EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
     
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
@@ -102,7 +102,7 @@ UTEST(xyz, xyz_tinker) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "         404  molden generated tinker .xyz (mm3 param.)", 54), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -125,7 +125,7 @@ UTEST(xyz, xyz_tinker_arc) {
     EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
@@ -133,7 +133,7 @@ UTEST(xyz, xyz_tinker_arc) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "   404  molden generated tinker .xyz (mm3 param.)", 48), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -153,7 +153,7 @@ UTEST(xyz, o2_arc) {
     EXPECT_EQ(7,            data.coordinates[0].atom_type);
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
@@ -161,7 +161,7 @@ UTEST(xyz, o2_arc) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "     2", 6), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -174,7 +174,7 @@ UTEST(xyz, h2o_arc) {
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 3, data.num_coordinates);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
@@ -182,7 +182,7 @@ UTEST(xyz, h2o_arc) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "     3  molden generated tinker .xyz (mm3 param.)", 49), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
@@ -195,7 +195,7 @@ UTEST(xyz, ch4_arc) {
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 5, data.num_coordinates);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
@@ -203,7 +203,7 @@ UTEST(xyz, ch4_arc) {
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
         EXPECT_EQ(strncmp(str, "     5  molden generated tinker .xyz (mm3 param.)", 49), 0);
     }
-    md_file_close(file);
+    md_file_close(&file);
 
     md_xyz_data_free(&data, md_get_heap_allocator());
 }

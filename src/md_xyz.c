@@ -39,11 +39,10 @@ typedef struct xyz_molecule_t {
 
 typedef struct xyz_trajectory_t {
     uint64_t magic;
-    md_file_o* file;
+    md_file_t  file;
     int64_t* frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
-    md_mutex_t mutex;
     uint32_t flags;
 } xyz_trajectory_t;
 
@@ -503,7 +502,7 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     ASSERT(xyz);
     ASSERT(xyz->magic == MD_XYZ_TRAJ_MAGIC);
 
-    if (!xyz->file) {
+    if (!md_file_valid(xyz->file)) {
         MD_LOG_ERROR("File handle is NULL");
         return 0;
     }
@@ -528,12 +527,9 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
         int64_t* ptr = (int64_t*)frame_data_ptr;
         ptr[0] = frame_idx;
 
-        ASSERT(xyz->file);
-        md_mutex_lock(&xyz->mutex);
-        md_file_seek(xyz->file, beg, MD_FILE_BEG);
-        const size_t bytes_read = md_file_read(xyz->file, &ptr[1], frame_size);
+        ASSERT(md_file_valid(xyz->file));
+        const size_t bytes_read = md_file_read_at(xyz->file, beg, &ptr[1], frame_size);
         (void)bytes_read;
-        md_mutex_unlock(&xyz->mutex);
         ASSERT(frame_size == bytes_read);
     }
 
@@ -685,8 +681,8 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
 
 bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
+    md_file_t  file = md_file_open(filename, MD_FILE_READ);
+    if (md_file_valid(file)) {
         size_t temp_pos = md_temp_get_pos();
         size_t buf_cap = MEGABYTES(1);
         char* buf = md_temp_push(buf_cap);
@@ -696,7 +692,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         result = xyz_parse(data, &reader, alloc, false);
         
         md_temp_set_pos_back(temp_pos);
-        md_file_close(file);
+        md_file_close(&file);
     } else {
         MD_LOG_ERROR("Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
     }
@@ -790,8 +786,8 @@ static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg
     md_xyz_data_t data = {0};
     
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
+    md_file_t  file = md_file_open(filename, MD_FILE_READ);
+    if (md_file_valid(file)) {
         md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
         size_t buf_cap = MEGABYTES(1);
         char* buf = md_vm_arena_push(arena, buf_cap);
@@ -802,7 +798,7 @@ static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg
         result = result && md_xyz_molecule_init(mol, &data, alloc);
 
         md_vm_arena_destroy(arena);
-        md_file_close(file);
+        md_file_close(&file);
     } else {
         MD_LOG_ERROR("Init XYZ from file: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
     }
@@ -856,8 +852,8 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
+    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
+    if (md_file_valid(file)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("XYZ trajectory cache: failed to read header");
             goto done;
@@ -892,7 +888,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
 
         result = true;
     done:
-        md_file_close(file);
+        md_file_close(&file);
     }
     return result;
 }
@@ -900,8 +896,8 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (!file) {
+    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+    if (!md_file_valid(file)) {
         MD_LOG_INFO("XYZ trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
@@ -920,13 +916,13 @@ static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
     result = true;
 
 done:
-    md_file_close(file);
+    md_file_close(&file);
     return result;
 }
 
 md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t traj_flags) {
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-    if (!file) {
+    md_file_t  file = md_file_open(filename, MD_FILE_READ);
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
         return false;
     }
@@ -943,7 +939,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     int64_t filesize = md_file_size(file);
-    md_file_close(file);
+    md_file_close(&file);
 
     char buf[1024] = "";
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
@@ -1023,10 +1019,9 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
-    xyz->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    xyz->file = md_file_open(filename, MD_FILE_READ);
     xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
-    xyz->mutex = md_mutex_create();
     xyz->header = (md_trajectory_header_t) {
         .num_frames = cache.header.num_frames,
         .num_atoms = cache.header.num_atoms,
@@ -1055,8 +1050,7 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    if (xyz->file) md_file_close(xyz->file);
-    md_mutex_destroy(&xyz->mutex);
+    if (md_file_valid(xyz->file)) md_file_close(&xyz->file);
     md_arena_allocator_destroy(xyz->allocator);
 }
 

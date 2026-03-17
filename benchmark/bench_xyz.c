@@ -10,13 +10,13 @@ UBENCH_EX(xyz, xmol) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/40-40-2-ddba-dyna.xmol");
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
         return;
     }
     UBENCH_SET_BYTES(md_file_size(file));
-    md_file_close(file);
+    md_file_close(&file);
 
     UBENCH_DO_BENCHMARK() {
         md_arena_allocator_reset(alloc);

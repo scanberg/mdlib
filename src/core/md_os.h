@@ -1,14 +1,82 @@
 #pragma once
 
+#include <core/md_platform.h>
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
-#include <core/md_str.h>
-
 // Collection of OS specific things
 
 struct  md_allocator_i;
+
+// ### TIME ###
+// This represents a os specific time stamp with the highest precision available (usually nanoseconds)
+// It is possible to subtract or perform simple arithmetic directly on the timestamp then
+// Extract seconds or milliseconds from it.
+typedef int64_t md_timestamp_t;
+
+// ### THREAD ###
+typedef void (*md_thread_exit) (void *data);
+typedef void (*md_thread_entry)(void *data);
+typedef struct md_thread_t md_thread_t;
+typedef uint64_t md_thread_id_t;
+
+// ### MUTEX ###
+typedef struct md_mutex_t {
+    union {
+        void* _align;
+        char _data[64];
+    };
+} md_mutex_t;
+
+// ### Semaphore ###
+typedef struct md_semaphore_t {
+    void* _data[4];
+} md_semaphore_t;
+
+// ### FILE ###
+typedef int64_t md_file_offset_t;
+typedef int64_t md_file_time_t;
+
+typedef enum md_file_info_flags_t {
+    MD_FILE_INFO_IS_DIRECTORY = 1u << 0,
+    MD_FILE_INFO_IS_REGULAR   = 1u << 1,
+    MD_FILE_INFO_IS_READONLY  = 1u << 2,
+} md_file_info_flags_t;
+ENUM_FLAGS(md_file_info_flags_t)
+
+typedef struct md_file_info_t {
+    md_file_offset_t size;
+    md_file_time_t modified_time;
+    md_file_time_t accessed_time;
+    uint32_t flags;
+} md_file_info_t;
+
+typedef struct md_file_t {
+#if MD_PLATFORM_WINDOWS
+    void* handle;
+#elif MD_PLATFORM_UNIX
+    int fd;
+#endif
+    uint32_t flags;
+} md_file_t;
+
+typedef enum md_file_flags_t {
+    MD_FILE_READ     = 1u << 0,
+    MD_FILE_WRITE    = 1u << 1,
+    MD_FILE_APPEND   = 1u << 2,
+    MD_FILE_CREATE   = 1u << 3,
+    MD_FILE_TRUNCATE = 1u << 4,
+} md_file_flags_t;
+ENUM_FLAGS(md_file_flags_t)
+
+typedef enum md_file_seek_origin_t {
+    MD_FILE_BEG = 0,
+    MD_FILE_CUR = 1,
+    MD_FILE_END = 2,
+} md_file_seek_origin_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,52 +118,7 @@ str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_
 bool md_path_is_valid(str_t path);
 bool md_path_is_directory(str_t path);
 
-// ### FILE ###
-
-// This is directly compatible with FILE, meaning you can directly cast it to FILE
-// and use it with the standard functions
-typedef struct md_file_o md_file_o;
-
-typedef enum {
-    MD_FILE_READ   = 1,
-    MD_FILE_WRITE  = 2,
-    MD_FILE_APPEND = 4,
-    MD_FILE_BINARY = 8
-} md_file_flags_t;
-
-typedef enum {
-    MD_FILE_BEG = 0,
-    MD_FILE_CUR = 1,
-    MD_FILE_END = 2,
-} md_file_seek_origin_t;
-
-md_file_o*  md_file_open(str_t filename, uint32_t file_flags);
-void        md_file_close(md_file_o* file);
-
-bool        md_file_eof(md_file_o* file);
-int64_t     md_file_tell(md_file_o* file);
-bool        md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin);
-size_t      md_file_size(md_file_o* file);
-
-// Reads a line from the file by searching for the first occurrence of new-line character '\n'.
-// Returns the number of bytes read (up to cap-1)
-size_t      md_file_read_line(md_file_o* file, char* buf, size_t cap);
-
-// Reads multiple lines from the file by filling the buffer with as many complete lines as possible.
-// returns the number of bytes read (up to cap-1)
-size_t      md_file_read_lines(md_file_o* file, char* buf, size_t cap);
-
-size_t      md_file_read(md_file_o* file, void* ptr, size_t num_bytes);
-size_t      md_file_write(md_file_o* file, const void* ptr, size_t num_bytes);
-
-size_t      md_file_printf(md_file_o* file, const char* format, ...);
-
 // ### TIME ###
-// This represents a os specific time stamp with the highest precision available (usually nanoseconds)
-// It is possible to subtract or perform simple arithmetic directly on the timestamp then
-// Extract seconds or milliseconds from it.
-typedef int64_t md_timestamp_t;
-
 md_timestamp_t md_time_current(void);
 
 double  md_time_as_nanoseconds(md_timestamp_t t);
@@ -115,52 +138,69 @@ void	md_vm_commit  (void* ptr, size_t size);
 void	md_vm_decommit(void* ptr, size_t size);
 
 // ### THREAD ###
-typedef void (*md_thread_exit) (void *data);
-typedef void (*md_thread_entry)(void *data);
-typedef struct md_thread_t md_thread_t;
-typedef uint64_t md_thread_id_t;
-
 md_thread_t*    md_thread_create(md_thread_entry func, void* data);
 void			md_thread_detach(md_thread_t* thread);
 bool			md_thread_join(md_thread_t* thread);
 
-// Register Callbacks
+// Register callbacks.
 bool			md_thread_on_exit(md_thread_exit callback);
 
-// Get ID from supplied thread object
+// Get ID from supplied thread object.
 md_thread_id_t	md_thread_get_id(md_thread_t* thread);
 
-// Get ID of current thread
+// Get ID of current thread.
 md_thread_id_t	md_thread_id(void);
 
-// Put the current thread to sleep for a supplied number of milliseconds
+// Put the current thread to sleep for a supplied number of milliseconds.
 void			md_thread_sleep(size_t milliseconds);
 
 // ### MUTEX ###
-typedef struct md_mutex_t {
-    union {
-        void* _align;
-        char _data[64];
-    };
-} md_mutex_t;
-
 md_mutex_t md_mutex_create(void);
 bool md_mutex_init(md_mutex_t* mutex);
 bool md_mutex_destroy(md_mutex_t* mutex);
 
 bool md_mutex_lock(md_mutex_t* mutex);
-
 bool md_mutex_try_lock(md_mutex_t* mutex);
 bool md_mutex_unlock(md_mutex_t* mutex);
 
-// ### Semaphore ###
-typedef struct md_semaphore_t {
-    void* _data[4];
-} md_semaphore_t;
+// ### FILE ###
+// Open semantics:
+// - MD_FILE_APPEND implies write access and forces sequential writes to append.
+// - MD_FILE_CREATE creates the file if it does not exist.
+// - MD_FILE_TRUNCATE truncates an existing file and requires write access.
+// - MD_FILE_APPEND and MD_FILE_TRUNCATE are mutually exclusive.
+// - A zero-initialized md_file_t represents an invalid or unopened file.
+md_file_t md_file_open(str_t filename, md_file_flags_t flags);
 
+// Checks if the file handle is valid (i.e. was opened successfully)
+bool md_file_valid(md_file_t file);
+
+// Closes the file and invalidates the handle on success.
+bool md_file_close(md_file_t* file);
+
+// Queries and stream-position operations.
+bool md_file_info_extract(md_file_t file, md_file_info_t* out_info);
+bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info);
+
+md_file_offset_t md_file_tell(md_file_t file);
+md_file_offset_t md_file_size(md_file_t file);
+bool md_file_seek(md_file_t file, md_file_offset_t offset, md_file_seek_origin_t origin);
+
+// Sequential I/O. Returns the number of bytes transferred and may return less than requested.
+size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes);
+size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes);
+
+// Positional I/O. Does not modify the current file position.
+// md_file_write_at rejects handles opened with MD_FILE_APPEND because append-only and positional
+// write semantics conflict across platforms.
+size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_t num_bytes);
+size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr, size_t num_bytes);
+
+size_t md_file_printf(md_file_t file, const char* format, ...);
+
+// ### Semaphore ###
 // @NOTE: The size type does not reflect the actual size of the semaphore which is probably (int).
 // But it is used to make the API more consistent.
-
 md_semaphore_t md_semaphore_create(size_t initial_count);
 bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count);
 bool md_semaphore_destroy(md_semaphore_t* semaphore);

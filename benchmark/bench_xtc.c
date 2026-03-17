@@ -18,7 +18,7 @@ static const str_t ion_path = STR(MD_BENCHMARK_DATA_DIR "/ef.xtc");
 
 UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(cat_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(cat_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -32,7 +32,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
     //size_t num_bytes = md_file_size(file);
     UBENCH_SET_BYTES(num_bytes);
 
-    md_file_close(file);
+    md_file_close(&file);
 
     XDRFILE* xdr = xdrfile_open(cat_path.ptr, "rb");
     
@@ -58,7 +58,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
 #if FULL_TEST
 UBENCH_EX(xtc, xdr_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(amy_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(amy_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -71,7 +71,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);
     UBENCH_SET_BYTES(num_bytes);
-    md_file_close(file);
+    md_file_close(&file);
 
     XDRFILE* xdr = xdrfile_open(amy_path.ptr, "rb");
     
@@ -96,7 +96,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
 
 UBENCH_EX(xtc, xdr_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(asp_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(asp_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -109,7 +109,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);
     UBENCH_SET_BYTES(num_bytes);
-    md_file_close(file);
+    md_file_close(&file);
 
     XDRFILE* xdr = xdrfile_open(asp_path.ptr, "rb");
 
@@ -134,7 +134,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
 
 UBENCH_EX(xtc, xdr_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(ion_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(ion_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -147,7 +147,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
     size_t num_bytes = num_frames * num_atoms * 3 * sizeof(float);
     // size_t num_bytes = md_file_size(file);
     UBENCH_SET_BYTES(num_bytes);
-    md_file_close(file);
+    md_file_close(&file);
 
     XDRFILE* xdr = xdrfile_open(ion_path.ptr, "rb");
 
@@ -173,7 +173,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
 
 UBENCH_EX(xtc, xtc_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(cat_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(cat_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -215,7 +215,7 @@ UBENCH_EX(xtc, xtc_catalyst) {
 #if FULL_TEST
 UBENCH_EX(xtc, xtc_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(amy_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(amy_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -255,7 +255,7 @@ UBENCH_EX(xtc, xtc_amyloid) {
 
 UBENCH_EX(xtc, xtc_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(asp_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(asp_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -295,7 +295,7 @@ UBENCH_EX(xtc, xtc_aspirin) {
 
 UBENCH_EX(xtc, xtc_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    md_file_o* file = md_file_open(ion_path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(ion_path, MD_FILE_READ);
 
     if (!file) {
         MD_LOG_ERROR("Bad");

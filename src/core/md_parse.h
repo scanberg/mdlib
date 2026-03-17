@@ -53,8 +53,8 @@ static inline int64_t find_char(const char* ptr, int64_t len, char character) {
 */
 
 // Attempts to read complete lines from a file (As many that can fit into buf with given capacity)
-static inline size_t md_parse_read_lines(md_file_o* file, char* buf, size_t cap) {
-    if (!file || !buf || cap < 1) return 0;
+static inline size_t md_parse_read_lines(md_file_t  file, char* buf, size_t cap) {
+    if (!md_file_valid(file) || !buf || cap < 1) return 0;
     size_t len = md_file_read(file, buf, cap);
     if (len == cap) {
         size_t loc;
@@ -73,12 +73,12 @@ typedef struct md_buffered_reader_t {
     str_t   str;
     char*   buf;
     size_t  cap;
-    md_file_o* file;
+    md_file_t  file;
 } md_buffered_reader_t;
 
-static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_o* file) {
+static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_t  file) {
     ASSERT(buf);
-    ASSERT(file);
+    ASSERT(md_file_valid(file));
     
     md_buffered_reader_t lr = {
         .str = {0, 0},
@@ -94,13 +94,14 @@ static inline md_buffered_reader_t md_buffered_reader_from_str(str_t str) {
     md_buffered_reader_t reader = {
         .str = str,
         .cap = str.len,
+        .file = {0},
     };
     return reader;
 }
 
 static inline void md_buffered_reader_ensure_lines(md_buffered_reader_t* r) {
     ASSERT(r);
-    if (r->file && !r->str.len) {
+    if (md_file_valid(r->file) && !r->str.len) {
         ASSERT(r->buf);
         const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
@@ -132,7 +133,7 @@ static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
 
 static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
     ASSERT(r);
-    if (r->file) {
+    if (md_file_valid(r->file)) {
         md_file_seek(r->file, 0, MD_FILE_BEG);
         r->str.ptr = NULL;
         r->str.len = 0;
@@ -170,7 +171,7 @@ static inline void md_buffered_reader_seekg(md_buffered_reader_t* r, int64_t pos
 
 // Gets the current position within the buffer
 static inline int64_t md_buffered_reader_tellg(const md_buffered_reader_t* r) {
-    if (r->file) {
+    if (md_file_valid(r->file)) {
         return md_file_tell(r->file) - r->str.len;
     } else {
         return r->cap - r->str.len;

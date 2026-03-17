@@ -12,7 +12,7 @@
 #endif
 
 // Secondary structure types (DSSP-like)
-enum {
+typedef enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
     MD_SECONDARY_STRUCTURE_COIL,
     MD_SECONDARY_STRUCTURE_TURN,
@@ -22,7 +22,7 @@ enum {
     MD_SECONDARY_STRUCTURE_HELIX_PI,
     MD_SECONDARY_STRUCTURE_BETA_SHEET,
     MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
-};
+} md_secondary_structure_t;
 
 enum {
     MD_RAMACHANDRAN_TYPE_UNKNOWN    = 0,
@@ -233,11 +233,8 @@ typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint16_t    md_atom_type_idx_t;
-typedef uint32_t    md_secondary_structure_t;
-//typedef uint32_t    md_flags_t;
 typedef uint8_t     md_atomic_number_t;
 typedef uint8_t     md_ramachandran_type_t;
-typedef uint8_t     md_valence_t;
 typedef uint8_t     md_order_t;
 
 // For backwards compatibility
@@ -267,7 +264,6 @@ static inline size_t md_unitcell_print(char* out_buf, size_t buf_cap, const md_u
 }
 
 // constructors for unitcell
-
 static inline md_unitcell_t md_unitcell_none(void) {
     md_unitcell_t cell = {0};
     return cell;

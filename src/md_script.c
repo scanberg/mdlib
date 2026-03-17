@@ -1918,7 +1918,7 @@ static void print_data_value(FILE* file, data_t data) {
 }
 */
 
-static void print_label(md_file_o* file, const ast_node_t* node) {
+static void print_label(md_file_t  file, const ast_node_t* node) {
     char buf[1024];
     switch(node->type) {
     case AST_CONSTANT_VALUE:
@@ -1987,13 +1987,13 @@ static void print_label(md_file_o* file, const ast_node_t* node) {
 }
 
 
-static inline void indent(md_file_o* file, int amount) {
+static inline void indent(md_file_t  file, int amount) {
     for (int i = 0; i < amount; ++i) {
         md_file_printf(file, "\t");
     }
 }
 
-static void print_node(md_file_o* file, const ast_node_t* node, int depth) {
+static void print_node(md_file_t  file, const ast_node_t* node, int depth) {
     if (!node || !file) return;
 
     indent(file, depth);
@@ -2016,7 +2016,7 @@ static void print_node(md_file_o* file, const ast_node_t* node, int depth) {
     md_file_printf(file, "},\n");
 }
 
-static void print_expr(md_file_o* file, str_t str) {
+static void print_expr(md_file_t  file, str_t str) {
     // We need to add escape character to quotation marks, since they are not representable within a json string...
     char buf[1024] = {0};
     int len = 0;
@@ -2040,9 +2040,9 @@ static void print_expr(md_file_o* file, str_t str) {
 }
 
 static void ast_to_json(const ast_node_t* node, str_t filename) {
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+    md_file_t  file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
 
-    if (file && node) {
+    if (md_file_valid(file) && node) {
         md_file_printf(file, "var treeData = [\n");
         md_file_printf(file, "{\n\"node\" :\n");
         print_node(file, node, 1);
@@ -2051,7 +2051,7 @@ static void ast_to_json(const ast_node_t* node, str_t filename) {
         print_expr(file, node->token.str);
         md_file_printf(file, "},\n");
         md_file_printf(file, "];");
-        md_file_close((md_file_o*)file);
+        md_file_close(&file);
     }
 }
 

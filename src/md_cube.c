@@ -49,7 +49,7 @@ bool md_cube_valid(const md_cube_t* cube) {
 	return true;
 }
 
-static bool open_file(md_file_o* file, str_t path) {
+static bool open_file(md_file_t* file, str_t path) {
 	ASSERT(file);
 
 	if (str_empty(path)) {
@@ -57,8 +57,8 @@ static bool open_file(md_file_o* file, str_t path) {
 		return false;
 	}
 
-	file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-	if (!file) {
+	*file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+	if (!md_file_valid(*file)) {
 		MD_LOG_ERROR("CUBE: Could not open file: '%.*s'", path.len, path.ptr);
 		return false;
 	}
@@ -256,15 +256,15 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 		return false;
 	}
 
-	md_file_o* file = NULL;
+	md_file_t file = {0};
 	bool success = false;
-	if (open_file(file, path)) {
+	if (open_file(&file, path)) {
 		str_t str = md_cube_serialize(cube, md_get_heap_allocator());
         if (!str_empty(str)) {
 			success = md_file_write(file, str_ptr(str), str_len(str)) == str_len(str);
 			str_free(str, md_get_heap_allocator());
         }
-		md_file_close(file);
+		md_file_close(&file);
 	}
 	
 	return success;

@@ -285,9 +285,9 @@ bool str_ends_with(str_t str, str_t suffix) {
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(filename, MD_FILE_READ);
     str_t result = {0,0};
-    if (file) {
+    if (md_file_valid(file)) {
         size_t file_size = md_file_size(file);
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {
@@ -303,7 +303,7 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
         } else {
             MD_LOG_ERROR("Could not allocate memory for file %d", 10);
         }
-        md_file_close(file);
+        md_file_close(&file);
     }
     return result;
 }

@@ -55,17 +55,16 @@
 
 typedef struct xtc_t {
     uint64_t magic;
-    md_file_o* file;
-    str_t filepath; // Store path to create multiple file streams
+    md_file_t  file;
     md_array(int64_t) frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
 } xtc_t;
 
 // XDR Specific stuff
-static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_file) {
+static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_t  xdr_file) {
     ASSERT(ptr);
-    ASSERT(xdr_file);
+    ASSERT(md_file_valid(xdr_file));
 
     size_t bytes = count;
     if (md_file_read(xdr_file, ptr, bytes) == bytes) {
@@ -75,9 +74,9 @@ static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_fi
     return false;
 }
 
-static inline bool xdr_read_int32(int32_t* ptr, size_t count, md_file_o* xdr_file) {
+static inline bool xdr_read_int32(int32_t* ptr, size_t count, md_file_t  xdr_file) {
     ASSERT(ptr);
-    ASSERT(xdr_file);
+    ASSERT(md_file_valid(xdr_file));
 
     size_t bytes = count * sizeof(int32_t);
     if (md_file_read(xdr_file, ptr, bytes) == bytes) {
@@ -92,10 +91,49 @@ static inline bool xdr_read_int32(int32_t* ptr, size_t count, md_file_o* xdr_fil
     return false;
 }
 
-static inline bool xdr_read_float (float* ptr, size_t count, md_file_o* xdr_file) {
+static inline bool xdr_read_float (float* ptr, size_t count, md_file_t  xdr_file) {
     ASSERT(ptr);
-    ASSERT(xdr_file);
+    ASSERT(md_file_valid(xdr_file));
     return xdr_read_int32((int32_t*)ptr, count, xdr_file);
+}
+
+static inline bool xdr_read_bytes_at(uint8_t* ptr, size_t count, md_file_t xdr_file, md_file_offset_t* offset) {
+    ASSERT(ptr);
+    ASSERT(offset);
+    ASSERT(md_file_valid(xdr_file));
+
+    if (md_file_read_at(xdr_file, *offset, ptr, count) == count) {
+        *offset += (md_file_offset_t)count;
+        return true;
+    }
+
+    return false;
+}
+
+static inline bool xdr_read_int32_at(int32_t* ptr, size_t count, md_file_t xdr_file, md_file_offset_t* offset) {
+    ASSERT(ptr);
+    ASSERT(offset);
+    ASSERT(md_file_valid(xdr_file));
+
+    const size_t bytes = count * sizeof(int32_t);
+    if (md_file_read_at(xdr_file, *offset, ptr, bytes) == bytes) {
+#if __LITTLE_ENDIAN__
+        for (size_t i = 0; i < count; ++i) {
+            ptr[i] = BSWAP32(ptr[i]);
+        }
+#endif
+        *offset += (md_file_offset_t)bytes;
+        return true;
+    }
+
+    return false;
+}
+
+static inline bool xdr_read_float_at(float* ptr, size_t count, md_file_t xdr_file, md_file_offset_t* offset) {
+    ASSERT(ptr);
+    ASSERT(offset);
+    ASSERT(md_file_valid(xdr_file));
+    return xdr_read_int32_at((int32_t*)ptr, count, xdr_file, offset);
 }
 
 static inline int sizeofint(int size) {
@@ -411,7 +449,7 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
     return v4i_load(val);
 }
 
-bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
+bool md_xtc_read_frame_header(md_file_t  xdr, int* natoms, int* step, float* time, float box[3][3]) {
     int magic;
 
     if (!xdr_read_int32(&magic, 1, xdr)) {
@@ -442,7 +480,38 @@ bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* tim
     return true;
 }
 
-size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+static bool md_xtc_read_frame_header_at(md_file_t xdr, md_file_offset_t* offset, int* natoms, int* step, float* time, float box[3][3]) {
+    int magic;
+
+    if (!xdr_read_int32_at(&magic, 1, xdr, offset)) {
+        MD_LOG_ERROR("XTC: Failed to read magic number in header");
+        return false;
+    }
+    if (magic != XTC_MAGIC) {
+        MD_LOG_ERROR("XTC: Magic number did not match");
+        return false;
+    }
+    if (!xdr_read_int32_at(natoms, 1, xdr, offset)) {
+        MD_LOG_ERROR("XTC: Failed to read number of atoms");
+        return false;
+    }
+    if (!xdr_read_int32_at(step, 1, xdr, offset)) {
+        MD_LOG_ERROR("XTC: Failed to read step");
+        return false;
+    }
+    if (!xdr_read_float_at(time, 1, xdr, offset)) {
+        MD_LOG_ERROR("XTC: Failed to read timestamp");
+        return false;
+    }
+    if (!xdr_read_float_at((float*)box, 9, xdr, offset)) {
+        MD_LOG_ERROR("XTC: Failed to read box dimensions");
+        return false;
+    }
+
+    return true;
+}
+
+size_t md_xtc_read_frame_offsets_and_times(md_file_t  xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
     int step, natoms;
     float time;
     float box[3][3];
@@ -561,8 +630,8 @@ done:
     return num_frames;
 }
 
-size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
-    if (xdr_file == NULL || out_coords_ptr == NULL) {
+size_t md_xtc_read_frame_coords(md_file_t  xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
+    if (!md_file_valid(xdr_file) || out_coords_ptr == NULL) {
         return 0;
     }
 
@@ -816,6 +885,199 @@ done:
     return (size_t)atom_idx;
 }
 
+static size_t md_xtc_read_frame_coords_at(md_file_t xdr_file, md_file_offset_t* offset, float* out_coords_ptr, size_t out_coord_cap) {
+    if (!md_file_valid(xdr_file) || out_coords_ptr == NULL || offset == NULL) {
+        return 0;
+    }
+
+    int natoms;
+    if (!xdr_read_int32_at(&natoms, 1, xdr_file, offset)) {
+        return 0;
+    }
+
+    if (out_coord_cap < (size_t)natoms) {
+        MD_LOG_ERROR("The supplied coordinate buffer is not sufficient to fit the number of atoms within the frame");
+        return 0;
+    }
+
+    if (natoms <= 9) {
+        if (!xdr_read_float_at(out_coords_ptr, natoms * 3, xdr_file, offset)) {
+            return 0;
+        }
+        return (size_t)natoms;
+    }
+
+    float precision;
+    if (!xdr_read_float_at(&precision, 1, xdr_file, offset)) {
+        return 0;
+    }
+
+    int32_t minint[3], maxint[3];
+    if (!xdr_read_int32_at(minint, 3, xdr_file, offset) || !xdr_read_int32_at(maxint, 3, xdr_file, offset)) {
+        return 0;
+    }
+
+    uint32_t sizeint[3] = {
+        (uint32_t)(maxint[0] - minint[0] + 1),
+        (uint32_t)(maxint[1] - minint[1] + 1),
+        (uint32_t)(maxint[2] - minint[2] + 1),
+    };
+
+    uint32_t bitsize = 0;
+    uint32_t bitsizeint[3] = {0};
+    unpack_data_t big_unpack = {0};
+
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        bitsizeint[0] = sizeofint(sizeint[0]);
+        bitsizeint[1] = sizeofint(sizeint[1]);
+        bitsizeint[2] = sizeofint(sizeint[2]);
+    } else {
+        bitsize = sizeofints(3, sizeint);
+        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
+        big_unpack.size_z = sizeint[2];
+        big_unpack.num_of_bits = (uint8_t)bitsize;
+        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
+        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
+        init_unpack_data_bits(&big_unpack, bitsize);
+    }
+
+    int smallidx;
+    if (!xdr_read_int32_at(&smallidx, 1, xdr_file, offset)) {
+        return 0;
+    }
+
+    int idx = MAX(smallidx - 1, FIRSTIDX);
+    int smaller = magicints[idx] / 2;
+    int smallnum = magicints[smallidx] / 2;
+    uint32_t smallsize = magicints[smallidx];
+
+    unpack_data_t sml_unpack = {
+        .size_zy = (uint64_t)smallsize * smallsize,
+        .size_z  = smallsize,
+        .num_of_bits = (uint8_t)smallidx,
+        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
+        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
+    };
+    init_unpack_data_bits(&sml_unpack, smallidx);
+
+    uint32_t num_bytes = 0;
+    if (!xdr_read_int32_at((int32_t*)&num_bytes, 1, xdr_file, offset)) {
+        return 0;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t mem_size = ALIGN_TO(num_bytes, 16);
+    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
+
+    int atom_idx = 0;
+    if (!xdr_read_bytes_at((uint8_t*)mem, num_bytes, xdr_file, offset)) {
+        goto done;
+    }
+
+    br_t br = {0};
+    br_init(&br, mem, mem_size / 8);
+
+    float* lfp = out_coords_ptr;
+    md_128 invp = md_mm_set1_ps(1.0f / precision);
+    v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
+    v4i_t thiscoord;
+    int run = 0;
+    int run_count = 0;
+
+    while (atom_idx < natoms) {
+        if (bitsize == 0) {
+            thiscoord = br_read_ints(&br, bitsizeint);
+        } else {
+            if (big_unpack.num_of_bits <= 64) {
+                thiscoord = unpack_coord64(&br, &big_unpack);
+            } else {
+                thiscoord = unpack_coord128(&br, &big_unpack);
+            }
+        }
+
+        thiscoord = v4i_add(thiscoord, vminint);
+
+        uint32_t data = (uint32_t)br_peek(&br, 6);
+        uint32_t flag = data & 32;
+        uint32_t skip = flag ? 6 : 1;
+        br_skip(&br, skip);
+
+        int is_smaller = 0;
+        if (flag) {
+            run = data & 31;
+            run_count  = run / 3;
+            is_smaller = run % 3;
+            run -= is_smaller;
+            is_smaller--;
+        }
+
+        int batch_size = run_count + 1;
+        if (atom_idx + batch_size > natoms) {
+            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
+            goto done;
+        }
+        atom_idx += batch_size;
+
+        if (run > 0) {
+            v4i_t prevcoord = thiscoord;
+            v4i_t vsmall = v4i_set1(smallnum);
+
+            if (sml_unpack.num_of_bits <= 64) {
+                v4i_t coord = unpack_coord64(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                write_coord(lfp, thiscoord, invp); lfp += 3;
+                write_coord(lfp, prevcoord, invp); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord64(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, invp); lfp += 3;
+                }
+            } else {
+                v4i_t coord = unpack_coord128(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                write_coord(lfp, thiscoord, invp); lfp += 3;
+                write_coord(lfp, prevcoord, invp); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord128(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, invp); lfp += 3;
+                }
+            }
+        } else {
+            write_coord(lfp, thiscoord, invp); lfp += 3;
+        }
+        smallidx += is_smaller;
+        if (is_smaller < 0) {
+            smallnum = smaller;
+            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
+        } else if (is_smaller > 0) {
+            smaller = smallnum;
+            smallnum = magicints[smallidx] / 2;
+        }
+        if (smallidx < FIRSTIDX) {
+            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
+            goto done;
+        }
+        if (smallidx != sml_unpack.num_of_bits) {
+            uint32_t sml_size       = magicints[smallidx];
+            sml_unpack.size_zy      = (uint64_t)sml_size * sml_size;
+            sml_unpack.size_z       = sml_size;
+            sml_unpack.num_of_bits  = (uint8_t)smallidx;
+            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
+            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
+            init_unpack_data_bits(&sml_unpack, smallidx);
+        }
+    }
+
+done:
+    md_temp_set_pos_back(temp_pos);
+    return (size_t)atom_idx;
+}
+
 bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     xtc_t* xtc = (xtc_t*)inst;
     ASSERT(xtc);
@@ -826,8 +1088,8 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
     return true;
 }
 
-static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(file);
+static bool xtc_decode_frame_data(md_file_t file, md_file_offset_t offset, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(md_file_valid(file));
 
     bool result = true;
 
@@ -840,7 +1102,7 @@ static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t*
     int natoms = 0, step = 0;
     float time = 0;
     float box[3][3];
-    result = md_xtc_read_frame_header(file, &natoms, &step, &time, box);
+    result = md_xtc_read_frame_header_at(file, &offset, &natoms, &step, &time, box);
     if (result) {
         if (header) {
             // nm -> Ångström
@@ -858,8 +1120,8 @@ static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t*
         if (x && y && z) {
             size_t byte_size = natoms * sizeof(float) * 3;
             float* xyz = md_alloc(md_get_heap_allocator(), byte_size);
-            size_t written_count = md_xtc_read_frame_coords(file, xyz, natoms);
-            result = (written_count == natoms);
+            size_t written_count = md_xtc_read_frame_coords_at(file, &offset, xyz, natoms);
+            result = (written_count == (size_t)natoms);
             if (result) {
                 // nm -> Ångström
                 for (int i = 0; i < natoms; ++i) {
@@ -885,13 +1147,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     bool result = false;
-    if (xtc->file) {
-        md_file_o* file = md_file_open(xtc->filepath, MD_FILE_READ | MD_FILE_BINARY);
-        if (!file) {
-            MD_LOG_ERROR("XTC: Failed to open file");
-            return false;
-        }
-
+    if (md_file_valid(xtc->file)) {
         if (!xtc->frame_offsets) {
             MD_LOG_ERROR("XTC: Frame offsets is empty");
             return 0;
@@ -903,14 +1159,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         }
 
         const int64_t pos = xtc->frame_offsets[frame_idx];
-        if (!md_file_seek(file, pos, MD_FILE_BEG)) {
-            MD_LOG_ERROR("XTC: Failed to seek to frame offset");
-            md_file_close(file);
-            return false;
-        }
-
-        result = xtc_decode_frame_data(file, header, x, y, z);
-        md_file_close(file);
+        result = xtc_decode_frame_data(xtc->file, pos, header, x, y, z);
     }
 
     return result;
@@ -927,8 +1176,8 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
+    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
+    if (md_file_valid(file)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("XTC trajectory cache: failed to read header");
             goto done;
@@ -980,7 +1229,7 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
 
         result = true;
     done:
-        md_file_close(file);
+        md_file_close(&file);
     }
     return result;
 }
@@ -988,8 +1237,8 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const xtc_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (!file) {
+    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+    if (!md_file_valid(file)) {
         MD_LOG_INFO("XTC trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
@@ -1014,7 +1263,7 @@ static bool write_cache(const xtc_cache_t* cache, str_t cache_file) {
     result = true;
 
 done:
-    md_file_close(file);
+    md_file_close(&file);
     return result;
 }
 
@@ -1023,9 +1272,9 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     str_t path = str_copy(filename, alloc);
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
 
-    if (file) {
+    if (md_file_valid(file)) {
         const size_t filesize = md_file_size(file);
 
         /* Go to file beg */
@@ -1090,7 +1339,6 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         xtc->magic = MD_XTC_TRAJ_MAGIC;
         xtc->allocator = alloc;
         xtc->file = file;
-        xtc->filepath = path;
         xtc->frame_offsets = cache.frame_offsets;
 
         xtc->header = (md_trajectory_header_t) {
@@ -1108,7 +1356,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         return traj;
     }
 fail:
-    if (file) md_file_close(file);
+    if (md_file_valid(file)) md_file_close(&file);
     md_arena_allocator_destroy(alloc);
     return NULL;
 }
@@ -1123,7 +1371,7 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
         return;
     }
 
-    if (xtc->file) md_file_close(xtc->file);
+    if (md_file_valid(xtc->file)) md_file_close(&xtc->file);
     md_arena_allocator_destroy(xtc->allocator);
 }
 

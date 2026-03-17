@@ -161,7 +161,7 @@ UTEST(os, file_read_lines) {
     str_t ref = load_textfile(path, md_get_heap_allocator());
 
     
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
     
     md_strb_t sb = md_strb_create(md_get_heap_allocator());
     

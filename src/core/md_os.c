@@ -50,6 +50,7 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 #elif MD_PLATFORM_UNIX
 
 #include <time.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -391,184 +392,795 @@ bool md_path_is_directory(str_t path) {
 
 // ### FILE ###
 
-// Ensures that md_file_o is always binary compatible with FILE and can thus be casted to FILE*
-struct md_file_o {
-    FILE handle;
-};
 
-md_file_o* md_file_open(str_t filename, uint32_t flags) {
-    if (!filename.ptr || !filename.len) return NULL;
+static bool file_has_read_access(md_file_t file) {
+    return (file.flags & MD_FILE_READ) != 0;
+}
+
+static bool file_has_write_access(md_file_t file) {
+    return (file.flags & (MD_FILE_WRITE | MD_FILE_APPEND)) != 0;
+}
+
+static bool file_is_append_only(md_file_t file) {
+    return (file.flags & MD_FILE_APPEND) != 0;
+}
+
+#define MD_FILE_FLAG_VALID (1u << 31)
+
+bool md_file_valid(md_file_t file) {
+    return (file.flags & MD_FILE_FLAG_VALID) != 0;
+}
+
+static md_file_t make_invalid_file(void) {
+    return (md_file_t){0};
+}
+
+#if MD_PLATFORM_WINDOWS
+static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
+    ASSERT(dst);
+    ASSERT(cap > 0);
+
+    if (!src.ptr || src.len == 0) {
+        return false;
+    }
+
+    const int len = MultiByteToWideChar(CP_UTF8, 0, src.ptr, (int)src.len, dst, (int)cap);
+    if (len <= 0 || len >= (int)cap) {
+        return false;
+    }
+
+    dst[len] = L'\0';
+    return true;
+}
+
+static md_file_time_t filetime_to_unix_ns(FILETIME ft) {
+    ULARGE_INTEGER value;
+    value.LowPart  = ft.dwLowDateTime;
+    value.HighPart = ft.dwHighDateTime;
+
+    // FILETIME is expressed as 100 ns intervals since 1601-01-01 UTC.
+    const int64_t windows_to_unix_epoch_100ns = 116444736000000000LL;
+    return ((int64_t)value.QuadPart - windows_to_unix_epoch_100ns) * 100;
+}
+
+static void fill_file_info_from_win32_data(md_file_info_t* info, DWORD attrs, uint64_t size, FILETIME access_time, FILETIME write_time) {
+    ASSERT(info);
+
+    info->size = (md_file_offset_t)size;
+    info->modified_time = filetime_to_unix_ns(write_time);
+    info->accessed_time = filetime_to_unix_ns(access_time);
+
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        info->flags |= MD_FILE_INFO_IS_DIRECTORY;
+    } else {
+        info->flags |= MD_FILE_INFO_IS_REGULAR;
+    }
+
+    if (attrs & FILE_ATTRIBUTE_READONLY) {
+        info->flags |= MD_FILE_INFO_IS_READONLY;
+    }
+}
+
+#elif MD_PLATFORM_UNIX
+static md_file_time_t timespec_to_unix_ns(time_t sec, long nsec) {
+    return (md_file_time_t)sec * 1000000000LL + (md_file_time_t)nsec;
+}
+
+static void fill_file_info_from_stat(md_file_info_t* info, const struct stat* st) {
+    ASSERT(info);
+    ASSERT(st);
+
+    info->size = (md_file_offset_t)st->st_size;
+
+#if MD_PLATFORM_OSX
+    info->modified_time = timespec_to_unix_ns(st->st_mtimespec.tv_sec, st->st_mtimespec.tv_nsec);
+    info->accessed_time = timespec_to_unix_ns(st->st_atimespec.tv_sec, st->st_atimespec.tv_nsec);
+#elif MD_PLATFORM_LINUX
+    info->modified_time = timespec_to_unix_ns(st->st_mtim.tv_sec, st->st_mtim.tv_nsec);
+    info->accessed_time = timespec_to_unix_ns(st->st_atim.tv_sec, st->st_atim.tv_nsec);
+#endif
+
+    if (S_ISDIR(st->st_mode)) {
+        info->flags |= MD_FILE_INFO_IS_DIRECTORY;
+    } else if (S_ISREG(st->st_mode)) {
+        info->flags |= MD_FILE_INFO_IS_REGULAR;
+    }
+
+    if ((st->st_mode & S_IWUSR) == 0) {
+        info->flags |= MD_FILE_INFO_IS_READONLY;
+    }
+}
+#endif
+
+bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
+    if (!out_info) {
+        MD_LOG_ERROR("md_file_info_extract: output info was NULL");
+        return false;
+    }
+
+    MEMSET(out_info, 0, sizeof(md_file_info_t));
+
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_info_extract: file was invalid");
+        return false;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    BY_HANDLE_FILE_INFORMATION info = {0};
+    if (!GetFileInformationByHandle((HANDLE)file.handle, &info)) {
+        MD_LOG_ERROR("md_file_info_extract: failed to query file info");
+        print_windows_error();
+        return false;
+    }
+
+    const uint64_t size = ((uint64_t)info.nFileSizeHigh << 32) | (uint64_t)info.nFileSizeLow;
+    fill_file_info_from_win32_data(out_info, info.dwFileAttributes, size, info.ftLastAccessTime, info.ftLastWriteTime);
+    return true;
+
+#elif MD_PLATFORM_UNIX
+    struct stat st = {0};
+    if (fstat(file.fd, &st) != 0) {
+        MD_LOG_ERROR("md_file_info_extract: failed to query file info");
+        return false;
+    }
+
+    fill_file_info_from_stat(out_info, &st);
+    return true;
+
+#else
+    return false;
+#endif
+}
+
+bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
+    if (!out_info) {
+        MD_LOG_ERROR("md_file_info_extract_from_path: output info was NULL");
+        return false;
+    }
+
+    MEMSET(out_info, 0, sizeof(md_file_info_t));
+
+    if (!filename.ptr || filename.len == 0) {
+        MD_LOG_ERROR("md_file_info_extract_from_path: filename was empty");
+        return false;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    wchar_t w_file[MD_MAX_PATH] = {0};
+    if (!utf8_to_utf16_path(w_file, ARRAY_SIZE(w_file), filename)) {
+        MD_LOG_ERROR("md_file_info_extract_from_path: failed to convert path to UTF-16");
+        return false;
+    }
+
+    WIN32_FILE_ATTRIBUTE_DATA data = {0};
+    if (!GetFileAttributesExW(w_file, GetFileExInfoStandard, &data)) {
+        MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
+        print_windows_error();
+        return false;
+    }
+
+    const uint64_t size = ((uint64_t)data.nFileSizeHigh << 32) | (uint64_t)data.nFileSizeLow;
+    fill_file_info_from_win32_data(out_info, data.dwFileAttributes, size, data.ftLastAccessTime, data.ftLastWriteTime);
+    return true;
+
+#elif MD_PLATFORM_UNIX
+    str_t path = str_copy(filename, md_get_temp_allocator());
+    struct stat st = {0};
+    if (stat(path.ptr, &st) != 0) {
+        MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
+        return false;
+    }
+
+    fill_file_info_from_stat(out_info, &st);
+    return true;
+
+#else
+    return false;
+#endif
+}
+
+md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
+    if (!filename.ptr || filename.len == 0) {
+        MD_LOG_ERROR("md_file_open: filename was empty");
+        return make_invalid_file();
+    }
+
+    const bool want_read = (flags & MD_FILE_READ) != 0;
+    const bool want_write = (flags & (MD_FILE_WRITE | MD_FILE_APPEND)) != 0;
+    const bool want_append = (flags & MD_FILE_APPEND) != 0;
+    const bool want_create = (flags & MD_FILE_CREATE) != 0 || want_append;
+    const bool want_truncate = (flags & MD_FILE_TRUNCATE) != 0;
+
+    if (!want_read && !want_write) {
+        MD_LOG_ERROR("md_file_open: no access mode specified");
+        return make_invalid_file();
+    }
+
+    if ((flags & MD_FILE_CREATE) && !want_write) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_CREATE requires write access");
+        return make_invalid_file();
+    }
+
+    if (want_truncate && !want_write) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_TRUNCATE requires write access");
+        return make_invalid_file();
+    }
+
+    if (want_append && want_truncate) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_APPEND and MD_FILE_TRUNCATE are mutually exclusive");
+        return make_invalid_file();
+    }
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
-    if (w_file_len >= ARRAY_SIZE(w_file)) {
-        MD_LOG_ERROR("File path exceeds limit!");
-        return NULL;
+    if (w_file_len <= 0 || w_file_len >= (int)ARRAY_SIZE(w_file)) {
+        MD_LOG_ERROR("md_file_open: failed to convert path to UTF-16");
+        return make_invalid_file();
     }
     w_file[w_file_len] = L'\0';
 
-    const wchar_t* w_mode = 0;
-    switch (flags) {
-    case MD_FILE_READ:
-        w_mode = L"r";
-        break;
-    case (MD_FILE_READ | MD_FILE_BINARY):
-        w_mode = L"rb";
-        break;
-    case MD_FILE_WRITE:
-        w_mode = L"w";
-        break;
-    case (MD_FILE_WRITE | MD_FILE_BINARY):
-        w_mode = L"wb";
-        break;
-    case MD_FILE_APPEND:
-        w_mode = L"a";
-        break;
-    case (MD_FILE_APPEND | MD_FILE_BINARY):
-        w_mode = L"ab";
-        break;
-    default:
-        MD_LOG_ERROR("Invalid combination of file access flags!");
-        return NULL;
+    DWORD desired_access = 0;
+    if (want_read) {
+        desired_access |= GENERIC_READ;
+    }
+    if (flags & MD_FILE_WRITE) {
+        desired_access |= GENERIC_WRITE;
+    }
+    if (want_append) {
+        desired_access |= FILE_APPEND_DATA;
     }
 
-    return (md_file_o*) _wfopen(w_file, w_mode);
+    DWORD creation_disposition = OPEN_EXISTING;
+    if (want_truncate && want_create) {
+        creation_disposition = CREATE_ALWAYS;
+    } else if (want_truncate) {
+        creation_disposition = TRUNCATE_EXISTING;
+    } else if (want_create) {
+        creation_disposition = OPEN_ALWAYS;
+    }
+
+    HANDLE handle = CreateFileW(
+        w_file,
+        desired_access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        creation_disposition,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    if (handle == INVALID_HANDLE_VALUE) {
+        MD_LOG_ERROR("md_file_open: failed to open file");
+        print_windows_error();
+        return make_invalid_file();
+    }
+
+    return (md_file_t){.handle = handle, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+
+#elif MD_PLATFORM_UNIX
+    int open_flags = 0;
+    if (want_read && want_write) {
+        open_flags |= O_RDWR;
+    } else if (want_read) {
+        open_flags |= O_RDONLY;
+    } else {
+        open_flags |= O_WRONLY;
+    }
+
+    if (want_create) {
+        open_flags |= O_CREAT;
+    }
+    if (want_truncate) {
+        open_flags |= O_TRUNC;
+    }
+    if (want_append) {
+        open_flags |= O_APPEND;
+    }
+
+#ifdef O_CLOEXEC
+    open_flags |= O_CLOEXEC;
+#endif
+
+    str_t path = str_copy(filename, md_get_temp_allocator());
+    const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+
+    int fd = -1;
+    do {
+        fd = open(path.ptr, open_flags, create_mode);
+    } while (fd == -1 && errno == EINTR);
+
+    if (fd == -1) {
+        return make_invalid_file();
+    }
+
+    return (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+
 #else
-    const char* mode = 0;
-    switch (flags) {
-    case MD_FILE_READ:
-        mode = "r";
-        break;
-    case (MD_FILE_READ | MD_FILE_BINARY):
-        mode = "rb";
-        break;
-    case MD_FILE_WRITE:
-        mode = "w";
-        break;
-    case (MD_FILE_WRITE | MD_FILE_BINARY):
-        mode = "wb";
-        break;
-    case MD_FILE_APPEND:
-        mode = "a";
-        break;
-    case (MD_FILE_APPEND | MD_FILE_BINARY):
-        mode = "ab";
-        break;
-    default:
-        MD_LOG_ERROR("Invalid combination of file access flags!");
-        return NULL;
-    }
-
-    char file[MD_MAX_PATH] = "";
-    strncpy(file, filename.ptr, ARRAY_SIZE(file)-1);
-    return (md_file_o*)fopen(file, mode);
+    return make_invalid_file();
 #endif
 }
 
-void md_file_close(md_file_o* file) {
-    fclose((FILE*)file);
-}
-
-bool md_file_eof(md_file_o* file) {
-    return feof((FILE*)file);
-}
-
-int64_t md_file_tell(md_file_o* file) {
-#if MD_PLATFORM_WINDOWS
-    return _ftelli64((FILE*)file);
-#else
-    return ftello((FILE*)file);
-#endif
-}
-
-bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin) {
-    if (!file) {
-        MD_LOG_ERROR("File handle was NULL");
+bool md_file_close(md_file_t* file) {
+    if (!file || !md_file_valid(*file)) {
+        MD_LOG_ERROR("md_file_close: file was invalid");
         return false;
     }
 
-    int o = 0;
-    switch(origin) {
-    case MD_FILE_BEG:
-        o = SEEK_SET;
-        break;
-    case MD_FILE_CUR:
-        o = SEEK_CUR;
-        break;
-    case MD_FILE_END:
-        o = SEEK_END;
-        break;
-    default:
-        MD_LOG_ERROR("Invalid seek origin value!");
-        return false;
-    }
+    md_file_t tmp = *file;
 
 #if MD_PLATFORM_WINDOWS
-    return _fseeki64((FILE*)file, offset, o) == 0;
-#else
-    return fseeko((FILE*)file, offset, o) == 0;
-#endif
-}
-
-size_t md_file_size(md_file_o* file) {
-    if (!file) {
-        MD_LOG_ERROR("File handle was NULL");
-        return 0;
+    if (!CloseHandle((HANDLE)tmp.handle)) {
+        MD_LOG_ERROR("md_file_close: failed to close file");
+        print_windows_error();
+        return false;
     }
-    int64_t cur = md_file_tell(file);
-    md_file_seek(file, 0, SEEK_END);
-    int64_t end = md_file_tell(file);
-    md_file_seek(file, cur, SEEK_SET);
-    return (size_t)end;
-}
-
-// Returns the number of successfully written/read bytes
-size_t md_file_read(md_file_o* file, void* ptr, size_t num_bytes) {
-    if (!file) {
-        MD_LOG_ERROR("File handle was NULL");
-        return 0;
-    }
-    return fread(ptr, 1, num_bytes, (FILE*)file);
-}
-
-size_t md_file_read_line(md_file_o* file, char* buf, size_t cap) {
-    int64_t pos = md_file_tell(file);
-    char* res = fgets(buf, (int)cap, (FILE*)file);
-    int64_t len = md_file_tell(file) - pos;
-    return res ? len : 0;
-}
-
-size_t md_file_read_lines(md_file_o* file, char* buf, size_t cap) {
-    if (!file || !buf || cap < 1) return 0;
-    
-    size_t len = fread(buf, 1, cap, (FILE*)file);
-    if (len == cap) {
-        size_t loc;
-        const str_t str = {buf, len};
-        if (str_rfind_char(&loc, str, '\n')) {
-            const long offset = (long)loc + 1 - (long)len;
-            fseek((FILE*)file, offset, SEEK_CUR);
-            len = loc + 1;
+#elif MD_PLATFORM_UNIX
+    for (;;) {
+        if (close(tmp.fd) == 0) {
+            break;
         }
+        if (errno == EINTR) {
+            continue;
+        }
+        MD_LOG_ERROR("md_file_close: failed to close file");
+        return false;
     }
-    return len;
+#endif
+
+    *file = make_invalid_file();
+    return true;
 }
 
-size_t md_file_write(md_file_o* file, const void* ptr, size_t num_bytes) {
-    ASSERT(file);
-    return fwrite(ptr, 1, num_bytes, (FILE*)file);
+md_file_offset_t md_file_tell(md_file_t file) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_tell: file was invalid");
+        return -1;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    LARGE_INTEGER zero = {0};
+    LARGE_INTEGER pos = {0};
+    if (!SetFilePointerEx((HANDLE)file.handle, zero, &pos, FILE_CURRENT)) {
+        MD_LOG_ERROR("md_file_tell: failed to query file position");
+        print_windows_error();
+        return -1;
+    }
+    return (md_file_offset_t)pos.QuadPart;
+
+#elif MD_PLATFORM_UNIX
+    off_t pos = lseek(file.fd, 0, SEEK_CUR);
+    if (pos == (off_t)-1) {
+        MD_LOG_ERROR("md_file_tell: failed to query file position");
+        return -1;
+    }
+    return (md_file_offset_t)pos;
+
+#else
+    return -1;
+#endif
 }
 
-size_t md_file_printf(md_file_o* file, const char* format, ...) {
-    ASSERT(file);
+md_file_offset_t md_file_size(md_file_t file) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_size: file was invalid");
+        return -1;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    LARGE_INTEGER size = {0};
+    if (!GetFileSizeEx((HANDLE)file.handle, &size)) {
+        MD_LOG_ERROR("md_file_size: failed to query file size");
+        print_windows_error();
+        return -1;
+    }
+    return (md_file_offset_t)size.QuadPart;
+
+#elif MD_PLATFORM_UNIX
+    struct stat st = {0};
+    if (fstat(file.fd, &st) != 0) {
+        MD_LOG_ERROR("md_file_size: failed to query file size");
+        return -1;
+    }
+    return (md_file_offset_t)st.st_size;
+
+#else
+    return -1;
+#endif
+}
+
+bool md_file_seek(md_file_t file, md_file_offset_t offset, md_file_seek_origin_t origin) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_seek: file was invalid");
+        return false;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    DWORD move_method = 0;
+    switch (origin) {
+    case MD_FILE_BEG: move_method = FILE_BEGIN; break;
+    case MD_FILE_CUR: move_method = FILE_CURRENT; break;
+    case MD_FILE_END: move_method = FILE_END; break;
+    default:
+        MD_LOG_ERROR("md_file_seek: invalid seek origin");
+        return false;
+    }
+
+    LARGE_INTEGER distance;
+    distance.QuadPart = offset;
+    if (!SetFilePointerEx((HANDLE)file.handle, distance, NULL, move_method)) {
+        MD_LOG_ERROR("md_file_seek: failed to seek file");
+        print_windows_error();
+        return false;
+    }
+    return true;
+
+#elif MD_PLATFORM_UNIX
+    int whence = 0;
+    switch (origin) {
+    case MD_FILE_BEG: whence = SEEK_SET; break;
+    case MD_FILE_CUR: whence = SEEK_CUR; break;
+    case MD_FILE_END: whence = SEEK_END; break;
+    default:
+        MD_LOG_ERROR("md_file_seek: invalid seek origin");
+        return false;
+    }
+
+    if (lseek(file.fd, (off_t)offset, whence) == (off_t)-1) {
+        MD_LOG_ERROR("md_file_seek: failed to seek file");
+        return false;
+    }
+    return true;
+
+#else
+    return false;
+#endif
+}
+
+size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_read: file was invalid");
+        return 0;
+    }
+    if (!file_has_read_access(file)) {
+        MD_LOG_ERROR("md_file_read: file was not opened for reading");
+        return 0;
+    }
+    if (!ptr && num_bytes > 0) {
+        MD_LOG_ERROR("md_file_read: buffer was NULL");
+        return 0;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    char* out = (char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        DWORD transferred = 0;
+
+        if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, NULL)) {
+            MD_LOG_ERROR("md_file_read: failed to read file");
+            print_windows_error();
+            break;
+        }
+        if (transferred == 0) {
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#elif MD_PLATFORM_UNIX
+    char* out = (char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        ssize_t transferred = read(file.fd, out + total, chunk);
+
+        if (transferred < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            MD_LOG_ERROR("md_file_read: failed to read file");
+            break;
+        }
+        if (transferred == 0) {
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#else
+    return 0;
+#endif
+}
+
+size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_write: file was invalid");
+        return 0;
+    }
+    if (!file_has_write_access(file)) {
+        MD_LOG_ERROR("md_file_write: file was not opened for writing");
+        return 0;
+    }
+    if (!ptr && num_bytes > 0) {
+        MD_LOG_ERROR("md_file_write: buffer was NULL");
+        return 0;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    const char* in = (const char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        DWORD transferred = 0;
+
+        if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, NULL)) {
+            MD_LOG_ERROR("md_file_write: failed to write file");
+            print_windows_error();
+            break;
+        }
+        if (transferred == 0) {
+            MD_LOG_ERROR("md_file_write: zero-byte write");
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#elif MD_PLATFORM_UNIX
+    const char* in = (const char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        ssize_t transferred = write(file.fd, in + total, chunk);
+
+        if (transferred < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            MD_LOG_ERROR("md_file_write: failed to write file");
+            break;
+        }
+        if (transferred == 0) {
+            MD_LOG_ERROR("md_file_write: zero-byte write");
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#else
+    return 0;
+#endif
+}
+
+size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_t num_bytes) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_read_at: file was invalid");
+        return 0;
+    }
+    if (!file_has_read_access(file)) {
+        MD_LOG_ERROR("md_file_read_at: file was not opened for reading");
+        return 0;
+    }
+    if (offset < 0) {
+        MD_LOG_ERROR("md_file_read_at: offset was negative");
+        return 0;
+    }
+    if (!ptr && num_bytes > 0) {
+        MD_LOG_ERROR("md_file_read_at: buffer was NULL");
+        return 0;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    char* out = (char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
+        OVERLAPPED overlapped = {0};
+        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
+        overlapped.OffsetHigh = (DWORD)(pos >> 32);
+
+        DWORD transferred = 0;
+        if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, &overlapped)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_HANDLE_EOF) {
+                break;
+            }
+            MD_LOG_ERROR("md_file_read_at: failed to read file");
+            print_windows_error();
+            break;
+        }
+        if (transferred == 0) {
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#elif MD_PLATFORM_UNIX
+    char* out = (char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        ssize_t transferred = pread(file.fd, out + total, chunk, (off_t)(offset + (md_file_offset_t)total));
+
+        if (transferred < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            MD_LOG_ERROR("md_file_read_at: failed to read file");
+            break;
+        }
+        if (transferred == 0) {
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#else
+    return 0;
+#endif
+}
+
+size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr, size_t num_bytes) {
+    if (!md_file_valid(file)) {
+        MD_LOG_ERROR("md_file_write_at: file was invalid");
+        return 0;
+    }
+    if (!file_has_write_access(file)) {
+        MD_LOG_ERROR("md_file_write_at: file was not opened for writing");
+        return 0;
+    }
+    if (file_is_append_only(file)) {
+        MD_LOG_ERROR("md_file_write_at: append-only handles do not support positional writes");
+        return 0;
+    }
+    if (offset < 0) {
+        MD_LOG_ERROR("md_file_write_at: offset was negative");
+        return 0;
+    }
+    if (!ptr && num_bytes > 0) {
+        MD_LOG_ERROR("md_file_write_at: buffer was NULL");
+        return 0;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    const char* in = (const char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
+        OVERLAPPED overlapped = {0};
+        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
+        overlapped.OffsetHigh = (DWORD)(pos >> 32);
+
+        DWORD transferred = 0;
+        if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, &overlapped)) {
+            MD_LOG_ERROR("md_file_write_at: failed to write file");
+            print_windows_error();
+            break;
+        }
+        if (transferred == 0) {
+            MD_LOG_ERROR("md_file_write_at: zero-byte write");
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#elif MD_PLATFORM_UNIX
+    const char* in = (const char*)ptr;
+    size_t total = 0;
+
+    while (total < num_bytes) {
+        const size_t remaining = num_bytes - total;
+        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        ssize_t transferred = pwrite(file.fd, in + total, chunk, (off_t)(offset + (md_file_offset_t)total));
+
+        if (transferred < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            MD_LOG_ERROR("md_file_write_at: failed to write file");
+            break;
+        }
+        if (transferred == 0) {
+            MD_LOG_ERROR("md_file_write_at: zero-byte write");
+            break;
+        }
+
+        total += (size_t)transferred;
+    }
+
+    return total;
+
+#else
+    return 0;
+#endif
+}
+
+size_t md_file_printf(md_file_t file, const char* format, ...) {
+    if (!format) {
+        MD_LOG_ERROR("md_file_printf: format was NULL");
+        return 0;
+    }
+
+    char stack_buf[1024];
+
     va_list args;
-    va_start (args, format);
-    int res = vfprintf((FILE*)file, format, args);
-    va_end (args);
-    return res;
-}
+    va_start(args, format);
 
+    va_list probe_args;
+    va_copy(probe_args, args);
+    const int count = vsnprintf(stack_buf, sizeof(stack_buf), format, probe_args);
+    va_end(probe_args);
+
+    if (count < 0) {
+        va_end(args);
+        MD_LOG_ERROR("md_file_printf: formatting failed");
+        return 0;
+    }
+
+    if ((size_t)count < sizeof(stack_buf)) {
+        va_end(args);
+        return md_file_write(file, stack_buf, (size_t)count);
+    }
+
+    const size_t buf_size = (size_t)count + 1;
+    md_allocator_i* alloc = md_get_heap_allocator();
+    char* heap_buf = (char*)md_alloc(alloc, buf_size);
+    if (!heap_buf) {
+        va_end(args);
+        MD_LOG_ERROR("md_file_printf: failed to allocate formatting buffer");
+        return 0;
+    }
+
+    const int written = vsnprintf(heap_buf, buf_size, format, args);
+    va_end(args);
+
+    if (written < 0) {
+        md_free(alloc, heap_buf, buf_size);
+        MD_LOG_ERROR("md_file_printf: formatting failed");
+        return 0;
+    }
+
+    const size_t result = md_file_write(file, heap_buf, (size_t)written);
+    md_free(alloc, heap_buf, buf_size);
+    return result;
+}
 
 // ### TIME ###
 

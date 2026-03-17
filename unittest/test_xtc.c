@@ -285,7 +285,7 @@ UTEST(xtc, catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    md_file_o*  file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t   file = md_file_open(path, MD_FILE_READ);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
@@ -333,7 +333,7 @@ UTEST(xtc, catalyst) {
     
 done:
     md_vm_arena_destroy(arena);
-    md_file_close(file);
+    md_file_close(&file);
     xdrfile_close(xdr);
 }
 
@@ -342,7 +342,7 @@ UTEST(xtc, big) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("/home/robin/data/PROD_r2.part0001.xtc");
-    md_file_o*  file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t   file = md_file_open(path, MD_FILE_READ);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
@@ -390,7 +390,7 @@ UTEST(xtc, big) {
     
 done:
     md_vm_arena_destroy(arena);
-    md_file_close(file);
+    md_file_close(&file);
     xdrfile_close(xdr);
 }
 
@@ -398,7 +398,7 @@ UTEST(xtc, amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("E:/data/md/amyloid-6T/prod-centered.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
@@ -446,7 +446,7 @@ UTEST(xtc, amyloid) {
 
 done:
     md_vm_arena_destroy(arena);
-    md_file_close(file);
+    md_file_close(&file);
     xdrfile_close(xdr);
 }
 
@@ -454,7 +454,7 @@ UTEST(xtc, H1N1) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_t  file = md_file_open(path, MD_FILE_READ);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
@@ -502,7 +502,7 @@ UTEST(xtc, H1N1) {
 
 done:
     md_vm_arena_destroy(arena);
-    md_file_close(file);
+    md_file_close(&file);
     xdrfile_close(xdr);
 }
 #endif
