@@ -74,7 +74,7 @@ typedef struct {
 #define UNIT_ANGSTROM       {.base = {.dim = {.length = 1,}},   .mult = 1e-10}
 #define UNIT_MILLISECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-3}
 #define UNIT_NANOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-9}
-#define UNIT_PIKOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-12}
+#define UNIT_PICOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-12}
 #define UNIT_FEMTOSECOND	{.base = {.dim = {.time = 1,}},     .mult = 1e-15}
 
 #define UNIT_DEGREE         {.base = {.dim = {.angle = 1,}},    .mult = RAD_TO_DEG(1),}
@@ -110,7 +110,7 @@ static const unit_name_t predefined_units[] = {
     {UNIT_METER_SQ,     S(u8"m²")},
     {UNIT_METER_SQ,     S(u8"m^2")},
     {UNIT_NANOSECOND,   S(u8"ns")},
-    {UNIT_PIKOSECOND,   S(u8"ps")},
+    {UNIT_PICOSECOND,   S(u8"ps")},
     {UNIT_NANOMETER,    S(u8"nm")},
     {UNIT_ANGSTROM,     S(u8"Å")},
     {UNIT_DEGREE,       S(u8"deg")},
@@ -720,8 +720,8 @@ md_unit_t md_unit_nanosecond(void) {
     return (md_unit_t)UNIT_NANOSECOND;
 }
 
-md_unit_t md_unit_pikosecond(void) {
-    return (md_unit_t)UNIT_PIKOSECOND;
+md_unit_t md_unit_picosecond(void) {
+    return (md_unit_t)UNIT_PICOSECOND;
 }
 
 md_unit_t md_unit_femtosecond(void) {

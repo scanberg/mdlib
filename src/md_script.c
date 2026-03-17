@@ -4101,7 +4101,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 table = md_array_last(ir->tables);
                 table->name = str_copy(path_to_file, ir->arena);
 
-                table_push_field_d(table, STR_LIT("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
+                table_push_field_d(table, STR_LIT("Time"), md_unit_picosecond(), edr.frame_time, edr.num_frames, ir->arena);
                 for (size_t i = 0; i < edr.num_energies; ++i) {
                     table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
                 }

@@ -685,7 +685,7 @@ done:
     return result;
 }
 
-md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t flags) {
+md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
@@ -736,12 +736,6 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
             goto fail;
         }
 
-        size_t max_frame_size = 0;
-        for (size_t i = 0; i < cache.header.num_frames; ++i) {
-            const size_t frame_size = (size_t)MAX(0, cache.frame_offsets[i + 1] - cache.frame_offsets[i]);
-            max_frame_size = MAX(max_frame_size, frame_size);
-        }
-
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(trr_t));
         ASSERT(mem);
         MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(trr_t));
@@ -758,8 +752,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
         trr->header = (md_trajectory_header_t) {
             .num_frames = cache.header.num_frames,
             .num_atoms = sh.natoms,
-            .max_frame_data_size = max_frame_size,
-            .time_unit = md_unit_pikosecond(),
+            .time_unit = md_unit_picosecond(),
             .frame_times = cache.frame_times,
         };
 

@@ -99,7 +99,7 @@ md_unit_t md_unit_kilogram(void);
 
 md_unit_t md_unit_second(void);
 md_unit_t md_unit_nanosecond(void);
-md_unit_t md_unit_pikosecond(void);
+md_unit_t md_unit_picosecond(void);
 md_unit_t md_unit_femtosecond(void);
 
 md_unit_t md_unit_ampere(void);

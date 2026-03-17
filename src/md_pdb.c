@@ -830,7 +830,7 @@ done:
     return result;
 }
 
-md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
+md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for PDB trajectory");
@@ -911,12 +911,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
     }
 
-    size_t max_frame_size = 0;
-    for (size_t i = 0; i < cache.header.num_frames; ++i) {
-        const size_t frame_size = (size_t)MAX(0, cache.frame_offsets[i + 1] - cache.frame_offsets[i]);
-        max_frame_size = MAX(max_frame_size, frame_size);
-    }
-
     md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
     for (size_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
@@ -937,7 +931,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb->header = (md_trajectory_header_t) {
         .num_frames = cache.header.num_frames,
         .num_atoms = cache.header.num_atoms,
-        .max_frame_data_size = max_frame_size,
         .time_unit = {0},
         .frame_times = frame_times,
     };

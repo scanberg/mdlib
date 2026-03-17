@@ -307,8 +307,6 @@ typedef md_128i v4i_t;
 
 static inline void write_coord(float* dst, v4i_t coord, md_128 invp) {
     md_128 data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), invp);
-    //md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    //md_mm_maskstore_ps(dst, mask, data);
     MEMCPY(dst, &data, 3 * sizeof(float));
 }
 
@@ -1074,12 +1072,6 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
             }
         }
 
-        size_t max_frame_size = 0;
-        for (size_t i = 0; i < cache.header.num_frames; ++i) {
-            const size_t frame_size = (size_t)MAX(0, cache.frame_offsets[i + 1] - cache.frame_offsets[i]);
-            max_frame_size = MAX(max_frame_size, frame_size);
-        }
-
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xtc_t));
         ASSERT(mem);
         MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(xtc_t));
@@ -1096,8 +1088,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         xtc->header = (md_trajectory_header_t) {
             .num_frames = cache.header.num_frames,
             .num_atoms = num_atoms,
-            .max_frame_data_size = max_frame_size,
-            .time_unit = md_unit_pikosecond(),
+            .time_unit = md_unit_picosecond(),
             .frame_times = cache.frame_times,
         };
 
