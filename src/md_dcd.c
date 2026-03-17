@@ -394,7 +394,7 @@ static bool dcd_read_frame_at(md_file_o* file,
     const int  atoms_in_frame   = all_atoms ? natoms : nfree;
 
     // --- Optional periodic cell block (CHARMm only) ---
-    if (charmm & DCD_HAS_EXTRA_BLOCK) {
+    if ((charmm & DCD_IS_CHARMM) && (charmm & DCD_HAS_EXTRA_BLOCK)) {
         int32_t block_sz = 0;
         if (md_file_read(file, &block_sz, 4) != 4) {
             MD_LOG_ERROR("DCD: Failed to read extra block size");
