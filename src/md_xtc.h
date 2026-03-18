@@ -11,9 +11,18 @@ struct md_trajectory_i;
 extern "C" {
 #endif
 
-size_t md_xtc_read_frame_offsets_and_times(md_file_t  xdr_file, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, struct md_allocator_i* alloc);
-bool   md_xtc_read_frame_header(md_file_t  xdr_file, int* natoms, int* step, float* time, float box[3][3]);
-size_t md_xtc_read_frame_coords(md_file_t  xdr_file, float* out_xyz, size_t xyz_coords);
+typedef struct md_xtc_header_t {
+	int32_t natoms;
+	int32_t step;
+	float time;
+	float box[3][3];
+} md_xtc_header_t;
+
+size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, struct md_allocator_i* alloc);
+
+// Returns the number of atoms decoded, or zero if the frame could not be decoded. The frame should be decoded into `out_header` and `out_xyz`, which should have capacity for at least three floats per atom.
+// Note that the data is only decoded and length units are typically nm.
+bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_xyz, size_t num_atoms);
 
 struct md_trajectory_i* md_xtc_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_xtc_trajectory_free(struct md_trajectory_i* traj);

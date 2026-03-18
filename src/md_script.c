@@ -1994,7 +1994,7 @@ static inline void indent(md_file_t  file, int amount) {
 }
 
 static void print_node(md_file_t  file, const ast_node_t* node, int depth) {
-    if (!node || !file) return;
+    if (!node || !md_file_valid(file)) return;
 
     indent(file, depth);
     md_file_printf(file, "{\"name\": \"");

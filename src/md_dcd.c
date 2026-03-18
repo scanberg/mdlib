@@ -70,13 +70,10 @@ static inline int32_t dcd_swap32(int32_t v, bool swap) {
     return swap ? (int32_t)BSWAP32((uint32_t)v) : v;
 }
 
-static inline void dcd_swap_float_array(float* data, int count, bool swap) {
+static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
     if (!swap) return;
     for (int i = 0; i < count; ++i) {
-        uint32_t tmp;
-        MEMCPY(&tmp, &data[i], 4);
-        tmp = BSWAP32(tmp);
-        MEMCPY(&data[i], &tmp, 4);
+        data[i] = BSWAP32(data[i]);
     }
 }
 
@@ -357,11 +354,6 @@ static bool dcd_read_bytes_at(md_file_t file, md_file_offset_t* offset, void* pt
     return true;
 }
 
-static void dcd_skip_bytes_at(md_file_offset_t* offset, md_file_offset_t num_bytes) {
-    ASSERT(offset);
-    *offset += num_bytes;
-}
-
 // Read one Fortran coordinate record: [int32: N*4][float[N]][int32: N*4].
 // When out is NULL the data is skipped.  Returns the atom count on success, -1 on error.
 // expected_count is used to validate the record size.
@@ -378,9 +370,9 @@ static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int e
 
     if (out) {
         if (!dcd_read_bytes_at(file, offset, out, (size_t)sz)) return -1;
-        dcd_swap_float_array(out, n, rev);
+        dcd_swap32_array((int32_t*)out, n, rev);
     } else {
-        dcd_skip_bytes_at(offset, sz);
+        *offset += sz;
     }
 
     int32_t sz2 = 0;
@@ -440,7 +432,7 @@ static bool dcd_read_frame_at(md_file_t file,
                 *out_unitcell = dcd_unitcell_from_params(uc);
         } else {
             // Unknown block size: skip the data
-            dcd_skip_bytes_at(offset, block_sz);
+            *offset += block_sz;
         }
 
         int32_t block_sz2 = 0;

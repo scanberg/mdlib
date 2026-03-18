@@ -9,7 +9,7 @@
 
 #define STR(x) {x"", sizeof(x"")-1}
 
-#define FULL_TEST 0
+#define FULL_TEST 1
 
 static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
 static const str_t amy_path = STR(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
@@ -195,17 +195,18 @@ UBENCH_EX(xtc, xtc_catalyst) {
         return;
     }
     
-
-    int natoms, step;
-    float time, box[3][3];
-
+    md_xtc_header_t xtc_header = {0};
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
+    md_array(uint8_t) frame_data = 0;
     
     UBENCH_DO_BENCHMARK() {
         for (size_t i = 0; i < num_frames; ++i) {
-            md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-            md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+			md_file_offset_t frame_beg = frame_offsets[i];
+			md_file_offset_t frame_end = frame_offsets[i + 1];
+			size_t frame_size = frame_end - frame_beg;
+			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_file_read_at(file, frame_beg, frame_data, frame_size);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -236,17 +237,18 @@ UBENCH_EX(xtc, xtc_amyloid) {
         return;
     }
 
-
-    int natoms, step;
-    float time, box[3][3];
-
+    md_xtc_header_t xtc_header = {0};
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
-
+    md_array(uint8_t) frame_data = 0;
+    
     UBENCH_DO_BENCHMARK() {
         for (size_t i = 0; i < num_frames; ++i) {
-            md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-            md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+			md_file_offset_t frame_beg = frame_offsets[i];
+			md_file_offset_t frame_end = frame_offsets[i + 1];
+			size_t frame_size = frame_end - frame_beg;
+			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_file_read_at(file, frame_beg, frame_data, frame_size);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -276,17 +278,18 @@ UBENCH_EX(xtc, xtc_aspirin) {
         return;
     }
 
-
-    int natoms, step;
-    float time, box[3][3];
-
+    md_xtc_header_t xtc_header = {0};
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
-
+    md_array(uint8_t) frame_data = 0;
+    
     UBENCH_DO_BENCHMARK() {
         for (size_t i = 0; i < num_frames; ++i) {
-            md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-            md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+			md_file_offset_t frame_beg = frame_offsets[i];
+			md_file_offset_t frame_end = frame_offsets[i + 1];
+			size_t frame_size = frame_end - frame_beg;
+			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_file_read_at(file, frame_beg, frame_data, frame_size);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -316,17 +319,18 @@ UBENCH_EX(xtc, xtc_ion_channel) {
         return;
     }
 
-
-    int natoms, step;
-    float time, box[3][3];
-
+    md_xtc_header_t xtc_header = {0};
     float* coords = md_vm_arena_push(arena, sizeof(float) * num_atoms * 3);
-
+    md_array(uint8_t) frame_data = 0;
+    
     UBENCH_DO_BENCHMARK() {
         for (size_t i = 0; i < num_frames; ++i) {
-            md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-            md_xtc_read_frame_header(file, &natoms, &step, &time, box);
-            md_xtc_read_frame_coords(file, coords, num_atoms);
+			md_file_offset_t frame_beg = frame_offsets[i];
+			md_file_offset_t frame_end = frame_offsets[i + 1];
+			size_t frame_size = frame_end - frame_beg;
+			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_file_read_at(file, frame_beg, frame_data, frame_size);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 

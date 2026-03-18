@@ -306,19 +306,24 @@ UTEST(xtc, catalyst) {
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
     EXPECT_EQ(xtc_num_frames, num_frames);
 
-    int natoms, step;
-    float time, box[3][3];
+    md_array(uint8_t) frame_data = 0;
+    md_xtc_header_t xtc_header = { 0 };
 
     for (size_t i = 0; i < num_frames; ++i) {
-        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
-        EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
+        md_file_offset_t frame_beg = frame_offsets[i];
+        md_file_offset_t frame_end = frame_offsets[i + 1];
+        size_t frame_size = frame_end - frame_beg;
+        md_file_seek(file, frame_beg, MD_FILE_BEG);
+
+        md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+        size_t read_bytes = md_file_read_at(file, frame_beg, frame_data, frame_size);
+        EXPECT_TRUE(md_xtc_decode_frame_data(frame_data, read_bytes, &xtc_header, xyz, num_atoms));
 
         static const size_t xtc_header_size = 52;
-        xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
-        int ncoord = natoms;
+        xdr_seek(xdr, frame_beg + xtc_header_size, SEEK_SET);
+        int ncoord = xtc_header.natoms;
         float prec;
-        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != xtc_header.natoms) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
@@ -341,7 +346,7 @@ done:
 UTEST(xtc, big) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
-    const str_t path = STR_LIT("/home/robin/data/PROD_r2.part0001.xtc");
+    const str_t path = STR_LIT("E:/data/md/big/PROD_r2.part0001.xtc");
     md_file_t   file = md_file_open(path, MD_FILE_READ);
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
@@ -363,19 +368,24 @@ UTEST(xtc, big) {
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
     EXPECT_EQ(xtc_num_frames, num_frames);
 
-    int natoms, step;
-    float time, box[3][3];
+    md_array(uint8_t) frame_data = 0;
+    md_xtc_header_t xtc_header = { 0 };
 
     for (size_t i = 0; i < 1; ++i) {
-        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
-        EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
+        md_file_offset_t frame_beg = frame_offsets[i];
+        md_file_offset_t frame_end = frame_offsets[i + 1];
+        size_t frame_size = frame_end - frame_beg;
+        md_file_seek(file, frame_beg, MD_FILE_BEG);
+
+        md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+        size_t read_bytes = md_file_read_at(file, frame_beg, frame_data, frame_size);
+        EXPECT_TRUE(md_xtc_decode_frame_data(frame_data, read_bytes, &xtc_header, xyz, num_atoms));
 
         static const size_t xtc_header_size = 52;
         xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
-        int ncoord = natoms;
+        int ncoord = xtc_header.natoms;
         float prec;
-        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != xtc_header.natoms) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
@@ -419,19 +429,20 @@ UTEST(xtc, amyloid) {
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
     EXPECT_EQ(xtc_num_frames, num_frames);
 
-    int natoms, step;
-    float time, box[3][3];
+    md_array(uint8_t) frame_data = 0;
+    md_xtc_header_t xtc_header = { 0 };
 
     for (size_t i = 0; i < 5; ++i) {
-        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
-        EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
+        md_file_offset_t frame_beg = frame_offsets[i];
+        md_file_offset_t frame_end = frame_offsets[i + 1];
+        size_t frame_size = frame_end - frame_beg;
+        md_file_seek(file, frame_beg, MD_FILE_BEG);
 
         static const size_t xtc_header_size = 52;
         xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
-        int ncoord = natoms;
+        int ncoord = xtc_header.natoms;
         float prec;
-        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != xtc_header.natoms) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
@@ -475,19 +486,20 @@ UTEST(xtc, H1N1) {
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
     EXPECT_EQ(xtc_num_frames, num_frames);
 
-    int natoms, step;
-    float time, box[3][3];
+    md_array(uint8_t) frame_data = 0;
+    md_xtc_header_t xtc_header = { 0 };
 
     for (size_t i = 0; i < 1; ++i) {
-        md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
-        EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
-        EXPECT_TRUE(md_xtc_read_frame_coords(file, xyz, num_atoms));
+        md_file_offset_t frame_beg = frame_offsets[i];
+        md_file_offset_t frame_end = frame_offsets[i + 1];
+        size_t frame_size = frame_end - frame_beg;
+        md_file_seek(file, frame_beg, MD_FILE_BEG);
 
         static const size_t xtc_header_size = 52;
         xdr_seek(xdr, frame_offsets[i] + xtc_header_size, SEEK_SET);
-        int ncoord = natoms;
+        int ncoord = xtc_header.natoms;
         float prec;
-        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != natoms) {
+        if (xdrfile_decompress_coord_float(ref, &ncoord, &prec, xdr) != xtc_header.natoms) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
