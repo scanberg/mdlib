@@ -300,7 +300,12 @@ static UBENCH_INLINE ubench_int64_t ubench_ns(void) {
   return UBENCH_CAST(ubench_int64_t, ts.tv_sec) * 1000 * 1000 * 1000 +
          ts.tv_nsec;
 #elif __APPLE__
-  return UBENCH_CAST(ubench_int64_t, mach_absolute_time());
+  static mach_timebase_info_data_t timebase = {0};
+  if (timebase.denom == 0) {
+    mach_timebase_info(&timebase);
+  }
+  ubench_int64_t ticks = mach_absolute_time();
+  return (ticks * timebase.numer) / timebase.denom;
 #endif
 }
 
