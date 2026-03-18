@@ -289,7 +289,7 @@ UTEST(xtc, catalyst) {
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -346,7 +346,7 @@ UTEST(xtc, big) {
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -402,7 +402,7 @@ UTEST(xtc, amyloid) {
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -458,7 +458,7 @@ UTEST(xtc, H1N1) {
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;

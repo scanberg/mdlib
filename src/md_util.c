@@ -877,6 +877,9 @@ static inline int fifo_pop(fifo_t* fifo) {
 
 static md_array(uint64_t) make_bitfield(size_t num_bits, md_allocator_i* alloc) {
     size_t num_elem = DIV_UP(num_bits, 64);
+    if (num_elem == 0) {
+        return NULL;
+    }
     md_array(uint64_t) bits = md_array_create(uint64_t, num_elem, alloc);
     MEMSET(bits, 0, md_array_bytes(bits));
     return bits;
@@ -927,8 +930,9 @@ static inline void bitfield_clear_bit(uint64_t* bits, int64_t idx) {
 }
 
 static inline size_t bitfield_popcount(const uint64_t* bits, size_t num_bits) {
-    ASSERT(bits);
-    ASSERT(num_bits > 0);
+    if (bits == NULL || num_bits == 0) {
+        return 0;
+    }
     const uint64_t* it = bits;
     const uint64_t* end = bits + DIV_UP(num_bits, 64) - 1;
     size_t count = 0;

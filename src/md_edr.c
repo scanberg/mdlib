@@ -753,7 +753,7 @@ static md_unit_t unit_from_str(str_t str) {
 		return md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
 	}
 	if (str_eq_cstr(str, "nm/ps")) {
-		return md_unit_div(md_unit_nanometer(), md_unit_pikosecond());
+		return md_unit_div(md_unit_nanometer(), md_unit_picosecond());
 	}
 
 	md_logf(MD_LOG_TYPE_INFO, "Failed to match supplied unit '%.*s'", (int)str.len, str.ptr);

@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 
 include(cmake/CheckVCPKG.cmake)
 
@@ -105,6 +105,8 @@ set(SRC_FILES
   src/md_gro.h
   src/md_gto.c
   src/md_gto.h
+  src/md_dcd.c
+  src/md_dcd.h
   src/md_lammps.c
   src/md_lammps.h
   src/md_mmcif.c

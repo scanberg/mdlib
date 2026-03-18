@@ -22,7 +22,7 @@ UTEST(xyz, xyz_standard) {
     EXPECT_NEAR(62.491f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -64,7 +64,7 @@ UTEST(xyz, xyz_xmol) {
     EXPECT_NEAR( 3.629187f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -95,7 +95,7 @@ UTEST(xyz, xyz_tinker) {
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
     
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -126,7 +126,7 @@ UTEST(xyz, xyz_tinker_arc) {
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -154,7 +154,7 @@ UTEST(xyz, o2_arc) {
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -175,7 +175,7 @@ UTEST(xyz, h2o_arc) {
     EXPECT_EQ(2000 * 3, data.num_coordinates);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
@@ -196,7 +196,7 @@ UTEST(xyz, ch4_arc) {
     EXPECT_EQ(2000 * 5, data.num_coordinates);
 
     md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(file);
+    ASSERT_TRUE(md_file_valid(file));
     for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);

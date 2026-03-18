@@ -18,7 +18,6 @@ struct md_trajectory_o;
 typedef struct md_trajectory_header_t {
 	size_t   num_frames;
 	size_t   num_atoms;
-	size_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
 	md_unit_t time_unit;
     const double* frame_times;  // Array of length num_frames
 } md_trajectory_header_t;
@@ -77,14 +76,6 @@ static inline size_t md_trajectory_num_atoms(const md_trajectory_i* traj) {
 	md_trajectory_header_t header;
 	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
 		return header.num_atoms;
-	}
-	return 0;
-}
-
-static inline size_t md_trajectory_max_frame_data_size(const md_trajectory_i* traj) {
-	md_trajectory_header_t header;
-	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
-		return header.max_frame_data_size;
 	}
 	return 0;
 }

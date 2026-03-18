@@ -154,27 +154,91 @@ UTEST(os, semaphore) {
     EXPECT_TRUE(md_semaphore_destroy(&sema));
 }
 
-#include <core/md_str_builder.h>
+UTEST(os, path_validity) {
+    const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+    const str_t bad_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/missing.txt");
 
-UTEST(os, file_read_lines) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro");
-    str_t ref = load_textfile(path, md_get_heap_allocator());
+    EXPECT_TRUE(md_path_is_valid(file_path));
+    EXPECT_TRUE(md_path_is_valid(dir_path));
+    EXPECT_FALSE(md_path_is_valid(bad_path));
 
-    
-    md_file_t  file = md_file_open(path, MD_FILE_READ);
-    
-    md_strb_t sb = md_strb_create(md_get_heap_allocator());
-    
-    const int64_t cap = KILOBYTES(1);
-    char* buf = md_alloc(md_get_heap_allocator(), cap);
-    
-    int64_t bytes_read;
-    while (bytes_read = md_file_read_lines(file, buf, cap)) {
-        md_strb_push_str(&sb, (str_t){buf, bytes_read});
-    }
+    EXPECT_FALSE(md_path_is_directory(file_path));
+    EXPECT_TRUE(md_path_is_directory(dir_path));
+    EXPECT_FALSE(md_path_is_directory(bad_path));
+}
 
-    str_t str = md_strb_to_str(sb);
-    EXPECT_TRUE(str_eq(str, ref));
+UTEST(os, file_info_extract) {
+    const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
 
-    md_free(md_get_heap_allocator(), buf, cap);
+    md_file_t file = md_file_open(file_path, MD_FILE_READ);
+    ASSERT_TRUE(md_file_valid(file));
+
+    md_file_info_t info = {0};
+    ASSERT_TRUE(md_file_info_extract(file, &info));
+    EXPECT_EQ(info.size, 5);
+    EXPECT_TRUE((info.flags & MD_FILE_INFO_IS_REGULAR) != 0);
+    EXPECT_FALSE((info.flags & MD_FILE_INFO_IS_DIRECTORY) != 0);
+
+    md_file_info_t path_info = {0};
+    ASSERT_TRUE(md_file_info_extract_from_path(file_path, &path_info));
+    EXPECT_EQ(path_info.size, 5);
+    EXPECT_TRUE((path_info.flags & MD_FILE_INFO_IS_REGULAR) != 0);
+
+    md_file_info_t dir_info = {0};
+    ASSERT_TRUE(md_file_info_extract_from_path(dir_path, &dir_info));
+    EXPECT_TRUE((dir_info.flags & MD_FILE_INFO_IS_DIRECTORY) != 0);
+
+    EXPECT_TRUE(md_file_close(&file));
+    EXPECT_FALSE(md_file_valid(file));
+}
+
+UTEST(os, file_read_seek_tell_size) {
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    md_file_t file = md_file_open(path, MD_FILE_READ);
+    ASSERT_TRUE(md_file_valid(file));
+
+    EXPECT_EQ(md_file_size(file), 5);
+    EXPECT_EQ(md_file_tell(file), 0);
+
+    char buf[6] = {0};
+    EXPECT_EQ(md_file_read(file, buf, 2), 2);
+    EXPECT_EQ(md_file_tell(file), 2);
+    EXPECT_STREQ(buf, "he");
+
+    EXPECT_TRUE(md_file_seek(file, 0, MD_FILE_BEG));
+    MEMSET(buf, 0, sizeof(buf));
+    EXPECT_EQ(md_file_read(file, buf, 5), 5);
+    EXPECT_STREQ(buf, "hello");
+    EXPECT_EQ(md_file_tell(file), 5);
+
+    EXPECT_TRUE(md_file_seek(file, -2, MD_FILE_END));
+    EXPECT_EQ(md_file_tell(file), 3);
+    MEMSET(buf, 0, sizeof(buf));
+    EXPECT_EQ(md_file_read(file, buf, 2), 2);
+    EXPECT_STREQ(buf, "lo");
+
+    EXPECT_TRUE(md_file_close(&file));
+    EXPECT_FALSE(md_file_valid(file));
+}
+
+UTEST(os, file_read_at_preserves_offset) {
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    md_file_t file = md_file_open(path, MD_FILE_READ);
+    ASSERT_TRUE(md_file_valid(file));
+
+    EXPECT_TRUE(md_file_seek(file, 2, MD_FILE_BEG));
+    EXPECT_EQ(md_file_tell(file), 2);
+
+    char whole[6] = {0};
+    EXPECT_EQ(md_file_read_at(file, 0, whole, 5), 5);
+    EXPECT_STREQ(whole, "hello");
+    EXPECT_EQ(md_file_tell(file), 2);
+
+    char tail[4] = {0};
+    EXPECT_EQ(md_file_read(file, tail, 3), 3);
+    EXPECT_STREQ(tail, "llo");
+
+    EXPECT_TRUE(md_file_close(&file));
 }

@@ -20,7 +20,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(cat_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -60,7 +60,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(amy_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -98,7 +98,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(asp_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -136,7 +136,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(ion_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -175,7 +175,7 @@ UBENCH_EX(xtc, xtc_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(cat_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -217,7 +217,7 @@ UBENCH_EX(xtc, xtc_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(amy_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -257,7 +257,7 @@ UBENCH_EX(xtc, xtc_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(asp_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }
@@ -297,7 +297,7 @@ UBENCH_EX(xtc, xtc_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_file_t  file = md_file_open(ion_path, MD_FILE_READ);
 
-    if (!file) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("Bad");
         return;
     }

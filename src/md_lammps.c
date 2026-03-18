@@ -1655,7 +1655,7 @@ void lammps_trajectory_free(struct md_trajectory_o* inst) {
 	lammps_trajectory_data_free(lammps_traj);
 }
 
-md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
+md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
 	md_file_t  file = md_file_open(filename, MD_FILE_READ);
 	if (!md_file_valid(file)) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
@@ -1720,7 +1720,6 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	traj_data->header = (md_trajectory_header_t){
 		.num_frames = cache.header.num_frames,
 		.num_atoms = cache.header.num_atoms,
-		.max_frame_data_size = max_frame_size,
 		.time_unit = md_unit_femtosecond(),
 		.frame_times = frame_times,
 	};
