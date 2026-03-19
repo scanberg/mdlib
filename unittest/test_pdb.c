@@ -110,6 +110,32 @@ UTEST(pdb, trajectory_i) {
     md_arena_allocator_destroy(alloc);
 }
 
+UTEST(pdb, trajectory_reader_i) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    ASSERT_TRUE(traj);
+
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    void* mem_ptr = md_alloc(alloc, mem_size);
+    float *x = (float*)mem_ptr;
+    float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+
+    md_trajectory_reader_i reader = {0};
+    ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
+
+    md_trajectory_frame_header_t header = {0};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_EQ(153, header.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_EQ(153, header.num_atoms);
+
+    md_trajectory_reader_free(&reader);
+    md_pdb_trajectory_free(traj);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(pdb, create_system) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");

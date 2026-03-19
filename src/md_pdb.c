@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
+#define MD_PDB_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
 #define MD_PDB_CACHE_VERSION 15
 #define MD_PDB_PARSE_BIOMT 1
@@ -36,6 +37,14 @@ typedef struct pdb_trajectory_t {
     md_trajectory_header_t header;
     md_allocator_i* allocator;
 } pdb_trajectory_t;
+
+typedef struct pdb_reader_t {
+    uint64_t magic;
+    md_file_t file;
+    const pdb_trajectory_t* traj;
+    md_array(uint8_t) frame_data;
+    md_allocator_i* arena;
+} pdb_reader_t;
 
 static inline void copy_str_field(char* dst, size_t dst_size, str_t line, size_t beg, size_t end) {
     str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
@@ -210,8 +219,7 @@ bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
+static size_t pdb_fetch_frame_data(const pdb_trajectory_t* pdb, md_file_t file, int64_t frame_idx, void* frame_data_ptr) {
     ASSERT(pdb);
     ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
 
@@ -230,26 +238,22 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     size_t frame_size = (size_t)MAX(0, end - beg);
 
     if (frame_data_ptr) {
-	    md_file_t file = { 0 };
-        if (!md_file_open(&file, pdb->filepath, MD_FILE_READ)) {
+        if (!md_file_valid(file)) {
             MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(pdb->filepath));
             return 0;
 	    }
 
         size_t bytes_read = md_file_read_at(file, beg, frame_data_ptr, frame_size);
 		frame_size = (bytes_read == frame_size) ? frame_size : 0;
-		md_file_close(&file);
     }
 
     return frame_size;
 }
 
-bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data, size_t frame_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
+static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame_data, size_t frame_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(frame_data);
     ASSERT(frame_size);
 
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
         MD_LOG_ERROR("Error when decoding frame header, pdb magic did not match");
         return false;
@@ -700,33 +704,86 @@ md_system_loader_i* md_pdb_system_loader(void) {
 }
 
 bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    (void)inst;
+    (void)frame_idx;
+    (void)header;
+    (void)x;
+    (void)y;
+    (void)z;
+    return false;
+}
+
+static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
+    pdb_reader_t* reader = (pdb_reader_t*)inst;
+    ASSERT(reader->magic == MD_PDB_TRAJ_READER_MAGIC);
+
+    const pdb_trajectory_t* pdb = reader->traj;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
+        MD_LOG_ERROR("Error when decoding frame coord, pdb magic did not match");
         return false;
     }
 
     bool result = false;
-    const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = pdb_fetch_frame_data(pdb, reader->file, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = md_get_heap_allocator();
-        void* frame_data = md_alloc(alloc, frame_size);
-        ASSERT(frame_data);
-
-        const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
+        md_array_ensure(reader->frame_data, frame_size, reader->arena);
+        const size_t read_size = pdb_fetch_frame_data(pdb, reader->file, frame_idx, reader->frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
-            goto done;
+            return false;
         }
 
-        result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-    done:
-        md_free(alloc, frame_data, frame_size);
+        result = pdb_decode_frame_data(pdb, reader->frame_data, frame_size, header, x, y, z);
     }
 
     return result;
+}
+
+static void pdb_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+    if (!reader) {
+        return;
+    }
+
+    pdb_reader_t* inst = (pdb_reader_t*)reader->inst;
+    if (inst) {
+        ASSERT(inst->magic == MD_PDB_TRAJ_READER_MAGIC);
+        if (md_file_valid(inst->file)) {
+            md_file_close(&inst->file);
+        }
+        md_arena_allocator_destroy(inst->arena);
+    }
+
+    MEMSET(reader, 0, sizeof(*reader));
+}
+
+static bool pdb_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+    ASSERT(reader);
+    ASSERT(traj_inst);
+
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj_inst;
+    ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
+
+    md_file_t file = {0};
+    if (!md_file_open(&file, pdb->filepath, MD_FILE_READ)) {
+        MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(pdb->filepath));
+        return false;
+    }
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    pdb_reader_t* inst = md_alloc(arena, sizeof(pdb_reader_t));
+    MEMSET(inst, 0, sizeof(pdb_reader_t));
+    inst->magic = MD_PDB_TRAJ_READER_MAGIC;
+    inst->file = file;
+    inst->traj = pdb;
+    inst->arena = arena;
+
+    MEMSET(reader, 0, sizeof(*reader));
+    reader->inst = (struct md_trajectory_reader_o*)inst;
+    reader->free = pdb_trajectory_reader_free;
+    reader->load_frame = pdb_reader_load_frame;
+    return true;
 }
 
 typedef struct pdb_cache_t {
@@ -932,8 +989,9 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb->unitcell = cache.cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
+    traj->free = md_pdb_trajectory_free;
     traj->get_header = pdb_get_header;
-    traj->load_frame = pdb_load_frame;
+    traj->init_reader = pdb_trajectory_reader_init;
 
     return traj;
 }
@@ -949,15 +1007,6 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
     }
     
     md_arena_allocator_destroy(pdb->allocator);
-}
-
-static md_trajectory_loader_i pdb_traj_loader = {
-    md_pdb_trajectory_create,
-    md_pdb_trajectory_free,
-};
-
-md_trajectory_loader_i* md_pdb_trajectory_loader(void) {
-    return &pdb_traj_loader;
 }
 
 #ifdef __cplusplus

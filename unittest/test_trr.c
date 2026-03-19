@@ -31,6 +31,30 @@ UTEST(trr, trajectory_i) {
     md_trr_trajectory_free(traj);
 }
 
+UTEST(trr, trajectory_reader_i) {
+    md_trajectory_i* traj = md_trr_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    ASSERT_TRUE(traj);
+
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
+    float *x = (float*)mem_ptr;
+    float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+
+    md_trajectory_reader_i reader = {0};
+    ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
+
+    md_trajectory_frame_header_t header = {0};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_EQ(6495, header.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_EQ(6495, header.num_atoms);
+
+    md_trajectory_reader_free(&reader);
+    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
+    md_trr_trajectory_free(traj);
+}
+
 UTEST(trr, nonexistent_file) {
     md_trajectory_i* traj = md_trr_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.trr"), md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     EXPECT_FALSE(traj);

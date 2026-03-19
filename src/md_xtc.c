@@ -1094,9 +1094,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;
+        traj->free = md_xtc_trajectory_free;
         traj->get_header = xtc_get_header;
-        traj->load_frame = xtc_load_frame;
-
 		traj->init_reader = xtc_trajectory_reader_init;
 
         md_file_close(&file);
@@ -1118,13 +1117,5 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     md_arena_allocator_destroy(xtc->alloc);
-}
-
-static md_trajectory_loader_i xtc_loader = {
-    md_xtc_trajectory_create,
-    md_xtc_trajectory_free,
-};
-
-md_trajectory_loader_i* md_xtc_trajectory_loader(void) {
-    return &xtc_loader;
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
 }

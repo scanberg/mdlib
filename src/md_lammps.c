@@ -12,6 +12,7 @@
 #include <string.h>
 
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
+#define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
 #define MD_LAMMPS_CACHE_MAGIC 0x89172bab
 #define MD_LAMMPS_CACHE_VERSION 15
 #define MD_LAMMPS_MOLECULE_LOADER_ARG_TYPE 0x341293abc8273650
@@ -67,12 +68,20 @@ typedef struct lammps_trajectory_t {
 	uint64_t magic;
 	int64_t* frame_offsets;
 
-	md_file_t file;
+	str_t filepath;
 	md_trajectory_header_t header;
 	coord_mappings_t coord_mappings;
 
 	md_allocator_i* allocator;
 } lammps_trajectory_t;
+
+typedef struct lammps_reader_t {
+	uint64_t magic;
+	md_file_t file;
+	const lammps_trajectory_t* traj;
+	md_array(uint8_t) frame_data;
+	md_allocator_i* arena;
+} lammps_reader_t;
 
 typedef struct lammps_cache_t {
 	md_trajectory_cache_header_t header;
@@ -1038,12 +1047,11 @@ bool lammps_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* hea
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-size_t lammps_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
-	lammps_trajectory_t* traj_data = (lammps_trajectory_t*)inst;
+static size_t lammps_fetch_frame_data(const lammps_trajectory_t* traj_data, md_file_t file, int64_t frame_idx, void* frame_data_ptr) {
 	ASSERT(traj_data);
 	ASSERT(traj_data->magic == MD_LAMMPS_TRAJ_MAGIC);
 
-	if (!md_file_valid(traj_data->file)) {
+	if (!md_file_valid(file)) {
 		MD_LOG_ERROR("File handle is NULL");
 		return 0;
 	}
@@ -1068,8 +1076,8 @@ size_t lammps_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, 
 		int64_t* ptr = (int64_t*)frame_data_ptr;
 		ptr[0] = frame_idx;
 
-		ASSERT(md_file_valid(traj_data->file));
-		const size_t bytes_read = md_file_read_at(traj_data->file, beg, &ptr[1], frame_size);
+		ASSERT(md_file_valid(file));
+		const size_t bytes_read = md_file_read_at(file, beg, &ptr[1], frame_size);
 		(void)bytes_read;
 		ASSERT(frame_size == bytes_read);
 	}
@@ -1276,8 +1284,7 @@ int compare_id_xyz(const void* a, const void* b) {
 	return id_xyz_a->id - id_xyz_b->id;
 }
 
-bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* out_frame_header, float* out_x, float* out_y, float* out_z) {
-	ASSERT(inst);
+static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* out_frame_header, float* out_x, float* out_y, float* out_z) {
 	ASSERT(data_ptr);
 	ASSERT(data_size);
 
@@ -1289,7 +1296,6 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	bool output_header = out_frame_header != NULL;
 	bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
 
-	lammps_trajectory_t* traj_data = (lammps_trajectory_t*)inst;
 	if (traj_data->magic != MD_LAMMPS_TRAJ_MAGIC) {
 		MD_LOG_ERROR("Error when decoding frame header, lammps magic did not match");
 		return false;
@@ -1495,35 +1501,86 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 
 //Loads the frame data from a given frame index, reading only the relevant part file for that frame.
 bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+	(void)inst;
+	(void)frame_idx;
+	(void)header;
+	(void)x;
+	(void)y;
+	(void)z;
+	return false;
+}
+
+static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
 	ASSERT(inst);
 
-	lammps_trajectory_t* lammps_traj = (lammps_trajectory_t*)inst;
+	lammps_reader_t* reader = (lammps_reader_t*)inst;
+	ASSERT(reader->magic == MD_LAMMPS_TRAJ_READER_MAGIC);
+
+	const lammps_trajectory_t* lammps_traj = reader->traj;
 	if (lammps_traj->magic != MD_LAMMPS_TRAJ_MAGIC) {
-		MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
+		MD_LOG_ERROR("Error when decoding frame coord, lammps magic did not match");
 		return false;
 	}
 
 	bool result = true;
-	const size_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
-	if (frame_size > 0) { //This check first that there actually is data to be read, before writing to frame_data
-		md_allocator_i* alloc = md_get_heap_allocator();
-
-		void* frame_data = md_alloc(alloc, frame_size);
-		ASSERT(frame_data);
-
-		const size_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
+	const size_t frame_size = lammps_fetch_frame_data(lammps_traj, reader->file, frame_idx, NULL);
+	if (frame_size > 0) {
+		md_array_ensure(reader->frame_data, frame_size, reader->arena);
+		const size_t read_size = lammps_fetch_frame_data(lammps_traj, reader->file, frame_idx, reader->frame_data);
 		if (read_size != frame_size) {
 			MD_LOG_ERROR("Failed to read the expected size");
-			goto done;
+			return false;
 		}
 
-		//Decode is what actually writes the data to x, y and z which are float pointers
-		result = lammps_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-done:
-		md_free(alloc, frame_data, frame_size);
+		result = lammps_decode_frame_data(lammps_traj, reader->frame_data, frame_size, header, x, y, z);
 	}
 
 	return result;
+}
+
+static void lammps_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+	if (!reader) {
+		return;
+	}
+
+	lammps_reader_t* inst = (lammps_reader_t*)reader->inst;
+	if (inst) {
+		ASSERT(inst->magic == MD_LAMMPS_TRAJ_READER_MAGIC);
+		if (md_file_valid(inst->file)) {
+			md_file_close(&inst->file);
+		}
+		md_arena_allocator_destroy(inst->arena);
+	}
+
+	MEMSET(reader, 0, sizeof(*reader));
+}
+
+static bool lammps_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+	ASSERT(reader);
+	ASSERT(traj_inst);
+
+	lammps_trajectory_t* traj = (lammps_trajectory_t*)traj_inst;
+	ASSERT(traj->magic == MD_LAMMPS_TRAJ_MAGIC);
+
+	md_file_t file = {0};
+	if (!md_file_open(&file, traj->filepath, MD_FILE_READ)) {
+		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
+		return false;
+	}
+
+	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+	lammps_reader_t* inst = md_alloc(arena, sizeof(lammps_reader_t));
+	MEMSET(inst, 0, sizeof(lammps_reader_t));
+	inst->magic = MD_LAMMPS_TRAJ_READER_MAGIC;
+	inst->file = file;
+	inst->traj = traj;
+	inst->arena = arena;
+
+	MEMSET(reader, 0, sizeof(*reader));
+	reader->inst = (struct md_trajectory_reader_o*)inst;
+	reader->free = lammps_trajectory_reader_free;
+	reader->load_frame = lammps_reader_load_frame;
+	return true;
 }
 
 static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_num_bytes, md_allocator_i* alloc) {
@@ -1646,7 +1703,6 @@ done:
 
 void lammps_trajectory_data_free(struct lammps_trajectory_t* lammps_traj) {
 	ASSERT(lammps_traj);
-	if (md_file_valid(lammps_traj->file)) md_file_close(&lammps_traj->file);
 	if (lammps_traj->frame_offsets) md_array_free(lammps_traj->frame_offsets, lammps_traj->allocator);
 	if (lammps_traj->header.frame_times) md_array_free(lammps_traj->header.frame_times, lammps_traj->allocator);
 }
@@ -1715,7 +1771,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	lammps_trajectory_t* traj_data = (lammps_trajectory_t*)(traj + 1);
 
 	traj_data->magic = MD_LAMMPS_TRAJ_MAGIC;
-	md_file_open(&traj_data->file, filename, MD_FILE_READ);
+	traj_data->filepath = str_copy(filename, alloc);
 	traj_data->frame_offsets = cache.frame_offsets;
 	traj_data->allocator = alloc;
 
@@ -1729,10 +1785,9 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	traj_data->coord_mappings = cache.coord_mappings;
 
 	traj->inst = (struct md_trajectory_o*)traj_data;
+	traj->free = md_lammps_trajectory_free;
 	traj->get_header = lammps_get_header;
-	traj->load_frame = lammps_load_frame;
-	//traj->fetch_frame_data = lammps_fetch_frame_data;
-	//traj->decode_frame_data = lammps_decode_frame_data;
+	traj->init_reader = lammps_trajectory_reader_init;
 
 	return traj;
 }
@@ -1750,13 +1805,4 @@ void md_lammps_trajectory_free(md_trajectory_i* traj) {
 	md_allocator_i* alloc = lammps_data->allocator;
 	lammps_trajectory_free(traj->inst);
 	md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(lammps_trajectory_t));
-}
-
-static md_trajectory_loader_i lammps_traj_loader = {
-	md_lammps_trajectory_create,
-	md_lammps_trajectory_free,
-};
-
-md_trajectory_loader_i* md_lammps_trajectory_loader(void) {
-	return &lammps_traj_loader;
 }

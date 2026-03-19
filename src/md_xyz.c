@@ -23,6 +23,7 @@ extern "C" {
 #define MD_XYZ_CACHE_VERSION    2
 #define MD_XYZ_MOL_MAGIC        0x285ada29078a9bc8
 #define MD_XYZ_TRAJ_MAGIC       0x2312ad7b78a9bc78
+#define MD_XYZ_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
 
 enum {
     XYZ_TINKER          = 1,
@@ -39,12 +40,20 @@ typedef struct xyz_molecule_t {
 
 typedef struct xyz_trajectory_t {
     uint64_t magic;
-    md_file_t  file;
+    str_t filepath;
     int64_t* frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     uint32_t flags;
 } xyz_trajectory_t;
+
+typedef struct xyz_reader_t {
+    uint64_t magic;
+    md_file_t file;
+    const xyz_trajectory_t* traj;
+    md_array(uint8_t) frame_data;
+    md_allocator_i* arena;
+} xyz_reader_t;
 
 // We massage the beg and end indices here to correspond the xyz specification
 // This makes our life easier when specifying all the different ranges
@@ -498,12 +507,11 @@ bool xyz_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
+static size_t xyz_fetch_frame_data(const xyz_trajectory_t* xyz, md_file_t file, int64_t frame_idx, void* frame_data_ptr) {
     ASSERT(xyz);
     ASSERT(xyz->magic == MD_XYZ_TRAJ_MAGIC);
 
-    if (!md_file_valid(xyz->file)) {
+    if (!md_file_valid(file)) {
         MD_LOG_ERROR("File handle is NULL");
         return 0;
     }
@@ -528,8 +536,8 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
         int64_t* ptr = (int64_t*)frame_data_ptr;
         ptr[0] = frame_idx;
 
-        ASSERT(md_file_valid(xyz->file));
-        const size_t bytes_read = md_file_read_at(xyz->file, beg, &ptr[1], frame_size);
+        ASSERT(md_file_valid(file));
+        const size_t bytes_read = md_file_read_at(file, beg, &ptr[1], frame_size);
         (void)bytes_read;
         ASSERT(frame_size == bytes_read);
     }
@@ -537,9 +545,7 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     return total_size;
 }
 
-bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
-
+static bool xyz_decode_frame_data(const xyz_trajectory_t* xyz, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     if (!data_ptr) {
         MD_LOG_ERROR("Data pointer is NULL");
         return false;
@@ -550,7 +556,6 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, s
         return false;
     }
 
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
     if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
         MD_LOG_ERROR("Error when decoding frame header, xyz magic did not match");
         return false;
@@ -816,31 +821,86 @@ md_system_loader_i* md_xyz_system_loader(void) {
 }
 
 bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    (void)inst;
+    (void)frame_idx;
+    (void)header;
+    (void)x;
+    (void)y;
+    (void)z;
+    return false;
+}
+
+static bool xyz_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
+    xyz_reader_t* reader = (xyz_reader_t*)inst;
+    ASSERT(reader->magic == MD_XYZ_TRAJ_READER_MAGIC);
+
+    const xyz_trajectory_t* xyz = reader->traj;
     if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
+        MD_LOG_ERROR("Error when decoding frame coord, xyz magic did not match");
         return false;
     }
 
     bool result = false;
-    size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
+    size_t frame_size = xyz_fetch_frame_data(xyz, reader->file, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = md_get_heap_allocator();
-        void* frame_data = md_alloc(alloc, frame_size);
-        size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
+        md_array_ensure(reader->frame_data, frame_size, reader->arena);
+        size_t read_size = xyz_fetch_frame_data(xyz, reader->file, frame_idx, reader->frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
-            goto done;
+            return false;
         }
 
-        result = xyz_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-    done:
-        md_free(alloc, frame_data, frame_size);
+        result = xyz_decode_frame_data(xyz, reader->frame_data, frame_size, header, x, y, z);
     }
 
     return result;
+}
+
+static void xyz_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+    if (!reader) {
+        return;
+    }
+
+    xyz_reader_t* inst = (xyz_reader_t*)reader->inst;
+    if (inst) {
+        ASSERT(inst->magic == MD_XYZ_TRAJ_READER_MAGIC);
+        if (md_file_valid(inst->file)) {
+            md_file_close(&inst->file);
+        }
+        md_arena_allocator_destroy(inst->arena);
+    }
+
+    MEMSET(reader, 0, sizeof(*reader));
+}
+
+static bool xyz_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+    ASSERT(reader);
+    ASSERT(traj_inst);
+
+    xyz_trajectory_t* xyz = (xyz_trajectory_t*)traj_inst;
+    ASSERT(xyz->magic == MD_XYZ_TRAJ_MAGIC);
+
+    md_file_t file = {0};
+    if (!md_file_open(&file, xyz->filepath, MD_FILE_READ)) {
+        MD_LOG_ERROR("XYZ: Failed to open file '" STR_FMT "'", STR_ARG(xyz->filepath));
+        return false;
+    }
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    xyz_reader_t* inst = md_alloc(arena, sizeof(xyz_reader_t));
+    MEMSET(inst, 0, sizeof(xyz_reader_t));
+    inst->magic = MD_XYZ_TRAJ_READER_MAGIC;
+    inst->file = file;
+    inst->traj = xyz;
+    inst->arena = arena;
+
+    MEMSET(reader, 0, sizeof(*reader));
+    reader->inst = (struct md_trajectory_reader_o*)inst;
+    reader->free = xyz_trajectory_reader_free;
+    reader->load_frame = xyz_reader_load_frame;
+    return true;
 }
 
 typedef struct xyz_cache_t {
@@ -1014,7 +1074,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
-    md_file_open(&xyz->file, filename, MD_FILE_READ);
+    xyz->filepath = str_copy(filename, alloc);
     xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
     xyz->header = (md_trajectory_header_t) {
@@ -1026,10 +1086,9 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     xyz->flags = xyz_flags;
 
     traj->inst = (struct md_trajectory_o*)xyz;
+    traj->free = md_xyz_trajectory_free;
     traj->get_header = xyz_get_header;
-    traj->load_frame = xyz_load_frame;
-    //traj->fetch_frame_data = xyz_fetch_frame_data;
-    //traj->decode_frame_data = xyz_decode_frame_data;
+    traj->init_reader = xyz_trajectory_reader_init;
 
     return traj;
 }
@@ -1044,17 +1103,7 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    if (md_file_valid(xyz->file)) md_file_close(&xyz->file);
     md_arena_allocator_destroy(xyz->allocator);
-}
-
-static md_trajectory_loader_i xyz_traj_loader = {
-    md_xyz_trajectory_create,
-    md_xyz_trajectory_free,
-};
-
-md_trajectory_loader_i* md_xyz_trajectory_loader(void) {
-    return &xyz_traj_loader;
 }
 
 #ifdef __cplusplus

@@ -53,26 +53,16 @@ typedef struct md_trajectory_reader_i {
 
 typedef struct md_trajectory_i {
 	struct md_trajectory_o* inst; // Opaque trajectory data
+	void (*free)(struct md_trajectory_i* self);
 
 	// Retrieves the common trajectory header metadata.
 	bool (*get_header)(struct md_trajectory_o* inst, md_trajectory_header_t* header);
 
-	// --- READER MODE ---
 	// Creates a reader with private I/O state suitable for reuse by a single worker/thread.
 	// The trajectory object owns shared immutable metadata, while the reader owns transient state
 	// such as file handles, scratch buffers and format specific decode state.
 	bool (*init_reader)(md_trajectory_reader_i* reader, struct md_trajectory_o* inst);
-
-	// --- EASY MODE ---
-    // Loads data for frame 'idx' into the supplied buffers. The buffers must be large enough to hold the data.
-    // each field is optional and can be NULL if you don't need it.
-	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 } md_trajectory_i;
-
-typedef struct md_trajectory_loader_i {
-	md_trajectory_i* (*create)(str_t filename, struct md_allocator_i* alloc, md_trajectory_flags_t flags);
-	void (*destroy)(md_trajectory_i* traj);
-} md_trajectory_loader_i;
 
 #ifdef __cplusplus
 }
@@ -120,6 +110,12 @@ static inline bool md_trajectory_get_header(const md_trajectory_i* traj, md_traj
 	return false;
 }
 
+static inline void md_trajectory_free(md_trajectory_i* traj) {
+	if (traj && traj->inst && traj->free) {
+		traj->free(traj);
+	}
+}
+
 // Reader mode operations
 static inline bool md_trajectory_reader_init(md_trajectory_reader_i* reader, const md_trajectory_i* traj) {
 	if (traj && traj->inst && traj->init_reader) {
@@ -142,8 +138,13 @@ static inline bool md_trajectory_reader_load_frame(md_trajectory_reader_i reader
 }
 
 static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t idx, md_trajectory_frame_header_t* frame_header, float* x, float* y, float* z) {
-	if (traj && traj->inst && traj->load_frame) {
-		return traj->load_frame(traj->inst, idx, frame_header, x, y, z);
+	bool result = false;
+	if (traj && traj->inst && traj->init_reader) {
+		md_trajectory_reader_i reader = {0};
+		if (traj->init_reader(&reader, traj->inst)) {
+			result = md_trajectory_reader_load_frame(reader, idx, frame_header, x, y, z);
+			md_trajectory_reader_free(&reader);
+		}
 	}
-	return false;
+	return result;
 }

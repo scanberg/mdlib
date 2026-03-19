@@ -14,7 +14,6 @@ struct md_allocator_i;
 struct md_system_t;
 struct md_system_loader_i;
 struct md_trajectory_i;
-struct md_trajectory_loader_i;
 
 typedef struct md_xyz_coordinate_t {
 	int  atom_index;
@@ -57,8 +56,6 @@ struct md_system_loader_i* md_xyz_system_loader(void);
 // TRAJECTORY
 struct md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_xyz_trajectory_free(struct md_trajectory_i* traj);
-
-struct md_trajectory_loader_i* md_xyz_trajectory_loader(void);
 
 #ifdef __cplusplus
 }

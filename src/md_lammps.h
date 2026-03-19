@@ -150,8 +150,6 @@ struct md_system_loader_i* md_lammps_system_loader(void);
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_lammps_trajectory_free(struct md_trajectory_i* traj);
 
-struct md_trajectory_loader_i* md_lammps_trajectory_loader(void);
-
 #ifdef __cplusplus
 }
 #endif

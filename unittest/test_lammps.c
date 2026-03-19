@@ -364,6 +364,34 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
 
 }
 
+UTEST(lammps, trajectory_reader_i) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj");
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    ASSERT_TRUE(traj);
+
+    size_t num_atoms = md_trajectory_num_atoms(traj);
+    size_t stride = ALIGN_TO(num_atoms, 16);
+    const size_t bytes = stride * 3 * sizeof(float);
+    void* mem = md_alloc(md_get_temp_allocator(), bytes);
+    float* x = (float*)mem + stride * 0;
+    float* y = (float*)mem + stride * 1;
+    float* z = (float*)mem + stride * 2;
+
+    md_trajectory_reader_i reader = {0};
+    ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
+
+    md_trajectory_frame_header_t header = {0};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_EQ(7800, header.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_EQ(7800, header.num_atoms);
+
+    md_trajectory_reader_free(&reader);
+    md_free(md_get_temp_allocator(), mem, bytes);
+    md_lammps_trajectory_free(traj);
+}
+
 
 UTEST(lammps, comprehensive_data_validation) {
     md_allocator_i* alloc = md_get_heap_allocator();

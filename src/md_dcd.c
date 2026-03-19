@@ -6,11 +6,13 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_str.h>
 #include <core/md_unit.h>
 
 #include <math.h>
 
 #define MD_DCD_TRAJ_MAGIC 0x3F5C8A1B7E902D46ULL
+#define MD_DCD_TRAJ_READER_MAGIC 0x3F5C8A1B7E902D47ULL
 
 // 1 AKMA time unit = 48.88821 fs = 0.04888821 ps
 // NAMD's TIMEFACTOR for converting DCD timestamps to femtoseconds
@@ -41,7 +43,7 @@ typedef struct dcd_file_header_t {
 
 typedef struct dcd_t {
     uint64_t magic;
-    md_file_t file;
+    str_t filepath;
     md_allocator_i* allocator;
 
 	dcd_file_header_t header;
@@ -63,6 +65,13 @@ typedef struct dcd_t {
     float* first_frame_y;
     float* first_frame_z;
 } dcd_t;
+
+typedef struct dcd_reader_t {
+    uint64_t magic;
+    md_file_t file;
+    const dcd_t* traj;
+    md_allocator_i* arena;
+} dcd_reader_t;
 
 // ==================== Byte-swap helpers ====================
 
@@ -514,9 +523,12 @@ static bool dcd_get_header(struct md_trajectory_o* inst, md_trajectory_header_t*
     return true;
 }
 
-static bool dcd_load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* out_hdr, float* x, float* y, float* z) {
+static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_hdr, float* x, float* y, float* z) {
     ASSERT(inst);
-    dcd_t* dcd = (dcd_t*)inst;
+    dcd_reader_t* reader = (dcd_reader_t*)inst;
+    ASSERT(reader->magic == MD_DCD_TRAJ_READER_MAGIC);
+
+    const dcd_t* dcd = reader->traj;
     if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
         MD_LOG_ERROR("DCD: Invalid trajectory instance in load_frame");
         return false;
@@ -529,8 +541,8 @@ static bool dcd_load_frame(struct md_trajectory_o* inst, int64_t idx, md_traject
 		MD_LOG_ERROR("DCD: Coordinate arrays must all be provided or all be NULL");
 		return false;
 	}
-    if (!md_file_valid(dcd->file)) {
-        MD_LOG_ERROR("DCD: Invalid file handle in trajectory instance");
+    if (!md_file_valid(reader->file)) {
+        MD_LOG_ERROR("DCD: Invalid file handle in reader instance");
 		return false;
 	}
     md_file_offset_t offset = dcd_frame_offset(dcd, idx);
@@ -544,7 +556,7 @@ static bool dcd_load_frame(struct md_trajectory_o* inst, int64_t idx, md_traject
 		MEMCPY(z, dcd->first_frame_z, (size_t)natoms * sizeof(float));
 	}
 	md_unitcell_t unitcell = md_unitcell_none();
-    bool success = dcd_read_frame_at(dcd->file, &offset, natoms, dcd->header.nfixed, dcd->header.charmm, dcd->header.reverse_endian,
+    bool success = dcd_read_frame_at(reader->file, &offset, natoms, dcd->header.nfixed, dcd->header.charmm, dcd->header.reverse_endian,
 									 dcd->header.free_indices,
 									 is_first_frame,
 									 &unitcell,
@@ -562,6 +574,52 @@ static bool dcd_load_frame(struct md_trajectory_o* inst, int64_t idx, md_traject
 		};
 	}
 	return true;
+}
+
+static void dcd_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+    if (!reader) {
+        return;
+    }
+
+    dcd_reader_t* inst = (dcd_reader_t*)reader->inst;
+    if (inst) {
+        ASSERT(inst->magic == MD_DCD_TRAJ_READER_MAGIC);
+        if (md_file_valid(inst->file)) {
+            md_file_close(&inst->file);
+        }
+        md_arena_allocator_destroy(inst->arena);
+    }
+
+    MEMSET(reader, 0, sizeof(*reader));
+}
+
+static bool dcd_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+    ASSERT(reader);
+    ASSERT(traj_inst);
+
+    dcd_t* dcd = (dcd_t*)traj_inst;
+    ASSERT(dcd->magic == MD_DCD_TRAJ_MAGIC);
+
+    md_file_t file = {0};
+    if (!md_file_open(&file, dcd->filepath, MD_FILE_READ)) {
+        MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(dcd->filepath));
+        return false;
+    }
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    dcd_reader_t* inst = md_alloc(arena, sizeof(dcd_reader_t));
+    MEMSET(inst, 0, sizeof(dcd_reader_t));
+    inst->magic = MD_DCD_TRAJ_READER_MAGIC;
+    inst->file = file;
+    inst->traj = dcd;
+    inst->arena = arena;
+
+    MEMSET(reader, 0, sizeof(*reader));
+    reader->inst = (struct md_trajectory_reader_o*)inst;
+    reader->free = dcd_trajectory_reader_free;
+    reader->load_frame = dcd_reader_load_frame;
+
+    return true;
 }
 
 // ==================== Creation and destruction ====================
@@ -639,7 +697,7 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
     dcd_t*           dcd  = (dcd_t*)(traj + 1);
 
     dcd->magic            = MD_DCD_TRAJ_MAGIC;
-    dcd->file             = file;
+    dcd->filepath         = str_copy(filename, alloc);
     dcd->allocator        = alloc;
     dcd->header           = fhdr;
     dcd->num_frames       = num_frames;
@@ -670,9 +728,12 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
         }
     }
 
-    traj->inst       = (struct md_trajectory_o*)dcd;
-    traj->get_header = dcd_get_header;
-    traj->load_frame = dcd_load_frame;
+    traj->inst        = (struct md_trajectory_o*)dcd;
+    traj->free        = md_dcd_trajectory_free;
+    traj->get_header  = dcd_get_header;
+    traj->init_reader = dcd_trajectory_reader_init;
+
+    md_file_close(&file);
 
     return traj;
 
@@ -690,15 +751,5 @@ void md_dcd_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-    if (md_file_valid(dcd->file)) md_file_close(&dcd->file);
     md_arena_allocator_destroy(dcd->allocator);
-}
-
-static md_trajectory_loader_i dcd_loader = {
-    md_dcd_trajectory_create,
-    md_dcd_trajectory_free,
-};
-
-md_trajectory_loader_i* md_dcd_trajectory_loader(void) {
-    return &dcd_loader;
 }
