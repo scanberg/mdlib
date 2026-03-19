@@ -67,7 +67,7 @@ typedef struct lammps_trajectory_t {
 	uint64_t magic;
 	int64_t* frame_offsets;
 
-	md_file_t  file;
+	md_file_t file;
 	md_trajectory_header_t header;
 	coord_mappings_t coord_mappings;
 

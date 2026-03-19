@@ -59,6 +59,8 @@ typedef struct md_file_t {
     void* handle;
 #elif MD_PLATFORM_UNIX
     int fd;
+#else
+    #error "Unsupported platform"
 #endif
     uint32_t flags;
 } md_file_t;
