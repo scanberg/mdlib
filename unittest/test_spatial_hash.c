@@ -531,8 +531,8 @@ UTEST(spatial_hash, n2) {
         md_unitcell_t test_cell = md_unitcell_from_matrix_double(A);
         double G[3][3];
         double I[3][3];
-        md_unitcell_G_extract(G, &test_cell);
-        md_unitcell_inv_basis_extract(I, &test_cell);
+        md_unitcell_G_extract_double(G, &test_cell);
+        md_unitcell_I_extract_double(I, &test_cell);
 
         double X[3][3];
 		// Ensure that A*I = Identity
@@ -652,8 +652,8 @@ UTEST(spatial_hash, n2) {
     const size_t expected_count = 3711879;
 
     double G[3][3], I[3][3];
-    md_unitcell_G_extract(G, &cell);
-    md_unitcell_inv_basis_extract(I, &cell);
+    md_unitcell_G_extract_double(G, &cell);
+    md_unitcell_I_extract_double(I, &cell);
 
     md_timestamp_t start, end;
     uint32_t count = 0;
@@ -731,9 +731,9 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     srand(31);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract(G, &sys.unitcell);
-    md_unitcell_basis_extract(A, &sys.unitcell);
-    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys.unitcell);
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    md_unitcell_I_extract_double(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -784,9 +784,9 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract(G, &sys.unitcell);
-    md_unitcell_basis_extract(A, &sys.unitcell);
-    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys.unitcell);
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    md_unitcell_I_extract_double(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -837,9 +837,9 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract(G, &sys.unitcell);
-    md_unitcell_basis_extract(A, &sys.unitcell);
-    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys.unitcell);
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    md_unitcell_I_extract_double(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -894,9 +894,9 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
     md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract(G, &sys.unitcell);
-    md_unitcell_basis_extract(A, &sys.unitcell);
-    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys.unitcell);
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    md_unitcell_I_extract_double(I, &sys.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -958,9 +958,9 @@ UTEST_F(spatial_hash, npt_triclinic) {
     md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract(G, &sys.unitcell);
-    md_unitcell_basis_extract(A, &sys.unitcell);
-    md_unitcell_inv_basis_extract(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys.unitcell);
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    md_unitcell_I_extract_double(I, &sys.unitcell);
 
 	EXPECT_EQ((float)G[0][0], acc.G00);
 	EXPECT_EQ((float)G[1][1], acc.G11);

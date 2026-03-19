@@ -190,8 +190,8 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
     uint32_t flags = 0;
 
     if (in_unitcell) {
-        md_unitcell_basis_extract(A, in_unitcell);
-        md_unitcell_inv_basis_extract(I, in_unitcell);
+        md_unitcell_A_extract_double(A, in_unitcell);
+        md_unitcell_I_extract_double(I, in_unitcell);
         flags = md_unitcell_flags(in_unitcell);
     }
 

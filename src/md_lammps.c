@@ -1330,7 +1330,9 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	mat4_t M = mat4_translate(-(float)xlo, -(float)ylo, -(float)zlo);
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
-		M = mat4_from_mat3(md_unitcell_basis_mat3(&cell));
+		mat3_t A;
+		md_unitcell_A_extract(A.elem, &cell);
+		M = mat4_from_mat3(A);
 	}
 
 	if (output_coords) {
