@@ -89,7 +89,8 @@ UTEST(mmcif, tokenizer) {
 
     {
         str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
-        md_file_t  file = md_file_open(path, MD_FILE_READ);
+        md_file_t file = {0};
+        ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 
@@ -130,7 +131,8 @@ UTEST(mmcif, tokenizer) {
 
     {
         str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
-        md_file_t  file = md_file_open(path, MD_FILE_READ);
+        md_file_t file = {0};
+        ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 
@@ -374,7 +376,8 @@ UTEST(mmcif, advance_to_next_control) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
-    md_file_t  file = md_file_open(path, MD_FILE_READ);
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
     char* buf = md_vm_arena_push(alloc, MEGABYTES(1));
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 

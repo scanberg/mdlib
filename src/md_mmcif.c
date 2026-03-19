@@ -992,9 +992,9 @@ static bool mmcif_init_from_str(md_system_t* sys, str_t str, const void* arg, md
 static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
     bool result = false;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
+    md_file_t file = {0};
 
-    if (md_file_valid(file)) {
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         const size_t pos = md_temp_get_pos();
         const size_t cap = MEGABYTES(1);
         void* buf = md_temp_push(cap);

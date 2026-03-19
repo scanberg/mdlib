@@ -14,6 +14,7 @@ typedef enum {
 ENUM_FLAGS(md_trajectory_flags_t)
 
 struct md_trajectory_o;
+struct md_trajectory_reader_o;
 
 typedef struct md_trajectory_header_t {
 	size_t   num_frames;
@@ -43,10 +44,24 @@ typedef struct md_trajectory_cache_header_t {
 extern "C" {
 #endif
 
+typedef struct md_trajectory_reader_i {
+	struct md_trajectory_reader_o* inst; // Opaque reader state
+	void (*free)(struct md_trajectory_reader_i* self);
+
+	bool (*load_frame)(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+} md_trajectory_reader_i;
+
 typedef struct md_trajectory_i {
 	struct md_trajectory_o* inst; // Opaque trajectory data
 
+	// Retrieves the common trajectory header metadata.
 	bool (*get_header)(struct md_trajectory_o* inst, md_trajectory_header_t* header);
+
+	// --- READER MODE ---
+	// Creates a reader with private I/O state suitable for reuse by a single worker/thread.
+	// The trajectory object owns shared immutable metadata, while the reader owns transient state
+	// such as file handles, scratch buffers and format specific decode state.
+	bool (*init_reader)(md_trajectory_reader_i* reader, struct md_trajectory_o* inst);
 
 	// --- EASY MODE ---
     // Loads data for frame 'idx' into the supplied buffers. The buffers must be large enough to hold the data.
@@ -101,6 +116,27 @@ static inline const double* md_trajectory_frame_times(const md_trajectory_i* tra
 static inline bool md_trajectory_get_header(const md_trajectory_i* traj, md_trajectory_header_t* header) {
 	if (traj && traj->inst && traj->get_header) {
 		return traj->get_header(traj->inst, header);
+	}
+	return false;
+}
+
+// Reader mode operations
+static inline bool md_trajectory_reader_init(md_trajectory_reader_i* reader, const md_trajectory_i* traj) {
+	if (traj && traj->inst && traj->init_reader) {
+		return traj->init_reader(reader, traj->inst);
+	}
+	return false;
+}
+
+static inline void md_trajectory_reader_free(md_trajectory_reader_i* reader) {
+	if (reader && reader->free) {
+		reader->free(reader);
+	}
+}
+
+static inline bool md_trajectory_reader_load_frame(md_trajectory_reader_i reader, int64_t idx, md_trajectory_frame_header_t* frame_header, float* x, float* y, float* z) {
+	if (reader.inst && reader.load_frame) {
+		return reader.load_frame(reader.inst, idx, frame_header, x, y, z);
 	}
 	return false;
 }

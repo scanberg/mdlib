@@ -71,8 +71,8 @@ UTEST(pdb, parse_trajectory) {
     EXPECT_EQ(pdb_data.num_helices, 0);
     EXPECT_EQ(pdb_data.num_sheets, 0);
 
-    md_file_t  file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(md_file_valid(file));
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
     for (int64_t i = 0; i < pdb_data.num_models; ++i) {
         char data[6] = {0};
         md_file_seek(file, pdb_data.models[i].byte_offset, MD_FILE_BEG);

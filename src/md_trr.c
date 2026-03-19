@@ -594,8 +594,8 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("TRR trajectory cache: failed to read header");
             goto done;
@@ -655,8 +655,8 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const trr_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_INFO("TRR trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }

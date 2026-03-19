@@ -147,8 +147,8 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
 
 bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     bool result = false;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         const int64_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_get_heap_allocator(), cap);
         

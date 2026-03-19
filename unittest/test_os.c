@@ -172,8 +172,8 @@ UTEST(os, file_info_extract) {
     const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
     const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
 
-    md_file_t file = md_file_open(file_path, MD_FILE_READ);
-    ASSERT_TRUE(md_file_valid(file));
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, file_path, MD_FILE_READ));
 
     md_file_info_t info = {0};
     ASSERT_TRUE(md_file_info_extract(file, &info));
@@ -196,8 +196,8 @@ UTEST(os, file_info_extract) {
 
 UTEST(os, file_read_seek_tell_size) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-    md_file_t file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(md_file_valid(file));
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     EXPECT_EQ(md_file_size(file), 5);
     EXPECT_EQ(md_file_tell(file), 0);
@@ -225,8 +225,8 @@ UTEST(os, file_read_seek_tell_size) {
 
 UTEST(os, file_read_at_preserves_offset) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-    md_file_t file = md_file_open(path, MD_FILE_READ);
-    ASSERT_TRUE(md_file_valid(file));
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     EXPECT_TRUE(md_file_seek(file, 2, MD_FILE_BEG));
     EXPECT_EQ(md_file_tell(file), 2);

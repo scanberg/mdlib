@@ -571,8 +571,8 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
 
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    md_file_t file = md_file_open(filename, MD_FILE_READ);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
         MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(filename));
         goto fail;
     }

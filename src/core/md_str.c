@@ -285,9 +285,9 @@ bool str_ends_with(str_t str, str_t suffix) {
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    str_t result = {0,0};
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    str_t result = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         size_t file_size = md_file_size(file);
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {

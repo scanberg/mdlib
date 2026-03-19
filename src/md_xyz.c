@@ -682,8 +682,8 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
 
 bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     bool result = false;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         size_t temp_pos = md_temp_get_pos();
         size_t buf_cap = MEGABYTES(1);
         char* buf = md_temp_push(buf_cap);
@@ -787,8 +787,8 @@ static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg
     md_xyz_data_t data = {0};
     
     bool result = false;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
         size_t buf_cap = MEGABYTES(1);
         char* buf = md_vm_arena_push(arena, buf_cap);
@@ -853,8 +853,8 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("XYZ trajectory cache: failed to read header");
             goto done;
@@ -897,8 +897,8 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_INFO("XYZ trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
@@ -922,8 +922,8 @@ done:
 }
 
 md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t traj_flags) {
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
         return false;
     }
@@ -1014,7 +1014,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
-    xyz->file = md_file_open(filename, MD_FILE_READ);
+    md_file_open(&xyz->file, filename, MD_FILE_READ);
     xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
     xyz->header = (md_trajectory_header_t) {

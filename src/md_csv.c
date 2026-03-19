@@ -89,8 +89,8 @@ bool md_csv_parse_str (md_csv_t* csv, str_t in_str, struct md_allocator_i* alloc
 }
 
 bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc) {
-    md_file_t  file = md_file_open(in_path, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_get_heap_allocator(), cap);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
@@ -134,8 +134,8 @@ str_t md_csv_write_to_str (const float* const field_values[], const str_t field_
 
 bool md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
     if (field_values && num_fields > 0 && num_values > 0) {
-        md_file_t  file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-        if (md_file_valid(file)) {
+        md_file_t file = {0};
+        if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             md_strb_t sb = md_strb_create(md_get_heap_allocator());
             write(&sb, field_values, field_names, num_fields, num_values);
             str_t str = md_strb_to_str(sb);

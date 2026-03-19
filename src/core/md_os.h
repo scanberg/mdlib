@@ -172,9 +172,10 @@ bool md_mutex_unlock(md_mutex_t* mutex);
 // - MD_FILE_TRUNCATE truncates an existing file and requires write access.
 // - MD_FILE_APPEND and MD_FILE_TRUNCATE are mutually exclusive.
 // - A zero-initialized md_file_t represents an invalid or unopened file.
-md_file_t md_file_open(str_t filename, md_file_flags_t flags);
+// returns true on success and false on failure, in which case out_file is not modified.
+bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags);
 
-// Checks if the file handle is valid (i.e. was opened successfully)
+// Checks if the file handle is valid
 bool md_file_valid(md_file_t file);
 
 // Closes the file and invalidates the handle on success.

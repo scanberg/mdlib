@@ -17,7 +17,6 @@
 #include <core/md_hash.h>
 
 #include <stdio.h>
-#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +30,7 @@ extern "C" {
 // The opaque blob
 typedef struct pdb_trajectory_t {
     uint64_t magic;
-    md_file_t  file;
+	str_t filepath;
     int64_t* frame_offsets;
     md_unitcell_t unitcell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
@@ -216,11 +215,6 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     ASSERT(pdb);
     ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
 
-    if (!md_file_valid(pdb->file)) {
-        MD_LOG_ERROR("File handle is NULL");
-        return 0;
-    }
-
     if (!pdb->frame_offsets) {
         MD_LOG_ERROR("Frame offsets is empty");
         return 0;
@@ -233,22 +227,27 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
 
     const int64_t beg = pdb->frame_offsets[frame_idx + 0];
     const int64_t end = pdb->frame_offsets[frame_idx + 1];
-    const size_t frame_size = (size_t)MAX(0, end - beg);
+    size_t frame_size = (size_t)MAX(0, end - beg);
 
     if (frame_data_ptr) {
-        ASSERT(md_file_valid(pdb->file));
-        const size_t bytes_read = md_file_read_at(pdb->file, beg, frame_data_ptr, frame_size);
-        (void)bytes_read;
-        ASSERT(frame_size == bytes_read);
+	    md_file_t file = { 0 };
+        if (!md_file_open(&file, pdb->filepath, MD_FILE_READ)) {
+            MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(pdb->filepath));
+            return 0;
+	    }
+
+        size_t bytes_read = md_file_read_at(file, beg, frame_data_ptr, frame_size);
+		frame_size = (bytes_read == frame_size) ? frame_size : 0;
+		md_file_close(&file);
     }
 
     return frame_size;
 }
 
-bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data, size_t frame_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
-    ASSERT(frame_data_ptr);
-    ASSERT(frame_data_size);
+    ASSERT(frame_data);
+    ASSERT(frame_size);
 
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
@@ -256,7 +255,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         return false;
     }
 
-    str_t str = { .ptr = (char*)frame_data_ptr, .len = frame_data_size };
+    str_t str = { .ptr = (char*)frame_data, .len = frame_size };
     str_t line;
 
     int32_t step = 0;
@@ -429,8 +428,8 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc
 
 bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i* alloc) {
     bool result = false;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         const size_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_get_heap_allocator(), cap);
         
@@ -671,8 +670,8 @@ static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg, md_a
 
 static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
         const size_t cap = MEGABYTES(1);
         char *buf = md_alloc(md_get_heap_allocator(), cap);
         ASSERT(buf);
@@ -741,8 +740,8 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("PDB trajectory cache: failed to read header");
             goto done;
@@ -797,8 +796,8 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_INFO("PDB trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
@@ -827,15 +826,16 @@ done:
 }
 
 md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
-    md_file_t  file = md_file_open(filename, MD_FILE_READ);
-    if (!md_file_valid(file)) {
-        MD_LOG_ERROR("Failed to open file for PDB trajectory");
+	md_file_info_t file_info = { 0 };
+    if (!md_file_info_extract_from_path(filename, &file_info)) {
+        MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
         return false;
     }
 
-    const size_t filesize = md_file_size(file);
-    md_file_close(&file);
+    const size_t filesize = file_info.size;
 
+	char cache_path_buf[4096];
+	snprintf(cache_path_buf, sizeof(cache_path_buf), STR_FMT ".cache", STR_ARG(filename));
     md_strb_t sb = md_strb_create(md_get_temp_allocator());
     md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
     str_t cache_file = md_strb_to_str(sb);
@@ -920,7 +920,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
-    pdb->file = md_file_open(filename, MD_FILE_READ);
+	pdb->filepath = str_copy(filename, alloc);
     pdb->frame_offsets = cache.frame_offsets;
     pdb->allocator = alloc;
     pdb->header = (md_trajectory_header_t) {
@@ -934,8 +934,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;
     traj->load_frame = pdb_load_frame;
-    //traj->fetch_frame_data = pdb_fetch_frame_data;
-    //traj->decode_frame_data = pdb_decode_frame;
 
     return traj;
 }
@@ -950,7 +948,6 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    if (md_file_valid(pdb->file)) md_file_close(&pdb->file);
     md_arena_allocator_destroy(pdb->allocator);
 }
 

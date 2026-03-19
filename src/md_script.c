@@ -2040,9 +2040,9 @@ static void print_expr(md_file_t  file, str_t str) {
 }
 
 static void ast_to_json(const ast_node_t* node, str_t filename) {
-    md_file_t  file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-
-    if (md_file_valid(file) && node) {
+    if (!node) return;
+    md_file_t file = {0};
+    if (md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         md_file_printf(file, "var treeData = [\n");
         md_file_printf(file, "{\n\"node\" :\n");
         print_node(file, node, 1);

@@ -285,11 +285,11 @@ UTEST(xtc, catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    md_file_t   file = md_file_open(path, MD_FILE_READ);
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -347,11 +347,11 @@ UTEST(xtc, big) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("E:/data/md/big/PROD_r2.part0001.xtc");
-    md_file_t   file = md_file_open(path, MD_FILE_READ);
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -408,11 +408,11 @@ UTEST(xtc, amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("E:/data/md/amyloid-6T/prod-centered.xtc");
-    md_file_t  file = md_file_open(path, MD_FILE_READ);
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;
@@ -465,11 +465,11 @@ UTEST(xtc, H1N1) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     const str_t path = STR_LIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
-    md_file_t  file = md_file_open(path, MD_FILE_READ);
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
     XDRFILE* xdr = xdrfile_open(path.ptr, "r");
 
-    ASSERT_TRUE(md_file_valid(file));
     ASSERT_TRUE(xdr);
 
     md_array(int64_t) frame_offsets = 0;

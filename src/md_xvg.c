@@ -9,23 +9,6 @@
 
 #include <time.h>
 
-static bool open_file(md_file_t* file, str_t path) {
-	ASSERT(file);
-
-	if (str_empty(path)) {
-		MD_LOG_ERROR("XVG: Path was empty");
-		return false;
-	}
-
-	*file = md_file_open(path, MD_FILE_READ);
-	if (!md_file_valid(*file)) {
-		MD_LOG_ERROR("XVG: Could not open file: '%.*s'", path.len, path.ptr);
-		return false;
-	}
-
-	return true;
-}
-
 str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	
@@ -258,9 +241,9 @@ bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
 bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	ASSERT(alloc);
 
-	md_file_t  file = md_file_open(path, MD_FILE_READ);
+	md_file_t file = {0};
 
-	if (!md_file_valid(file)) {
+	if (!md_file_open(&file, path, MD_FILE_READ)) {
 		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '"STR_FMT"'", STR_ARG(path));
 		return false;
 	}

@@ -5,7 +5,6 @@
 
 #include <core/md_common.h>
 #include <core/md_array.h>
-#include <core/md_str_builder.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -13,10 +12,7 @@
 #include <core/md_vec_math.h>
 
 #include <libdivide.h>
-
-#include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #if defined(__SIZEOF_INT128__)
 #define HAS_INT128_T
@@ -25,6 +21,7 @@
 #define MD_XTC_CACHE_MAGIC   0x8281237612371
 #define MD_XTC_CACHE_VERSION 3
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
+#define MD_XTC_TRAJ_READER_MAGIC 0x162365dac721996
 
 #define XTC_MAGIC 1995
 
@@ -68,13 +65,26 @@ typedef md_128i v4i_t;
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(addr)      md_mm_loadu_epi32(addr)
 
+// Trajectory opaque data for xtc
 typedef struct xtc_t {
     uint64_t magic;
-    md_file_t  file;
+	str_t filepath;
     md_array(int64_t) frame_offsets;
     md_trajectory_header_t header;
-    md_allocator_i* allocator;
+    md_allocator_i* alloc;
 } xtc_t;
+
+// Trajectory reader state
+typedef struct xtc_reader_t {
+	uint64_t magic;
+    md_file_t file;
+    md_array(uint8_t) frame_data; // scratch buffer for compressed frame data, resized as needed for each frame
+    md_array(float)   coord_data; // scratch buffer for packed coordinates
+    size_t num_atoms;
+    size_t num_frames;
+	const int64_t* frame_offsets; // pointer into xtc_t.frame_offsets for quick access
+    md_allocator_i*   arena;
+} xtc_reader_t;
 
 typedef struct unpack_data_t {
     uint64_t size_zy;
@@ -705,6 +715,121 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
     return true;
 }
 
+bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+    ASSERT(inst);
+
+    xtc_reader_t* xtc = (xtc_reader_t*)inst;
+    bool result = false;
+    if (md_file_valid(xtc->file)) {
+        if (!xtc->frame_offsets) {
+            MD_LOG_ERROR("XTC: Frame offsets is empty");
+            return 0;
+        }
+
+        if (frame_idx < 0 || (int64_t)xtc->num_frames <= frame_idx) {
+            MD_LOG_ERROR("XTC: Frame index is out of range");
+            return 0;
+        }
+		const int64_t beg = xtc->frame_offsets[frame_idx];
+		const int64_t end = xtc->frame_offsets[frame_idx + 1];
+        if (end <= beg) {
+            MD_LOG_ERROR("XTC: Invalid frame offset range");
+            return false;
+		}
+		const size_t frame_size = end - beg;
+
+        md_array_ensure(xtc->frame_data, ALIGN_TO(frame_size, 16), xtc->arena);
+        size_t read_size = md_file_read_at(xtc->file, beg, xtc->frame_data, frame_size);
+
+        if (read_size == frame_size) {
+            md_xtc_header_t xtc_header = {0};
+
+            if (md_xtc_decode_frame_data(xtc->frame_data, frame_size, &xtc_header, xtc->coord_data, xtc->num_atoms)) {
+                // nm -> Ångström
+                if (out_x && out_y && out_z) {
+                    for (int i = 0; i < xtc_header.natoms; ++i) {
+                        out_x[i] = xtc->coord_data[i*3 + 0] * 10.0f;
+                        out_y[i] = xtc->coord_data[i*3 + 1] * 10.0f;
+                        out_z[i] = xtc->coord_data[i*3 + 2] * 10.0f;
+                    }
+                }
+
+                if (out_header) {
+                    for (int i = 0; i < 3; ++i) {
+                        xtc_header.box[i][0] *= 10.0f;
+                        xtc_header.box[i][1] *= 10.0f;
+                        xtc_header.box[i][2] *= 10.0f;
+                    }
+                    out_header->num_atoms = xtc_header.natoms;
+                    out_header->index     = xtc_header.step;
+                    out_header->timestamp = xtc_header.time;
+                    out_header->unitcell  = md_unitcell_from_matrix_float(xtc_header.box);
+                }
+
+                result = true;
+            } else {
+                MD_LOG_ERROR("XTC: Failed to decode frame data");
+            }
+        } else {
+            MD_LOG_ERROR("XTC: Failed to read frame data from file, expected %zu bytes, got %zu bytes", frame_size, read_size);
+        }
+    }
+
+    return result;
+}
+
+void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+    if (!reader) {
+        return;
+    }
+    xtc_reader_t* inst = (xtc_reader_t*)reader->inst;
+    if (inst) {
+        ASSERT(inst->magic == MD_XTC_TRAJ_READER_MAGIC);
+        if (md_file_valid(inst->file)) {
+            md_file_close(&inst->file);
+        }
+        md_arena_allocator_destroy(inst->arena);
+    }
+    MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
+}
+
+bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+    ASSERT(reader);
+    ASSERT(traj_inst);
+
+    xtc_t* xtc = (xtc_t*)traj_inst;
+    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
+
+    md_file_t file = {0};
+    if (!md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
+        MD_LOG_ERROR("XTC: Failed to open file '" STR_FMT "'", STR_ARG(xtc->filepath));
+        return false;
+    }
+
+    MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    size_t num_frames = xtc->header.num_atoms;
+
+    xtc_reader_t* inst = md_alloc(arena, sizeof(xtc_reader_t));
+    MEMSET(inst, 0, sizeof(xtc_reader_t));
+    inst->magic = MD_XTC_TRAJ_READER_MAGIC;
+    inst->file = file;
+    inst->arena = arena;
+    inst->num_atoms = xtc->header.num_atoms;
+    inst->num_frames = xtc->header.num_frames;
+    inst->frame_offsets = xtc->frame_offsets;
+
+    size_t num_coords = xtc->header.num_atoms * 3;
+    md_array_ensure(inst->coord_data, num_coords, arena);
+
+    reader->inst = (struct md_trajectory_reader_o*)inst;
+    reader->load_frame = xtc_reader_load_frame;
+    reader->free = xtc_trajectory_reader_free;
+
+    return true;
+}
+
 bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
@@ -713,18 +838,19 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
         return false;
     }
+    if (!xtc->frame_offsets) {
+        MD_LOG_ERROR("XTC: Frame offsets is empty");
+        return 0;
+    }
+
+    if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
+        MD_LOG_ERROR("XTC: Frame index is out of range");
+        return 0;
+    }
 
     bool result = false;
-    if (md_file_valid(xtc->file)) {
-        if (!xtc->frame_offsets) {
-            MD_LOG_ERROR("XTC: Frame offsets is empty");
-            return 0;
-        }
-
-        if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
-            MD_LOG_ERROR("XTC: Frame index is out of range");
-            return 0;
-        }
+	md_file_t file = { 0 };
+    if (md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
 
         const int64_t beg = xtc->frame_offsets[frame_idx];
         const int64_t end = xtc->frame_offsets[frame_idx + 1];
@@ -741,7 +867,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
             return false;
 		}
 
-		size_t read_size = md_file_read_at(xtc->file, beg, frame_data, frame_size);
+		size_t read_size = md_file_read_at(file, beg, frame_data, frame_size);
 		if (read_size == frame_size) {
             size_t num_atoms = xtc->header.num_atoms;
 			float* xyz = malloc(num_atoms * sizeof(float) * 3);
@@ -785,6 +911,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         }
 
 		free(frame_data);
+		md_file_close(&file);
     }
 
     return result;
@@ -801,8 +928,8 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_t  file = md_file_open(cache_file, MD_FILE_READ);
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("XTC trajectory cache: failed to read header");
             goto done;
@@ -862,8 +989,8 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const xtc_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_t  file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_INFO("XTC trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
@@ -897,9 +1024,9 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     str_t path = str_copy(filename, alloc);
-    md_file_t file = md_file_open(path, MD_FILE_READ);
 
-    if (md_file_valid(file)) {
+    md_file_t file = {0};
+    if (md_file_open(&file, path, MD_FILE_READ)) {
         const size_t filesize = md_file_size(file);
 
         uint8_t frame_header_data[XTC_SMALL_HEADER_SIZE];
@@ -955,8 +1082,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         xtc_t* xtc = (xtc_t*)(traj + 1);
 
         xtc->magic = MD_XTC_TRAJ_MAGIC;
-        xtc->allocator = alloc;
-        xtc->file = file;
+        xtc->filepath = str_copy(filename, alloc);
+        xtc->alloc = alloc;
         xtc->frame_offsets = cache.frame_offsets;
 
         xtc->header = (md_trajectory_header_t) {
@@ -970,6 +1097,9 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
 
+		traj->init_reader = xtc_trajectory_reader_init;
+
+        md_file_close(&file);
         return traj;
     }
 fail:
@@ -987,9 +1117,7 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-
-    if (md_file_valid(xtc->file)) md_file_close(&xtc->file);
-    md_arena_allocator_destroy(xtc->allocator);
+    md_arena_allocator_destroy(xtc->alloc);
 }
 
 static md_trajectory_loader_i xtc_loader = {

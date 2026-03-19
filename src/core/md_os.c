@@ -411,10 +411,6 @@ bool md_file_valid(md_file_t file) {
     return (file.flags & MD_FILE_FLAG_VALID) != 0;
 }
 
-static md_file_t make_invalid_file(void) {
-    return (md_file_t){0};
-}
-
 #if MD_PLATFORM_WINDOWS
 static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
     ASSERT(dst);
@@ -579,10 +575,15 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 #endif
 }
 
-md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
+bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
+    if (!out_file) {
+        MD_LOG_ERROR("md_file_open: output file was NULL");
+        return false;
+    }
+
     if (!filename.ptr || filename.len == 0) {
         MD_LOG_ERROR("md_file_open: filename was empty");
-        return make_invalid_file();
+        return false;
     }
 
     const bool want_read = (flags & MD_FILE_READ) != 0;
@@ -593,22 +594,22 @@ md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
 
     if (!want_read && !want_write) {
         MD_LOG_ERROR("md_file_open: no access mode specified");
-        return make_invalid_file();
+        return false;
     }
 
     if ((flags & MD_FILE_CREATE) && !want_write) {
         MD_LOG_ERROR("md_file_open: MD_FILE_CREATE requires write access");
-        return make_invalid_file();
+        return false;
     }
 
     if (want_truncate && !want_write) {
         MD_LOG_ERROR("md_file_open: MD_FILE_TRUNCATE requires write access");
-        return make_invalid_file();
+        return false;
     }
 
     if (want_append && want_truncate) {
         MD_LOG_ERROR("md_file_open: MD_FILE_APPEND and MD_FILE_TRUNCATE are mutually exclusive");
-        return make_invalid_file();
+        return false;
     }
 
 #if MD_PLATFORM_WINDOWS
@@ -616,7 +617,7 @@ md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
     if (w_file_len <= 0 || w_file_len >= (int)ARRAY_SIZE(w_file)) {
         MD_LOG_ERROR("md_file_open: failed to convert path to UTF-16");
-        return make_invalid_file();
+        return false;
     }
     w_file[w_file_len] = L'\0';
 
@@ -650,12 +651,13 @@ md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
         NULL);
 
     if (handle == INVALID_HANDLE_VALUE) {
-        MD_LOG_ERROR("md_file_open: failed to open file");
-        print_windows_error();
-        return make_invalid_file();
+        //MD_LOG_ERROR("md_file_open: failed to open file");
+        //print_windows_error();
+        return false;
     }
 
-    return (md_file_t){.handle = handle, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+    *out_file = (md_file_t){.handle = handle, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+    return true;
 
 #elif MD_PLATFORM_UNIX
     int open_flags = 0;
@@ -690,13 +692,14 @@ md_file_t md_file_open(str_t filename, md_file_flags_t flags) {
     } while (fd == -1 && errno == EINTR);
 
     if (fd == -1) {
-        return make_invalid_file();
+        return false;
     }
 
-    return (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+    *out_file = (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+    return true;
 
 #else
-    return make_invalid_file();
+    return false;
 #endif
 }
 
@@ -726,8 +729,7 @@ bool md_file_close(md_file_t* file) {
         return false;
     }
 #endif
-
-    *file = make_invalid_file();
+	MEMSET(file, 0, sizeof(md_file_t));
     return true;
 }
 

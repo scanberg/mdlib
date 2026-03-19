@@ -4838,7 +4838,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = tmp_bf;
         }
 
-        mat3_t A;
+        mat3_t A = { 0 };
         md_unitcell_A_extract(A.elem, &ctx->initial_configuration.header->unitcell);
 
         // Reference point
