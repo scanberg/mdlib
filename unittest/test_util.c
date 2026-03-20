@@ -33,8 +33,6 @@ struct util {
     md_system_t mol_2or2;
     md_system_t mol_1k4r;
     md_system_t mol_8g7u;
-
-    md_trajectory_i* traj_ala;
 };
 
 UTEST_F_SETUP(util) {
@@ -73,12 +71,15 @@ UTEST_F_SETUP(util) {
     md_mmcif_system_init_from_file(&utest_fixture->mol_1fez, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
     md_util_system_postprocess(&utest_fixture->mol_1fez, MD_UTIL_POSTPROCESS_ALL);
 
+    utest_fixture->mol_2or2.alloc = alloc;
     md_mmcif_system_init_from_file(&utest_fixture->mol_2or2, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
     md_util_system_postprocess(&utest_fixture->mol_2or2, MD_UTIL_POSTPROCESS_ALL);
 
+    utest_fixture->mol_1k4r.alloc = alloc;
     md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_postprocess(&utest_fixture->mol_1k4r, MD_UTIL_POSTPROCESS_ALL);
 
+    utest_fixture->mol_8g7u.alloc = alloc;
     md_mmcif_system_init_from_file(&utest_fixture->mol_8g7u, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
     md_util_system_postprocess(&utest_fixture->mol_8g7u, MD_UTIL_POSTPROCESS_ALL);
 }
@@ -152,7 +153,7 @@ UTEST_F(util, structure) {
 UTEST_F(util, rmsd) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t* mol = &utest_fixture->mol_ala;
-    md_trajectory_i* traj = utest_fixture->traj_ala;
+    md_trajectory_i* traj = utest_fixture->mol_ala.trajectory;
     ASSERT_TRUE(mol);
     ASSERT_TRUE(traj);
 

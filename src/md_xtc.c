@@ -1029,15 +1029,17 @@ static void md_xtc_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-    md_arena_allocator_destroy(xtc->alloc);
     MEMSET(traj, 0, sizeof(md_trajectory_i));
+    md_arena_allocator_destroy(xtc->alloc);
 }
 
-static md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    str_t path = str_copy(filename, alloc);
+    char path_buf[4096];
+    size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+    str_t path = {path_buf, path_len};
 
     md_file_t file = {0};
     if (md_file_open(&file, path, MD_FILE_READ)) {
@@ -1060,10 +1062,10 @@ static md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i*
             goto fail;
         }
 
-        char path_buf[4096];
-		int len = snprintf(path_buf, sizeof(path_buf), STR_FMT ".cache", STR_ARG(path));
-		ASSERT(0 < len && len < (int)sizeof(path_buf));
-        str_t cache_path = { path_buf, (size_t)len };
+        char cache_buf[4096];
+		int len = snprintf(path_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(path));
+		ASSERT(0 < len && len < (int)sizeof(cache_buf));
+        str_t cache_path = { cache_buf, (size_t)len };
 
         xtc_cache_t cache = {0};
         if (!try_read_cache(&cache, cache_path, filesize, alloc)) {
@@ -1096,7 +1098,7 @@ static md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i*
         xtc_t* xtc = (xtc_t*)(traj + 1);
 
         xtc->magic = MD_XTC_TRAJ_MAGIC;
-        xtc->filepath = str_copy(filename, alloc);
+        xtc->filepath = str_copy(path, alloc);
         xtc->alloc = alloc;
         xtc->frame_offsets = cache.frame_offsets;
 

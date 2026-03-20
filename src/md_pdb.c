@@ -468,7 +468,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     ASSERT(data);
 
     if (!sys->alloc) {
-       MD_LOG_ERROR("System allocator is not set");
+       MD_LOG_ERROR("System allocator not set");
        return false;
     }
 

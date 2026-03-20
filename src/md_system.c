@@ -12,26 +12,94 @@ extern "C" {
 
 void md_system_free(md_system_t* sys) {
     ASSERT(sys);
-    if (sys->alloc) md_arena_allocator_destroy(sys->alloc);
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
+    md_trajectory_free(sys->trajectory);
+
+    // ATOM
+    md_array_free(sys->atom.x, alloc);
+    md_array_free(sys->atom.y, alloc);
+    md_array_free(sys->atom.z, alloc);
+    md_array_free(sys->atom.type_idx, alloc);
+    md_array_free(sys->atom.flags, alloc);
+
+    // ATOM TYPE
+    md_array_free(sys->atom.type.name, alloc);
+    md_array_free(sys->atom.type.z, alloc);
+    md_array_free(sys->atom.type.mass, alloc);
+    md_array_free(sys->atom.type.radius, alloc);
+    md_array_free(sys->atom.type.color, alloc);
+    md_array_free(sys->atom.type.flags, alloc);
+
+    // COMPONENT
+    md_array_free(sys->component.name, alloc);
+    md_array_free(sys->component.seq_id, alloc);
+    md_array_free(sys->component.atom_offset, alloc);
+    md_array_free(sys->component.flags, alloc);
+
+    // INSTANCE
+    md_array_free(sys->instance.id, alloc);
+    md_array_free(sys->instance.auth_id, alloc);
+    md_array_free(sys->instance.comp_offset, alloc);
+    md_array_free(sys->instance.entity_idx, alloc);
+
+    // ENTITY
+    md_array_free(sys->entity.id, alloc);
+    md_array_free(sys->entity.flags, alloc);
+    for (size_t i = 0; i < sys->entity.count; ++i) {
+        if (!str_empty(sys->entity.description[i])) {
+            str_free(sys->entity.description[i], alloc);
+        }
+    }
+
+    // PROTEIN BACKBONE
+    md_array_free(sys->protein_backbone.range.offset, alloc);
+    md_array_free(sys->protein_backbone.range.inst_idx, alloc);
+    md_array_free(sys->protein_backbone.segment.atoms, alloc);
+    md_array_free(sys->protein_backbone.segment.angle, alloc);
+    md_array_free(sys->protein_backbone.segment.secondary_structure, alloc);
+    md_array_free(sys->protein_backbone.segment.rama_type, alloc);
+    md_array_free(sys->protein_backbone.segment.comp_idx, alloc);
+
+    // NUCLEIC BACKBONE
+    md_array_free(sys->nucleic_backbone.range.offset, alloc);
+    md_array_free(sys->nucleic_backbone.range.inst_idx, alloc);
+    md_array_free(sys->nucleic_backbone.segment.atoms, alloc);
+    md_array_free(sys->nucleic_backbone.segment.comp_idx, alloc);
+
+    // BONDS
+    md_array_free(sys->bond.pairs, alloc);
+    md_array_free(sys->bond.flags, alloc);
+    md_array_free(sys->bond.conn.atom_idx, alloc);
+    md_array_free(sys->bond.conn.bond_idx, alloc);
+    md_array_free(sys->bond.conn.offset, alloc);
+
+    // HYDROGEN BONDS
+    md_array_free(sys->hydrogen_bond.candidate.acceptor.idx, alloc);
+    md_array_free(sys->hydrogen_bond.candidate.acceptor.num_lone_pairs, alloc);
+    md_array_free(sys->hydrogen_bond.candidate.donor.d_idx, alloc);
+    md_array_free(sys->hydrogen_bond.candidate.donor.h_idx, alloc);
+
+    md_index_data_free(&sys->ring);
+    md_index_data_free(&sys->structure);
+
+    // ASSEMBLY
+    md_array_free(sys->assembly.atom_range, alloc);
+    md_array_free(sys->assembly.label, alloc);
+    md_array_free(sys->assembly.transform, alloc);
+
+    if (!str_empty(sys->description)) {
+        str_free(sys->description, alloc);
+    }
+
     MEMSET(sys, 0, sizeof(md_system_t));
 }
 
 void md_system_reset(md_system_t* sys) {
     ASSERT(sys);
-    ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
-    MEMSET(sys, 0, sizeof(md_system_t));
-    md_arena_allocator_reset(alloc);
+    md_system_free(sys);
     sys->alloc = alloc;
-}
-
-// Initialize a system with an allocator. This is additive and optional helper.
-void md_system_init(md_system_t* sys, struct md_allocator_i* alloc) {
-    ASSERT(sys);
-    MEMSET(sys, 0, sizeof(md_system_t));
-    sys->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
-    sys->trajectory = NULL;
-    sys->initial_unitcell = (md_unitcell_t){0};
 }
 
 // This is from Mathis work in Openspace modified slightly
@@ -208,9 +276,7 @@ void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc) 
 // Attach a trajectory to the system, freeing any existing attached trajectory.
 void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj) {
     if (!sys) return;
-    if (sys->trajectory) {
-        md_trajectory_free(sys->trajectory);
-    }
+    md_trajectory_free(sys->trajectory);
     sys->trajectory = traj;
 }
 

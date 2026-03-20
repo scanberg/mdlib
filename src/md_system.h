@@ -988,9 +988,8 @@ static inline int md_hydrogen_bond_acceptor_num_lone_pairs(const md_hydrogen_bon
 // Initialize a system with an allocator. This helper records the allocator on the system so
 // subsequent calls that accept a NULL allocator may fall back to `sys->alloc`.
 
-void md_system_init(md_system_t* sys, struct md_allocator_i* backing);
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
-void md_system_free(md_system_t* sys);
+void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
 
 // Ensure that the dst_sys has the allocator set
 bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);

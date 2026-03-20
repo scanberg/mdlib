@@ -126,7 +126,7 @@ UTEST(lammps, water_ethane_cubic) {
     }
 
     md_system_t sys = { .alloc = alloc };
-    md_lammps_molecule_init(&sys, &data, alloc);
+    md_lammps_system_init_from_data(&sys, &data);
     for (size_t i = 0; i < sys.atom.count; ++i) {
         EXPECT_EQ(sys.atom.x[i], data.atoms[i].x);
         EXPECT_EQ(sys.atom.y[i], data.atoms[i].y);
@@ -284,7 +284,7 @@ UTEST(lammps, water_ethane_triclinic) {
 UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
-    //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
+
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
@@ -318,13 +318,13 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_NEAR(header.unitcell.z, 39.121262, 0.0001);
 
     md_free(md_get_temp_allocator(), mem, bytes);
-    md_lammps_trajectory_free(traj);
+    md_trajectory_free(traj);
 }
 
 UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
-    //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
+    
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
@@ -358,7 +358,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_NEAR(42.3503265, header.unitcell.z, 0.0001);
 
     md_free(md_get_temp_allocator(), mem, bytes);
-    md_lammps_trajectory_free(traj);
+    md_trajectory_free(traj);
 
 }
 
@@ -387,7 +387,7 @@ UTEST(lammps, trajectory_reader_i) {
 
     md_trajectory_reader_free(&reader);
     md_free(md_get_temp_allocator(), mem, bytes);
-    md_lammps_trajectory_free(traj);
+    md_trajectory_free(traj);
 }
 
 

@@ -60,7 +60,7 @@ typedef struct md_array_header_t {
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
 #define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
-#define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
+#define md_array_free(a, alloc)         ((a) ? (*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__) : 0)
 
 #ifdef __cplusplus
 extern "C" {

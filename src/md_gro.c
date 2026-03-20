@@ -174,7 +174,7 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
     ASSERT(data);
 
     if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator must be set");
+        MD_LOG_ERROR("System allocator not set");
         return false;
     }
 

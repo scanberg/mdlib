@@ -64,27 +64,27 @@ void thread_func(void* user_data) {
 }
 
 UTEST(frame_cache, parallel_workload) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
-    md_system_t mol = {0};
-    md_gro_data_t gro = {0};
+    md_system_t sys = {.alloc = arena};
+
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+    ASSERT_TRUE(md_xtc_attach_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE));
+
+    md_trajectory_i* traj = sys.trajectory;
+
+    const size_t num_atoms = md_trajectory_num_atoms(traj);
+    const size_t num_frames = md_trajectory_num_frames(traj);
+
     md_frame_cache_t cache = {0};
-    md_trajectory_i* traj = md_xtc_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
-
-    ASSERT_TRUE(md_gro_data_parse_file(&gro, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), alloc));
-    ASSERT_TRUE(md_gro_system_init(&mol, &gro, alloc));
-    ASSERT_TRUE(traj);
-
-    const int64_t num_atoms = md_trajectory_num_atoms(traj);
-    const int64_t num_frames = md_trajectory_num_frames(traj);
     // We cache much less of the frames so we get some eviction and contention going
-    ASSERT_TRUE(md_frame_cache_init(&cache, traj, alloc, num_frames / 8));
+    ASSERT_TRUE(md_frame_cache_init(&cache, traj, arena, num_frames / 8));
 
-    const int64_t frame_stride = num_atoms * 3;
-    float* ref_coords = md_alloc(alloc, num_frames * num_atoms * 3 * sizeof(float));
-    md_unitcell_t* ref_cells = md_alloc(alloc, num_frames * sizeof(md_unitcell_t));
+    const size_t frame_stride = num_atoms * 3;
+    float* ref_coords = md_alloc(arena, num_frames * num_atoms * 3 * sizeof(float));
+    md_unitcell_t* ref_cells = md_alloc(arena, num_frames * sizeof(md_unitcell_t));
 
-    for (int64_t i = 0; i < num_frames; ++i) {
+    for (size_t i = 0; i < num_frames; ++i) {
         float* ref_x = ref_coords + frame_stride * i + num_atoms * 0;
         float* ref_y = ref_coords + frame_stride * i + num_atoms * 1;
         float* ref_z = ref_coords + frame_stride * i + num_atoms * 2;
@@ -112,6 +112,6 @@ UTEST(frame_cache, parallel_workload) {
         EXPECT_EQ(0, corrupt_count);
     }
 
-    md_xtc_trajectory_free(traj);
-    md_arena_allocator_destroy(alloc);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(arena);
 }

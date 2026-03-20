@@ -801,7 +801,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_optio
 
     md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     size_t buf_cap = MEGABYTES(1);
-    char* buf = md_vm_arena_push(temp_arena, buf_cap);
+    char* buf = md_arena_allocator_push(temp_arena, buf_cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
     

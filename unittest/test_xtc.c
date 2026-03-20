@@ -278,7 +278,7 @@ UTEST(xtc, trajectory_i) {
     }
 
     md_free(md_get_heap_allocator(), mem_ptr, mem_size);
-    md_xtc_trajectory_free(traj);
+    md_trajectory_free(traj);
 }
 
 UTEST(xtc, catalyst) {

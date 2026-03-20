@@ -5741,6 +5741,12 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     float* curr_coords = md_vm_arena_push(temp_alloc, coord_bytes);
     float* atom_mass   = md_vm_arena_push(temp_alloc, sizeof(float) * stride);
     float* atom_radius = md_vm_arena_push(temp_alloc, sizeof(float) * stride);
+
+    md_trajectory_reader_i traj_reader = {0};
+    if (!md_trajectory_reader_init(&traj_reader, traj)) {
+        MD_LOG_ERROR("Failed to initialize trajectory reader for evaluation");
+        return false;
+    }
     
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(temp_alloc, num_expr * sizeof(data_t));
@@ -5789,7 +5795,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     };
 
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
-    md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z);
+    md_trajectory_reader_load_frame(traj_reader, 0, &init_header, init_x, init_y, init_z);
 
     bool result = true;
 
@@ -5799,7 +5805,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
             goto done;
         }
         
-        result = md_trajectory_load_frame(traj, f_idx, &curr_header, curr_x, curr_y, curr_z);
+        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &curr_header, curr_x, curr_y, curr_z);
 
         if (!result) {
             MD_LOG_ERROR("Failed to load frame during evaluation");
@@ -5953,6 +5959,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
 done:
     //md_logf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
     FREE_TEMP_ALLOC;
+    md_trajectory_reader_free(&traj_reader);
     return result;
 }
 

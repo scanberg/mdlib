@@ -1,9 +1,10 @@
-﻿#include <md_lammps.h>
+﻿#include "md_lammps.h"
+
 #include <md_system.h>
+#include <md_trajectory.h>
+#include <md_util.h>
 
 #include <core/md_common.h>
-#include <core/md_str.h>
-#include <core/md_str_builder.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -18,7 +19,7 @@
 #define MD_LAMMPS_CACHE_VERSION 15
 #define MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE 0x341293abc8273650
 
-static md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
+struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
 
 enum {
 	TYPE_UNKNOWN,
@@ -886,6 +887,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		type_masses[i] = data->atom_types[i].mass;
     }
+	
 	size_t num_successfully_mapped_types = md_util_element_from_mass(type_z, type_masses, data->num_atom_types);
 
 	// @TODO: Do something with the variable above to propagate information of possible Coarse-grained system
@@ -1320,7 +1322,7 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
 		mat3_t A;
-		md_unitcell_A_extract(A.elem, &cell);
+		md_unitcell_A_extract_float(A.elem, &cell);
 		M = mat4_from_mat3(A);
 	}
 
@@ -1693,11 +1695,11 @@ static void md_lammps_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-    md_arena_allocator_destroy(inst->alloc);
     MEMSET(traj, 0, sizeof(md_trajectory_i));
+    md_arena_allocator_destroy(inst->alloc);
 }
 
-static md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
 	md_file_info_t file_info = {0};
 	if (!md_file_info_extract_from_path(filename, &file_info)) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");

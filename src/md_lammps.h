@@ -1,12 +1,12 @@
 ﻿#pragma once
 
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stdbool.h>
-#include <core/md_os.h>
-#include <core/md_str.h>
-#include <md_util.h>
-#include <md_trajectory.h>
 
+struct md_allocator_i;
+struct md_trajectory_i;
 struct md_system_t;
 
 //All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
@@ -140,6 +140,7 @@ bool md_lammps_system_init_from_str (struct md_system_t* sys, str_t str,	  const
 
 // TRAJECTORY
 bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);
+struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 
 #ifdef __cplusplus
 }

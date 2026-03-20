@@ -784,8 +784,6 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     md_array_ensure(atom_entries, 1024, temp_arena);
     md_array_ensure(entities, 4, temp_arena);
 
-    MEMSET(sys, 0, sizeof(md_system_t));
-
     mmcif_cell_params_t cell = {0};
     mmcif_parse_state_t state = {
         .reader = reader,
@@ -991,7 +989,7 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, str_t str) {
     }
 
     if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator is not set");
+        MD_LOG_ERROR("System allocator not set");
         return false;
     }
 

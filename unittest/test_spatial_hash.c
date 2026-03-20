@@ -507,11 +507,8 @@ static inline double rnd_rng(double min, double max) {
 UTEST(spatial_hash, n2) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
-    md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
-
-    md_system_t sys = {0};
-    ASSERT_TRUE(md_gro_system_init(&sys, &gro_data, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
 
     {
 
