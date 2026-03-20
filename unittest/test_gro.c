@@ -12,25 +12,23 @@ UTEST(gro, parse_small) {
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/catalyst.gro");
     md_gro_data_t gro_data = {0};
-    bool result = md_gro_data_parse_file(&gro_data, path, alloc);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, path, alloc));
     EXPECT_EQ(gro_data.num_atoms, 1336);
 
-    md_system_t mol = {0};
-
-    md_gro_system_init(&mol, &gro_data, alloc);
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+    md_system_t sys = { .alloc = alloc };
+    md_gro_system_init_from_data(&sys, &gro_data);
+    for (int64_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(sys.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(sys.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
-    md_system_free(&mol, alloc);
+    md_system_reset(&sys);
 
-    EXPECT_TRUE(md_gro_system_loader()->init_from_file(&mol, path, NULL, alloc));
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+    EXPECT_TRUE(md_gro_system_init_from_file(&sys, path));
+    for (int64_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(sys.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(sys.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
 
     md_gro_data_free(&gro_data, alloc);
@@ -41,25 +39,23 @@ UTEST(gro, parse_big) {
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/centered.gro");
     md_gro_data_t gro_data = { 0 };
-    bool result = md_gro_data_parse_file(&gro_data, path, alloc);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, path, alloc));
     EXPECT_EQ(gro_data.num_atoms, 161742);
 
-    md_system_t mol = { 0 };
-
-    md_gro_system_init(&mol, &gro_data, alloc);
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+    md_system_t sys = { .alloc = alloc };
+    md_gro_system_init_from_data(&sys, &gro_data);
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(sys.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(sys.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
-    md_system_free(&mol, alloc);
+    md_system_reset(&sys);
 
-    EXPECT_TRUE(md_gro_system_loader()->init_from_file(&mol, path, NULL, alloc));
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+    EXPECT_TRUE(md_gro_system_init_from_file(&sys, path));
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(sys.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(sys.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
 
     md_gro_data_free(&gro_data, alloc);

@@ -20,6 +20,7 @@ typedef struct md_xtc_header_t {
 
 size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, struct md_allocator_i* alloc);
 
+// This is an internal procedure exposed to enable testing and profiling.
 // Returns the number of atoms decoded, or zero if the frame could not be decoded. The frame should be decoded into `out_header` and `out_xyz`, which should have capacity for at least three floats per atom.
 // Note that the data is only decoded and length units are typically nm.
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_xyz, size_t num_atoms);

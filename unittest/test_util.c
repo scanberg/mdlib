@@ -41,40 +41,46 @@ UTEST_F_SETUP(util) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     utest_fixture->alloc = alloc;
 
-    md_pdb_system_loader()->init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_ala, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_ala.alloc = alloc;
+    md_pdb_system_init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    md_util_system_postprocess(&utest_fixture->mol_ala, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_pftaa, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_pftaa.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_pftaa, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_nucleotides, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_nucleotides.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_nucleotides, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_centered.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_centered, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_dna, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_dna, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_dna.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_dna, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_dna, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_trp, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_trp, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_trp.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_trp, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_trp, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_system_loader()->init_from_file(&utest_fixture->mol_aspirine, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_aspirine, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_aspirine.alloc = alloc;
+    md_gro_system_init_from_file(&utest_fixture->mol_aspirine, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"));
+    md_util_system_postprocess(&utest_fixture->mol_aspirine, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_1fez, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_1fez, alloc, MD_UTIL_POSTPROCESS_ALL);
+    utest_fixture->mol_1fez.alloc = alloc;
+    md_mmcif_system_init_from_file(&utest_fixture->mol_1fez, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    md_util_system_postprocess(&utest_fixture->mol_1fez, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_2or2, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_2or2, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_mmcif_system_init_from_file(&utest_fixture->mol_2or2, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    md_util_system_postprocess(&utest_fixture->mol_2or2, MD_UTIL_POSTPROCESS_ALL);
 
-    md_pdb_system_loader()->init_from_file(&utest_fixture->mol_1k4r, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_1k4r, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
+    md_util_system_postprocess(&utest_fixture->mol_1k4r, MD_UTIL_POSTPROCESS_ALL);
 
-    md_mmcif_system_loader()->init_from_file(&utest_fixture->mol_8g7u, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL, alloc);
-    md_util_system_postprocess(&utest_fixture->mol_8g7u, alloc, MD_UTIL_POSTPROCESS_ALL);
-
-    utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    md_mmcif_system_init_from_file(&utest_fixture->mol_8g7u, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    md_util_system_postprocess(&utest_fixture->mol_8g7u, MD_UTIL_POSTPROCESS_ALL);
 }
 
 UTEST_F_TEARDOWN(util) {
@@ -84,9 +90,9 @@ UTEST_F_TEARDOWN(util) {
 UTEST(util, hbonds) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
 
-    md_system_t sys = {0};
-    md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, arena);
-    md_util_system_postprocess(&sys, arena, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = arena };
+    md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
     md_hydrogen_bond_data_t hbond_data = {0};
     md_util_hydrogen_bond_init(&hbond_data, &sys, arena);
@@ -336,17 +342,17 @@ UTEST_F(util, rings_common) {
 
 UTEST(util, rings_c60) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-	md_system_t mol = {0};
-	md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
-	md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+	md_system_t sys = { .alloc = alloc };
+	md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE);
+	md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-	EXPECT_EQ(mol.atom.count, 60);
-	EXPECT_EQ(mol.bond.count, 90);
+	EXPECT_EQ(sys.atom.count, 60);
+	EXPECT_EQ(sys.bond.count, 90);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 32);
 
-    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -354,17 +360,17 @@ UTEST(util, rings_c60) {
 
 UTEST(util, rings_c720) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), MD_XYZ_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    EXPECT_EQ(mol.atom.count, 720);
-    EXPECT_EQ(mol.bond.count, 1080);
+    EXPECT_EQ(sys.atom.count, 720);
+    EXPECT_EQ(sys.bond.count, 1080);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 362);
 
-    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -372,11 +378,11 @@ UTEST(util, rings_c720) {
 
 UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 207);
 
     md_vm_arena_destroy(alloc);
@@ -384,14 +390,14 @@ UTEST(util, rings_14kr) {
 
 UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -399,14 +405,14 @@ UTEST(util, rings_trytophan_pdb) {
 
 UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), MD_XYZ_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -414,14 +420,14 @@ UTEST(util, rings_trytophan_xyz) {
 
 UTEST(util, rings_full) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_xyz_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), MD_XYZ_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 195);
 
-    const size_t num_structures = md_index_data_num_ranges(&mol.structure);
+    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -429,36 +435,36 @@ UTEST(util, rings_full) {
 
 UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    md_system_t mol = {0};
-    md_pdb_system_loader()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
-    const int64_t num_rings = md_index_data_num_ranges(&mol.ring);
+    const int64_t num_rings = md_index_data_num_ranges(&sys.ring);
     ASSERT_EQ(num_rings, 4);
-    EXPECT_EQ(md_index_range_size(&mol.ring, 0), 3);
-    EXPECT_EQ(md_index_range_size(&mol.ring, 1), 6);
-    EXPECT_EQ(md_index_range_size(&mol.ring, 2), 6);
-    EXPECT_EQ(md_index_range_size(&mol.ring, 3), 6);
+    EXPECT_EQ(md_index_range_size(&sys.ring, 0), 3);
+    EXPECT_EQ(md_index_range_size(&sys.ring, 1), 6);
+    EXPECT_EQ(md_index_range_size(&sys.ring, 2), 6);
+    EXPECT_EQ(md_index_range_size(&sys.ring, 3), 6);
 
     md_vm_arena_destroy(alloc);
 }
 
 UTEST_F(util, structure_matching_amyloid_chain) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_system_t* mol = &utest_fixture->mol_centered;
+    md_system_t* sys = &utest_fixture->mol_centered;
 
 #if 1
     {
         // Test for the chains
         const int ref_structure_idx = 0;
-        int*   ref_idx = md_index_range_ptr(&mol->structure,  ref_structure_idx);
-        size_t ref_len = md_index_range_size(&mol->structure, ref_structure_idx);
+        int*   ref_idx = md_index_range_ptr(&sys->structure,  ref_structure_idx);
+        size_t ref_len = md_index_range_size(&sys->structure, ref_structure_idx);
 
         // Prune Hydrogen
         if (true) {
             md_array(int) new_idx = 0;
             for (size_t i = 0; i < ref_len; ++i) {
-                if (md_atom_atomic_number(&mol->atom, ref_idx[i]) > 1) {
+                if (md_atom_atomic_number(&sys->atom, ref_idx[i]) > 1) {
                     md_array_push(new_idx, ref_idx[i], alloc);
                 }
             }
@@ -467,7 +473,7 @@ UTEST_F(util, structure_matching_amyloid_chain) {
         }
 
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_INSTANCE, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_INSTANCE, sys, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_num_ranges(&result);
@@ -479,17 +485,17 @@ UTEST_F(util, structure_matching_amyloid_chain) {
 
 UTEST_F(util, structure_matching_PFTAA) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_system_t* mol = &utest_fixture->mol_centered;
+    md_system_t* sys = &utest_fixture->mol_centered;
 
 #if 1
     {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
-        const int*   ref_idx  = md_index_range_beg (&mol->structure, ref_structure_idx);
-        const size_t ref_size = md_index_range_size(&mol->structure, ref_structure_idx);
+        const int*   ref_idx  = md_index_range_beg (&sys->structure, ref_structure_idx);
+        const size_t ref_size = md_index_range_size(&sys->structure, ref_structure_idx);
 
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, sys, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_num_ranges(&result);
@@ -501,14 +507,14 @@ UTEST_F(util, structure_matching_PFTAA) {
 
 UTEST_F(util, structure_matching_PFTAA_ring) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_system_t* mol = &utest_fixture->mol_pftaa;
+    md_system_t* sys = &utest_fixture->mol_pftaa;
     {
 #if 1
         // Rings, represents a ring within the molecule
         const int ref_idx[] = {19,20,21,22,24};
         const size_t ref_size = ARRAY_SIZE(ref_idx);
 
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, sys, alloc);
         const size_t result_count = md_index_data_num_ranges(&result);
         EXPECT_EQ(result_count, 5);
 #endif
@@ -531,7 +537,7 @@ UTEST_F(util, structure_matching_PFTAA_ring) {
         const int ref_idx[] = {0,1,2,3,4,5,6,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24,25,46,47,48};
         const int64_t ref_len = ARRAY_SIZE(ref_idx);
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, sys, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
         size_t result_count = md_index_data_num_ranges(&result);
@@ -941,20 +947,20 @@ UTEST(util, radix_sort) {
     printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }
 
-static inline bool init_system(md_system_t* sys, str_t path, md_allocator_i* alloc) {
+static inline bool init_system(md_system_t* sys, str_t path) {
     str_t ext;
     if (!extract_ext(&ext, path)) {
         return false;
     }
 
     if (str_eq_ignore_case(ext, STR_LIT("pdb"))) {
-        return md_pdb_system_loader()->init_from_file(sys, path, NULL, alloc);
+        return md_pdb_system_init_from_file(sys, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
     } else
     if (str_eq_ignore_case(ext, STR_LIT("gro"))) {
-        return md_gro_system_loader()->init_from_file(sys, path, NULL, alloc);
+        return md_gro_system_init_from_file(sys, path);
     } else
     if (str_eq_ignore_case(ext, STR_LIT("cif"))) {
-        return md_mmcif_system_loader()->init_from_file(sys, path, NULL, alloc);
+        return md_mmcif_system_init_from_file(sys, path);
     }
 
     return false;
@@ -965,8 +971,8 @@ UTEST(util, entity_instance) {
     ASSERT(alloc);
 
     {
-        md_system_t sys = {0};
-        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+        md_system_t sys = {.alloc = alloc};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
@@ -977,8 +983,8 @@ UTEST(util, entity_instance) {
     }
 
     {
-        md_system_t sys = {0};
-        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc));
+        md_system_t sys = {.alloc = alloc};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
@@ -995,8 +1001,8 @@ UTEST(util, entity_instance) {
     }
 
     {
-        md_system_t sys = {0};
-        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), alloc));
+        md_system_t sys = {.alloc = alloc};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 3);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
@@ -1015,8 +1021,8 @@ UTEST(util, entity_instance) {
     }
 
     {
-        md_system_t sys = {0};
-        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), alloc));
+        md_system_t sys = {.alloc = alloc};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
 
         ASSERT_EQ(md_system_entity_count(&sys), 8);
@@ -1076,8 +1082,8 @@ UTEST(util, entity_instance) {
     }
 
     {
-        md_system_t sys = {0};
-        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), alloc));
+        md_system_t sys = {.alloc = alloc};
+        ASSERT_TRUE(init_system(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
 
         ASSERT_EQ(md_system_entity_count(&sys), 2);

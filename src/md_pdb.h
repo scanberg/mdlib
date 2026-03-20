@@ -1,10 +1,9 @@
 ﻿#pragma once
 
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stdbool.h>
-
-#include <core/md_str.h>
-#include <md_trajectory.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,16 +12,17 @@ extern "C" {
 struct md_system_t;
 struct md_allocator_i;
 struct md_system_loader_i;
-struct md_mat4_t;
 
 enum {
+    MD_PDB_COORD_FLAG_NONE          = 0,
 	MD_PDB_COORD_FLAG_HETATM        = 1,
     MD_PDB_COORD_FLAG_TERMINATOR    = 2,   // Terminator for chain
 };
 
 enum {
-    MD_PDB_OPTION_NONE = 0,
-    MD_PDB_OPTION_CONCAT_MODELS = 1,
+    MD_PDB_OPTION_NONE                      = 0,
+    MD_PDB_OPTION_CONCAT_MODELS             = 1,
+    MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE  = 2, // Only applies if the PDB stems from file on disk and contains a trajectory.
 };
 
 typedef uint32_t md_pdb_options_t;
@@ -173,8 +173,9 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
-bool md_pdb_system_init(struct md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options);
-struct md_system_loader_i* md_pdb_system_loader(void);
+bool md_pdb_system_init_from_data(struct md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options);
+bool md_pdb_system_init_from_file(struct md_system_t* sys, str_t filename, md_pdb_options_t options);
+bool md_pdb_system_init_from_str (struct md_system_t* sys, str_t str,      md_pdb_options_t options);
 
 // TRAJECTORY
 //bool md_pdb_trajectory_attach_from_file(struct md_system_t* sys, str_t filename);

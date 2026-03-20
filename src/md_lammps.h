@@ -122,28 +122,21 @@ const char** md_lammps_atom_format_strings(void);
 md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str);
 md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t filename);
 
-// validate a arbitrary atom format encoded in a string
-// Must contain the fields: 'id type x y z'
-bool md_lammps_validate_atom_format(const char* atom_format, char* err_buf, size_t err_cap);
+// validate a arbitrary atom format encoded in a string (atom_format)
+// Writes a human readable error message to out_buf if the format is invalid.
+// the format must contain the fields: 'id type x y z'
+bool md_lammps_validate_atom_format(char* out_buf, size_t buf_cap, const char* atom_format);
 
-bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* atom_format_str, struct md_allocator_i* alloc);
-bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format_str, struct md_allocator_i* alloc);
+// DATA PARSING
+// atom_format is optional and will be used if supplied
+bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* atom_format, struct md_allocator_i* alloc);
+bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format, struct md_allocator_i* alloc);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
-// System
-bool md_lammps_system_init(struct md_system_t* sys, const md_lammps_data_t* lammps_data);
-
-// Loader API
-
-// This object has to be passed as the 'arg' parameter in the loader api
-typedef struct md_lammps_system_loader_arg_t {
-	uint64_t type;
-	const char* atom_format_str;
-}md_lammps_system_loader_arg_t;
-
-// Use this to create a valid arg object which can be passed to the loader api
-md_lammps_system_loader_arg_t md_lammps_system_loader_arg(const char* atom_format_str);
-struct md_system_loader_i* md_lammps_system_loader(void);
+// SYSTEM
+bool md_lammps_system_init_from_data(struct md_system_t* sys, const md_lammps_data_t* lammps_data);
+bool md_lammps_system_init_from_file(struct md_system_t* sys, str_t filename, const char* atom_format);
+bool md_lammps_system_init_from_str (struct md_system_t* sys, str_t str,	  const char* atom_format);
 
 // TRAJECTORY
 bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);

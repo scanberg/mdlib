@@ -103,23 +103,18 @@ struct script {
     md_allocator_i* arena;
     md_system_t amy;
     md_system_t ala;
-    md_trajectory_i* ala_traj;
 };
-
-static md_system_t* amy = 0;
-static md_system_t* ala = 0;
-static md_trajectory_i* ala_traj = 0;
 
 UTEST_F_SETUP(script) {
     utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
-    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, utest_fixture->arena));
-    ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, utest_fixture->arena));
+    utest_fixture->amy.alloc = utest_fixture->arena;
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    md_util_system_postprocess(&utest_fixture->amy, MD_UTIL_POSTPROCESS_ALL);
 
-    md_util_system_postprocess(&utest_fixture->amy, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
-    md_util_system_postprocess(&utest_fixture->ala, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
-
-    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), utest_fixture->arena, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    utest_fixture->ala.alloc = utest_fixture->arena;
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_util_system_postprocess(&utest_fixture->ala, MD_UTIL_POSTPROCESS_ALL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -1133,7 +1128,7 @@ UTEST_F(script, selection_big) {
 UTEST_F(script, dynamic_length) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala_traj;
+    md_trajectory_i* traj = utest_fixture->ala.trajectory;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
@@ -1148,7 +1143,7 @@ UTEST_F(script, dynamic_length) {
 UTEST_F(script, property_compute) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala_traj;
+    md_trajectory_i* traj = utest_fixture->ala.trajectory;
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1335,7 +1330,7 @@ void func(void* user_data) {
 UTEST_F(script, parallel_evaluation) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala_traj;
+    md_trajectory_i* traj = utest_fixture->ala.trajectory;
 
     const str_t script = STR_LIT("p1 = distance(1,10);");
 

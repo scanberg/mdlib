@@ -185,11 +185,9 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
 // value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos (0 == no cutoff (Infinite radius of influence))
 size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
 
-// MOLECULE
-bool md_vlx_system_init(struct md_system_t* sys, const md_vlx_t* vlx, struct md_allocator_i* alloc);
-
-struct md_system_loader_i* md_vlx_system_loader(void);
-
+// SYSTEM
+bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);
+bool md_vlx_system_init_from_file(struct md_system_t* sys, str_t filename);
 
 #ifdef __cplusplus
 }

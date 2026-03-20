@@ -9073,11 +9073,16 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_system_postprocess(md_system_t* sys, md_allocator_i* alloc, md_postprocess_flags_t flags) {
+bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) {
     ASSERT(sys);
-    ASSERT(alloc);
 
     if (sys->atom.count == 0) return false;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+
+    md_allocator_i* alloc = sys->alloc;
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 

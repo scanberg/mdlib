@@ -623,6 +623,17 @@ static bool dcd_trajectory_reader_init(md_trajectory_reader_i* reader, struct md
     return true;
 }
 
+void md_dcd_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj && traj->inst);
+    dcd_t* dcd = (dcd_t*)traj->inst;
+    if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
+        MD_LOG_ERROR("DCD: Cannot free trajectory, invalid magic");
+        ASSERT(false);
+        return;
+    }
+    md_arena_allocator_destroy(dcd->allocator);
+}
+
 // ==================== Creation and destruction ====================
 md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     ASSERT(ext_alloc);
@@ -744,22 +755,11 @@ fail:
     return NULL;
 }
 
-void md_dcd_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj && traj->inst);
-    dcd_t* dcd = (dcd_t*)traj->inst;
-    if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
-        MD_LOG_ERROR("DCD: Cannot free trajectory, invalid magic");
-        ASSERT(false);
-        return;
-    }
-    md_arena_allocator_destroy(dcd->allocator);
-}
-
 // Attach convenience wrapper: create trajectory and attach to system
-bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename) {
+bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
     if (!sys) return false;
     md_allocator_i* alloc = sys->alloc ? sys->alloc : md_get_heap_allocator();
-    md_trajectory_i* traj = md_dcd_trajectory_create(filename, alloc, MD_TRAJECTORY_FLAG_NONE);
+    md_trajectory_i* traj = md_dcd_trajectory_create(filename, alloc, flags);
     if (!traj) return false;
     md_system_attach_trajectory(sys, traj);
     return true;

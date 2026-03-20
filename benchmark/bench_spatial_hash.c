@@ -21,19 +21,21 @@ void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_id
 UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
-    md_system_t sys = { 0 };
-    bool result = (md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), NULL, arena));
+    md_system_t sys = { .alloc = arena };
+    if (!md_gro_system_init_from_file(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"))) {
+        fprintf(stderr, "Failed to load system for spatial acc benchmark\n");
+        md_vm_arena_destroy(arena);
+        return;
+    }
 
-    if (result) {
-        md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
-        md_spatial_acc_t acc = { .alloc = arena };
-        md_spatial_acc_init(&acc, &stream, RADIUS, &sys.unitcell, 0);
+    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_spatial_acc_t acc = { .alloc = arena };
+    md_spatial_acc_init(&acc, &stream, RADIUS, &sys.unitcell, 0);
 
-        uint32_t count = 0;
-        UBENCH_DO_BENCHMARK() {
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, RADIUS, spatial_acc_pair_count_callback, &count, 0);
-            UBENCH_DO_NOTHING(&count);
-        }
+    uint32_t count = 0;
+    UBENCH_DO_BENCHMARK() {
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, RADIUS, spatial_acc_pair_count_callback, &count, 0);
+        UBENCH_DO_NOTHING(&count);
     }
 
     md_vm_arena_destroy(arena);

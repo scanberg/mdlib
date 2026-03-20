@@ -601,8 +601,8 @@ const char** md_lammps_atom_format_strings(void) {
 }
 
 md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str) {
-	md_buffered_reader_t line_reader = md_buffered_reader_from_str(str);
-	return detect_atom_format(&line_reader);
+	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	return detect_atom_format(&reader);
 }
 
 md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
@@ -612,13 +612,14 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 		return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 	}
 
+    size_t temp_pos = md_temp_get_pos();
 	const size_t cap = MEGABYTES(1);
 	char* buf = md_temp_push(cap);
 
-	md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-	md_lammps_atom_format_t format = detect_atom_format(&line_reader);
+	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+	md_lammps_atom_format_t format = detect_atom_format(&reader);
 
-	md_temp_pop(cap);
+	md_temp_set_pos_back(temp_pos);
 	md_file_close(&file);
 
 	return format;
@@ -809,7 +810,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	return true;
 }
 
-bool md_lammps_validate_atom_format(const char* format, char* err_buf, size_t err_cap) {
+bool md_lammps_validate_atom_format(char* err_buf, size_t err_cap, const char* format) {
 	int mappings[ARRAY_SIZE(atom_field_name)] = {0};
 	return interpret_format(mappings, format, err_buf, err_cap) > 0;
 }
@@ -851,7 +852,7 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
-bool md_lammps_system_init(md_system_t* sys, const md_lammps_data_t* data) {
+bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* data) {
 	ASSERT(sys);
 	ASSERT(data);
 
@@ -976,70 +977,42 @@ bool md_lammps_system_init(md_system_t* sys, const md_lammps_data_t* data) {
 	return true;
 }
 
-static bool lammps_init_from_str(md_system_t* sys, str_t str, const void* arg) {
-	if (!arg) {
-		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
-		return false;
-	}
-
-	const md_lammps_system_loader_arg_t* lammps_arg = (const md_lammps_system_loader_arg_t*)arg;
-	if (lammps_arg->type != MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE) {
-		MD_LOG_ERROR("Invalid argument type for lammps system loader");
-		return false;
-	}
-
-	const char* format = lammps_arg->atom_format_str;
+bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* atom_format) {
 	md_allocator_i* temp_alloc = md_get_heap_allocator();
 
-	md_lammps_data_t data = { 0 };
-	bool success = false;
-	if (md_lammps_data_parse_str(&data, str, format, temp_alloc)) {
-		success = md_lammps_system_init(sys, &data);
-	}
-	md_lammps_data_free(&data, temp_alloc);
+	if (!atom_format) {
+        md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
+		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
+			MD_LOG_ERROR("Could not detect atom format from supplied string");
+			return false;
+        }
+        atom_format = atom_format_string[format];
+    }
 
+	md_lammps_data_t data = { 0 };
+	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+
+	md_lammps_data_free(&data, temp_alloc);
 	return success;
 }
 
-static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
-	if (!arg) {
-		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
-		return false;
-	}
-
-	const md_lammps_system_loader_arg_t* lammps_arg = (const md_lammps_system_loader_arg_t*)arg;
-	if (lammps_arg->type != MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE) {
-		MD_LOG_ERROR("Invalid argument type for lammps system loader");
-		return false;
-	}
-
-	const char* format = lammps_arg->atom_format_str;
+bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const char* atom_format) {
 	md_allocator_i* temp_alloc = md_get_heap_allocator();
 
+	if (!atom_format) {
+        md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
+		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
+			MD_LOG_ERROR("Could not detect atom format from file '" STR_FMT "'", STR_ARG(filename));
+			return false;
+        }
+        atom_format = atom_format_string[format];
+    }
+
 	md_lammps_data_t data = { 0 };
-	bool success = false;
-	if (md_lammps_data_parse_file(&data, filename, format, temp_alloc)) {
-		success = md_lammps_system_init(sys, &data);
-	}
+	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+
 	md_lammps_data_free(&data, temp_alloc);
-
 	return success;
-}
-
-md_lammps_system_loader_arg_t md_lammps_system_loader_arg(const char* atom_format_str) {
-	md_lammps_system_loader_arg_t arg = { 0 };
-	arg.type = MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE;
-	arg.atom_format_str = atom_format_str;
-	return arg;
-}
-
-static md_system_loader_i lammps_api = {
-	lammps_init_from_str,
-	lammps_init_from_file,
-};
-
-md_system_loader_i* md_lammps_system_loader(void) {
-	return &lammps_api;
 }
 
 // TRAJECTORY OPERATIONS
@@ -1744,6 +1717,7 @@ static md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 		//If the cache file does not exist, we create one
 		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
+            md_arena_allocator_destroy(alloc);
 			return false;
 		}
 

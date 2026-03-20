@@ -721,7 +721,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
-bool md_xyz_system_init(md_system_t* sys, const md_xyz_data_t* data) {
+bool md_xyz_system_init_from_data(md_system_t* sys, const md_xyz_data_t* data, md_xyz_options_t options) {
     ASSERT(sys);
     ASSERT(data);
 
@@ -777,24 +777,21 @@ bool md_xyz_system_init(md_system_t* sys, const md_xyz_data_t* data) {
     return true;
 }
 
-static bool xyz_init_from_str(md_system_t* sys, str_t str, const void* arg) {
+bool md_xyz_system_init_from_str(md_system_t* sys, str_t str, md_xyz_options_t options) {
     ASSERT(sys);
-    (void)arg;
     
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));    
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 
     md_xyz_data_t data = {0};
-    bool result = xyz_parse(&data, &reader, arena, false) && md_xyz_system_init(sys, &data);
+    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, &data, options);
 
-    md_vm_arena_destroy(arena);
-    
+    md_arena_allocator_destroy(temp_arena);
     return result;
 }
 
-static bool xyz_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
+bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_options_t options) {
     ASSERT(sys);
-    (void)arg;
     
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -802,36 +799,31 @@ static bool xyz_init_from_file(md_system_t* sys, str_t filename, const void* arg
         return false;
     }
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     size_t buf_cap = MEGABYTES(1);
-    char* buf = md_vm_arena_push(arena, buf_cap);
+    char* buf = md_vm_arena_push(temp_arena, buf_cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
     
     md_xyz_data_t data = {0};
-    bool result = xyz_parse(&data, &reader, arena, false) && md_xyz_system_init(sys, &data);
+    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, &data, options);
 
     // If the file contained multiple models, interpret as a trajectory and attach one.
     if (result && data.num_models > 1) {
-        md_trajectory_i* traj = md_xyz_trajectory_create(filename, sys->alloc, MD_TRAJECTORY_FLAG_NONE);
+        md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
+        if (options & MD_XYZ_OPTION_DISABLE_CACHE_WRITE) {
+            traj_flags |= MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE;
+        }
+        md_trajectory_i* traj = md_xyz_trajectory_create(filename, sys->alloc, traj_flags);
         if (traj) {
             md_system_attach_trajectory(sys, traj);
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_arena_allocator_destroy(temp_arena);
     md_file_close(&file);
 
     return result;
-}
-
-static md_system_loader_i xyz_molecule_api = {
-    xyz_init_from_str,
-    xyz_init_from_file,
-};
-
-md_system_loader_i* md_xyz_system_loader(void) {
-    return &xyz_molecule_api;
 }
 
 bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {

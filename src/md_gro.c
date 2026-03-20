@@ -169,15 +169,16 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_gro_data_t));
 }
 
-bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, struct md_allocator_i* alloc) {
+bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* data) {
     ASSERT(sys);
     ASSERT(data);
-    ASSERT(alloc);
 
-    MEMSET(sys, 0, sizeof(md_system_t));
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator must be set");
+        return false;
+    }
 
-    /* Record system allocator early so subsequent allocations use system-owned allocator. */
-    md_system_init(sys, alloc);
+    md_system_reset(sys);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
     md_array(str_t) atom_names = 0;
@@ -185,14 +186,14 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    md_array_ensure(sys->atom.x, capacity, alloc);
-    md_array_ensure(sys->atom.y, capacity, alloc);
-    md_array_ensure(sys->atom.z, capacity, alloc);
-    md_array_ensure(sys->atom.type_idx, capacity, alloc);
-    md_array_ensure(sys->atom.flags, capacity, alloc);
+    md_array_ensure(sys->atom.x, capacity, sys->alloc);
+    md_array_ensure(sys->atom.y, capacity, sys->alloc);
+    md_array_ensure(sys->atom.z, capacity, sys->alloc);
+    md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
+    md_array_ensure(sys->atom.flags, capacity, sys->alloc);
 
     sys->atom.type.count = 0;
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	uint64_t prev_comp_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
@@ -208,10 +209,10 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
             // New residue
             md_flags_t res_flags = 0;
             sys->component.count += 1;
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-            md_array_push(sys->component.name,  make_label(res_name), alloc);
-            md_array_push(sys->component.seq_id,    res_id, alloc);
-            md_array_push(sys->component.flags,  res_flags, alloc);
+            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+            md_array_push(sys->component.name,  make_label(res_name), sys->alloc);
+            md_array_push(sys->component.seq_id,    res_id, sys->alloc);
+            md_array_push(sys->component.flags,  res_flags, sys->alloc);
 		}
 
         sys->atom.count += 1;
@@ -224,7 +225,7 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
 		prev_comp_key = comp_key;
     }
-	md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+	md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
 
     float box[3][3] = {0};
     // convert from nm to Ångström
@@ -236,8 +237,8 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
     sys->unitcell = md_unitcell_from_matrix_float(box);
 
-    md_util_system_infer_atom_types(sys, atom_names, alloc);
-    md_util_system_infer_covalent_bonds(sys, alloc);
+    md_util_system_infer_atom_types(sys, atom_names, sys->alloc);
+    md_util_system_infer_covalent_bonds(sys, sys->alloc);
     md_util_system_infer_comp_flags(sys);
 
     md_vm_arena_destroy(temp_arena);
@@ -245,43 +246,22 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
     return true;
 }
 
-static bool gro_init_from_str(md_system_t* sys, str_t str, const void* arg) {
-    (void)arg;
-    md_gro_data_t data = {0};
-    bool success = false;
-    if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
-        success = md_gro_system_init(sys, &data, md_get_heap_allocator());
-    }
-    md_gro_data_free(&data, md_get_heap_allocator());
-
-    return success;
-}
-
-static bool gro_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
-    (void)arg;
-
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator must be set");
-        return false;
-    }
-    md_system_reset(sys);
+bool md_gro_system_init_from_file(md_system_t* sys, str_t filename) {
+    md_allocator_i* temp_alloc = md_get_heap_allocator();
     
     md_gro_data_t data = {0};
-    bool success = false;
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
-    if (md_gro_data_parse_file(&data, filename, temp_alloc)) {
-        success = md_gro_system_init(sys, &data, sys->alloc);
-    }
-    md_gro_data_free(&data, temp_alloc);
+    bool success = md_gro_data_parse_file(&data, filename, temp_alloc) && md_gro_system_init_from_data(sys, &data);
 
+    md_gro_data_free(&data, temp_alloc);
     return success;
 }
 
-static md_system_loader_i gro_api = {
-    gro_init_from_str,
-    gro_init_from_file,
-};
+static bool md_gro_system_init_from_str(md_system_t* sys, str_t str) {
+    md_allocator_i* temp_alloc = md_get_heap_allocator();
 
-md_system_loader_i* md_gro_system_loader(void) {
-    return &gro_api;
+    md_gro_data_t data = {0};
+    bool success = md_gro_data_parse_str(&data, str, temp_alloc) && md_gro_system_init_from_data(sys, &data);
+
+    md_gro_data_free(&data, temp_alloc);
+    return success;
 }

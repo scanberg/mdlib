@@ -407,32 +407,36 @@ UTEST(xyz, create_molecule) {
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
 
-    md_system_t mol = {0};
-    EXPECT_TRUE(md_xyz_molecule_init(&mol, &data, alloc));
+    md_system_t sys = { .alloc = alloc };
+    EXPECT_TRUE(md_xyz_system_init_from_data(&sys, &data, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
     ASSERT_GT(data.num_models, 0);
-    ASSERT_EQ(mol.atom.count, data.models[0].end_coord_index - data.models[0].beg_coord_index);
+    ASSERT_EQ(sys.atom.count, data.models[0].end_coord_index - data.models[0].beg_coord_index);
 
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], data.coordinates[i].x);
-        EXPECT_EQ(mol.atom.y[i], data.coordinates[i].y);
-        EXPECT_EQ(mol.atom.z[i], data.coordinates[i].z);
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], data.coordinates[i].x);
+        EXPECT_EQ(sys.atom.y[i], data.coordinates[i].y);
+        EXPECT_EQ(sys.atom.z[i], data.coordinates[i].z);
     }
 
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 
     md_xyz_data_free(&data, alloc);
 }
 
 UTEST(xyz, trajectory_i) {
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
-    md_trajectory_i* traj = md_xyz_trajectory_create(path, md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    md_system_t sys = { .alloc = temp_arena };
+    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
+    md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(2280, md_trajectory_num_atoms(traj));
     EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
     const size_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_temp_allocator(), mem_size);
+    void* mem_ptr = md_arena_allocator_push(temp_arena, mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -444,17 +448,21 @@ UTEST(xyz, trajectory_i) {
         EXPECT_EQ(2280, header.num_atoms);
     }
 
-    md_free(md_get_temp_allocator(), mem_ptr, mem_size);
-    md_xyz_trajectory_free(traj);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(temp_arena);
 }
 
 UTEST(xyz, trajectory_reader_i) {
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
-    md_trajectory_i* traj = md_xyz_trajectory_create(path, md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    md_system_t sys = { .alloc = temp_arena };
+    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
+    md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
 
     const size_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_temp_allocator(), mem_size);
+    void* mem_ptr = md_arena_allocator_push(temp_arena, mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -468,9 +476,8 @@ UTEST(xyz, trajectory_reader_i) {
     EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
     EXPECT_EQ(2280, header.num_atoms);
 
-    md_trajectory_reader_free(&reader);
-    md_free(md_get_temp_allocator(), mem_ptr, mem_size);
-    md_xyz_trajectory_free(traj);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(temp_arena);
 }
 
 
@@ -478,31 +485,31 @@ UTEST(xyz, comprehensive_c720) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
     
-    md_system_t mol = {0};
-    bool result = md_xyz_system_loader()->init_from_file(&mol, path, NULL, alloc);
+    md_system_t sys = { .alloc = alloc };
+    bool result = md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_NONE);
     ASSERT_TRUE(result);
     
     // C720 should have exactly 720 carbon atoms
-    EXPECT_EQ(mol.atom.count, 720);
+    EXPECT_EQ(sys.atom.count, 720);
     
     // All atoms should be carbon
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(md_atom_atomic_number(&mol.atom, i), 6); // Carbon atomic number
+    for (int64_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(md_atom_atomic_number(&sys.atom, i), 6); // Carbon atomic number
     }
     
     // Check that coordinates are not all the same (should be a 3D structure)
     bool has_variation_x = false, has_variation_y = false, has_variation_z = false;
-    float first_x = mol.atom.x[0], first_y = mol.atom.y[0], first_z = mol.atom.z[0];
-    for (int64_t i = 1; i < mol.atom.count; ++i) {
-        if (fabsf(mol.atom.x[i] - first_x) > 0.01f) has_variation_x = true;
-        if (fabsf(mol.atom.y[i] - first_y) > 0.01f) has_variation_y = true;
-        if (fabsf(mol.atom.z[i] - first_z) > 0.01f) has_variation_z = true;
+    float first_x = sys.atom.x[0], first_y = sys.atom.y[0], first_z = sys.atom.z[0];
+    for (int64_t i = 1; i < sys.atom.count; ++i) {
+        if (fabsf(sys.atom.x[i] - first_x) > 0.01f) has_variation_x = true;
+        if (fabsf(sys.atom.y[i] - first_y) > 0.01f) has_variation_y = true;
+        if (fabsf(sys.atom.z[i] - first_z) > 0.01f) has_variation_z = true;
     }
     EXPECT_TRUE(has_variation_x);
     EXPECT_TRUE(has_variation_y);
     EXPECT_TRUE(has_variation_z);
     
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 }
 
 UTEST(xyz, error_handling) {
@@ -510,14 +517,15 @@ UTEST(xyz, error_handling) {
     
     // Test nonexistent file
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
-    md_system_t mol = {0};
-    bool result = md_xyz_system_loader()->init_from_file(&mol, path, NULL, alloc);
+    md_system_t sys = {.alloc = alloc};
+    bool result = md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_NONE);
     EXPECT_FALSE(result);
-    md_system_free(&mol, alloc);
+
+    md_system_reset(&sys);
     
     // Test empty path
-    str_t empty_path = {0,0};
-    result = md_xyz_system_loader()->init_from_file(&mol, empty_path, NULL, alloc);
+    str_t empty_path = {0};
+    result = md_xyz_system_init_from_file(&sys, empty_path, MD_XYZ_OPTION_NONE);
     EXPECT_FALSE(result);
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 }

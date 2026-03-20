@@ -125,21 +125,20 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_EQ(ref_dihedrals[i].atom_id[3],  data.dihedrals[i].atom_id[3]);
     }
 
-    md_system_t mol = {0};
-
-    md_lammps_molecule_init(&mol, &data, alloc);
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
-        EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
-        EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
+    md_system_t sys = { .alloc = alloc };
+    md_lammps_molecule_init(&sys, &data, alloc);
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], data.atoms[i].x);
+        EXPECT_EQ(sys.atom.y[i], data.atoms[i].y);
+        EXPECT_EQ(sys.atom.z[i], data.atoms[i].z);
     }
 
     // Skip first atom type == Unknown
-    for (size_t i = 1; i < mol.atom.type.count; ++i) {
-        str_t type_id = md_atom_type_name(&mol.atom.type, i);
-        float mass    = md_atom_type_mass(&mol.atom.type, i);
-        float radius  = md_atom_type_radius(&mol.atom.type, i);
-        md_atomic_number_t z = md_atom_type_atomic_number(&mol.atom.type, i);
+    for (size_t i = 1; i < sys.atom.type.count; ++i) {
+        str_t type_id = md_atom_type_name(&sys.atom.type, i);
+        float mass    = md_atom_type_mass(&sys.atom.type, i);
+        float radius  = md_atom_type_radius(&sys.atom.type, i);
+        md_atomic_number_t z = md_atom_type_atomic_number(&sys.atom.type, i);
 
         bool found = false;
         for (size_t j = 0; j < data.num_atom_types; ++j) {
@@ -161,7 +160,7 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_TRUE(found);
     }
 
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 
     md_lammps_data_free(&data, alloc);
 }
@@ -268,17 +267,16 @@ UTEST(lammps, water_ethane_triclinic) {
         EXPECT_EQ(ref_dihedrals[i].atom_id[3],  data.dihedrals[i].atom_id[3]);
     }
 
-    md_system_t mol = {0};
-
-    md_lammps_molecule_init(&mol, &data, alloc);
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
-        EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
-        EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
-        EXPECT_NE(mol.atom.type_idx[i], 0);
+    md_system_t sys = {.alloc = alloc};
+    ASSERT_TRUE(md_lammps_system_init_from_data(&sys, &data));
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(sys.atom.x[i], data.atoms[i].x);
+        EXPECT_EQ(sys.atom.y[i], data.atoms[i].y);
+        EXPECT_EQ(sys.atom.z[i], data.atoms[i].z);
+        EXPECT_NE(sys.atom.type_idx[i], 0);
     }
 
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 
     md_lammps_data_free(&data, alloc);
 }
@@ -404,25 +402,23 @@ UTEST(lammps, comprehensive_data_validation) {
     
     const char** atom_formats = md_lammps_atom_format_strings();
     const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
-    md_lammps_molecule_loader_arg_t args = md_lammps_molecule_loader_arg(atom_format);
     
     for (int p = 0; p < 2; ++p) {
-        md_system_t mol = {0};
-        bool result = md_lammps_system_loader()->init_from_file(&mol, paths[p], &args, alloc);
-        ASSERT_TRUE(result);
+        md_system_t sys = { .alloc = alloc };
+        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, paths[p], atom_format));
         
-        EXPECT_GT(mol.atom.count, 0);
+        EXPECT_GT(sys.atom.count, 0);
         
         // Validate coordinates are finite for a sample of atoms
-        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, mol.atom.count); ++i) {
-            EXPECT_FALSE(isnan(mol.atom.x[i]));
-            EXPECT_FALSE(isnan(mol.atom.y[i]));
-            EXPECT_FALSE(isnan(mol.atom.z[i]));
-            EXPECT_FALSE(isinf(mol.atom.x[i]));
-            EXPECT_FALSE(isinf(mol.atom.y[i]));
-            EXPECT_FALSE(isinf(mol.atom.z[i]));
+        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, sys.atom.count); ++i) {
+            EXPECT_FALSE(isnan(sys.atom.x[i]));
+            EXPECT_FALSE(isnan(sys.atom.y[i]));
+            EXPECT_FALSE(isnan(sys.atom.z[i]));
+            EXPECT_FALSE(isinf(sys.atom.x[i]));
+            EXPECT_FALSE(isinf(sys.atom.y[i]));
+            EXPECT_FALSE(isinf(sys.atom.z[i]));
         }
         
-        md_system_free(&mol, alloc);
+        md_system_free(&sys);
     }
 }

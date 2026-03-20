@@ -433,20 +433,21 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc
 }
 
 bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i* alloc) {
-    bool result = false;
     md_file_t file = {0};
-    if (md_file_open(&file, filename, MD_FILE_READ)) {
-        const size_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_get_heap_allocator(), cap);
-        
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        result = pdb_parse(data, &reader, alloc, false);
-        
-        md_free(md_get_heap_allocator(), buf, cap);
-        md_file_close(&file);
-    } else {
-        MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
+        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        return false;
     }
+
+    const size_t cap = MEGABYTES(1);
+    char* buf = md_alloc(md_get_heap_allocator(), cap);
+        
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+    bool result = pdb_parse(data, &reader, alloc, false);
+        
+    md_free(md_get_heap_allocator(), buf, cap);
+    md_file_close(&file);
+
     return result;
 }
 
@@ -462,16 +463,18 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options) {
+bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
     ASSERT(data);
 
-    // Use heap allocator for internal allocations unless caller supplies another path via md_system_init.
-    struct md_allocator_i* alloc = md_get_heap_allocator();
+    if (!sys->alloc) {
+       MD_LOG_ERROR("System allocator is not set");
+       return false;
+    }
 
-    bool result = false;
+    md_system_reset(sys);
 
-    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     size_t beg_atom_index = 0;
     size_t end_atom_index = data->num_atom_coordinates;
@@ -483,26 +486,23 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
         end_atom_index = data->models[0].end_atom_index;
     }
 
-    MEMSET(sys, 0, sizeof(md_system_t));
-
-    /* Record system allocator early so subsequent allocations use system-owned allocator. */
-    md_system_init(sys, alloc);
+    bool result = false;
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
     md_array(str_t) atom_name = 0;
-    md_array_ensure(atom_name, capacity, temp_alloc);
+    md_array_ensure(atom_name, capacity, temp_arena);
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
-    md_array_ensure(sys->atom.x,        capacity, alloc);
-    md_array_ensure(sys->atom.y,        capacity, alloc);
-    md_array_ensure(sys->atom.z,        capacity, alloc);
-    md_array_ensure(sys->atom.type_idx, capacity, alloc);
-    md_array_ensure(sys->atom.flags,    capacity, alloc);
+    md_array_ensure(sys->atom.x,        capacity, sys->alloc);
+    md_array_ensure(sys->atom.y,        capacity, sys->alloc);
+    md_array_ensure(sys->atom.z,        capacity, sys->alloc);
+    md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
+    md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
 	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	uint64_t prev_comp_key = 0;
 	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
@@ -537,7 +537,7 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             float mass   = md_atomic_number_mass(atomic_number);
             float radius = md_atomic_number_vdw_radius(atomic_number);
             uint32_t color = md_atomic_number_cpk_color(atomic_number);
-            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, alloc);
+            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, sys->alloc);
         } else {
             num_unassigned_atom_types += 1;
         }
@@ -550,17 +550,17 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
             md_flags_t comp_flags = flags;
 
             sys->component.count += 1;
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-            md_array_push(sys->component.name,   make_label(res_name), alloc);
-            md_array_push(sys->component.seq_id, seq_id, alloc);
-            md_array_push(sys->component.flags,  comp_flags, alloc);
+            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+            md_array_push(sys->component.name,   make_label(res_name), sys->alloc);
+            md_array_push(sys->component.seq_id, seq_id, sys->alloc);
+            md_array_push(sys->component.flags,  comp_flags, sys->alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
             if (terminator) {
                 // Trigger a new component for the next residue even if the chain id is the same, to correctly capture chain breaks
                 asym_id.len = 2;
             }
-            md_array_push(comp_auth_asym_ids, asym_id, temp_alloc);
+            md_array_push(comp_auth_asym_ids, asym_id, temp_arena);
         }
 
         sys->atom.count += 1;
@@ -576,7 +576,7 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
@@ -590,12 +590,11 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
     };
 
     if (num_unassigned_atom_types > 0) {
-        md_util_system_infer_atom_types(sys, atom_name, alloc);
+        md_util_system_infer_atom_types(sys, atom_name, sys->alloc);
     }
-	md_util_system_infer_covalent_bonds(sys, alloc);
+	md_util_system_infer_covalent_bonds(sys, sys->alloc);
     md_util_system_infer_comp_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, alloc);
-
+    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, sys->alloc);
 
     /*
     // Create instances from assemblies
@@ -664,61 +663,52 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
 
     result = true;
 done:
-    md_vm_arena_destroy(temp_alloc);
+    md_arena_allocator_destroy(temp_arena);
     return result;
 }
 
-static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg) {
-    (void)arg;
-    md_pdb_data_t data = {0};
+bool md_pdb_system_init_from_str(md_system_t* sys, str_t str, md_pdb_options_t options) {
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
-    md_pdb_data_parse_str(&data, str, temp_alloc);
-    bool success = md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE);
-    md_pdb_data_free(&data, temp_alloc);
+    md_pdb_data_t data = {0};
+    md_pdb_data_parse_str(&data, str, temp_arena);
+    bool success = md_pdb_system_init_from_data(sys, &data, options);
     
+    md_arena_allocator_destroy(temp_arena);
     return success;
 }
 
-static bool pdb_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
-    (void)arg;
+bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_options_t options) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
+        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
         return false;
     }
 
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     const size_t cap = MEGABYTES(1);
-    char *buf = md_alloc(temp_alloc, cap);
+    char *buf = md_arena_allocator_push(temp_arena, cap);
     ASSERT(buf);
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     
     md_pdb_data_t data = {0};
-    bool parse = pdb_parse(&data, &reader, temp_alloc, true);
-    bool success = parse && md_pdb_system_init(sys, &data, MD_PDB_OPTION_NONE);
+    bool success = pdb_parse(&data, &reader, temp_arena, false) && md_pdb_system_init_from_data(sys, &data, options);
 
     // If the file contained multiple models, interpret as a trajectory and attach one.
     if (success && data.num_models > 1) {
-        md_trajectory_i* traj = md_pdb_trajectory_create(filename, sys->alloc, MD_TRAJECTORY_FLAG_NONE);
+        md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
+        if (options & MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) {
+            traj_flags |= MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE;
+        }
+        md_trajectory_i* traj = md_pdb_trajectory_create(filename, sys->alloc, traj_flags);
         if (traj) {
             md_system_attach_trajectory(sys, traj);
         }
     }
 
-    md_pdb_data_free(&data, temp_alloc);
-    md_free(temp_alloc, buf, cap);
+    md_arena_allocator_destroy(temp_arena);
 
     return success;
-}
-
-static md_system_loader_i pdb_molecule_api = {
-    pdb_init_from_str,
-    pdb_init_from_file,
-};
-
-md_system_loader_i* md_pdb_system_loader(void) {
-    return &pdb_molecule_api;
 }
 
 bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {

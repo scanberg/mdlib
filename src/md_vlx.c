@@ -3089,24 +3089,29 @@ void md_vlx_destroy(md_vlx_t* vlx) {
 	}
 }
 
-bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* alloc) {
+bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	ASSERT(sys);
 	ASSERT(vlx);
-
+	
 	if (vlx->number_of_atoms == 0) {
 		MD_LOG_ERROR("The veloxchem object contains no atoms");
 		return false;
 	}
 
+	if (!sys->alloc) {
+		MD_LOG_ERROR("System allocator is not set");
+		return false;
+    }
+
+	md_system_reset(sys);
+
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	MEMSET(sys, 0, sizeof(md_system_t));
-
-	md_array_resize(sys->atom.x,		capacity, alloc);
-	md_array_resize(sys->atom.y,		capacity, alloc);
-	md_array_resize(sys->atom.z,		capacity, alloc);
-    md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags,    capacity, alloc);
+	md_array_resize(sys->atom.x,		capacity, sys->alloc);
+	md_array_resize(sys->atom.y,		capacity, sys->alloc);
+	md_array_resize(sys->atom.z,		capacity, sys->alloc);
+    md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
+    md_array_resize(sys->atom.flags,    capacity, sys->alloc);
 
 	MEMSET(sys->atom.x,			0, md_array_bytes(sys->atom.x));
 	MEMSET(sys->atom.y,			0, md_array_bytes(sys->atom.y));
@@ -3114,7 +3119,7 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
 		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
@@ -3127,7 +3132,7 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 		float radius = md_atomic_number_vdw_radius(z);
 		uint32_t color = md_atomic_number_cpk_color(z);
 
-		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, alloc);
+		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
 	}
 
@@ -3136,37 +3141,19 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 	return true;
 }
 
-static bool vlx_sys_init_from_str(md_system_t* sys, str_t str, const void* arg) {
-	(void)sys;
-	(void)str;
-	(void)arg;
-	MD_LOG_ERROR("This is not implemented yeti");
-	return false;
-}
+bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
+	ASSERT(sys);
 
-static bool vlx_sys_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
-	(void)arg;
-	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+	md_vlx_t* vlx = md_vlx_create(temp_arena);
 
-	bool success = false;
-	if (vlx_parse_file(vlx, filename, VLX_FLAG_CORE)) {
-		success = md_vlx_system_init(sys, vlx, sys->alloc);
-	}
+	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, vlx);
 
-	md_vlx_destroy(vlx);
+	md_arena_allocator_destroy(temp_arena);
 	return success;
 }
 
-static md_system_loader_i vlx_loader = {
-	vlx_sys_init_from_str,
-	vlx_sys_init_from_file
-};
-
 // Externally visible procedures
-
-md_system_loader_i* md_vlx_system_loader(void) {
-	return &vlx_loader;
-}
 
 size_t md_vlx_number_of_atoms(const md_vlx_t* vlx) {
 	if (vlx) return vlx->number_of_atoms;

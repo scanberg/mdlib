@@ -982,20 +982,6 @@ static inline int md_hydrogen_bond_acceptor_num_lone_pairs(const md_hydrogen_bon
     return 0;
 }
 
-/*
-
-The molecule loader interface is just a convenience interface for abstracing the functionality of initializing molecule data
-
-The reason for providing a distinct function for initializing from file is that some molecule files can
-also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
-molecule data only the first part of the file is used.
-
-*/
-
-typedef struct md_system_loader_i {
-    bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg);
-    bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg);
-} md_system_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.
@@ -1006,6 +992,7 @@ void md_system_init(md_system_t* sys, struct md_allocator_i* backing);
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
 void md_system_free(md_system_t* sys);
 
+// Ensure that the dst_sys has the allocator set
 bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);
 
 // Attach helpers: set or create-and-attach trajectories to a system.

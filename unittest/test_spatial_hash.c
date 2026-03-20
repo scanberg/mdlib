@@ -721,8 +721,8 @@ static inline float rnd() {
 UTEST_F(spatial_hash, test_correctness_centered) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys = { 0 };
-    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
 
     md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
@@ -775,8 +775,8 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 UTEST_F(spatial_hash, test_correctness_ala) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys = { 0 };
-    ASSERT_TRUE(md_pdb_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
 
     srand(31);
     md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
@@ -827,8 +827,8 @@ UTEST_F(spatial_hash, test_correctness_ala) {
 UTEST_F(spatial_hash, test_correctness_water) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys = { 0 };
-    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
 
     srand(31);
 
@@ -882,10 +882,9 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     const char** atom_formats = md_lammps_atom_format_strings();
     const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
-    md_lammps_molecule_loader_arg_t args = md_lammps_molecule_loader_arg(atom_format);
 
-    md_system_t sys = { 0 };
-    ASSERT_TRUE(md_lammps_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), &args, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
 
     srand(31);
 
@@ -948,8 +947,8 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 UTEST_F(spatial_hash, npt_triclinic) {
     md_allocator_i* alloc = utest_fixture->arena;
 
-    md_system_t sys = { 0 };
-    ASSERT_TRUE(md_gro_system_loader()->init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL, alloc));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
 
     srand(31);
 

@@ -35,13 +35,19 @@ UBENCH_EX(gro, postprocess) {
     md_allocator_i* alloc = md_linear_allocator_create(buffer, capacity);
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
-    md_system_t mol = {0};
-    md_gro_system_loader()->init_from_file(&mol, path, 0, alloc);
-    md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_system_t sys = {.alloc = alloc};
+    if (!md_gro_system_init_from_file(&sys, path)) {
+        MD_LOG_ERROR("Failed to load system for GRO postprocess benchmark\n");
+        md_free(md_get_heap_allocator(), buffer, capacity);
+        return;
+    }
+
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
     size_t reset_pos = md_linear_allocator_get_pos(alloc);
     UBENCH_DO_BENCHMARK() {
-        md_util_system_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_BOND_BIT);
+        md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_BOND_BIT);
+        md_system_reset(&sys);
         md_linear_allocator_set_pos_back(alloc, reset_pos);
     }
 

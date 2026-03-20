@@ -11,75 +11,73 @@
 UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
-    md_system_t mol;
-    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, path);
     EXPECT_TRUE(result);
 
     if (result) {
-        EXPECT_EQ(4097, mol.atom.count);
+        EXPECT_EQ(4097, sys.atom.count);
 
-        EXPECT_EQ(7, md_atom_atomic_number(&mol.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&mol.atom, 0)));
+        EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
         //EXPECT_STREQ("LYS", mol.atom.resname[0].buf);
         //EXPECT_EQ(1, mol.atom.resid[0]);
         //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
-        EXPECT_NEAR(52.489, mol.atom.x[0], 0.001);
-        EXPECT_NEAR(21.292, mol.atom.y[0], 0.001);
-        EXPECT_NEAR(84.339, mol.atom.z[0], 0.001);
+        EXPECT_NEAR(52.489, sys.atom.x[0], 0.001);
+        EXPECT_NEAR(21.292, sys.atom.y[0], 0.001);
+        EXPECT_NEAR(84.339, sys.atom.z[0], 0.001);
     }
 
-    md_system_free(&mol, md_get_heap_allocator());
+    md_system_free(&sys);
 }
 
 UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
-    md_system_t mol;
-    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, path);
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
     if (result) {
-        EXPECT_EQ(5382, mol.atom.count);
+        EXPECT_EQ(5382, sys.atom.count);
 
-        EXPECT_EQ(7, md_atom_atomic_number(&mol.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&mol.atom, 0)));
-        //EXPECT_STREQ("ALA", mol.atom.resname[0].buf);
-        //EXPECT_EQ(1, mol.atom.resid[0]);
-        //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
-
-        EXPECT_NEAR(58.157, mol.atom.x[0], 0.001);
-        EXPECT_NEAR(49.822, mol.atom.y[0], 0.001);
-        EXPECT_NEAR(80.569, mol.atom.z[0], 0.001);
+        EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
+        //EXPECT_STREQ("ALA", sys.atom.resname[0].buf);
+        //EXPECT_EQ(1, sys.atom.resid[0]);
+        //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
+        EXPECT_NEAR(58.157, sys.atom.x[0], 0.001);
+        EXPECT_NEAR(49.822, sys.atom.y[0], 0.001);
+        EXPECT_NEAR(80.569, sys.atom.z[0], 0.001);
     }
 
-    md_system_free(&mol, md_get_heap_allocator());
+    md_system_free(&sys);
 }
 
 UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
-    md_system_t mol;
-    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, path);
     EXPECT_TRUE(result);
-    md_util_system_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
+    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
 
     if (result) {
-        EXPECT_EQ(14229, mol.atom.count);
+        EXPECT_EQ(14229, sys.atom.count);
 
-        EXPECT_EQ(7, md_atom_atomic_number(&mol.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&mol.atom, 0)));
-        //EXPECT_STREQ("PHE", mol.atom.resname[0].buf);
-        //EXPECT_EQ(241, mol.atom.resid[0]);
-        //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
-
-        EXPECT_NEAR(77.862,  mol.atom.x[0], 0.001);
-        EXPECT_NEAR(105.453, mol.atom.y[0], 0.001);
-        EXPECT_NEAR(80.951,  mol.atom.z[0], 0.001);
+        EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
+        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
+        //EXPECT_STREQ("PHE", sys.atom.resname[0].buf);
+        //EXPECT_EQ(241, sys.atom.resid[0]);
+        //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
+        EXPECT_NEAR(77.862,  sys.atom.x[0], 0.001);
+        EXPECT_NEAR(105.453, sys.atom.y[0], 0.001);
+        EXPECT_NEAR(80.951,  sys.atom.z[0], 0.001);
     }
 
-    md_system_free(&mol, md_get_heap_allocator());
+    md_system_free(&sys);
 }
 
 #include <md_mmcif.c>
@@ -332,44 +330,43 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
-    md_system_t mol = {0};
-    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
+    md_system_t sys = { .alloc = alloc };
+    bool result = md_mmcif_system_init_from_file(&sys, path);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
-    EXPECT_GT(mol.atom.count, 0);
-    EXPECT_GT(mol.component.count, 0);
-    EXPECT_GT(mol.instance.count, 0);
+    EXPECT_GT(sys.atom.count, 0);
+    EXPECT_GT(sys.component.count, 0);
+    EXPECT_GT(sys.instance.count, 0);
     
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;
-    for (int64_t i = 0; i < mol.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
-        EXPECT_FALSE(isnan(mol.atom.x[i]));
-        EXPECT_FALSE(isnan(mol.atom.y[i]));
-        EXPECT_FALSE(isnan(mol.atom.z[i]));
-        EXPECT_FALSE(isinf(mol.atom.x[i]));
-        EXPECT_FALSE(isinf(mol.atom.y[i]));
-        EXPECT_FALSE(isinf(mol.atom.z[i]));
+    for (int64_t i = 0; i < sys.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
+        EXPECT_FALSE(isnan(sys.atom.x[i]));
+        EXPECT_FALSE(isnan(sys.atom.y[i]));
+        EXPECT_FALSE(isnan(sys.atom.z[i]));
+        EXPECT_FALSE(isinf(sys.atom.x[i]));
+        EXPECT_FALSE(isinf(sys.atom.y[i]));
+        EXPECT_FALSE(isinf(sys.atom.z[i]));
         
-        if (mol.atom.x[i] != 0.0f || mol.atom.y[i] != 0.0f || mol.atom.z[i] != 0.0f) {
+        if (sys.atom.x[i] != 0.0f || sys.atom.y[i] != 0.0f || sys.atom.z[i] != 0.0f) {
             has_nonzero_coord = true;
         }
     }
     EXPECT_TRUE(has_nonzero_coord);
     
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 }
 
 UTEST(mmcif, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
-    md_system_t mol = {0};
-    bool result = md_mmcif_system_loader()->init_from_file(&mol, path, NULL, alloc);
-    EXPECT_FALSE(result);
+    md_system_t sys = { .alloc = alloc };
+    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, path));
     
     // Should be safe to free even when init failed
-    md_system_free(&mol, alloc);
+    md_system_free(&sys);
 }
 
 UTEST(mmcif, advance_to_next_control) {

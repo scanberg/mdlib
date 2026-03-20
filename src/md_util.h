@@ -109,19 +109,8 @@ bool md_util_system_infer_structures(md_system_t* sys, struct md_allocator_i* al
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_system_postprocess(struct md_system_t* sys, struct md_allocator_i* alloc, md_postprocess_flags_t flags);
+bool md_util_system_postprocess(struct md_system_t* sys, md_postprocess_flags_t flags);
 
-
-// ### UNIT CELL ###
-
-// Construct unit cell from orthographic extents
-md_unitcell_t md_util_unitcell_from_extent(double x, double y, double z);
-
-// Construct possibly a triclinic cell from extents a,b,c and axis angles alpha, beta, gamma (in degrees)
-md_unitcell_t md_util_unitcell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma);
-
-//Construct cell from upper triangular matrix components
-md_unitcell_t md_util_unitcell_from_triclinic(double x, double y, double z, double xy, double xz, double yz);
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
 // out_dist:  Output array of distances, must have length of (num_a * num_b)

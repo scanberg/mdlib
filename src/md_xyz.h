@@ -1,10 +1,10 @@
 ﻿#pragma once
 
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
-#include <core/md_str.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,8 +12,13 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_system_loader_i;
-#include <md_trajectory.h>
+
+enum {
+    MD_XYZ_OPTION_NONE = 0,
+    MD_XYZ_OPTION_DISABLE_CACHE_WRITE = 1, // Only applies if the XYZ stems from file on disk and contains a trajectory.
+};
+
+typedef uint32_t md_xyz_options_t;
 
 typedef struct md_xyz_coordinate_t {
 	int  atom_index;
@@ -49,8 +54,9 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
-bool md_xyz_system_init(struct md_system_t* sys, const md_xyz_data_t* data);
-struct md_system_loader_i* md_xyz_system_loader(void);
+bool md_xyz_system_init_from_data(struct md_system_t* sys, const md_xyz_data_t* data, md_xyz_options_t options);
+bool md_xyz_system_init_from_file(struct md_system_t* sys, str_t filename, md_xyz_options_t options);
+bool md_xyz_system_init_from_str (struct md_system_t* sys, str_t str, md_xyz_options_t options);
 
 #ifdef __cplusplus
 }
