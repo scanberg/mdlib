@@ -1,4 +1,5 @@
 #include <md_dcd.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 
 #include <core/md_common.h>
@@ -752,4 +753,14 @@ void md_dcd_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     md_arena_allocator_destroy(dcd->allocator);
+}
+
+// Attach convenience wrapper: create trajectory and attach to system
+bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename) {
+    if (!sys) return false;
+    md_allocator_i* alloc = sys->alloc ? sys->alloc : md_get_heap_allocator();
+    md_trajectory_i* traj = md_dcd_trajectory_create(filename, alloc, MD_TRAJECTORY_FLAG_NONE);
+    if (!traj) return false;
+    md_system_attach_trajectory(sys, traj);
+    return true;
 }

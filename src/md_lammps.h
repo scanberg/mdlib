@@ -130,25 +130,23 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* ato
 bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format_str, struct md_allocator_i* alloc);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
-// Molecule
-bool md_lammps_molecule_init(struct md_system_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
+// System
+bool md_lammps_system_init(struct md_system_t* sys, const md_lammps_data_t* lammps_data);
 
 // Loader API
 
 // This object has to be passed as the 'arg' parameter in the loader api
-typedef struct md_lammps_molecule_loader_arg_t {
+typedef struct md_lammps_system_loader_arg_t {
 	uint64_t type;
 	const char* atom_format_str;
-}md_lammps_molecule_loader_arg_t;
+}md_lammps_system_loader_arg_t;
 
 // Use this to create a valid arg object which can be passed to the loader api
-md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_format_str);
-
+md_lammps_system_loader_arg_t md_lammps_system_loader_arg(const char* atom_format_str);
 struct md_system_loader_i* md_lammps_system_loader(void);
 
-//Trajectory
-struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
-void md_lammps_trajectory_free(struct md_trajectory_i* traj);
+// TRAJECTORY
+bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);
 
 #ifdef __cplusplus
 }

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <md_trajectory.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,7 +12,6 @@ extern "C" {
 
 struct md_system_t;
 struct md_allocator_i;
-struct md_trajectory_i;
 struct md_system_loader_i;
 struct md_mat4_t;
 
@@ -172,13 +172,13 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
 bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
-// MOLECULE
-bool md_pdb_system_init(struct md_system_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
+// SYSTEM
+bool md_pdb_system_init(struct md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options);
 struct md_system_loader_i* md_pdb_system_loader(void);
 
 // TRAJECTORY
-struct md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
-void md_pdb_trajectory_free(struct md_trajectory_i* traj);
+//bool md_pdb_trajectory_attach_from_file(struct md_system_t* sys, str_t filename);
+//bool md_pdb_trajectory_attach_from_str (struct md_system_t* sys, str_t str);
 
 #ifdef __cplusplus
 }

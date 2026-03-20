@@ -19,6 +19,9 @@
 extern "C" {
 #endif
 
+// Forward-declare trajectory creator so it can be used before the definition below.
+md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t traj_flags);
+
 #define MD_XYZ_CACHE_MAGIC      0x8265485749172bab
 #define MD_XYZ_CACHE_VERSION    2
 #define MD_XYZ_MOL_MAGIC        0x285ada29078a9bc8
@@ -686,22 +689,21 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
 }
 
 bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
-    bool result = false;
     md_file_t file = {0};
-    if (md_file_open(&file, filename, MD_FILE_READ)) {
-        size_t temp_pos = md_temp_get_pos();
-        size_t buf_cap = MEGABYTES(1);
-        char* buf = md_temp_push(buf_cap);
-        ASSERT(buf);
-        
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
-        result = xyz_parse(data, &reader, alloc, false);
-        
-        md_temp_set_pos_back(temp_pos);
-        md_file_close(&file);
-    } else {
-        MD_LOG_ERROR("Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
+        MD_LOG_ERROR("Parse XYZ: Failed to open file '" STR_FMT "'", STR_ARG(filename));
+        return false;
     }
+    size_t temp_pos = md_temp_get_pos();
+    size_t buf_cap = MEGABYTES(1);
+    char* buf = md_temp_push(buf_cap);
+    
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
+    bool result = xyz_parse(data, &reader, alloc, false);
+    
+    md_temp_set_pos_back(temp_pos);
+    md_file_close(&file);
+
     return result;
 }
 
@@ -719,10 +721,16 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
-bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md_allocator_i* alloc) {
+bool md_xyz_system_init(md_system_t* sys, const md_xyz_data_t* data) {
     ASSERT(sys);
     ASSERT(data);
-    ASSERT(alloc);
+
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+
+    md_system_reset(sys);
 
     size_t beg_coord_index = 0;
     size_t end_coord_index = data->num_coordinates;
@@ -734,18 +742,16 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
         end_coord_index = data->models[0].end_coord_index;
     }
 
-    MEMSET(sys, 0, sizeof(md_system_t));
-
     const size_t num_atoms = end_coord_index - beg_coord_index;
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-    md_array_ensure(sys->atom.x, reserve_size, alloc);
-    md_array_ensure(sys->atom.y, reserve_size, alloc);
-    md_array_ensure(sys->atom.z, reserve_size, alloc);
-    md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
+    md_array_ensure(sys->atom.x, reserve_size, sys->alloc);
+    md_array_ensure(sys->atom.y, reserve_size, sys->alloc);
+    md_array_ensure(sys->atom.z, reserve_size, sys->alloc);
+    md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
 
     // Setup atom types including unknown type
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
@@ -756,14 +762,14 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
         float mass = md_atomic_number_mass(atomic_number);
         float radius = md_atomic_number_vdw_radius(atomic_number);
         uint32_t color = md_atomic_number_cpk_color(atomic_number);
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, alloc);
+        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, sys->alloc);
 
         sys->atom.count += 1;
-        md_array_push(sys->atom.x, x, alloc);
-        md_array_push(sys->atom.y, y, alloc);
-        md_array_push(sys->atom.z, z, alloc);
-        md_array_push(sys->atom.flags, 0, alloc);
-        md_array_push(sys->atom.type_idx, atom_type_idx, alloc);
+        md_array_push(sys->atom.x, x, sys->alloc);
+        md_array_push(sys->atom.y, y, sys->alloc);
+        md_array_push(sys->atom.z, z, sys->alloc);
+        md_array_push(sys->atom.flags, 0, sys->alloc);
+        md_array_push(sys->atom.type_idx, atom_type_idx, sys->alloc);
     }
 
     sys->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
@@ -771,43 +777,51 @@ bool md_xyz_molecule_init(md_system_t* sys, const md_xyz_data_t* data, struct md
     return true;
 }
 
-static bool xyz_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool xyz_init_from_str(md_system_t* sys, str_t str, const void* arg) {
+    ASSERT(sys);
     (void)arg;
+    
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));    
+    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 
     md_xyz_data_t data = {0};
-
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    bool result = xyz_parse(&data, &reader, arena, true);
-    result = result && md_xyz_molecule_init(mol, &data, alloc);
+    bool result = xyz_parse(&data, &reader, arena, false) && md_xyz_system_init(sys, &data);
 
     md_vm_arena_destroy(arena);
     
     return result;
 }
 
-static bool xyz_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool xyz_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
+    ASSERT(sys);
     (void)arg;
-    md_xyz_data_t data = {0};
     
-    bool result = false;
     md_file_t file = {0};
-    if (md_file_open(&file, filename, MD_FILE_READ)) {
-        md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-        size_t buf_cap = MEGABYTES(1);
-        char* buf = md_vm_arena_push(arena, buf_cap);
-        ASSERT(buf);
-
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
-        result = xyz_parse(&data, &reader, arena, true);
-        result = result && md_xyz_molecule_init(mol, &data, alloc);
-
-        md_vm_arena_destroy(arena);
-        md_file_close(&file);
-    } else {
-        MD_LOG_ERROR("Init XYZ from file: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
+        MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(filename));
+        return false;
     }
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    size_t buf_cap = MEGABYTES(1);
+    char* buf = md_vm_arena_push(arena, buf_cap);
+
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
+    
+    md_xyz_data_t data = {0};
+    bool result = xyz_parse(&data, &reader, arena, false) && md_xyz_system_init(sys, &data);
+
+    // If the file contained multiple models, interpret as a trajectory and attach one.
+    if (result && data.num_models > 1) {
+        md_trajectory_i* traj = md_xyz_trajectory_create(filename, sys->alloc, MD_TRAJECTORY_FLAG_NONE);
+        if (traj) {
+            md_system_attach_trajectory(sys, traj);
+        }
+    }
+
+    md_vm_arena_destroy(arena);
+    md_file_close(&file);
+
     return result;
 }
 
@@ -981,6 +995,20 @@ done:
     return result;
 }
 
+void md_xyz_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    xyz_trajectory_t* xyz = (xyz_trajectory_t*)traj->inst;
+    if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
+        MD_LOG_ERROR("Trajectory is not a valid xyz trajectory.");
+        ASSERT(false);
+        return;
+    }
+    
+    md_arena_allocator_destroy(xyz->allocator);
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
+}
+
 md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t traj_flags) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1091,19 +1119,6 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     traj->init_reader = xyz_trajectory_reader_init;
 
     return traj;
-}
-
-void md_xyz_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)traj->inst;
-    if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Trajectory is not a valid xyz trajectory.");
-        ASSERT(false);
-        return;
-    }
-    
-    md_arena_allocator_destroy(xyz->allocator);
 }
 
 #ifdef __cplusplus

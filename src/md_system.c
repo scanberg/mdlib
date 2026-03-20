@@ -1,82 +1,37 @@
 ﻿#include <md_system.h>
+#include <md_trajectory.h>
 
+#include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SAFE_FREE(P)          \
-    do {                         \
-        if (P) {                 \
-            md_array_free(P, alloc); \
-            P = NULL;            \
-        }                        \
-    } while (0)
+void md_system_free(md_system_t* sys) {
+    ASSERT(sys);
+    if (sys->alloc) md_arena_allocator_destroy(sys->alloc);
+    MEMSET(sys, 0, sizeof(md_system_t));
+}
 
-    void md_system_free(md_system_t* mol, struct md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(alloc);
+void md_system_reset(md_system_t* sys) {
+    ASSERT(sys);
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
+    MEMSET(sys, 0, sizeof(md_system_t));
+    md_arena_allocator_reset(alloc);
+    sys->alloc = alloc;
+}
 
-    // Atom
-    SAFE_FREE(mol->atom.x);
-    SAFE_FREE(mol->atom.y);
-    SAFE_FREE(mol->atom.z);
-    SAFE_FREE(mol->atom.type_idx);
-    SAFE_FREE(mol->atom.flags);
-
-    // Atom Type
-    SAFE_FREE(mol->atom.type.name);
-    SAFE_FREE(mol->atom.type.z);
-    SAFE_FREE(mol->atom.type.mass);
-    SAFE_FREE(mol->atom.type.radius);
-    SAFE_FREE(mol->atom.type.color);
-
-    // Component
-    SAFE_FREE(mol->component.name);
-    SAFE_FREE(mol->component.seq_id);
-    SAFE_FREE(mol->component.atom_offset);
-    SAFE_FREE(mol->component.flags);
-
-    // Instance
-    SAFE_FREE(mol->instance.id);
-    SAFE_FREE(mol->instance.auth_id);
-    SAFE_FREE(mol->instance.entity_idx);
-    SAFE_FREE(mol->instance.comp_offset);
-
-    // Protein Backbone
-    SAFE_FREE(mol->protein_backbone.range.offset);
-    SAFE_FREE(mol->protein_backbone.range.inst_idx);
-    SAFE_FREE(mol->protein_backbone.segment.atoms);
-    SAFE_FREE(mol->protein_backbone.segment.angle);
-    SAFE_FREE(mol->protein_backbone.segment.secondary_structure);
-    SAFE_FREE(mol->protein_backbone.segment.rama_type);
-    SAFE_FREE(mol->protein_backbone.segment.comp_idx);
-
-    // Nucleic Backbone
-    SAFE_FREE(mol->nucleic_backbone.range.offset);
-    SAFE_FREE(mol->nucleic_backbone.range.inst_idx);
-    SAFE_FREE(mol->nucleic_backbone.segment.atoms);
-    SAFE_FREE(mol->nucleic_backbone.segment.comp_idx);
-
-    // Bonds
-    SAFE_FREE(mol->bond.pairs);
-    SAFE_FREE(mol->bond.flags);
-    
-    SAFE_FREE(mol->bond.conn.atom_idx);
-    SAFE_FREE(mol->bond.conn.bond_idx);
-    SAFE_FREE(mol->bond.conn.offset);
-
-    md_index_data_free(&mol->structure);
-    md_index_data_free(&mol->ring);
-
-    // Assembly
-    SAFE_FREE(mol->assembly.atom_range);
-    SAFE_FREE(mol->assembly.label);
-    SAFE_FREE(mol->assembly.transform);
-
-    MEMSET(mol, 0, sizeof(md_system_t));
+// Initialize a system with an allocator. This is additive and optional helper.
+void md_system_init(md_system_t* sys, struct md_allocator_i* alloc) {
+    ASSERT(sys);
+    MEMSET(sys, 0, sizeof(md_system_t));
+    sys->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+    sys->trajectory = NULL;
+    sys->initial_unitcell = (md_unitcell_t){0};
 }
 
 // This is from Mathis work in Openspace modified slightly
@@ -94,9 +49,18 @@ extern "C" {
         for (int64_t j = 0; j < src->A.count; j++) \
             if (src->A.B) dst->A.B[dst->A.count + j].C += D
 
-void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocator_i* alloc) {
-    // Make sure that the dst_molecule is clean!
-    MEMSET(dst, 0, sizeof(md_system_t));
+bool md_system_copy(md_system_t* dst, const md_system_t* src) {
+    ASSERT(dst);
+    ASSERT(src);
+
+    if (!dst->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+
+    md_system_reset(dst);
+
+    md_allocator_i* alloc = dst->alloc;
 
     ARRAY_PUSH(atom, x);
     ARRAY_PUSH(atom, y);
@@ -150,7 +114,11 @@ void md_system_copy(md_system_t* dst, const md_system_t* src, struct md_allocato
     dst->bond.count           = src->bond.count;
     dst->bond.conn.count      = src->bond.conn.count;
     dst->bond.conn.offset_count = src->bond.conn.offset_count;
-    dst->unitcell             = src->unitcell;
+    dst->initial_unitcell     = src->initial_unitcell;
+    dst->alloc                = alloc;
+    dst->trajectory           = NULL;
+
+    return true;
 }
 
 #undef ARRAY_PUSH
@@ -235,6 +203,15 @@ void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc) 
     ASSERT(sys);
     ASSERT(alloc);
 	md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
+}
+
+// Attach a trajectory to the system, freeing any existing attached trajectory.
+void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj) {
+    if (!sys) return;
+    if (sys->trajectory) {
+        md_trajectory_free(sys->trajectory);
+    }
+    sys->trajectory = traj;
 }
 
 #ifdef __cplusplus

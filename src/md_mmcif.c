@@ -982,30 +982,49 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     return sys->atom.count > 0;
 }
 
-static bool mmcif_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool mmcif_init_from_str(md_system_t* sys, str_t str, const void* arg) {
     (void)arg;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator is not set");
+        return false;
+    }
+    if (str_empty(str)) {
+        MD_LOG_ERROR("Input string is empty");
+        return false;
+    }
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
     MEMSET(sys, 0, sizeof(md_system_t));
-    return mmcif_parse(sys, &reader, alloc);
+    return mmcif_parse(sys, &reader, sys->alloc);
 }
 
-static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool mmcif_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
+    ASSERT(sys);
     (void)arg;
-    bool result = false;
+
     md_file_t file = {0};
-
-    if (md_file_open(&file, filename, MD_FILE_READ)) {
-        const size_t pos = md_temp_get_pos();
-        const size_t cap = MEGABYTES(1);
-        void* buf = md_temp_push(cap);
-
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        MEMSET(sys, 0, sizeof(md_system_t));
-        result = mmcif_parse(sys, &reader, alloc);
-
-        md_temp_set_pos_back(pos);
-        md_file_close(&file);
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
+        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        return false;
     }
+
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    
+    bool result = false;
+
+    const size_t pos = md_temp_get_pos();
+    const size_t cap = MEGABYTES(1);
+    void* buf = md_temp_push(cap);
+
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+    MEMSET(sys, 0, sizeof(md_system_t));
+    result = mmcif_parse(sys, &reader, sys->alloc);
+
+    md_temp_set_pos_back(pos);
+    md_file_close(&file);
+
     return result;
 }
 

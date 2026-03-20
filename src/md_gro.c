@@ -176,6 +176,9 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
 
     MEMSET(sys, 0, sizeof(md_system_t));
 
+    /* Record system allocator early so subsequent allocations use system-owned allocator. */
+    md_system_init(sys, alloc);
+
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
     md_array(str_t) atom_names = 0;
     md_array_ensure(atom_names, data->num_atoms, temp_arena);
@@ -242,26 +245,34 @@ bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* data, stru
     return true;
 }
 
-static bool gro_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool gro_init_from_str(md_system_t* sys, str_t str, const void* arg) {
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
-        success = md_gro_system_init(sys, &data, alloc);
+        success = md_gro_system_init(sys, &data, md_get_heap_allocator());
     }
     md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
 
-static bool gro_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool gro_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
     (void)arg;
+
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator must be set");
+        return false;
+    }
+    md_system_reset(sys);
+    
     md_gro_data_t data = {0};
     bool success = false;
-    if (md_gro_data_parse_file(&data, filename, md_get_heap_allocator())) {
-        success = md_gro_system_init(sys, &data, alloc);
+    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    if (md_gro_data_parse_file(&data, filename, temp_alloc)) {
+        success = md_gro_system_init(sys, &data, sys->alloc);
     }
-    md_gro_data_free(&data, md_get_heap_allocator());
+    md_gro_data_free(&data, temp_alloc);
 
     return success;
 }

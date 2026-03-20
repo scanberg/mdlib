@@ -1,5 +1,6 @@
 ﻿#include <md_xtc.h>
 
+#include <md_system.h>
 #include <md_util.h>
 #include <md_trajectory.h>
 
@@ -1019,7 +1020,20 @@ done:
     return result;
 }
 
-md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+static void md_xtc_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    xtc_t* xtc = (xtc_t*)traj->inst;
+    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
+        MD_LOG_ERROR("XTC: Cannot free trajectory, is not a valid XTC trajectory.");
+        ASSERT(false);
+        return;
+    }
+    md_arena_allocator_destroy(xtc->alloc);
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
+}
+
+static md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
@@ -1107,15 +1121,15 @@ fail:
     return NULL;
 }
 
-void md_xtc_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    xtc_t* xtc = (xtc_t*)traj->inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        MD_LOG_ERROR("XTC: Cannot free trajectory, is not a valid XTC trajectory.");
-        ASSERT(false);
-        return;
+// Attach convenience wrapper: create trajectory and attach to system
+bool md_xtc_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
+    if (!sys) return false;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
     }
-    md_arena_allocator_destroy(xtc->alloc);
-    MEMSET(traj, 0, sizeof(md_trajectory_i));
+    md_trajectory_i* traj = md_xtc_trajectory_create(filename, sys->alloc, flags);
+    if (!traj) return false;
+    md_system_attach_trajectory(sys, traj);
+    return true;
 }

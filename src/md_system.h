@@ -5,6 +5,9 @@
 
 #include <md_types.h>
 
+// Forward declare trajectory type to avoid including trajectory header here
+typedef struct md_trajectory_i md_trajectory_i;
+
 typedef struct md_atom_type_data_t {
     size_t count;
 
@@ -153,11 +156,14 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_pair_t* bonds;
 } md_hydrogen_bond_data_t;
 
-
 // This represents the persistent portion (topology) of a system which does not change over time, such as the atom types, bonds, components, etc.
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
-    md_unitcell_t               unitcell;
+    md_allocator_i*             alloc;
+    md_trajectory_i*            trajectory;
+
+    md_unitcell_t               initial_unitcell;
+    md_unitcell_t               unitcell; // compatibility alias for consumers still using sys->unitcell
 
     md_atom_data_t              atom;
     md_component_data_t         component;
@@ -177,6 +183,9 @@ typedef struct md_system_t {
 
     str_t                       description;
 } md_system_t;
+
+
+// `md_system_state_t` is defined in md_types.h; do not redefine here.
 
 #ifdef __cplusplus
 extern "C" {
@@ -984,14 +993,23 @@ molecule data only the first part of the file is used.
 */
 
 typedef struct md_system_loader_i {
-    bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg, struct md_allocator_i* alloc);
-    bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg, struct md_allocator_i* alloc);
+    bool (*init_from_str) (md_system_t* sys, str_t string,   const void* arg);
+    bool (*init_from_file)(md_system_t* sys, str_t filename, const void* arg);
 } md_system_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.
-void md_system_free(md_system_t* sys, struct md_allocator_i* alloc);
-void md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys, struct md_allocator_i* alloc);
+// Initialize a system with an allocator. This helper records the allocator on the system so
+// subsequent calls that accept a NULL allocator may fall back to `sys->alloc`.
+
+void md_system_init(md_system_t* sys, struct md_allocator_i* backing);
+void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
+void md_system_free(md_system_t* sys);
+
+bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);
+
+// Attach helpers: set or create-and-attach trajectories to a system.
+void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj);
 
 #ifdef __cplusplus
 }

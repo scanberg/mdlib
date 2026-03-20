@@ -1,4 +1,5 @@
 #include <md_trr.h>
+#include <md_system.h>
 
 #include <md_util.h>
 #include <md_trajectory.h>
@@ -737,6 +738,18 @@ done:
     return result;
 }
 
+void md_trr_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    trr_t* trr = (trr_t*)traj->inst;
+    if (trr->magic != MD_TRR_TRAJ_MAGIC) {
+        MD_LOG_ERROR("TRR: Cannot free trajectory, is not a valid trr trajectory.");
+        ASSERT(false);
+        return;
+    }
+    md_arena_allocator_destroy(trr->allocator);
+}
+
 md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
@@ -823,14 +836,16 @@ fail:
     return NULL;
 }
 
-void md_trr_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    trr_t* trr = (trr_t*)traj->inst;
-    if (trr->magic != MD_TRR_TRAJ_MAGIC) {
-        MD_LOG_ERROR("TRR: Cannot free trajectory, is not a valid trr trajectory.");
-        ASSERT(false);
-        return;
+// Attach convenience wrapper: create trajectory and attach to system
+bool md_trr_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
+    ASSERT(sys);
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
     }
-    md_arena_allocator_destroy(trr->allocator);
+
+    md_trajectory_i* traj = md_trr_trajectory_create(filename, sys->alloc, flags);
+    if (!traj) return false;
+    md_system_attach_trajectory(sys, traj);
+    return true;
 }

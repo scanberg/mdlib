@@ -3136,22 +3136,21 @@ bool md_vlx_system_init(md_system_t* sys, const md_vlx_t* vlx, md_allocator_i* a
 	return true;
 }
 
-static bool vlx_sys_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
-	(void)mol;
+static bool vlx_sys_init_from_str(md_system_t* sys, str_t str, const void* arg) {
+	(void)sys;
 	(void)str;
 	(void)arg;
-	(void)alloc;
 	MD_LOG_ERROR("This is not implemented yeti");
 	return false;
 }
 
-static bool vlx_sys_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool vlx_sys_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
 	(void)arg;
 	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
 	bool success = false;
 	if (vlx_parse_file(vlx, filename, VLX_FLAG_CORE)) {
-		success = md_vlx_system_init(mol, vlx, alloc);
+		success = md_vlx_system_init(sys, vlx, sys->alloc);
 	}
 
 	md_vlx_destroy(vlx);

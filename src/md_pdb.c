@@ -22,6 +22,8 @@
 extern "C" {
 #endif
 
+static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
+
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
 #define MD_PDB_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
@@ -460,10 +462,12 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
+bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
     ASSERT(data);
-    ASSERT(alloc);
+
+    // Use heap allocator for internal allocations unless caller supplies another path via md_system_init.
+    struct md_allocator_i* alloc = md_get_heap_allocator();
 
     bool result = false;
 
@@ -480,6 +484,9 @@ bool md_pdb_system_init(md_system_t* sys, const md_pdb_data_t* data, md_pdb_opti
     }
 
     MEMSET(sys, 0, sizeof(md_system_t));
+
+    /* Record system allocator early so subsequent allocations use system-owned allocator. */
+    md_system_init(sys, alloc);
 
     size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
@@ -661,37 +668,48 @@ done:
     return result;
 }
 
-static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool pdb_init_from_str(md_system_t* mol, str_t str, const void* arg) {
     (void)arg;
     md_pdb_data_t data = {0};
 
-    md_pdb_data_parse_str(&data, str, md_get_heap_allocator());
-    bool success = md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
-    md_pdb_data_free(&data, md_get_heap_allocator());
+    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    md_pdb_data_parse_str(&data, str, temp_alloc);
+    bool success = md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE);
+    md_pdb_data_free(&data, temp_alloc);
     
     return success;
 }
 
-static bool pdb_init_from_file(md_system_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool pdb_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
     (void)arg;
     md_file_t file = {0};
-    if (md_file_open(&file, filename, MD_FILE_READ)) {
-        const size_t cap = MEGABYTES(1);
-        char *buf = md_alloc(md_get_heap_allocator(), cap);
-        ASSERT(buf);
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        
-        md_pdb_data_t data = {0};
-        bool parse   = pdb_parse(&data, &reader, md_get_heap_allocator(), true);
-        bool success = parse && md_pdb_system_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
-        
-        md_pdb_data_free(&data, md_get_heap_allocator());
-        md_free(md_get_heap_allocator(), buf, cap);
-        
-        return success;
+    if (!md_file_open(&file, filename, MD_FILE_READ)) {
+        MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
+        return false;
     }
-    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
-    return false;
+
+    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    const size_t cap = MEGABYTES(1);
+    char *buf = md_alloc(temp_alloc, cap);
+    ASSERT(buf);
+    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+    
+    md_pdb_data_t data = {0};
+    bool parse = pdb_parse(&data, &reader, temp_alloc, true);
+    bool success = parse && md_pdb_system_init(sys, &data, MD_PDB_OPTION_NONE);
+
+    // If the file contained multiple models, interpret as a trajectory and attach one.
+    if (success && data.num_models > 1) {
+        md_trajectory_i* traj = md_pdb_trajectory_create(filename, sys->alloc, MD_TRAJECTORY_FLAG_NONE);
+        if (traj) {
+            md_system_attach_trajectory(sys, traj);
+        }
+    }
+
+    md_pdb_data_free(&data, temp_alloc);
+    md_free(temp_alloc, buf, cap);
+
+    return success;
 }
 
 static md_system_loader_i pdb_molecule_api = {
@@ -882,7 +900,20 @@ done:
     return result;
 }
 
-md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+static void md_pdb_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj->inst;
+    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
+        MD_LOG_ERROR("Trajectory is not a valid PDB trajectory.");
+        ASSERT(false);
+        return;
+    }
+    
+    md_arena_allocator_destroy(pdb->allocator);
+}
+
+static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
 	md_file_info_t file_info = { 0 };
     if (!md_file_info_extract_from_path(filename, &file_info)) {
         MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
@@ -994,19 +1025,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     traj->init_reader = pdb_trajectory_reader_init;
 
     return traj;
-}
-
-void md_pdb_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj->inst;
-    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Trajectory is not a valid PDB trajectory.");
-        ASSERT(false);
-        return;
-    }
-    
-    md_arena_allocator_destroy(pdb->allocator);
 }
 
 #ifdef __cplusplus

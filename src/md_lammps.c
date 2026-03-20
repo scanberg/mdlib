@@ -1,4 +1,5 @@
 ﻿#include <md_lammps.h>
+#include <md_system.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -15,7 +16,9 @@
 #define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
 #define MD_LAMMPS_CACHE_MAGIC 0x89172bab
 #define MD_LAMMPS_CACHE_VERSION 15
-#define MD_LAMMPS_MOLECULE_LOADER_ARG_TYPE 0x341293abc8273650
+#define MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE 0x341293abc8273650
+
+static md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
 
 enum {
 	TYPE_UNKNOWN,
@@ -72,7 +75,7 @@ typedef struct lammps_trajectory_t {
 	md_trajectory_header_t header;
 	coord_mappings_t coord_mappings;
 
-	md_allocator_i* allocator;
+	md_allocator_i* alloc;
 } lammps_trajectory_t;
 
 typedef struct lammps_reader_t {
@@ -848,19 +851,25 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
-bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_allocator_i* alloc) {
+bool md_lammps_system_init(md_system_t* sys, const md_lammps_data_t* data) {
 	ASSERT(sys);
 	ASSERT(data);
-	ASSERT(alloc);
 
-	MEMSET(sys, 0, sizeof(md_system_t));
+	if (!sys->alloc) {
+		MD_LOG_ERROR("No allocator set in system");
+		return false;
+	}
+
+	md_system_reset(sys);
+
+	/* Record system allocator early so subsequent allocations use system-owned allocator. */
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_ensure(sys->atom.x,		capacity, alloc);
-	md_array_ensure(sys->atom.y,		capacity, alloc);
-	md_array_ensure(sys->atom.z,		capacity, alloc);
-	md_array_ensure(sys->atom.type_idx, capacity, alloc);
-	md_array_ensure(sys->atom.flags,    capacity, alloc);
+	md_array_ensure(sys->atom.x,		capacity, sys->alloc);
+	md_array_ensure(sys->atom.y,		capacity, sys->alloc);
+	md_array_ensure(sys->atom.z,		capacity, sys->alloc);
+	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
+	md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
 	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
@@ -868,7 +877,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, alloc);
+	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
 
 	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
     md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
@@ -890,7 +899,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 		float radius = data->atom_types[i].radius;
 		uint32_t color = type_z[i] != MD_Z_X ? md_atomic_number_cpk_color(type_z[i]) : 0xFF808080; // Gray for unknown elements
 		
-		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, color, 0, alloc);
+		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, color, 0, sys->alloc);
 	}
 
 	int prev_resid = -1;
@@ -908,10 +917,10 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 				char buf[8];
 				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
-				md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-				md_array_push(sys->component.seq_id, resid, alloc);
-				md_array_push(sys->component.name, make_label(name), alloc);
-				md_array_push(sys->component.flags, 0, alloc);
+				md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+				md_array_push(sys->component.seq_id, resid, sys->alloc);
+				md_array_push(sys->component.name, make_label(name), sys->alloc);
+				md_array_push(sys->component.flags, 0, sys->alloc);
 				sys->component.count += 1;
 			}
 		}
@@ -927,7 +936,7 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	}
 
 	if (has_resid) {
-		md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc); // Final sentinel
+		md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc); // Final sentinel
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
@@ -942,8 +951,8 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 
 	// Create bonds
 	if (data->num_bonds > 0) {
-		md_array_ensure(sys->bond.pairs, data->num_bonds, alloc);
-		md_array_ensure(sys->bond.flags, data->num_bonds, alloc);
+		md_array_ensure(sys->bond.pairs, data->num_bonds, sys->alloc);
+		md_array_ensure(sys->bond.flags, data->num_bonds, sys->alloc);
 
 		for (size_t i = 0; i < data->num_bonds; ++i) {
 			int32_t atom_id0 = data->bonds[i].atom_id[0];
@@ -967,39 +976,40 @@ bool md_lammps_molecule_init(md_system_t* sys, const md_lammps_data_t* data, md_
 	return true;
 }
 
-static bool lammps_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
+static bool lammps_init_from_str(md_system_t* sys, str_t str, const void* arg) {
 	if (!arg) {
 		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
 		return false;
 	}
 
-	const md_lammps_molecule_loader_arg_t* lammps_arg = (const md_lammps_molecule_loader_arg_t*)arg;
-	if (lammps_arg->type != MD_LAMMPS_MOLECULE_LOADER_ARG_TYPE) {
-		MD_LOG_ERROR("Invalid argument type for lammps molecule loader");
+	const md_lammps_system_loader_arg_t* lammps_arg = (const md_lammps_system_loader_arg_t*)arg;
+	if (lammps_arg->type != MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE) {
+		MD_LOG_ERROR("Invalid argument type for lammps system loader");
 		return false;
 	}
 
 	const char* format = lammps_arg->atom_format_str;
+	md_allocator_i* temp_alloc = md_get_heap_allocator();
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_str(&data, str, format, md_get_heap_allocator())) {
-		success = md_lammps_molecule_init(sys, &data, alloc);
+	if (md_lammps_data_parse_str(&data, str, format, temp_alloc)) {
+		success = md_lammps_system_init(sys, &data);
 	}
-	md_lammps_data_free(&data, md_get_heap_allocator());
+	md_lammps_data_free(&data, temp_alloc);
 
 	return success;
 }
 
-static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
+static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* arg) {
 	if (!arg) {
 		MD_LOG_ERROR("Missing required argument for lammps molecule loader");
 		return false;
 	}
 
-	const md_lammps_molecule_loader_arg_t* lammps_arg = (const md_lammps_molecule_loader_arg_t*)arg;
-	if (lammps_arg->type != MD_LAMMPS_MOLECULE_LOADER_ARG_TYPE) {
-		MD_LOG_ERROR("Invalid argument type for lammps molecule loader");
+	const md_lammps_system_loader_arg_t* lammps_arg = (const md_lammps_system_loader_arg_t*)arg;
+	if (lammps_arg->type != MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE) {
+		MD_LOG_ERROR("Invalid argument type for lammps system loader");
 		return false;
 	}
 
@@ -1009,16 +1019,16 @@ static bool lammps_init_from_file(md_system_t* sys, str_t filename, const void* 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
 	if (md_lammps_data_parse_file(&data, filename, format, temp_alloc)) {
-		success = md_lammps_molecule_init(sys, &data, alloc);
+		success = md_lammps_system_init(sys, &data);
 	}
 	md_lammps_data_free(&data, temp_alloc);
 
 	return success;
 }
 
-md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_format_str) {
-	md_lammps_molecule_loader_arg_t arg = { 0 };
-	arg.type = MD_LAMMPS_MOLECULE_LOADER_ARG_TYPE;
+md_lammps_system_loader_arg_t md_lammps_system_loader_arg(const char* atom_format_str) {
+	md_lammps_system_loader_arg_t arg = { 0 };
+	arg.type = MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE;
 	arg.atom_format_str = atom_format_str;
 	return arg;
 }
@@ -1701,31 +1711,31 @@ done:
 	return result;
 }
 
-void lammps_trajectory_data_free(struct lammps_trajectory_t* lammps_traj) {
-	ASSERT(lammps_traj);
-	if (lammps_traj->frame_offsets) md_array_free(lammps_traj->frame_offsets, lammps_traj->allocator);
-	if (lammps_traj->header.frame_times) md_array_free(lammps_traj->header.frame_times, lammps_traj->allocator);
+static void md_lammps_trajectory_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    lammps_trajectory_t* inst = (lammps_trajectory_t*)traj->inst;
+    if (inst->magic != MD_LAMMPS_TRAJ_MAGIC) {
+        MD_LOG_ERROR("LAMMPS: Cannot free trajectory, is not a valid LAMMPS trajectory object.");
+        ASSERT(false);
+        return;
+    }
+    md_arena_allocator_destroy(inst->alloc);
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
 }
 
-void lammps_trajectory_free(struct md_trajectory_o* inst) {
-	ASSERT(inst);
-	lammps_trajectory_t* lammps_traj = (lammps_trajectory_t*)inst;
-	lammps_trajectory_data_free(lammps_traj);
-}
-
-md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
-	md_file_t file = {0};
-	if (!md_file_open(&file, filename, MD_FILE_READ)) {
+static md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+	md_file_info_t file_info = {0};
+	if (!md_file_info_extract_from_path(filename, &file_info)) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
 		return false;
 	}
 
-	int64_t filesize = md_file_size(file);
-	md_file_close(&file);
+	int64_t filesize = file_info.size;
 
-	md_strb_t sb = md_strb_create(md_get_temp_allocator());
-	md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
-	str_t cache_file = md_strb_to_str(sb);
+	char cache_path_buf[4096];
+	int len = snprintf(cache_path_buf, sizeof(cache_path_buf), STR_FMT ".cache", STR_ARG(filename));
+	str_t cache_file = { .ptr = cache_path_buf, .len = len };
 
 	lammps_cache_t cache = {0};
 	md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
@@ -1764,7 +1774,6 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	}
 
 	void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(lammps_trajectory_t));
-	ASSERT(mem);
 	MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(lammps_trajectory_t));
 
 	md_trajectory_i* traj = mem;
@@ -1773,7 +1782,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	traj_data->magic = MD_LAMMPS_TRAJ_MAGIC;
 	traj_data->filepath = str_copy(filename, alloc);
 	traj_data->frame_offsets = cache.frame_offsets;
-	traj_data->allocator = alloc;
+	traj_data->alloc = alloc;
 
 	traj_data->header = (md_trajectory_header_t){
 		.num_frames = cache.header.num_frames,
@@ -1792,17 +1801,14 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	return traj;
 }
 
-void md_lammps_trajectory_free(md_trajectory_i* traj) {
-	ASSERT(traj);
-	ASSERT(traj->inst);
-	lammps_trajectory_t* lammps_data = (lammps_trajectory_t*)traj->inst;
-	if (lammps_data->magic != MD_LAMMPS_TRAJ_MAGIC) {
-		MD_LOG_ERROR("Trajectory is not a valid LAMMPS trajectory.");
-		ASSERT(false);
-		return;
-	}
-
-	md_allocator_i* alloc = lammps_data->allocator;
-	lammps_trajectory_free(traj->inst);
-	md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(lammps_trajectory_t));
+bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
+    if (!sys) return false;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_trajectory_i* traj = md_lammps_trajectory_create(filename, sys->alloc, flags);
+    if (!traj) return false;
+    md_system_attach_trajectory(sys, traj);
+    return true;
 }

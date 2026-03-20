@@ -5,7 +5,7 @@
 #include <core/md_os.h>
 
 struct md_allocator_i;
-struct md_trajectory_i;
+struct md_system_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,8 +24,7 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)
 // Note that the data is only decoded and length units are typically nm.
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_xyz, size_t num_atoms);
 
-struct md_trajectory_i* md_xtc_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
-void md_xtc_trajectory_free(struct md_trajectory_i* traj);
+bool md_xtc_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);
 
 #ifdef __cplusplus
 }

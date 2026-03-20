@@ -38,7 +38,7 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
 
 // Molecule
-bool md_gro_system_init(struct md_system_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
+bool md_gro_system_init(struct md_system_t* sys, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
 
 struct md_system_loader_i* md_gro_system_loader(void);
 
