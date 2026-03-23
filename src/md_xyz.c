@@ -997,7 +997,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
-        return false;
+        return NULL;
     }
 
     uint32_t xyz_flags = 0;
@@ -1007,7 +1007,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
         md_buffered_reader_t reader = md_buffered_reader_from_str((str_t){buf, len});
         if (!extract_flags(&xyz_flags, &reader)) {
             MD_LOG_ERROR("Failed to determine format for XYZ trajectory");
-            return false;
+            return NULL;
         }
     }
 
@@ -1069,7 +1069,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
     cleanup:
         md_arena_allocator_destroy(temp_alloc);
         if (!result) {
-            return false;
+            return NULL;
         }
     }
 

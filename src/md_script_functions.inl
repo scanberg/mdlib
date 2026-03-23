@@ -3789,7 +3789,7 @@ static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const 
 }
 
 // Draw single distance between two points
-static void inline draw_distance(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis, uint32_t vis_flags) {
+static inline void draw_distance(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis, uint32_t vis_flags) {
     if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
         md_script_vis_vertex_t va = { c_a, COLOR_WHITE };
         md_script_vis_vertex_t vb = { c_b, COLOR_WHITE };

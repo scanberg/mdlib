@@ -94,7 +94,7 @@ static bool parse_integer(int* result, parse_state_t* s) {
 
 static const symbol_t* match_symbol(bool shortcut, parse_state_t* s) {
     if (!is_alpha(peek_char(s))) {
-        return false;
+        return NULL;
     }
     char c0 = consume_char(s);
     char c1 = peek_char(s);

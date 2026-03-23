@@ -489,14 +489,16 @@ struct float_token_t {
 
 static inline int find_first_char(md_128i v, char c) {
     md_128i m = md_mm_cmpeq_epi8(v, md_mm_set1_epi8(c));
-    return ctz32(md_mm_movemask_epi8(m));
+	int mask = md_mm_movemask_epi8(m);
+    return mask ? ctz32(mask) : 0;
 }
 
 // Specialized version where the the integer and fractional part each
 // are expected to fit into 8 characters. ptr is expected to have 16 readable characters from its loacation in memory.
 static inline double parse_float_wide(const char* ptr, size_t len) {
-    int neg = (*ptr == '-');
+    int neg = 0;
     if (*ptr == '-') {
+        neg = 1;
         ++ptr;
         --len;
     }

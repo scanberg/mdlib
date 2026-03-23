@@ -11,15 +11,13 @@
 #include <core/md_array.h>
 #include <core/md_parse.h>
 
-#include <string.h>
-
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
 #define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
 #define MD_LAMMPS_CACHE_MAGIC 0x89172bab
 #define MD_LAMMPS_CACHE_VERSION 15
 #define MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE 0x341293abc8273650
 
-struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
+struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags);
 
 enum {
 	TYPE_UNKNOWN,
@@ -1703,7 +1701,7 @@ struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 	md_file_info_t file_info = {0};
 	if (!md_file_info_extract_from_path(filename, &file_info)) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
-		return false;
+		return NULL;
 	}
 
 	int64_t filesize = file_info.size;
@@ -1720,7 +1718,7 @@ struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
             md_arena_allocator_destroy(alloc);
-			return false;
+			return NULL;
 		}
 
 		cache.header.magic     = MD_LAMMPS_CACHE_MAGIC;

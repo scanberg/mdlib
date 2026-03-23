@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags);
+static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags);
 
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
 #define MD_PDB_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
@@ -899,11 +899,11 @@ static void md_pdb_trajectory_free(md_trajectory_i* traj) {
     md_arena_allocator_destroy(pdb->allocator);
 }
 
-static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
+static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
 	md_file_info_t file_info = { 0 };
     if (!md_file_info_extract_from_path(filename, &file_info)) {
         MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
-        return false;
+        return NULL;
     }
 
     const size_t filesize = file_info.size;
@@ -977,7 +977,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
         cleanup:
         md_arena_allocator_destroy(temp_alloc);
         if (!result) {
-            return false;
+            return NULL;
         }
     }
 

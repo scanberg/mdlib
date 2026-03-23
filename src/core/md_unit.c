@@ -7,7 +7,7 @@
 #include <math.h>  // fpclassify
 #include <stdio.h> // snprintf
 
-#define S(str) {str"", sizeof(str)-1}
+#define S(str) {(const char*)str"", sizeof(str)-1}
 
 typedef struct {
     float value;

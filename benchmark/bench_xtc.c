@@ -47,6 +47,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
         for (size_t i = 0; i < num_frames; ++i) {
             /* Read one frame of an open xtc file */
             int res = read_xtc(xdr, &natoms, &step, &time, box, (rvec*)coords, &prec);
+			(void)res;
         }
     }
 
@@ -86,6 +87,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
         for (size_t i = 0; i < num_frames; ++i) {
             /* Read one frame of an open xtc file */
             int res = read_xtc(xdr, &natoms, &step, &time, box, (rvec*)coords, &prec);
+            (void)res;
         }
     }
 
@@ -124,6 +126,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
         for (size_t i = 0; i < num_frames; ++i) {
             /* Read one frame of an open xtc file */
             int res = read_xtc(xdr, &natoms, &step, &time, box, (rvec*)coords, &prec);
+            (void)res;
         }
     }
 
@@ -162,6 +165,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
         for (size_t i = 0; i < num_frames; ++i) {
             /* Read one frame of an open xtc file */
             int res = read_xtc(xdr, &natoms, &step, &time, box, (rvec*)coords, &prec);
+            (void)res;
         }
     }
 
