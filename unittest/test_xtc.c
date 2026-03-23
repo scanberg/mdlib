@@ -327,12 +327,12 @@ UTEST(xtc, catalyst) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
-        EXPECT_EQ(ncoord, num_atoms);
+        ASSERT_EQ(ncoord, num_atoms);
 
         for (int j = 0; j < num_atoms; ++j) {
-            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
-            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
-            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+            ASSERT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            ASSERT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            ASSERT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
         }
     }
     

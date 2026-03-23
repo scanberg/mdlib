@@ -361,7 +361,16 @@ static inline void extract_int32(int32_t* out, size_t count, const uint8_t* ptr)
 }
 
 static inline void extract_float(float* out, size_t count, const uint8_t* ptr) {
-	extract_int32((int32_t*)out, count, ptr);
+    for (size_t i = 0; i < count; ++i) {
+        int32_t ival;
+        MEMCPY(&ival, ptr + i * sizeof(int32_t), sizeof(int32_t));
+#if __LITTLE_ENDIAN__
+        ival = BSWAP32(ival);
+#endif
+        float fval;
+        MEMCPY(&fval, &ival, sizeof(float));
+        out[i] = fval;
+    }
 }
 
 static inline bool decode_header(const uint8_t* frame_ptr, md_xtc_header_t* out_header) {

@@ -4504,7 +4504,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
             // One or more arguments
             ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-            type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
+            type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = { 0 };
             
             size_t arg_len = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
             ASSERT(arg_len == num_args);
