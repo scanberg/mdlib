@@ -28,7 +28,7 @@ UTEST(trr, trajectory_i) {
     }
 
     md_free(md_get_heap_allocator(), mem_ptr, mem_size);
-    md_trr_trajectory_free(traj);
+    md_trajectory_free(traj);
 }
 
 UTEST(trr, trajectory_reader_i) {
@@ -52,7 +52,7 @@ UTEST(trr, trajectory_reader_i) {
 
     md_trajectory_reader_free(&reader);
     md_free(md_get_heap_allocator(), mem_ptr, mem_size);
-    md_trr_trajectory_free(traj);
+    md_trajectory_free(traj);
 }
 
 UTEST(trr, nonexistent_file) {
@@ -83,5 +83,5 @@ UTEST(trr, frame_boundary_conditions) {
     EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
 
     md_free(md_get_heap_allocator(), mem_ptr, mem_size);
-    md_trr_trajectory_free(traj);
+    md_trajectory_free(traj);
 }

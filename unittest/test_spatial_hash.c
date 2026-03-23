@@ -11,6 +11,7 @@
 #include <md_gro.h>
 #include <md_lammps.h>
 #include <md_system.h>
+#include <md_util.h>
 
 #include <math.h>
 #include <stdlib.h>
