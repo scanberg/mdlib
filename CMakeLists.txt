@@ -4,9 +4,10 @@ include(cmake/CheckVCPKG.cmake)
 
 project(mdlib LANGUAGES C)
 
-set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 if (CMAKE_COMPILER_IS_GNUCC)
+  set(CMAKE_C_STANDARD 23)
   set(CMAKE_C_EXTENSIONS ON)
 endif()
 
