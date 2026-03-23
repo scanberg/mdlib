@@ -1063,7 +1063,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         }
 
         char cache_buf[4096];
-		int len = snprintf(path_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(path));
+		int len = snprintf(cache_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(path));
 		ASSERT(0 < len && len < (int)sizeof(cache_buf));
         str_t cache_path = { cache_buf, (size_t)len };
 

@@ -256,7 +256,7 @@ bool md_gro_system_init_from_file(md_system_t* sys, str_t filename) {
     return success;
 }
 
-static bool md_gro_system_init_from_str(md_system_t* sys, str_t str) {
+bool md_gro_system_init_from_str(md_system_t* sys, str_t str) {
     md_allocator_i* temp_alloc = md_get_heap_allocator();
 
     md_gro_data_t data = {0};
