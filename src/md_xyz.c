@@ -361,7 +361,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     coord->y = (float)parse_float(tokens[tok_idx++]);
     coord->z = (float)parse_float(tokens[tok_idx++]);
     
-    if (!(flags & XYZ_EXTENDED) && tok_idx < num_tokens) {
+    if (!(flags & XYZ_EXTENDED) && tok_idx < (int)num_tokens) {
         coord->atom_type = (int)parse_int(tokens[tok_idx++]);
 
         // Connectivity follows atom_type
@@ -630,8 +630,6 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
     size_t expected_count = 0;
     md_xyz_model_t mdl = {0};
     size_t byte_offset = 0;
-
-    size_t model_count = 0;
 
     while (xyz_parse_model_header(&mdl, reader, flags | XYZ_STORE_COMMENT, &expected_count, alloc)) {
         if (md_array_size(data->models) == 16126) {

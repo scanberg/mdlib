@@ -24,7 +24,7 @@ typedef enum {
     MD_UTIL_POSTPROCESS_HBOND_BIT           = 1u << 6,
 	MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT = 1u << 7,
 
-    MD_UTIL_POSTPROCESS_ALL                 = ~0u,
+    MD_UTIL_POSTPROCESS_ALL                 = -1,
 } md_postprocess_flags_t;
 
 ENUM_FLAGS(md_postprocess_flags_t)

@@ -540,7 +540,7 @@ static inline void md_atom_coord_free(md_atom_coord_data_t* coord, md_allocator_
 
 static inline vec3_t md_atom_coord_vec3(const md_atom_coord_data_t* coord, size_t atom_idx) {
     ASSERT(coord);
-    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4, "Unexpected chunk size");
 
     size_t chunk_idx = atom_idx >> 2;
     size_t within_chunk_idx = atom_idx & 3;
@@ -553,7 +553,7 @@ static inline vec3_t md_atom_coord_vec3(const md_atom_coord_data_t* coord, size_
 
 static inline vec4_t md_atom_coord_vec4(const md_atom_coord_data_t* coord, float w, size_t atom_idx) {
     ASSERT(coord);
-    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4, "Unexpected chunk size");
 
     size_t chunk_idx = atom_idx >> 2;
     size_t within_chunk_idx = atom_idx & 3;
@@ -566,7 +566,7 @@ static inline vec4_t md_atom_coord_vec4(const md_atom_coord_data_t* coord, float
 
 static inline void md_atom_coord_set(md_atom_coord_data_t* coord, size_t atom_idx, float x, float y, float z) {
     ASSERT(coord);
-    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4);
+    STATIC_ASSERT(MD_COORD_CHUNK_SIZE == 4, "Unexpected chunk size");
 
     size_t chunk_idx = atom_idx >> 2;
     size_t within_chunk_idx = atom_idx & 3;

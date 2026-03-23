@@ -505,8 +505,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	uint64_t prev_comp_key = 0;
-	char prev_chain_id = -1; // No need for a key for the previous chain, just store the id
-
     size_t num_unassigned_atom_types = 0;
 
     bool terminator = false;
@@ -571,7 +569,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
         md_array_push_no_grow(sys->atom.flags, flags);
         md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
 
-        prev_chain_id = chain_id;
 		prev_comp_key = comp_key;
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
@@ -662,7 +659,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     */
 
     result = true;
-done:
     md_arena_allocator_destroy(temp_arena);
     return result;
 }

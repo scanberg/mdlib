@@ -524,7 +524,7 @@ static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number
 		int nsph = spherical_momentum_num_components(angl);
 		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
 		for (int isph = 0; isph < nsph; isph++) {
-			int	ncomp = spherical_momentum_num_factors(angl, isph);
+			// int	ncomp = spherical_momentum_num_factors(angl, isph);
 
 			// go through atoms
 			for (int atomidx = 0; atomidx < natoms; atomidx++) {
@@ -634,7 +634,7 @@ static void extract_gto_data(struct md_gto_data_t* out_data, const dvec3_t* atom
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
-	uint32_t coeff_idx = 0; // same as the cgto_idx
+	// uint32_t coeff_idx = 0; // same as the cgto_idx
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int angl = 0; angl <= max_angl; angl++) {
@@ -833,7 +833,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 			};
 
 			// Grow the array and fill in slots with null_basis
-			while (md_array_size(basis_set->atom_basis.data) < atomic_number) {
+			while ((int)md_array_size(basis_set->atom_basis.data) < atomic_number) {
 				md_array_push(basis_set->atom_basis.data, null_basis, alloc);
 			}
 
@@ -1597,7 +1597,7 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* arena) {
 	ASSERT(rsp);
 	char buf[64];
-	uint64_t dim[2];
+	size_t dim[2];
 
 	// Test to read first NTO entry to get dimensions, NTO is optional and may not exist
 	if (!h5_read_dataset_dims(dim, 2, handle, "NTO_S1_alpha_orbitals")) {
@@ -1756,7 +1756,7 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	// Attempt to read number_of_modes (Available in new format)
 	if (!h5_read_scalar(&number_of_modes, handle, H5T_NATIVE_HSIZE, "number_of_modes")) {
 		// Fallback (Old format, read force_constant dims to get number of modes)
-		uint64_t dim[2];
+		size_t dim[2];
 		int num_dim = h5_read_dataset_dims(dim, 2, handle, "force_constants");
 		if (num_dim <= 0) {
 			return false;
@@ -1829,7 +1829,7 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 		// Handle dataset case
 		// Iterate over outer dimension in dataset, which should be [number_of_normal_modes][number_of_atoms][3]
 
-		uint64_t data_dim[3];
+		size_t data_dim[3];
 		int num_dim = h5_read_dataset_dims(data_dim, 3, handle, "normal_modes");
 
 		// Assert expected dimensions
@@ -1865,7 +1865,7 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 
 static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
-	uint64_t dim[3];
+	size_t dim[3];
 	int num_dim;
 	
 	num_dim = h5_read_dataset_dims(dim, 3, handle, "nuclear_repulsion_energies");
@@ -2266,7 +2266,7 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 						goto done;
 					}
 
-					uint64_t dim[2];
+					size_t dim[2];
 					if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
 						goto done;
 					}

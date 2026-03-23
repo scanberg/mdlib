@@ -668,7 +668,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
             }
         }
          
-        str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
+        //str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
         str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
         str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
         str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];

@@ -94,6 +94,7 @@ static const uint8_t element_ionic_radii_u8[] = {
     0, 100,   0, 120,   0, 240, 230,   0
 };
 
+#if 0
 // Covalent radii for elements (single, double, triple) bonds in pikometers
 // https://en.wikipedia.org/wiki/Covalent_radius
 static const uint8_t element_covalent_radii3[][3] = {
@@ -222,7 +223,7 @@ static const uint8_t element_covalent_radii3[][3] = {
     { 165,   0,   0 }, // Ts
     { 157,   0,   0 }, // Og
 };
-
+#endif
 
 // https://dx.doi.org/10.1021/jp8111556
 static const float element_vdw_radii[] = {
@@ -464,19 +465,21 @@ static const uint64_t element_transition_metal_mask[2] = {
     0x0000000001FF01FFULL,
 };
 
+#if 0
 static const uint64_t element_alkaline_earth[2] = {
     0x0100004000101010,
     0x0000000001000000,
 };
 
-static const uint64_t element_aromatic_ring[2] = {
-    0x000c00030001c1e0,
-    0x0000000000080000,
-};
-
 static const uint64_t element_covalent_mask[2] = {
     0x003E0000001FC7E6ULL, // atomic numbers 1–63
     0x0000000000000000ULL, // atomic numbers 64–127 (unused)
+};
+#endif
+
+static const uint64_t element_aromatic_ring[2] = {
+    0x000c00030001c1e0,
+    0x0000000000080000,
 };
 
 // This is a macro to generate test functions of the bitmasks above
@@ -549,9 +552,11 @@ static const char* amino_acids[] = {
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
 };
 
+#if 0
 static const char* nucleic_acids[] = {
     "A", "C", "G", "T", "U", "+U", "YG", "1MA", "1MG", "2MG", "5MC", "5MU", "7MG", "H2U", "M2G", "OMC", "OMG", "PSU",
 };
+#endif
 
 /*static const char* peptides[] = {"APN", "CPN", "TPN", "GPN"};*/
 static const char* rna[] = {"A", "C", "T", "G", "I", "U", "N"};
@@ -566,6 +571,7 @@ static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "
 
 static const char* common_ions[] = { "NA", "K", "CA", "MG", "ZN", "CL", "F", "MN", "FE", "CU", "CO", "NI", "CD", "BR", "I", "CS", "SR"};
 
+#if 0
 // Taken from here
 // https://github.com/molstar/molstar/blob/master/src/mol-model/structure/model/properties/atomic/bonds.ts
 /*
@@ -623,6 +629,7 @@ static str_t intra_bond_order_table[] = {
     BAKE("DT|C2|O2"),
     BAKE("DT|C4|O4"),
 };
+#endif
 
 #include <stdlib.h>
 
@@ -749,7 +756,6 @@ static void sort_radix_uint32(uint32_t* out_indices, const uint32_t* keys, size_
     radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[2], 2);
     radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[3], 3);
 }
-
 
 static inline void radix_pass_indices_8(uint32_t* dst_indices, const uint32_t* keys, const uint32_t* src_indices, size_t count, uint32_t hist[256],
                                         int pass) {
@@ -3803,7 +3809,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         // Covalent radius sum factors
         static const float k_min   = 0.65f;
         static const float k_cov   = 1.15f;
-        static const float k_tight = 1.05f;
+        //static const float k_tight = 1.05f;
         static const float k_coord = 1.30f;
         static const float k_metal = 0.90f;
 
@@ -3867,15 +3873,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
-            md_timestamp_t ts_start = md_time_current();
-
             md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &stream, cell_ext, cell, 0);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
-            md_timestamp_t ts_end = md_time_current();
-
-            double dt_ms = md_time_as_milliseconds(ts_end - ts_start);
             //MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
         }
 
@@ -4302,9 +4303,10 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             sys->component.flags[comp_idx] |= MD_FLAG_ION;
         }
 
-done:
         // Propagate flags to atoms
-		const uint32_t mask = MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEIC_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ION;
+		static const uint32_t mask = MD_FLAG_POLYPEPTIDE | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEIC_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ION;
+
+        done:
         for (unsigned i = comp_range.beg; i < comp_range.end; ++i) {
             sys->atom.flags[i] |= sys->component.flags[comp_idx] & mask;
         }
@@ -4390,10 +4392,10 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_sy
             md_bond_iter_next(&it);
         }
         
-        size_t num_conn = md_bond_conn_count(&sys->bond, i);
+        int num_conn = (int)md_bond_conn_count(&sys->bond, i);
         if (num_conn <= max_conn) {
             if (z_i == MD_Z_S) {
-                num_lone_pairs = MAX(0, 4 - (int)num_conn);
+                num_lone_pairs = MAX(0, 4 - num_conn);
             }
 
             md_atom_idx_t acc_idx = (md_atom_idx_t)i;
@@ -4944,8 +4946,6 @@ bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
     size_t processed_ring_elements = 0;
 #endif
 
-    size_t num_rings = 0;
-
     for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
         if (sys->atom.flags[atom_idx] & (MD_FLAG_WATER | MD_FLAG_ION)) continue;
 
@@ -5096,8 +5096,6 @@ bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
     fifo_t queue = fifo_create(1024, temp_arena);
 
     md_array(int) indices = md_array_create(int, 1024, temp_arena);
-
-    size_t num_structures = 0;
 
     for (int i = 0; i < (int)atom_count; ++i) {
         md_array_shrink(indices, 0);
@@ -8575,8 +8573,6 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 
 bool md_util_system_pbc(md_system_t* sys) {
     ASSERT(sys);
-
-	md_unitcell_flags_t cell_flags = sys->unitcell.flags;
 
     if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
         vec3_t ext = { 0 };

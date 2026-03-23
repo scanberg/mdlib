@@ -1202,8 +1202,6 @@ static void fix_precedence(ast_node_t** node) {
     if (!node) return;
     ast_node_t* parent = *node;
     if (!parent) return;
-    
-    ast_node_t** op  = node;
 
     if (operator_binary((*node)->type)) {
         if (md_array_size((*node)->children) != 2) {
@@ -3647,9 +3645,6 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
 static bool deduce_type_dim_from_args(type_info_t* type, ast_node_t** args, size_t num_args, token_t token, eval_context_t* ctx) {
     ASSERT(ctx);
-
-    int max_dim = 0;
-    int max_len = 0;
 
     for (size_t i = 0; i < num_args; ++i) {
     // If the argument has leading ones in its type, we want to replicate that

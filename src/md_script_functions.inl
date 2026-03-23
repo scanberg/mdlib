@@ -1363,7 +1363,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
                 // For bitfields, we only care about the first subscript dimension [0]
                 irange_t range = ctx->subscript_ranges[0];
                 for (int i = range.beg; i < range.end; ++i) {
-                    if (i < bf_len) {
+                    if (i < (int)bf_len) {
                         const md_bitfield_t* bf = &in_bf[i];
                         if (ctx->mol_ctx) {
                             md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
@@ -4523,10 +4523,10 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_INT));
 
-	int N = as_int(arg[1]);
+	int in_N = as_int(arg[1]);
 
     if (dst) {
-        if (N <= 0) {
+        if (in_N <= 0) {
             return 0;
         }
 
@@ -4541,14 +4541,16 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			src_bf = &tmp_bf;
         }
 
-        uint64_t src_beg_bit = md_bitfield_beg_bit(src_bf);
-		uint64_t src_end_bit = md_bitfield_end_bit(src_bf);
-		uint64_t src_size = src_end_bit - src_beg_bit;
+        uint32_t N = (uint32_t)in_N;
+
+        uint32_t src_beg_bit = (uint32_t)md_bitfield_beg_bit(src_bf);
+		uint32_t src_end_bit = (uint32_t)md_bitfield_end_bit(src_bf);
+		uint32_t src_size = src_end_bit - src_beg_bit;
 
 		// Split bitfield into N bitfields
-        for (uint64_t i = 0; i < (uint64_t)N; ++i) {
-			uint64_t range_beg = (src_size * i) / N;
-			uint64_t range_end = (i == N - 1) ? src_size : (src_size * (i + 1)) / N;
+        for (uint32_t i = 0; i < N; ++i) {
+			uint32_t range_beg = (src_size * i) / N;
+			uint32_t range_end = (i + 1 == N) ? src_size : (src_size * (i + 1)) / N;
 
 			md_bitfield_t* bf = &dst_bf_arr[i];
 			md_bitfield_set_range(bf, src_beg_bit + range_beg, src_beg_bit + range_end);
@@ -4557,11 +4559,11 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return 0;
     } else {
         // Static check, return number of bitfields returned
-        if (N <= 0) {
+        if (in_N <= 0) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Split count must be greater than zero");
             return STATIC_VALIDATION_ERROR;
 		}
-		return N;
+		return in_N;
     }
 }
 

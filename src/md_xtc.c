@@ -810,7 +810,6 @@ bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajec
     MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    size_t num_frames = xtc->header.num_atoms;
 
     xtc_reader_t* inst = md_alloc(arena, sizeof(xtc_reader_t));
     MEMSET(inst, 0, sizeof(xtc_reader_t));
