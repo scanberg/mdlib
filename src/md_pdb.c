@@ -585,6 +585,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
             sys->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
         }
     };
+    
+    sys->initial_unitcell = sys->unitcell;
 
     if (num_unassigned_atom_types > 0) {
         md_util_system_infer_atom_types(sys, atom_name, sys->alloc);

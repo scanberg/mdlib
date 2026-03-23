@@ -968,11 +968,12 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         }
     }
 
+    sys->unitcell = md_unitcell_none();
     if (cell_parsed) {
         sys->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
-    } else {
-        sys->unitcell = md_unitcell_none();
     }
+
+	sys->initial_unitcell = sys->unitcell;
 
 	md_util_system_infer_covalent_bonds(sys, alloc);
     md_util_system_infer_comp_flags(sys);

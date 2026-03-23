@@ -949,6 +949,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	double xz = data->cell.xz;
 	double yz = data->cell.yz;
     sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+	sys->initial_unitcell = sys->unitcell;
 
 	// Create bonds
 	if (data->num_bonds > 0) {

@@ -1,6 +1,7 @@
 #include <md_dcd.h>
 #include <md_system.h>
 #include <md_trajectory.h>
+#include <md_util.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -60,11 +61,15 @@ typedef struct dcd_t {
 	double* frame_times;          // Precomputed frame timestamps (picoseconds), length = num_frames.
 	md_unit_t time_unit;          // Time unit for frame_times (we try to convert to picoseconds if time data is available, otherwise we fallback to indices)
 
+    md_unitcell_t initial_unitcell; // Store a copy of the initial unitcell in case it is not stored in the trajectory itself.
+
     // Full coordinate snapshot of frame 0, used for fixed-atom reconstruction in subsequent frames.
     // Only allocated when nfixed > 0.
     float* first_frame_x;
     float* first_frame_y;
     float* first_frame_z;
+
+    vec3_t translation;
 } dcd_t;
 
 typedef struct dcd_reader_t {
@@ -401,12 +406,12 @@ static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int e
 //
 // Any output pointer may be NULL (the corresponding data will be skipped).
 static bool dcd_read_frame_at(md_file_t file,
-                               md_file_offset_t* offset,
-                               int natoms, int nfixed, int charmm, bool rev,
-                               const int32_t* free_indices,
-                               bool is_first_frame,
-                               md_unitcell_t* out_unitcell,
-                               float* out_x, float* out_y, float* out_z)
+                              md_file_offset_t* offset,
+                              int natoms, int nfixed, int charmm, bool rev,
+                              const int32_t* free_indices,
+                              bool is_first_frame,
+                              md_unitcell_t* out_unitcell,
+                              float* out_x, float* out_y, float* out_z)
 {
     ASSERT(md_file_valid(file));
     ASSERT(offset);
@@ -556,16 +561,26 @@ static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t i
 		MEMCPY(y, dcd->first_frame_y, (size_t)natoms * sizeof(float));
 		MEMCPY(z, dcd->first_frame_z, (size_t)natoms * sizeof(float));
 	}
-	md_unitcell_t unitcell = md_unitcell_none();
+	md_unitcell_t unitcell = dcd->initial_unitcell;
     bool success = dcd_read_frame_at(reader->file, &offset, natoms, dcd->header.nfixed, dcd->header.charmm, dcd->header.reverse_endian,
 									 dcd->header.free_indices,
 									 is_first_frame,
 									 &unitcell,
 									 x, y, z);
     if (!success) {
-        MD_LOG_ERROR("DCD: Failed to read frame %lld", idx);
+        MD_LOG_ERROR("DCD: Failed to read frame %zu", (size_t)idx);
         return false;
     }
+
+    if (x && y && z && vec3_length_squared(dcd->translation) > 0.0f) {
+        // Apply the cumulative translation to the coordinates so that the trajectory is consistent with the unit cell.
+        for (int i = 0; i < natoms; ++i) {
+            x[i] += dcd->translation.x;
+            y[i] += dcd->translation.y;
+            z[i] += dcd->translation.z;
+        }
+    }
+
 	if (out_hdr) {
 		*out_hdr = (md_trajectory_frame_header_t){
 			.num_atoms = (size_t)natoms,
@@ -718,26 +733,41 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
     dcd->frame_size       = (size_t)frame_size;
     dcd->frame_times      = frame_times;
 	dcd->time_unit        = time_unit;
-
+    
     // When fixed atoms are present, store the full first-frame coordinates.
     // These are blended with subsequent frames that only contain free-atom deltas.
     dcd->first_frame_x = NULL;
     dcd->first_frame_y = NULL;
     dcd->first_frame_z = NULL;
-    if (fhdr.nfixed > 0) {
+    {
         const int natoms   = fhdr.natoms;
 		dcd->first_frame_x = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
 		dcd->first_frame_y = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
 		dcd->first_frame_z = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
 		md_file_offset_t first_frame_offset = dcd_frame_offset(dcd, 0);
+        md_unitcell_t unitcell = { 0 };
         // Read the first frame treating nfixed as 0 so that all atoms are read.
 		if (!dcd_read_frame_at(file, &first_frame_offset, natoms, 0, fhdr.charmm, fhdr.reverse_endian,
-                               NULL, true, NULL,
+                               NULL, true, &unitcell,
                                dcd->first_frame_x, dcd->first_frame_y, dcd->first_frame_z))
         {
             MD_LOG_ERROR("DCD: Failed to read first frame for fixed-atom initialisation");
             goto fail;
         }
+
+        // We always read the first frame atoms and check the COM, we want to identify if the coordiantes should be shifted by unitcell center.
+		vec3_t com = md_util_com_compute(dcd->first_frame_x, dcd->first_frame_y, dcd->first_frame_z, NULL, NULL, (size_t)natoms, &unitcell);
+
+        mat3_t A = { 0 };
+        md_unitcell_A_extract_float(A.elem, &unitcell);
+		vec3_t uc_center = mat3_mul_vec3(A, (vec3_t) { 0.5f, 0.5f, 0.5f });
+
+        // Check which com is closest
+		float dist_com = vec3_distance(com, (vec3_t) { 0, 0, 0 });
+        float dist_uc_center = vec3_distance(com, uc_center);
+        if (dist_uc_center < dist_com) {
+            dcd->translation = uc_center;
+		}
     }
 
     traj->inst        = (struct md_trajectory_o*)dcd;
@@ -758,9 +788,12 @@ fail:
 // Attach convenience wrapper: create trajectory and attach to system
 bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
     if (!sys) return false;
-    md_allocator_i* alloc = sys->alloc ? sys->alloc : md_get_heap_allocator();
-    md_trajectory_i* traj = md_dcd_trajectory_create(filename, alloc, flags);
+    md_trajectory_i* traj = md_dcd_trajectory_create(filename, sys->alloc, flags);
     if (!traj) return false;
+	dcd_t* dcd = (dcd_t*)traj->inst;
+	if (dcd && dcd->magic == MD_DCD_TRAJ_MAGIC) {
+        dcd->initial_unitcell = sys->initial_unitcell;
+    }
     md_system_attach_trajectory(sys, traj);
     return true;
 }
