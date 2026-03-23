@@ -4943,6 +4943,7 @@ bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
     mark_t  current_mark  = 1;
 
 #if DEBUG
+	size_t num_rings = 0;
     size_t processed_ring_elements = 0;
 #endif
 
@@ -5132,7 +5133,6 @@ bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
         
         // Here we should have exhausted every atom that is connected to index i.
         md_index_data_push_arr(&sys->structure, indices, md_array_size(indices));
-        num_structures += 1;
     }
     
     md_vm_arena_destroy(temp_arena);

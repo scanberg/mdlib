@@ -1,7 +1,6 @@
 ﻿#include <md_xtc.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_trajectory.h>
 
 #include <core/md_common.h>

@@ -632,12 +632,6 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
     size_t byte_offset = 0;
 
     while (xyz_parse_model_header(&mdl, reader, flags | XYZ_STORE_COMMENT, &expected_count, alloc)) {
-        if (md_array_size(data->models) == 16126) {
-            while(0) {};
-        }
-
-        model_count = md_array_size(data->models);
-
         md_array_ensure(data->coordinates, md_array_size(data->coordinates) + expected_count, alloc);
         
         mdl.byte_offset = byte_offset;
