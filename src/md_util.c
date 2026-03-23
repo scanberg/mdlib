@@ -4423,6 +4423,7 @@ typedef struct hbond_candidate_callback_data_t {
 } hbond_candidate_callback_data_t;
 
 static inline void spatial_acc_hbond_candidate_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t count, void* user_data) {
+	(void)ij_dist2;
     hbond_candidate_callback_data_t* data = (hbond_candidate_callback_data_t*)user_data;
     const float min_angle = data->min_angle_in_radians;
 
@@ -4435,7 +4436,7 @@ static inline void spatial_acc_hbond_candidate_callback(const uint32_t* i_idx, c
         float angle  = vec4_angle (vec4_sub(d_xyz, h_xyz), vec4_sub(a_xyz, h_xyz));
         float h_dist = vec4_length(vec4_sub(h_xyz, a_xyz));
         if (angle > min_angle) {
-            float score = cosf(PI - angle) / h_dist;
+            float score = cosf((float)PI - angle) / h_dist;
             if (score > data->donor_energies[d_idx].score) {
                 data->donor_energies[d_idx].score = score;
                 data->donor_energies[d_idx].acc_idx = (int)a_idx;
@@ -4943,7 +4944,6 @@ bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
     mark_t  current_mark  = 1;
 
 #if DEBUG
-	size_t num_rings = 0;
     size_t processed_ring_elements = 0;
 #endif
 
@@ -5044,7 +5044,6 @@ bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
                         if (!md_hashset_get(&ring_set, key)) {
                             md_hashset_add(&ring_set, key);
                             md_index_data_push_arr(&sys->ring, ring, len);
-                            num_rings += 1;
                         }
                     }
                 } else {
@@ -5550,6 +5549,8 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
 
 // typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    (void)idx_i;
+    (void)ij_dist2;
     md_bitfield_t* mask = (md_bitfield_t*)user_param;
     md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
 }
