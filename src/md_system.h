@@ -157,9 +157,9 @@ typedef struct md_hydrogen_bond_data_t {
 } md_hydrogen_bond_data_t;
 
 typedef struct md_system_state_t {
-    float* x;
-    float* y;
-    float* z;
+    float* atom_x;
+    float* atom_y;
+    float* atom_z;
     md_unitcell_t unitcell;
 } md_system_state_t;
 
@@ -287,15 +287,6 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
 }
 
 // Atom helpers
-static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
-    ASSERT(atom_data);
-    return atom_data->count;
-}
-
-static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
-}
 
 static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
@@ -314,6 +305,19 @@ static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* ato
     }
     
     return 0;
+}
+
+static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
+    ASSERT(atom_data);
+    return atom_data->count;
+}
+
+static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
+    ASSERT(atom_data);
+    if (atom_idx < atom_data->count) {
+        return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
+    }
+    return vec3_zero();
 }
 
 static inline float md_atom_mass(const md_atom_data_t* atom, size_t atom_idx) {
@@ -338,7 +342,6 @@ static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) 
 
 static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
-
     if (atom_idx < atom->count) {
 		return md_atom_type_name(&atom->type, atom->type_idx[atom_idx]);
     }
