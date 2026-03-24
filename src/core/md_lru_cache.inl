@@ -53,8 +53,8 @@ static inline int md_lru_cache8_get_lru(md_lru_cache8_t cache) {
 static inline void md_lru_cache8_set_mru(md_lru_cache8_t* cache, int idx) {
 	ASSERT(md_lru_cache8_validate(*cache));
 	ASSERT(0 <= idx && idx < 8);
-	*cache = (*cache | (0xFFULL << (8 * idx)));
-	*cache &= ~((md_lru_cache8_t)0x0101010101010101ULL << idx);
+	*cache |= 0xFFULL << (8 * idx);
+	*cache &= ~(0x0101010101010101ULL << idx);
 }
 
 // -------------------------------------------------------------------------
@@ -67,7 +67,7 @@ static inline md_lru_cache4_t md_lru_cache4_init(md_lru_cache4_t* cache) {
     // 0  0  1  1
     // 0  0  0  1
     // 0  0  0  0	<- LRU
-	return *cache = 0x137U;
+	return *cache = 0x8CEU;
 }
 
 static inline int md_lru_cache4_validate(md_lru_cache4_t cache) {
@@ -84,6 +84,6 @@ static inline void md_lru_cache4_set_mru(md_lru_cache4_t* cache, int idx) {
 	ASSERT(md_lru_cache4_validate(*cache));
 	ASSERT(0 <= idx && idx < 4);
 	// Promote idx to a byte-row mask then clear the column
-	*cache |= (0xFU << (4 * idx));
-	*cache &= ~((uint16_t)0x1111U << idx);
+	*cache |= 0xFU << (4 * idx); // Set row
+    *cache &= ~(0x1111U << idx); // Clear column
 }
