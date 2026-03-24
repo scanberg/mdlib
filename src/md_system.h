@@ -156,6 +156,13 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_pair_t* bonds;
 } md_hydrogen_bond_data_t;
 
+typedef struct md_system_state_t {
+    float* x;
+    float* y;
+    float* z;
+    md_unitcell_t unitcell;
+} md_system_state_t;
+
 // This represents the persistent portion (topology) of a system which does not change over time, such as the atom types, bonds, components, etc.
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
@@ -183,9 +190,6 @@ typedef struct md_system_t {
 
     str_t                       description;
 } md_system_t;
-
-
-// `md_system_state_t` is defined in md_types.h; do not redefine here.
 
 #ifdef __cplusplus
 extern "C" {
@@ -793,7 +797,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
 
 // This is not something which should be done frequently
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
-void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc);
+void md_system_bond_build_connectivity(md_system_t* sys);
 
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     ASSERT(bond_data);
@@ -895,10 +899,9 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
     return md_bond_find(&sys->bond, atom_idx_a, atom_idx_b);
 }
 
-static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
+static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
     ASSERT(sys);
-    ASSERT(alloc);
-    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, alloc);
+    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, sys->alloc);
 }
 
 static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx) {

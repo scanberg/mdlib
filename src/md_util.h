@@ -57,7 +57,7 @@ bool md_util_resname_nucleotide(str_t str);
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_atom_auth_asym_id[], struct md_allocator_i* alloc);
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_atom_auth_asym_id[]);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
@@ -76,10 +76,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const float* in_x, c
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-static inline void md_util_system_infer_covalent_bonds(md_system_t* sys, struct md_allocator_i* alloc) {
-    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, alloc);
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
-}
+void md_util_system_infer_covalent_bonds(md_system_t* sys);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -90,7 +87,7 @@ void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_syst
 void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_system_t* sys, double radius, const struct md_bitfield_t* viable_mask);
 
 // Infer rings formed by covalent bonds
-bool md_util_system_infer_rings(md_system_t* sys, struct md_allocator_i* alloc);
+bool md_util_system_infer_rings(md_system_t* sys);
 
 void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const struct md_system_t* sys, md_allocator_i* alloc);
 
@@ -103,10 +100,10 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, con
                                  const md_unitcell_t* unitcell, double max_dist, double min_angle);
 
 // Identify isolated structures by covalent bonds
-bool md_util_system_infer_structures(md_system_t* sys, struct md_allocator_i* alloc);
+bool md_util_system_infer_structures(md_system_t* sys);
 
 // Identify atom types within the system
-void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], struct md_allocator_i* alloc);
+void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_system_postprocess(struct md_system_t* sys, md_postprocess_flags_t flags);

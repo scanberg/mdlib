@@ -975,7 +975,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
 
 	sys->initial_unitcell = sys->unitcell;
 
-	md_util_system_infer_covalent_bonds(sys, alloc);
+	md_util_system_infer_covalent_bonds(sys);
     md_util_system_infer_comp_flags(sys);
 
     return sys->atom.count > 0;

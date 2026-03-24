@@ -85,6 +85,23 @@ static inline uint64_t bsr64(uint64_t mask) {
 
 #endif
 
+// find first zero nibble in 16-bit integer
+static inline uint32_t find_first_zero_nibble16(uint16_t x) {
+    uint16_t y = (x - 0x1111) & ~x & 0x8888;
+    return ctz32(y) >> 2;
+}
+
+// find first zero nibble in 32-bit integer
+static inline uint32_t find_first_zero_nibble32(uint32_t x) {
+    uint32_t y = (x - 0x11111111) & ~x & 0x88888888;
+    return ctz32(y) >> 2;
+}
+
+static inline uint64_t find_first_zero_nibble64(uint64_t x) {
+    uint64_t y = (x - 0x1111111111111111) & ~x & 0x8888888888888888;
+    return ctz64(y) >> 2;
+}
+
 // find first zero Byte
 static inline uint32_t find_first_zero_byte32(uint32_t x) {
     uint32_t y = (x - 0x01010101) & ~x & 0x80808080;

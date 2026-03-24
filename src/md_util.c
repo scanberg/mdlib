@@ -4013,6 +4013,11 @@ done:
     md_vm_arena_destroy(temp_arena);
 }
 
+void md_util_system_infer_covalent_bonds(md_system_t* sys) {
+    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, sys->alloc);
+    md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+}
+
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
@@ -4634,12 +4639,13 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
 // Define what size of components we group into same instances
 #define MAX_GROUPED_COMP_SIZE 4
 
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[], struct md_allocator_i* alloc) {
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[]) {
     if (!sys || sys->component.count == 0) {
         MD_LOG_ERROR("Missing system or components");
         return false;
     }
-    ASSERT(alloc);
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
@@ -4901,9 +4907,10 @@ static void sort_ring(int* arr, int n) {
 // Copyright (c) 2018 mol* contributors, licensed under MIT, See LICENSE file for more info.
 // @author David Sehnal <david.sehnal@gmail.com>
 
-bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
+bool md_util_system_infer_rings(md_system_t* sys) {
     ASSERT(sys);
-    ASSERT(alloc);
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
 
     size_t num_atoms = md_system_atom_count(sys);
     size_t num_bonds = md_system_bond_count(sys);
@@ -5075,9 +5082,11 @@ bool md_util_system_infer_rings(md_system_t* sys, md_allocator_i* alloc) {
 #undef MAX_DEPTH
 
 // Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
-bool md_util_system_infer_structures(md_system_t* sys, md_allocator_i* alloc) {
+bool md_util_system_infer_structures(md_system_t* sys) {
     ASSERT(sys);
-    ASSERT(alloc);
+    ASSERT(sys->alloc);
+
+    md_allocator_i* alloc = sys->alloc;
 
     if (sys->structure.alloc && sys->structure.alloc != alloc) {
         md_index_data_free(&sys->structure);
@@ -5389,7 +5398,7 @@ static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) 
     return NULL;
 }
 
-void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[], md_allocator_i* alloc) {
+void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]) {
     if (!sys) {
         MD_LOG_ERROR("system was null");
         return;
@@ -5398,6 +5407,11 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
         MD_LOG_ERROR("Must provide atom_labels");
         return;
     }
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator was null");
+        return;
+    }
+    md_allocator_i* alloc = sys->alloc;
 
     size_t temp_pos = md_temp_get_pos();
 
@@ -9129,14 +9143,14 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
         if (sys->bond.count == 0) {
-            md_util_system_infer_covalent_bonds(sys, alloc);
+            md_util_system_infer_covalent_bonds(sys);
         }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
         if (sys->bond.count) {
-            md_util_system_infer_structures(sys, alloc);
-            md_util_system_infer_rings(sys, alloc);
+            md_util_system_infer_structures(sys);
+            md_util_system_infer_rings(sys);
         }
     }
     
@@ -9148,7 +9162,7 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
 
     if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
         if (sys->instance.count == 0) {
-            md_util_system_infer_entity_and_instance(sys, NULL, alloc);
+            md_util_system_infer_entity_and_instance(sys, NULL);
         }
     }
 

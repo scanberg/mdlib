@@ -589,11 +589,11 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     sys->initial_unitcell = sys->unitcell;
 
     if (num_unassigned_atom_types > 0) {
-        md_util_system_infer_atom_types(sys, atom_name, sys->alloc);
+        md_util_system_infer_atom_types(sys, atom_name);
     }
-	md_util_system_infer_covalent_bonds(sys, sys->alloc);
+	md_util_system_infer_covalent_bonds(sys);
     md_util_system_infer_comp_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids, sys->alloc);
+    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
 
     /*
     // Create instances from assemblies

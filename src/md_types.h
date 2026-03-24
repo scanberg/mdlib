@@ -500,7 +500,6 @@ static inline void md_index_data_merge(md_index_data_t* dest, const md_index_dat
 
 
 // Atom coordinate helper functions
-
 #define MD_COORD_CHUNK_SIZE 4
 
 // Store atom coordinates in chunks of 4 to strike a good balance between cache locality for fetching individual atoms and SIMD processing
@@ -513,13 +512,6 @@ typedef struct md_atom_coord_data_t {
     size_t num_chunks;
     md_coord_chunk_t* chunks;
 } md_atom_coord_data_t;
-
-// This represents the transient portion of a system which change over time, such as the atom coordinates, bonds, etc.
-typedef struct md_system_state_t {
-    md_atom_coord_data_t coord;
-    md_unitcell_t unitcell;
-    // Add other dynamic properties here such as e.g. hydrogen bonds, etc. which may change over time.
-} md_system_state_t;
 
 static inline void md_atom_coord_init(md_atom_coord_data_t* coord, size_t num_atoms, md_allocator_i* alloc) {
     ASSERT(coord);

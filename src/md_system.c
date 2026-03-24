@@ -267,10 +267,9 @@ void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, 
 	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->count, atom_count, alloc);
 }
 
-void md_system_bond_build_connectivity(md_system_t* sys, md_allocator_i* alloc) {
+void md_system_bond_build_connectivity(md_system_t* sys) {
     ASSERT(sys);
-    ASSERT(alloc);
-	md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
+	md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
 }
 
 // Attach a trajectory to the system, freeing any existing attached trajectory.
