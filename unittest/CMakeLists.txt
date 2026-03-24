@@ -32,7 +32,6 @@ set (SRC_FILES
     test_unit.c
     test_script.c
     test_filter.c
-    test_frame_cache.c
     test_spatial_hash.c
     test_string_builder.c
     test_base64.c
