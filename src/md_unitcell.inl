@@ -251,37 +251,53 @@ static inline void md_unitcell_diag_extract_float(float out_diag[3], const md_un
 }
 
 #ifdef __cplusplus
+
+// Fuck off C++ and the standard library with your nonsense
+// Making me do all this nonsense for simple bullshit.
+
+template<typename A, typename B>
+struct md_is_same { static constexpr bool value = false; };
+
+template<typename A>
+struct md_is_same<A, A> { static constexpr bool value = true; };
+
+template<typename A, typename B>
+constexpr bool md_is_same_v = md_is_same<A, B>::value;
+
+template<typename T>
+struct md_false { static constexpr bool value = false; };
+
 // C++ template dispatch
 template<typename T>
 inline void md_unitcell_A_extract(T (&out_A)[3][3], const md_unitcell_t* cell) {
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (md_is_same_v<T, double>) {
         md_unitcell_A_extract_double(out_A, cell);
-    } else if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (md_is_same_v<T, float>) {
         md_unitcell_A_extract_float(out_A, cell);
     } else {
-        static_assert(false, "Unsupported type for md_unitcell_A_extract");
+        static_assert(md_false<T>::value, "Unsupported type for md_unitcell_A_extract");
     }
 }
 
 template<typename T>
 inline void md_unitcell_I_extract(T (&out_I)[3][3], const md_unitcell_t* cell) {
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (md_is_same_v<T, double>) {
         md_unitcell_I_extract_double(out_I, cell);
-    } else if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (md_is_same_v<T, float>) {
         md_unitcell_I_extract_float(out_I, cell);
     } else {
-        static_assert(false, "Unsupported type for md_unitcell_I_extract");
+        static_assert(md_false<T>::value, "Unsupported type for md_unitcell_I_extract");
     }
 }
 
 template<typename T>
 inline void md_unitcell_G_extract(T (&out_G)[3][3], const md_unitcell_t* cell) {
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (md_is_same_v<T, double>) {
         md_unitcell_G_extract_double(out_G, cell);
-    } else if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (md_is_same_v<T, float>) {
         md_unitcell_G_extract_float(out_G, cell);
     } else {
-        static_assert(false , "Unsupported type for md_unitcell_G_extract");
+        static_assert(md_false<T>::value , "Unsupported type for md_unitcell_G_extract");
     }
 }
 
