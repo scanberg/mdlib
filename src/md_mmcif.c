@@ -858,13 +858,13 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             if (entities[i].type == ENTITY_TYPE_POLYMER) {
                 flags |= MD_FLAG_POLYMER;
                 if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_L) {
-                    flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_L;
+                    flags |= MD_FLAG_POLYPEPTIDE | MD_FLAG_ISOMER_L;
                 } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_D) {
-                    flags |= MD_FLAG_AMINO_ACID | MD_FLAG_ISOMER_D;
+                    flags |= MD_FLAG_POLYPEPTIDE | MD_FLAG_ISOMER_D;
                 } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE ||
                     entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE ||
                     entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID) {
-                    flags |= MD_FLAG_NUCLEOTIDE;
+                    flags |= MD_FLAG_NUCLEIC_ACID;
                 }
             } else if (entities[i].type == ENTITY_TYPE_WATER) {
                 flags |= MD_FLAG_WATER;
