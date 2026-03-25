@@ -99,6 +99,10 @@ static inline uint64_t md_hash64(const void* input, size_t len, uint64_t seed) {
     return XXH64(input, len, seed);
 }
 
+static inline uint64_t md_hash64_combine(uint64_t a, uint64_t b) {
+    return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2));
+}
+
 static inline uint64_t md_hash64_str(str_t str, uint64_t seed) { return XXH64(str.ptr, str.len, seed); }
 
 
