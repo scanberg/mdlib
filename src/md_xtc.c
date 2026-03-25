@@ -714,7 +714,7 @@ done:
     return atom_idx == natoms;
 }
 
-bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
+static bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     xtc_t* xtc = (xtc_t*)inst;
     ASSERT(xtc);
     ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
@@ -724,7 +724,7 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
     return true;
 }
 
-bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+static bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
     ASSERT(inst);
 
     xtc_reader_t* xtc = (xtc_reader_t*)inst;
@@ -787,7 +787,7 @@ bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_id
     return result;
 }
 
-void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
+static void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     if (!reader) {
         return;
     }
@@ -802,7 +802,7 @@ void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
 }
 
-bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
+static bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
     ASSERT(reader);
     ASSERT(traj_inst);
 
@@ -838,7 +838,7 @@ bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajec
     return true;
 }
 
-bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
     xtc_t* xtc = (xtc_t*)inst;
