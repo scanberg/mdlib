@@ -8,12 +8,15 @@
 
 #include <md_util.h>
 #include <md_system.h>
+#include <md_trajectory.h>
 #include <md_gto.h>
 
 #include <hdf5.h>
 #include <hdf5_hl.h>
 
 #include <float.h>
+
+#define VLX_MAGIC 0x87b716a78cfb2813
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.5291772109029999
@@ -75,50 +78,73 @@ typedef struct basis_set_t {
 
 // New format
 
-typedef struct md_vlx_1d_data_t {
-	size_t  size;
-	double* data;
-} md_vlx_1d_data_t;
+#define MD_VLX_MAX_RANK 5
 
-typedef struct md_vlx_2d_data_t {
+typedef struct md_ndarray_f64_t {
+	uint32_t rank;
+	uint32_t size[MD_VLX_MAX_RANK];
+	double*  data;
+} md_ndarray_f64_t;
+
+static inline size_t md_ndarray_f64_size(const md_ndarray_f64_t* arr) {
+	size_t total = 1;
+	for (uint32_t i = 0; i < arr->rank; ++i) {
+		total *= arr->size[i];
+	}
+	return total;
+}
+
+typedef struct md_2darray_f64_t {
 	size_t  size[2];
 	double* data;
-} md_vlx_2d_data_t;
+} md_2darray_f64_t;
+
+typedef struct md_ndarray_i32_t {
+	uint32_t rank;
+	uint32_t size[MD_VLX_MAX_RANK];
+	int32_t* data;
+} md_ndarray_i32_t;
+
+static inline size_t md_ndarray_i32_size(const md_ndarray_i32_t* arr) {
+	size_t total = 1;
+	for (uint32_t i = 0; i < arr->rank; ++i) {
+		total *= arr->size[i];
+	}
+	return total;
+}
 
 typedef struct md_vlx_orbital_t {
-	md_vlx_2d_data_t coefficients;
-    md_vlx_2d_data_t density;
-	md_vlx_1d_data_t energy;
-	md_vlx_1d_data_t occupancy;
-	// In VeloxChem there are two additional fields present in the case of molecular orbitals which are D, and F
-	// D may correspond to density
-	// F likely corresponds to the Fock Matrix
+    md_ndarray_f64_t coefficients;	// [num_frames][num_orbitals][num_ao]
+    md_ndarray_f64_t density;		// [num_frames][num_ao][num_ao]
+    md_ndarray_f64_t energy;		// [num_frames][num_orbitals]
+    md_ndarray_f64_t occupancy;		// [num_frames][num_orbitals]
+
+    int* homo_idx;					// [num_frames]
+	int* lumo_idx;					// [num_frames]
 } md_vlx_orbital_t;
 
 typedef struct md_vlx_scf_history_t {
-	size_t  number_of_iterations;
-	double* density_diff;
-	double* energy_diff;
-	double* energy;
-	double* gradient_norm;
-	double* max_gradient;
+	md_ndarray_i32_t number_of_iterations;
+	md_ndarray_f64_t density_diff;
+	md_ndarray_f64_t energy_diff;
+	md_ndarray_f64_t energy;
+	md_ndarray_f64_t gradient_norm;
+	md_ndarray_f64_t max_gradient;
 } md_vlx_scf_history_t;
 
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	md_vlx_scf_type_t type;
-	size_t homo_idx[2];
-	size_t lumo_idx[2];
 
-	double energy;
-	dvec3_t ground_state_dipole_moment;
+	md_ndarray_f64_t energy; // [num_frames]
+	md_ndarray_f64_t ground_state_dipole_moment; // [num_frames(optional)][3]
 
 	md_vlx_orbital_t alpha;
 	md_vlx_orbital_t beta;
 
-	double* resp_charges;
+	md_ndarray_f64_t resp_charges;
+	md_ndarray_f64_t S;
 
-	md_vlx_2d_data_t S;
 	md_vlx_scf_history_t history;
 } md_vlx_scf_t;
 
@@ -168,15 +194,15 @@ typedef struct md_vlx_t {
 	size_t number_of_alpha_electrons;
 	size_t number_of_beta_electrons;
 
+    size_t number_of_frames; // For trajectory data, 1 for static calculations, >1 for trajectories
+    int*   frame_ids;        // optional
+
 	double molecular_charge;
 	double nuclear_repulsion_energy;
-	size_t spin_multiplicity;
+	int    spin_multiplicity;
 
-	// Arrays (length = number_of_atoms)
-	dvec3_t* atom_coordinates;
-	md_element_t* atomic_numbers;
-
-	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
+    // [num_frames][num_atoms][3]
+	md_ndarray_f64_t atom_coordinates;
 
 	// Data blocks
 	md_vlx_scf_t scf;
@@ -187,8 +213,25 @@ typedef struct md_vlx_t {
 	// Atomic orbital data represented as GTOs
 	md_gto_data_t gto_data;
 
+	md_element_t* atomic_numbers;
+	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
+
 	struct md_allocator_i* arena;
 } md_vlx_t;
+
+static void orbital_identify_homo_lumo(int* out_homo_idx, int* out_lumo_idx, const double* occ_data, size_t occ_size) {
+	ASSERT(out_homo_idx);
+	ASSERT(out_lumo_idx);
+
+	for (size_t i = 0; i < occ_size; ++i) {
+		if (occ_data[i] > 0.5) {
+			*out_homo_idx = (int)i;
+		} else {
+			*out_lumo_idx = (int)i;
+			break;
+		}
+	}
+}
 
 static int char_to_angular_momentum_type(int c) {
 	switch (c) {
@@ -902,422 +945,115 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	return true;
 }
 
-static bool parse_vlx_geom(md_vlx_t* vlx, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-	bool result = false;
-
-	md_buffered_reader_skip_line(reader); // ====...
-	md_buffered_reader_skip_line(reader); // *empty*
-	md_buffered_reader_skip_line(reader); // Atom  Coordinate X  Coordinate Y  Coordinate Z
-	md_buffered_reader_skip_line(reader); // *empty* 
-
-	typedef struct {
-		md_label_t sym;
-		double x, y, z;
-	} field_t;
-
-	size_t temp_pos = md_temp_get_pos();
-	md_allocator_i* temp_alloc = md_get_temp_allocator();
-	md_array(field_t) fields = 0;
-
-	str_t line;
-	str_t tok[8];
-	while (md_buffered_reader_extract_line(&line, reader)) {
-		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok == 4) {
-			field_t f = {0};
-			f.sym = make_label(tok[0]);
-			f.x   = parse_float(tok[1]);
-			f.y   = parse_float(tok[2]);
-			f.z   = parse_float(tok[3]);
-
-			md_array_push(fields, f, temp_alloc);
-		} else if (num_tok == 0) {
-			// Assume valid end here upon empty line
-			break;
-		} else {
-			MD_LOG_ERROR("Unexpected number of tokens in geometry section, expected 4, got (%zu)");
-			goto done;
-		}
-	}
-
-	size_t count = md_array_size(fields);
-	if (count == 0) {
-		MD_LOG_ERROR("No atomic coordinates found");
-		goto done;
-	}
-
-	// If we end up here, we may read the following lines in order
-	// These are however not present in geometry optimizations
-	
-	if (md_buffered_reader_peek_line(&line, reader) && str_begins_with(str_trim(line), STR_LIT("Molecular charge"))) {
-		// Molecular charge            : int                                                                 
-		// Spin multiplicity           : int                                                               
-		// Number of atoms             : int                                                               
-		// Number of alpha electrons   : int                                                               
-		// Number of beta  electrons   : int   
-		str_t field_ident[] = {
-			STR_LIT("Molecular charge            :"),                                                              
-			STR_LIT("Spin multiplicity           :"),                                                            
-			STR_LIT("Number of atoms             :"),                                                            
-			STR_LIT("Number of alpha electrons   :"),                                                            
-			STR_LIT("Number of beta  electrons   :"),
-		};
-		int64_t field_vals[ARRAY_SIZE(field_ident)];
-
-		size_t loc;
-		for (size_t i = 0; i < ARRAY_SIZE(field_ident); ++i) {
-			str_t ident = field_ident[i];
-			if (!md_buffered_reader_extract_line(&line, reader) || !str_find_str(&loc, line, ident)) {
-				MD_LOG_ERROR("Failed to parse line: '"STR_FMT"'", STR_ARG(field_ident[i]));
-				goto done;
-			}
-			str_t value_str = str_trim(str_substr(line, loc + str_len(ident), SIZE_MAX));
-			field_vals[i] = parse_int(value_str);
-		}
-
-		if ((size_t)field_vals[2] != count) {
-			MD_LOG_ERROR("Incorrect number of atoms parsed, expected %zu entries, parsed %zu.", (size_t)field_vals[2], count);
-			goto done;
-		}
-
-		// Copy data
-		vlx->molecular_charge			= (double)field_vals[0];
-		vlx->spin_multiplicity			= (size_t)field_vals[1];
-		vlx->number_of_atoms			= (size_t)field_vals[2];
-		vlx->number_of_alpha_electrons	= (size_t)field_vals[3];
-		vlx->number_of_beta_electrons	= (size_t)field_vals[4];
-	}
-
-	md_array_grow(vlx->atomic_numbers, count, alloc);
-	md_array_grow(vlx->atom_coordinates, count, alloc);
-
-	for (size_t i = 0; i < count; ++i) {
-		md_atomic_number_t anum = md_atomic_number_from_symbol(LBL_TO_STR(fields[i].sym), false);
-		if (anum == 0) {
-			MD_LOG_ERROR("Unrecognized element '%s' in geometry", fields[i].sym);
-			goto done;
-		}
-		vlx->atomic_numbers[i] = anum;
-		vlx->atom_coordinates[i] = (dvec3_t){ fields[i].x, fields[i].y, fields[i].z };
-	}
-
-	result = true;
-done:
-	md_temp_set_pos_back(temp_pos);
-	return result;
-}
-
-static bool parse_vlx_basis(md_vlx_t* vlx, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-	md_buffered_reader_skip_line(reader); // ====...
-	md_buffered_reader_skip_line(reader); // *empty*
-
-	str_t line;
-	str_t tok[8];
-	while (md_buffered_reader_extract_line(&line, reader)) {
-		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok == 2 && str_eq(tok[0], STR_LIT("Basis:"))) {
-			vlx->basis_set_ident = str_copy(tok[1], alloc);
-			return true;
-		} else if (num_tok == 1 && str_begins_with(tok[0], STR_LIT("====="))) {
-			// Parsed into next section >.<
-			return false;
-		}
-	}
-	return false;
-}
-
-static bool parse_vlx_scf(md_vlx_t* vlx, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-	str_t tok[8];
-	str_t line;
-
-	md_buffered_reader_skip_line(reader); // =====
-
-	int mask = 0;
-	while (md_buffered_reader_extract_line(&line, reader)) {
-		line = str_trim(line);
-
-		if (str_begins_with(line, STR_LIT("Wave Function Model"))) {
-			size_t loc = 0;
-			if (str_find_char(&loc, line, ':')) {
-				str_t scf_type = str_trim_beg(str_substr(line, loc+1, SIZE_MAX));
-				if (str_begins_with(scf_type, STR_LIT("Spin-Restricted Open-Shell"))) {
-					vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
-				} else if (str_begins_with(scf_type, STR_LIT("Spin-Restricted"))) {
-					vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED;
-				} else if (str_begins_with(scf_type, STR_LIT("Spin-Unrestricted"))) {
-					vlx->scf.type = MD_VLX_SCF_TYPE_UNRESTRICTED;
-				} else {
-					vlx->scf.type = MD_VLX_SCF_TYPE_UNKNOWN;
-					MD_LOG_ERROR("Unexpected Wave Function Model: '"STR_FMT"'", STR_ARG(scf_type));
-					return false;
-				}
-				mask |= 1;
-			}
-		} else if (str_begins_with(line, STR_LIT("Iter. |")) && str_ends_with(line, STR_LIT("| Density Change"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			// Parse table, start tokenization
-			while (md_buffered_reader_extract_line(&line, reader)) {
-				size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-				if (num_tok == 6) {
-					double energy_tot		= parse_float(tok[1]);
-					double energy_change	= parse_float(tok[2]);
-					double gradient_norm	= parse_float(tok[3]);
-					double max_gradient		= parse_float(tok[4]);
-					double density_change	= parse_float(tok[5]);
-
-					md_array_push(vlx->scf.history.energy,		  energy_tot, alloc);
-					md_array_push(vlx->scf.history.energy_diff,	  energy_change, alloc);
-					md_array_push(vlx->scf.history.gradient_norm, gradient_norm, alloc);
-					md_array_push(vlx->scf.history.max_gradient,  max_gradient, alloc);
-					md_array_push(vlx->scf.history.density_diff,  density_change, alloc);
-					vlx->scf.history.number_of_iterations += 1;
-
-					mask |= 2;
-				} else if (num_tok == 0) {
-					// Assume valid end here upon empty line
-					break;
-				} else {
-					MD_LOG_ERROR("Unexpected number of tokens in scf energy iteration section, expected 6, got (%zu)");
-					return false;
-				}
-			}
-		} else if (str_eq(line, STR_LIT("Ground State Dipole Moment"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_buffered_reader_extract_line(&line, reader);
-			line = str_trim_beg(line);
-
-			if (str_begins_with(line, STR_LIT("*** Warning:"))) {
-				md_buffered_reader_skip_line(reader);
-				md_buffered_reader_skip_line(reader);
-				md_buffered_reader_skip_line(reader);
-			}
-
-			dvec3_t vec = { 0 };
-			for (int i = 0; i < 3; ++i) {
-				if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 6) {
-					MD_LOG_ERROR("Failed to parse SCF Ground State Dipole Moment, incomplete fields!");
-					return false;
-				}
-				vec.elem[i] = parse_float(tok[2]);
-			}
-			vlx->scf.ground_state_dipole_moment.x = vec.x;
-			vlx->scf.ground_state_dipole_moment.y = vec.y;
-			vlx->scf.ground_state_dipole_moment.z = vec.z;
-			mask |= 4;
-		} else if (str_begins_with(line, STR_LIT("====="))) {
-			// We've read too far and into the next section
-			MD_LOG_ERROR("Failed to parse SCF section, some fields are missing");
-			return false;
-		}
-		if (mask == 7) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-static bool parse_vlx_rsp_dipole_moments(dvec3_t* moments, size_t num_excited_states, md_buffered_reader_t* reader) {
-	str_t tok[8];
-	str_t line;
-
-	for (size_t i = 0; i < num_excited_states; ++i) {
-		if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 6) {
-			MD_LOG_ERROR("Unexpected number of tokens in rsp dipole moment table");
-			return false;
-		}
-		
-		str_t first = str_join(tok[0], tok[1]);
-		if (!str_eq(first, STR_LIT("Excited State"))) {
-			MD_LOG_ERROR("Unexpected entry in rsp dipole moment table, expected 'Excited State', got '"STR_FMT"'", first);
-			return false;
-		}
-
-		str_t ident = tok[2];
-		if (ident.len > 0 && ident.ptr[ident.len-1] == ':') {
-			ident.len -= 1;
-		}
-
-		moments[i].x = parse_float(tok[3]);
-		moments[i].y = parse_float(tok[4]);
-		moments[i].z = parse_float(tok[5]);
-	}
-
-	return true;
-}
-
-static bool parse_vlx_rsp(md_vlx_t* vlx, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-	str_t tok[16];
-	str_t line;
-
-	md_buffered_reader_skip_line(reader); // =====
-
-	int mask = 0;
-	while ( md_buffered_reader_extract_line(&line, reader)) {
-		line = str_trim(line);
-		if (str_empty(line)) continue;
-
-		if (str_begins_with(line, STR_LIT("Number of States")) && extract_tokens(tok, ARRAY_SIZE(tok), &line) == 5) {
-			vlx->rsp.number_of_excited_states = parse_int(tok[4]);
-			mask |= 1;
-		} else if (str_eq(line, STR_LIT("Electric Transition Dipole Moments (dipole length, a.u.)"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_buffered_reader_skip_line(reader); // X Y Z
-			md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, alloc);
-			if (!parse_vlx_rsp_dipole_moments(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, reader)) {
-				return false;
-			}
-			mask |= 2;
-		} else if (str_eq(line, STR_LIT("Electric Transition Dipole Moments (dipole velocity, a.u.)"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_buffered_reader_skip_line(reader); // X Y Z
-			md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, alloc);
-			if (!parse_vlx_rsp_dipole_moments(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, reader)) {
-				return false;
-			}
-			mask |= 4;
-		} else if (str_eq(line, STR_LIT("Magnetic Transition Dipole Moments (a.u.)"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_buffered_reader_skip_line(reader); // X Y Z
-			md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, alloc);
-			if (!parse_vlx_rsp_dipole_moments(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, reader)) {
-				return false;
-			}
-			mask |= 8;
-		}
-		else if (str_eq(line, STR_LIT("One-Photon Absorption"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, alloc);
-			md_array_resize(vlx->rsp.absorption_ev, vlx->rsp.number_of_excited_states, alloc);
-			for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
-				if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 9) {
-					MD_LOG_ERROR("Unexpected number of tokens in entry when parsing One-Photon Absorption");
-					return false;
-				}
-				vlx->rsp.absorption_ev[i] = parse_float(tok[5]);
-				vlx->rsp.oscillator_strengths[i] = parse_float(tok[8]);
-			}
-			mask |= 16;
-		} else if (str_eq(line, STR_LIT("Electronic Circular Dichroism"))) {
-			md_buffered_reader_skip_line(reader); // -----
-			md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, alloc);
-			for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
-				if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 9) {
-					MD_LOG_ERROR("Unexpected number of tokens in entry when parsing Electronic Circular Dichroism");
-					return false;
-				}
-				vlx->rsp.rotatory_strengths[i] = parse_float(tok[6]);
-			}
-			mask |= 32;
-		} else if (str_begins_with(line, STR_LIT("===="))) {
-			// Parsed into next section
-			return false;
-		}
-		if (mask == 63) {
-			return true;
-		}
-	}
-	return false;
-}
-
-static bool vlx_parse_out(md_vlx_t* vlx, md_buffered_reader_t* reader) {
-	str_t line;
-	while (md_buffered_reader_extract_line(&line, reader)) {
-		str_t str = str_trim(line);
-		if (str_eq(str, STR_LIT("Molecular Geometry (Angstroms)"))) {
-			if (!parse_vlx_geom(vlx, reader, vlx->arena)) {
-				MD_LOG_ERROR("Failed to parse geometry");
-				return false;
-			}
-		} else if (str_eq(str, STR_LIT("Molecular Basis (Atomic Basis)"))) {
-			if (!parse_vlx_basis(vlx, reader, vlx->arena)) {
-				MD_LOG_ERROR("Failed to parse basis");
-				return false;
-			}
-		} else if (str_eq(str, STR_LIT("Self Consistent Field Driver Setup"))) {
-			if (!parse_vlx_scf(vlx, reader, vlx->arena)) {
-				MD_LOG_ERROR("Failed to parse SCF section");
-				return false;
-			}
-		} else if (str_eq(str, STR_LIT("Linear Response EigenSolver Setup"))) {
-			if (!parse_vlx_rsp(vlx, reader, vlx->arena)) {
-				MD_LOG_ERROR("Failed to parse RSP section");
-				return false;
-			}
-		}
-	}
-
-	return true;
-}
-
 static bool h5_read_scalar(void* buf, hid_t file_id, hid_t mem_type_id, const char* field_name) {
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
-		return false;
-	}
+    bool result = false;
 
-	// Open the dataset containing the double value
-	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
-	if (dataset_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
-		return false;
-	}
+    htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+    if (exists == 0) {
+        return false;
+    }
 
-	bool result = false;
+    hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
+    if (dataset_id == H5I_INVALID_HID) {
+        MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
+        return false;
+    }
 
-	// Read the dataset into the 'value' variable
-	herr_t status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
-	if (status != 0) {
-		MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
-		goto done;
-	}
+    hid_t space_id = H5Dget_space(dataset_id);
+    int ndims = H5Sget_simple_extent_ndims(space_id);
 
-	result = true;
+    herr_t status = -1;
+    if (ndims == 2) {
+        // 2D array: select [0,0]
+        hsize_t offset[2] = {0, 0};
+        hsize_t count[2]  = {1, 1};
+        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+        hid_t memspace_id = H5Screate_simple(2, count, NULL);
+        status = H5Dread(dataset_id, mem_type_id, memspace_id, space_id, H5P_DEFAULT, buf);
+        H5Sclose(memspace_id);
+    } else if (ndims == 1) {
+        hsize_t offset[1] = {0};
+        hsize_t count[1]  = {1};
+        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+        hid_t memspace_id = H5Screate_simple(1, count, NULL);
+        status = H5Dread(dataset_id, mem_type_id, memspace_id, space_id, H5P_DEFAULT, buf);
+        H5Sclose(memspace_id);
+    } else if (ndims == 0) {
+        status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+    } else {
+        MD_LOG_ERROR("Unsupported scalar dataset rank: %d", ndims);
+        goto done;
+    }
+
+    if (status != 0) {
+        MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
+        goto done;
+    }
+
+    result = true;
 done:
-	H5Dclose(dataset_id);
-
-	return result;
+    H5Sclose(space_id);
+    H5Dclose(dataset_id);
+    return result;
 }
 
 static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_allocator_i* alloc) {
-	bool result = false;
+    bool result = false;
 
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
-		return false;
-	}
+    htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+    if (exists == 0) {
+        return false;
+    }
 
-	// Open the dataset
-	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
-	if (dataset_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
-		return false;
-	}
+    hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
+    if (dataset_id == H5I_INVALID_HID) {
+        MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
+        return false;
+    }
 
-	// Get the datatype and space
-	hid_t datatype_id = H5Dget_type(dataset_id);  // Get datatype
-	hid_t space_id = H5Dget_space(dataset_id);    // Get dataspace
+    hid_t datatype_id = H5Dget_type(dataset_id);
+    hid_t space_id = H5Dget_space(dataset_id);
 
-	// Determine size of string (assume variable-length string)
-	size_t size = H5Tget_size(datatype_id);
-	str_t data = str_alloc(size, alloc);
-	herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (char*)data.ptr);
-	if (status != 0) {
-		MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
-		str_free(data, alloc);
-		goto done;
-	}
-	*str = data;
+    int ndims = H5Sget_simple_extent_ndims(space_id);
+    size_t size = H5Tget_size(datatype_id);
+    str_t data = str_alloc(size, alloc);
 
-	result = true;
+    herr_t status = -1;
+    if (ndims == 2) {
+        // 2D array: select [0,0]
+        hsize_t offset[2] = {0, 0};
+        hsize_t count[2]  = {1, 1};
+        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+        hid_t memspace_id = H5Screate_simple(2, count, NULL);
+        status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, (char*)data.ptr);
+        H5Sclose(memspace_id);
+    } else if (ndims == 1) {
+        hsize_t offset[1] = {0};
+        hsize_t count[1]  = {1};
+        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+        hid_t memspace_id = H5Screate_simple(1, count, NULL);
+        status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, (char*)data.ptr);
+        H5Sclose(memspace_id);
+    } else if (ndims == 0) {
+        status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (char*)data.ptr);
+    } else {
+        MD_LOG_ERROR("Unsupported string dataset rank: %d", ndims);
+        str_free(data, alloc);
+        goto done;
+    }
+
+    if (status != 0) {
+        MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
+        str_free(data, alloc);
+        goto done;
+    }
+    *str = data;
+    result = true;
 done:
-
-	// Close HDF5 resources
-	H5Tclose(datatype_id);
-	H5Sclose(space_id);
-	H5Dclose(dataset_id);
-
-	return result;
+    H5Tclose(datatype_id);
+    H5Sclose(space_id);
+    H5Dclose(dataset_id);
+    return result;
 }
 
 static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const char* field_name) {
@@ -1337,6 +1073,32 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 
 	// Get the datatype and space
 	hid_t datatype_id = H5Dget_type(dataset_id);  // Get datatype
+	hid_t space_id = H5Dget_space(dataset_id);
+
+	// Get the rank of the field
+    int rank = H5Sget_simple_extent_ndims(H5Dget_space(dataset_id));
+
+	// If the rank is greater than 1, we just read the first element [0,0,...] as a string
+	if (rank > 1) {
+		hsize_t offset[8] = {0};
+		hsize_t count[8] = {1};
+		for (int i = 0; i < rank; ++i) count[i] = 1;
+		H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+		hid_t memspace_id = H5Screate_simple(rank, count, NULL);
+		size_t size = H5Tget_size(datatype_id);
+		if (size < str_cap) {
+			herr_t status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, out_str);
+			H5Sclose(memspace_id);
+			if (status != 0) {
+				MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
+				goto done;
+			}
+			result = size;
+			goto done;
+		}
+		H5Sclose(memspace_id);
+		goto done;
+	}
 
 	// Determine size of string (assume variable-length string)
 	size_t size = H5Tget_size(datatype_id);
@@ -1351,6 +1113,7 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 done:
 
 	// Close HDF5 resources
+	H5Sclose(space_id);
 	H5Tclose(datatype_id);
 	H5Dclose(dataset_id);
 
@@ -1400,196 +1163,272 @@ static bool h5_check_dataset_exists(hid_t file_id, const char* field_name) {
 }
 
 static bool h5_read_dataset_data(void* out_data, size_t num_samples, hid_t file_id, hid_t mem_type_id, const char* field_name) {
-	ASSERT(out_data);
+    ASSERT(out_data);
 
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
-		return false;
-	}
+    htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+    if (exists == 0) {
+        return false;
+    }
 
-	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
-	if (dataset_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
-		return false;
-	}
+    hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
+    if (dataset_id == H5I_INVALID_HID) {
+        MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
+        return false;
+    }
 
-	bool result = false;
-	hid_t space_id = H5Dget_space(dataset_id);
-	if (space_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 space");
-		goto done;
-	}
+    bool result = false;
+    hid_t space_id = H5Dget_space(dataset_id);
+    if (space_id == H5I_INVALID_HID) {
+        MD_LOG_ERROR("Failed to open H5 space");
+        goto done;
+    }
 
-	hsize_t num_points = H5Sget_simple_extent_npoints(space_id);
+    hsize_t total_points = H5Sget_simple_extent_npoints(space_id);
 
-	if (num_points != num_samples) {
-		MD_LOG_ERROR("Unexpected number of points when reading dataset, got %i, expected %i", num_points, num_samples);
-		goto done;
-	}
+    if (num_samples > (size_t)total_points) {
+        MD_LOG_ERROR("Requested more samples than available in dataset");
+        goto done;
+    }
 
-	herr_t status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_data);
+    herr_t status = -1;
+    if (num_samples == (size_t)total_points) {
+        // Read the whole dataset as usual
+        status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_data);
+    } else {
+		// Create temporary buffer to read all into
+        size_t temp_bytes = total_points * H5Tget_size(mem_type_id);
+        void* temp_buffer = malloc(temp_bytes);
+        status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, temp_buffer);
+        if (status == 0) {
+            MEMCPY(out_data, temp_buffer, num_samples * H5Tget_size(mem_type_id));
+        }
+        free(temp_buffer);
+    }
 
-	if (status != 0) {
-		MD_LOG_ERROR("An error occured when reading H5 data");
-		goto done;
-	}
+    if (status != 0) {
+        MD_LOG_ERROR("An error occured when reading H5 data");
+        goto done;
+    }
 
-	result = true;
+    result = true;
 done:
-	H5Sclose(space_id);
-	H5Dclose(dataset_id);
+    H5Sclose(space_id);
+    H5Dclose(dataset_id);
 
-	return result;
+    return result;
+}
+
+static bool h5_extract_ndarray_f64(md_ndarray_f64_t* out_array, hid_t file_id, const char* field_name, md_allocator_i* arena) {
+	size_t dims[8];
+	int ndim = h5_read_dataset_dims(dims, 8, file_id, field_name);
+	if (ndim < 0) {
+		return false;
+	}
+	ASSERT(ndim < MD_VLX_MAX_RANK);
+
+	size_t total_size = 1;
+	for (int i = 0; i < ndim; i++) {
+		total_size *= dims[i];
+        out_array->size[i] = (uint32_t)dims[i];
+	}
+	out_array->rank = ndim;
+
+	md_array_resize(out_array->data, total_size, arena);
+	return h5_read_dataset_data(out_array->data, total_size, file_id, H5T_NATIVE_DOUBLE, field_name);
+}
+
+static bool h5_extract_ndarray_i32(md_ndarray_i32_t* out_array, hid_t file_id, const char* field_name, md_allocator_i* arena) {
+	size_t dims[8];
+	int ndim = h5_read_dataset_dims(dims, 8, file_id, field_name);
+	if (ndim < 0) {
+		return false;
+	}
+	ASSERT(ndim < MD_VLX_MAX_RANK);
+
+	size_t total_size = 1;
+	for (int i = 0; i < ndim; i++) {
+		total_size *= dims[i];
+        out_array->size[i] = (uint32_t)dims[i];
+	}
+	out_array->rank = ndim;
+
+	md_array_resize(out_array->data, total_size, arena);
+	return h5_read_dataset_data(out_array->data, total_size, file_id, H5T_NATIVE_INT32, field_name);
 }
 
 // Data extraction procedures
 
-static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
+static bool h5_read_scf_data(md_vlx_scf_t* scf, hid_t handle, md_allocator_i* arena) {
 	char scf_type[64] = {0};
 	if (!h5_read_cstr(scf_type, sizeof(scf_type), handle, "scf_type")) {
 		return false;
 	}
 
 	if (str_eq_cstr(STR_LIT("restricted"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED;
+		scf->type = MD_VLX_SCF_TYPE_RESTRICTED;
 	} else if (str_eq_cstr(STR_LIT("restricted_openshell"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
+		scf->type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
 	} else if (str_eq_cstr(STR_LIT("unrestricted"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_UNRESTRICTED;
+		scf->type = MD_VLX_SCF_TYPE_UNRESTRICTED;
 	} else {
-		vlx->scf.type = MD_VLX_SCF_TYPE_UNKNOWN;
+		scf->type = MD_VLX_SCF_TYPE_UNKNOWN;
 		MD_LOG_ERROR("Unrecognized scf type present in h5 scf section: '%s'", scf_type);
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->scf.energy, handle, H5T_NATIVE_DOUBLE, "scf_energy")) {
+	if (!h5_extract_ndarray_f64(&scf->energy, handle, "scf_energy", arena)) {
 		return false;
 	}
 
-	size_t dim[2];
+    size_t num_frames = md_ndarray_f64_size(&scf->energy);
+
+	/*
+	size_t dim[2] = {0};
 	h5_read_dataset_dims(dim, 2, handle, "C_alpha");
 
 	// Density dimensions (May differ from dim is always square)
-	size_t den_dim[2];
+	size_t den_dim[2] = {0};
     h5_read_dataset_dims(den_dim, 2, handle, "D_alpha");
 
-	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
-	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
+	md_array_resize(scf->alpha.coefficients.data, dim[0] * dim[1], arena);
+	MEMCPY(scf->alpha.coefficients.size, dim, sizeof(dim));
 
-	md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
-	vlx->scf.alpha.energy.size = dim[1];
+	md_array_resize(scf->alpha.energy.data, dim[1], arena);
+	scf->alpha.energy.size = dim[1];
+	md_array_resize(scf->alpha.occupancy.data, dim[1], arena);
+	scf->alpha.occupancy.size = dim[1];
 
-	md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
-	vlx->scf.alpha.occupancy.size = dim[1];
-
-	md_array_resize(vlx->scf.alpha.density.data, den_dim[0] * den_dim[1], vlx->arena);
-    MEMCPY(vlx->scf.alpha.density.size, den_dim, sizeof(den_dim));
+	md_array_resize(scf->alpha.density.data, den_dim[0] * den_dim[1], arena);
+    MEMCPY(scf->alpha.density.size, den_dim, sizeof(den_dim));
+	*/
 
 	// Extract alpha data
-	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, md_array_size(vlx->scf.alpha.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
+	if (!h5_extract_ndarray_f64(&scf->alpha.coefficients, handle, "C_alpha", arena)) {
 		return false;
 	}
-	if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, md_array_size(vlx->scf.alpha.energy.data), handle, H5T_NATIVE_DOUBLE, "E_alpha")) {
+	if (!h5_extract_ndarray_f64(&scf->alpha.energy, handle, "E_alpha", arena)) {
 		return false;
 	}
-	if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, md_array_size(vlx->scf.alpha.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_alpha")) {
+	if (!h5_extract_ndarray_f64(&scf->alpha.occupancy, handle, "occ_alpha", arena)) {
 		return false;
 	}
-    if (!h5_read_dataset_data(vlx->scf.alpha.density.data, md_array_size(vlx->scf.alpha.density.data), handle, H5T_NATIVE_DOUBLE, "D_alpha")) {
+    if (!h5_extract_ndarray_f64(&scf->alpha.density, handle, "D_alpha", arena)) {
         return false;
     }
 
-	if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-		md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
-		MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+	md_array_resize(scf->alpha.homo_idx, num_frames, arena);
+	md_array_resize(scf->alpha.lumo_idx, num_frames, arena);
 
-		md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
-		vlx->scf.beta.energy.size = dim[1];
+	// Identify homo and lumo
+	for (size_t i = 0; i < num_frames; ++i) {
+		// Create slices for occupancy data
+		size_t num_occ = scf->alpha.occupancy.size[scf->alpha.occupancy.rank - 1];
+		const double* occ_data = scf->alpha.occupancy.data + i * num_occ;
+		orbital_identify_homo_lumo(scf->alpha.homo_idx + i, scf->alpha.lumo_idx + i, occ_data, num_occ);
+	}
 
-		md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
-		vlx->scf.beta.occupancy.size = dim[1];
+	if (scf->type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+		/*
+		md_array_resize(scf->beta.coefficients.data, dim[0] * dim[1], arena);
+		MEMCPY(scf->beta.coefficients.size, dim, sizeof(dim));
 
-		md_array_resize(vlx->scf.beta.density.data, den_dim[0] * den_dim[0], vlx->arena);
-        MEMCPY(vlx->scf.beta.density.size, den_dim, sizeof(den_dim));
+		md_array_resize(scf->beta.energy.data, dim[1], arena);
+		scf->beta.energy.size = dim[1];
+
+		md_array_resize(scf->beta.occupancy.data, dim[1], arena);
+		scf->beta.occupancy.size = dim[1];
+
+		md_array_resize(scf->beta.density.data, den_dim[0] * den_dim[0], arena);
+        MEMCPY(scf->beta.density.size, den_dim, sizeof(den_dim));
+		*/
 
 		// Extract beta data
-		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_beta")) {
+		if (!h5_extract_ndarray_f64(&scf->beta.coefficients, handle, "C_beta", arena)) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->scf.beta.energy.data, md_array_size(vlx->scf.beta.energy.data), handle, H5T_NATIVE_DOUBLE, "E_beta")) {
+		if (!h5_extract_ndarray_f64(&scf->beta.energy, handle, "E_beta", arena)) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
+		if (!h5_extract_ndarray_f64(&scf->beta.occupancy, handle, "occ_beta", arena)) {
 			return false;
 		}
-        if (!h5_read_dataset_data(vlx->scf.beta.density.data, md_array_size(vlx->scf.beta.density.data), handle, H5T_NATIVE_DOUBLE, "D_beta")) {
+        if (!h5_extract_ndarray_f64(&scf->beta.density, handle, "D_beta", arena)) {
             return false;
         }
 	} else {
 		// Shallow copy fields from Alpha
-		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
-		if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
-			vlx->scf.beta.occupancy.data = 0;
-			md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
-			if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
+		MEMCPY(&scf->beta, &scf->alpha, sizeof(md_vlx_orbital_t));
+		if (scf->type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+			scf->beta.occupancy.data = 0;
+            MEMSET(&scf->beta.occupancy, 0, sizeof(scf->beta.occupancy));
+			if (!h5_extract_ndarray_f64(&scf->beta.occupancy, handle, "occ_beta", arena)) {
 				return false;
+			}
+
+			scf->beta.homo_idx = 0;
+			scf->beta.lumo_idx = 0;
+			md_array_resize(scf->beta.homo_idx, num_frames, arena);
+			md_array_resize(scf->beta.lumo_idx, num_frames, arena);
+
+			// Identify homo and lumo
+			for (size_t i = 0; i < num_frames; ++i) {
+				// Create slices for occupancy data
+				size_t num_occ = scf->beta.occupancy.size[scf->alpha.occupancy.rank - 1];
+				const double* occ_data = scf->beta.occupancy.data + i * num_occ;
+				orbital_identify_homo_lumo(scf->beta.homo_idx + i, scf->beta.lumo_idx + i, occ_data, num_occ);
 			}
 		}
 	}
 
-	// S matrix is overlap (notice dimension is the same as D)
-	md_array_resize(vlx->scf.S.data, den_dim[0] * den_dim[1], vlx->arena);
-    MEMCPY(vlx->scf.S.size, den_dim, sizeof(den_dim));
 
-	if (!h5_read_dataset_data(vlx->scf.S.data, md_array_size(vlx->scf.S.data), handle, H5T_NATIVE_DOUBLE, "S")) {
+
+	// S matrix is overlap (notice dimension is the same as D)
+	//md_array_resize(scf->S.data, den_dim[0] * den_dim[1], arena);
+    //MEMCPY(scf->S.size, den_dim, sizeof(den_dim));
+
+	if (!h5_extract_ndarray_f64(&scf->S, handle, "S", arena)) {
 		return false;
 	}
 
 	// The ground state dipole moment is not present in all versions
-	if (!h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment")) {
+	if (!h5_extract_ndarray_f64(&scf->ground_state_dipole_moment, handle, "dipole_moment", arena)) {
 		//return false;
 	}
 
-	size_t scf_hist_iter = 0;
-	if (!h5_read_dataset_dims(&scf_hist_iter, 1, handle, "scf_history_diff_density")) {
+    // Extract SCF history data
+	if (!h5_extract_ndarray_f64(&scf->history.density_diff, handle, "scf_history_diff_density", arena)) {
+		return false;
+	}
+	if (!h5_extract_ndarray_f64(&scf->history.energy_diff, handle, "scf_history_diff_energy", arena)) {
+		return false;
+	}
+	if (!h5_extract_ndarray_f64(&scf->history.energy, handle, "scf_history_energy", arena)) {
+		return false;
+	}
+	if (!h5_extract_ndarray_f64(&scf->history.gradient_norm, handle, "scf_history_gradient_norm", arena)) {
+		return false;
+	}
+	if (!h5_extract_ndarray_f64(&scf->history.max_gradient, handle, "scf_history_max_gradient", arena)) {
 		return false;
 	}
 
-	if (scf_hist_iter > 0) {
-		vlx->scf.history.number_of_iterations = scf_hist_iter;
-		md_array_resize(vlx->scf.history.density_diff, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.energy, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.energy_diff, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.gradient_norm, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.max_gradient, scf_hist_iter, vlx->arena);
-	}
+	if (!h5_extract_ndarray_f64(&scf->resp_charges, handle, "charges_resp", arena)) {
 
-	if (!h5_read_dataset_data(vlx->scf.history.density_diff, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_density")) {
-		return false;
 	}
-	if (!h5_read_dataset_data(vlx->scf.history.energy_diff, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_energy")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.energy, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_energy")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.gradient_norm, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_gradient_norm")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.max_gradient, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_max_gradient")) {
-		return false;
-	}
-
+	/*
+	
+	
 	{
 		size_t charge_resp_dim;
 		if (h5_read_dataset_dims(&charge_resp_dim, 1, handle, "charges_resp")) {
-			md_array_resize(vlx->scf.resp_charges, charge_resp_dim, vlx->arena);
-			if (!h5_read_dataset_data(vlx->scf.resp_charges, md_array_size(vlx->scf.resp_charges), handle, H5T_NATIVE_DOUBLE, "charges_resp")) {
+			md_array_resize(scf->resp_charges, charge_resp_dim, arena);
+			if (!h5_read_dataset_data(scf->resp_charges, md_array_size(scf->resp_charges), handle, H5T_NATIVE_DOUBLE, "charges_resp")) {
 				MD_LOG_ERROR("Could not read charges_resp");
 				return false;
 			}
 		}
 	}
+	*/
 
 	return true;
 }
@@ -1611,6 +1450,7 @@ static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* ar
 	for (size_t i = 0; i < rsp->number_of_excited_states; ++i) {
 		int idx = (int)(i + 1);
 
+		/*
 		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
 		if (!h5_read_dataset_dims(dim, 2, handle, buf)) {
 			return false;
@@ -1619,7 +1459,9 @@ static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* ar
 			MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
 			return false;
 		}
+		*/
 
+		/*
 		md_array_resize(rsp->nto[i].coefficients.data, dim[0] * dim[1], arena);
 		MEMSET(rsp->nto[i].coefficients.data, 0, md_array_bytes(rsp->nto[i].coefficients.data));
 		MEMCPY(rsp->nto[i].coefficients.size, dim, sizeof(dim));
@@ -1645,45 +1487,52 @@ static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* ar
 		if (!h5_read_dataset_data(rsp->nto[i].energy.data, md_array_size(rsp->nto[i].energy.data), handle, H5T_NATIVE_DOUBLE, buf)) {
 			return false;
 		}
+
+		orbital_identify_homo_lumo(&rsp->nto[i]);
+		// The NTO data is a bit shoehorned into the orbital representation and the homo lumo indices do not have a clear equivalence.
+		// The occupancy information is instead the eigenvalue weights (lambdas) and are centered around the set values.
+		rsp->nto[i].homo_idx = rsp->nto[i].homo_idx / 2;
+		rsp->nto[i].lumo_idx = rsp->nto[i].homo_idx + 1;
+		*/
 	}
 
 	return true;
 }
 
-static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
-	h5_read_scalar(&vlx->rsp.number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states");
-	if (vlx->rsp.number_of_excited_states > 0) {
+static bool h5_read_rsp_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* arena) {
+	h5_read_scalar(&rsp->number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states");
+	if (rsp->number_of_excited_states > 0) {
 		// Standard Linear Response data, allocate and read
 
 		// Allocate data
-		md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.electric_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+		md_array_resize(rsp->electric_transition_dipoles, rsp->number_of_excited_states, arena);
+		MEMSET(rsp->electric_transition_dipoles, 0, rsp->number_of_excited_states * sizeof(dvec3_t));
 
-		md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+		md_array_resize(rsp->magnetic_transition_dipoles, rsp->number_of_excited_states, arena);
+		MEMSET(rsp->magnetic_transition_dipoles, 0, rsp->number_of_excited_states * sizeof(dvec3_t));
 
-		md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.velocity_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+		md_array_resize(rsp->velocity_transition_dipoles, rsp->number_of_excited_states, arena);
+		MEMSET(rsp->velocity_transition_dipoles, 0, rsp->number_of_excited_states * sizeof(dvec3_t));
 
-		md_array_resize(vlx->rsp.absorption_ev,	vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.absorption_ev, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+		md_array_resize(rsp->absorption_ev,	rsp->number_of_excited_states, arena);
+		MEMSET(rsp->absorption_ev, 0, rsp->number_of_excited_states * sizeof(double));
 
-		md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.oscillator_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+		md_array_resize(rsp->oscillator_strengths, rsp->number_of_excited_states, arena);
+		MEMSET(rsp->oscillator_strengths, 0, rsp->number_of_excited_states * sizeof(double));
 
-		md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
-		MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+		md_array_resize(rsp->rotatory_strengths, rsp->number_of_excited_states, arena);
+		MEMSET(rsp->rotatory_strengths, 0, rsp->number_of_excited_states * sizeof(double));
 
 		// NTO data
 		if (h5_check_dataset_exists(handle, "NTO_S1_alpha_orbitals")) {
-			if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
+			if (!h5_read_nto_data(rsp, handle, arena)) {
 				return false;
 			}
 		} else {
 			// Check for 'nto' folder inside
             hid_t nto_group = H5Gopen(handle, "nto", H5P_DEFAULT);
 			if (nto_group >= 0) {
-				bool result = h5_read_nto_data(&vlx->rsp, nto_group, vlx->arena);
+				bool result = h5_read_nto_data(rsp, nto_group, arena);
 				H5Gclose(nto_group);
                 if (!result) {
                     return false;
@@ -1692,32 +1541,32 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		}
 
 		// Dipoles
-		size_t num_dipole_points = vlx->rsp.number_of_excited_states * 3;
-		if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
+		size_t num_dipole_points = rsp->number_of_excited_states * 3;
+		if (!h5_read_dataset_data(rsp->electric_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
+		if (!h5_read_dataset_data(rsp->magnetic_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
+		if (!h5_read_dataset_data(rsp->velocity_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
 			return false;
 		}
 
 		// Abs, rot and osc
-		if (!h5_read_dataset_data(vlx->rsp.absorption_ev, md_array_size(vlx->rsp.absorption_ev), handle, H5T_NATIVE_DOUBLE, "eigenvalues")) {
+		if (!h5_read_dataset_data(rsp->absorption_ev, md_array_size(rsp->absorption_ev), handle, H5T_NATIVE_DOUBLE, "eigenvalues")) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, md_array_size(vlx->rsp.oscillator_strengths), handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
+		if (!h5_read_dataset_data(rsp->oscillator_strengths, md_array_size(rsp->oscillator_strengths), handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
 			return false;
 		}
-		if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, md_array_size(vlx->rsp.rotatory_strengths), handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
+		if (!h5_read_dataset_data(rsp->rotatory_strengths, md_array_size(rsp->rotatory_strengths), handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
 			return false;
 		}
 
 		// Convert Atomic units (Hartree) to eV
-		if (vlx->rsp.absorption_ev) {
-			for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
-				vlx->rsp.absorption_ev[i] *= HARTREE_TO_EV;
+		if (rsp->absorption_ev) {
+			for (size_t i = 0; i < rsp->number_of_excited_states; ++i) {
+				rsp->absorption_ev[i] *= HARTREE_TO_EV;
 			}
 		}
 	}
@@ -1725,23 +1574,23 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	// CPP data is optional, only read if present
 	size_t dim;
 	if (h5_read_dataset_dims(&dim, 1, handle, "frequencies")) {
-		vlx->rsp.cpp.number_of_frequencies = dim;
-		md_array_resize(vlx->rsp.cpp.frequencies, dim, vlx->arena);
-		if (!h5_read_dataset_data(vlx->rsp.cpp.frequencies, md_array_size(vlx->rsp.cpp.frequencies), handle, H5T_NATIVE_DOUBLE, "frequencies")) {
+		rsp->cpp.number_of_frequencies = dim;
+		md_array_resize(rsp->cpp.frequencies, dim, arena);
+		if (!h5_read_dataset_data(rsp->cpp.frequencies, md_array_size(rsp->cpp.frequencies), handle, H5T_NATIVE_DOUBLE, "frequencies")) {
 			// Frequencies has to be present if cpp section is present, fail if missing
 			return false;
 		}
 		
 		if (h5_check_dataset_exists(handle, "sigma")) {
-			md_array_resize(vlx->rsp.cpp.sigmas, dim, vlx->arena);
-			if (!h5_read_dataset_data(vlx->rsp.cpp.sigmas, md_array_size(vlx->rsp.cpp.sigmas), handle, H5T_NATIVE_DOUBLE, "sigma")) {
+			md_array_resize(rsp->cpp.sigmas, dim, arena);
+			if (!h5_read_dataset_data(rsp->cpp.sigmas, md_array_size(rsp->cpp.sigmas), handle, H5T_NATIVE_DOUBLE, "sigma")) {
 				return false;
 			}
 		}
 
 		if (h5_check_dataset_exists(handle, "delta-epsilon")) {
-			md_array_resize(vlx->rsp.cpp.delta_epsilon, dim, vlx->arena);
-			if (!h5_read_dataset_data(vlx->rsp.cpp.delta_epsilon, md_array_size(vlx->rsp.cpp.delta_epsilon), handle, H5T_NATIVE_DOUBLE, "delta-epsilon")) {
+			md_array_resize(rsp->cpp.delta_epsilon, dim, arena);
+			if (!h5_read_dataset_data(rsp->cpp.delta_epsilon, md_array_size(rsp->cpp.delta_epsilon), handle, H5T_NATIVE_DOUBLE, "delta-epsilon")) {
 				return false;
 			}
 		}
@@ -1750,7 +1599,7 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
+static bool h5_read_vib_data(md_vlx_vib_t* vib, hid_t handle, size_t number_of_atoms, md_allocator_i* arena) {
 	size_t number_of_modes = 0;
 
 	// Attempt to read number_of_modes (Available in new format)
@@ -1769,25 +1618,25 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	vlx->vib.number_of_normal_modes = number_of_modes;
+	vib->number_of_normal_modes = number_of_modes;
 
-	md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.force_constants, md_array_size(vlx->vib.force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
+	md_array_resize(vib->force_constants, number_of_modes, arena);
+	if (!h5_read_dataset_data(vib->force_constants, md_array_size(vib->force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.ir_intensities, md_array_size(vlx->vib.ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
+	md_array_resize(vib->ir_intensities, number_of_modes, arena);
+	if (!h5_read_dataset_data(vib->ir_intensities, md_array_size(vib->ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.frequencies, md_array_size(vlx->vib.frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
+	md_array_resize(vib->frequencies, number_of_modes, arena);
+	if (!h5_read_dataset_data(vib->frequencies, md_array_size(vib->frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.reduced_masses, md_array_size(vlx->vib.reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
+	md_array_resize(vib->reduced_masses, number_of_modes, arena);
+	if (!h5_read_dataset_data(vib->reduced_masses, md_array_size(vib->reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
 		return false;
 	}
 
@@ -1803,26 +1652,25 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	if (obj_type == H5I_GROUP) {
         hid_t normal_modes_id = H5Gopen(handle, "normal_modes", H5P_DEFAULT);
         if (normal_modes_id != H5I_INVALID_HID) {
-			if (vlx->number_of_atoms == 0) {
+			if (number_of_atoms == 0) {
 				MD_LOG_ERROR("Missing number of atoms, is required for normal modes");
 				return false;
 			}
 
             char lbl[32];
-            for (size_t i = 0; i < vlx->vib.number_of_normal_modes; ++i) {
+            for (size_t i = 0; i < vib->number_of_normal_modes; ++i) {
                 snprintf(lbl, sizeof(lbl), "%zu", i + 1);
 
-                dvec3_t* data = md_array_create(dvec3_t, vlx->number_of_atoms, vlx->arena);
-                MEMSET(data, 0, sizeof(dvec3_t) * vlx->number_of_atoms);
-
-                if (!h5_read_dataset_data(data, 3 * vlx->number_of_atoms, normal_modes_id, H5T_NATIVE_DOUBLE, lbl)) {
+                dvec3_t* data = md_array_create(dvec3_t, number_of_atoms, arena);
+                MEMSET(data, 0, sizeof(dvec3_t) * number_of_atoms);
+                if (!h5_read_dataset_data(data, 3 * number_of_atoms, normal_modes_id, H5T_NATIVE_DOUBLE, lbl)) {
                     MD_LOG_ERROR("Failed to extract dataset in '%s' normal mode", lbl);
-                    md_array_free(data, vlx->arena);
+                    md_array_free(data, arena);
                     return false;
                 }
 
                 // Success, append ata
-                md_array_push(vlx->vib.normal_modes, data, vlx->arena);
+                md_array_push(vib->normal_modes, data, arena);
             }
         }
 	} else if (obj_type == H5I_DATASET) {
@@ -1833,26 +1681,26 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 		int num_dim = h5_read_dataset_dims(data_dim, 3, handle, "normal_modes");
 
 		// Assert expected dimensions
-		if (num_dim != 3 || data_dim[0] != vlx->vib.number_of_normal_modes || data_dim[1] != vlx->number_of_atoms || data_dim[2] != 3) {
+		if (num_dim != 3 || data_dim[0] != vib->number_of_normal_modes || data_dim[1] != number_of_atoms || data_dim[2] != 3) {
 			MD_LOG_ERROR("Unexpected dimensions in normal_modes dataset");
 			H5Oclose(obj_info);
 			return false;
 		}
 
 		size_t num_points = data_dim[0] * data_dim[1] * data_dim[2];
-		double* raw_data = md_array_create(double, num_points, vlx->arena);
+		double* raw_data = md_array_create(double, num_points, arena);
 		if (!h5_read_dataset_data(raw_data, num_points, handle, H5T_NATIVE_DOUBLE, "normal_modes")) {
 			MD_LOG_ERROR("Failed to read normal_modes dataset");
-			md_array_free(raw_data, vlx->arena);
+			md_array_free(raw_data, arena);
 			H5Oclose(obj_info);
 			return false;
 		}
 
 		// Set the pointers to each normal mode (within raw_data)
 		dvec3_t* base_ptr = (dvec3_t*)raw_data;
-		for (size_t i = 0; i < vlx->vib.number_of_normal_modes; ++i) {
-			dvec3_t* mode_data = base_ptr + (i * vlx->number_of_atoms);
-			md_array_push(vlx->vib.normal_modes, mode_data, vlx->arena);
+		for (size_t i = 0; i < vib->number_of_normal_modes; ++i) {
+			dvec3_t* mode_data = base_ptr + (i * number_of_atoms);
+			md_array_push(vib->normal_modes, mode_data, arena);
 		}
 	} else {
 		MD_LOG_ERROR("Unrecognized object type for 'normal_modes'");
@@ -1863,7 +1711,7 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
+static bool h5_read_opt_data(md_vlx_opt_t* opt, hid_t handle, size_t number_of_atoms, md_allocator_i* arena) {
 	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
 	size_t dim[3];
 	int num_dim;
@@ -1875,10 +1723,10 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 
 	// This is a fix because the input data in one version is supplied as a 2D object
 	size_t len = dim[0];
-	vlx->opt.number_of_steps = len;
+	opt->number_of_steps = len;
 
-	md_array_resize(vlx->opt.nuclear_repulsion_energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.nuclear_repulsion_energies, md_array_size(vlx->opt.nuclear_repulsion_energies), handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion_energies")) {
+	md_array_resize(opt->nuclear_repulsion_energies, len, arena);
+	if (!h5_read_dataset_data(opt->nuclear_repulsion_energies, md_array_size(opt->nuclear_repulsion_energies), handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion_energies")) {
 		return false;
 	}
 
@@ -1899,25 +1747,25 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	md_array_resize(vlx->opt.energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
+	md_array_resize(opt->energies, len, arena);
+	if (!h5_read_dataset_data(opt->energies, md_array_size(opt->energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
 		return false;
 	}
 
 	num_dim = h5_read_dataset_dims(dim, 3, handle, coord_ident);
-	if (dim[0] != len || dim[1] != vlx->number_of_atoms || dim[2] != 3) {
+	if (dim[0] != len || dim[1] != number_of_atoms || dim[2] != 3) {
 		MD_LOG_ERROR("Inconsistent or invalid opt_coordinates dimensions");
 		return false;
 	}
 
-	md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
+	md_array_resize(opt->coordinates, dim[0] * dim[1], arena);
+	if (!h5_read_dataset_data(opt->coordinates, md_array_size(opt->coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
 		return false;
 	}
 
-	if (vlx->opt.coordinates) {
+	if (opt->coordinates) {
 		for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
-			vlx->opt.coordinates[i] = dvec3_mul_f(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
+			opt->coordinates[i] = dvec3_mul_f(opt->coordinates[i], BOHR_TO_ANGSTROM);
 		}
 	}
 
@@ -1943,15 +1791,22 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->number_of_alpha_electrons, handle, H5T_NATIVE_INT64, "number_of_alpha_electrons")) {
+	size_t dims[8] = {0};
+	if (!h5_read_dataset_dims(dims, ARRAY_SIZE(dims), handle, "nuclear_repulsion")) {
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->number_of_atoms, handle, H5T_NATIVE_INT64, "number_of_atoms")) {
+	vlx->number_of_frames = dims[0] > 0 ? dims[0] : 1;
+
+	if (!h5_read_scalar(&vlx->number_of_alpha_electrons, handle, H5T_NATIVE_UINT64, "number_of_alpha_electrons")) {
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->number_of_beta_electrons, handle, H5T_NATIVE_INT64, "number_of_beta_electrons")) {
+	if (!h5_read_scalar(&vlx->number_of_atoms, handle, H5T_NATIVE_UINT64, "number_of_atoms")) {
+		return false;
+	}
+
+	if (!h5_read_scalar(&vlx->number_of_beta_electrons, handle, H5T_NATIVE_UINT64, "number_of_beta_electrons")) {
 		return false;
 	}
 
@@ -1959,7 +1814,7 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->spin_multiplicity, handle, H5T_NATIVE_INT64, "spin_multiplicity")) {
+	if (!h5_read_scalar(&vlx->spin_multiplicity, handle, H5T_NATIVE_INT32, "spin_multiplicity")) {
 		return false;
 	}
 
@@ -1968,25 +1823,38 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	md_array_resize(vlx->atom_coordinates, vlx->number_of_atoms, vlx->arena);
-	MEMSET(vlx->atom_coordinates, 0, md_array_bytes(vlx->atom_coordinates));
-	if (!h5_read_dataset_data(vlx->atom_coordinates, md_array_size(vlx->atom_coordinates) * 3, handle, H5T_NATIVE_DOUBLE, "atom_coordinates")) {
+    if (!h5_extract_ndarray_f64(&vlx->atom_coordinates, handle, "atom_coordinates", vlx->arena)) {
 		return false;
+	}
+    // We expect coordinates to be rank 2 or 3, and have inner most dimension of 3, and outer dimension matching number of atoms
+	if ((vlx->atom_coordinates.rank != 2 && vlx->atom_coordinates.rank != 3) ||
+		vlx->atom_coordinates.size[vlx->atom_coordinates.rank-1] != 3 ||
+		vlx->atom_coordinates.size[vlx->atom_coordinates.rank-2] != vlx->number_of_atoms) {
+		MD_LOG_ERROR("Inconsistent or invalid atom_coordinates dimensions");
+		return false;
+	}
+
+	if (vlx->number_of_frames > 1) {
+		if (vlx->atom_coordinates.rank != 3 ||
+			vlx->atom_coordinates.size[0] != vlx->number_of_frames)
+		{
+            MD_LOG_ERROR("Inconsistent or invalid atom_coordinates dimensions for multiple frames");
+			return false;
+		}
+	}
+
+	// Convert Atomic units to Ångström
+	if (vlx->atom_coordinates.data) {
+		size_t tot_len = md_ndarray_f64_size(&vlx->atom_coordinates);
+		for (size_t i = 0; i < tot_len; ++i) {
+            vlx->atom_coordinates.data[i] *= BOHR_TO_ANGSTROM;
+		}
 	}
 
 	md_array_resize(vlx->atomic_numbers, vlx->number_of_atoms, vlx->arena);
 	MEMSET(vlx->atomic_numbers, 0, md_array_bytes(vlx->atomic_numbers));
 	if (!h5_read_dataset_data(vlx->atomic_numbers, md_array_size(vlx->atomic_numbers), handle, H5T_NATIVE_UINT8, "nuclear_charges")) {
 		return false;
-	}
-
-	// Convert Atomic units to Ångström
-	if (vlx->atom_coordinates) {
-		for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-			vlx->atom_coordinates[i].x *= BOHR_TO_ANGSTROM;
-			vlx->atom_coordinates[i].y *= BOHR_TO_ANGSTROM;
-			vlx->atom_coordinates[i].z *= BOHR_TO_ANGSTROM;
-		}
 	}
 
 	return true;
@@ -2015,7 +1883,7 @@ static bool vlx_read_scf_results(md_vlx_t* vlx, str_t filename, vlx_flags_t flag
 	}
 	
 	if (flags & VLX_FLAG_SCF) {
-		if (!h5_read_scf_data(vlx, file_id)) {
+		if (!h5_read_scf_data(&vlx->scf, file_id, vlx->arena)) {
 			goto done;
 		}
 	}
@@ -2055,7 +1923,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (H5Lexists(file_id, "scf", H5P_DEFAULT) > 0) {
 			hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
 			if (scf_id != H5I_INVALID_HID) {
-				result = h5_read_scf_data(vlx, scf_id);
+				result = h5_read_scf_data(&vlx->scf, scf_id, vlx->arena);
 				H5Gclose(scf_id);
 				if (!result) goto done;
 			}
@@ -2067,15 +1935,10 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
         if (H5Lexists(file_id, "vib", H5P_DEFAULT) > 0) {
             hid_t vib_id = H5Gopen(file_id, "vib", H5P_DEFAULT);
             if (vib_id != H5I_INVALID_HID) {
-                result = h5_read_vib_data(vlx, vib_id);
+                result = h5_read_vib_data(&vlx->vib, vib_id, vlx->number_of_atoms, vlx->arena);
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
-
-			// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
-			// Which currently write alot of restart data into the rsp section
-			// clear
-			// flags &= ~VLX_FLAG_RSP;
         }
     }
 
@@ -2084,7 +1947,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (H5Lexists(file_id, "opt", H5P_DEFAULT) > 0) {
 			hid_t opt_id = H5Gopen(file_id, "opt", H5P_DEFAULT);
 			if (opt_id != H5I_INVALID_HID) {
-				result = h5_read_opt_data(vlx, opt_id);
+				result = h5_read_opt_data(&vlx->opt, opt_id, vlx->number_of_atoms, vlx->arena);
 				H5Gclose(opt_id);
 				if (!result) goto done;
 			}
@@ -2096,7 +1959,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (H5Lexists(file_id, "rsp", H5P_DEFAULT) > 0) {
 			hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
 			if (rsp_id != H5I_INVALID_HID) {
-				result = h5_read_rsp_data(vlx, rsp_id);
+				result = h5_read_rsp_data(&vlx->rsp, rsp_id, vlx->arena);
 				H5Gclose(rsp_id);
 				if (!result) goto done;
 			}
@@ -2109,203 +1972,6 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 done:
 	H5Fclose(file_id);
 
-	return result;
-}
-
-static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
-	md_file_t file = {0};
-	if (!md_file_open(&file, filename, MD_FILE_READ)) {
-		MD_LOG_ERROR("Failed to open file: '"STR_FMT"'", STR_ARG(filename));
-		return false;
-	}
-
-	size_t temp_pos = md_temp_get_pos();
-	size_t cap = KILOBYTES(16);
-	char* buf = md_temp_push(cap);
-
-	bool result = false;
-
-	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-	str_t line;
-	while (md_buffered_reader_extract_line(&line, &reader)) {
-		str_t str = str_trim(line);
-		if (flags & VLX_FLAG_CORE) {
-			if (str_eq(str, STR_LIT("Molecular Geometry (Angstroms)"))) {
-				if (!parse_vlx_geom(vlx, &reader, vlx->arena)) {
-					MD_LOG_ERROR("Failed to parse geometry");
-					goto done;
-				}
-			} else if (str_eq(str, STR_LIT("Molecular Basis (Atomic Basis)"))) {
-				if (!parse_vlx_basis(vlx, &reader, vlx->arena)) {
-					MD_LOG_ERROR("Failed to parse basis");
-					goto done;
-				}
-			}
-		}
-		if (flags & VLX_FLAG_SCF) {
-			if(str_eq(str, STR_LIT("Self Consistent Field Driver Setup"))) {
-				if (!parse_vlx_scf(vlx, &reader, vlx->arena)) {
-					MD_LOG_ERROR("Failed to parse SCF section");
-					goto done;
-				}
-			}
-		}
-		if (flags & VLX_FLAG_RSP) {
-			if (str_eq(str, STR_LIT("Linear Response EigenSolver Setup"))) {
-				if (!parse_vlx_rsp(vlx, &reader, vlx->arena)) {
-					MD_LOG_ERROR("Failed to parse RSP section");
-					goto done;
-				}
-			}
-		}
-	}
-	md_file_close(&file);
-
-	str_t base_file = {0};
-	extract_file_path_without_ext(&base_file, filename);
-
-	md_strb_t sb = md_strb_create(md_get_temp_allocator());
-
-	if (flags & VLX_FLAG_SCF) {
-		// Attempt to read scf data
-		md_strb_reset(&sb);
-		md_strb_fmt(&sb, STR_FMT ".scf.results.h5", STR_ARG(base_file));
-		if (md_path_is_valid(md_strb_to_str(sb))) {
-			// Open an existing file
-			hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
-			if (file_id == H5I_INVALID_HID) {
-				MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
-				goto done;
-			}
-			if (!h5_read_scf_data(vlx, file_id)) {
-				goto done;
-			}
-		} else {
-			md_strb_reset(&sb);
-			md_strb_fmt(&sb, STR_FMT ".scf.h5", STR_ARG(base_file));
-			if (md_path_is_valid(md_strb_to_str(sb))) {
-				// Open an existing file
-				hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
-				if (file_id == H5I_INVALID_HID) {
-					MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
-					goto done;
-				}
-				size_t dim[2];
-				if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
-					goto done;
-				}
-
-				md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
-				MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
-
-				md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
-				vlx->scf.alpha.energy.size = dim[1];
-
-				md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
-				vlx->scf.alpha.occupancy.size = dim[1];
-
-				if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, md_array_size(vlx->scf.alpha.coefficients.data), file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
-					goto done;
-				}
-				if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, md_array_size(vlx->scf.alpha.energy.data), file_id, H5T_NATIVE_DOUBLE, "alpha_energies")) {
-					goto done;
-				}
-				if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, md_array_size(vlx->scf.alpha.occupancy.data), file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
-					goto done;
-				}
-
-				if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-					md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
-					MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
-
-					md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
-					vlx->scf.beta.energy.size = dim[1];
-
-					md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
-					vlx->scf.beta.occupancy.size = dim[1];
-
-					// Extract beta data
-					if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), file_id, H5T_NATIVE_DOUBLE, "beta_orbitals")) {
-						goto done;
-					}
-					if (!h5_read_dataset_data(vlx->scf.beta.energy.data, md_array_size(vlx->scf.beta.energy.data), file_id, H5T_NATIVE_DOUBLE, "beta_energies")) {
-						goto done;
-					}
-					if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
-						goto done;
-					}
-				} else {
-					// Shallow copy fields from Alpha
-					MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
-
-					if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
-						vlx->scf.beta.occupancy.data = 0;
-						md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
-						if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
-							goto done;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if (flags & VLX_FLAG_RSP) {
-        // Test if we can read the first NTO file
-		md_strb_reset(&sb);
-		md_strb_fmt(&sb, STR_FMT "_S1_NTO.h5", STR_ARG(base_file));
-		if (H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT) != H5I_INVALID_HID) {
-			for (int i = 0; i < (int)vlx->rsp.number_of_excited_states; ++i) {
-				md_strb_reset(&sb);
-				md_strb_fmt(&sb, STR_FMT "_S%i_NTO.h5", STR_ARG(base_file), i + 1);
-				if (md_path_is_valid(md_strb_to_str(sb))) {
-					// Open an existing file
-					hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
-					if (file_id == H5I_INVALID_HID) {
-						MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
-						goto done;
-					}
-
-					size_t dim[2];
-					if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
-						goto done;
-					}
-					if (dim[0] == 0 || dim[1] == 0) {
-						MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
-						goto done;
-					}
-
-					md_array_push(vlx->rsp.nto, (md_vlx_orbital_t) { 0 }, vlx->arena);
-					md_vlx_orbital_t* nto = md_array_last(vlx->rsp.nto);
-
-					md_array_resize(nto->coefficients.data, dim[0] * dim[1], vlx->arena);
-					MEMCPY(nto->coefficients.size, dim, sizeof(dim));
-
-					md_array_resize(nto->occupancy.data, dim[1], vlx->arena);
-					nto->occupancy.size = dim[1];
-
-					if (!h5_read_dataset_data(nto->coefficients.data, md_array_size(nto->coefficients.data), file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
-						goto done;
-					}
-					if (!h5_read_dataset_data(nto->occupancy.data, md_array_size(nto->occupancy.data), file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
-						goto done;
-					}
-				}
-				else {
-					MD_LOG_INFO("The veloxchem object specified %zu excited states, but the matching NTOs could not be found.", vlx->rsp.number_of_excited_states);
-					if (vlx->rsp.nto) {
-						md_array_free(vlx->rsp.nto, vlx->arena);
-						vlx->rsp.nto = NULL;
-						break;
-					}
-				}
-			}
-		}
-	}
-
-	result = true;
-done:
-	md_temp_set_pos_back(temp_pos);
 	return result;
 }
 
@@ -2356,11 +2022,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 
 	bool result = false;
 
-	if (str_ends_with(filename, STR_LIT(".out"))) {
-		if (!vlx_parse_out_file(vlx, filename, flags)) {
-			goto done;
-		}
-	} else if (str_ends_with(filename, STR_LIT(".scf.results.h5"))) {
+	if (str_ends_with(filename, STR_LIT(".scf.results.h5"))) {
 		if (!vlx_read_scf_results(vlx, filename, flags)) {
 			goto done;
 		}
@@ -2431,27 +2093,6 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
-	// Identify homo and lumo
-	if (vlx->scf.alpha.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
-			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-				vlx->scf.homo_idx[0] = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.lumo_idx[0] = i;
-				break;
-			}
-		}
-	}
-
-	if (vlx->scf.beta.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.beta.occupancy.size; ++i) {
-			if (vlx->scf.beta.occupancy.data[i] == 0.0) {
-				vlx->scf.homo_idx[1] = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.lumo_idx[1] = i;
-				break;
-			}
-		}
-	}
-
 	if (vlx->number_of_atoms > 0 && vlx->scf.type != MD_VLX_SCF_TYPE_UNKNOWN) {
 		// Extract ao_to_atom_idx map
 		size_t N = md_vlx_scf_number_of_atomic_orbitals(vlx);
@@ -2460,7 +2101,8 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			extract_ao_to_atom_idx(vlx->ao_to_atom_idx, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
 		}
 
-		extract_gto_data(&vlx->gto_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
+		const dvec3_t* coords = (const dvec3_t*)vlx->atom_coordinates.data;
+		extract_gto_data(&vlx->gto_data, coords, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
 	}
 
 	result = true;
@@ -2475,7 +2117,7 @@ size_t md_vlx_nto_gto_count(const md_vlx_t* vlx) {
 	return vlx->gto_data.num_pgtos;
 }
 
-static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
+static inline void extract_row(double* dst, const md_2darray_f64_t* data, size_t row_idx) {
 	ASSERT(dst);
 	ASSERT(data);
 	ASSERT(row_idx < data->size[0]);
@@ -2486,7 +2128,7 @@ static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t
 	}
 }
 
-static inline void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t col_idx) {
+static inline void extract_col(double* dst, const md_2darray_f64_t* data, size_t col_idx) {
 	ASSERT(dst);
 	ASSERT(data);
 	ASSERT(col_idx < data->size[1]);
@@ -2498,12 +2140,21 @@ static inline void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t
 
 static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[1];
+	return orb->coefficients.size[orb->coefficients.rank-2];
 }
 
 static inline size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[0];
+	return orb->coefficients.size[orb->coefficients.rank-1];
+}
+
+static inline md_2darray_f64_t create_2d_array(md_ndarray_f64_t ndarray) {
+	ASSERT(ndarray.rank >= 2);
+	md_2darray_f64_t arr = {
+		.data = ndarray.data,
+		.size = {ndarray.size[ndarray.rank - 1], ndarray.size[ndarray.rank - 2]}
+	};
+	return arr;
 }
 
 static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
@@ -2511,17 +2162,18 @@ static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(orb);
 	ASSERT(mo_idx < number_of_molecular_orbitals(orb));
 
-	extract_col(out_coeff, &orb->coefficients, mo_idx);
+    md_2darray_f64_t arr = create_2d_array(orb->coefficients);
+	extract_col(out_coeff, &arr, mo_idx);
 }
 
 static inline size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[0];
+	return orb->coefficients.size[orb->coefficients.rank-1];
 }
 
 static inline size_t number_of_ao_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[1];
+	return orb->coefficients.size[orb->coefficients.rank-2];
 }
 
 static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t ao_idx) {
@@ -2529,8 +2181,9 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(orb);
 	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
-	extract_row(out_coeff, &orb->coefficients, ao_idx);
-}
+    md_2darray_f64_t arr = create_2d_array(orb->coefficients);
+	extract_row(out_coeff, &arr, ao_idx);
+}	
 
 static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, const double* mo_coeffs, double value_cutoff) {
 	size_t count = 0;
@@ -2574,8 +2227,10 @@ bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_
 		return false;
 	}
 
+	const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
+
 	// The lambda values are stored symmetrically around homo/lumo
-	size_t max_lambda_idx = vlx->scf.homo_idx[0];
+	size_t max_lambda_idx = orb->homo_idx[0];
 
 	if (max_lambda_idx == 0) {
 		MD_LOG_ERROR("Internal error: Incorrect max lambda");
@@ -2589,19 +2244,18 @@ bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_
 
 	int64_t mo_idx = 0;
 	if (type == MD_VLX_NTO_TYPE_PARTICLE) {
-		mo_idx = (int64_t)vlx->scf.lumo_idx[0] + (int64_t)lambda_idx;
+		mo_idx = (int64_t)orb->lumo_idx[0] + (int64_t)lambda_idx;
 	} else if (type == MD_VLX_NTO_TYPE_HOLE) {
-		mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
+		mo_idx = (int64_t)orb->homo_idx[0] - (int64_t)lambda_idx;
 	} else {
 		MD_LOG_ERROR("Invalid NTO type!");
 		return false;
 	}
 
-	const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
-
 	size_t temp_pos = md_temp_get_pos();
 	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
+	const dvec3_t* atom_xyz = (const dvec3_t*)vlx->atom_coordinates.data;
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
 	extract_gtos(out_gtos, &vlx->gto_data, mo_coeffs, 0.0);
@@ -2678,7 +2332,7 @@ static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1,
 }
 #endif
 
-size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
+size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
 	ASSERT(gtos);
 	ASSERT(vlx);
 
@@ -2812,7 +2466,9 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 
 const double* md_vlx_scf_resp_charges(const md_vlx_t* vlx) {
 	if (vlx) {
-		return vlx->scf.resp_charges;
+		if (vlx->scf.resp_charges.data) {
+			return vlx->scf.resp_charges.data;
+		}
 	}
 	return NULL;
 }
@@ -2910,7 +2566,7 @@ const double* md_vlx_rsp_nto_occupancy(const md_vlx_t* vlx, size_t nto_idx) {
 const double* md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			return vlx->rsp.nto[nto_idx].occupancy.data + vlx->scf.lumo_idx[0];
+			return vlx->rsp.nto[nto_idx].occupancy.data + vlx->rsp.nto[nto_idx].lumo_idx[0];
 		}
 	}
 	return NULL;
@@ -2942,9 +2598,9 @@ size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, 
 
 			int64_t mo_idx = 0;
 			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
-				mo_idx = (int64_t)vlx->scf.lumo_idx[0] + (int64_t)lambda_idx;
+				mo_idx = (int64_t)orb->lumo_idx[0] + (int64_t)lambda_idx;
 			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
-				mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
+				mo_idx = (int64_t)orb->homo_idx[0] - (int64_t)lambda_idx;
 			} else {
 				MD_LOG_ERROR("Invalid NTO type!");
 				return 0;
@@ -3089,6 +2745,148 @@ void md_vlx_destroy(md_vlx_t* vlx) {
 	}
 }
 
+typedef struct vlx_traj_t {
+    uint64_t magic; // For validation
+
+	size_t num_frames;
+	size_t num_atoms;
+
+    float* atom_x; // [num_frames][num_atoms]
+    float* atom_y; // [num_frames][num_atoms]
+    float* atom_z; // [num_frames][num_atoms]
+
+    double* frame_times; // [num_frames]
+
+	md_allocator_i* alloc;
+} vlx_traj_t;
+
+static bool vlx_traj_get_header(const struct md_trajectory_o* inst, md_trajectory_header_t* out_header) {
+	ASSERT(inst);
+    ASSERT(out_header);
+    vlx_traj_t* traj = (vlx_traj_t*)inst;
+    if (traj && traj->magic == VLX_MAGIC) {
+		out_header->num_frames  = traj->num_frames;
+		out_header->num_atoms   = traj->num_atoms;
+		out_header->frame_times = traj->frame_times;
+		out_header->time_unit   = md_unit_none();
+		return true;
+	}
+
+    return false;
+}
+
+static bool vlx_traj_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+    vlx_traj_t* traj = (vlx_traj_t*)inst;
+	if (traj && traj->magic == VLX_MAGIC) {
+        if (frame_idx < 0 || (size_t)frame_idx >= traj->num_frames) {
+			MD_LOG_ERROR("Frame index out of bounds");
+			return false;
+		}
+        // Extract data for the requested frame
+		if (out_x) {
+            MEMCPY(out_x, traj->atom_x + frame_idx * traj->num_atoms, sizeof(float) * traj->num_atoms);
+		}
+        if (out_y) {
+			MEMCPY(out_y, traj->atom_y + frame_idx * traj->num_atoms, sizeof(float) * traj->num_atoms);
+		}
+        if (out_z) {
+			MEMCPY(out_z, traj->atom_z + frame_idx * traj->num_atoms, sizeof(float) * traj->num_atoms);
+		}
+		if (out_header) {
+            out_header->index = frame_idx;
+            out_header->num_atoms = traj->num_atoms;
+            out_header->timestamp = traj->frame_times[frame_idx];
+			out_header->unitcell = md_unitcell_none();
+		}
+		return true;
+	}
+	return false;
+}
+
+static void vlx_traj_reader_free(md_trajectory_reader_i* reader) {
+	// No dynamic resources to free in this example, but if there were, we'd clean them up here.
+    MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
+}
+
+
+static bool vlx_traj_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* inst) {
+    vlx_traj_t* traj = (vlx_traj_t*)inst;
+    if (traj && traj->magic == VLX_MAGIC) {
+		reader->inst = (struct md_trajectory_reader_o*)traj;
+		reader->load_frame = vlx_traj_reader_load_frame;
+        reader->free = vlx_traj_reader_free;
+		return true;
+	}
+	return false;
+}
+
+static void vlx_traj_free(md_trajectory_i* traj) {
+    ASSERT(traj);
+    ASSERT(traj->inst);
+    vlx_traj_t* vlx_traj = (vlx_traj_t*)traj->inst;
+    if (vlx_traj->magic != VLX_MAGIC) {
+        MD_LOG_ERROR("VLX: Cannot free trajectory, is not a valid VLX trajectory.");
+        ASSERT(false);
+        return;
+    }
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
+    md_arena_allocator_destroy(vlx_traj->alloc);
+}
+
+md_trajectory_i* md_vlx_create_trajectory(const md_vlx_t* vlx, md_allocator_i* ext_alloc, uint32_t flags) {
+	ASSERT(ext_alloc);
+	if (!vlx) {
+		MD_LOG_ERROR("vlx pointer is NULL");
+		return NULL;
+	}
+    if (vlx->number_of_atoms == 0 || vlx->number_of_frames == 0) {
+        MD_LOG_INFO("vlx object contains no trajectory data");
+		return NULL;
+	}
+
+    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
+
+	md_trajectory_i* traj = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(vlx_traj_t));
+	if (!traj) {
+		MD_LOG_ERROR("Failed to allocate memory for trajectory interface");
+		return NULL;
+	}
+
+	MEMSET(traj, 0, sizeof(md_trajectory_i) + sizeof(vlx_traj_t));
+    vlx_traj_t* vlx_traj = (vlx_traj_t*)(traj + 1);
+
+	// Extract coordinate information from the vlx object and populate vlx_traj
+    vlx_traj->magic = VLX_MAGIC;
+    vlx_traj->num_frames = vlx->number_of_frames;
+    vlx_traj->num_atoms = vlx->number_of_atoms;
+    vlx_traj->alloc = alloc;
+
+    size_t num_points = vlx_traj->num_frames * vlx_traj->num_atoms;
+
+	md_array_resize(vlx_traj->atom_x, num_points, alloc);
+    md_array_resize(vlx_traj->atom_y, num_points, alloc);
+    md_array_resize(vlx_traj->atom_z, num_points, alloc);
+    md_array_resize(vlx_traj->frame_times, vlx_traj->num_frames, alloc);
+
+	ASSERT(3 * num_points == md_ndarray_f64_size(&vlx->atom_coordinates));
+    for (size_t i = 0; i < num_points; ++i) {
+		vlx_traj->atom_x[i] = (float)vlx->atom_coordinates.data[i * 3 + 0];
+		vlx_traj->atom_y[i] = (float)vlx->atom_coordinates.data[i * 3 + 1];
+		vlx_traj->atom_z[i] = (float)vlx->atom_coordinates.data[i * 3 + 2];
+	}
+
+	for (size_t i = 0; i < vlx_traj->num_frames; ++i) {
+		vlx_traj->frame_times[i] = (double)i; // Placeholder: using frame index as time, replace with actual time if available
+    }
+	
+    traj->inst = (struct md_trajectory_o*)vlx_traj;
+    traj->free = vlx_traj_free;
+	traj->get_header  = vlx_traj_get_header;
+    traj->init_reader = vlx_traj_reader_init;
+
+	return traj;
+}
+
 bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	ASSERT(sys);
 	ASSERT(vlx);
@@ -3121,10 +2919,11 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
-	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
-		sys->atom.y[i] = (float)vlx->atom_coordinates[i].y;
-		sys->atom.z[i] = (float)vlx->atom_coordinates[i].z;
+    const dvec3_t* coords = (const dvec3_t*)vlx->atom_coordinates.data;
+	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {	
+		sys->atom.x[i] = (float)coords[i].x;
+		sys->atom.y[i] = (float)coords[i].y;
+		sys->atom.z[i] = (float)coords[i].z;
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		str_t sym  = md_atomic_number_symbol(z);
@@ -3137,6 +2936,10 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	}
 
 	sys->atom.count = vlx->number_of_atoms;
+
+    if (vlx->number_of_frames > 1) {
+		sys->trajectory = md_vlx_create_trajectory(vlx, sys->alloc, 0);
+	}
 
 	return true;
 }
@@ -3201,7 +3004,7 @@ str_t md_vlx_potfile(const md_vlx_t* vlx) {
 }
 
 const dvec3_t* md_vlx_atom_coordinates(const md_vlx_t* vlx) {
-	if (vlx) return vlx->atom_coordinates;
+	if (vlx) return (const dvec3_t*)vlx->atom_coordinates.data;
 	return NULL;
 }
 
@@ -3221,16 +3024,24 @@ md_vlx_scf_type_t md_vlx_scf_type(const md_vlx_t* vlx) {
 }
 
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.ground_state_dipole_moment;
+	if (vlx) {
+        if (vlx->scf.ground_state_dipole_moment.data) {
+			return *((dvec3_t*)(vlx->scf.ground_state_dipole_moment.data));
+		}
+	}
 	return (dvec3_t){0};
 }
 
 size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
 		if (type == MD_VLX_MO_TYPE_ALPHA) {
-			return vlx->scf.homo_idx[0];
+			if (vlx->scf.alpha.homo_idx) {
+				return vlx->scf.alpha.homo_idx[0];
+			}
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
-			return vlx->scf.homo_idx[1];
+			if (vlx->scf.beta.homo_idx) {
+				return vlx->scf.beta.homo_idx[0];
+			}
 		}
 	}
 	return 0;
@@ -3239,9 +3050,13 @@ size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
 		if (type == MD_VLX_MO_TYPE_ALPHA) {
-			return vlx->scf.lumo_idx[0];
+			if (vlx->scf.alpha.lumo_idx) {
+				return vlx->scf.alpha.lumo_idx[0];
+			}
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
-			return vlx->scf.lumo_idx[1];
+			if (vlx->scf.beta.lumo_idx) {
+				return vlx->scf.beta.lumo_idx[0];
+			}
 		}
 	}
 	return 0;
@@ -3353,7 +3168,8 @@ const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx) {
 // This only contains the upper triangular part of the matrix, due to symmetry.
 size_t md_vlx_scf_upper_triangular_density_matrix_size(const md_vlx_t* vlx) {
 	if (vlx) {
-		return (vlx->scf.alpha.density.size[0] > 0) ? (vlx->scf.alpha.density.size[0] * (vlx->scf.alpha.density.size[0] + 1)) / 2 : 0;
+        size_t N = vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
+		return (N > 0) ? (N * (N + 1)) / 2 : 0;
 	}
 	return 0;
 }
@@ -3361,11 +3177,13 @@ size_t md_vlx_scf_upper_triangular_density_matrix_size(const md_vlx_t* vlx) {
 // Populates the provided array with the density matrix data.
 bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		size_t dim = vlx->scf.alpha.density.size[0];
+		size_t dim = 0;
         const double* density_data = NULL;
         if (type == MD_VLX_MO_TYPE_ALPHA) {
+			dim = vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
 			density_data = vlx->scf.alpha.density.data;
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
+            dim = vlx->scf.beta.density.size[vlx->scf.beta.density.rank - 1];
 			density_data = vlx->scf.beta.density.data;
 		} else {
 			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
@@ -3386,7 +3204,7 @@ bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, 
 // Get the regular density matrix size N in (N x N)
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
 	if (vlx) {
-		return vlx->scf.alpha.density.size[0];
+		return vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
 	}
 	return 0;
 }
@@ -3394,7 +3212,7 @@ size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
 // Extracts the full density matrix into a square matrix representation
 bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		size_t dim = vlx->scf.alpha.density.size[0];
+		size_t dim = vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
 		const double* density_data = NULL;
 		if (type == MD_VLX_MO_TYPE_ALPHA) {
 			density_data = vlx->scf.alpha.density.data;
@@ -3416,32 +3234,32 @@ bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_v
 
 // SCF History
 size_t md_vlx_scf_history_size(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.number_of_iterations;
+	if (vlx) return vlx->scf.history.number_of_iterations.data[vlx->scf.history.number_of_iterations.rank - 1];
 	return 0;
 }
 
 const double* md_vlx_scf_history_energy(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.energy;
+	if (vlx) return vlx->scf.history.energy.data;
 	return NULL;
 }
 
 const double* md_vlx_scf_history_energy_diff(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.energy_diff;
+	if (vlx) return vlx->scf.history.energy_diff.data;
 	return NULL;
 }
 
 const double* md_vlx_scf_history_density_diff(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.density_diff;
+	if (vlx) return vlx->scf.history.density_diff.data;
 	return NULL;
 }
 
 const double* md_vlx_scf_history_gradient_norm(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.gradient_norm;
+	if (vlx) return vlx->scf.history.gradient_norm.data;
 	return NULL;
 }
 
 const double* md_vlx_scf_history_max_gradient(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.max_gradient;
+	if (vlx) return vlx->scf.history.max_gradient.data;
 	return NULL;
 }
 
