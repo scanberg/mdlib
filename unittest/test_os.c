@@ -68,10 +68,15 @@ UTEST(os, path_relative) {
     }
 }
 
-UTEST(os, ram) {
-    uint64_t physical_ram = md_os_physical_ram();
-    printf("total physical ram %i GB\n", (int)(physical_ram / GIGABYTES(1)));
-    EXPECT_GT(physical_ram, 0);
+UTEST(os, sys_info) {
+	md_os_sys_info_t info = { 0 };
+	EXPECT_TRUE(md_os_sys_info_query(&info));
+    printf("total physical ram %i GB\n", (int)(info.physical_ram_bytes / GIGABYTES(1)));
+	printf("physical cores: %d\n", info.num_physical_cores);
+	printf("virtual cores: %d\n", info.num_virtual_cores);
+    EXPECT_GT(info.physical_ram_bytes, 0);
+	EXPECT_GT(info.num_physical_cores, 0);
+    EXPECT_GT(info.num_virtual_cores,  0);
 }
 
 UTEST(os, mem) {

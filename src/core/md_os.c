@@ -1668,3 +1668,143 @@ bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
     return true;
 #endif
 }
+
+// Returns system information such as core counts and RAM. See md_os_info_t in header.
+bool md_os_sys_info_query(md_os_sys_info_t* info) {
+    if (!info) return false;
+    MEMSET(info, 0, sizeof(md_os_sys_info_t));
+
+#if MD_PLATFORM_WINDOWS
+
+    // ---------------------------
+    // Logical cores
+    // ---------------------------
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    info->num_virtual_cores = (int)sysinfo.dwNumberOfProcessors;
+
+    // ---------------------------
+    // Physical cores (robust)
+    // ---------------------------
+    DWORD len = 0;
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buffer = NULL;
+
+    // Query required size
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) &&
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        info->num_physical_cores = info->num_virtual_cores;
+    } else {
+        buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)md_alloc(md_get_temp_allocator(), len);
+
+        if (buffer && GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &len)) {
+            DWORD offset = 0;
+            int physical = 0;
+
+            while (offset < len) {
+                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX ptr =
+                    (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)((uint8_t*)buffer + offset);
+
+                if (ptr->Relationship == RelationProcessorCore) {
+                    physical++;
+                }
+
+                offset += ptr->Size;
+            }
+
+            info->num_physical_cores = physical > 0 ? physical : info->num_virtual_cores;
+        } else {
+            info->num_physical_cores = info->num_virtual_cores;
+        }
+    }
+
+    info->physical_ram_bytes = md_os_physical_ram();
+    return true;
+
+#elif MD_PLATFORM_OSX
+
+    // ---------------------------
+    // macOS (correct & simple)
+    // ---------------------------
+    int logical = 0;
+    int physical = 0;
+    size_t size = sizeof(int);
+
+    if (sysctlbyname("hw.logicalcpu", &logical, &size, NULL, 0) != 0) {
+        logical = 1;
+    }
+
+    size = sizeof(int);
+    if (sysctlbyname("hw.physicalcpu", &physical, &size, NULL, 0) != 0) {
+        physical = logical;
+    }
+
+    info->num_virtual_cores = logical;
+    info->num_physical_cores = physical;
+    info->physical_ram_bytes = md_os_physical_ram();
+    return true;
+
+#elif MD_PLATFORM_UNIX
+
+    // ---------------------------
+    // Linux / generic UNIX
+    // ---------------------------
+    int logical = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    info->num_virtual_cores = logical > 0 ? logical : 1;
+
+#if defined(__linux__)
+
+    // Count unique (physical id, core id) pairs
+    FILE* f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        typedef struct { int phys_id; int core_id; } core_pair_t;
+        core_pair_t cores[512];
+        int core_count = 0;
+
+        int phys_id = -1;
+        int core_id = -1;
+
+        char line[256];
+
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "physical id", 11) == 0) {
+                sscanf(line, "physical id : %d", &phys_id);
+            } else if (strncmp(line, "core id", 7) == 0) {
+                sscanf(line, "core id : %d", &core_id);
+            } else if (line[0] == '\n') {
+                if (phys_id >= 0 && core_id >= 0) {
+                    bool found = false;
+                    for (int i = 0; i < core_count; ++i) {
+                        if (cores[i].phys_id == phys_id &&
+                            cores[i].core_id == core_id) {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found && core_count < (int)ARRAY_SIZE(cores)) {
+                        cores[core_count++] = (core_pair_t){phys_id, core_id};
+                    }
+                }
+                phys_id = core_id = -1;
+            }
+        }
+
+        fclose(f);
+
+        info->num_physical_cores = core_count > 0 ? core_count : info->num_virtual_cores;
+    } else {
+        info->num_physical_cores = info->num_virtual_cores;
+    }
+
+#else
+    info->num_physical_cores = info->num_virtual_cores;
+#endif
+
+    info->physical_ram_bytes = md_os_physical_ram();
+    return true;
+
+#else
+    ASSERT(false);
+    return false;
+#endif
+}
