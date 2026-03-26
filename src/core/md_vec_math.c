@@ -293,9 +293,9 @@ mat3_t mat3_extract_rotation(mat3_t M) {
     mat3_svd_t svd = mat3_svd(M);
 
     mat3_t Ut = mat3_transpose(svd.U);
-    float  d = mat3_determinant(mat3_mul(svd.V, Ut));
-    mat3_t D = {1, 0, 0, 0, 1, 0, 0, 0, d};
-    mat3_t R = mat3_mul(mat3_mul(svd.V, D), Ut);
+    float  d  = mat3_determinant(mat3_mul(svd.V, Ut));
+    mat3_t D  = {1, 0, 0, 0, 1, 0, 0, 0, signf(d)};
+    mat3_t R  = mat3_mul(mat3_mul(svd.V, D), Ut);
     return R;
 }
 
