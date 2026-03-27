@@ -57,7 +57,6 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
-#include <sys/sysctl.h>
 #include <pthread.h>
 #include <pwd.h>
 
@@ -71,6 +70,7 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #if MD_PLATFORM_OSX
 #include <limits.h>
 #include <sys/param.h>
+#include <sys/sysctl.h>
 #include <mach/mach_init.h>
 #include <mach/task.h>
 #include <mach/semaphore.h>
