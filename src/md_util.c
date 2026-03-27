@@ -1325,7 +1325,23 @@ bool md_util_resname_nucleotide(str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
-    
+
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys) {
+    ASSERT(out_xyzw);
+    ASSERT(mask);
+    ASSERT(sys);
+
+    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
+    size_t count = 0;
+    while (md_bitfield_iter_next(&it)) {
+        size_t i = md_bitfield_iter_idx(&it);
+        vec3_t xyz = md_atom_coord(&sys->atom, i);
+        float mass = md_atom_mass(&sys->atom, i);
+        out_xyzw[count] = vec4_from_vec3(xyz, mass);
+        count++;
+    }
+}
+
 bool md_util_resname_acidic(str_t str) {
     return find_str_in_cstr_arr(NULL, str, acidic, ARRAY_SIZE(acidic));
 }

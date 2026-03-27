@@ -57,6 +57,7 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>
 #include <pthread.h>
 #include <pwd.h>
 

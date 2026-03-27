@@ -54,6 +54,8 @@ bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys);
+
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
