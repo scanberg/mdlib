@@ -8644,6 +8644,13 @@ static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices
         MD_LOG_ERROR("Missing bond connectivity");
         return false;
     }
+    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
+
+    if (!is_ortho && !is_triclinic) {
+        // Nothing to unwrap against
+        return true;
+    }
 
     const size_t atom_count = bond->conn.offset_count - 1;
     uint64_t* visited = make_bitfield(atom_count, alloc);
@@ -8656,8 +8663,6 @@ static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices
         }
     }
 
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
     vec4_t ext = {0};
     mat3_t A = {0};
 
@@ -8665,10 +8670,6 @@ static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices
         md_unitcell_diag_extract_float(ext.elem, cell);
     } else if (is_triclinic) {
         md_unitcell_A_extract_float(A.elem, cell);
-    } else {
-        MD_LOG_ERROR("Unrecognized unit_cell type");
-        fifo_free(&queue);
-        return false;
     }
 
     for (size_t i = 0; i < count; ++i) {
@@ -8728,6 +8729,14 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
         return false;
     }
 
+    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
+
+    if (!is_ortho && !is_triclinic) {
+        // Nothing to unwrap against
+        return true;
+    }
+
     const size_t atom_count = bond->conn.offset_count - 1;
     uint64_t* visited = make_bitfield(atom_count, alloc);
     uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
@@ -8739,8 +8748,6 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
         }
     }
 
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
     vec4_t ext = {0};
     mat3_t A = {0};
 
@@ -8748,10 +8755,6 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
         md_unitcell_diag_extract_float(ext.elem, cell);
     } else if (is_triclinic) {
         md_unitcell_A_extract_float(A.elem, cell);
-    } else {
-        MD_LOG_ERROR("Unrecognized unit_cell type");
-        fifo_free(&queue);
-        return false;
     }
 
     for (size_t i = 0; i < count; ++i) {
