@@ -84,12 +84,16 @@ typedef enum md_file_seek_origin_t {
 extern "C" {
 #endif
 
-// ### MISC OS ###
-// returns total physical ram available on the machine
-size_t md_os_physical_ram(void);
+// ### OS INFO ###
+typedef struct md_os_sys_info_t {
+    int num_physical_cores;
+    int num_virtual_cores;
+    size_t physical_ram_bytes;
+    // Add more fields as needed
+} md_os_sys_info_t;
 
-// returns number of processors available on machine
-size_t md_os_num_processors(void);
+// Fills the md_os_info_t struct with system information. Returns true on success.
+bool md_os_sys_info_query(md_os_sys_info_t* info);
 
 // ### PATH ###
 // Gets the current working directory

@@ -54,6 +54,8 @@ bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys);
+
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
@@ -131,10 +133,9 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 // Applies periodic boundary conditions to all coordinates in a system
 bool md_util_system_pbc(md_system_t* sys);
 
-// Unwraps a structure
-// It implicitly uses the previous coordinate as a reference when deperiodizing
-bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
+// Unwraps a structure by traversing the supplied bond topology
+bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
+bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
 
 // Unwraps all structures in a system
 bool md_util_system_unwrap(md_system_t* sys);

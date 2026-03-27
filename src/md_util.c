@@ -829,8 +829,9 @@ static inline bool fifo_full(fifo_t* fifo)  { return fifo->size == fifo->capacit
 
 static inline fifo_t fifo_create(size_t capacity, md_allocator_i* alloc) {
     ASSERT(alloc);
+    capacity = next_power_of_two64(MAX(16, capacity));
     fifo_t fifo = {
-        .data = md_alloc(alloc, sizeof(int) * next_power_of_two64(MAX(16, (uint64_t)capacity))),
+        .data = md_alloc(alloc, sizeof(int) * capacity),
         .head = 0,
         .tail = 0,
         .size = 0,
@@ -1325,7 +1326,23 @@ bool md_util_resname_nucleotide(str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
-    
+
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys) {
+    ASSERT(out_xyzw);
+    ASSERT(mask);
+    ASSERT(sys);
+
+    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
+    size_t count = 0;
+    while (md_bitfield_iter_next(&it)) {
+        size_t i = md_bitfield_iter_idx(&it);
+        vec3_t xyz = md_atom_coord(&sys->atom, i);
+        float mass = md_atom_mass(&sys->atom, i);
+        out_xyzw[count] = vec4_from_vec3(xyz, mass);
+        count++;
+    }
+}
+
 bool md_util_resname_acidic(str_t str) {
     return find_str_in_cstr_arr(NULL, str, acidic, ARRAY_SIZE(acidic));
 }
@@ -3904,7 +3921,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
             if (!mi && !mj) {
                 // Both non-metals, check against k_cov
-                const float d_cov = k_cov * sum_r;
+                float factor = k_cov;
+                if (ci == cj) {
+                    // Allow for slightly longer bonds within the same component (e.g. for large flexible ligands)
+                    factor *= 1.05f;
+                }
+                const float d_cov = factor * sum_r;
                 if (d < d_cov) {
                     md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
@@ -8600,92 +8622,196 @@ bool md_util_system_pbc(md_system_t* sys) {
     return true;
 }
 
-static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
+static inline void unwrap_atom_ortho_vec4(vec4_t* pos, const vec4_t* ref, vec4_t ext) {
+    *pos = vec4_deperiodize_ortho(*pos, *ref, ext);
+}
+
+static inline void unwrap_atom_triclinic_vec4(vec4_t* pos, const vec4_t* ref, const mat3_t* A) {
+    deperiodize_triclinic(pos->elem, ref->elem, A->elem);
+}
+
+static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
+    ASSERT(bond);
+    ASSERT(cell);
+    ASSERT(alloc);
 
-    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+    if (count == 0) return true;
+
+    if (!bond->conn.offset || bond->conn.offset_count == 0) {
+        MD_LOG_ERROR("Missing bond connectivity");
+        return false;
+    }
+
+    const size_t atom_count = bond->conn.offset_count - 1;
+    uint64_t* visited = make_bitfield(atom_count, alloc);
+    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
+    fifo_t queue = fifo_create(256, alloc);
 
     if (indices) {
-        int idx = indices[0];
-        vec4_t ref_pos = vec4_set(x[idx], y[idx], z[idx], 0);
-        for (size_t i = 1; i < count; ++i) {
-            idx = indices[i];
-            const vec4_t pos = vec4_deperiodize_ortho((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
-            x[idx] = pos.x;
-            y[idx] = pos.y;
-            z[idx] = pos.z;
-            ref_pos = pos;
+        for (size_t i = 0; i < count; ++i) {
+            bitfield_set_bit(membership, indices[i]);
         }
+    }
+
+    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
+    vec4_t ext = {0};
+    mat3_t A = {0};
+
+    if (is_ortho) {
+        md_unitcell_diag_extract_float(ext.elem, cell);
+    } else if (is_triclinic) {
+        md_unitcell_A_extract_float(A.elem, cell);
     } else {
-        vec4_t ref_pos = {x[0], y[0], z[0], 0};
-        for (size_t i = 1; i < count; ++i) {
-            const vec4_t pos = vec4_deperiodize_ortho((vec4_t){x[i], y[i], z[i], 0}, ref_pos, ext);
-            x[i] = pos.x;
-            y[i] = pos.y;
-            z[i] = pos.z;
-            ref_pos = pos;
+        MD_LOG_ERROR("Unrecognized unit_cell type");
+        fifo_free(&queue);
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const int seed = indices ? indices[i] : (int)i;
+        if (bitfield_test_bit(visited, seed)) continue;
+
+        bitfield_set_bit(visited, seed);
+        fifo_clear(&queue);
+        fifo_push(&queue, seed);
+
+        while (!fifo_empty(&queue)) {
+            const int cur = fifo_pop(&queue);
+            const vec4_t ref = { x[cur], y[cur], z[cur], 0 };
+            md_bond_iter_t it = md_bond_iter(bond, cur);
+            while (md_bond_iter_has_next(&it)) {
+                const int next = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+
+                if (indices) {
+                    if (!bitfield_test_bit(membership, next)) continue;
+                } else if ((size_t)next >= count) {
+                    continue;
+                }
+
+                if (bitfield_test_bit(visited, next)) continue;
+
+                vec4_t pos = { x[next], y[next], z[next], 0 };
+                if (is_ortho) {
+                    unwrap_atom_ortho_vec4(&pos, &ref, ext);
+                } else {
+                    unwrap_atom_triclinic_vec4(&pos, &ref, &A);
+                }
+                x[next] = pos.x;
+                y[next] = pos.y;
+                z[next] = pos.z;
+
+                bitfield_set_bit(visited, next);
+                fifo_push(&queue, next);
+            }
         }
     }
+
+    fifo_free(&queue);
+    return true;
 }
 
-static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
-    const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    vec4_t ref_pos = xyzw[0];
-    for (size_t i = 1; i < count; ++i) {
-        const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
-        xyzw[i] = pos;
-        ref_pos = pos;
+static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
+    ASSERT(xyzw);
+    ASSERT(bond);
+    ASSERT(cell);
+    ASSERT(alloc);
+
+    if (count == 0) return true;
+
+    if (!bond->conn.offset || bond->conn.offset_count == 0) {
+        MD_LOG_ERROR("Missing bond connectivity");
+        return false;
     }
-}
 
-static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    mat3_t A = { 0 };
-    md_unitcell_A_extract_float(A.elem, cell);
+    const size_t atom_count = bond->conn.offset_count - 1;
+    uint64_t* visited = make_bitfield(atom_count, alloc);
+    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
+    fifo_t queue = fifo_create(256, alloc);
 
     if (indices) {
-        int idx = indices[0];
-        vec3_t ref_pos = {x[idx], y[idx], z[idx]};
-        for (size_t i = 1; i < count; ++i) {
-            idx = indices[i];
-            vec3_t pos = {x[idx], y[idx], z[idx]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
-            x[idx] = pos.x;
-            y[idx] = pos.y;
-            z[idx] = pos.z;
-            ref_pos = pos;
+        for (size_t i = 0; i < count; ++i) {
+            bitfield_set_bit(membership, indices[i]);
         }
+    }
+
+    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
+    vec4_t ext = {0};
+    mat3_t A = {0};
+
+    if (is_ortho) {
+        md_unitcell_diag_extract_float(ext.elem, cell);
+    } else if (is_triclinic) {
+        md_unitcell_A_extract_float(A.elem, cell);
     } else {
-        vec3_t ref_pos = {x[0], y[0], z[0]};
-        for (size_t i = 1; i < count; ++i) {
-            vec3_t pos = {x[i], y[i], z[i]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
-            x[i] = pos.x;
-            y[i] = pos.y;
-            z[i] = pos.z;
-            ref_pos = pos;
+        MD_LOG_ERROR("Unrecognized unit_cell type");
+        fifo_free(&queue);
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const int seed = indices ? indices[i] : (int)i;
+        if (bitfield_test_bit(visited, seed)) continue;
+
+        bitfield_set_bit(visited, seed);
+        fifo_clear(&queue);
+        fifo_push(&queue, seed);
+
+        while (!fifo_empty(&queue)) {
+            const int cur = fifo_pop(&queue);
+            const vec4_t ref = xyzw[cur];
+            md_bond_iter_t it = md_bond_iter(bond, cur);
+            while (md_bond_iter_has_next(&it)) {
+                const int next = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+
+                if (indices) {
+                    if (!bitfield_test_bit(membership, next)) continue;
+                } else if ((size_t)next >= count) {
+                    continue;
+                }
+
+                if (bitfield_test_bit(visited, next)) continue;
+
+                if (is_ortho) {
+                    unwrap_atom_ortho_vec4(&xyzw[next], &ref, ext);
+                } else {
+                    unwrap_atom_triclinic_vec4(&xyzw[next], &ref, &A);
+                }
+
+                bitfield_set_bit(visited, next);
+                fifo_push(&queue, next);
+            }
         }
     }
+
+    fifo_free(&queue);
+    return true;
 }
 
-static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
-    mat3_t A = { 0 };
-    md_unitcell_A_extract_float(A.elem, cell);
-
-    vec4_t ref_pos = xyzw[0];
-    for (size_t i = 1; i < count; ++i) {
-        vec4_t pos = xyzw[i];
-        deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
-        xyzw[i] = pos;
-        ref_pos = pos;
+bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
+    if (!x) {
+        MD_LOG_ERROR("Missing required input: in_out_x");
+        return false;
     }
 
-}
+    if (!y) {
+        MD_LOG_ERROR("Missing required input: in_out_y");
+        return false;
+    }
 
-bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    if (!x || !y || !z) {
-        MD_LOG_ERROR("Missing required input: x,y or z");
+    if (!z) {
+        MD_LOG_ERROR("Missing required input: in_out_y");
+        return false;
+    }
+
+    if (!bond) {
+        MD_LOG_ERROR("Missing bond topology");
         return false;
     }
 
@@ -8694,69 +8820,53 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return false;
     }
 
-    if (cell->flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, cell);
-        unwrap_ortho(x, y, z, indices, count, ext);
-        return true;
-    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        unwrap_triclinic(x, y, z, indices, count, cell);
-        return true;
-    }
-
-    // The unit cell is not initialized or is simply not periodic
-    return false;
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_arena);
+    md_vm_arena_destroy(temp_arena);
+    return result;
 }
 
-bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
     }
 
+    if (!bond) {
+        MD_LOG_ERROR("Missing bond topology");
+        return false;
+    }
+
     if (!cell) {
         MD_LOG_ERROR("Missing cell");
         return false;
     }
 
-    if (md_unitcell_is_orthorhombic(cell)) {
-        vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, cell);
-        unwrap_ortho_vec4(xyzw, count, ext);
-        return true;
-    } else if (md_unitcell_is_triclinic(cell)) {
-        unwrap_triclinic_vec4(xyzw, count, cell);
-        return true;
-    }
-
-    // The unit cell is not initialized or is simply not periodic
-    return false;
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    const bool result = unwrap_topology_vec4(xyzw, indices, count, bond, cell, temp_arena);
+    md_vm_arena_destroy(temp_arena);
+    return result;
 }
 
 bool md_util_system_unwrap(md_system_t* sys) {
     ASSERT(sys);
-    size_t num_structures = md_index_data_num_ranges(&sys->structure);
-	float* x = sys->atom.x;
-	float* y = sys->atom.y;
-	float* z = sys->atom.z;
 
-	md_unitcell_flags_t cell_flags = md_unitcell_flags(&sys->unitcell);
-    if (cell_flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, &sys->unitcell);
-        for (size_t i = 0; i < num_structures; ++i) {
-            const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
-            const size_t   s_len = md_index_range_size(&sys->structure, i);
-            unwrap_ortho(x, y, z, s_idx, s_len, ext);
+    const size_t num_structures = md_index_data_num_ranges(&sys->structure);
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+
+    for (size_t i = 0; i < num_structures; ++i) {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
+        const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
+        const size_t s_len = md_index_range_size(&sys->structure, i);
+        if (!unwrap_topology(sys->atom.x, sys->atom.y, sys->atom.z, s_idx, s_len, &sys->bond, &sys->unitcell, temp_arena)) {
+            md_vm_arena_temp_end(temp);
+            md_vm_arena_destroy(temp_arena);
+            return false;
         }
-    } else if (cell_flags & MD_UNITCELL_TRICLINIC) {
-        for (size_t i = 0; i < num_structures; ++i) {
-            const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
-            const size_t   s_len = md_index_range_size(&sys->structure, i);
-            unwrap_triclinic(x, y, z, s_idx, s_len, &sys->unitcell);
-        }
+        md_vm_arena_temp_end(temp);
     }
-    
+
+    md_vm_arena_destroy(temp_arena);
     return true;
 }
 
