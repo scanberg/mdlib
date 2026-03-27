@@ -2138,6 +2138,18 @@ static inline void extract_col(double* dst, const md_2darray_f64_t* data, size_t
 	}
 }
 
+static inline size_t orb_number_of_snapshots(const md_vlx_orbital_t* orb) {
+	ASSERT(orb);
+    if (orb->coefficients.rank == 2) {
+		return 1; // No snapshot dimension, treat as single snapshot
+	} else if (orb->coefficients.rank == 3) {
+		return orb->coefficients.size[0];
+	}
+	// Error
+	MD_LOG_ERROR("malformed orb object");
+	return 0;
+}
+
 static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[orb->coefficients.rank-2];
@@ -2148,21 +2160,22 @@ static inline size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
 	return orb->coefficients.size[orb->coefficients.rank-1];
 }
 
-static inline md_2darray_f64_t create_2d_array(md_ndarray_f64_t ndarray) {
+static inline md_2darray_f64_t create_2d_slice(md_ndarray_f64_t ndarray, size_t slice_idx) {
 	ASSERT(ndarray.rank >= 2);
 	md_2darray_f64_t arr = {
-		.data = ndarray.data,
+		.data = ndarray.data + slice_idx * ndarray.size[ndarray.rank - 2] * ndarray.size[ndarray.rank - 1],
 		.size = {ndarray.size[ndarray.rank - 1], ndarray.size[ndarray.rank - 2]}
 	};
 	return arr;
 }
 
-static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
+static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t snapshot_idx, size_t mo_idx) {
 	ASSERT(out_coeff);
 	ASSERT(orb);
 	ASSERT(mo_idx < number_of_molecular_orbitals(orb));
+    ASSERT(snapshot_idx < orb_number_of_snapshots(orb));
 
-    md_2darray_f64_t arr = create_2d_array(orb->coefficients);
+    md_2darray_f64_t arr = create_2d_slice(orb->coefficients, snapshot_idx);
 	extract_col(out_coeff, &arr, mo_idx);
 }
 
@@ -2181,7 +2194,7 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(orb);
 	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
-    md_2darray_f64_t arr = create_2d_array(orb->coefficients);
+    md_2darray_f64_t arr = create_2d_slice(orb->coefficients, 0);
 	extract_row(out_coeff, &arr, ao_idx);
 }	
 
@@ -2257,8 +2270,9 @@ bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 	const dvec3_t* atom_xyz = (const dvec3_t*)vlx->atom_coordinates.data;
 
-	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
+	extract_mo_coefficients(mo_coeffs, orb, 0, mo_idx);
 	extract_gtos(out_gtos, &vlx->gto_data, mo_coeffs, 0.0);
+
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -2332,7 +2346,7 @@ static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1,
 }
 #endif
 
-size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
+size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t snapshot_idx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
 	ASSERT(gtos);
 	ASSERT(vlx);
 
@@ -2456,7 +2470,7 @@ size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx
 	size_t temp_pos = md_temp_get_pos();
 	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
-	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
+	extract_mo_coefficients(mo_coeffs, orb, snapshot_idx, mo_idx);
 
 	size_t count = extract_gtos(gtos, &vlx->gto_data, mo_coeffs, value_cutoff);
 
@@ -2612,7 +2626,7 @@ size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, 
 			}
 
 			if (out_ao) {
-				extract_mo_coefficients(out_ao, orb, mo_idx);
+				extract_mo_coefficients(out_ao, orb, 0, mo_idx);
 			}
 			return number_of_mo_coefficients(orb);
 		}

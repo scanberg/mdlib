@@ -183,7 +183,7 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
 // mo_idx: Molecular Orbital Index
 // type: Molecular orbital type: Alpha / Beta
 // value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos (0 == no cutoff (Infinite radius of influence))
-size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
+size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t snapshot_idx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
 
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);

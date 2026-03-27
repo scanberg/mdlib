@@ -146,14 +146,14 @@ UTEST(vlx, correctness) {
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, 0.0);
+    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, 0, mo_idx, MD_VLX_MO_TYPE_ALPHA, 0.0);
 
     size_t cap_phi = num_gtos;
     double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
 
     size_t num_mo_coeffs = number_of_mo_coefficients(&vlx->scf.alpha);
     double* mo_coeffs = md_arena_allocator_push(arena, sizeof(double) * num_mo_coeffs);
-    extract_mo_coefficients(mo_coeffs, &vlx->scf.alpha, mo_idx);
+    extract_mo_coefficients(mo_coeffs, &vlx->scf.alpha, 0, mo_idx);
 
     md_gto_grid_evaluate(vol_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
@@ -206,7 +206,7 @@ UTEST(vlx, minimal_example) {
     // Extract GTOs
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
+    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, 0, mo_idx, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);
