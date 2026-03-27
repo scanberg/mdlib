@@ -4292,10 +4292,10 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw_vec4(xyzw[1], ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, &bf);
 
                 md_util_pbc_vec4(xyzw[0], count, &ctx->mol->unitcell);
-                md_util_unwrap_vec4(xyzw[0], count, &ctx->mol->unitcell);
+                md_util_unwrap_vec4(xyzw[0], NULL, count, &ctx->mol->bond, &ctx->mol->unitcell);
 
                 md_util_pbc_vec4(xyzw[1], count, &ctx->mol->unitcell);
-                md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unitcell);
+                md_util_unwrap_vec4(xyzw[1], NULL, count, &ctx->mol->bond, &ctx->mol->unitcell);
 
                 const vec3_t com[2] = {
                     md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
@@ -4741,7 +4741,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Place structure within the same period
-        md_util_unwrap_vec4(xyzw, count, &ctx->mol->unitcell);
+        md_util_unwrap_vec4(xyzw, NULL, count, &ctx->mol->bond, &ctx->mol->unitcell);
         vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
@@ -5733,7 +5733,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int*    trg_idx = md_vm_arena_push(ctx->temp_alloc, sizeof(int) * trg_size);
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
 
-        md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unitcell);
+        md_util_unwrap_vec4(ref_xyzw[0], NULL, ref_size, &ctx->mol->bond, &ctx->mol->unitcell);
         ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
 
         const double cell_ext = cutoff;
@@ -5757,7 +5757,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
 
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
-            md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unitcell);
+            md_util_unwrap_vec4(ref_xyzw[1], NULL, ref_size, &ctx->mol->bond, &ctx->mol->unitcell);
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
