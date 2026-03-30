@@ -170,7 +170,7 @@ typedef enum {
 // Controls how the color of the licorice representation is assigned.
 typedef enum {
 	MD_GL_LICORICE_MODE_NEAREST,
-	MD_GL_LICORICE_MODE_LINEAR,
+	MD_GL_LICORICE_MODE_SMOOTH,
     MD_GL_LICORICE_MODE_UNIFORM,
 } md_gl_licorice_mode_t;
 
@@ -185,6 +185,7 @@ typedef struct md_gl_draw_op_t {
         struct {
             float radius;
 			md_gl_licorice_mode_t color_mode;
+            float sharpness; // 0.0 = fully smooth, 1.0 = fully sharp
 			uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
         } licorice;
 
@@ -192,6 +193,7 @@ typedef struct md_gl_draw_op_t {
             float ball_scale;
             float stick_radius;
             md_gl_licorice_mode_t color_mode;
+            float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
         } ball_and_stick;
 

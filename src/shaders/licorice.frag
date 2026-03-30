@@ -7,7 +7,7 @@
 #endif
 
 #define MODE_NEAREST 0
-#define MODE_LINEAR  1
+#define MODE_SMOOTH  1
 #define MODE_UNIFORM 2
 
 #ifndef GL_ARB_shading_language_packing
@@ -34,6 +34,7 @@ layout (std140) uniform ubo {
     float u_radius;
     float u_max_d2;
     int   u_mode;
+    float u_sharpness;
     uint  u_uniform_color;
 };
 
@@ -128,8 +129,12 @@ void main() {
     vec4 color;
     if (u_mode == MODE_NEAREST) {
         color = in_frag.color[side];
-    } else if (u_mode == MODE_LINEAR) {
-        color = mix(in_frag.color[0], in_frag.color[1], seg_t);
+    } else if (u_mode == MODE_SMOOTH) {
+        float s = u_sharpness * u_sharpness;
+        float k = mix(1.0, 32.0, s);
+        float a = pow(seg_t, k);
+        float b = pow(1.0 - seg_t, k);
+        color = mix(in_frag.color[0], in_frag.color[1], a / (a + b));
     } else if (u_mode == MODE_UNIFORM) {
         color = vec4(unpackUnorm4x8(u_uniform_color));
     }
