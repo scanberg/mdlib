@@ -16,6 +16,8 @@ layout (std140) uniform ubo {
     uint _pad0;
     float u_radius;
     float u_max_d2;
+    int   u_mode;
+    uint  u_uniform_color;
 };
 
 layout(location = 0) in vec3 in_position;

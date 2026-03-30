@@ -1,8 +1,20 @@
 #version 330 core
 #extension GL_ARB_conservative_depth : enable
+#extension GL_ARB_shading_language_packing : enable
 
 #ifndef ORTHO
 #define ORTHO 0
+#endif
+
+#define MODE_NEAREST 0
+#define MODE_LINEAR  1
+#define MODE_UNIFORM 2
+
+#ifndef GL_ARB_shading_language_packing
+vec4 unpackUnorm4x8(uint p) {
+    uvec4 iv = uvec4(p & 0xFFU, (p >> 8U) & 0xFFU, (p >> 16U) & 0xFFU, (p >> 24U) & 0xFFU);
+    return vec4(iv) * (1.0f / 255.0f);
+}
 #endif
 
 layout (std140) uniform ubo {
@@ -21,6 +33,8 @@ layout (std140) uniform ubo {
     uint _pad0;
     float u_radius;
     float u_max_d2;
+    int   u_mode;
+    uint  u_uniform_color;
 };
 
 in Fragment {
@@ -111,7 +125,14 @@ void main() {
     vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
     gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
 
-    vec4 color = in_frag.color[side];
+    vec4 color;
+    if (u_mode == MODE_NEAREST) {
+        color = in_frag.color[side];
+    } else if (u_mode == MODE_LINEAR) {
+        color = mix(in_frag.color[0], in_frag.color[1], seg_t);
+    } else if (u_mode == MODE_UNIFORM) {
+        color = vec4(unpackUnorm4x8(u_uniform_color));
+    }
     vec3 view_velocity = in_frag.view_vel;
     uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
 
