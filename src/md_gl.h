@@ -167,12 +167,12 @@ typedef enum {
     MD_GL_REP_CARTOON,
 } md_gl_rep_type_t;
 
-// Controls how the color of the licorice representation is assigned.
+// Controls how the color of the bonds are calculated in the licorice and ball-and-stick representations
 typedef enum {
-	MD_GL_LICORICE_MODE_NEAREST,
-	MD_GL_LICORICE_MODE_SMOOTH,
-    MD_GL_LICORICE_MODE_UNIFORM,
-} md_gl_licorice_mode_t;
+	MD_GL_BOND_MODE_NEAREST,
+	MD_GL_BOND_MODE_SMOOTH,
+    MD_GL_BOND_MODE_UNIFORM,
+} md_gl_bond_mode_t;
 
 typedef struct md_gl_draw_op_t {
     md_gl_rep_type_t type;
@@ -184,17 +184,17 @@ typedef struct md_gl_draw_op_t {
 
         struct {
             float radius;
-			md_gl_licorice_mode_t color_mode;
+			md_gl_bond_mode_t color_mode;
             float sharpness; // 0.0 = fully smooth, 1.0 = fully sharp
-			uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
+			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
         } licorice;
 
         struct {
             float ball_scale;
             float stick_radius;
-            md_gl_licorice_mode_t color_mode;
+            md_gl_bond_mode_t color_mode;
             float sharpness;
-            uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
+            uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
         } ball_and_stick;
 
         struct {
