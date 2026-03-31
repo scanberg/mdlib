@@ -15,7 +15,7 @@ typedef struct md_gto_t {
 	float alpha;		// Exponent alpha
 	float cutoff;		// Radial cutoff
 	uint8_t i, j, k, l;
-	uint32_t _pad;
+	uint32_t ao_idx;
 } md_gto_t;
 
 typedef struct md_pgto_t {
@@ -30,7 +30,7 @@ typedef struct md_orbital_data_t {
 	size_t num_gtos;
 	md_gto_t* gtos;
 
-	// Optional parameters to evaluate multiple orbitals in one 'go'
+	// Optional parameters to evaluate multiple orbitals as batches in a single pass
 	// This is necessary in case the evaluation mode is psi squared as the squaring has to occur after each orbital
 	size_t num_orbs;
 	uint32_t* orb_offsets;

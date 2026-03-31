@@ -5,8 +5,8 @@
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
+#include <core/md_hash.h>
 
-#include <md_util.h>
 #include <md_system.h>
 #include <md_trajectory.h>
 #include <md_gto.h>
@@ -203,6 +203,8 @@ typedef struct md_vlx_t {
 
     // [num_frames][num_atoms][3]
 	md_ndarray_f64_t atom_coordinates;
+
+	md_vlx_atomic_property_t* atomic_properties; // Optional data, may be NULL, length is number of atomic properties
 
 	// Data blocks
 	md_vlx_scf_t scf;
@@ -1256,8 +1258,132 @@ static bool h5_extract_ndarray_i32(md_ndarray_i32_t* out_array, hid_t file_id, c
 	return h5_read_dataset_data(out_array->data, total_size, file_id, H5T_NATIVE_INT32, field_name);
 }
 
-// Data extraction procedures
+// Scan through an h5 group (no recursion) and check for datasets with the attribute 'atomic_property', if found, this will contain the label of the property.
+// If read, we will attempt to extract this as an array of doubles (if it has the length of number of atoms).
+static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
+	H5G_info_t info = { 0 };
+	if (H5Gget_info(group_handle, &info) < 0) {
+		MD_LOG_ERROR("Failed to get group info when reading atomic properties");
+		return false;
+	}
 
+	char name_buf[256];
+	for (hsize_t i = 0; i < info.nlinks; ++i) {
+		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
+		if (size < 0) {
+			continue;
+		}
+		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
+		MD_LOG_DEBUG("obj_name: '%s', obj_type: %i", name_buf, type);
+
+		// Ensure that the type is a dataset, if not we skip
+		if (type != H5G_DATASET) {
+			continue;
+		}
+		hid_t dataset_id = H5Dopen(group_handle, name_buf, H5P_DEFAULT);
+		if (dataset_id == H5I_INVALID_HID) {
+			continue;
+		}
+
+		if (!H5Aexists(dataset_id, "atomic_property")) {
+			continue;
+		}
+
+		hid_t attr_id = H5Aopen(dataset_id, "atomic_property", H5P_DEFAULT);
+		if (attr_id == H5I_INVALID_HID) {
+			H5Dclose(dataset_id);
+			continue;
+		}
+		char property_label[256] = { 0 };
+		hid_t attr_type = H5Aget_type(attr_id);
+
+		// Check if attribute type is variable length string or fixed length string, and read accordingly
+		if (H5Tis_variable_str(attr_type)) {
+			char* var_str;
+			H5Aread(attr_id, attr_type, &var_str);
+			strncpy(property_label, var_str, sizeof(property_label));
+			H5free_memory(var_str);
+		} else if (H5Tget_class(attr_type) == H5T_STRING) {
+			H5Aread(attr_id, attr_type, property_label);
+		} else {
+			MD_LOG_ERROR("Unexpected attribute type for 'atomic_property' attribute in dataset '%s'", name_buf);
+			goto done;
+		}
+
+		// If we end up here we did not fail, but we may not have read a property label either, so we check if we got something valid
+		if (property_label[0] == '\0') {
+			// Not an error, just use the field name as the property label
+			strncpy(property_label, name_buf, sizeof(property_label));
+		}
+		property_label[sizeof(property_label) - 1] = '\0';
+
+		// We have a property label, we attempt to read the dataset as an array of doubles with the length of number of atoms
+		hid_t space_id = H5Dget_space(dataset_id);
+		if (space_id == H5I_INVALID_HID) {
+			MD_LOG_ERROR("Failed to get dataspace for dataset '%s'", name_buf);
+			goto done;
+		}
+
+		int num_dims = H5Sget_simple_extent_ndims(space_id);
+		if (num_dims < 0) {
+			MD_LOG_ERROR("Failed to get number of dimensions for dataset '%s'", name_buf);
+			H5Sclose(space_id);
+			goto done;
+		}
+		if (num_dims > 2) {
+			MD_LOG_ERROR("Too many dimensions for atomic property dataset '%s', expected at most 3, got %i", name_buf, num_dims);
+			H5Sclose(space_id);
+			goto done;
+		}
+
+		size_t dims[2] = { 0 };
+		H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
+
+		// We expect the inner most dimension to be the number of atoms. Otherwise we skip.
+		if (dims[num_dims - 1] != vlx->number_of_atoms) {
+			MD_LOG_ERROR("Unexpected size of innermost dimension for atomic property dataset '%s', expected %zu, got %zu", name_buf, vlx->number_of_atoms, dims[num_dims - 1]);
+			H5Sclose(space_id);
+			continue;
+		}
+
+		size_t num_points = H5Sget_simple_extent_npoints(space_id);
+		
+		H5Sclose(space_id);
+
+		// Construct a unique uint64_t key for this property.
+
+		H5O_info_t oinfo = {0};
+		if (H5Oget_info(dataset_id, &oinfo, H5O_INFO_BASIC) < 0) {
+			goto done;
+		};
+
+		uint64_t key = md_hash64(&oinfo.token, sizeof(oinfo.token), 0);
+		
+		md_vlx_atomic_property_t property = {
+			 .label = str_copy_cstr(property_label, vlx->arena),
+			 .key = key,
+			 .dim[0] = vlx->number_of_atoms,
+			 .dim[1] = num_dims > 1 ? dims[0] : 1,
+			 .data = NULL,
+		};
+
+		md_array_resize(property.data, num_points, vlx->arena);
+		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read data for atomic property dataset '%s'", name_buf);
+			goto done;
+		}
+
+		md_array_push(vlx->atomic_properties, property, vlx->arena);
+	done:
+		H5Tclose(attr_type);
+		H5Aclose(attr_id);
+		H5Dclose(dataset_id);
+	}
+	return true;
+}
+
+// Data extraction procedures
 static bool h5_read_scf_data(md_vlx_scf_t* scf, hid_t handle, md_allocator_i* arena) {
 	char scf_type[64] = {0};
 	if (!h5_read_cstr(scf_type, sizeof(scf_type), handle, "scf_type")) {
@@ -1530,14 +1656,16 @@ static bool h5_read_rsp_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* ar
 			}
 		} else {
 			// Check for 'nto' folder inside
-            hid_t nto_group = H5Gopen(handle, "nto", H5P_DEFAULT);
-			if (nto_group >= 0) {
-				bool result = h5_read_nto_data(rsp, nto_group, arena);
-				H5Gclose(nto_group);
-                if (!result) {
-                    return false;
+			if (H5Lexists(handle, "nto", H5P_DEFAULT)) {
+				hid_t nto_group = H5Gopen(handle, "nto", H5P_DEFAULT);
+				if (nto_group >= 0) {
+					bool result = h5_read_nto_data(rsp, nto_group, arena);
+					H5Gclose(nto_group);
+					if (!result) {
+						return false;
+					}
 				}
-            }
+			}
 		}
 
 		// Dipoles
@@ -1916,6 +2044,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (!h5_read_core_data(vlx, file_id)) {
 			goto done;
 		}
+		h5_read_atomic_properties(vlx, file_id);
 	}
 
 	// SCF
@@ -1924,6 +2053,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
 			if (scf_id != H5I_INVALID_HID) {
 				result = h5_read_scf_data(&vlx->scf, scf_id, vlx->arena);
+				h5_read_atomic_properties(vlx, scf_id);
 				H5Gclose(scf_id);
 				if (!result) goto done;
 			}
@@ -1936,6 +2066,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
             hid_t vib_id = H5Gopen(file_id, "vib", H5P_DEFAULT);
             if (vib_id != H5I_INVALID_HID) {
                 result = h5_read_vib_data(&vlx->vib, vib_id, vlx->number_of_atoms, vlx->arena);
+				h5_read_atomic_properties(vlx, vib_id);
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
@@ -1948,6 +2079,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t opt_id = H5Gopen(file_id, "opt", H5P_DEFAULT);
 			if (opt_id != H5I_INVALID_HID) {
 				result = h5_read_opt_data(&vlx->opt, opt_id, vlx->number_of_atoms, vlx->arena);
+				h5_read_atomic_properties(vlx, opt_id);
 				H5Gclose(opt_id);
 				if (!result) goto done;
 			}
@@ -1960,6 +2092,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
 			if (rsp_id != H5I_INVALID_HID) {
 				result = h5_read_rsp_data(&vlx->rsp, rsp_id, vlx->arena);
+				h5_read_atomic_properties(vlx, rsp_id);
 				H5Gclose(rsp_id);
 				if (!result) goto done;
 			}
@@ -2198,28 +2331,28 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	extract_row(out_coeff, &arr, ao_idx);
 }	
 
-static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, const double* mo_coeffs, double value_cutoff) {
+static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* in_gto, const double* mo_coeffs, double value_cutoff) {
 	size_t count = 0;
-	for (size_t i = 0; i < ao_data->num_cgtos; ++i) {
-		for (size_t j = ao_data->cgto_offset[i]; j < ao_data->cgto_offset[i+1]; ++j) {
+	for (size_t i = 0; i < in_gto->num_cgtos; ++i) {
+		for (size_t j = in_gto->cgto_offset[i]; j < in_gto->cgto_offset[i+1]; ++j) {
 			int pi,pj,pk,pl;
-			md_gto_unpack_ijkl(ao_data->pgto_ijkl[j], &pi, &pj, &pk, &pl);
-			double radius = md_gto_compute_radius_of_influence(pi, pj, pk, ao_data->pgto_coeff[j], ao_data->pgto_alpha[j], value_cutoff);
+			md_gto_unpack_ijkl(in_gto->pgto_ijkl[j], &pi, &pj, &pk, &pl);
+			double radius = md_gto_compute_radius_of_influence(pi, pj, pk, in_gto->pgto_coeff[j], in_gto->pgto_alpha[j], value_cutoff);
 			if (radius == 0.0) {
 				continue; // Skip GTOs with zero radius of influence given this cutoff_value
 			}
 
-			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
-			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
-			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
-			out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgto_coeff[j]);
-			out_gtos[count].alpha = ao_data->pgto_alpha[j];
+			out_gtos[count].x = in_gto->cgto_xyzr[i].x;
+			out_gtos[count].y = in_gto->cgto_xyzr[i].y;
+			out_gtos[count].z = in_gto->cgto_xyzr[i].z;
+			out_gtos[count].coeff = (float)(mo_coeffs[i] * in_gto->pgto_coeff[j]);
+			out_gtos[count].alpha = in_gto->pgto_alpha[j];
 			out_gtos[count].cutoff = (float)radius;
 			out_gtos[count].i = (uint8_t)pi;
 			out_gtos[count].j = (uint8_t)pj;
 			out_gtos[count].k = (uint8_t)pk;
 			out_gtos[count].l = (uint8_t)pl;
-			out_gtos[count]._pad = (uint32_t)i; // Store mo coeff idx here
+			out_gtos[count].ao_idx = (uint32_t)i;
 			count += 1;
 		}
 	}
@@ -2901,6 +3034,33 @@ md_trajectory_i* md_vlx_create_trajectory(const md_vlx_t* vlx, md_allocator_i* e
 	return traj;
 }
 
+size_t md_vlx_atomic_property_count(const md_vlx_t* vlx) {
+	if (vlx) {
+		return md_array_size(vlx->atomic_properties);
+	}
+	return 0;
+}
+
+const md_vlx_atomic_property_t* md_vlx_atomic_property_by_index(const md_vlx_t* vlx, size_t idx) {
+	if (vlx) {
+		if (idx < md_array_size(vlx->atomic_properties)) {
+			return &vlx->atomic_properties[idx];
+		}
+	}
+	return NULL;
+}
+
+const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vlx, uint64_t key) {
+	if (vlx) {
+		for (size_t i = 0; i < md_array_size(vlx->atomic_properties); ++i) {
+			if (vlx->atomic_properties[i].key == key) {
+				return &vlx->atomic_properties[i];
+			}
+		}
+	}
+	return NULL;
+}
+
 bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	ASSERT(sys);
 	ASSERT(vlx);
@@ -3119,8 +3279,10 @@ bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vl
         ASSERT(out_gto_data);
 		for (size_t i = 0; i < vlx->gto_data.num_cgtos; ++i) {
             double cgto_radius = 0.0;
-			uint32_t cgto_offset = (uint32_t)out_gto_data->num_pgtos;
-			for (size_t j = vlx->gto_data.cgto_offset[i]; j < vlx->gto_data.cgto_offset[i + 1]; ++j) {
+			uint32_t pgto_offset = (uint32_t)out_gto_data->num_pgtos;
+            uint32_t cgto_beg = vlx->gto_data.cgto_offset[i];
+            uint32_t cgto_end = vlx->gto_data.cgto_offset[i + 1];
+			for (size_t j = cgto_beg; j < cgto_end; ++j) {
 				int pi, pj, pk, pl;
 				md_gto_unpack_ijkl(vlx->gto_data.pgto_ijkl[j], &pi, &pj, &pk, &pl);
 				double radius = md_gto_compute_radius_of_influence(pi, pj, pk, vlx->gto_data.pgto_coeff[j], vlx->gto_data.pgto_alpha[j], cutoff_value);
@@ -3133,10 +3295,10 @@ bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vl
 				float pgto_radius = (float)radius;
 				uint32_t pgto_ijkl = vlx->gto_data.pgto_ijkl[j];
 
-				md_array_push(out_gto_data->pgto_coeff, pgto_coeff, alloc);
-				md_array_push(out_gto_data->pgto_alpha, pgto_alpha, alloc);
+				md_array_push(out_gto_data->pgto_coeff,  pgto_coeff,  alloc);
+				md_array_push(out_gto_data->pgto_alpha,  pgto_alpha,  alloc);
 				md_array_push(out_gto_data->pgto_radius, pgto_radius, alloc);
-				md_array_push(out_gto_data->pgto_ijkl, pgto_ijkl, alloc);
+				md_array_push(out_gto_data->pgto_ijkl,   pgto_ijkl,   alloc);
 				out_gto_data->num_pgtos += 1;
 
 				cgto_radius = MAX(cgto_radius, radius);
@@ -3144,7 +3306,7 @@ bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vl
             // Push cgtos regardless of radius (otherwise indexing will be off)
             vec4_t cgto_xyzr = {vlx->gto_data.cgto_xyzr[i].x, vlx->gto_data.cgto_xyzr[i].y, vlx->gto_data.cgto_xyzr[i].z, (float)cgto_radius};
             md_array_push(out_gto_data->cgto_xyzr,   cgto_xyzr,   alloc);
-            md_array_push(out_gto_data->cgto_offset, cgto_offset, alloc);
+            md_array_push(out_gto_data->cgto_offset, pgto_offset, alloc);
 			
 			out_gto_data->num_cgtos += 1;
         }
@@ -3189,20 +3351,33 @@ size_t md_vlx_scf_upper_triangular_density_matrix_size(const md_vlx_t* vlx) {
 }
 
 // Populates the provided array with the density matrix data.
-bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+bool md_vlx_scf_extract_upper_triangular_density_matrix_data_f32(float* out_values, const md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		size_t dim = 0;
-        const double* density_data = NULL;
+		if (snapshot_idx > 0 && snapshot_idx >= vlx->number_of_frames) {
+			MD_LOG_ERROR("Snapshot index out of bounds for density matrix extraction!");
+			return false;
+        }
+
+        const md_ndarray_f64_t* D = NULL;
         if (type == MD_VLX_MO_TYPE_ALPHA) {
-			dim = vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
-			density_data = vlx->scf.alpha.density.data;
+			D = &vlx->scf.alpha.density;
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
-            dim = vlx->scf.beta.density.size[vlx->scf.beta.density.rank - 1];
-			density_data = vlx->scf.beta.density.data;
+            D = &vlx->scf.beta.density;
 		} else {
 			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
 			return false;
         }
+
+        size_t dim = D->size[D->rank - 1];
+        const double* density_data = D->data;
+
+		if (snapshot_idx > 0) {
+			if (D->rank != 3 || snapshot_idx >= D->size[0]) {
+				MD_LOG_ERROR("Snapshot index out of bounds for density matrix extraction!");
+				return false;
+			}
+			density_data += snapshot_idx * dim * dim;
+		}
 
 		for (size_t i = 0; i < dim; ++i) {
 			for (size_t j = i; j < dim; ++j) {
@@ -3224,18 +3399,34 @@ size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
 }
 
 // Extracts the full density matrix into a square matrix representation
-bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type) {
+bool md_vlx_scf_extract_density_matrix_data_f32(float* out_values, const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		size_t dim = vlx->scf.alpha.density.size[vlx->scf.alpha.density.rank - 1];
-		const double* density_data = NULL;
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
-			density_data = vlx->scf.alpha.density.data;
+		if (snapshot_idx > 0 && snapshot_idx >= vlx->number_of_frames) {
+			MD_LOG_ERROR("Snapshot index out of bounds for density matrix extraction!");
+			return false;
+        }
+
+        const md_ndarray_f64_t* D = NULL;
+        if (type == MD_VLX_MO_TYPE_ALPHA) {
+			D = &vlx->scf.alpha.density;
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
-			density_data = vlx->scf.beta.density.data;
+            D = &vlx->scf.beta.density;
 		} else {
 			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
 			return false;
+        }
+
+        size_t dim = D->size[D->rank - 1];
+        const double* density_data = D->data;
+
+		if (snapshot_idx > 0) {
+			if (D->rank != 3 || snapshot_idx >= D->size[0]) {
+				MD_LOG_ERROR("Snapshot index out of bounds for density matrix extraction!");
+				return false;
+			}
+			density_data += snapshot_idx * dim * dim;
 		}
+
 		for (size_t i = 0; i < dim; ++i) {
 			for (size_t j = 0; j < dim; ++j) {
 				out_values[i * dim + j] = (float)density_data[i * dim + j];  // Convert to float

@@ -18,15 +18,6 @@
 // Forward declarations
 struct md_system_t;
 
-#if 0
-// Predefined Palettes
-enum {
-    MD_GL_PALETTE_CPK,
-    MD_GL_PALETTE_SECONDARY_STRUCTURE,
-    MD_GL_PALETTE_ORDINAL_DIVERGING_HSV,
-};
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -147,19 +138,6 @@ void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
-#if 0
-typedef struct {
-    uint32_t id;
-} md_gl_palette_t;
-
-md_gl_palette_t md_gl_palette_create();
-void md_gl_palette_destroy(md_gl_palette_t pal);
-
-// The color palette 
-void md_gl_palette_set_colors(md_gl_palette_t pal, uint32_t offset, uint32_t count, const uint32_t* colors);
-
-#endif
-
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules
@@ -189,6 +167,13 @@ typedef enum {
     MD_GL_REP_CARTOON,
 } md_gl_rep_type_t;
 
+// Controls how the color of the licorice representation is assigned.
+typedef enum {
+	MD_GL_LICORICE_MODE_NEAREST,
+	MD_GL_LICORICE_MODE_SMOOTH,
+    MD_GL_LICORICE_MODE_UNIFORM,
+} md_gl_licorice_mode_t;
+
 typedef struct md_gl_draw_op_t {
     md_gl_rep_type_t type;
 
@@ -199,11 +184,17 @@ typedef struct md_gl_draw_op_t {
 
         struct {
             float radius;
+			md_gl_licorice_mode_t color_mode;
+            float sharpness; // 0.0 = fully smooth, 1.0 = fully sharp
+			uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
         } licorice;
 
         struct {
             float ball_scale;
             float stick_radius;
+            md_gl_licorice_mode_t color_mode;
+            float sharpness;
+            uint32_t uniform_color; // Used if color_mode is MD_GL_LICORICE_MODE_UNIFORM
         } ball_and_stick;
 
         struct {
@@ -216,10 +207,6 @@ typedef struct md_gl_draw_op_t {
             float sheet_scale;
             float helix_scale;
         } cartoon;
-
-        struct {
-            float probe_radius;
-        } solvent_excluded_surface;
     } args;
 
     md_gl_rep_t rep;

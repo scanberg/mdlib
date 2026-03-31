@@ -8,13 +8,18 @@
 #include <md_gto.h>
 #include <core/md_str.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct md_allocator_i;
 struct md_system_t;
 struct md_system_loader_i;
+
+typedef struct md_vlx_t md_vlx_t;
+
+typedef struct md_vlx_atomic_property_t {
+	str_t    label;
+	uint64_t key;
+	size_t   dim[2];	// dim[0] = number of atoms, dim[1] = 1 for scalar properties, N for multi-dimensional properties.
+	double*  data;
+} md_vlx_atomic_property_t;
 
 typedef enum {
 	MD_VLX_MO_TYPE_ALPHA = 0,
@@ -33,7 +38,9 @@ typedef enum {
 	MD_VLX_SCF_TYPE_UNRESTRICTED,
 } md_vlx_scf_type_t;
 
-typedef struct md_vlx_t md_vlx_t;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Basic operations
 
@@ -85,13 +92,13 @@ const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx);
 size_t md_vlx_scf_upper_triangular_density_matrix_size(const struct md_vlx_t* vlx);
 
 // Extracts the elements of the matrix into a compact upper triangular matrix
-bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+bool md_vlx_scf_extract_upper_triangular_density_matrix_data_f32(float* out_values, const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
 
 // Get the regular density matrix size N in (N x N)
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
 
 // Extracts the full density matrix into a square matrix representation
-bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+bool md_vlx_scf_extract_density_matrix_data_f32(float* out_values, const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
 
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
@@ -184,6 +191,11 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
 // type: Molecular orbital type: Alpha / Beta
 // value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos (0 == no cutoff (Infinite radius of influence))
 size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t snapshot_idx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
+
+// Atomic properties
+size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);
+const md_vlx_atomic_property_t* md_vlx_atomic_property_by_index(const md_vlx_t* vlx, size_t idx);
+const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vlx, uint64_t key);
 
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);

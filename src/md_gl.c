@@ -1284,7 +1284,7 @@ void md_gl_rep_set_color(md_gl_rep_t handle, uint32_t offset, uint32_t count, co
 static bool compute_spline(const molecule_t* mol);
 
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale);
-static bool draw_licorice  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length);
+static bool draw_licorice  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_licorice_mode_t mode, float sharpness, uint32_t uniform_color);
 static bool draw_ribbons   (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float width_scale, float thickness_scale);
 static bool draw_cartoon   (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float coil_scale, float helix_scale, float ribbon_scale);
 
@@ -1436,10 +1436,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, scale * draw_op->args.space_fill.radius_scale);
             break;
         case MD_GL_REP_LICORICE:
-            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.licorice.radius, max_length);
+            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.licorice.radius, max_length, draw_op->args.licorice.color_mode, draw_op->args.licorice.sharpness, draw_op->args.licorice.uniform_color);
             break;
         case MD_GL_REP_BALL_AND_STICK:
-            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius, max_length);
+            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius, max_length, draw_op->args.ball_and_stick.color_mode, draw_op->args.ball_and_stick.sharpness, draw_op->args.ball_and_stick.uniform_color);
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
         case MD_GL_REP_RIBBONS:
@@ -1517,7 +1517,7 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     return true;
 }
 
-static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length) {
+static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_licorice_mode_t mode, float sharpness, uint32_t uniform_color) {
     ASSERT(mol);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
@@ -1532,7 +1532,10 @@ static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer
     struct {
 		float radius;
 		float max_d2;
-	} params = { radius, max_length * max_length };
+        int   mode;
+        float sharpness;
+		uint32_t uniform_color;
+	} params = { radius, max_length * max_length, mode, sharpness, uniform_color };
 
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
 
