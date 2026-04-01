@@ -1298,6 +1298,18 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     }
 }
 
+static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, size_t count, md_allocator_i* alloc) {
+    if (count == 1) {
+        return bf_arr[0];
+    }
+
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    for (size_t i = 0; i < count; ++i) {
+        md_bitfield_or_inplace(&bf, &bf_arr[i]);
+    }
+    return bf;
+}
+
 static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(ctx->vis);
@@ -1464,7 +1476,14 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         md_bitfield_t* bf_arr = as_bitfield(arg);
         size_t num_bf = element_count(arg);
 
-        if (num_bf == 1) {
+        if (ctx->proc_flags & FLAG_FLATTEN) {
+			// Flatten all bitfields into one
+			md_bitfield_t flat_bf = _internal_flatten_bf(bf_arr, num_bf, ctx->temp_alloc);
+            if (ctx->mol_ctx) {
+                md_bitfield_and(&tmp_bf, &flat_bf, ctx->mol_ctx);
+                positions = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &tmp_bf, ctx->temp_alloc);
+            }
+        } else if (num_bf == 1) {
             md_bitfield_t* bf = bf_arr;
             if (ctx->mol_ctx) {
                 md_bitfield_init(&tmp_bf, ctx->temp_alloc);
@@ -1919,18 +1938,6 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         as_float(*dst) = max_val;
     }
     return 0;
-}
-
-static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, size_t count, md_allocator_i* alloc) {
-    if (count == 1) {
-        return bf_arr[0];
-    }
-    
-    md_bitfield_t bf = md_bitfield_create(alloc);
-    for (size_t i = 0; i < count; ++i) {
-        md_bitfield_or_inplace(&bf, &bf_arr[i]);
-    }
-    return bf;
 }
 
 static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {

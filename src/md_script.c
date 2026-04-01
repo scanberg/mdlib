@@ -311,6 +311,7 @@ typedef struct eval_context_t {
     token_t  op_token;                  // Token for the operation which is evaluated
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
     flags_t* arg_flags;                 // Flags of arguments
+    flags_t proc_flags;                 // Procedure flags of called procedure
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_vis_t* vis;               // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
@@ -2764,16 +2765,19 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
     flags_t* old_arg_flags  = ctx->arg_flags;
     token_t* old_arg_tokens = ctx->arg_tokens;
+    flags_t  old_proc_flags = ctx->proc_flags;
+
     // Set
     ctx->arg_tokens = arg_tokens;
     ctx->arg_flags  = arg_flags;
+    ctx->proc_flags = proc->flags;
 
     result = proc->proc_ptr(dst, arg_data, ctx);
 
     // Reset
     ctx->arg_flags  = old_arg_flags;
     ctx->arg_tokens = old_arg_tokens;
-
+    ctx->proc_flags = old_proc_flags;
 done:
     for (int64_t i = (int64_t)num_args - 1; i >= 0; --i) {
         if (!(args[i]->flags & FLAG_CONSTANT)) {
