@@ -24,7 +24,7 @@ UBENCH_EX(gto, evaluate_grid) {
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
-	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx, 0);
     for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
         vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
         min_box = vec3_min(min_box, c);

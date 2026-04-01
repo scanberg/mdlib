@@ -92,7 +92,7 @@ UTEST(vlx, vlx_parse) {
     EXPECT_EQ(41, md_vlx_number_of_alpha_electrons(vlx));
     EXPECT_EQ(41, md_vlx_number_of_beta_electrons(vlx));
 
-	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx, 0);
     ASSERT_TRUE(coords != NULL);
 
     EXPECT_NEAR(-3.259400000000, coords[0].x, 1.0e-5);
@@ -101,20 +101,16 @@ UTEST(vlx, vlx_parse) {
 
     EXPECT_TRUE(str_eq(md_vlx_basis_set_ident(vlx), STR_LIT("DEF2-SVP")));
 
-    int num_iter = md_vlx_scf_history_size(vlx);
-	const double* energy = md_vlx_scf_history_energy(vlx);
-    const double* energy_diff = md_vlx_scf_history_energy_diff(vlx);
-	const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
-	const double* max_grad = md_vlx_scf_history_max_gradient(vlx);
-	const double* density_diff = md_vlx_scf_history_density_diff(vlx);
+    md_vlx_scf_history_t hist = { 0 };
+	EXPECT_TRUE(md_vlx_scf_history_extract(&hist, vlx, 0));
 
-    ASSERT_EQ(12, num_iter);
-    for (size_t i = 0; i < num_iter; ++i) {
-        EXPECT_NEAR(ref_ener_tot[i], energy[i], 1.0e-5);
-        EXPECT_NEAR(ref_ener_change[i], energy_diff[i], 1.0e-5);
-        EXPECT_NEAR(ref_grad_norm[i], grad_norm[i], 1.0e-5);
-        EXPECT_NEAR(ref_max_grad[i], max_grad[i], 1.0e-5);
-        EXPECT_NEAR(ref_density_change[i], density_diff[i], 1.0e-5);
+    ASSERT_EQ(12, hist.number_of_iterations);
+    for (size_t i = 0; i < hist.number_of_iterations; ++i) {
+        EXPECT_NEAR(ref_ener_tot[i], hist.energy[i], 1.0e-5);
+        EXPECT_NEAR(ref_ener_change[i], hist.energy_diff[i], 1.0e-5);
+        EXPECT_NEAR(ref_grad_norm[i], hist.gradient_norm[i], 1.0e-5);
+        EXPECT_NEAR(ref_max_grad[i], hist.max_gradient[i], 1.0e-5);
+        EXPECT_NEAR(ref_density_change[i], hist.density_diff[i], 1.0e-5);
     }
 
     // @TODO: Test RSP
@@ -142,7 +138,7 @@ UTEST(vlx, correctness) {
         .dim = {vol_dim, vol_dim, vol_dim},
     };
 
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx, 0, MD_VLX_MO_TYPE_ALPHA);
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
@@ -159,7 +155,7 @@ UTEST(vlx, correctness) {
 
     mat4_t index_to_world = md_grid_index_to_world(&grid);
 
-    const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+    const dvec3_t* coords = md_vlx_atom_coordinates(vlx, 0);
 
     for (int iz = 0; iz < grid.dim[2]; ++iz) {
         for (int iy = 0; iy < grid.dim[1]; ++iy) {
@@ -201,7 +197,7 @@ UTEST(vlx, minimal_example) {
     const int vol_dim = 80;
 
     // The molecular orbital index we aim to sample
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx, 0, MD_VLX_MO_TYPE_ALPHA);
 
     // Extract GTOs
     size_t num_gtos = md_vlx_mo_gto_count(vlx);

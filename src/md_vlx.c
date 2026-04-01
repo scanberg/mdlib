@@ -123,15 +123,6 @@ typedef struct md_vlx_orbital_t {
 	int* lumo_idx;					// [num_frames]
 } md_vlx_orbital_t;
 
-typedef struct md_vlx_scf_history_t {
-	md_ndarray_i32_t number_of_iterations;
-	md_ndarray_f64_t density_diff;
-	md_ndarray_f64_t energy_diff;
-	md_ndarray_f64_t energy;
-	md_ndarray_f64_t gradient_norm;
-	md_ndarray_f64_t max_gradient;
-} md_vlx_scf_history_t;
-
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	md_vlx_scf_type_t type;
@@ -145,7 +136,14 @@ typedef struct md_vlx_scf_t {
 	md_ndarray_f64_t resp_charges;
 	md_ndarray_f64_t S;
 
-	md_vlx_scf_history_t history;
+	struct {
+		md_ndarray_i32_t number_of_iterations;
+		md_ndarray_f64_t density_diff;
+		md_ndarray_f64_t energy_diff;
+		md_ndarray_f64_t energy;
+		md_ndarray_f64_t gradient_norm;
+		md_ndarray_f64_t max_gradient;
+	} history;
 } md_vlx_scf_t;
 
 typedef struct md_vlx_cpp_t {
@@ -1537,10 +1535,14 @@ static bool h5_read_scf_data(md_vlx_scf_t* scf, hid_t handle, md_allocator_i* ar
 	if (!h5_extract_ndarray_f64(&scf->history.max_gradient, handle, "scf_history_max_gradient", arena)) {
 		return false;
 	}
-
-	if (!h5_extract_ndarray_f64(&scf->resp_charges, handle, "charges_resp", arena)) {
-
+	if (!h5_extract_ndarray_i32(&scf->history.number_of_iterations, handle, "scf_history_energy_lengths", arena)) {
+		// Not an error, field is not present. We revert to having a single snapshot for the history, given by the length of the energy array
+		scf->history.number_of_iterations.rank = 0;
+		scf->history.number_of_iterations.size[0] = 1;
+		md_array_resize(scf->history.number_of_iterations.data, 1, arena);
+		scf->history.number_of_iterations.data[0] = scf->history.energy.size[scf->history.energy.rank - 1];
 	}
+
 	/*
 	
 	
@@ -3177,8 +3179,28 @@ str_t md_vlx_potfile(const md_vlx_t* vlx) {
 	return (str_t){0};
 }
 
-const dvec3_t* md_vlx_atom_coordinates(const md_vlx_t* vlx) {
-	if (vlx) return (const dvec3_t*)vlx->atom_coordinates.data;
+const dvec3_t* md_vlx_atom_coordinates(const md_vlx_t* vlx, size_t snapshot_idx) {
+	if (!vlx) return NULL;
+
+	const md_ndarray_f64_t* arr = &vlx->atom_coordinates;
+	if (!arr || !arr->data) return NULL;
+
+	// Static coordinates: [num_atoms][3]
+	if (arr->rank == 2) {
+		if (snapshot_idx != 0) return NULL;
+		if (arr->size[0] != (uint32_t)vlx->number_of_atoms || arr->size[1] != 3) return NULL;
+		return (const dvec3_t*)arr->data;
+	}
+
+	// Trajectory coordinates: [num_frames][num_atoms][3]
+	if (arr->rank == 3) {
+		if (snapshot_idx >= (size_t)arr->size[0]) return NULL;
+		if (arr->size[1] != (uint32_t)vlx->number_of_atoms || arr->size[2] != 3) return NULL;
+
+		const size_t slab_size = (size_t)arr->size[1] * (size_t)arr->size[2];
+		return (const dvec3_t*)(arr->data + snapshot_idx * slab_size);
+	}
+
 	return NULL;
 }
 
@@ -3206,30 +3228,38 @@ dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
 	return (dvec3_t){0};
 }
 
-size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
 	if (vlx) {
 		if (type == MD_VLX_MO_TYPE_ALPHA) {
 			if (vlx->scf.alpha.homo_idx) {
-				return vlx->scf.alpha.homo_idx[0];
+				if (snapshot_idx < vlx->number_of_frames) {
+					return vlx->scf.alpha.homo_idx[0];
+				}
 			}
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
 			if (vlx->scf.beta.homo_idx) {
-				return vlx->scf.beta.homo_idx[0];
+				if (snapshot_idx < vlx->number_of_frames) {
+					return vlx->scf.beta.homo_idx[0];
+				}
 			}
 		}
 	}
 	return 0;
 }
 
-size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
 	if (vlx) {
 		if (type == MD_VLX_MO_TYPE_ALPHA) {
 			if (vlx->scf.alpha.lumo_idx) {
-				return vlx->scf.alpha.lumo_idx[0];
+				if (snapshot_idx < vlx->number_of_frames) {
+					return vlx->scf.alpha.lumo_idx[0];
+				}
 			}
 		} else if (type == MD_VLX_MO_TYPE_BETA) {
 			if (vlx->scf.beta.lumo_idx) {
-				return vlx->scf.beta.lumo_idx[0];
+				if (snapshot_idx < vlx->number_of_frames) {
+					return vlx->scf.beta.lumo_idx[0];
+				}
 			}
 		}
 	}
@@ -3250,28 +3280,50 @@ size_t md_vlx_scf_number_of_molecular_orbitals(const md_vlx_t* vlx) {
 	return 0;
 }
 
-const double* md_vlx_scf_mo_occupancy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
-	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
-			return vlx->scf.alpha.occupancy.data;
-		} 
-		else if (type == MD_VLX_MO_TYPE_BETA) {
-			return vlx->scf.beta.occupancy.data;
-		}
+const double* md_vlx_scf_mo_occupancy(const md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
+	if (!vlx) return NULL;
+
+	const md_ndarray_f64_t* arr =
+		(type == MD_VLX_MO_TYPE_ALPHA) ? &vlx->scf.alpha.occupancy :
+		(type == MD_VLX_MO_TYPE_BETA)  ? &vlx->scf.beta.occupancy  :
+		NULL;
+
+	if (!arr || !arr->data) return NULL;
+
+	// Default snapshot
+	if (snapshot_idx == 0) {
+		return arr->data;
 	}
-	return NULL;
+
+	// Explicit snapshot requested: require [frame][...][...] layout
+	if (arr->rank != 2) return NULL;
+	if (snapshot_idx >= (size_t)arr->size[0]) return NULL;
+
+	const size_t slab_size = (size_t)arr->size[1];
+	return arr->data + snapshot_idx * slab_size;
 }
 
-const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
-	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
-			return vlx->scf.alpha.energy.data;
-		}
-		else if (type == MD_VLX_MO_TYPE_BETA) {
-			return vlx->scf.beta.energy.data;
-		}
+const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type) {
+	if (!vlx) return NULL;
+
+	const md_ndarray_f64_t* arr =
+		(type == MD_VLX_MO_TYPE_ALPHA) ? &vlx->scf.alpha.energy :
+		(type == MD_VLX_MO_TYPE_BETA)  ? &vlx->scf.beta.energy  :
+		NULL;
+
+	if (!arr || !arr->data) return NULL;
+
+	// Default snapshot
+	if (snapshot_idx == 0) {
+		return arr->data;
 	}
-	return NULL;
+
+	// Explicit snapshot requested: require [frame][...][...] layout
+	if (arr->rank != 2) return NULL;
+	if (snapshot_idx >= (size_t)arr->size[0]) return NULL;
+
+	const size_t slab_size = (size_t)arr->size[1];
+	return arr->data + snapshot_idx * slab_size;
 }
 
 bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const md_vlx_t* vlx, double cutoff_value, md_allocator_i* alloc) {
@@ -3438,34 +3490,47 @@ bool md_vlx_scf_extract_density_matrix_data_f32(float* out_values, const struct 
 }
 
 // SCF History
-size_t md_vlx_scf_history_size(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.number_of_iterations.data[vlx->scf.history.number_of_iterations.rank - 1];
-	return 0;
-}
+bool md_vlx_scf_history_extract(md_vlx_scf_history_t* hist, const struct md_vlx_t* vlx, size_t snapshot_idx) {
+	if (!hist || !vlx) return false;
+	MEMSET(hist, 0, sizeof(*hist));
 
-const double* md_vlx_scf_history_energy(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.energy.data;
-	return NULL;
-}
+	const md_ndarray_f64_t* energy        = &vlx->scf.history.energy;
+	const md_ndarray_f64_t* energy_diff   = &vlx->scf.history.energy_diff;
+	const md_ndarray_f64_t* density_diff  = &vlx->scf.history.density_diff;
+	const md_ndarray_f64_t* gradient_norm = &vlx->scf.history.gradient_norm;
+	const md_ndarray_f64_t* max_gradient  = &vlx->scf.history.max_gradient;
+	const md_ndarray_i32_t* num_iter      = &vlx->scf.history.number_of_iterations;
 
-const double* md_vlx_scf_history_energy_diff(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.energy_diff.data;
-	return NULL;
-}
+	if (!energy->data || !energy_diff->data || !density_diff->data || !gradient_norm->data || !max_gradient->data || !num_iter->data) {
+		return false;
+	}
 
-const double* md_vlx_scf_history_density_diff(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.density_diff.data;
-	return NULL;
-}
+	if (num_iter->rank != 1 || num_iter->size[0] == 0) {
+		return false;
+	}
 
-const double* md_vlx_scf_history_gradient_norm(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.gradient_norm.data;
-	return NULL;
-}
+	// Determine slice from energy tensor, then validate others against it.
+	if (energy->rank == 1) {
+		if (snapshot_idx != 0) return false;
+	} else if (energy->rank == 2) {
+		if (snapshot_idx >= (size_t)energy->size[0]) return false;
+	} else {
+		return false;
+	}
 
-const double* md_vlx_scf_history_max_gradient(const md_vlx_t* vlx) {
-	if (vlx) return vlx->scf.history.max_gradient.data;
-	return NULL;
+	size_t slice_length = energy->size[energy->rank-1];
+	size_t slice_offset = snapshot_idx * slice_length;
+
+	hist->energy        = energy->data        + slice_offset;
+	hist->energy_diff   = energy_diff->data   + slice_offset;
+	hist->density_diff  = density_diff->data  + slice_offset;
+	hist->gradient_norm = gradient_norm->data + slice_offset;
+	hist->max_gradient  = max_gradient->data  + slice_offset;
+
+	// Default to full slice length. If explicit iteration count exists, clamp to that.
+	hist->number_of_iterations = (size_t)num_iter->data[snapshot_idx];
+
+	return true;
 }
 
 bool md_vlx_parse_file(md_vlx_t* vlx, str_t filename) {

@@ -21,7 +21,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
-	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx, 0);
     for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
         vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
         min_box = vec3_min(min_box, c);
@@ -180,7 +180,7 @@ UTEST(gto, h2o) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, 0, MD_VLX_MO_TYPE_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, arena);
 

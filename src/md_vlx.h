@@ -63,7 +63,7 @@ str_t  md_vlx_basis_set_ident(const struct md_vlx_t* vlx);
 str_t  md_vlx_dft_func_label(const struct md_vlx_t* vlx);
 str_t  md_vlx_potfile(const struct md_vlx_t* vlx);
 
-const dvec3_t* md_vlx_atom_coordinates(const struct md_vlx_t* vlx);
+const dvec3_t* md_vlx_atom_coordinates(const struct md_vlx_t* vlx, size_t snapshot_idx);
 const uint8_t* md_vlx_atomic_numbers(const struct md_vlx_t* vlx);
 
 // Maps AO index to atom index, length is number of atomic orbitals
@@ -72,14 +72,14 @@ const int* md_vlx_ao_to_atom_idx(const struct md_vlx_t* vlx);
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
-size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
+size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
 
 size_t  md_vlx_scf_number_of_atomic_orbitals   (const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 
-const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
+const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
 
 // Atomic orbital GTO data
 bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
@@ -100,13 +100,17 @@ size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
 // Extracts the full density matrix into a square matrix representation
 bool md_vlx_scf_extract_density_matrix_data_f32(float* out_values, const struct md_vlx_t* vlx, size_t snapshot_idx, md_vlx_mo_type_t type);
 
+typedef struct md_vlx_scf_history_t {
+	size_t number_of_iterations;
+	const double* energy;
+	const double* energy_diff;
+	const double* density_diff;
+	const double* gradient_norm;
+	const double* max_gradient;
+} md_vlx_scf_history_t;
+
 // SCF History
-size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_history_energy(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_history_energy_diff(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_history_density_diff(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_history_gradient_norm(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
+bool md_vlx_scf_history_extract(md_vlx_scf_history_t* hist, const struct md_vlx_t* vlx, size_t snapshot_idx);
 
 // SCF (Optional data)
 // 
