@@ -328,7 +328,9 @@ typedef struct eval_context_t {
 
     // A common spatial acceleration structure which is built lazily.
     // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
-    md_spatial_acc_t* spatial_acc;
+    // Will be rebuilt and scaled up if required
+    md_spatial_acc_t spatial_acc;
+	double spatial_acc_cell_ext;
 
     // During evaluations, whenever we hit a array subscript operator, we store the indices
     // In order to propagate what will be visible and or used by the array subscript operator
@@ -5811,7 +5813,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
-        ctx.spatial_acc = NULL;
+		MEMSET(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
+        ctx.spatial_acc_cell_ext = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
             type_info_t type = expr[i]->data.type;

@@ -731,18 +731,24 @@ static procedure_t procedures[] = {
 
 #undef CSTR
 
-static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx) {
+static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
     ASSERT(ctx);
-    if (!ctx->spatial_acc) {
-        ctx->spatial_acc = md_vm_arena_push_zero(ctx->temp_alloc, sizeof(md_spatial_acc_t));
-        ctx->spatial_acc->alloc = ctx->temp_alloc;
+    
+    if (ctx->spatial_acc_cell_ext < 2.0 * max_cutoff) {
+		// REBUIDD SPATIAL ACC
+        if (ctx->spatial_acc.alloc) {
+			md_spatial_acc_free(&ctx->spatial_acc);
+        }
+        ctx->spatial_acc.alloc = ctx->temp_alloc;
 
+        // Round up to nearest multiple of 6.0 as it seems like a good granularity for typical molecular configurations.
+		double cell_ext = ceil(max_cutoff / 6.0) * 6.0;
         md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, NULL, ctx->mol->atom.count);
-        // Currently we leave this to the internal default, but could in the future be tweaked for the dataset at hand.
-        double cell_ext = 0.0;
-        md_spatial_acc_init(ctx->spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, 0);
+        md_spatial_acc_init(&ctx->spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, 0);
+		ctx->spatial_acc_cell_ext = cell_ext;
     }
-    return ctx->spatial_acc;
+
+    return &ctx->spatial_acc;
 }
 
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
@@ -2472,7 +2478,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, radius);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
@@ -2523,7 +2529,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_acc_t* acc = get_spatial_acc(ctx);
+        const md_spatial_acc_t* acc = get_spatial_acc(ctx, radius);
 
         size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
         int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);
@@ -2591,7 +2597,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const frange_t rad_range = as_frange(arg[0]);
 
     if (dst || ctx->vis) {
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, rad_range.end);
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
@@ -2645,7 +2651,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, rad_range.end);
 
         size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
         int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);
