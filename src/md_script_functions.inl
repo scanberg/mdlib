@@ -1476,17 +1476,9 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         md_bitfield_t* bf_arr = as_bitfield(arg);
         size_t num_bf = element_count(arg);
 
-        if (ctx->proc_flags & FLAG_FLATTEN) {
-			// Flatten all bitfields into one
-			md_bitfield_t flat_bf = _internal_flatten_bf(bf_arr, num_bf, ctx->temp_alloc);
-            if (ctx->mol_ctx) {
-                md_bitfield_and(&tmp_bf, &flat_bf, ctx->mol_ctx);
-                positions = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &tmp_bf, ctx->temp_alloc);
-            }
-        } else if (num_bf == 1) {
+        if (num_bf == 1) {
             md_bitfield_t* bf = bf_arr;
             if (ctx->mol_ctx) {
-                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
                 md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
                 bf = &tmp_bf;
             }
@@ -1499,8 +1491,20 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
                     bf = &tmp_bf;
                 }
-                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
-                md_array_push(positions, com, ctx->temp_alloc);
+                
+                if (ctx->proc_flags & FLAG_FLATTEN) {
+                    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+                    size_t count = md_bitfield_popcount(bf);
+                    md_array_ensure(positions, md_array_size(positions) + count, ctx->temp_alloc);
+                    while (md_bitfield_iter_next(&it)) {
+                        const uint64_t idx = md_bitfield_iter_idx(&it);
+                        vec3_t pos = vec3_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]);
+                        md_array_push(positions, pos, ctx->temp_alloc);
+                    }
+                } else {
+                    vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
+                    md_array_push(positions, com, ctx->temp_alloc);
+                }
             }
             ASSERT(num_bf == md_array_size(positions));
         }
