@@ -731,18 +731,24 @@ static procedure_t procedures[] = {
 
 #undef CSTR
 
-static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx) {
+static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
     ASSERT(ctx);
-    if (!ctx->spatial_acc) {
-        ctx->spatial_acc = md_vm_arena_push_zero(ctx->temp_alloc, sizeof(md_spatial_acc_t));
-        ctx->spatial_acc->alloc = ctx->temp_alloc;
+    
+    if (ctx->spatial_acc_cell_ext < 2.0 * max_cutoff) {
+		// REBUIDD SPATIAL ACC
+        if (ctx->spatial_acc.alloc) {
+			md_spatial_acc_free(&ctx->spatial_acc);
+        }
+        ctx->spatial_acc.alloc = ctx->temp_alloc;
 
+        // Round up to nearest multiple of 6.0 as it seems like a good granularity for typical molecular configurations.
+		double cell_ext = ceil(max_cutoff / 6.0) * 6.0;
         md_coord_stream_t stream = md_coord_stream_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, NULL, ctx->mol->atom.count);
-        // Currently we leave this to the internal default, but could in the future be tweaked for the dataset at hand.
-        double cell_ext = 0.0;
-        md_spatial_acc_init(ctx->spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, 0);
+        md_spatial_acc_init(&ctx->spatial_acc, &stream, cell_ext, &ctx->mol->unitcell, 0);
+		ctx->spatial_acc_cell_ext = cell_ext;
     }
-    return ctx->spatial_acc;
+
+    return &ctx->spatial_acc;
 }
 
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
@@ -1292,6 +1298,18 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     }
 }
 
+static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, size_t count, md_allocator_i* alloc) {
+    if (count == 1) {
+        return bf_arr[0];
+    }
+
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    for (size_t i = 0; i < count; ++i) {
+        md_bitfield_or_inplace(&bf, &bf_arr[i]);
+    }
+    return bf;
+}
+
 static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(ctx->vis);
@@ -1461,7 +1479,6 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         if (num_bf == 1) {
             md_bitfield_t* bf = bf_arr;
             if (ctx->mol_ctx) {
-                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
                 md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
                 bf = &tmp_bf;
             }
@@ -1474,8 +1491,20 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
                     bf = &tmp_bf;
                 }
-                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
-                md_array_push(positions, com, ctx->temp_alloc);
+                
+                if (ctx->proc_flags & FLAG_FLATTEN) {
+                    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+                    size_t count = md_bitfield_popcount(bf);
+                    md_array_ensure(positions, md_array_size(positions) + count, ctx->temp_alloc);
+                    while (md_bitfield_iter_next(&it)) {
+                        const uint64_t idx = md_bitfield_iter_idx(&it);
+                        vec3_t pos = vec3_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]);
+                        md_array_push(positions, pos, ctx->temp_alloc);
+                    }
+                } else {
+                    vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->atom_mass, bf);
+                    md_array_push(positions, com, ctx->temp_alloc);
+                }
             }
             ASSERT(num_bf == md_array_size(positions));
         }
@@ -1913,18 +1942,6 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         as_float(*dst) = max_val;
     }
     return 0;
-}
-
-static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, size_t count, md_allocator_i* alloc) {
-    if (count == 1) {
-        return bf_arr[0];
-    }
-    
-    md_bitfield_t bf = md_bitfield_create(alloc);
-    for (size_t i = 0; i < count; ++i) {
-        md_bitfield_or_inplace(&bf, &bf_arr[i]);
-    }
-    return bf;
 }
 
 static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -2472,7 +2489,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, radius);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
@@ -2523,7 +2540,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_acc_t* acc = get_spatial_acc(ctx);
+        const md_spatial_acc_t* acc = get_spatial_acc(ctx, radius);
 
         size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
         int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);
@@ -2591,7 +2608,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const frange_t rad_range = as_frange(arg[0]);
 
     if (dst || ctx->vis) {
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, rad_range.end);
         const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
@@ -2645,7 +2662,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        const md_spatial_acc_t* sa = get_spatial_acc(ctx);
+        const md_spatial_acc_t* sa = get_spatial_acc(ctx, rad_range.end);
 
         size_t num_idx = md_bitfield_popcount(ctx->mol_ctx);
         int32_t* idx = md_vm_arena_push_array(ctx->temp_alloc, int32_t, num_idx);

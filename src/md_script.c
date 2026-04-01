@@ -311,6 +311,7 @@ typedef struct eval_context_t {
     token_t  op_token;                  // Token for the operation which is evaluated
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
     flags_t* arg_flags;                 // Flags of arguments
+    flags_t proc_flags;                 // Procedure flags of called procedure
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_vis_t* vis;               // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
@@ -328,7 +329,9 @@ typedef struct eval_context_t {
 
     // A common spatial acceleration structure which is built lazily.
     // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
-    md_spatial_acc_t* spatial_acc;
+    // Will be rebuilt and scaled up if required
+    md_spatial_acc_t spatial_acc;
+	double spatial_acc_cell_ext;
 
     // During evaluations, whenever we hit a array subscript operator, we store the indices
     // In order to propagate what will be visible and or used by the array subscript operator
@@ -2762,16 +2765,19 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
     flags_t* old_arg_flags  = ctx->arg_flags;
     token_t* old_arg_tokens = ctx->arg_tokens;
+    flags_t  old_proc_flags = ctx->proc_flags;
+
     // Set
     ctx->arg_tokens = arg_tokens;
     ctx->arg_flags  = arg_flags;
+    ctx->proc_flags = proc->flags;
 
     result = proc->proc_ptr(dst, arg_data, ctx);
 
     // Reset
     ctx->arg_flags  = old_arg_flags;
     ctx->arg_tokens = old_arg_tokens;
-
+    ctx->proc_flags = old_proc_flags;
 done:
     for (int64_t i = (int64_t)num_args - 1; i >= 0; --i) {
         if (!(args[i]->flags & FLAG_CONSTANT)) {
@@ -5811,7 +5817,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
-        ctx.spatial_acc = NULL;
+		MEMSET(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
+        ctx.spatial_acc_cell_ext = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
             type_info_t type = expr[i]->data.type;
