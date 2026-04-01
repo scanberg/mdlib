@@ -1284,7 +1284,7 @@ void md_gl_rep_set_color(md_gl_rep_t handle, uint32_t offset, uint32_t count, co
 static bool compute_spline(const molecule_t* mol);
 
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale);
-static bool draw_licorice  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_licorice_mode_t mode, float sharpness, uint32_t uniform_color);
+static bool draw_licorice  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_bond_mode_t mode, float sharpness, uint32_t uniform_color);
 static bool draw_ribbons   (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float width_scale, float thickness_scale);
 static bool draw_cartoon   (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float coil_scale, float helix_scale, float ribbon_scale);
 
@@ -1517,7 +1517,7 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     return true;
 }
 
-static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_licorice_mode_t mode, float sharpness, uint32_t uniform_color) {
+static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_bond_mode_t mode, float sharpness, uint32_t uniform_color) {
     ASSERT(mol);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
