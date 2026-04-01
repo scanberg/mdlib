@@ -1537,12 +1537,7 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 		H5Sclose(space_id);
 
 		// Construct a unique uint64_t key for this property.
-		H5O_info1_t oinfo = {0};
-		if (H5Oget_info2(dataset_id, &oinfo, H5O_INFO_BASIC) < 0) {
-			goto done;
-		};
-		
-		uint64_t key = md_hash64(&oinfo.addr, sizeof(oinfo.addr), 0);
+		uint64_t key = md_hash64(name_buf, sizeof(name_buf), 0);
 		
 		md_vlx_atomic_property_t property = {
 			 .label = str_copy_cstr(property_label, vlx->arena),
