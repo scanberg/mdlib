@@ -437,8 +437,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     out_graph->edges = edges;
     out_graph->alloc = alloc;
     
-    MD_LOG_INFO("Extracted %u edges in Morse-Smale complex", num_edges);
-    
     success = true;
 cleanup:
     delete_buffer(ubo_buf);
