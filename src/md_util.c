@@ -268,6 +268,7 @@ static const uint8_t element_max_valence[] = {
 // Based on this with some values modified
 // Some stem from Jmol, some from Rasmol
 // http://jmol.sourceforge.net/jscolors/
+
 static const uint32_t element_cpk_colors[] = {
     RGB(255,   0, 255), // Unknown (0)  rgb(255, 0, 255)
     RGB(255, 255, 255), // H (1)        rgb(255, 255, 255)
@@ -298,7 +299,7 @@ static const uint32_t element_cpk_colors[] = {
     RGB(224, 102,  51), // Fe (26)      rgb(224, 102, 51)
     RGB(240, 144, 160), // Co (27)      rgb(240, 144, 160)
     RGB(80,  208,  80), // Ni (28)      rgb(80, 208, 80)
-    RGB(200, 128,  51), // Cu (29)      rgb(165, 42, 42)
+    RGB(200, 128,  51), // Cu (29)      rgb(200, 128, 51)
     RGB(125, 128, 176), // Zn (30)      rgb(125, 128, 176)
     RGB(194, 143, 143), // Ga (31)      rgb(194, 143, 143)
     RGB(102, 143, 143), // Ge (32)      rgb(102, 143, 143)
