@@ -215,6 +215,7 @@ typedef struct md_vlx_t {
 
 	md_element_t* atomic_numbers;
 	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
+    int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 
 	struct md_allocator_i* arena;
 } md_vlx_t;
@@ -1237,7 +1238,7 @@ static bool h5_extract_ndarray_f64(md_ndarray_f64_t* out_array, hid_t file_id, c
 	return h5_read_dataset_data(out_array->data, total_size, file_id, H5T_NATIVE_DOUBLE, field_name);
 }
 
-static bool h5_extract_ndarray_i32(md_ndarray_i32_t* out_array, hid_t file_id, const char* field_name, md_allocator_i* arena) {
+static bool h5_extract_ndarray_i32(md_ndarray_i32_t* out_array, hid_t file_id, const char* field_name, md_allocator_i* alloc) {
 	size_t dims[8];
 	int ndim = h5_read_dataset_dims(dims, 8, file_id, field_name);
 	if (ndim < 0) {
@@ -1252,7 +1253,7 @@ static bool h5_extract_ndarray_i32(md_ndarray_i32_t* out_array, hid_t file_id, c
 	}
 	out_array->rank = ndim;
 
-	md_array_resize(out_array->data, total_size, arena);
+	md_array_resize(out_array->data, total_size, alloc);
 	return h5_read_dataset_data(out_array->data, total_size, file_id, H5T_NATIVE_INT32, field_name);
 }
 
@@ -1979,6 +1980,13 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	MEMSET(vlx->atomic_numbers, 0, md_array_bytes(vlx->atomic_numbers));
 	if (!h5_read_dataset_data(vlx->atomic_numbers, md_array_size(vlx->atomic_numbers), handle, H5T_NATIVE_UINT8, "nuclear_charges")) {
 		return false;
+	}
+
+	if (h5_check_dataset_exists(handle, "qm_atom_indices")) {
+        md_array_resize(vlx->local_to_global_atom_idx, vlx->number_of_atoms, vlx->arena);
+        if (!h5_read_dataset_data(vlx->local_to_global_atom_idx, vlx->number_of_atoms, handle, H5T_NATIVE_INT32, "qm_atom_indices")) {
+			return false;
+		}
 	}
 
 	return true;
@@ -3126,6 +3134,72 @@ bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
 	return success;
 }
 
+// Attempt to open the file and check if it can supplement the existing system with QM data
+bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) {
+	ASSERT(sys);
+
+	// Simple check here, we just check for the existence of a couple of fields in h5 file.
+
+	str_t ext = {0};
+	if (extract_ext(&ext, filename)) {
+        if (!str_eq_ignore_case(ext, STR_LIT("h5")) && !str_eq_ignore_case(ext, STR_LIT("hdf5"))) {
+			// Unsupported file extension
+			return false;
+		}
+	}
+
+	// Ensure a zero terminated string for interfacing to HDF5
+	char buf[2048];
+	str_copy_to_char_buf(buf, sizeof(buf), filename);
+
+	// Open an existing file
+	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(filename));
+		return false;
+	}
+
+	bool result = false;
+	
+    if (h5_check_dataset_exists(file_id, "qm_atom_indices") &&
+		h5_check_dataset_exists(file_id, "nuclear_charges"))
+	{
+        md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+		// Derive atomic numbers from nuclear charges and verify with qm_atom_indices that they are consistent with the loaded system.
+        // This is a heuristic check, but it should be sufficient to determine if the file contains data that can supplement the existing system.
+		
+        md_ndarray_i32_t qm_atom_indices = { 0 };
+        md_ndarray_i32_t nuclear_charges = { 0 };
+		
+        if (h5_extract_ndarray_i32(&qm_atom_indices, file_id, "qm_atom_indices", temp_arena) &&
+            h5_extract_ndarray_i32(&nuclear_charges, file_id, "nuclear_charges", temp_arena))
+		{
+			if (qm_atom_indices.size[qm_atom_indices.rank - 1] == nuclear_charges.size[ qm_atom_indices.rank - 1]) {
+				uint32_t num_atoms = (int)qm_atom_indices.size[qm_atom_indices.rank - 1];
+                const int* qm_indices = qm_atom_indices.data;
+                const int* charges    = nuclear_charges.data;
+
+				bool match = true;
+				for (size_t i = 0; i < num_atoms; ++i) {
+                    int idx = qm_indices[i];
+					int z = md_atom_atomic_number(&sys->atom, idx);
+                    if (z != charges[i]) {
+						match = false;
+						break;
+					}
+				}
+				result = match;
+			}
+		}
+		md_arena_allocator_destroy(temp_arena);
+	}
+
+done:
+	H5Fclose(file_id);
+
+	return result;
+}
+
 // Externally visible procedures
 
 size_t md_vlx_number_of_atoms(const md_vlx_t* vlx) {
@@ -3205,6 +3279,11 @@ const uint8_t* md_vlx_atomic_numbers(const md_vlx_t* vlx) {
 
 const int* md_vlx_ao_to_atom_idx(const md_vlx_t* vlx) {
 	if (vlx) return vlx->ao_to_atom_idx;
+	return NULL;
+}
+
+const int* md_vlx_local_to_global_atom_idx(const md_vlx_t* vlx) {
+	if (vlx) return vlx->local_to_global_atom_idx;
 	return NULL;
 }
 

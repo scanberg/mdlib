@@ -69,6 +69,11 @@ const uint8_t* md_vlx_atomic_numbers(const struct md_vlx_t* vlx);
 // Maps AO index to atom index, length is number of atomic orbitals
 const int* md_vlx_ao_to_atom_idx(const struct md_vlx_t* vlx);
 
+// Maps local atom indices to full system indices.
+// If the system is *NOT* a subsystem, NULL will be returned, and the full system indices are the same as the atom indices.
+// Otherwise it will have the length of number of atoms, and for each atom index it will give the corresponding full system index that maps to it.
+const int* md_vlx_local_to_global_atom_idx(const struct md_vlx_t* vlx);
+
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
@@ -204,6 +209,7 @@ const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vl
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);
 bool md_vlx_system_init_from_file(struct md_system_t* sys, str_t filename);
+bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, str_t filename);
 
 #ifdef __cplusplus
 }
