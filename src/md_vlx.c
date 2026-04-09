@@ -174,7 +174,6 @@ typedef struct md_vlx_t {
 
 	// Arrays (length = number_of_atoms)
 	dvec3_t* atom_coordinates;
-	md_element_t* atomic_numbers;
 
 	md_vlx_atomic_property_t* atomic_properties; // Optional data, may be NULL, length is number of atomic properties
 
