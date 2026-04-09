@@ -31,15 +31,15 @@ UTEST(str, perf_int) {
     const int64_t num_iter = 1000000;
     int64_t acc = 0;
 
-    md_timestamp_t t0 = md_time_current();
+    md_timestamp_t t0 = md_time_now();
     for (int64_t i = 0; i < num_iter; ++i) {
         acc += atol(str.ptr);
     }
-    md_timestamp_t t1 = md_time_current();    
+    md_timestamp_t t1 = md_time_now();    
     for (int64_t i = 0; i < num_iter; ++i) {
         acc += parse_int(str);
     }
-    md_timestamp_t t2 = md_time_current();
+    md_timestamp_t t2 = md_time_now();
 
     double t_atoi  = md_time_as_milliseconds(t1 - t0);
     double t_parse = md_time_as_milliseconds(t2 - t1);
@@ -81,15 +81,15 @@ UTEST(str, perf_float) {
     const int64_t num_iter = 1000000;
     double acc = 0;
 
-    md_timestamp_t t0 = md_time_current();
+    md_timestamp_t t0 = md_time_now();
     for (int64_t i = 0; i < num_iter; ++i) {
         acc += atof(str.ptr);
     }
-    md_timestamp_t t1 = md_time_current();    
+    md_timestamp_t t1 = md_time_now();    
     for (int64_t i = 0; i < num_iter; ++i) {
         acc += parse_float(str);
     }
-    md_timestamp_t t2 = md_time_current();
+    md_timestamp_t t2 = md_time_now();
 
     double t_atof  = md_time_as_milliseconds(t1 - t0);
     double t_parse = md_time_as_milliseconds(t2 - t1);

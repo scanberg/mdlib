@@ -125,7 +125,7 @@ bool md_path_is_valid(str_t path);
 bool md_path_is_directory(str_t path);
 
 // ### TIME ###
-md_timestamp_t md_time_current(void);
+md_timestamp_t md_time_now(void);
 
 double  md_time_as_nanoseconds(md_timestamp_t t);
 double  md_time_as_milliseconds(md_timestamp_t t);
