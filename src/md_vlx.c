@@ -176,8 +176,6 @@ typedef struct md_vlx_t {
 	dvec3_t* atom_coordinates;
 	md_element_t* atomic_numbers;
 
-	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
-
 	md_vlx_atomic_property_t* atomic_properties; // Optional data, may be NULL, length is number of atomic properties
 
 	// Data blocks
@@ -188,6 +186,10 @@ typedef struct md_vlx_t {
 
 	// Atomic orbital data represented as GTOs
 	md_gto_data_t gto_data;
+
+	md_element_t* atomic_numbers;
+	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
+    int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 
 	struct md_allocator_i* arena;
 } md_vlx_t;
@@ -1441,7 +1443,7 @@ done:
 	H5Sclose(space_id);
 	H5Dclose(dataset_id);
 
-	return result;
+    return result;
 }
 
 // Scan through an h5 group (no recursion) and check for datasets with the attribute 'atomic_property', if found, this will contain the label of the property.
@@ -2108,6 +2110,13 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 			vlx->atom_coordinates[i].x *= BOHR_TO_ANGSTROM;
 			vlx->atom_coordinates[i].y *= BOHR_TO_ANGSTROM;
 			vlx->atom_coordinates[i].z *= BOHR_TO_ANGSTROM;
+		}
+	}
+
+	if (h5_check_dataset_exists(handle, "qm_atom_indices")) {
+        md_array_resize(vlx->local_to_global_atom_idx, vlx->number_of_atoms, vlx->arena);
+		if (!h5_read_dataset_data(vlx->local_to_global_atom_idx, vlx->number_of_atoms, handle, H5T_NATIVE_INT32, "qm_atom_indices")) {
+			return false;
 		}
 	}
 
@@ -3302,6 +3311,72 @@ bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
 	return success;
 }
 
+// Attempt to open the file and check if it can supplement the existing system with QM data
+bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) {
+	ASSERT(sys);
+
+	// Simple check here, we just check for the existence of a couple of fields in h5 file.
+
+	str_t ext = {0};
+	if (extract_ext(&ext, filename)) {
+        if (!str_eq_ignore_case(ext, STR_LIT("h5")) && !str_eq_ignore_case(ext, STR_LIT("hdf5"))) {
+			// Unsupported file extension
+			return false;
+		}
+	}
+
+	// Ensure a zero terminated string for interfacing to HDF5
+	char buf[2048];
+	str_copy_to_char_buf(buf, sizeof(buf), filename);
+
+	// Open an existing file
+	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(filename));
+		return false;
+	}
+
+	bool result = false;
+	
+    if (h5_check_dataset_exists(file_id, "qm_atom_indices") &&
+		h5_check_dataset_exists(file_id, "nuclear_charges"))
+	{
+        md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+		// Derive atomic numbers from nuclear charges and verify with qm_atom_indices that they are consistent with the loaded system.
+        // This is a heuristic check, but it should be sufficient to determine if the file contains data that can supplement the existing system.
+		
+		size_t vlx_num_atoms = 0;
+		if (!h5_read_scalar(&vlx_num_atoms, file_id, H5T_NATIVE_UINT64, "number_of_atoms")) {
+			return false;
+		}
+
+		md_array(int) qm_atom_indices = md_array_create(int, vlx_num_atoms, temp_arena);
+		md_array(int) nuclear_charges = md_array_create(int, vlx_num_atoms, temp_arena);
+		
+        if (h5_read_dataset_data(qm_atom_indices, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "qm_atom_indices") &&
+			h5_read_dataset_data(nuclear_charges, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "nuclear_charges"))
+		{
+			bool match = true;
+			for (size_t i = 0; i < vlx_num_atoms; ++i) {
+                int idx = qm_atom_indices[i];
+				int z = md_atom_atomic_number(&sys->atom, idx);
+                if (z != nuclear_charges[i]) {
+					match = false;
+					break;
+				}
+			}
+			result = match;
+		
+		}
+		md_arena_allocator_destroy(temp_arena);
+	}
+
+done:
+	H5Fclose(file_id);
+
+	return result;
+}
+
 // Externally visible procedures
 
 size_t md_vlx_number_of_atoms(const md_vlx_t* vlx) {
@@ -3361,6 +3436,11 @@ const uint8_t* md_vlx_atomic_numbers(const md_vlx_t* vlx) {
 
 const int* md_vlx_ao_to_atom_idx(const md_vlx_t* vlx) {
 	if (vlx) return vlx->ao_to_atom_idx;
+	return NULL;
+}
+
+const int* md_vlx_local_to_global_atom_idx(const md_vlx_t* vlx) {
+	if (vlx) return vlx->local_to_global_atom_idx;
 	return NULL;
 }
 
