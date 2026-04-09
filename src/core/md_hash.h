@@ -11,18 +11,33 @@
 #include <stdint.h>
 #include <stddef.h>
 
+static inline uint32_t md_fnv1a32(const char *s, size_t len) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= (unsigned char)s[i];
+        h *= 16777619u;
+    }
+    return h;
+}
 
-#if 0
-// @NOTE(Robin): This does not seem to work on MSVC
-// https://stackoverflow.com/questions/2826559/compile-time-preprocessor-hashing-of-string
-// http://lolengine.net/blog/2011/12/20/cpp-constant-string-hash
-#define HASH_H1(s,i,x)   (x*65599u+(uint8_t)s[(i)<sizeof(s)?sizeof(s)-1-(i):sizeof(s)])
-#define HASH_H4(s,i,x)   HASH_H1 (s,i,HASH_H1 (s,i+1, HASH_H1 (s,i+2,  HASH_H1 (s,i+3,x))))
-#define HASH_H16(s,i,x)  HASH_H4 (s,i,HASH_H4 (s,i+4, HASH_H4 (s,i+8,  HASH_H4 (s,i+12,x))))
-#define HASH_H64(s,i,x)  HASH_H16(s,i,HASH_H16(s,i+16,HASH_H16(s,i+32, HASH_H16(s,i+48,x))))
-#define HASH_H256(s,i,x) HASH_H64(s,i,HASH_H64(s,i+64,HASH_H64(s,i+128,HASH_H64(s,i+192,x))))
-// Hash a string literal (at compile time)
-#define HASH_STR_LIT(s)  ((uint32_t)(HASH_H256(s"",0,0)^(HASH_H256(s"",0,0)>>16)))
+#if defined(__clang__) || defined(__GNUC__)
+
+#define HASH_STR32(str)                                             \
+    (__builtin_constant_p(str"") ?                                  \
+        (uint32_t)(                                                 \
+            ({                                                      \
+                const char *s_ = (str);                             \
+                uint32_t h_ = 2166136261u;                          \
+                while (*s_) {                                       \
+                    h_ ^= (unsigned char)*s_++;                     \
+                    h_ *= 16777619u;                                \
+                }                                                   \
+                h_;                                                 \
+            })                                                      \
+        )                                                           \
+    : md_fnv1a32(str"", sizeof(str) - 1))
+#else
+#define HASH_STR32(str) (md_fnv1a32(str"", sizeof(str) - 1))
 #endif
 
 #ifdef __cplusplus
@@ -90,7 +105,7 @@ static inline float md_halton(int index, int base) {
     return r;
 }
 
-
+// Standard default hash functions.
 static inline uint32_t md_hash32(const void* input, size_t len, uint32_t seed) {
     return XXH32(input, len, seed);
 }
