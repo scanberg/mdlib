@@ -231,6 +231,12 @@ typedef struct md_gl_draw_args_t {
         const float* prev_proj_matrix;
     } view_transform;
 
+    // Picking offset for atoms and bonds, used to assign unique picking ids to each renderable element in the molecule.
+    struct {
+        uint32_t atom_base;
+        uint32_t bond_base;
+    } picking_offset;
+
     uint32_t atom_mask;
 	float max_bond_length;	// Maximum bond length for rendering bonds (in Ångström)
 } md_gl_draw_args_t;
