@@ -52,6 +52,8 @@ size_t md_strb_len(md_strb_t sb);
 // Capacity of buffer in bytes
 size_t md_strb_cap(md_strb_t sb);
 
+bool md_strb_empty(md_strb_t sb);
+
 // Size of buffer in bytes (including zero terminator)
 size_t md_strb_size(md_strb_t sb);
 
