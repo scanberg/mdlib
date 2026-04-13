@@ -2297,6 +2297,46 @@ static inline vec2_t operator / (float s, vec2_t a) {
     return c;
 }
 
+static inline vec2_t operator *= (vec2_t& a, vec2_t b) {
+    a = vec2_mul(a, b);
+    return a;
+}
+
+static inline vec2_t operator *= (vec2_t& v, float s) {
+    v = vec2_mul_f(v, s);
+    return v;
+}
+
+static inline vec2_t operator /= (vec2_t& a, vec2_t b) {
+    a = vec2_div(a, b);
+    return a;
+}
+
+static inline vec2_t operator /= (vec2_t& v, float s) {
+    v = vec2_div_f(v, s);
+    return v;
+}
+
+static inline vec2_t operator += (vec2_t& a, vec2_t b) {
+    a = vec2_add(a, b);
+    return a;
+}
+
+static inline vec2_t operator += (vec2_t& v, float s) {
+    v = vec2_add_f(v, s);
+    return v;
+}
+
+static inline vec2_t operator -= (vec2_t& a, vec2_t b) {
+    a = vec2_sub(a, b);
+    return a;
+}
+
+static inline vec2_t operator -= (vec2_t& v, float s) {
+    v = vec2_sub_f(v, s);
+    return v;
+}
+
 // vec3
 static inline bool operator == (vec3_t a, vec3_t b){
     return a.x == b.x && a.y == b.y && a.z == b.z;
