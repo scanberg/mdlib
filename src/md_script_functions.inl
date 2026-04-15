@@ -798,7 +798,7 @@ static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_
 #define COLOR_U32(R,G,B,A) (((uint32_t)A << 24) | ((uint32_t)B << 16) | ((uint32_t)G << 8) | ((uint32_t)R))
 
 static inline md_script_vis_vertex_t vertex(vec3_t p, uint32_t color) {
-    return (md_script_vis_vertex_t){p, color};
+    return (md_script_vis_vertex_t){p, color, 0xFFFFFFFFu};
 }
 
 static inline void push_point(md_script_vis_vertex_t v, md_script_vis_t* vis) {
