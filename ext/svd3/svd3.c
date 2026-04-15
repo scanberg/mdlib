@@ -15,6 +15,15 @@
 **
 **************************************************************************/
 
+/*
+
+MODIFIED FROM ITS ORIGINAL SOURCE
+rsqrt produced a collision in recent versions of glibc so it was renamed to invSqrt.
+
+Robin
+
+*/
+
 
 #define _gamma 5.828427124746190097  // FOUR_GAMMA_SQUARED = sqrt(8)+3;
 #define _cstar 0.923879532511286756  // cos(pi/8)
@@ -26,7 +35,7 @@
 #include <stdbool.h>
 #include <math.h>
 
-static inline float rsqrt(float x) {
+static inline float invSqrt(float x) {
     return 1.0f / sqrtf(x);
 }
 
@@ -109,7 +118,7 @@ static inline void approximateGivensQuaternion(float a11, float a12, float a22, 
     *ch = 2 * (a11 - a22);
     *sh = a12;
     bool b = _gamma * *sh * *sh < *ch * *ch;
-    float w = rsqrt(*ch * *ch + *sh * *sh);
+    float w = invSqrt(*ch * *ch + *sh * *sh);
     *ch = b ? w * *ch : (float)_cstar;
     *sh = b ? w * *sh : (float)_sstar;
 }
@@ -234,7 +243,7 @@ static inline void QRGivensQuaternion(float a1, float a2, float *ch, float *sh) 
     *ch = fabsf(a1) + fmaxf(rho, epsilon);
     bool b = a1 < 0;
     condSwap(b, sh, ch);
-    float w = rsqrt(*ch * *ch + *sh * *sh);
+    float w = invSqrt(*ch * *ch + *sh * *sh);
     *ch *= w;
     *sh *= w;
 }
