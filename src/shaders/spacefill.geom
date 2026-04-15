@@ -34,9 +34,10 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
+    uint u_atom_base_index;
+    uint u_bond_base_index;
+    uint _pad;
+    
     float u_radius_scale;
 };
 
@@ -90,7 +91,7 @@ void main()
     out_frag.view_sphere = in_vert[0].view_sphere;
     out_frag.view_velocity = in_vert[0].view_velocity;
     out_frag.color = in_vert[0].color;
-    out_frag.atom_idx = in_vert[0].atom_idx;
+    out_frag.atom_idx = u_atom_base_index + in_vert[0].atom_idx;
 
 #if ORTHO
     emit_vertex_ortho(vec2(-1, -1));

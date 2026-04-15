@@ -30,7 +30,8 @@ layout (std140) uniform ubo {
     uint u_atom_mask;
     uint u_atom_base_index;
     uint u_bond_base_index;
-    uint _pad0;
+    uint _pad;
+
     float u_radius;
     float u_max_d2;
     int   u_mode;
