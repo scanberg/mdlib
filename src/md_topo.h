@@ -18,6 +18,14 @@ typedef enum md_topo_critical_point_type_t {
     MD_TOPO_JOIN_SADDLE = 4,
 } md_topo_critical_point_type_t;
 
+static const char* md_topo_critical_point_type_str[] = {
+    "Undefined",
+    "Maximum",
+    "Split Saddle",
+    "Minimum",
+    "Join Saddle"
+};
+
 // Edge in the Morse-Smale complex
 // Edges connect critical points along integral lines:
 // - Maxima -> Split saddles (descending 1-manifolds)
@@ -115,6 +123,14 @@ static inline size_t md_topo_offset_minima(const md_topo_extremum_graph_t* graph
 
 static inline size_t md_topo_offset_join_saddles(const md_topo_extremum_graph_t* graph) {
     return graph ? graph->num_maxima + graph->num_split_saddles + graph->num_minima : 0;
+}
+
+static inline md_topo_critical_point_type_t md_topo_vertex_type(const md_topo_extremum_graph_t* graph, size_t vertex_idx) {
+    if (!graph || vertex_idx >= graph->num_vertices) return MD_TOPO_UNDEFINED;
+    if (vertex_idx < graph->num_maxima) return MD_TOPO_MAXIMUM;
+    if (vertex_idx < graph->num_maxima + graph->num_split_saddles) return MD_TOPO_SPLIT_SADDLE;
+    if (vertex_idx < graph->num_maxima + graph->num_split_saddles + graph->num_minima) return MD_TOPO_MINIMUM;
+    return MD_TOPO_JOIN_SADDLE;
 }
 
 // Extract vertex types into separate array (returns number of types written)
