@@ -1290,34 +1290,74 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 		return false;
 	}
 
-	// Open the dataset
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
 		return false;
 	}
 
-	// Get the datatype and space
-	hid_t datatype_id = H5Dget_type(dataset_id);  // Get datatype
-	hid_t space_id = H5Dget_space(dataset_id);    // Get dataspace
+	hid_t datatype_id = H5Dget_type(dataset_id);
+	hid_t space_id = H5Dget_space(dataset_id);
 
-	// Determine size of string (assume variable-length string)
-	size_t size = H5Tget_size(datatype_id);
-	str_t data = str_alloc(size, alloc);
-	herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (char*)data.ptr);
-	if (status != 0) {
-		MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
-		str_free(data, alloc);
+	if (datatype_id == H5I_INVALID_HID || space_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to query H5 datatype/space for dataset: '%s'", field_name);
 		goto done;
 	}
-	*str = data;
+
+	if (H5Tget_class(datatype_id) != H5T_STRING) {
+		MD_LOG_ERROR("H5 dataset is not a string: '%s'", field_name);
+		goto done;
+	}
+
+	if (H5Tis_variable_str(datatype_id)) {
+		char* tmp = NULL;
+		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, &tmp);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read variable-length string for H5 dataset: '%s'", field_name);
+			goto done;
+		}
+
+		size_t len = tmp ? strlen(tmp) : 0;
+		str_t data = str_alloc(len, alloc);
+		if (len > 0) {
+			MEMCPY((char*)data.ptr, tmp, len);
+		}
+		*str = data;
+
+		if (tmp) {
+			H5free_memory(tmp);
+		}
+	} else {
+		const size_t raw_len = H5Tget_size(datatype_id);
+		char* tmp = md_alloc(md_get_heap_allocator(), raw_len + 1);
+		if (!tmp) {
+			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
+			goto done;
+		}
+		MEMSET(tmp, 0, raw_len + 1);
+
+		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read fixed-length string for H5 dataset: '%s'", field_name);
+			md_free(md_get_heap_allocator(), tmp, raw_len + 1);
+			goto done;
+		}
+
+		size_t len = strnlen(tmp, raw_len);
+		str_t data = str_alloc(len, alloc);
+		if (len > 0) {
+			MEMCPY((char*)data.ptr, tmp, len);
+		}
+		*str = data;
+
+		md_free(md_get_heap_allocator(), tmp, raw_len + 1);
+	}
 
 	result = true;
-done:
 
-	// Close HDF5 resources
-	H5Tclose(datatype_id);
-	H5Sclose(space_id);
+done:
+	if (datatype_id != H5I_INVALID_HID) H5Tclose(datatype_id);
+	if (space_id != H5I_INVALID_HID) H5Sclose(space_id);
 	H5Dclose(dataset_id);
 
 	return result;
