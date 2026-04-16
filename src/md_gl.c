@@ -208,9 +208,6 @@ typedef struct {
     uint32_t id;
     uint32_t flags;
 
-    uint32_t atom_index_base;
-    uint32_t bond_index_base;
-
     uint32_t atom_count;
     uint32_t comp_count;
     uint32_t bond_count;
@@ -373,14 +370,6 @@ static inline void gl_buffer_clear(gl_buffer_t buf) {
     glUnmapBuffer(GL_ARRAY_BUFFER);
     //    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-}
-
-void md_gl_mol_set_index_base(md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base) {
-    molecule_t* mol = mol_lookup(handle.id);
-    if (mol) {
-        mol->atom_index_base = atom_index_base;
-        mol->bond_index_base = bond_index_base;
-    }
 }
 
 void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
@@ -930,8 +919,6 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         handle.id = id;
         molecule_t* gl_mol = ctx.molecules + index;
 
-        gl_mol->bond_index_base = 0x80000000;
-
         gl_mol->atom_count = (uint32_t)sys->atom.count;
         gl_mol->buffer[GL_BUFFER_ATOM_POSITION]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3,   NULL, GL_DYNAMIC_DRAW);
         gl_mol->buffer[GL_BUFFER_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3,   NULL, GL_DYNAMIC_COPY);
@@ -1312,6 +1299,8 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
         extract_jitter_uv(ubo_data->jitter_uv.elem + 2, *prev_view_to_clip);
     }
     ubo_data->atom_mask = args->atom_mask;
+    ubo_data->atom_index_base = args->picking_offset.atom_base;
+    ubo_data->bond_index_base = args->picking_offset.bond_base;
 }
 
 static inline bool is_backbone_representation_type(md_gl_rep_type_t type) {
@@ -1396,8 +1385,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     int program_permutation = 0;
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
 
-    uint32_t index_base[2] = {0,0};
-
     // Maximum bond length in units (Ångström assumed)
     const float max_length = args->max_bond_length > 0.0f ? args->max_bond_length : 5.0f;
         
@@ -1423,12 +1410,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
             // Non uniform scale is not supported, it will cause rendering artifact for radius scaling parameters which are assumed to be uniform.
             scale = mean;
-        }
-
-        if (mol->atom_index_base != index_base[0] || mol->bond_index_base != index_base[1]) {
-            index_base[0] = mol->atom_index_base;
-            index_base[1] = mol->bond_index_base;
-            gl_buffer_set_sub_data(ctx.ubo, offsetof(gl_ubo_base_t, atom_index_base), sizeof(index_base), &index_base);
         }
 
         switch (draw_op->type) {

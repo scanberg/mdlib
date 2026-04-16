@@ -473,9 +473,9 @@ UTEST_F(util, structure_matching_amyloid_chain) {
             ref_len = md_array_size(new_idx);
         }
 
-        md_timestamp_t t0 = md_time_current();
+        md_timestamp_t t0 = md_time_now();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_INSTANCE, sys, alloc);
-        md_timestamp_t t1 = md_time_current();
+        md_timestamp_t t1 = md_time_now();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_num_ranges(&result);
         printf("result count: %zu\n", result_count);
@@ -495,9 +495,9 @@ UTEST_F(util, structure_matching_PFTAA) {
         const int*   ref_idx  = md_index_range_beg (&sys->structure, ref_structure_idx);
         const size_t ref_size = md_index_range_size(&sys->structure, ref_structure_idx);
 
-        md_timestamp_t t0 = md_time_current();
+        md_timestamp_t t0 = md_time_now();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, sys, alloc);
-        md_timestamp_t t1 = md_time_current();
+        md_timestamp_t t1 = md_time_now();
         printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_num_ranges(&result);
         printf("result count: %zu\n", result_count);
@@ -537,9 +537,9 @@ UTEST_F(util, structure_matching_PFTAA_ring) {
         // Symmetry, represents half molecule minus the ring which holds the two symmetric parts together.
         const int ref_idx[] = {0,1,2,3,4,5,6,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24,25,46,47,48};
         const int64_t ref_len = ARRAY_SIZE(ref_idx);
-        md_timestamp_t t0 = md_time_current();
+        md_timestamp_t t0 = md_time_now();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, sys, alloc);
-        md_timestamp_t t1 = md_time_current();
+        md_timestamp_t t1 = md_time_now();
         printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
         size_t result_count = md_index_data_num_ranges(&result);
         EXPECT_EQ(result_count, 2);
@@ -757,7 +757,7 @@ UTEST_F(util, structure_matching_smiles) {
         //{STR_LIT("ASPIRINE"), &utest_fixture->mol_aspirine},
     };
 
-    md_timestamp_t t0 = md_time_current();
+    md_timestamp_t t0 = md_time_now();
     for (const test_sys_t* test = test_mols; test != test_mols + ARRAY_SIZE(test_mols); ++test) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
         for (const res_t* res = residues; res != residues + ARRAY_SIZE(residues); ++res) {
@@ -843,7 +843,7 @@ UTEST_F(util, structure_matching_smiles) {
         }
         md_vm_arena_temp_end(temp);
     }
-    md_timestamp_t t1 = md_time_current();
+    md_timestamp_t t1 = md_time_now();
     printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
 
 }
@@ -935,15 +935,15 @@ UTEST(util, radix_sort) {
 
     md_timestamp_t t0, t1;
 
-    t0 = md_time_current();
+    t0 = md_time_now();
     md_util_sort_radix_uint32(indices, values, N, temp);
-    t1 = md_time_current();
+    t1 = md_time_now();
 
     printf("Time for radix index sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 
-    t0 = md_time_current();
+    t0 = md_time_now();
     md_util_sort_radix_inplace_uint32(values, N);
-    t1 = md_time_current();
+    t1 = md_time_now();
 
     printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }

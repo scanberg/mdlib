@@ -1013,44 +1013,40 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
     }
 
     hid_t datatype_id = H5Dget_type(dataset_id);
-    hid_t space_id = H5Dget_space(dataset_id);
+    hid_t space_id    = H5Dget_space(dataset_id);
+	hid_t memspace_id = H5S_ALL;
 
-    int ndims = H5Sget_simple_extent_ndims(space_id);
+    int    rank = H5Sget_simple_extent_ndims(space_id);
     size_t size = H5Tget_size(datatype_id);
-    str_t data = str_alloc(size, alloc);
+
+	size_t temp_pos = md_temp_get_pos();
+    char* temp_str = md_temp_push(size + 1);
 
     herr_t status = -1;
-    if (ndims == 2) {
-        // 2D array: select [0,0]
-        hsize_t offset[2] = {0, 0};
-        hsize_t count[2]  = {1, 1};
-        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
-        hid_t memspace_id = H5Screate_simple(2, count, NULL);
-        status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, (char*)data.ptr);
-        H5Sclose(memspace_id);
-    } else if (ndims == 1) {
-        hsize_t offset[1] = {0};
-        hsize_t count[1]  = {1};
-        H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
-        hid_t memspace_id = H5Screate_simple(1, count, NULL);
-        status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, (char*)data.ptr);
-        H5Sclose(memspace_id);
-    } else if (ndims == 0) {
-        status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (char*)data.ptr);
+	if (rank < 8) {
+		hsize_t offset[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+		hsize_t count[8]  = {1, 1, 1, 1, 1, 1, 1, 1};
+		H5Sselect_hyperslab(space_id, H5S_SELECT_SET, offset, NULL, count, NULL);
+		hid_t memspace_id = H5Screate_simple(rank, count, NULL);
+		status = H5Dread(dataset_id, datatype_id, memspace_id, space_id, H5P_DEFAULT, temp_str);
+		H5Sclose(memspace_id);
+	} else if (rank == 0) {
+        status = H5Dread(dataset_id, datatype_id, H5S_ALL, space_id, H5P_DEFAULT, temp_str);
     } else {
-        MD_LOG_ERROR("Unsupported string dataset rank: %d", ndims);
-        str_free(data, alloc);
+        MD_LOG_ERROR("Unsupported string dataset rank: %d", rank);
         goto done;
     }
 
     if (status != 0) {
         MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
-        str_free(data, alloc);
         goto done;
     }
-    *str = data;
+
+	// Success
+    *str = str_copy_cstr(temp_str, alloc);
     result = true;
 done:
+	md_temp_set_pos_back(temp_pos);
     H5Tclose(datatype_id);
     H5Sclose(space_id);
     H5Dclose(dataset_id);
@@ -1985,6 +1981,13 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	if (h5_check_dataset_exists(handle, "qm_atom_indices")) {
         md_array_resize(vlx->local_to_global_atom_idx, vlx->number_of_atoms, vlx->arena);
         if (!h5_read_dataset_data(vlx->local_to_global_atom_idx, vlx->number_of_atoms, handle, H5T_NATIVE_INT32, "qm_atom_indices")) {
+			return false;
+		}
+	}
+
+	if (h5_check_dataset_exists(handle, "qm_atom_indices")) {
+        md_array_resize(vlx->local_to_global_atom_idx, vlx->number_of_atoms, vlx->arena);
+		if (!h5_read_dataset_data(vlx->local_to_global_atom_idx, vlx->number_of_atoms, handle, H5T_NATIVE_INT32, "qm_atom_indices")) {
 			return false;
 		}
 	}
@@ -3167,7 +3170,12 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) 
         md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 		// Derive atomic numbers from nuclear charges and verify with qm_atom_indices that they are consistent with the loaded system.
         // This is a heuristic check, but it should be sufficient to determine if the file contains data that can supplement the existing system.
-		
+
+		size_t vlx_num_atoms = 0;
+		if (!h5_read_scalar(&vlx_num_atoms, file_id, H5T_NATIVE_UINT64, "number_of_atoms")) {
+			return false;
+		}
+
         md_ndarray_i32_t qm_atom_indices = { 0 };
         md_ndarray_i32_t nuclear_charges = { 0 };
 		

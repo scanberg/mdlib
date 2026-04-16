@@ -136,7 +136,7 @@ static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
 
     // Prevent spamming the logger with the same message by comparing its hash
-    const md_timestamp_t t = md_time_current();
+    const md_timestamp_t t = md_time_now();
     const uint32_t hash = djb2_hash(msg);
 
     if (md_time_as_seconds(t - prev_time) < 1.0 && hash == prev_hash) {

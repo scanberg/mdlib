@@ -499,7 +499,7 @@ struct parse_context_t {
 // ##########################
 
 static uint64_t generate_fingerprint(void) {
-    return md_time_current();
+    return md_time_now();
 }
 
 static int operator_precedence(ast_type_t type) {

@@ -11,9 +11,10 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
+    uint u_atom_base_index;
+    uint u_bond_base_index;
+    uint _pad;
+    
     float u_width_scale;
     float u_height_scale;
 };
@@ -48,7 +49,7 @@ void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
     out_frag.view_coord = view_coord.xyz / view_coord.w;
     out_frag.view_velocity = in_vert[idx].view_velocity;
     out_frag.view_normal = normal.xyz;
-    out_frag.picking_idx = in_vert[0].picking_idx;
+    out_frag.picking_idx = u_atom_base_index + in_vert[0].picking_idx;
     gl_Position = clip_coord;
     EmitVertex();
 }

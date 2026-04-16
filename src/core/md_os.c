@@ -1187,7 +1187,7 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
 
 // ### TIME ###
 
-md_timestamp_t md_time_current(void) {
+md_timestamp_t md_time_now(void) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);

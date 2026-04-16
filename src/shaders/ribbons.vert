@@ -14,9 +14,10 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
+    uint u_atom_base_index;
+    uint u_bond_base_index;
+    uint _pad;
+
     float u_width_scale;
     float u_height_scale;
 };
@@ -49,7 +50,7 @@ void main() {
     out_vert.view_velocity   = vec3(u_world_to_view * vec4(in_velocity, 0));
     out_vert.color           = texelFetch(u_atom_color_buffer, int(in_atom_index));
     out_vert.segment_t       = in_segment_t;
-    out_vert.picking_idx     = in_atom_index;
+    out_vert.picking_idx     = u_atom_base_index + in_atom_index;
     out_vert.spline_flags    = in_flags;
     out_vert.atom_flags      = texelFetch(u_atom_flags_buffer, int(in_atom_index)).x;
 }

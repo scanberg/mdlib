@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include "md_str_builder.h"
 
 void md_strb_init(md_strb_t* sb, struct md_allocator_i* alloc) {
 	ASSERT(sb);
@@ -109,9 +110,11 @@ size_t md_strb_cap(md_strb_t sb) {
 	return md_array_capacity(sb.buf);
 }
 
-const char* md_strb_to_cstr(md_strb_t sb) {
-	return sb.buf;
+bool md_strb_empty(md_strb_t sb) {
+	return md_strb_len(sb) == 0;
 }
+
+const char* md_strb_to_cstr(md_strb_t sb) { return sb.buf; }
 
 str_t md_strb_to_str(md_strb_t sb) {
 	const size_t len = md_strb_len(sb);

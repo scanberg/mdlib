@@ -657,13 +657,13 @@ UTEST(spatial_hash, n2) {
     uint32_t count = 0;
 
     // Spatial acc implementation
-    start = md_time_current();
+    start = md_time_now();
     md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
     md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
-    end = md_time_current();
+    end = md_time_now();
     size_t sa_count = count;
     //end = md_time_current();
     //printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));
@@ -672,10 +672,10 @@ UTEST(spatial_hash, n2) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, sa_count);
     }
 
-    start = md_time_current();
+    start = md_time_now();
     count = 0;
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, 5.0, spatial_acc_neighbor_callback, &count, 0);
-	end = md_time_current();
+	end = md_time_now();
     sa_count = count;
 	//printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
 	size_t ext_expected_count = expected_count * 2 + sys.atom.count;
