@@ -5111,11 +5111,9 @@ bool md_util_system_infer_structures(md_system_t* sys) {
 
     md_allocator_i* alloc = sys->alloc;
 
-    if (sys->structure.alloc && sys->structure.alloc != alloc) {
-        md_index_data_free(&sys->structure);
-    }
-    sys->structure.alloc = alloc;
-    md_index_data_clear(&sys->structure);
+    md_array_shrink(sys->structure.offset, 0);
+    md_array_shrink(sys->structure.atom_idx, 0);
+    md_array_shrink(sys->structure.parent_idx, 0);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
 
@@ -5124,46 +5122,51 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     // Create a bitfield to keep track of which atoms have been visited
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
 
-    // The capacity is arbitrary here, and will be resized if needed.
-    fifo_t queue = fifo_create(1024, temp_arena);
+    // Parallel queues:
+    // - atom_queue   : global atom index to visit
+    // - parent_queue : local parent index within the current structure, -1 for root
+    fifo_t atom_queue   = fifo_create(1024, temp_arena);
+    fifo_t parent_queue = fifo_create(1024, temp_arena);
 
-    md_array(int) indices = md_array_create(int, 1024, temp_arena);
+    // Sentinel start offset
+    md_array_push(sys->structure.offset, 0, alloc);
 
     for (int i = 0; i < (int)atom_count; ++i) {
-        md_array_shrink(indices, 0);
-        // Skip any atom which has already been touched
         if (bitfield_test_bit(visited, i)) continue;
 
-        fifo_clear(&queue);
-        fifo_push(&queue, i);
-        while (!fifo_empty(&queue)) {
-            int cur = fifo_pop(&queue);
-            if (bitfield_test_bit(visited, cur)) continue;
-            bitfield_set_bit(visited, cur);
+        const uint32_t base_offset = (uint32_t)md_array_size(sys->structure.atom_idx);
 
-            md_array_push(indices, cur, temp_arena);
-            
+        fifo_clear(&atom_queue);
+        fifo_clear(&parent_queue);
+
+        bitfield_set_bit(visited, i);
+        fifo_push(&atom_queue, i);
+        fifo_push(&parent_queue, -1);
+
+        while (!fifo_empty(&atom_queue)) {
+            const int cur        = fifo_pop(&atom_queue);
+            const int parent_idx = fifo_pop(&parent_queue);
+
+            const int local_idx = (int)(md_array_size(sys->structure.atom_idx) - base_offset);
+
+            md_array_push(sys->structure.atom_idx, cur, alloc);
+            md_array_push(sys->structure.parent_idx, parent_idx, alloc);
+
             md_bond_iter_t it = md_bond_iter(&sys->bond, cur);
             while (md_bond_iter_has_next(&it)) {
-                int next = md_bond_iter_atom_index(&it);
-                if (!bitfield_test_bit(visited, next)) {
-                    fifo_push(&queue, next);
-                }
+                const int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
+
+                if (bitfield_test_bit(visited, next)) continue;
+
+                bitfield_set_bit(visited, next);
+                fifo_push(&atom_queue, next);
+                fifo_push(&parent_queue, local_idx);
             }
         }
 
-        // Sort the indices within the structure for more coherent memory access
-        size_t size = md_array_size(indices);
-        if (size < 128) {
-            sort_arr(indices, (int)size);
-        } else {
-            uint32_t* temp = md_vm_arena_push(temp_arena, size * sizeof(uint32_t));
-            sort_radix_inplace_uint32((uint32_t*)indices, size, temp);
-        }
-        
-        // Here we should have exhausted every atom that is connected to index i.
-        md_index_data_push_arr(&sys->structure, indices, md_array_size(indices));
+        sys->structure.count += 1;
+        md_array_push(sys->structure.offset, (uint32_t)md_array_size(sys->structure.atom_idx), alloc);
     }
     
     md_vm_arena_destroy(temp_arena);
@@ -8798,6 +8801,92 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
     return true;
 }
 
+bool md_util_unwrap_structure(float* x, float* y, float* z, const md_structure_t* structure, const md_unitcell_t* cell) {
+    if (!x) {
+        MD_LOG_ERROR("Missing required input: in_out_x");
+        return false;
+    }
+
+    if (!y) {
+        MD_LOG_ERROR("Missing required input: in_out_y");
+        return false;
+    }
+
+    if (!z) {
+        MD_LOG_ERROR("Missing required input: in_out_y");
+        return false;
+    }
+
+    if (!structure) {
+        MD_LOG_ERROR("Missing structure");
+        return false;
+    }
+
+    if (!cell) {
+        MD_LOG_ERROR("Missing cell");
+        return false;
+    }
+
+
+    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
+
+    if (!is_ortho && !is_triclinic) {
+        return true;
+    }
+
+
+    // atom_idx[0] is the root, parent_idx[0] is expected to be -1
+
+    if (is_ortho) {
+        vec4_t ext = {0};
+        md_unitcell_diag_extract_float(ext.elem, cell);
+
+        for (size_t i = 1; i < structure->count; ++i) {
+            const int32_t cur_atom = structure->atom_idx[i];
+            const int32_t par_local = structure->parent_idx[i];
+
+            ASSERT(par_local >= 0);
+            ASSERT((size_t)par_local < i);
+
+            const int32_t ref_atom = structure->atom_idx[par_local];
+
+            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
+            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
+
+            unwrap_atom_ortho_vec4(&pos, &ref, ext);
+
+            x[cur_atom] = pos.x;
+            y[cur_atom] = pos.y;
+            z[cur_atom] = pos.z;
+        }
+    } else {
+        mat3_t A = {0};
+        md_unitcell_A_extract_float(A.elem, cell);
+
+        for (size_t i = 1; i < structure->count; ++i) {
+            const int32_t cur_atom = structure->atom_idx[i];
+            const int32_t par_local = structure->parent_idx[i];
+
+            ASSERT(par_local >= 0);
+            ASSERT((size_t)par_local < i);
+
+            const int32_t ref_atom = structure->atom_idx[par_local];
+
+            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
+            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
+
+            unwrap_atom_triclinic_vec4(&pos, &ref, &A);
+
+            x[cur_atom] = pos.x;
+            y[cur_atom] = pos.y;
+            z[cur_atom] = pos.z;
+        }
+    }
+
+    return true;
+}
+
 bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
     if (!x) {
         MD_LOG_ERROR("Missing required input: in_out_x");
@@ -8824,9 +8913,10 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return false;
     }
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_arena);
-    md_vm_arena_destroy(temp_arena);
+    md_allocator_i* temp_alloc = md_get_temp_allocator();
+    size_t temp_pos = md_temp_get_pos();
+    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_alloc);
+    md_temp_set_pos_back(temp_pos);
     return result;
 }
 
@@ -8852,26 +8942,14 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, con
     return result;
 }
 
-bool md_util_system_unwrap(md_system_t* sys) {
+void md_util_system_unwrap_structures(md_system_t* sys) {
     ASSERT(sys);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys->structure);
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-
-    for (size_t i = 0; i < num_structures; ++i) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
-        const int32_t* s_idx = md_index_range_beg(&sys->structure, i);
-        const size_t s_len = md_index_range_size(&sys->structure, i);
-        if (!unwrap_topology(sys->atom.x, sys->atom.y, sys->atom.z, s_idx, s_len, &sys->bond, &sys->unitcell, temp_arena)) {
-            md_vm_arena_temp_end(temp);
-            md_vm_arena_destroy(temp_arena);
-            return false;
-        }
-        md_vm_arena_temp_end(temp);
+    for (size_t i = 0; i < sys->structure.count; ++i) {
+        md_structure_t structure = {0};
+        md_structure_extract(&structure, &sys->structure, i);
+        md_util_unwrap_structure(sys->atom.x, sys->atom.y, sys->atom.z, &structure, &sys->unitcell);
     }
-
-    md_vm_arena_destroy(temp_arena);
-    return true;
 }
 
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {
@@ -10201,13 +10279,15 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
     switch (level) {
     case MD_UTIL_MATCH_LEVEL_STRUCTURE:
         if (filter) {
-            for (size_t s_idx = 0; s_idx < md_index_data_num_ranges(&sys->structure); ++s_idx) {
-                if (md_index_range_size(&sys->structure, s_idx) < min_size) {
+            for (size_t s_idx = 0; s_idx < md_structure_count(&sys->structure); ++s_idx) {
+                md_structure_t structure = {0};
+                md_structure_extract(&structure, &sys->structure, s_idx);
+                if (structure.count < min_size) {
                     continue;
                 }
                 idx_range_t range = idx_range_create(out_structures);
-                const int* beg = md_index_range_beg(&sys->structure, s_idx);
-                const int* end = md_index_range_end(&sys->structure, s_idx);
+                const int* beg = structure.atom_idx;
+                const int* end = structure.atom_idx + structure.count;
                 for (const int* it = beg; it != end; ++it) {
                     int i = *it;
                     if (filter_atom(sys, i, filter)) {
@@ -10217,11 +10297,13 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
                 idx_range_commit(range);
             }
         } else {
-            for (size_t s_idx = 0; s_idx < md_index_data_num_ranges(&sys->structure); ++s_idx) {
-                if (md_index_range_size(&sys->structure, s_idx) < min_size) {
+            for (size_t s_idx = 0; s_idx < md_structure_count(&sys->structure); ++s_idx) {
+                md_structure_t structure = {0};
+                md_structure_extract(&structure, &sys->structure, s_idx);
+                if (structure.count < min_size) {
                     continue;
                 }
-                md_index_data_push_arr(out_structures, md_index_range_beg(&sys->structure, s_idx), md_index_range_size(&sys->structure, s_idx));
+                md_index_data_push_arr(out_structures, structure.atom_idx, structure.count);
             }
         }
         break;
@@ -10275,8 +10357,10 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
     md_array(int) structure_idx = md_vm_arena_push_array(temp_arena, int, atom_count);
 
     for (size_t i = 0; i < md_structure_count(&sys->structure); ++i) {
-        const int* beg = md_index_range_beg(&sys->structure, i);
-        const int* end = md_index_range_end(&sys->structure, i);
+        md_structure_t structure = {0};
+        md_structure_extract(&structure, &sys->structure, i);
+        const int* beg = structure.atom_idx;
+        const int* end = structure.atom_idx + structure.count;
         for (const int* it = beg; it != end; ++it) {
             structure_idx[*it] = (int)i;
         }

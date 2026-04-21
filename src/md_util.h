@@ -134,11 +134,12 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 bool md_util_system_pbc(md_system_t* sys);
 
 // Unwraps a structure by traversing the supplied bond topology
+bool md_util_unwrap_structure(float* in_out_x, float* in_out_y, float* in_out_z, const md_structure_t* structure, const md_unitcell_t* cell);
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
 bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
 
 // Unwraps all structures in a system
-bool md_util_system_unwrap(md_system_t* sys);
+void md_util_system_unwrap_structures(md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);

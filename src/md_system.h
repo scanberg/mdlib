@@ -130,6 +130,24 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
+// Structure represents one connected component within the system
+// And contains the iteration order of atoms and parent-child relationships for traversing the structure as a tree
+// This is used for unwrapping for example.
+typedef struct md_structure_t {
+    const int32_t* atom_idx;
+    const int32_t* parent_idx;
+    size_t   count;
+} md_structure_t;
+
+// This is the contiguous storage of all structures, the offsets field is used to index into the atom_idx and parent_idx arrays for each structure
+// From this individual structures (md_structure_t) can be extracted
+typedef struct md_structure_data_t {
+    size_t count;
+    uint32_t* offset; // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
+    int32_t* atom_idx;
+    int32_t* parent_idx;
+} md_structure_data_t;
+
 typedef struct md_hydrogen_bond_candidates_t {
     struct {
         size_t count;
@@ -184,7 +202,7 @@ typedef struct md_system_t {
     md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
-    md_index_data_t             structure;          // Isolated structures connected by persistent bonds
+    md_structure_data_t         structure;          // Isolated structures connected by persistent bonds
 
     md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
 
@@ -603,21 +621,24 @@ static inline md_flags_t md_entity_flags(const md_entity_data_t* entity, size_t 
     return flags;
 }
 
-static inline size_t md_structure_count(const md_index_data_t* structure) {
+static inline size_t md_structure_count(const md_structure_data_t* structure) {
     ASSERT(structure);
-    return md_index_data_num_ranges(structure);
+    return structure->count;
 }
 
-static inline size_t md_structure_atom_count(const md_index_data_t* structure, size_t struct_idx) {
-    ASSERT(structure);
-    return md_index_range_size(structure, struct_idx);
+static inline bool md_structure_extract(md_structure_t* out_structure, const md_structure_data_t* structure_data, size_t struct_idx) {
+    ASSERT(out_structure);
+    ASSERT(structure_data);
+    if (struct_idx < structure_data->count) {
+        uint32_t offset = structure_data->offset[struct_idx];
+        uint32_t next_offset = structure_data->offset[struct_idx + 1];
+        out_structure->count = next_offset - offset;
+        out_structure->atom_idx = &structure_data->atom_idx[offset];
+        out_structure->parent_idx = &structure_data->parent_idx[offset];
+        return true;
+    }
+    return false;
 }
-
-static inline const md_atom_idx_t* md_structure_atom_indices(const md_index_data_t* structure, size_t struct_idx) {
-    ASSERT(structure);
-    return md_index_range_beg(structure, struct_idx);
-}
-
 
 // SYSTEM
 // System level convenience accessors

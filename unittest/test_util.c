@@ -140,13 +140,13 @@ UTEST_F(util, backbone) {
 }
 
 UTEST_F(util, structure) {
-    size_t num_structures_pftaa = md_index_data_num_ranges(&utest_fixture->mol_pftaa.structure);
+    size_t num_structures_pftaa = md_structure_count(&utest_fixture->mol_pftaa.structure);
     EXPECT_EQ(1, num_structures_pftaa);
-    size_t num_structures_nucleotides = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.structure);
+    size_t num_structures_nucleotides = md_structure_count(&utest_fixture->mol_nucleotides.structure);
     EXPECT_EQ(2, num_structures_nucleotides);
-    size_t num_structures_ala = md_index_data_num_ranges(&utest_fixture->mol_ala.structure);
+    size_t num_structures_ala = md_structure_count(&utest_fixture->mol_ala.structure);
 	EXPECT_EQ(1, num_structures_ala);
-	size_t num_structures_centered = md_index_data_num_ranges(&utest_fixture->mol_centered.structure);
+	size_t num_structures_centered = md_structure_count(&utest_fixture->mol_centered.structure);
 	EXPECT_EQ(253+61, num_structures_centered);
 }
 
@@ -312,16 +312,16 @@ UTEST(util, com) {
 UTEST_F(util, structures) {
     size_t num_structures = 0;
 
-    num_structures = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.structure);
+    num_structures = md_structure_count(&utest_fixture->mol_nucleotides.structure);
     EXPECT_EQ(num_structures, 2);
 
-    num_structures = md_index_data_num_ranges(&utest_fixture->mol_ala.structure);
+    num_structures = md_structure_count(&utest_fixture->mol_ala.structure);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_index_data_num_ranges(&utest_fixture->mol_pftaa.structure);
+	num_structures = md_structure_count(&utest_fixture->mol_pftaa.structure);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_index_data_num_ranges(&utest_fixture->mol_centered.structure);
+	num_structures = md_structure_count(&utest_fixture->mol_centered.structure);
     EXPECT_EQ(num_structures, 253 + 61); // Chains + PFTAA
 }
 
@@ -353,7 +353,7 @@ UTEST(util, rings_c60) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 32);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
+    const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -371,7 +371,7 @@ UTEST(util, rings_c720) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 362);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
+    const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -398,7 +398,7 @@ UTEST(util, rings_trytophan_pdb) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
+    const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -413,7 +413,7 @@ UTEST(util, rings_trytophan_xyz) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
+    const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -428,7 +428,7 @@ UTEST(util, rings_full) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 195);
 
-    const size_t num_structures = md_index_data_num_ranges(&sys.structure);
+    const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
     md_vm_arena_destroy(alloc);
@@ -457,14 +457,16 @@ UTEST_F(util, structure_matching_amyloid_chain) {
 #if 1
     {
         // Test for the chains
-        const int ref_structure_idx = 0;
-        int*   ref_idx = md_index_range_ptr(&sys->structure,  ref_structure_idx);
-        size_t ref_len = md_index_range_size(&sys->structure, ref_structure_idx);
+        md_structure_t ref_structure = {0};
+        md_structure_extract(&ref_structure, &sys->structure, 0);
+
+        const int32_t* ref_idx = ref_structure.atom_idx;
+        size_t ref_len = ref_structure.count;
 
         // Prune Hydrogen
         if (true) {
             md_array(int) new_idx = 0;
-            for (size_t i = 0; i < ref_len; ++i) {
+            for (size_t i = 0; i < ref_structure.count; ++i) {
                 if (md_atom_atomic_number(&sys->atom, ref_idx[i]) > 1) {
                     md_array_push(new_idx, ref_idx[i], alloc);
                 }
@@ -492,8 +494,10 @@ UTEST_F(util, structure_matching_PFTAA) {
     {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
-        const int*   ref_idx  = md_index_range_beg (&sys->structure, ref_structure_idx);
-        const size_t ref_size = md_index_range_size(&sys->structure, ref_structure_idx);
+        md_structure_t ref_structure = { 0 };
+        md_structure_extract(&ref_structure, &sys->structure, ref_structure_idx);
+        const int*   ref_idx  = ref_structure.atom_idx;
+        const size_t ref_size = ref_structure.count;
 
         md_timestamp_t t0 = md_time_now();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_COMPONENT, sys, alloc);

@@ -81,7 +81,10 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->hydrogen_bond.candidate.donor.h_idx, alloc);
 
     md_index_data_free(&sys->ring);
-    md_index_data_free(&sys->structure);
+
+    md_array_free(sys->structure.offset, alloc);
+    md_array_free(sys->structure.atom_idx, alloc);
+    md_array_free(sys->structure.parent_idx, alloc);
 
     // ASSEMBLY
     md_array_free(sys->assembly.atom_range, alloc);

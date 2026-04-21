@@ -5486,14 +5486,14 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             break;
         }
         case COUNT_TYPE_STRUCTURE: {
-            size_t num_structures = md_index_data_num_ranges(&ctx->mol->structure);
+            size_t num_structures = md_structure_count(&ctx->mol->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
             for (size_t i = 0; i < num_structures; ++i) {
-                const int32_t* idx = md_index_range_beg(&ctx->mol->structure, i);
-                const size_t num_idx = md_index_range_size(&ctx->mol->structure, i);
+                md_structure_t structure = {0};
+                md_structure_extract(&structure, &ctx->mol->structure, i);
             
                 md_bitfield_clear(&tmp2);
-                md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
+                md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)structure.atom_idx, structure.count);
                 md_bitfield_and_inplace(&tmp2, &bf);
                 if (md_bitfield_popcount(&tmp2) > 0) {
                     count += 1;

@@ -29,6 +29,7 @@ typedef struct md_coord_stream_t {
         } soa;
 
         struct {
+            // AOS is assumed to contain packed XYZ with some stride to the next triplet, i.e. a typical vertex struct.
             const float* base;
             size_t stride;   // in bytes
         } aos;
@@ -135,11 +136,6 @@ void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_sp
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param);
 
 void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param);
-
-#if 0
-// Iterate over external points against points within the spatial acceleration structure in neighboring cells (1-cell neighborhood)
-void md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatial_acc_t* acc, const float* ext_x, const float* ext_y, const float* ext_z, size_t ext_count, md_spatial_acc_pair_callback_t callback, void* user_param);
-#endif
 
 // --- HELPER FUNCTIONS ---
 
