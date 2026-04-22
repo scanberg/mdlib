@@ -151,7 +151,7 @@ typedef struct {
 md_gl_rep_t md_gl_rep_create(md_gl_mol_t mol);
 void        md_gl_rep_destroy(md_gl_rep_t rep);
 
-void        md_gl_rep_set_color(md_gl_rep_t rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
+void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
 
 /*
  *  DRAW

@@ -1230,7 +1230,7 @@ void md_gl_rep_destroy(md_gl_rep_t handle) {
     }
 }
 
-void md_gl_rep_set_color(md_gl_rep_t handle, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
+void md_gl_rep_set_atom_colors(md_gl_rep_t handle, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
     if (color_data == NULL) {
         MD_LOG_ERROR("color_data ptr was NULL");
         return;
