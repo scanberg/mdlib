@@ -173,19 +173,6 @@ static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, i
 	if (l) *l = (packed >> 24) & 0xFF;
 }
 
-// Evaluates GTOs over a grid on the GPU and stores the result into a supplied volume
-// - vol_tex: The texture handle to the volume
-// - vol_dim: The dimensions of the volume
-// - vol_step: The voxel spacing in world space length units
-// - world_to_model: float[4][4] (col-major) transformation matrix to transform a point in world_space coordinates into the volumes model space (note not texture space, but a space which is rotated and translated such that the axes align with the volume and its origin is placed at (0,0,0))
-// - index_to_world: float[4][4] (col-major) transformation matrix to transform a point in the volumes index coordinates [0, dim[ into world space coordinates
-// - gtos: The gtos to evaluate
-// - num_gtos: Number of supplied gtos
-// - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
-
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
-
 // Average local ionization energy
 // Evaluates GTOs over a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
@@ -194,14 +181,6 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, c
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
 void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
-
-// Evaluates CGTOs defined by gto_data with a given 'density' matrix
-// - vol_tex: The texture handle to the volume
-// - grid: The grid defining the location of samples to evaluate
-// - gto_data: The gto data to evaluate
-// - matrix_data: The matrix coefficients (Upper triangular format)
-// - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const double* ao_matrix, bool include_gradients);
 
 #if MD_ENABLE_GPU
 // GPU-resident buffer holding all input data for density evaluation.

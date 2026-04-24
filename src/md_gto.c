@@ -768,20 +768,19 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
 #else
 
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
 
+// GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)mo_coeffs; (void)cutoff; (void)mode;
 }
 
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
-
-}
-
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-
-}
-
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim, bool output_grad_and_value) {
-
+// mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)mo_coeffs; (void)mo_scl; (void)num_mos; (void)cutoff; (void)mode;
 }
 
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
