@@ -54,6 +54,256 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
 
+
+// ---------------------------------------------------------------------------
+// Spherical→Cartesian expansion tables
+// Converts md_gto_basis_t (radial shells, pure radial coefficients) into the
+// flat Cartesian SoA layout (md_gto_data_t / GPU buffer) used by evaluators.
+// Coupling coefficients and Cartesian (l,m,n) tables ported from VeloxChem.
+// ---------------------------------------------------------------------------
+
+typedef uint8_t gto_lmn_t[3];
+
+static const gto_lmn_t gto_S_lmn[1]  = {{0,0,0}};
+static const gto_lmn_t gto_P_lmn[3]  = {{1,0,0},{0,1,0},{0,0,1}};
+static const gto_lmn_t gto_D_lmn[6]  = {{2,0,0},{1,1,0},{1,0,1},{0,2,0},{0,1,1},{0,0,2}};
+static const gto_lmn_t gto_F_lmn[10] = {{3,0,0},{2,1,0},{2,0,1},{1,2,0},{1,1,1},{1,0,2},{0,3,0},{0,2,1},{0,1,2},{0,0,3}};
+static const gto_lmn_t gto_G_lmn[15] = {{4,0,0},{3,1,0},{3,0,1},{2,2,0},{2,1,1},{2,0,2},{1,3,0},{1,2,1},{1,1,2},{1,0,3},{0,4,0},{0,3,1},{0,2,2},{0,1,3},{0,0,4}};
+
+#define GTO_d3  3.464101615137754587
+#define GTO_f5  1.581138830084189666
+#define GTO_f15 7.745966692414833770
+#define GTO_f3  1.224744871391589049
+#define GTO_g35 (4.0 * 5.916079783099616042)
+#define GTO_g17 (4.0 * 4.183300132670377739)
+#define GTO_g5  (4.0 * 2.236067977499789696)
+#define GTO_g2  (4.0 * 1.581138830084189666)
+
+static const double  gto_S_factors[] = {1.0};
+static const uint8_t gto_S_indices[] = {0};
+static const uint8_t gto_S_num_fac[] = {1};
+
+static const double  gto_P_factors[] = {1.0, 1.0, 1.0};
+static const uint8_t gto_P_indices[] = {1, 2, 0};
+static const uint8_t gto_P_offsets[] = {0, 1, 2};
+static const uint8_t gto_P_num_fac[] = {1, 1, 1};
+
+static const double  gto_D_factors[] = {GTO_d3, GTO_d3, -1.0, -1.0, 2.0, GTO_d3, 0.5*GTO_d3, -0.5*GTO_d3};
+static const uint8_t gto_D_indices[] = {1, 4, 0, 3, 5, 2, 0, 3};
+static const uint8_t gto_D_offsets[] = {0, 1, 2, 5, 6};
+static const uint8_t gto_D_num_fac[] = {1, 1, 3, 1, 2};
+
+static const double  gto_F_factors[] = {3.0*GTO_f5, -GTO_f5, GTO_f15, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 2.0, -3.0, -3.0, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 0.5*GTO_f15, -0.5*GTO_f15, GTO_f5, -3.0*GTO_f5};
+static const uint8_t gto_F_indices[] = {1, 6, 4, 8, 1, 6, 9, 2, 7, 5, 0, 3, 2, 7, 0, 3};
+static const uint8_t gto_F_offsets[] = {0, 2, 3, 6, 9, 12, 14};
+static const uint8_t gto_F_num_fac[] = {2, 1, 3, 3, 3, 2, 2};
+
+static const double gto_G_factors[] = {
+    GTO_g35, -GTO_g35, 3.0*GTO_g17, -GTO_g17, 6.0*GTO_g5, -GTO_g5, -GTO_g5, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2,
+    8.0, 3.0, 3.0, 6.0, -24.0, -24.0, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2, 3.0*GTO_g5,
+    -3.0*GTO_g5, -0.5*GTO_g5, 0.5*GTO_g5, GTO_g17, -3.0*GTO_g17, 0.25*GTO_g35, 0.25*GTO_g35, -1.50*GTO_g35};
+static const uint8_t gto_G_indices[] = {1, 6, 4, 11, 8, 1, 6, 13, 4, 11, 14, 0, 10, 3, 5, 12, 9, 2, 7, 5, 12, 0, 10, 2, 7, 0, 10, 3};
+static const uint8_t gto_G_offsets[] = {0, 2, 4, 7, 10, 16, 19, 23, 25};
+static const uint8_t gto_G_num_fac[] = {2, 2, 3, 3, 6, 3, 4, 2, 3};
+
+#undef GTO_d3
+#undef GTO_f5
+#undef GTO_f15
+#undef GTO_f3
+#undef GTO_g35
+#undef GTO_g17
+#undef GTO_g5
+#undef GTO_g2
+
+static inline int gto_sph_num_factors(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_num_fac[isph];
+    case 1: return gto_P_num_fac[isph];
+    case 2: return gto_D_num_fac[isph];
+    case 3: return gto_F_num_fac[isph];
+    case 4: return gto_G_num_fac[isph];
+    default: ASSERT(false); return 0;
+    }
+}
+
+static inline const double* gto_sph_factors(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_factors;
+    case 1: return gto_P_factors + gto_P_offsets[isph];
+    case 2: return gto_D_factors + gto_D_offsets[isph];
+    case 3: return gto_F_factors + gto_F_offsets[isph];
+    case 4: return gto_G_factors + gto_G_offsets[isph];
+    default: ASSERT(false); return NULL;
+    }
+}
+
+static inline const uint8_t* gto_sph_indices(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_indices;
+    case 1: return gto_P_indices + gto_P_offsets[isph];
+    case 2: return gto_D_indices + gto_D_offsets[isph];
+    case 3: return gto_F_indices + gto_F_offsets[isph];
+    case 4: return gto_G_indices + gto_G_offsets[isph];
+    default: ASSERT(false); return NULL;
+    }
+}
+
+static inline const gto_lmn_t* gto_cart_lmn(int l) {
+    switch (l) {
+    case 0: return gto_S_lmn;
+    case 1: return gto_P_lmn;
+    case 2: return gto_D_lmn;
+    case 3: return gto_F_lmn;
+    case 4: return gto_G_lmn;
+    default: ASSERT(false); return NULL;
+    }
+}
+
+// Count the number of CGTOs and PGTOs that will result from expanding a basis.
+static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
+    const md_gto_basis_t* basis)
+{
+    uint32_t nc = 0, np = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        int l     = (int)basis->shells[si].l;
+        int nsph  = 2 * l + 1;
+        int nprims = (int)basis->shells[si].num_primitives;
+        nc += (uint32_t)nsph;
+        for (int isph = 0; isph < nsph; isph++) {
+            np += (uint32_t)(gto_sph_num_factors(l, isph) * nprims);
+        }
+    }
+    *out_num_cgtos = nc;
+    *out_num_pgtos = np;
+}
+
+// Expand md_gto_basis_t into the flat Cartesian SoA arrays expected by the GPU shader.
+// Spherical-to-Cartesian coupling factors (fcarts) are baked into pgto_coeff here.
+// pgto_radius is set to FLT_MAX (no pre-culling; the shader handles distance tests).
+// All output arrays must be pre-allocated to num_cgtos / num_pgtos entries respectively.
+static void gto_expand_basis(
+    vec4_t* cgto_xyzr, uint32_t* cgto_offset,
+    float* pgto_alpha, float* pgto_coeff, float* pgto_radius, uint32_t* pgto_ijkl,
+    const md_gto_basis_t* basis, const float* atom_xyz)
+{
+    uint32_t ci = 0, pi = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const md_gto_shell_t* shell = &basis->shells[si];
+        int l      = (int)shell->l;
+        int nsph   = 2 * l + 1;
+        int nprims = (int)shell->num_primitives;
+        uint32_t   prim_base = shell->primitive_offset;
+        const gto_lmn_t* lmn = gto_cart_lmn(l);
+        float ax = atom_xyz[shell->atom_idx * 3 + 0];
+        float ay = atom_xyz[shell->atom_idx * 3 + 1];
+        float az = atom_xyz[shell->atom_idx * 3 + 2];
+
+        for (int isph = 0; isph < nsph; isph++) {
+            int           ncomp   = gto_sph_num_factors(l, isph);
+            const double* fcarts  = gto_sph_factors(l, isph);
+            const uint8_t* sidx   = gto_sph_indices(l, isph);
+
+            int lx[8], ly[8], lz[8];
+            for (int ic = 0; ic < ncomp; ic++) {
+                lx[ic] = lmn[sidx[ic]][0];
+                ly[ic] = lmn[sidx[ic]][1];
+                lz[ic] = lmn[sidx[ic]][2];
+            }
+
+            cgto_xyzr[ci]   = (vec4_t){ax, ay, az, FLT_MAX};
+            cgto_offset[ci] = pi;
+
+            for (int ip = 0; ip < nprims; ip++) {
+                float alpha = basis->alpha[prim_base + ip];
+                float coef1 = basis->coeff[prim_base + ip];
+                for (int ic = 0; ic < ncomp; ic++) {
+                    pgto_alpha[pi]  = alpha;
+                    pgto_coeff[pi]  = (float)(coef1 * fcarts[ic]);
+                    pgto_radius[pi] = FLT_MAX;
+                    pgto_ijkl[pi]   = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l);
+                    pi++;
+                }
+            }
+            ci++;
+        }
+    }
+    cgto_offset[ci] = pi;  // sentinel
+}
+
+static size_t density_matrix_upper_tri_size(size_t n) {
+    return n * (n + 1) / 2;
+}
+
+// Convert a full N×N row-major double density matrix to compact upper-triangular float.
+static void density_matrix_upper_tri_extract_float(float* out, const double* dm, size_t n) {
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i; j < n; j++) {
+            out[k++] = (float)dm[i * n + j];
+        }
+    }
+}
+
+size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
+    uint32_t nc, np;
+    gto_basis_count(&nc, &np, basis);
+    return np;
+}
+
+size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
+    const float* atom_xyz, const double* mo_coeffs, double cutoff)
+{
+    ASSERT(out);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(mo_coeffs);
+
+    size_t num_gtos = 0;
+    uint32_t cgto_idx = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const md_gto_shell_t* shell = &basis->shells[si];
+        int l      = (int)shell->l;
+        int nsph   = 2 * l + 1;
+        int nprims = (int)shell->num_primitives;
+        uint32_t prim_base = shell->primitive_offset;
+        const gto_lmn_t* lmn = gto_cart_lmn(l);
+        float ax = atom_xyz[shell->atom_idx * 3 + 0];
+        float ay = atom_xyz[shell->atom_idx * 3 + 1];
+        float az = atom_xyz[shell->atom_idx * 3 + 2];
+
+        for (int isph = 0; isph < nsph; isph++) {
+            double mo_coeff = mo_coeffs[cgto_idx++];
+            int           ncomp  = gto_sph_num_factors(l, isph);
+            const double* fcarts = gto_sph_factors(l, isph);
+            const uint8_t* sidx  = gto_sph_indices(l, isph);
+
+            for (int ip = 0; ip < nprims; ip++) {
+                float alpha = basis->alpha[prim_base + ip];
+                float coef1 = basis->coeff[prim_base + ip];
+                for (int ic = 0; ic < ncomp; ic++) {
+                    out[num_gtos++] = (md_gto_t){
+                        .x      = ax,
+                        .y      = ay,
+                        .z      = az,
+                        .coeff  = (float)(coef1 * fcarts[ic] * mo_coeff),
+                        .alpha  = alpha,
+                        .cutoff = FLT_MAX,
+                        .i      = lmn[sidx[ic]][0],
+                        .j      = lmn[sidx[ic]][1],
+                        .k      = lmn[sidx[ic]][2],
+                        .l      = (uint8_t)l,
+                    };
+                }
+            }
+        }
+    }
+
+    if (cutoff > 0.0) {
+        num_gtos = md_gto_cutoff_compute_and_filter(out, num_gtos, cutoff);
+    }
+    return num_gtos;
+}
+
 #if !MD_PLATFORM_OSX
 
 #include <core/md_gl_util.h>
@@ -463,251 +713,6 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 }
 
 #endif
-
-// ---------------------------------------------------------------------------
-// Spherical→Cartesian expansion tables
-// Converts md_gto_basis_t (radial shells, pure radial coefficients) into the
-// flat Cartesian SoA layout (md_gto_data_t / GPU buffer) used by evaluators.
-// Coupling coefficients and Cartesian (l,m,n) tables ported from VeloxChem.
-// ---------------------------------------------------------------------------
-
-typedef uint8_t gto_lmn_t[3];
-
-static const gto_lmn_t gto_S_lmn[1]  = {{0,0,0}};
-static const gto_lmn_t gto_P_lmn[3]  = {{1,0,0},{0,1,0},{0,0,1}};
-static const gto_lmn_t gto_D_lmn[6]  = {{2,0,0},{1,1,0},{1,0,1},{0,2,0},{0,1,1},{0,0,2}};
-static const gto_lmn_t gto_F_lmn[10] = {{3,0,0},{2,1,0},{2,0,1},{1,2,0},{1,1,1},{1,0,2},{0,3,0},{0,2,1},{0,1,2},{0,0,3}};
-static const gto_lmn_t gto_G_lmn[15] = {{4,0,0},{3,1,0},{3,0,1},{2,2,0},{2,1,1},{2,0,2},{1,3,0},{1,2,1},{1,1,2},{1,0,3},{0,4,0},{0,3,1},{0,2,2},{0,1,3},{0,0,4}};
-
-#define GTO_d3  3.464101615137754587
-#define GTO_f5  1.581138830084189666
-#define GTO_f15 7.745966692414833770
-#define GTO_f3  1.224744871391589049
-#define GTO_g35 (4.0 * 5.916079783099616042)
-#define GTO_g17 (4.0 * 4.183300132670377739)
-#define GTO_g5  (4.0 * 2.236067977499789696)
-#define GTO_g2  (4.0 * 1.581138830084189666)
-
-static const double  gto_S_factors[] = {1.0};
-static const uint8_t gto_S_indices[] = {0};
-static const uint8_t gto_S_num_fac[] = {1};
-
-static const double  gto_P_factors[] = {1.0, 1.0, 1.0};
-static const uint8_t gto_P_indices[] = {1, 2, 0};
-static const uint8_t gto_P_offsets[] = {0, 1, 2};
-static const uint8_t gto_P_num_fac[] = {1, 1, 1};
-
-static const double  gto_D_factors[] = {GTO_d3, GTO_d3, -1.0, -1.0, 2.0, GTO_d3, 0.5*GTO_d3, -0.5*GTO_d3};
-static const uint8_t gto_D_indices[] = {1, 4, 0, 3, 5, 2, 0, 3};
-static const uint8_t gto_D_offsets[] = {0, 1, 2, 5, 6};
-static const uint8_t gto_D_num_fac[] = {1, 1, 3, 1, 2};
-
-static const double  gto_F_factors[] = {3.0*GTO_f5, -GTO_f5, GTO_f15, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 2.0, -3.0, -3.0, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 0.5*GTO_f15, -0.5*GTO_f15, GTO_f5, -3.0*GTO_f5};
-static const uint8_t gto_F_indices[] = {1, 6, 4, 8, 1, 6, 9, 2, 7, 5, 0, 3, 2, 7, 0, 3};
-static const uint8_t gto_F_offsets[] = {0, 2, 3, 6, 9, 12, 14};
-static const uint8_t gto_F_num_fac[] = {2, 1, 3, 3, 3, 2, 2};
-
-static const double gto_G_factors[] = {
-    GTO_g35, -GTO_g35, 3.0*GTO_g17, -GTO_g17, 6.0*GTO_g5, -GTO_g5, -GTO_g5, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2,
-    8.0, 3.0, 3.0, 6.0, -24.0, -24.0, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2, 3.0*GTO_g5,
-    -3.0*GTO_g5, -0.5*GTO_g5, 0.5*GTO_g5, GTO_g17, -3.0*GTO_g17, 0.25*GTO_g35, 0.25*GTO_g35, -1.50*GTO_g35};
-static const uint8_t gto_G_indices[] = {1, 6, 4, 11, 8, 1, 6, 13, 4, 11, 14, 0, 10, 3, 5, 12, 9, 2, 7, 5, 12, 0, 10, 2, 7, 0, 10, 3};
-static const uint8_t gto_G_offsets[] = {0, 2, 4, 7, 10, 16, 19, 23, 25};
-static const uint8_t gto_G_num_fac[] = {2, 2, 3, 3, 6, 3, 4, 2, 3};
-
-#undef GTO_d3
-#undef GTO_f5
-#undef GTO_f15
-#undef GTO_f3
-#undef GTO_g35
-#undef GTO_g17
-#undef GTO_g5
-#undef GTO_g2
-
-static inline int gto_sph_num_factors(int l, int isph) {
-    switch (l) {
-    case 0: return gto_S_num_fac[isph];
-    case 1: return gto_P_num_fac[isph];
-    case 2: return gto_D_num_fac[isph];
-    case 3: return gto_F_num_fac[isph];
-    case 4: return gto_G_num_fac[isph];
-    default: ASSERT(false); return 0;
-    }
-}
-
-static inline const double* gto_sph_factors(int l, int isph) {
-    switch (l) {
-    case 0: return gto_S_factors;
-    case 1: return gto_P_factors + gto_P_offsets[isph];
-    case 2: return gto_D_factors + gto_D_offsets[isph];
-    case 3: return gto_F_factors + gto_F_offsets[isph];
-    case 4: return gto_G_factors + gto_G_offsets[isph];
-    default: ASSERT(false); return NULL;
-    }
-}
-
-static inline const uint8_t* gto_sph_indices(int l, int isph) {
-    switch (l) {
-    case 0: return gto_S_indices;
-    case 1: return gto_P_indices + gto_P_offsets[isph];
-    case 2: return gto_D_indices + gto_D_offsets[isph];
-    case 3: return gto_F_indices + gto_F_offsets[isph];
-    case 4: return gto_G_indices + gto_G_offsets[isph];
-    default: ASSERT(false); return NULL;
-    }
-}
-
-static inline const gto_lmn_t* gto_cart_lmn(int l) {
-    switch (l) {
-    case 0: return gto_S_lmn;
-    case 1: return gto_P_lmn;
-    case 2: return gto_D_lmn;
-    case 3: return gto_F_lmn;
-    case 4: return gto_G_lmn;
-    default: ASSERT(false); return NULL;
-    }
-}
-
-// Count the number of CGTOs and PGTOs that will result from expanding a basis.
-static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
-    const md_gto_basis_t* basis)
-{
-    uint32_t nc = 0, np = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        int l     = (int)basis->shells[si].l;
-        int nsph  = 2 * l + 1;
-        int nprims = (int)basis->shells[si].num_primitives;
-        nc += (uint32_t)nsph;
-        for (int isph = 0; isph < nsph; isph++) {
-            np += (uint32_t)(gto_sph_num_factors(l, isph) * nprims);
-        }
-    }
-    *out_num_cgtos = nc;
-    *out_num_pgtos = np;
-}
-
-// Expand md_gto_basis_t into the flat Cartesian SoA arrays expected by the GPU shader.
-// Spherical-to-Cartesian coupling factors (fcarts) are baked into pgto_coeff here.
-// pgto_radius is set to FLT_MAX (no pre-culling; the shader handles distance tests).
-// All output arrays must be pre-allocated to num_cgtos / num_pgtos entries respectively.
-static void gto_expand_basis(
-    vec4_t* cgto_xyzr, uint32_t* cgto_offset,
-    float* pgto_alpha, float* pgto_coeff, float* pgto_radius, uint32_t* pgto_ijkl,
-    const md_gto_basis_t* basis, const float* atom_xyz)
-{
-    uint32_t ci = 0, pi = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        const md_gto_shell_t* shell = &basis->shells[si];
-        int l      = (int)shell->l;
-        int nsph   = 2 * l + 1;
-        int nprims = (int)shell->num_primitives;
-        uint32_t   prim_base = shell->primitive_offset;
-        const gto_lmn_t* lmn = gto_cart_lmn(l);
-        float ax = atom_xyz[shell->atom_idx * 3 + 0];
-        float ay = atom_xyz[shell->atom_idx * 3 + 1];
-        float az = atom_xyz[shell->atom_idx * 3 + 2];
-
-        for (int isph = 0; isph < nsph; isph++) {
-            int           ncomp   = gto_sph_num_factors(l, isph);
-            const double* fcarts  = gto_sph_factors(l, isph);
-            const uint8_t* sidx   = gto_sph_indices(l, isph);
-
-            int lx[8], ly[8], lz[8];
-            for (int ic = 0; ic < ncomp; ic++) {
-                lx[ic] = lmn[sidx[ic]][0];
-                ly[ic] = lmn[sidx[ic]][1];
-                lz[ic] = lmn[sidx[ic]][2];
-            }
-
-            cgto_xyzr[ci]   = (vec4_t){ax, ay, az, FLT_MAX};
-            cgto_offset[ci] = pi;
-
-            for (int ip = 0; ip < nprims; ip++) {
-                float alpha = basis->alpha[prim_base + ip];
-                float coef1 = basis->coeff[prim_base + ip];
-                for (int ic = 0; ic < ncomp; ic++) {
-                    pgto_alpha[pi]  = alpha;
-                    pgto_coeff[pi]  = (float)(coef1 * fcarts[ic]);
-                    pgto_radius[pi] = FLT_MAX;
-                    pgto_ijkl[pi]   = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l);
-                    pi++;
-                }
-            }
-            ci++;
-        }
-    }
-    cgto_offset[ci] = pi;  // sentinel
-}
-
-// Convert a full N×N row-major double density matrix to compact upper-triangular float.
-static void density_matrix_to_upper_tri(float* out, const double* dm, uint32_t n) {
-    size_t k = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        for (uint32_t j = i; j < n; j++) {
-            out[k++] = (float)dm[(size_t)i * n + j];
-        }
-    }
-}
-
-size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
-    uint32_t nc, np;
-    gto_basis_count(&nc, &np, basis);
-    return np;
-}
-
-size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
-    const float* atom_xyz, const double* mo_coeffs, double cutoff)
-{
-    ASSERT(out);
-    ASSERT(basis);
-    ASSERT(atom_xyz);
-    ASSERT(mo_coeffs);
-
-    size_t num_gtos = 0;
-    uint32_t cgto_idx = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        const md_gto_shell_t* shell = &basis->shells[si];
-        int l      = (int)shell->l;
-        int nsph   = 2 * l + 1;
-        int nprims = (int)shell->num_primitives;
-        uint32_t prim_base = shell->primitive_offset;
-        const gto_lmn_t* lmn = gto_cart_lmn(l);
-        float ax = atom_xyz[shell->atom_idx * 3 + 0];
-        float ay = atom_xyz[shell->atom_idx * 3 + 1];
-        float az = atom_xyz[shell->atom_idx * 3 + 2];
-
-        for (int isph = 0; isph < nsph; isph++) {
-            double mo_coeff = mo_coeffs[cgto_idx++];
-            int           ncomp  = gto_sph_num_factors(l, isph);
-            const double* fcarts = gto_sph_factors(l, isph);
-            const uint8_t* sidx  = gto_sph_indices(l, isph);
-
-            for (int ip = 0; ip < nprims; ip++) {
-                float alpha = basis->alpha[prim_base + ip];
-                float coef1 = basis->coeff[prim_base + ip];
-                for (int ic = 0; ic < ncomp; ic++) {
-                    out[num_gtos++] = (md_gto_t){
-                        .x      = ax,
-                        .y      = ay,
-                        .z      = az,
-                        .coeff  = (float)(coef1 * fcarts[ic] * mo_coeff),
-                        .alpha  = alpha,
-                        .cutoff = FLT_MAX,
-                        .i      = lmn[sidx[ic]][0],
-                        .j      = lmn[sidx[ic]][1],
-                        .k      = lmn[sidx[ic]][2],
-                        .l      = (uint8_t)l,
-                    };
-                }
-            }
-        }
-    }
-
-    if (cutoff > 0.0) {
-        num_gtos = md_gto_cutoff_compute_and_filter(out, num_gtos, cutoff);
-    }
-    return num_gtos;
-}
 
 #if MD_ENABLE_GPU
 
