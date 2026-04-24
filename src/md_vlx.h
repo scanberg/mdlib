@@ -22,9 +22,9 @@ typedef struct md_vlx_atomic_property_t {
 } md_vlx_atomic_property_t;
 
 typedef enum {
-	MD_VLX_MO_TYPE_ALPHA = 0,
-	MD_VLX_MO_TYPE_BETA = 1,
-} md_vlx_mo_type_t;
+	MD_VLX_SPIN_ALPHA = 0,
+	MD_VLX_SPIN_BETA  = 1,
+} md_vlx_spin_t;
 
 typedef enum {
 	MD_VLX_NTO_TYPE_PARTICLE = 0,
@@ -77,54 +77,52 @@ const int* md_vlx_local_to_global_atom_idx(const struct md_vlx_t* vlx);
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
-size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t type);
+size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t type);
 
 size_t  md_vlx_scf_number_of_atomic_orbitals   (const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 
-const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_spin_t type);
+const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_spin_t type);
 
 // ---------------------------------------------------------------------------
 // Basis-centric API  (primary interface — use these in new code)
 // ---------------------------------------------------------------------------
 
-// Build a static md_gto_basis_t from vlx data.  Call once at load time;
-// the result is valid for the lifetime of vlx.
+// Build a static md_gto_basis_t from vlx data. Call once at load time.
+// Shells are emitted in order: angular momentum → atom → contracted function.
+// All AO-indexed matrices stored in vlx are already reordered to match this
+// shell order at parse time, so MO vectors and density matrices can be used
+// directly without any permutation.
 bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const struct md_vlx_t* vlx, struct md_allocator_i* alloc);
 
-// Extract one MO coefficient vector (one column of the internal AO×MO matrix)
-// into caller-supplied storage.  out must hold at least N = md_vlx_scf_number_of_atomic_orbitals() doubles.
-// Returns N on success, 0 on failure.  Transposition is handled internally.
-size_t md_vlx_scf_mo_coefficients(double* out_ao, const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type);
+// Direct pointer to the AO coefficient vector for MO mo_idx (shell order).
+// The matrix is stored [num_mo][num_ao] internally; this returns a pointer to
+// row mo_idx, which is a contiguous array of num_ao doubles.
+// Returns NULL on failure (out-of-range mo_idx, missing data, etc.).
+const double* md_vlx_scf_mo_coefficients(const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type);
 
-// Extract the full N×N AO density matrix into caller-supplied storage.
-// out must hold N*N doubles (row-major).  N = md_vlx_scf_number_of_atomic_orbitals().
-// Returns true on success.
-bool md_vlx_scf_density_matrix(double* out_ao, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-
-// Extract NTO AO coefficient vector for one (nto_idx, lambda_idx, type) combination
-// into caller-supplied storage of length md_vlx_scf_number_of_atomic_orbitals().
-// Returns the number of AOs written, or 0 on failure.
-size_t md_vlx_rsp_nto_coefficients(double* out_ao, const struct md_vlx_t* vlx,
-    size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
+// Direct pointer to the AO coefficient vector for NTO lambda_idx / type (shell order).
+// Returns NULL on failure.
+const double* md_vlx_rsp_nto_coefficients(const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // The overlap matrix (S) is a square, symmetric matrix [N][N], this returns the length N
 size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx);
 
-// Get the required element size of a compact upper triangular matrix representation
-size_t md_vlx_scf_upper_triangular_density_matrix_size(const struct md_vlx_t* vlx);
-
-// Extracts the elements of the matrix into a compact upper triangular matrix
-bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
-
-// Get the regular density matrix size N in (N x N)
+// The density matrix is a square, symmetric matrix [N][N], this returns the length N
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_density_matrix_data(const struct md_vlx_t* vlx, md_vlx_spin_t type);
 
-// Extracts the full density matrix into a square matrix representation
-bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+// ---------------------------------------------------------------------------
+// Deprecated extraction API — prefer the direct pointer functions above
+// ---------------------------------------------------------------------------
+
+// Copy one MO coefficient vector into caller-supplied storage.
+// out must hold at least md_vlx_scf_number_of_atomic_orbitals() doubles.
+// Returns the number of AOs on success, 0 on failure.
+size_t md_vlx_scf_mo_coefficients_extract(double* out, const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type);
 
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
@@ -166,9 +164,6 @@ bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
-
-// returns the AO coefficients for the given NTO, lambda idx and type
-size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)

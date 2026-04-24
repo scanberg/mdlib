@@ -8,7 +8,7 @@
 #include <core/md_gpu.h>
 #endif
 
-// Gaussian Type Orbital
+// Stand Alone Gaussian Type Orbital
 // Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
 // Where x' y' and z' are the observer coordinates we evaluate the function at
 typedef struct md_gto_t {
@@ -37,32 +37,29 @@ typedef struct md_orbital_data_t {
 // ---------------------------------------------------------------------------
 // General basis representation
 // ---------------------------------------------------------------------------
-// One contracted shell in radial (angular-momentum) form.
-// A shell with angular momentum l contributes (2l+1) spherical AOs to the
-// MO coefficient vector, or (l+1)(l+2)/2 Cartesian components internally.
-// Cartesian angular indices (i,j,k) are derived from l at evaluation time —
-// they are NOT stored here, keeping this struct independent of any particular
-// Cartesian ordering convention.
+// One contracted Gaussian shell.
+// A shell with angular momentum l contributes (2l+1) contiguous coefficients
+// to an MO vector (spherical AOs) and (2l+1) contiguous rows/columns to an
+// AO-basis matrix (density, overlap, etc.).
+// Cartesian angular indices (i,j,k) are derived from l at evaluation time.
 // Atom coordinates are NOT stored — they are passed separately so the basis
 // remains valid after geometry updates.
 // 16 bytes, fits exactly 4 per cache line, no padding.
 typedef struct md_gto_shell_t {
     uint32_t  atom_idx;          // index of the parent atom in the caller-supplied atom_xyz array
     uint32_t  primitive_offset;  // first index into basis->alpha and basis->coeff arrays
-    uint32_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
-    uint32_t  num_primitives;    // number of Gaussian primitives in the contraction
+    uint16_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
+    uint16_t  num_primitives;    // number of Gaussian primitives in the contraction
+    uint32_t  _pad;
 } md_gto_shell_t;
 
-// A complete contracted Gaussian basis set for a molecular system,
-// stored in the radial (shell) form — one entry per contracted shell.
+// A complete contracted Gaussian basis set for a molecular system.
+// One md_gto_shell_t per contracted shell, ordered as: angular momentum first,
+// then atom, then contracted function within that (angl, atom) pair.
+// MO coefficient vectors and AO-basis matrices must be in the same shell order.
 //
-// Shells are ordered to match the AO index convention of the QM program that
-// generated the MO coefficient vectors.  The AO index for shell i is simply
-// the sum of (2*shells[j].l + 1) for all j < i (spherical counting); this is
-// implicit and does not need to be stored.
-//
-// Contraction coefficients (coeff) are pure radial — any spherical-to-Cartesian
-// transformation factors are applied internally at evaluation time (md_gto_data_build).
+// Contraction coefficients (coeff) are pure radial — spherical-to-Cartesian
+// transformation factors are applied internally at evaluation time.
 //
 // Atom coordinates are NOT stored here.  Pass them as a flat float array
 // (packed xyz, stride 3, length >= max(atom_idx)+1) to any function that needs them.
@@ -120,16 +117,6 @@ void md_gto_grid_evaluate_mo(
     const md_gto_basis_t* basis, const float* atom_xyz,
     const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
 
-// Evaluate sum_i weight_i * psi_i(r)^2 on a grid.
-// Used for NTO densities, attachment/detachment densities, and MO-based
-// electron density.  Each mo_coeffs[i] is an AO coefficient vector of
-// length num_cgtos; squaring and weighted accumulation are done internally.
-void md_gto_grid_evaluate_mo_sum(
-    float* out, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
-    const double* const* mo_coeffs, const double* weights, size_t num_mos,
-    double cutoff);
-
 // Evaluate full electron density via AO density matrix on a grid.
 // density_matrix: full N×N row-major double array, N = number of CGTOs implied by basis.
 // The function constructs a compact upper-triangular float representation internally.
@@ -151,6 +138,16 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis);
 // Returns:   number of elements written (after pruning, or total if cutoff == 0)
 size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
     const float* atom_xyz, const double* mo_coeffs, double cutoff);
+
+// GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
+
+// mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode);
 
 // Basis-centric GL density evaluation.
 // Expands the basis, converts the NxN double density matrix to upper-triangular float,
@@ -204,7 +201,7 @@ void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const m
 // - gto_data: The gto data to evaluate
 // - matrix_data: The matrix coefficients (Upper triangular format)
 // - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim, bool include_gradients);
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const double* ao_matrix, bool include_gradients);
 
 #if MD_ENABLE_GPU
 // GPU-resident buffer holding all input data for density evaluation.

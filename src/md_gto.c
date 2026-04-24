@@ -54,7 +54,6 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
 
-
 // ---------------------------------------------------------------------------
 // Spherical→Cartesian expansion tables
 // Converts md_gto_basis_t (radial shells, pure radial coefficients) into the
@@ -165,8 +164,8 @@ static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
 {
     uint32_t nc = 0, np = 0;
     for (uint32_t si = 0; si < basis->num_shells; si++) {
-        int l     = (int)basis->shells[si].l;
-        int nsph  = 2 * l + 1;
+        int l      = (int)basis->shells[si].l;
+        int nsph   = 2 * l + 1;
         int nprims = (int)basis->shells[si].num_primitives;
         nc += (uint32_t)nsph;
         for (int isph = 0; isph < nsph; isph++) {
@@ -242,6 +241,15 @@ static void density_matrix_upper_tri_extract_float(float* out, const double* dm,
             out[k++] = (float)dm[i * n + j];
         }
     }
+}
+
+void md_gto_grid_evaluate_mo(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+}
+
+void md_gto_grid_evaluate_density(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* density_matrix)
+{}
+
+void md_gto_grid_evaluate_mo_sum(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* const* mo_coeffs, const double* weights, size_t num_mos, double cutoff) {
 }
 
 size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
@@ -490,10 +498,10 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix_data, size_t matrix_dim, bool include_gradients) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix, size_t upper_triangular_len, bool include_gradients) {
     ASSERT(grid);
     ASSERT(gto_data);
-    ASSERT(upper_triangular_matrix_data);
+    ASSERT(upper_triangular_matrix);
 
     md_gl_debug_push("EVAL DENSITY");
 
@@ -538,13 +546,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         goto done;
     }
 
-    size_t matrix_data_len = (matrix_dim * (matrix_dim + 1)) / 2;
-    const float* matrix_data = upper_triangular_matrix_data;
-
-    if (matrix_dim != gto_data->num_cgtos) {
-        MD_LOG_ERROR("Matrix dim, cgto mismatch");
-        goto done;
-    }
+    size_t matrix_dim = gto_data->num_cgtos;
 
     typedef struct {
         mat4_t world_to_model;
@@ -579,7 +581,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLsizeiptr ssbo_pgto_ijkl_size      = sizeof(uint32_t) * (gto_data->num_pgtos);
 
     GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_ijkl_base + ssbo_pgto_ijkl_size, 256);
-    GLsizeiptr ssbo_matrix_size         = sizeof(float) * matrix_data_len;
+    GLsizeiptr ssbo_matrix_size         = sizeof(float) * upper_triangular_len;
 
     GLintptr   ubo_base                 = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
     GLsizeiptr ubo_size                 = sizeof(uniform_block_t);
@@ -594,7 +596,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_alpha_base,     ssbo_pgto_alpha_size,   gto_data->pgto_alpha);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_radius_base,    ssbo_pgto_radius_size,  gto_data->pgto_radius);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_ijkl_base,      ssbo_pgto_ijkl_size,    gto_data->pgto_ijkl);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       matrix_data);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       upper_triangular_matrix);
 
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buf, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buf, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
@@ -647,6 +649,82 @@ done:
     md_gl_debug_pop();
 }
 
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+    ASSERT(grid);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(mo_coeffs);
+
+    GLuint program = get_gto_program();
+    if (!program) return;
+
+    size_t temp_pos  = md_temp_get_pos();
+    size_t max_gtos  = md_gto_pgto_count(basis);
+    md_gto_t* gtos   = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos);
+    size_t num_gtos  = md_gto_expand_with_mo(gtos, basis, atom_xyz, mo_coeffs, cutoff);
+
+    if (num_gtos > 0) {
+        uint32_t orb_offsets[2] = { 0, (uint32_t)num_gtos };
+        float    orb_scaling[1] = { 1.0f };
+        md_orbital_data_t orb = {
+            .num_gtos    = num_gtos,
+            .gtos        = gtos,
+            .num_orbs    = 1,
+            .orb_offsets = orb_offsets,
+            .orb_scaling = orb_scaling,
+        };
+        gto_grid_evaluate_orb_GPU(vol_tex, grid, &orb, mode, program);
+    }
+
+    md_temp_set_pos_back(temp_pos);
+}
+
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
+    ASSERT(grid);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(mo_coeffs);
+
+    if (num_mos == 0) return;
+
+    GLuint program = get_gto_program();
+    if (!program) return;
+
+    size_t temp_pos  = md_temp_get_pos();
+    size_t max_gtos  = md_gto_pgto_count(basis);
+
+    // Flat GTO buffer for all MOs concatenated
+    md_gto_t* gtos        = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos * num_mos);
+    uint32_t* orb_offsets = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_mos + 1));
+    float*    orb_scaling = (float*)   md_temp_push(sizeof(float)    *  num_mos);
+
+    size_t total_gtos = 0;
+    size_t num_valid  = 0;
+    orb_offsets[0]    = 0;
+
+    for (size_t i = 0; i < num_mos; i++) {
+        if (!mo_coeffs[i]) continue;
+        size_t n = md_gto_expand_with_mo(gtos + total_gtos, basis, atom_xyz, mo_coeffs[i], cutoff);
+        if (n == 0) continue;
+        total_gtos            += n;
+        orb_scaling[num_valid] = (float)(mo_scl ? mo_scl[i] : 1.0);
+        orb_offsets[++num_valid] = (uint32_t)total_gtos;
+    }
+
+    if (total_gtos > 0) {
+        md_orbital_data_t orb = {
+            .num_gtos    = total_gtos,
+            .gtos        = gtos,
+            .num_orbs    = num_valid,
+            .orb_offsets = orb_offsets,
+            .orb_scaling = orb_scaling,
+        };
+        gto_grid_evaluate_orb_GPU(vol_tex, grid, &orb, mode, program);
+    }
+
+    md_temp_set_pos_back(temp_pos);
+}
+
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz,
     const double* density_matrix, bool include_gradients)
@@ -666,11 +744,11 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     float*    pgto_coeff  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
     float*    pgto_radius = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
     uint32_t* pgto_ijkl   = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_pgtos);
-    size_t    tri_len     = ((size_t)num_cgtos * (num_cgtos + 1)) / 2;
+    size_t    tri_len     = density_matrix_upper_tri_size(num_cgtos);
     float*    upper_tri   = (float*)   md_temp_push(sizeof(float)    * tri_len);
 
     gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
-    density_matrix_to_upper_tri(upper_tri, density_matrix, num_cgtos);
+    density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
 
     md_gto_data_t gto_data = {
         .num_cgtos   = num_cgtos,
@@ -683,7 +761,7 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
         .pgto_ijkl   = pgto_ijkl,
     };
 
-    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, &gto_data, upper_tri, num_cgtos, include_gradients);
+    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, &gto_data, upper_tri, tri_len, include_gradients);
 
     md_temp_set_pos_back(temp_pos);
 }

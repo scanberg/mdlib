@@ -62,7 +62,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_ao);
-    md_vlx_scf_mo_coefficients(mo_coeffs, vlx, 120, MD_VLX_MO_TYPE_ALPHA);
+    md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
@@ -140,8 +140,7 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
     }
 
     size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
-    double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_ao);
-    md_vlx_scf_mo_coefficients(mo_coeffs, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+    const double* mo_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, MD_VLX_SPIN_ALPHA);
 
     size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
@@ -211,7 +210,7 @@ UTEST(gto, h2o) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, arena);
 
@@ -232,8 +231,8 @@ UTEST(gto, amide) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
+    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, arena);
     double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, arena);
@@ -255,8 +254,8 @@ UTEST(gto, ne) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/ne.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
+    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, arena);
     double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, arena);
@@ -278,8 +277,8 @@ UTEST(gto, myjob) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/myjob.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
+    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, arena);
     double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, arena);

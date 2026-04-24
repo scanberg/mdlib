@@ -25,10 +25,11 @@ UBENCH_EX(gto, evaluate_grid) {
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
 	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+    vec3_t* atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * md_vlx_number_of_atoms(vlx));
     for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
-        vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
-        min_box = vec3_min(min_box, c);
-        max_box = vec3_max(max_box, c);
+        atom_xyz[i] = vec3_set((float)(coords[i].x * ANGSTROM_TO_BOHR), (float)(coords[i].y * ANGSTROM_TO_BOHR), (float)(coords[i].z * ANGSTROM_TO_BOHR));
+        min_box = vec3_min(min_box, atom_xyz[i]);
+        max_box = vec3_max(max_box, atom_xyz[i]);
     }
 
     min_box = vec3_sub_f(min_box, 2.0f);
@@ -54,9 +55,17 @@ UBENCH_EX(gto, evaluate_grid) {
         .dim = {vol_dim, vol_dim, vol_dim},
     };
 
-    size_t num_gtos = md_vlx_mo_gto_count(vlx);
+    md_gto_basis_t basis = {0};
+    md_vlx_gto_basis_extract(&basis, vlx, arena);
+
+    size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
+
+    size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
+    md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
+
+    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, 1.0e-6);
 
     md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
 

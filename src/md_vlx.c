@@ -185,8 +185,12 @@ typedef struct md_vlx_t {
 
 
 	md_element_t* atomic_numbers;
-	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices
-    int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
+	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices (shell order)
+	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
+	// ao_remap[shell_ao_idx] = vlx_ao_idx
+	// Maps from shell order (angl→atom→func→isph) to VeloxChem matrix row order (angl→isph→atom→func).
+	// Built once after the basis set is parsed; used to permute C, D, S matrices into shell order.
+	int* ao_remap;
 
 	struct md_allocator_i* arena;
 } md_vlx_t;
@@ -477,6 +481,95 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 	}
 
 	return count;
+}
+
+// Build a permutation table that maps from shell order (angl→atom→func→isph)
+// to VeloxChem matrix row order (angl→isph→atom→func).
+// ao_remap[shell_ao_idx] = vlx_ao_idx.
+// Returns the total number of AOs (length of the table), or 0 on failure.
+static size_t build_ao_remap(int** out_remap, const md_vlx_t* vlx, md_allocator_i* alloc) {
+	ASSERT(out_remap);
+	ASSERT(vlx);
+	ASSERT(alloc);
+
+	int natoms   = (int)vlx->number_of_atoms;
+	int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
+
+	// First, count total AOs
+	size_t num_aos = 0;
+	for (int angl = 0; angl <= max_angl; angl++) {
+		int nsph = spherical_momentum_num_components(angl);
+		for (int atomidx = 0; atomidx < natoms; atomidx++) {
+			int idelem = vlx->atomic_numbers[atomidx];
+			basis_func_t basis_funcs[128];
+			size_t num_funcs = basis_set_extract_atomic_basis_func_angl(
+				basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
+			num_aos += (size_t)nsph * num_funcs;
+		}
+	}
+
+	if (num_aos == 0) return 0;
+
+	int* remap = (int*)md_alloc(alloc, sizeof(int) * num_aos);
+	MEMSET(remap, 0, sizeof(int) * num_aos);
+
+	// VeloxChem matrix AO index: angl → isph → atom → func
+	// Shell AO index:            angl → atom → func → isph
+	//
+	// We walk shell order (outer loop) and record where each entry maps in VLX order.
+	// vlx_ao_start[angl][isph][atom] is needed. We pre-compute the vlx base offset per
+	// (angl, isph, atom) by walking the vlx ordering once.
+
+	// Compute vlx_base[angl][isph][atomidx] = starting VLX AO index for that group.
+	// Flat: vlx_base[angl * (max_angl+1) * natoms + isph * natoms + atomidx]
+	// But isph is up to 2*max_angl+1. Use a temp VLA-style allocation.
+	int max_nsph = 2 * max_angl + 1;
+	size_t temp_pos = md_temp_get_pos();
+	int* vlx_base = (int*)md_temp_push(sizeof(int) * (max_angl + 1) * max_nsph * natoms);
+	int* vlx_num  = (int*)md_temp_push(sizeof(int) * (max_angl + 1) * natoms);
+	MEMSET(vlx_base, 0, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
+	MEMSET(vlx_num,  0, sizeof(int) * (max_angl + 1) * natoms);
+
+	// Count funcs per (angl, atom) so we know stride for vlx_base
+	for (int angl = 0; angl <= max_angl; angl++) {
+		for (int atomidx = 0; atomidx < natoms; atomidx++) {
+			int idelem = vlx->atomic_numbers[atomidx];
+			basis_func_t bf[128];
+			size_t nf = basis_set_extract_atomic_basis_func_angl(bf, ARRAY_SIZE(bf), &vlx->basis_set, idelem, angl);
+			vlx_num[angl * natoms + atomidx] = (int)nf;
+		}
+	}
+
+	// Walk VLX order to fill vlx_base
+	int vlx_idx = 0;
+	for (int angl = 0; angl <= max_angl; angl++) {
+		int nsph = spherical_momentum_num_components(angl);
+		for (int isph = 0; isph < nsph; isph++) {
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				vlx_base[angl * max_nsph * natoms + isph * natoms + atomidx] = vlx_idx;
+				vlx_idx += vlx_num[angl * natoms + atomidx];
+			}
+		}
+	}
+
+	// Now walk shell order and fill remap
+	int shell_idx = 0;
+	for (int angl = 0; angl <= max_angl; angl++) {
+		int nsph = spherical_momentum_num_components(angl);
+		for (int atomidx = 0; atomidx < natoms; atomidx++) {
+			int nfuncs = vlx_num[angl * natoms + atomidx];
+			for (int funcidx = 0; funcidx < nfuncs; funcidx++) {
+				for (int isph = 0; isph < nsph; isph++, shell_idx++) {
+					int base = vlx_base[angl * max_nsph * natoms + isph * natoms + atomidx];
+					remap[shell_idx] = base + funcidx;
+				}
+			}
+		}
+	}
+
+	md_temp_set_pos_back(temp_pos);
+	*out_remap = remap;
+	return num_aos;
 }
 
 static size_t vlx_pgto_count(const md_vlx_t* vlx) {
@@ -1426,6 +1519,43 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// AO permutation helpers
+// Reorder AO-indexed matrices from VeloxChem order into shell order in-place.
+// ---------------------------------------------------------------------------
+
+// Permute rows of an AO×MO matrix (num_ao rows, num_mo columns, row-major).
+// remap[shell_ao] = vlx_ao  =>  dst_row[shell_ao] = src_row[vlx_ao]
+// Permute rows of a [num_ao x num_mo] matrix according to remap and transpose to [num_mo x num_ao].
+// On entry  mat is [num_ao][num_mo] in VeloxChem AO order.
+// On return mat is [num_mo][num_ao] in shell order — each MO is a contiguous row.
+static void ao_permute(double* mat, size_t num_ao, size_t num_mo, const int* remap) {
+	size_t temp_pos = md_temp_get_pos();
+	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_mo);
+	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_mo);
+	for (size_t mo = 0; mo < num_mo; mo++) {
+		for (size_t ao = 0; ao < num_ao; ao++) {
+			mat[mo * num_ao + ao] = tmp[(size_t)remap[ao] * num_mo + mo];
+		}
+	}
+	md_temp_set_pos_back(temp_pos);
+}
+
+// Permute both rows and columns of a square AO×AO matrix (num_ao × num_ao, row-major).
+static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
+	size_t temp_pos = md_temp_get_pos();
+	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_ao);
+	for (size_t i = 0; i < num_ao; i++) {
+		size_t si = (size_t)remap[i];
+		for (size_t j = 0; j < num_ao; j++) {
+			size_t sj = (size_t)remap[j];
+			mat[i * num_ao + j] = tmp[si * num_ao + sj];
+		}
+	}
+	md_temp_set_pos_back(temp_pos);
+}
+
 // Data extraction procedures
 static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	char scf_type[64] = {0};
@@ -2153,6 +2283,11 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 	}
 	md_file_close(&file);
 
+	if (vlx->number_of_atoms == 0 || str_empty(vlx->basis_set_ident) || vlx->atomic_numbers == 0) {
+		MD_LOG_ERROR("Failed to parse required information in out file");
+		goto done;
+	}
+
 	str_t base_file = {0};
 	extract_file_path_without_ext(&base_file, filename);
 
@@ -2241,9 +2376,8 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 			}
 		}
 	}
-
 	if (flags & VLX_FLAG_RSP) {
-        // Test if we can read the first NTO file
+		// Test if we can read the first NTO file
 		md_strb_reset(&sb);
 		md_strb_fmt(&sb, STR_FMT "_S1_NTO.h5", STR_ARG(base_file));
 		if (H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT) != H5I_INVALID_HID) {
@@ -2281,6 +2415,15 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 					}
 					if (!h5_read_dataset_data(nto->occupancy.data, md_array_size(nto->occupancy.data), file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
 						goto done;
+					}
+
+					// Permute+transpose into [num_mo][num_ao] shell order
+					if (vlx->ao_remap) {
+						size_t nao = nto->coefficients.size[0];
+						size_t nmo = nto->coefficients.size[1];
+						ao_permute(nto->coefficients.data, nao, nmo, vlx->ao_remap);
+						nto->coefficients.size[0] = nmo;
+						nto->coefficients.size[1] = nao;
 					}
 				}
 				else {
@@ -2423,6 +2566,51 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
+	// Build the AO remap table and apply it to all loaded matrices.
+	// This must happen after the basis set has been successfully resolved,
+	// since build_ao_remap() requires basis topology to be valid.
+	if (vlx->ao_remap == NULL && vlx->basis_set.atom_basis.count > 0) {
+		size_t num_ao = build_ao_remap(&vlx->ao_remap, vlx, vlx->arena);
+		if (num_ao > 0 && vlx->ao_remap) {
+			// SCF: permute+transpose C [num_ao x num_mo] -> [num_mo x num_ao] in shell order
+			if (vlx->scf.alpha.coefficients.data && num_ao == vlx->scf.alpha.coefficients.size[0]) {
+				size_t num_mo_a = vlx->scf.alpha.coefficients.size[1];
+				ao_permute(vlx->scf.alpha.coefficients.data, num_ao, num_mo_a, vlx->ao_remap);
+				vlx->scf.alpha.coefficients.size[0] = num_mo_a;
+				vlx->scf.alpha.coefficients.size[1] = num_ao;
+			}
+			if (vlx->scf.alpha.density.data && num_ao == vlx->scf.alpha.density.size[0]) {
+				ao_permute_square(vlx->scf.alpha.density.data, num_ao, vlx->ao_remap);
+			}
+			if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+				if (vlx->scf.beta.coefficients.data && num_ao == vlx->scf.beta.coefficients.size[0]) {
+					size_t num_mo_b = vlx->scf.beta.coefficients.size[1];
+					ao_permute(vlx->scf.beta.coefficients.data, num_ao, num_mo_b, vlx->ao_remap);
+					vlx->scf.beta.coefficients.size[0] = num_mo_b;
+					vlx->scf.beta.coefficients.size[1] = num_ao;
+				}
+				if (vlx->scf.beta.density.data && num_ao == vlx->scf.beta.density.size[0]) {
+					ao_permute_square(vlx->scf.beta.density.data, num_ao, vlx->ao_remap);
+				}
+			}
+			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
+				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
+			}
+			// NTO: permute+transpose each [num_ao x num_mo] -> [num_mo x num_ao] in shell order
+			if (vlx->rsp.nto) {
+				for (size_t ni = 0; ni < vlx->rsp.number_of_excited_states; ni++) {
+					md_vlx_orbital_t* nto = &vlx->rsp.nto[ni];
+					if (!nto->coefficients.data) continue;
+					if (num_ao != nto->coefficients.size[0]) continue;
+					size_t nmo = nto->coefficients.size[1];
+					ao_permute(nto->coefficients.data, num_ao, nmo, vlx->ao_remap);
+					nto->coefficients.size[0] = nmo;
+					nto->coefficients.size[1] = num_ao;
+				}
+			}
+		}
+	}
+
 	// Identify homo and lumo
 	if (vlx->scf.alpha.occupancy.data) {
 		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
@@ -2485,19 +2673,6 @@ static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 	return orb->coefficients.size[1];
 }
 
-static inline size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
-	ASSERT(orb);
-	return orb->coefficients.size[0];
-}
-
-static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
-	ASSERT(out_coeff);
-	ASSERT(orb);
-	ASSERT(mo_idx < number_of_molecular_orbitals(orb));
-
-	extract_col(out_coeff, &orb->coefficients, mo_idx);
-}
-
 static inline size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[0];
@@ -2514,7 +2689,7 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
 	extract_row(out_coeff, &orb->coefficients, ao_idx);
-
+}
 
 const double* md_vlx_scf_resp_charges(const md_vlx_t* vlx) {
 	if (vlx) {
@@ -2631,46 +2806,7 @@ const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
 	return NULL;
 }
 
-size_t md_vlx_rsp_nto_number_of_ao_coefficients(const struct md_vlx_t* vlx, size_t nto_idx) {
-	if (vlx) {
-		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			return vlx->rsp.nto[nto_idx].coefficients.size[0];
-		}
-	}
-	return 0;
-}
-
-size_t md_vlx_rsp_nto_extract_coefficients(double* out_ao, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
-	if (vlx) {
-		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			const md_vlx_orbital_t* orb = &vlx->rsp.nto[nto_idx];
-			// We return the data pointer to the LUMO orbital index
-
-			int64_t mo_idx = 0;
-			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
-				mo_idx = (int64_t)vlx->scf.lumo_idx[0] + (int64_t)lambda_idx;
-			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
-				mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
-			} else {
-				MD_LOG_ERROR("Invalid NTO type!");
-				return 0;
-			}
-
-			if (mo_idx < 0 || mo_idx >= (int64_t)md_vlx_scf_number_of_molecular_orbitals(vlx)) {
-				MD_LOG_ERROR("lambda_idx out of bounds");
-				return 0;
-			}
-
-			if (out_ao) {
-				extract_mo_coefficients(out_ao, orb, mo_idx);
-			}
-			return number_of_mo_coefficients(orb);
-		}
-	}
-	return 0;
-}
-
-size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
+size_t md_vlx_vib_number_of_normal_modes(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->vib.number_of_normal_modes;
 	}
@@ -3029,22 +3165,22 @@ dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
 	return (dvec3_t){0};
 }
 
-size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
+		if (type == MD_VLX_SPIN_ALPHA) {
 			return vlx->scf.homo_idx[0];
-		} else if (type == MD_VLX_MO_TYPE_BETA) {
+		} else if (type == MD_VLX_SPIN_BETA) {
 			return vlx->scf.homo_idx[1];
 		}
 	}
 	return 0;
 }
 
-size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
+		if (type == MD_VLX_SPIN_ALPHA) {
 			return vlx->scf.lumo_idx[0];
-		} else if (type == MD_VLX_MO_TYPE_BETA) {
+		} else if (type == MD_VLX_SPIN_BETA) {
 			return vlx->scf.lumo_idx[1];
 		}
 	}
@@ -3065,116 +3201,112 @@ size_t md_vlx_scf_number_of_molecular_orbitals(const md_vlx_t* vlx) {
 	return 0;
 }
 
-const double* md_vlx_scf_mo_occupancy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+const double* md_vlx_scf_mo_occupancy(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
+		if (type == MD_VLX_SPIN_ALPHA) {
 			return vlx->scf.alpha.occupancy.data;
 		} 
-		else if (type == MD_VLX_MO_TYPE_BETA) {
+		else if (type == MD_VLX_SPIN_BETA) {
 			return vlx->scf.beta.occupancy.data;
 		}
 	}
 	return NULL;
 }
 
-const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
+		if (type == MD_VLX_SPIN_ALPHA) {
 			return vlx->scf.alpha.energy.data;
 		}
-		else if (type == MD_VLX_MO_TYPE_BETA) {
+		else if (type == MD_VLX_SPIN_BETA) {
 			return vlx->scf.beta.energy.data;
 		}
 	}
 	return NULL;
 }
 
-// ---------------------------------------------------------------------------
-// Basis-centric API (Phase 4)
-// ---------------------------------------------------------------------------
-
 bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const md_vlx_t* vlx, md_allocator_i* alloc) {
-    if (!vlx || !out) return false;
-    ASSERT(alloc);
+	if (!vlx || !out) return false;
+	ASSERT(alloc);
 
-    MEMSET(out, 0, sizeof(*out));
+	MEMSET(out, 0, sizeof(*out));
 
-    int natoms   = (int)vlx->number_of_atoms;
-    int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
+	int natoms   = (int)vlx->number_of_atoms;
+	int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
 
-    // Walk in l-first / atom-second order — same as extract_gto_data — so that
-    // AO indices produced here match the column ordering of the MO coefficient
-    // matrix stored in vlx->scf.alpha.coefficients.
-    for (int angl = 0; angl <= max_angl; angl++) {
-        for (int atomidx = 0; atomidx < natoms; atomidx++) {
-            int idelem = vlx->atomic_numbers[atomidx];
-            basis_func_t basis_funcs[128];
-            size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(
-                basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
+	// Emit one shell per contracted function, ordered angl -> atom -> func.
+	// MO coefficient vectors stored in vlx are already permuted to this order
+	// by build_ao_remap() applied at parse time.
+	for (int angl = 0; angl <= max_angl; angl++) {
+		for (int atomidx = 0; atomidx < natoms; atomidx++) {
+			int idelem = vlx->atomic_numbers[atomidx];
+			basis_func_t basis_funcs[128];
+			size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(
+				basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
 
-            for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
-                const basis_func_t* bf = &basis_funcs[funcidx];
-                md_gto_shell_t shell = {
-                    .atom_idx         = (uint32_t)atomidx,
-                    .primitive_offset = out->num_primitives,
-                    .l                = (uint32_t)angl,
-                    .num_primitives   = (uint32_t)bf->count,
-                };
-                md_array_push(out->shells, shell, alloc);
-                out->num_shells++;
+			for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
+				const basis_func_t* bf = &basis_funcs[funcidx];
+				md_gto_shell_t shell = {
+					.atom_idx         = (uint32_t)atomidx,
+					.primitive_offset = out->num_primitives,
+					.l                = (uint16_t)angl,
+					.num_primitives   = (uint16_t)bf->count,
+				};
+				md_array_push(out->shells, shell, alloc);
+				out->num_shells++;
 
-                for (int ip = 0; ip < bf->count; ip++) {
-                    md_array_push(out->alpha, (float)bf->exponents[ip], alloc);
-                    md_array_push(out->coeff, (float)bf->normalization_coefficients[ip], alloc);
-                    out->num_primitives++;
-                }
-            }
-        }
-    }
-    return out->num_shells > 0;
+				for (int ip = 0; ip < bf->count; ip++) {
+					md_array_push(out->alpha, (float)bf->exponents[ip], alloc);
+					md_array_push(out->coeff, (float)bf->normalization_coefficients[ip], alloc);
+					out->num_primitives++;
+				}
+			}
+		}
+	}
+	return out->num_shells > 0;
 }
 
-size_t md_vlx_scf_mo_coefficients(double* out, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
-    if (!vlx) return 0;
-    const md_vlx_orbital_t* orb = NULL;
-    if (type == MD_VLX_MO_TYPE_ALPHA) {
-        orb = &vlx->scf.alpha;
-    } else if (type == MD_VLX_MO_TYPE_BETA) {
-        orb = &vlx->scf.beta;
-    } else {
-        return 0;
-    }
-    size_t n = number_of_mo_coefficients(orb);
-    if (n == 0 || mo_idx >= number_of_molecular_orbitals(orb)) return 0;
-    if (out) {
-        extract_mo_coefficients(out, orb, mo_idx);
-    }
-    return n;
+// Returns a direct pointer to the AO coefficient vector for MO mo_idx.
+// The matrix is stored [num_mo][num_ao] after permutation and transpose at load time,
+// so each MO's coefficients are contiguous and in shell order.
+const double* md_vlx_scf_mo_coefficients(const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type) {
+	if (!vlx) return NULL;
+	const md_vlx_orbital_t* orb = (type == MD_VLX_SPIN_ALPHA) ? &vlx->scf.alpha :
+								  (type == MD_VLX_SPIN_BETA)  ? &vlx->scf.beta  : NULL;
+	if (!orb || !orb->coefficients.data) return NULL;
+	size_t num_mo = orb->coefficients.size[0];
+	size_t num_ao = orb->coefficients.size[1];
+	if (mo_idx >= num_mo || num_ao == 0) return NULL;
+	return orb->coefficients.data + mo_idx * num_ao;
 }
 
-bool md_vlx_scf_density_matrix(double* out, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
-    if (!vlx) return false;
-    const double* dm   = NULL;
-    size_t        dim  = 0;
-    if (type == MD_VLX_MO_TYPE_ALPHA) {
-        dm  = vlx->scf.alpha.density.data;
-        dim = vlx->scf.alpha.density.size[0];
-    } else if (type == MD_VLX_MO_TYPE_BETA) {
-        dm  = vlx->scf.beta.density.data;
-        dim = vlx->scf.beta.density.size[0];
-    } else {
-        return false;
-    }
-    if (!dm || dim == 0) return false;
-    if (out) {
-        MEMCPY(out, dm, sizeof(double) * dim * dim);
-    }
-    return true;
+// Returns a direct pointer to the AO coefficient vector for NTO lambda_idx / type.
+// Layout is [num_mo][num_ao] after permutation at load time.
+const double* md_vlx_rsp_nto_coefficients(const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+	if (!vlx || !vlx->rsp.nto) return NULL;
+	if (nto_idx >= vlx->rsp.number_of_excited_states) return NULL;
+	const md_vlx_orbital_t* nto = &vlx->rsp.nto[nto_idx];
+	if (!nto->coefficients.data) return NULL;
+	size_t num_mo = nto->coefficients.size[0];
+	size_t num_ao = nto->coefficients.size[1];
+	// After ao_permute+transpose the matrix is [num_mo][num_ao].
+	// VeloxChem stores hole NTOs in the occupied block (rows 0..lumo_idx-1)
+	// and particle NTOs in the virtual block (rows lumo_idx..num_mo-1).
+	size_t lumo_idx = vlx->scf.lumo_idx[0];
+	size_t offset = (type == MD_VLX_NTO_TYPE_PARTICLE) ? lumo_idx : 0;
+	size_t idx = offset + lambda_idx;
+	if (idx >= num_mo || num_ao == 0) return NULL;
+	return nto->coefficients.data + idx * num_ao;
 }
 
-size_t md_vlx_rsp_nto_coefficients(double* out_ao, const md_vlx_t* vlx,
-    size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
-    return md_vlx_rsp_nto_extract_coefficients(out_ao, vlx, nto_idx, lambda_idx, type);
+// Deprecated extraction wrappers kept for backward compatibility.
+size_t md_vlx_scf_mo_coefficients_extract(double* out, const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type) {
+	const double* src = md_vlx_scf_mo_coefficients(vlx, mo_idx, type);
+	if (!src) return 0;
+	size_t num_ao = vlx->scf.alpha.coefficients.size[1];
+	if (type == MD_VLX_SPIN_BETA) num_ao = vlx->scf.beta.coefficients.size[1];
+	if (out) MEMCPY(out, src, sizeof(double) * num_ao);
+	return num_ao;
 }
 
 static inline size_t get_matrix_index(size_t i, size_t j, size_t N) {
@@ -3199,40 +3331,6 @@ const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx) {
 	return NULL;
 }
 
-// Returns the size of the density matrix in number of elements.
-// This only contains the upper triangular part of the matrix, due to symmetry.
-size_t md_vlx_scf_upper_triangular_density_matrix_size(const md_vlx_t* vlx) {
-	if (vlx) {
-		return (vlx->scf.alpha.density.size[0] > 0) ? (vlx->scf.alpha.density.size[0] * (vlx->scf.alpha.density.size[0] + 1)) / 2 : 0;
-	}
-	return 0;
-}
-
-// Populates the provided array with the density matrix data.
-bool md_vlx_scf_extract_upper_triangular_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
-	if (vlx) {
-		size_t dim = vlx->scf.alpha.density.size[0];
-        const double* density_data = NULL;
-        if (type == MD_VLX_MO_TYPE_ALPHA) {
-			density_data = vlx->scf.alpha.density.data;
-		} else if (type == MD_VLX_MO_TYPE_BETA) {
-			density_data = vlx->scf.beta.density.data;
-		} else {
-			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
-			return false;
-        }
-
-		for (size_t i = 0; i < dim; ++i) {
-			for (size_t j = i; j < dim; ++j) {
-				size_t idx = get_matrix_index(i, j, dim);
-                out_values[idx] = (float)density_data[i * dim + j];  // Convert to float
-            }
-		}
-		return true;
-	}
-	return false;
-}
-
 // Get the regular density matrix size N in (N x N)
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
 	if (vlx) {
@@ -3242,13 +3340,13 @@ size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx) {
 }
 
 // Extracts the full density matrix into a square matrix representation
-bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type) {
+bool md_vlx_scf_extract_density_matrix_data_float(float* out_values, const struct md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
 		size_t dim = vlx->scf.alpha.density.size[0];
 		const double* density_data = NULL;
-		if (type == MD_VLX_MO_TYPE_ALPHA) {
+		if (type == MD_VLX_SPIN_ALPHA) {
 			density_data = vlx->scf.alpha.density.data;
-		} else if (type == MD_VLX_MO_TYPE_BETA) {
+		} else if (type == MD_VLX_SPIN_BETA) {
 			density_data = vlx->scf.beta.density.data;
 		} else {
 			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
@@ -3262,6 +3360,20 @@ bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_v
 		return true;
 	}
 	return false;
+}
+
+const double* md_vlx_scf_density_matrix_data(const md_vlx_t* vlx, md_vlx_spin_t type) {
+	if (vlx) {
+		if (type == MD_VLX_SPIN_ALPHA) {
+			return vlx->scf.alpha.density.data;
+		} else if (type == MD_VLX_SPIN_BETA) {
+			return vlx->scf.beta.density.data;
+		} else {
+			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
+			return NULL;
+		}
+	}
+	return NULL;
 }
 
 // SCF History

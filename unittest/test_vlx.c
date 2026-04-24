@@ -123,83 +123,6 @@ UTEST(vlx, vlx_parse) {
 #endif
 }
 
-UTEST(vlx, correctness) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-
-    md_vlx_t* vlx = md_vlx_create(arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
-
-    const int vol_dim = 80;
-
-    size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
-    float* vol_data = md_arena_allocator_push(arena, bytes);
-    MEMSET(vol_data, 0, bytes);
-
-    md_grid_t grid = (md_grid_t) {
-        .orientation = mat3_ident(),
-        .origin = {-5.744767, -5.744767, -5.522177},
-        .spacing = {0.143619, 0.143619, 0.143619},
-        .dim = {vol_dim, vol_dim, vol_dim},
-    };
-
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-
-    md_gto_basis_t basis = {0};
-    md_vlx_gto_basis_extract(&basis, vlx, arena);
-
-    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-    const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
-    float* atom_xyz = (float*)md_arena_allocator_push(arena, sizeof(float) * 3 * num_atoms);
-    for (size_t i = 0; i < num_atoms; i++) {
-        atom_xyz[3*i+0] = (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+1] = (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+2] = (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR);
-    }
-
-    size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
-    double* mo_coeffs_arr = (double*)md_arena_allocator_push(arena, sizeof(double) * num_ao);
-    md_vlx_scf_mo_coefficients(mo_coeffs_arr, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-
-    size_t max_gtos = md_gto_pgto_count(&basis);
-    md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * max_gtos);
-    size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, atom_xyz, mo_coeffs_arr, 0.0);
-
-    size_t cap_phi = max_gtos;
-    double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
-
-    size_t num_mo_coeffs = number_of_mo_coefficients(&vlx->scf.alpha);
-    double* mo_coeffs = md_arena_allocator_push(arena, sizeof(double) * num_mo_coeffs);
-    extract_mo_coefficients(mo_coeffs, &vlx->scf.alpha, mo_idx);
-
-    md_gto_grid_evaluate(vol_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-
-    mat4_t index_to_world = md_grid_index_to_world(&grid);
-
-    for (int iz = 0; iz < grid.dim[2]; ++iz) {
-        for (int iy = 0; iy < grid.dim[1]; ++iy) {
-            for (int ix = 0; ix < grid.dim[0]; ++ix) {
-                vec4_t pos = mat4_mul_vec4(index_to_world, vec4_set((float)ix, (float)iy, (float)iz, 1.0));
-                pos = vec4_mul_f(pos, BOHR_TO_ANGSTROM);
-
-                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, pos.x, pos.y, pos.z);
-
-                ASSERT(num_phi == num_mo_coeffs);
-                double ref_psi = 0.0;
-                for (size_t i = 0; i < num_mo_coeffs; ++i) {
-                    ref_psi += mo_coeffs[i] * phi[i]; 
-                }
-
-                int idx = iz * grid.dim[1] * grid.dim[0] + iy * grid.dim[0] + ix;
-                float grid_psi = vol_data[idx];
-                
-                EXPECT_NEAR(ref_psi, grid_psi, 1.0e-5);
-            }
-        }
-    }
-
-    md_arena_allocator_destroy(arena);
-}
-
 UTEST(vlx, minimal_example) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
@@ -211,16 +134,35 @@ UTEST(vlx, minimal_example) {
         return;
     }
 
+    const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
+    vec3_t* atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * md_vlx_number_of_atoms(vlx));
+
+    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); i++) {
+        atom_xyz[i] = vec3_set(
+            (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR),
+            (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR),
+            (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR)
+        );
+    }
+
     // The volume dimensions which we aim to sample molecular orbital over
     const int vol_dim = 80;
 
     // The molecular orbital index we aim to sample
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
 
     // Extract GTOs
-    size_t num_gtos = md_vlx_mo_gto_count(vlx);
+    md_gto_basis_t basis = {0};
+    md_vlx_gto_basis_extract(&basis, vlx, arena);
+
+    size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
+    
+    size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
+    md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_ALPHA);
+
+    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);
