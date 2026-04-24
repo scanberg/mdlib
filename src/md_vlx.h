@@ -86,8 +86,29 @@ size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
-// Atomic orbital GTO data
-bool md_vlx_scf_extract_gto_data(md_gto_data_t* out_gto_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
+// ---------------------------------------------------------------------------
+// Basis-centric API  (primary interface — use these in new code)
+// ---------------------------------------------------------------------------
+
+// Build a static md_gto_basis_t from vlx data.  Call once at load time;
+// the result is valid for the lifetime of vlx.
+bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const struct md_vlx_t* vlx, struct md_allocator_i* alloc);
+
+// Extract one MO coefficient vector (one column of the internal AO×MO matrix)
+// into caller-supplied storage.  out must hold at least N = md_vlx_scf_number_of_atomic_orbitals() doubles.
+// Returns N on success, 0 on failure.  Transposition is handled internally.
+size_t md_vlx_scf_mo_coefficients(double* out_ao, const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type);
+
+// Extract the full N×N AO density matrix into caller-supplied storage.
+// out must hold N*N doubles (row-major).  N = md_vlx_scf_number_of_atomic_orbitals().
+// Returns true on success.
+bool md_vlx_scf_density_matrix(double* out_ao, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+
+// Extract NTO AO coefficient vector for one (nto_idx, lambda_idx, type) combination
+// into caller-supplied storage of length md_vlx_scf_number_of_atomic_orbitals().
+// Returns the number of AOs written, or 0 on failure.
+size_t md_vlx_rsp_nto_coefficients(double* out_ao, const struct md_vlx_t* vlx,
+    size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // The overlap matrix (S) is a square, symmetric matrix [N][N], this returns the length N
 size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx);
@@ -175,27 +196,6 @@ size_t md_vlx_vib_num_raman_activity(const struct md_vlx_t* vlx);
 
 // Returns array of length D
 const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx);
-
-// Extract Natural Transition Orbitals GTOs
-// nto_idx: The index of the excited state (0-based indexing)
-// lambda_idx: The lambda component to extract (0-based indexing), 0 corresponds to the most significant index
-size_t md_vlx_nto_gto_count(const md_vlx_t* vlx);
-bool   md_vlx_nto_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
-
-// Extract Molecular Orbital (MO) PGTOs
-
-// This provides an upper limit to the number of gtos supplied
-// Use this to reserve the data for the gtos
-size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
-
-// This extract the gtos into the supplied array
-// Returns the number of gtos written
-// gtos: an array to hold the extracted gtos
-// vlx: a pointer to a valid VeloxChem object
-// mo_idx: Molecular Orbital Index
-// type: Molecular orbital type: Alpha / Beta
-// value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos (0 == no cutoff (Infinite radius of influence))
-size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
 
 // Atomic properties
 size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);

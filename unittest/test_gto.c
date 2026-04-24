@@ -49,9 +49,24 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     *grid_data = vol_data;
 
-    *num_gtos = md_vlx_mo_gto_count(vlx);
+    md_gto_basis_t basis = {0};
+    md_vlx_gto_basis_extract(&basis, vlx, arena);
+
+    size_t num_atoms = md_vlx_number_of_atoms(vlx);
+    float* atom_xyz = (float*)md_arena_allocator_push(arena, sizeof(float) * 3 * num_atoms);
+    for (size_t i = 0; i < num_atoms; i++) {
+        atom_xyz[3*i+0] = (float)(coords[i].x * ANGSTROM_TO_BOHR);
+        atom_xyz[3*i+1] = (float)(coords[i].y * ANGSTROM_TO_BOHR);
+        atom_xyz[3*i+2] = (float)(coords[i].z * ANGSTROM_TO_BOHR);
+    }
+
+    size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_ao);
+    md_vlx_scf_mo_coefficients(mo_coeffs, vlx, 120, MD_VLX_MO_TYPE_ALPHA);
+
+    *num_gtos = md_gto_pgto_count(&basis);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    *num_gtos = md_vlx_mo_gto_extract(*gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
+    *num_gtos = md_gto_expand_with_mo(*gtos, &basis, atom_xyz, mo_coeffs, 1.0e-6);
 }
 
 UTEST(gto, evaluate_grid) {
@@ -112,9 +127,25 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
     };
     float* grid_data = md_arena_allocator_push(arena, sizeof(float) * cube->data.num_x * cube->data.num_y * cube->data.num_z);
 
-    size_t num_gtos = md_vlx_mo_gto_count(vlx);
+    md_gto_basis_t basis = {0};
+    md_vlx_gto_basis_extract(&basis, vlx, arena);
+
+    size_t num_atoms = md_vlx_number_of_atoms(vlx);
+    const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
+    float* atom_xyz = (float*)md_arena_allocator_push(arena, sizeof(float) * 3 * num_atoms);
+    for (size_t i = 0; i < num_atoms; i++) {
+        atom_xyz[3*i+0] = (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR);
+        atom_xyz[3*i+1] = (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR);
+        atom_xyz[3*i+2] = (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR);
+    }
+
+    size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_ao);
+    md_vlx_scf_mo_coefficients(mo_coeffs, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+
+    size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, cutoff_value);
+    num_gtos = md_gto_expand_with_mo(gtos, &basis, atom_xyz, mo_coeffs, cutoff_value);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 

@@ -78,36 +78,6 @@ static GLuint get_gto_program(void) {
     return program;
 }
 
-static GLuint get_alie_program(void) {
-    static GLuint program = 0;
-    if (!program) {
-        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t){(const char*)eval_alie_comp, eval_alie_comp_size}, 0, 0)) {
-            GLuint prog = glCreateProgram();
-            if (md_gl_program_attach_and_link(prog, &shader, 1)) {
-                program = prog;
-            }
-        }
-        glDeleteShader(shader);
-    }
-    return program;
-}
-
-static GLuint get_voronoi_segment_program(void) {
-    static GLuint program = 0;
-    if (!program) {
-        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t){(const char*)voronoi_segment_comp, voronoi_segment_comp_size}, 0, 0)) {
-            GLuint prog = glCreateProgram();
-            if (md_gl_program_attach_and_link(prog, &shader, 1)) {
-                program = prog;
-            }
-        }
-        glDeleteShader(shader);
-    }
-    return program;
-}
-
 static GLuint get_gto_density_program(void) {
     static GLuint program = 0;
     if (!program) {
@@ -253,99 +223,6 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, c
 
     GLuint program = get_gto_program();
     gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
-}
-
-void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-    ASSERT(vol_grid);
-    ASSERT(orb);
-
-    GLuint program = get_alie_program();
-    gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
-}
-
-void md_gto_voronoi_segment_GPU(float* out_values, const float* point_xyzr, size_t num_points, uint32_t vol_tex, const md_grid_t* grid) {
-    ASSERT(out_values);
-    ASSERT(point_xyzr);
-    ASSERT(grid);
-
-    GLenum format = 0;
-    if (glGetTextureLevelParameteriv) {
-        glGetTextureLevelParameteriv(vol_tex, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
-    } else {
-        glBindTexture(GL_TEXTURE_3D, vol_tex);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
-        glBindTexture(GL_TEXTURE_3D, 0);
-    }
-
-    switch (format) {
-    case GL_R16F:
-    case GL_R32F:
-        break;
-    default:
-        // Not good
-        MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
-        return;
-    }
-
-    md_gl_debug_push("SEGMENT VOL TO GROUP");
-
-    GLintptr   ssbo_point_value_offset = 0;
-    GLsizeiptr ssbo_point_value_size   = sizeof(float) * 16;
-
-    GLintptr   ssbo_point_xyzr_offset  = ALIGN_TO(ssbo_point_value_offset + ssbo_point_value_size, 256);
-    GLsizeiptr ssbo_point_xyzr_size    = sizeof(float) * 4 * num_points;
-
-    size_t total_size = ALIGN_TO(ssbo_point_xyzr_offset + ssbo_point_xyzr_size, 256);
-    GLuint ssbo = get_buffer(total_size);
-    
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-
-    // Clear first portion of buffer holding point values
-    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32F, ssbo_point_value_offset, ssbo_point_value_size, GL_RED, GL_FLOAT, NULL);
-    // Fill next portion of buffer with point xyzr
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_xyzr_offset,  ssbo_point_xyzr_size,  point_xyzr);
-
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_point_xyzr_offset,  ssbo_point_xyzr_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_point_value_offset, ssbo_point_value_size);
-
-    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, format);
-
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-    GLuint program = get_voronoi_segment_program();
-    glUseProgram(program);
-
-    float world_to_model[4][4];
-    float index_to_world[4][4];
-    world_to_model_matrix(world_to_model, grid);
-    index_to_world_matrix(index_to_world, grid);
-
-    glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
-    glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
-    glUniform3fv(2, 1, grid->spacing.elem);
-    glUniform1ui(3, (GLuint)num_points);
-
-    int num_groups[3] = {
-        DIV_UP(grid->dim[0], 8),
-        DIV_UP(grid->dim[1], 8),
-        DIV_UP(grid->dim[2], 8),
-    };
-    glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
-
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    uint32_t* temp_values = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_points);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_value_offset, ssbo_point_value_size, temp_values);
-    for (size_t i = 0; i < num_points; ++i) {
-        out_values[i] = (float)(temp_values[i] / QUANTIZATION_SCALE_FACTOR);
-    }
-    md_temp_pop(sizeof(uint32_t) * num_points);
-
-    glUseProgram(0);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    free_buffer(ssbo);
-    md_gl_debug_pop();
 }
 
 void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
@@ -520,13 +397,50 @@ done:
     md_gl_debug_pop();
 }
 
+void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* density_matrix, bool include_gradients)
+{
+    ASSERT(grid);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(density_matrix);
+
+    uint32_t num_cgtos, num_pgtos;
+    gto_basis_count(&num_cgtos, &num_pgtos, basis);
+
+    size_t temp_pos = md_temp_get_pos();
+    vec4_t*   cgto_xyzr   = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
+    uint32_t* cgto_offset = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_cgtos + 1));
+    float*    pgto_alpha  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    float*    pgto_coeff  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    float*    pgto_radius = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    uint32_t* pgto_ijkl   = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_pgtos);
+    size_t    tri_len     = ((size_t)num_cgtos * (num_cgtos + 1)) / 2;
+    float*    upper_tri   = (float*)   md_temp_push(sizeof(float)    * tri_len);
+
+    gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
+    density_matrix_to_upper_tri(upper_tri, density_matrix, num_cgtos);
+
+    md_gto_data_t gto_data = {
+        .num_cgtos   = num_cgtos,
+        .cgto_xyzr   = cgto_xyzr,
+        .cgto_offset = cgto_offset,
+        .num_pgtos   = num_pgtos,
+        .pgto_alpha  = pgto_alpha,
+        .pgto_coeff  = pgto_coeff,
+        .pgto_radius = pgto_radius,
+        .pgto_ijkl   = pgto_ijkl,
+    };
+
+    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, &gto_data, upper_tri, num_cgtos, include_gradients);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
 #else
 
 void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-
-}
-
-void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
 
 }
 
@@ -542,7 +456,258 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
 
 }
 
+void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* density_matrix, bool include_gradients) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)density_matrix; (void)include_gradients;
+}
+
 #endif
+
+// ---------------------------------------------------------------------------
+// Spherical→Cartesian expansion tables
+// Converts md_gto_basis_t (radial shells, pure radial coefficients) into the
+// flat Cartesian SoA layout (md_gto_data_t / GPU buffer) used by evaluators.
+// Coupling coefficients and Cartesian (l,m,n) tables ported from VeloxChem.
+// ---------------------------------------------------------------------------
+
+typedef uint8_t gto_lmn_t[3];
+
+static const gto_lmn_t gto_S_lmn[1]  = {{0,0,0}};
+static const gto_lmn_t gto_P_lmn[3]  = {{1,0,0},{0,1,0},{0,0,1}};
+static const gto_lmn_t gto_D_lmn[6]  = {{2,0,0},{1,1,0},{1,0,1},{0,2,0},{0,1,1},{0,0,2}};
+static const gto_lmn_t gto_F_lmn[10] = {{3,0,0},{2,1,0},{2,0,1},{1,2,0},{1,1,1},{1,0,2},{0,3,0},{0,2,1},{0,1,2},{0,0,3}};
+static const gto_lmn_t gto_G_lmn[15] = {{4,0,0},{3,1,0},{3,0,1},{2,2,0},{2,1,1},{2,0,2},{1,3,0},{1,2,1},{1,1,2},{1,0,3},{0,4,0},{0,3,1},{0,2,2},{0,1,3},{0,0,4}};
+
+#define GTO_d3  3.464101615137754587
+#define GTO_f5  1.581138830084189666
+#define GTO_f15 7.745966692414833770
+#define GTO_f3  1.224744871391589049
+#define GTO_g35 (4.0 * 5.916079783099616042)
+#define GTO_g17 (4.0 * 4.183300132670377739)
+#define GTO_g5  (4.0 * 2.236067977499789696)
+#define GTO_g2  (4.0 * 1.581138830084189666)
+
+static const double  gto_S_factors[] = {1.0};
+static const uint8_t gto_S_indices[] = {0};
+static const uint8_t gto_S_num_fac[] = {1};
+
+static const double  gto_P_factors[] = {1.0, 1.0, 1.0};
+static const uint8_t gto_P_indices[] = {1, 2, 0};
+static const uint8_t gto_P_offsets[] = {0, 1, 2};
+static const uint8_t gto_P_num_fac[] = {1, 1, 1};
+
+static const double  gto_D_factors[] = {GTO_d3, GTO_d3, -1.0, -1.0, 2.0, GTO_d3, 0.5*GTO_d3, -0.5*GTO_d3};
+static const uint8_t gto_D_indices[] = {1, 4, 0, 3, 5, 2, 0, 3};
+static const uint8_t gto_D_offsets[] = {0, 1, 2, 5, 6};
+static const uint8_t gto_D_num_fac[] = {1, 1, 3, 1, 2};
+
+static const double  gto_F_factors[] = {3.0*GTO_f5, -GTO_f5, GTO_f15, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 2.0, -3.0, -3.0, 4.0*GTO_f3, -GTO_f3, -GTO_f3, 0.5*GTO_f15, -0.5*GTO_f15, GTO_f5, -3.0*GTO_f5};
+static const uint8_t gto_F_indices[] = {1, 6, 4, 8, 1, 6, 9, 2, 7, 5, 0, 3, 2, 7, 0, 3};
+static const uint8_t gto_F_offsets[] = {0, 2, 3, 6, 9, 12, 14};
+static const uint8_t gto_F_num_fac[] = {2, 1, 3, 3, 3, 2, 2};
+
+static const double gto_G_factors[] = {
+    GTO_g35, -GTO_g35, 3.0*GTO_g17, -GTO_g17, 6.0*GTO_g5, -GTO_g5, -GTO_g5, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2,
+    8.0, 3.0, 3.0, 6.0, -24.0, -24.0, 4.0*GTO_g2, -3.0*GTO_g2, -3.0*GTO_g2, 3.0*GTO_g5,
+    -3.0*GTO_g5, -0.5*GTO_g5, 0.5*GTO_g5, GTO_g17, -3.0*GTO_g17, 0.25*GTO_g35, 0.25*GTO_g35, -1.50*GTO_g35};
+static const uint8_t gto_G_indices[] = {1, 6, 4, 11, 8, 1, 6, 13, 4, 11, 14, 0, 10, 3, 5, 12, 9, 2, 7, 5, 12, 0, 10, 2, 7, 0, 10, 3};
+static const uint8_t gto_G_offsets[] = {0, 2, 4, 7, 10, 16, 19, 23, 25};
+static const uint8_t gto_G_num_fac[] = {2, 2, 3, 3, 6, 3, 4, 2, 3};
+
+#undef GTO_d3
+#undef GTO_f5
+#undef GTO_f15
+#undef GTO_f3
+#undef GTO_g35
+#undef GTO_g17
+#undef GTO_g5
+#undef GTO_g2
+
+static inline int gto_sph_num_factors(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_num_fac[isph];
+    case 1: return gto_P_num_fac[isph];
+    case 2: return gto_D_num_fac[isph];
+    case 3: return gto_F_num_fac[isph];
+    case 4: return gto_G_num_fac[isph];
+    default: ASSERT(false); return 0;
+    }
+}
+
+static inline const double* gto_sph_factors(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_factors;
+    case 1: return gto_P_factors + gto_P_offsets[isph];
+    case 2: return gto_D_factors + gto_D_offsets[isph];
+    case 3: return gto_F_factors + gto_F_offsets[isph];
+    case 4: return gto_G_factors + gto_G_offsets[isph];
+    default: ASSERT(false); return NULL;
+    }
+}
+
+static inline const uint8_t* gto_sph_indices(int l, int isph) {
+    switch (l) {
+    case 0: return gto_S_indices;
+    case 1: return gto_P_indices + gto_P_offsets[isph];
+    case 2: return gto_D_indices + gto_D_offsets[isph];
+    case 3: return gto_F_indices + gto_F_offsets[isph];
+    case 4: return gto_G_indices + gto_G_offsets[isph];
+    default: ASSERT(false); return NULL;
+    }
+}
+
+static inline const gto_lmn_t* gto_cart_lmn(int l) {
+    switch (l) {
+    case 0: return gto_S_lmn;
+    case 1: return gto_P_lmn;
+    case 2: return gto_D_lmn;
+    case 3: return gto_F_lmn;
+    case 4: return gto_G_lmn;
+    default: ASSERT(false); return NULL;
+    }
+}
+
+// Count the number of CGTOs and PGTOs that will result from expanding a basis.
+static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
+    const md_gto_basis_t* basis)
+{
+    uint32_t nc = 0, np = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        int l     = (int)basis->shells[si].l;
+        int nsph  = 2 * l + 1;
+        int nprims = (int)basis->shells[si].num_primitives;
+        nc += (uint32_t)nsph;
+        for (int isph = 0; isph < nsph; isph++) {
+            np += (uint32_t)(gto_sph_num_factors(l, isph) * nprims);
+        }
+    }
+    *out_num_cgtos = nc;
+    *out_num_pgtos = np;
+}
+
+// Expand md_gto_basis_t into the flat Cartesian SoA arrays expected by the GPU shader.
+// Spherical-to-Cartesian coupling factors (fcarts) are baked into pgto_coeff here.
+// pgto_radius is set to FLT_MAX (no pre-culling; the shader handles distance tests).
+// All output arrays must be pre-allocated to num_cgtos / num_pgtos entries respectively.
+static void gto_expand_basis(
+    vec4_t* cgto_xyzr, uint32_t* cgto_offset,
+    float* pgto_alpha, float* pgto_coeff, float* pgto_radius, uint32_t* pgto_ijkl,
+    const md_gto_basis_t* basis, const float* atom_xyz)
+{
+    uint32_t ci = 0, pi = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const md_gto_shell_t* shell = &basis->shells[si];
+        int l      = (int)shell->l;
+        int nsph   = 2 * l + 1;
+        int nprims = (int)shell->num_primitives;
+        uint32_t   prim_base = shell->primitive_offset;
+        const gto_lmn_t* lmn = gto_cart_lmn(l);
+        float ax = atom_xyz[shell->atom_idx * 3 + 0];
+        float ay = atom_xyz[shell->atom_idx * 3 + 1];
+        float az = atom_xyz[shell->atom_idx * 3 + 2];
+
+        for (int isph = 0; isph < nsph; isph++) {
+            int           ncomp   = gto_sph_num_factors(l, isph);
+            const double* fcarts  = gto_sph_factors(l, isph);
+            const uint8_t* sidx   = gto_sph_indices(l, isph);
+
+            int lx[8], ly[8], lz[8];
+            for (int ic = 0; ic < ncomp; ic++) {
+                lx[ic] = lmn[sidx[ic]][0];
+                ly[ic] = lmn[sidx[ic]][1];
+                lz[ic] = lmn[sidx[ic]][2];
+            }
+
+            cgto_xyzr[ci]   = (vec4_t){ax, ay, az, FLT_MAX};
+            cgto_offset[ci] = pi;
+
+            for (int ip = 0; ip < nprims; ip++) {
+                float alpha = basis->alpha[prim_base + ip];
+                float coef1 = basis->coeff[prim_base + ip];
+                for (int ic = 0; ic < ncomp; ic++) {
+                    pgto_alpha[pi]  = alpha;
+                    pgto_coeff[pi]  = (float)(coef1 * fcarts[ic]);
+                    pgto_radius[pi] = FLT_MAX;
+                    pgto_ijkl[pi]   = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l);
+                    pi++;
+                }
+            }
+            ci++;
+        }
+    }
+    cgto_offset[ci] = pi;  // sentinel
+}
+
+// Convert a full N×N row-major double density matrix to compact upper-triangular float.
+static void density_matrix_to_upper_tri(float* out, const double* dm, uint32_t n) {
+    size_t k = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        for (uint32_t j = i; j < n; j++) {
+            out[k++] = (float)dm[(size_t)i * n + j];
+        }
+    }
+}
+
+size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
+    uint32_t nc, np;
+    gto_basis_count(&nc, &np, basis);
+    return np;
+}
+
+size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
+    const float* atom_xyz, const double* mo_coeffs, double cutoff)
+{
+    ASSERT(out);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(mo_coeffs);
+
+    size_t num_gtos = 0;
+    uint32_t cgto_idx = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const md_gto_shell_t* shell = &basis->shells[si];
+        int l      = (int)shell->l;
+        int nsph   = 2 * l + 1;
+        int nprims = (int)shell->num_primitives;
+        uint32_t prim_base = shell->primitive_offset;
+        const gto_lmn_t* lmn = gto_cart_lmn(l);
+        float ax = atom_xyz[shell->atom_idx * 3 + 0];
+        float ay = atom_xyz[shell->atom_idx * 3 + 1];
+        float az = atom_xyz[shell->atom_idx * 3 + 2];
+
+        for (int isph = 0; isph < nsph; isph++) {
+            double mo_coeff = mo_coeffs[cgto_idx++];
+            int           ncomp  = gto_sph_num_factors(l, isph);
+            const double* fcarts = gto_sph_factors(l, isph);
+            const uint8_t* sidx  = gto_sph_indices(l, isph);
+
+            for (int ip = 0; ip < nprims; ip++) {
+                float alpha = basis->alpha[prim_base + ip];
+                float coef1 = basis->coeff[prim_base + ip];
+                for (int ic = 0; ic < ncomp; ic++) {
+                    out[num_gtos++] = (md_gto_t){
+                        .x      = ax,
+                        .y      = ay,
+                        .z      = az,
+                        .coeff  = (float)(coef1 * fcarts[ic] * mo_coeff),
+                        .alpha  = alpha,
+                        .cutoff = FLT_MAX,
+                        .i      = lmn[sidx[ic]][0],
+                        .j      = lmn[sidx[ic]][1],
+                        .k      = lmn[sidx[ic]][2],
+                        .l      = (uint8_t)l,
+                    };
+                }
+            }
+        }
+    }
+
+    if (cutoff > 0.0) {
+        num_gtos = md_gto_cutoff_compute_and_filter(out, num_gtos, cutoff);
+    }
+    return num_gtos;
+}
 
 #if MD_ENABLE_GPU
 
@@ -612,23 +777,24 @@ static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint3
     return L;
 }
 
-bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* density_matrix) {
     ASSERT(buf);
     ASSERT(device);
-    ASSERT(gto_data);
-    ASSERT(matrix_data);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(density_matrix);
 
-    if (matrix_dim != gto_data->num_cgtos) {
-        MD_LOG_ERROR("md_gto_density_buf_create: matrix_dim (%zu) != num_cgtos (%zu)", matrix_dim, gto_data->num_cgtos);
-        return false;
-    }
+    uint32_t num_cgtos = 0, num_pgtos = 0;
+    gto_basis_count(&num_cgtos, &num_pgtos, basis);
 
     MEMSET(buf, 0, sizeof(*buf));
-    buf->num_cgtos  = (uint32_t)gto_data->num_cgtos;
-    buf->num_pgtos  = (uint32_t)gto_data->num_pgtos;
-    buf->matrix_dim = (uint32_t)matrix_dim;
+    buf->num_cgtos  = num_cgtos;
+    buf->num_pgtos  = num_pgtos;
+    buf->matrix_dim = num_cgtos;
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    gto_buf_layout_t L = gto_density_buf_compute_layout(num_cgtos, num_pgtos, num_cgtos);
 
     buf->buffer = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){
         .size  = L.total_size,
@@ -639,33 +805,79 @@ bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device
         return false;
     }
 
+    size_t temp_pos = md_temp_get_pos();
+    size_t tri_len  = ((size_t)num_cgtos * (num_cgtos + 1)) / 2;
+    vec4_t*   cgto_xyzr   = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
+    uint32_t* cgto_offset = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_cgtos + 1));
+    float*    pgto_alpha  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    float*    pgto_coeff  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    float*    pgto_radius = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
+    uint32_t* pgto_ijkl   = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_pgtos);
+    float*    matrix      = (float*)   md_temp_push(sizeof(float)    * tri_len);
+
+    gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
+    density_matrix_to_upper_tri(matrix, density_matrix, num_cgtos);
+
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
-    MEMCPY(ptr + L.off_cgto_xyzr,   gto_data->cgto_xyzr,   L.sz_cgto_xyzr);
-    MEMCPY(ptr + L.off_cgto_offset, gto_data->cgto_offset,  L.sz_cgto_offset);
-    MEMCPY(ptr + L.off_pgto_coeff,  gto_data->pgto_coeff,   L.sz_pgto_coeff);
-    MEMCPY(ptr + L.off_pgto_alpha,  gto_data->pgto_alpha,   L.sz_pgto_alpha);
-    MEMCPY(ptr + L.off_pgto_radius, gto_data->pgto_radius,  L.sz_pgto_radius);
-    MEMCPY(ptr + L.off_pgto_ijkl,   gto_data->pgto_ijkl,    L.sz_pgto_ijkl);
-    MEMCPY(ptr + L.off_matrix,      matrix_data,             L.sz_matrix);
+    MEMCPY(ptr + L.off_cgto_xyzr,   cgto_xyzr,   L.sz_cgto_xyzr);
+    MEMCPY(ptr + L.off_cgto_offset, cgto_offset,  L.sz_cgto_offset);
+    MEMCPY(ptr + L.off_pgto_coeff,  pgto_coeff,   L.sz_pgto_coeff);
+    MEMCPY(ptr + L.off_pgto_alpha,  pgto_alpha,   L.sz_pgto_alpha);
+    MEMCPY(ptr + L.off_pgto_radius, pgto_radius,  L.sz_pgto_radius);
+    MEMCPY(ptr + L.off_pgto_ijkl,   pgto_ijkl,    L.sz_pgto_ijkl);
+    MEMCPY(ptr + L.off_matrix,      matrix,        L.sz_matrix);
     md_gpu_unmap_buffer(buf->buffer);
 
+    md_temp_set_pos_back(temp_pos);
     return true;
 }
 
-void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf, const float* matrix_data, size_t matrix_dim) {
+void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
+    const md_gto_basis_t* basis, const float* atom_xyz) {
     ASSERT(buf);
     ASSERT(buf->buffer);
-    ASSERT(matrix_data);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
 
-    if ((uint32_t)matrix_dim != buf->matrix_dim) {
-        MD_LOG_ERROR("md_gto_density_buf_update_matrix: matrix_dim mismatch (got %zu, expected %u)", matrix_dim, buf->matrix_dim);
-        return;
+    size_t temp_pos = md_temp_get_pos();
+    vec4_t* cgto_xyzr = (vec4_t*)md_temp_push(sizeof(vec4_t) * buf->num_cgtos);
+
+    uint32_t ci = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        int   nsph = 2 * (int)basis->shells[si].l + 1;
+        float ax   = atom_xyz[basis->shells[si].atom_idx * 3 + 0];
+        float ay   = atom_xyz[basis->shells[si].atom_idx * 3 + 1];
+        float az   = atom_xyz[basis->shells[si].atom_idx * 3 + 2];
+        for (int isph = 0; isph < nsph; isph++) {
+            cgto_xyzr[ci++] = (vec4_t){ax, ay, az, FLT_MAX};
+        }
     }
 
     gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
-    MEMCPY(ptr + L.off_matrix, matrix_data, L.sz_matrix);
+    MEMCPY(ptr + L.off_cgto_xyzr, cgto_xyzr, L.sz_cgto_xyzr);
     md_gpu_unmap_buffer(buf->buffer);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
+void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
+    const double* density_matrix) {
+    ASSERT(buf);
+    ASSERT(buf->buffer);
+    ASSERT(density_matrix);
+
+    size_t tri_len  = ((size_t)buf->matrix_dim * (buf->matrix_dim + 1)) / 2;
+    size_t temp_pos = md_temp_get_pos();
+    float* matrix   = (float*)md_temp_push(sizeof(float) * tri_len);
+    density_matrix_to_upper_tri(matrix, density_matrix, buf->matrix_dim);
+
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    MEMCPY(ptr + L.off_matrix, matrix, L.sz_matrix);
+    md_gpu_unmap_buffer(buf->buffer);
+
+    md_temp_set_pos_back(temp_pos);
 }
 
 void md_gto_density_buf_destroy(md_gto_density_buf_t* buf) {
@@ -1771,35 +1983,5 @@ size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float
         }
         out_gtos[num_gtos++] = in_gtos[i];
     }
-    return num_gtos;
-}
-
-size_t md_gto_obb_test(md_gto_t* out_gtos, const float center[3], const float half_ext[3], const float orientation[3][3], const md_gto_t* in_gtos, size_t in_num_gtos) {
-
-    size_t num_gtos = 0;
-    for (size_t i = 0; i < in_num_gtos; ++i) {
-        float x = in_gtos[i].x;
-        float y = in_gtos[i].y;
-        float z = in_gtos[i].z;
-        float r = in_gtos[i].cutoff;
-
-        // Transform to OBB space
-        float dx = x - center[0];
-        float dy = y - center[1];
-        float dz = z - center[2];
-
-        // Transform to OBB space
-        float ox = dx * orientation[0][0] + dy * orientation[1][0] + dz * orientation[2][0];
-        float oy = dx * orientation[0][1] + dy * orientation[1][1] + dz * orientation[2][1];
-        float oz = dx * orientation[0][2] + dy * orientation[1][2] + dz * orientation[2][2];
-
-        // Check overlap including radius
-        if (fabs(ox) > half_ext[0] + r || fabs(oy) > half_ext[1] + r || fabs(oz) > half_ext[2] + r) {
-            continue;
-        }
-         
-        out_gtos[num_gtos++] = in_gtos[i];
-    }
-
     return num_gtos;
 }
