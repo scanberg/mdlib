@@ -14,6 +14,7 @@
 
 // Metal-specific: maximum number of recorded commands per command buffer
 #define MD_GPU_METAL_MAX_COMMANDS 1024
+#define MD_GPU_MAX_COMMANDS MD_GPU_METAL_MAX_COMMANDS
 
 /* =============================
    Internal structs
@@ -54,6 +55,7 @@ typedef enum md_gpu_cmd_type_t {
     CMD_DISPATCH,
     CMD_COPY_BUFFER,
     CMD_COPY_IMAGE_TO_BUFFER,
+    CMD_COPY_BUFFER_TO_IMAGE,
     CMD_FILL_BUFFER,
     CMD_BARRIER,
     CMD_BARRIER_BUFFER,
@@ -71,6 +73,11 @@ struct md_gpu_cmd_copy_buffer {
 struct md_gpu_cmd_copy_image_to_buffer {
     struct md_gpu_image* image;
     struct md_gpu_buffer* buffer;
+};
+
+struct md_gpu_cmd_copy_buffer_to_image {
+    struct md_gpu_buffer* buffer;
+    struct md_gpu_image* image;
 };
 
 struct md_gpu_cmd_fill_buffer {
@@ -94,6 +101,7 @@ struct md_gpu_recorded_cmd {
         uint32_t dispatch_size[3];
         struct md_gpu_cmd_copy_buffer copy_buf;
         struct md_gpu_cmd_copy_image_to_buffer copy_img_buf;
+        struct md_gpu_cmd_copy_buffer_to_image copy_buf_img;
         struct md_gpu_cmd_fill_buffer fill_buf;
         struct md_gpu_cmd_barrier_buffer barrier_buf;
         struct md_gpu_cmd_barrier_image  barrier_img;
@@ -233,6 +241,10 @@ void md_gpu_unmap_buffer(md_gpu_buffer_t buffer) {
     (void)buffer;
 }
 
+uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
+    return (uint64_t)[buffer->buffer gpuAddress];
+}
+
 /* =============================
    Images
    ============================= */
@@ -277,7 +289,10 @@ md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
         [device->device newLibraryWithData:data error:&err];
     ASSERT(lib && !err);
 
-    id<MTLFunction> fn = [lib newFunctionWithName:@"main0"];
+    // Slang renames 'main' to 'main_0' for Metal (Metal reserves 'main').
+    // spirv-cross used 'main0'; try both for compatibility.
+    id<MTLFunction> fn = [lib newFunctionWithName:@"main_0"];
+    if (!fn) fn = [lib newFunctionWithName:@"main0"];
     ASSERT(fn);
 
     struct md_gpu_compute_pipeline* p =
@@ -436,6 +451,16 @@ void md_gpu_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd,
     rc->u.copy_img_buf.buffer = dst_buffer;
 }
 
+void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
+                                     md_gpu_buffer_t src_buffer,
+                                     md_gpu_image_t dst_image) {
+    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    rc->type = CMD_COPY_BUFFER_TO_IMAGE;
+    rc->u.copy_buf_img.buffer = src_buffer;
+    rc->u.copy_buf_img.image = dst_image;
+}
+
 void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t buffer,
                             size_t offset,
@@ -554,6 +579,32 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                      destinationOffset:0
                                 destinationBytesPerRow:bytes_per_row
                             destinationBytesPerImage:bytes_per_image];
+                [blit endEncoding];
+                break;
+            }
+
+            case CMD_COPY_BUFFER_TO_IMAGE: {
+                if (compute_enc) {
+                    [compute_enc endEncoding];
+                    compute_enc = nil;
+                }
+                id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
+                MTLSize sz = MTLSizeMake(c->u.copy_buf_img.image->desc.width,
+                                         c->u.copy_buf_img.image->desc.height,
+                                         c->u.copy_buf_img.image->desc.depth);
+                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_buf_img.image->desc.format);
+                ASSERT(bpp > 0);
+                const size_t bytes_per_row   = (size_t)sz.width * (size_t)bpp;
+                const size_t bytes_per_image = bytes_per_row * (size_t)sz.height;
+                [blit copyFromBuffer:c->u.copy_buf_img.buffer->buffer
+                        sourceOffset:0
+                   sourceBytesPerRow:bytes_per_row
+                 sourceBytesPerImage:bytes_per_image
+                          sourceSize:sz
+                           toTexture:c->u.copy_buf_img.image->texture
+                    destinationSlice:0
+                    destinationLevel:0
+                   destinationOrigin:MTLOriginMake(0,0,0)];
                 [blit endEncoding];
                 break;
             }

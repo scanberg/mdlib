@@ -3,6 +3,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
+#endif
+
 struct md_grid_t;
 struct md_allocator_i;
 
@@ -70,10 +74,15 @@ extern "C" {
 // Compute topology on GPU from a 3D scalar field volume texture
 // - out_graph: Output extremum graph structure (allocated inside the function)
 //      Should have alloc field set to the desired allocator (0 for default heap allocator)
-// - vol_tex: The texture handle to the volume (must be a 3D texture with float format)
+// - device: GPU device handle
+// - volume: 3D image (R32_FLOAT, STORAGE flag) containing the scalar field
 // - grid: The grid defining the volume dimensions and spacing
 // - scalar_threshold: Minimum scalar value to consider for critical points (to filter noise)
+#if MD_ENABLE_GPU
+bool md_topo_compute_extremum_graph_gpu(md_topo_extremum_graph_t* out_graph, md_gpu_device_t device, md_gpu_image_t volume, const struct md_grid_t* grid, float scalar_threshold);
+#else
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);
+#endif
 
 // Free an extremum graph structure
 void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph);

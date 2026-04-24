@@ -14,13 +14,24 @@ string(LENGTH "${HEX_CONTENT}" HEX_LEN)
 math(EXPR REM "${HEX_LEN} % 8")
 if (NOT REM EQUAL 0)
   math(EXPR PAD "8 - ${REM}")
-  string(RANDOM LENGTH ${PAD} ALPHABET "0" PAD_ZEROS) # produces all '0'
+  string(REPEAT "0" ${PAD} PAD_ZEROS)
   string(APPEND HEX_CONTENT "${PAD_ZEROS}")
+  string(LENGTH "${HEX_CONTENT}" HEX_LEN)
 endif()
 
-# Convert each 32-bit word (8 hex digits) to "0x........,"
-string(REGEX REPLACE "([0-9a-f]{8})" "0x\\1," ARRAY_DATA "${HEX_CONTENT}")
-string(REGEX REPLACE ",$" "" ARRAY_DATA "${ARRAY_DATA}")
+# Build array data by iterating 8 hex chars (one uint32_t) at a time
+math(EXPR NUM_WORDS "${HEX_LEN} / 8")
+set(ARRAY_DATA "")
+set(POS 0)
+foreach(I RANGE 1 ${NUM_WORDS})
+  string(SUBSTRING "${HEX_CONTENT}" ${POS} 8 WORD)
+  if (ARRAY_DATA)
+    string(APPEND ARRAY_DATA ",0x${WORD}")
+  else()
+    set(ARRAY_DATA "0x${WORD}")
+  endif()
+  math(EXPR POS "${POS} + 8")
+endforeach()
 
 file(WRITE "${OUTPUT}"
 "#include <stdint.h>\n\n"

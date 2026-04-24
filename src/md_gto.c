@@ -10,15 +10,6 @@
 #include <stdbool.h>
 #include <float.h>
 
-#if !MD_PLATFORM_OSX
-
-#include <core/md_gl_util.h>
-#include <gto_shaders.inl>
-#include <GL/gl3w.h>
-
-// This should be kept in sync with the define present in segment_and_attribute_to_group.comp
-#define QUANTIZATION_SCALE_FACTOR 1.0e6
-
 static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* grid) {
     // There is no scaling applied in this transformation, only rotation and translation
     out_mat[0][0] = grid->orientation.elem[0][0];
@@ -62,6 +53,15 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][1] += 0.5f * (out_mat[0][1] + out_mat[1][1] + out_mat[2][1]);
     out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
+
+#if !MD_PLATFORM_OSX
+
+#include <core/md_gl_util.h>
+#include <gto_shaders.inl>
+#include <GL/gl3w.h>
+
+// This should be kept in sync with the define present in segment_and_attribute_to_group.comp
+#define QUANTIZATION_SCALE_FACTOR 1.0e6
 
 static GLuint get_gto_program(void) {
     static GLuint program = 0;
@@ -543,6 +543,187 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
 }
 
 #endif
+
+#if MD_ENABLE_GPU
+
+#include <core/md_gpu.h>
+#include <gto_gpu_shaders.inl>
+
+static md_gpu_device_t gto_cached_device = NULL;
+static md_gpu_compute_pipeline_t gto_pip_density = NULL;
+
+static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t device) {
+    if (gto_cached_device != device) {
+        if (gto_pip_density) { md_gpu_destroy_compute_pipeline(gto_pip_density); gto_pip_density = NULL; }
+        gto_cached_device = device;
+    }
+    if (!gto_pip_density) {
+        md_gpu_compute_pipeline_desc_t desc = {
+            .shader = { .data = gto_eval_gto_density_start, .size = gto_eval_gto_density_size() },
+            .threadgroup_size = { 8, 8, 8 },
+        };
+        gto_pip_density = md_gpu_create_compute_pipeline(device, &desc);
+        if (!gto_pip_density) {
+            MD_LOG_ERROR("Failed to create GTO density compute pipeline");
+        }
+    }
+    return gto_pip_density;
+}
+
+// Sub-region layout for the packed GPU buffer.
+// All offsets are 256-byte aligned to satisfy both Vulkan and Metal constraints.
+typedef struct {
+    size_t off_cgto_xyzr;   size_t sz_cgto_xyzr;
+    size_t off_cgto_offset; size_t sz_cgto_offset;
+    size_t off_pgto_coeff;  size_t sz_pgto_coeff;
+    size_t off_pgto_alpha;  size_t sz_pgto_alpha;
+    size_t off_pgto_radius; size_t sz_pgto_radius;
+    size_t off_pgto_ijkl;   size_t sz_pgto_ijkl;
+    size_t off_matrix;      size_t sz_matrix;
+    size_t total_size;
+} gto_buf_layout_t;
+
+static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint32_t num_pgtos, uint32_t matrix_dim) {
+    gto_buf_layout_t L;
+    size_t matrix_data_len = ((size_t)matrix_dim * (matrix_dim + 1)) / 2;
+
+    L.off_cgto_xyzr   = 0;
+    L.sz_cgto_xyzr    = sizeof(float)    * 4 * num_cgtos;
+
+    L.off_cgto_offset = ALIGN_TO(L.off_cgto_xyzr   + L.sz_cgto_xyzr,   256);
+    L.sz_cgto_offset  = sizeof(uint32_t) * (num_cgtos + 1);
+
+    L.off_pgto_coeff  = ALIGN_TO(L.off_cgto_offset  + L.sz_cgto_offset,  256);
+    L.sz_pgto_coeff   = sizeof(float)    * num_pgtos;
+
+    L.off_pgto_alpha  = ALIGN_TO(L.off_pgto_coeff   + L.sz_pgto_coeff,   256);
+    L.sz_pgto_alpha   = sizeof(float)    * num_pgtos;
+
+    L.off_pgto_radius = ALIGN_TO(L.off_pgto_alpha   + L.sz_pgto_alpha,   256);
+    L.sz_pgto_radius  = sizeof(float)    * num_pgtos;
+
+    L.off_pgto_ijkl   = ALIGN_TO(L.off_pgto_radius  + L.sz_pgto_radius,  256);
+    L.sz_pgto_ijkl    = sizeof(uint32_t) * num_pgtos;
+
+    L.off_matrix      = ALIGN_TO(L.off_pgto_ijkl    + L.sz_pgto_ijkl,    256);
+    L.sz_matrix       = sizeof(float)    * matrix_data_len;
+
+    L.total_size      = ALIGN_TO(L.off_matrix + L.sz_matrix, 256);
+    return L;
+}
+
+bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim) {
+    ASSERT(buf);
+    ASSERT(device);
+    ASSERT(gto_data);
+    ASSERT(matrix_data);
+
+    if (matrix_dim != gto_data->num_cgtos) {
+        MD_LOG_ERROR("md_gto_density_buf_create: matrix_dim (%zu) != num_cgtos (%zu)", matrix_dim, gto_data->num_cgtos);
+        return false;
+    }
+
+    MEMSET(buf, 0, sizeof(*buf));
+    buf->num_cgtos  = (uint32_t)gto_data->num_cgtos;
+    buf->num_pgtos  = (uint32_t)gto_data->num_pgtos;
+    buf->matrix_dim = (uint32_t)matrix_dim;
+
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+
+    buf->buffer = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){
+        .size  = L.total_size,
+        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
+    });
+    if (!buf->buffer) {
+        MD_LOG_ERROR("md_gto_density_buf_create: failed to allocate GPU buffer (%zu bytes)", L.total_size);
+        return false;
+    }
+
+    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    MEMCPY(ptr + L.off_cgto_xyzr,   gto_data->cgto_xyzr,   L.sz_cgto_xyzr);
+    MEMCPY(ptr + L.off_cgto_offset, gto_data->cgto_offset,  L.sz_cgto_offset);
+    MEMCPY(ptr + L.off_pgto_coeff,  gto_data->pgto_coeff,   L.sz_pgto_coeff);
+    MEMCPY(ptr + L.off_pgto_alpha,  gto_data->pgto_alpha,   L.sz_pgto_alpha);
+    MEMCPY(ptr + L.off_pgto_radius, gto_data->pgto_radius,  L.sz_pgto_radius);
+    MEMCPY(ptr + L.off_pgto_ijkl,   gto_data->pgto_ijkl,    L.sz_pgto_ijkl);
+    MEMCPY(ptr + L.off_matrix,      matrix_data,             L.sz_matrix);
+    md_gpu_unmap_buffer(buf->buffer);
+
+    return true;
+}
+
+void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf, const float* matrix_data, size_t matrix_dim) {
+    ASSERT(buf);
+    ASSERT(buf->buffer);
+    ASSERT(matrix_data);
+
+    if ((uint32_t)matrix_dim != buf->matrix_dim) {
+        MD_LOG_ERROR("md_gto_density_buf_update_matrix: matrix_dim mismatch (got %zu, expected %u)", matrix_dim, buf->matrix_dim);
+        return;
+    }
+
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    MEMCPY(ptr + L.off_matrix, matrix_data, L.sz_matrix);
+    md_gpu_unmap_buffer(buf->buffer);
+}
+
+void md_gto_density_buf_destroy(md_gto_density_buf_t* buf) {
+    if (!buf) return;
+    if (buf->buffer) {
+        md_gpu_destroy_buffer(buf->buffer);
+    }
+    MEMSET(buf, 0, sizeof(*buf));
+}
+
+bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf, md_gpu_image_t out_image, const md_grid_t* grid, md_gpu_fence_t* out_fence) {
+    if (!device || !buf || !buf->buffer || !out_image || !grid || !out_fence) {
+        MD_LOG_ERROR("md_gto_grid_evaluate_density_gpu: invalid input");
+        return false;
+    }
+
+    md_gpu_compute_pipeline_t pipeline = gto_ensure_density_pipeline(device);
+    if (!pipeline) return false;
+
+    typedef struct {
+        float    world_to_model[4][4];
+        float    index_to_world[4][4];
+        float    step[4];
+        uint32_t D_matrix_dim;
+        uint32_t _pad[3];
+    } ubo_t;
+
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+
+    ubo_t ubo = {0};
+    world_to_model_matrix(ubo.world_to_model, grid);
+    index_to_world_matrix(ubo.index_to_world, grid);
+    ubo.step[0]      = grid->spacing.elem[0];
+    ubo.step[1]      = grid->spacing.elem[1];
+    ubo.step[2]      = grid->spacing.elem[2];
+    ubo.step[3]      = 0.0f;
+    ubo.D_matrix_dim = buf->matrix_dim;
+
+    md_gpu_queue_t          queue = md_gpu_acquire_compute_queue(device);
+    md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(device);
+
+    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_buffer_range(cmd, 0, buf->buffer, L.off_cgto_xyzr,   L.sz_cgto_xyzr);
+    md_gpu_cmd_bind_buffer_range(cmd, 1, buf->buffer, L.off_cgto_offset,  L.sz_cgto_offset);
+    md_gpu_cmd_bind_buffer_range(cmd, 2, buf->buffer, L.off_pgto_coeff,   L.sz_pgto_coeff);
+    md_gpu_cmd_bind_buffer_range(cmd, 3, buf->buffer, L.off_pgto_alpha,   L.sz_pgto_alpha);
+    md_gpu_cmd_bind_buffer_range(cmd, 4, buf->buffer, L.off_pgto_radius,  L.sz_pgto_radius);
+    md_gpu_cmd_bind_buffer_range(cmd, 5, buf->buffer, L.off_pgto_ijkl,    L.sz_pgto_ijkl);
+    md_gpu_cmd_bind_buffer_range(cmd, 6, buf->buffer, L.off_matrix,       L.sz_matrix);
+    md_gpu_cmd_bind_image(cmd, 0, out_image);
+    md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+
+    *out_fence = md_gpu_queue_submit(queue, cmd);
+    return true;
+}
+
+#endif // MD_ENABLE_GPU
 
 static inline float fast_powf(float base, int exp) {
     float val = 1.0f;

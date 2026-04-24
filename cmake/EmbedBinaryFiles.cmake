@@ -42,10 +42,9 @@ static inline size_t ${SYMBOL}_size(void) {
 
 ")
 
-        if (MSVC)
-            set(C_FILE ${GEN_DIR}/${SYMBOL}.c)
+        set(C_FILE ${GEN_DIR}/${SYMBOL}.c)
 
-            add_custom_command(
+        add_custom_command(
             OUTPUT ${C_FILE}
             COMMAND ${CMAKE_COMMAND}
                 -DINPUT=${ABS}
@@ -54,30 +53,9 @@ static inline size_t ${SYMBOL}_size(void) {
                 -P ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/BinToC.cmake
             DEPENDS ${ABS}
             VERBATIM
-            )
+        )
 
-            target_sources(${EMBED_TARGET} PRIVATE ${C_FILE})
-
-        elseif (APPLE)
-            target_link_options(${EMBED_TARGET} PRIVATE
-                "-Wl,-sectcreate,__DATA,__${SYMBOL},${ABS}"
-            )
-
-        else()
-            set(OBJ ${GEN_DIR}/${SYMBOL}.o)
-
-            add_custom_command(
-                OUTPUT ${OBJ}
-                COMMAND ${CMAKE_OBJCOPY}
-                    --input binary
-                    --output elf64-x86-64
-                    --binary-architecture i386:x86-64
-                    ${ABS} ${OBJ}
-                DEPENDS ${ABS}
-            )
-
-            target_sources(${EMBED_TARGET} PRIVATE ${OBJ})
-        endif()
+        target_sources(${EMBED_TARGET} PRIVATE ${C_FILE})
     endforeach()
 
     file(APPEND ${OUT_HEADER}

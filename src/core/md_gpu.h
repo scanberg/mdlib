@@ -51,7 +51,7 @@ enum {
 
 typedef uint32_t md_gpu_image_flags_t;
 enum {
-    MD_GPU_IMAGE_NONE         = 0,
+    MD_GPU_IMAGE_NONE        = 0,
     MD_GPU_IMAGE_STORAGE     = 1 << 0, /* shader read/write */
     MD_GPU_IMAGE_CPU_VISIBLE = 1 << 1, /* readback via copy */
 };
@@ -116,8 +116,9 @@ md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device, const md_gpu_buffer
 
 void md_gpu_destroy_buffer(md_gpu_buffer_t buffer);
 
-void* md_gpu_map_buffer(md_gpu_buffer_t buffer);
-void  md_gpu_unmap_buffer(md_gpu_buffer_t buffer);
+void*    md_gpu_map_buffer(md_gpu_buffer_t buffer);
+void     md_gpu_unmap_buffer(md_gpu_buffer_t buffer);
+uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer);
 
 /* =============================
 Images (volumes, storage images)
@@ -146,7 +147,10 @@ Command buffers
          - Images are declared/bound at descriptor set 0, binding = slot + MD_GPU_MAX_BIND_SLOTS.
        This avoids descriptor-type collisions since Vulkan cannot have a buffer and an image at the
        same descriptor binding number, while Metal has separate index spaces for buffers/textures.
-     - Do not bind user buffers/images to the reserved slot. */
+     - Do not bind user buffers/images to the reserved slot.
+     - Preferred pattern: pass GPU buffer addresses via push constants using
+         md_gpu_buffer_address(). Explicit slot binds remain available for images
+         and legacy shaders. */
 enum {
     MD_GPU_MAX_BIND_SLOTS = 16,
     MD_GPU_PUSH_CONSTANTS_SLOT = (MD_GPU_MAX_BIND_SLOTS - 1),

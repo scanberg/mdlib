@@ -4,6 +4,10 @@
 
 #include <core/md_grid.h>
 
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
+#endif
+
 // Gaussian Type Orbital
 // Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
 // Where x' y' and z' are the observer coordinates we evaluate the function at
@@ -37,6 +41,41 @@ typedef struct md_orbital_data_t {
 	float* orb_scaling;
 } md_orbital_data_t;
 
+// ---------------------------------------------------------------------------
+// General basis representation
+// ---------------------------------------------------------------------------
+// A contracted shell: a set of (l+1)(l+2)/2 cartesian angular functions at
+// one atom center, sharing num_primitives radial primitives.
+// All coefficients are expected to be fully normalized (contraction + angular
+// normalization factors baked in).  The struct contains no atom coordinates —
+// those are passed as a separate argument to any procedure that needs them,
+// keeping this struct static after construction.
+// 16 bytes, 4 per cache line, no internal padding.
+typedef struct md_gto_shell_t {
+    uint32_t  atom_idx;           // index into the caller-supplied atom_xyz array
+    uint32_t  primitive_offset;   // first index into basis alpha/coeff arrays
+    uint32_t  l;                  // angular momentum (0=s, 1=p, 2=d, ...)
+    uint32_t  num_primitives;
+} md_gto_shell_t;
+
+// A complete contracted Gaussian basis set for a molecular system.
+// Shells and primitives are owned by this struct (single allocation recommended).
+// Atom coordinates are NOT stored here; pass them on the side as const float* atom_xyz
+// (packed xyz, length num_atoms*3) to any procedure that requires them.
+typedef struct md_gto_basis_t {
+    uint32_t         num_shells;
+    uint32_t         num_primitives;
+    md_gto_shell_t*  shells;   // [num_shells]
+    float*           alpha;    // [num_primitives]  Gaussian exponents
+    float*           coeff;    // [num_primitives]  normalized contraction coefficients
+} md_gto_basis_t;
+
+// ---------------------------------------------------------------------------
+// Compute-optimized (derived) representation
+// ---------------------------------------------------------------------------
+// Flat SoA layout ready for CPU/GPU evaluation. Built from md_gto_basis_t via
+// md_gto_data_build(). Each CGTO corresponds to one cartesian angular component
+// of a shell; primitives are purely radial (ijkl lives at the CGTO level).
 typedef struct md_gto_data_t {
 	size_t     num_cgtos;
 	vec4_t*    cgto_xyzr;
@@ -122,6 +161,37 @@ void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, 
 // - matrix_data: The matrix coefficients (Upper triangular format)
 // - matrix_dim: The dimension of the square matrix (should match the number of CGTOs in gto_data)
 void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim, bool include_gradients);
+
+#if MD_ENABLE_GPU
+// GPU-resident buffer holding all input data for density evaluation.
+// Sized at creation time from gto_data; only the matrix sub-region can be updated in-place.
+// The caller must have waited on (or destroyed) the previous dispatch fence before calling
+// md_gto_density_buf_update or md_gto_density_buf_destroy.
+typedef struct md_gto_density_buf_t {
+    md_gpu_buffer_t buffer;  // single backing GPU buffer
+    uint32_t num_cgtos;
+    uint32_t num_pgtos;
+    uint32_t matrix_dim;     // == num_cgtos; stored separately for convenience
+} md_gto_density_buf_t;
+
+// Allocate a GPU buffer and upload all GTO basis data + initial density matrix.
+// Returns false on allocation failure.
+bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_dim);
+
+// Re-upload the density matrix into the existing buffer.
+// matrix_dim must match the value used at creation time.
+// Call only after the previous dispatch fence has been waited on or destroyed.
+void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf, const float* matrix_data, size_t matrix_dim);
+
+// Destroy the backing GPU buffer. Safe to call with a zeroed struct.
+void md_gto_density_buf_destroy(md_gto_density_buf_t* buf);
+
+// Dispatch an async electron density evaluation.
+// The image must be R32_FLOAT with MD_GPU_IMAGE_STORAGE.
+// *out_fence receives a fence the caller must wait on (md_gpu_fence_wait) or poll
+// (md_gpu_fence_is_signaled), then destroy with md_gpu_destroy_fence.
+bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf, md_gpu_image_t out_image, const md_grid_t* grid, md_gpu_fence_t* out_fence);
+#endif
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

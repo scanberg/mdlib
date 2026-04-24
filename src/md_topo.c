@@ -44,7 +44,307 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
 
-#if !MD_PLATFORM_OSX
+#if MD_ENABLE_GPU
+
+#include <core/md_gpu.h>
+#include <topo_gpu_shaders.inl>
+
+// Pipeline cache
+static md_gpu_device_t cached_device = NULL;
+static md_gpu_compute_pipeline_t pip_bidirectional_manifold = NULL;
+static md_gpu_compute_pipeline_t pip_path_compression = NULL;
+static md_gpu_compute_pipeline_t pip_critical_points = NULL;
+static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
+static md_gpu_compute_pipeline_t pip_vertex_edge_extraction = NULL;
+
+static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* cached, const uint32_t* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
+    if (cached_device != device) {
+        // Device changed, invalidate all cached pipelines
+        if (pip_bidirectional_manifold)    { md_gpu_destroy_compute_pipeline(pip_bidirectional_manifold);    pip_bidirectional_manifold = NULL; }
+        if (pip_path_compression)          { md_gpu_destroy_compute_pipeline(pip_path_compression);          pip_path_compression = NULL; }
+        if (pip_critical_points)           { md_gpu_destroy_compute_pipeline(pip_critical_points);           pip_critical_points = NULL; }
+        if (pip_critical_point_compaction) { md_gpu_destroy_compute_pipeline(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
+        if (pip_vertex_edge_extraction)    { md_gpu_destroy_compute_pipeline(pip_vertex_edge_extraction);    pip_vertex_edge_extraction = NULL; }
+        cached_device = device;
+    }
+    if (*cached == NULL) {
+        md_gpu_compute_pipeline_desc_t desc = {
+            .shader = { .data = blob_start, .size = blob_size },
+            .threadgroup_size = { wg_x, wg_y, wg_z },
+        };
+        *cached = md_gpu_create_compute_pipeline(device, &desc);
+        if (*cached == NULL) {
+            MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
+        }
+    }
+    return *cached;
+}
+
+bool md_topo_compute_extremum_graph_gpu(md_topo_extremum_graph_t* out_graph, md_gpu_device_t device, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
+    if (!out_graph || !device || !volume || !grid) {
+        MD_LOG_ERROR("Invalid input: out_graph=%p, device=%p, volume=%p, grid=%p", (void*)out_graph, (void*)device, (void*)volume, (void*)grid);
+        return false;
+    }
+
+    md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
+
+    const uint32_t num_points = (uint32_t)(grid->dim[0] * grid->dim[1] * grid->dim[2]);
+
+    // UBO / push constants (same layout as shader UBO struct)
+    struct {
+        float index_to_world[4][4];
+        uint32_t dims[3];
+        float scalar_threshold;
+    } ubo_data;
+    index_to_world_matrix(ubo_data.index_to_world, grid);
+    ubo_data.dims[0] = grid->dim[0];
+    ubo_data.dims[1] = grid->dim[1];
+    ubo_data.dims[2] = grid->dim[2];
+    ubo_data.scalar_threshold = scalar_threshold;
+
+    // Create pipelines (lazy, cached)
+    md_gpu_compute_pipeline_t p_manifold   = ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8, 8, 8);
+    md_gpu_compute_pipeline_t p_compress   = ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8, 8, 8);
+    md_gpu_compute_pipeline_t p_critical   = ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8, 8, 8);
+    md_gpu_compute_pipeline_t p_compact    = ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8, 8, 8);
+    md_gpu_compute_pipeline_t p_extract    = ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1, 1);
+
+    if (!p_manifold || !p_compress || !p_critical || !p_compact || !p_extract) {
+        return false;
+    }
+
+    md_gpu_queue_t queue = md_gpu_acquire_compute_queue(device);
+
+    // Create GPU buffers
+    md_gpu_buffer_t ascending_buf  = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
+    md_gpu_buffer_t descending_buf = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
+    md_gpu_buffer_t types_buf      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(int32_t) });
+    md_gpu_buffer_t counts_buf     = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
+    md_gpu_buffer_t changed_buf    = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
+
+    bool success = false;
+    md_gpu_buffer_t indices_buf    = NULL;
+    md_gpu_buffer_t counters_buf   = NULL;
+    md_gpu_buffer_t type_counts_buf = NULL;
+    md_gpu_buffer_t vert_buf       = NULL;
+    md_gpu_buffer_t edge_buf       = NULL;
+    md_gpu_buffer_t edge_count_buf = NULL;
+
+    // Staging buffers for readback
+    md_gpu_buffer_t staging_counts     = NULL;
+    md_gpu_buffer_t staging_edge_count = NULL;
+    md_gpu_buffer_t staging_verts      = NULL;
+    md_gpu_buffer_t staging_edges      = NULL;
+
+    // === Steps 1-2: Bidirectional manifold + Path compression ===
+    {
+        md_gpu_command_buffer_t cmd = md_gpu_acquire_command_buffer(device);
+
+        // Step 1: Bidirectional manifold
+        md_gpu_cmd_bind_compute_pipeline(cmd, p_manifold);
+        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
+        md_gpu_cmd_bind_image(cmd, 0, volume);
+        md_gpu_cmd_bind_buffer(cmd, 0, ascending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 1, descending_buf);
+        md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+        md_gpu_cmd_barrier(cmd);
+
+        // Step 2: Path compression (iterative)
+        uint32_t num_iterations = 0;
+        uint32_t max_dim = grid->dim[0];
+        if (grid->dim[1] > max_dim) max_dim = grid->dim[1];
+        if (grid->dim[2] > max_dim) max_dim = grid->dim[2];
+        while (max_dim > (1U << num_iterations)) {
+            num_iterations++;
+        }
+        num_iterations += 2;
+
+        md_gpu_cmd_bind_compute_pipeline(cmd, p_compress);
+        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
+        md_gpu_cmd_bind_buffer(cmd, 0, ascending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 1, descending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 2, changed_buf);
+        for (uint32_t i = 0; i < num_iterations; i++) {
+            md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+            md_gpu_cmd_barrier(cmd);
+        }
+
+        // Step 3: Critical points
+        md_gpu_cmd_fill_buffer(cmd, counts_buf, 0, 4 * sizeof(uint32_t), 0);
+        md_gpu_cmd_barrier(cmd);
+
+        md_gpu_cmd_bind_compute_pipeline(cmd, p_critical);
+        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
+        md_gpu_cmd_bind_image(cmd, 0, volume);
+        md_gpu_cmd_bind_buffer(cmd, 0, ascending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 1, descending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 2, types_buf);
+        md_gpu_cmd_bind_buffer(cmd, 3, counts_buf);
+        md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+        md_gpu_cmd_barrier(cmd);
+
+        // Copy counts to staging for readback
+        staging_counts = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+        md_gpu_cmd_copy_buffer(cmd, counts_buf, staging_counts, 4 * sizeof(uint32_t), 0, 0);
+
+        md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
+        md_gpu_fence_wait(fence);
+        md_gpu_destroy_fence(fence);
+    }
+
+    // Read back counts
+    uint32_t counts[4] = {0};
+    {
+        void* ptr = md_gpu_map_buffer(staging_counts);
+        MEMCPY(counts, ptr, sizeof(counts));
+        md_gpu_unmap_buffer(staging_counts);
+    }
+
+    uint32_t num_maxima        = counts[0];
+    uint32_t num_split_saddles = counts[1];
+    uint32_t num_minima        = counts[2];
+    uint32_t num_join_saddles  = counts[3];
+    uint32_t num_vertices      = num_maxima + num_split_saddles + num_minima + num_join_saddles;
+    uint32_t num_edges         = 8 * (num_split_saddles + num_join_saddles);
+
+    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
+                num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices);
+
+    if (num_vertices == 0) {
+        MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+        out_graph->alloc = alloc;
+        success = true;
+        goto cleanup;
+    }
+
+    // === Steps 4-5: Compaction + Extraction ===
+    indices_buf    = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_vertices * sizeof(uint32_t) });
+    counters_buf   = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
+    type_counts_buf = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 5 * sizeof(uint32_t) });
+    vert_buf       = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_vertices * 4 * sizeof(float) });
+    edge_buf       = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_edges * sizeof(md_topo_edge_t) });
+    edge_count_buf = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
+
+    {
+        md_gpu_command_buffer_t cmd = md_gpu_acquire_command_buffer(device);
+
+        // Upload counter initial values: write offsets for each type
+        // We need to fill counters_buf with {0, num_maxima, num_maxima+num_split_saddles, num_maxima+num_split_saddles+num_minima}
+        // Using fill_buffer for each word
+        md_gpu_cmd_fill_buffer(cmd, counters_buf, 0 * sizeof(uint32_t), sizeof(uint32_t), 0);
+        md_gpu_cmd_fill_buffer(cmd, counters_buf, 1 * sizeof(uint32_t), sizeof(uint32_t), num_maxima);
+        md_gpu_cmd_fill_buffer(cmd, counters_buf, 2 * sizeof(uint32_t), sizeof(uint32_t), num_maxima + num_split_saddles);
+        md_gpu_cmd_fill_buffer(cmd, counters_buf, 3 * sizeof(uint32_t), sizeof(uint32_t), num_maxima + num_split_saddles + num_minima);
+        md_gpu_cmd_barrier(cmd);
+
+        // Step 4: Critical point compaction
+        md_gpu_cmd_bind_compute_pipeline(cmd, p_compact);
+        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
+        md_gpu_cmd_bind_buffer(cmd, 0, types_buf);
+        md_gpu_cmd_bind_buffer(cmd, 1, indices_buf);
+        md_gpu_cmd_bind_buffer(cmd, 2, counters_buf);
+        md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+        md_gpu_cmd_barrier(cmd);
+
+        // Upload type_counts
+        md_gpu_cmd_fill_buffer(cmd, type_counts_buf, 0 * sizeof(uint32_t), sizeof(uint32_t), num_maxima);
+        md_gpu_cmd_fill_buffer(cmd, type_counts_buf, 1 * sizeof(uint32_t), sizeof(uint32_t), num_split_saddles);
+        md_gpu_cmd_fill_buffer(cmd, type_counts_buf, 2 * sizeof(uint32_t), sizeof(uint32_t), num_minima);
+        md_gpu_cmd_fill_buffer(cmd, type_counts_buf, 3 * sizeof(uint32_t), sizeof(uint32_t), num_join_saddles);
+        md_gpu_cmd_fill_buffer(cmd, type_counts_buf, 4 * sizeof(uint32_t), sizeof(uint32_t), num_vertices);
+        md_gpu_cmd_fill_buffer(cmd, edge_count_buf, 0, sizeof(uint32_t), 0);
+        md_gpu_cmd_barrier(cmd);
+
+        // Step 5: Vertex + edge extraction
+        md_gpu_cmd_bind_compute_pipeline(cmd, p_extract);
+        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
+        md_gpu_cmd_bind_buffer(cmd, 0, indices_buf);
+        md_gpu_cmd_bind_buffer(cmd, 1, type_counts_buf);
+        md_gpu_cmd_bind_buffer(cmd, 2, ascending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 3, descending_buf);
+        md_gpu_cmd_bind_buffer(cmd, 4, vert_buf);
+        md_gpu_cmd_bind_buffer(cmd, 5, edge_buf);
+        md_gpu_cmd_bind_buffer(cmd, 6, edge_count_buf);
+        md_gpu_cmd_bind_buffer(cmd, 7, types_buf);
+        md_gpu_cmd_bind_image(cmd, 0, volume);
+        md_gpu_cmd_dispatch(cmd, num_vertices, 1, 1);
+        md_gpu_cmd_barrier(cmd);
+
+        // Copy results to staging
+        staging_edge_count = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+        staging_verts      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_vertices * 4 * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+        staging_edges      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_edges * sizeof(md_topo_edge_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+        md_gpu_cmd_copy_buffer(cmd, edge_count_buf, staging_edge_count, sizeof(uint32_t), 0, 0);
+        md_gpu_cmd_copy_buffer(cmd, vert_buf, staging_verts, num_vertices * 4 * sizeof(float), 0, 0);
+        md_gpu_cmd_copy_buffer(cmd, edge_buf, staging_edges, num_edges * sizeof(md_topo_edge_t), 0, 0);
+
+        md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
+        md_gpu_fence_wait(fence);
+        md_gpu_destroy_fence(fence);
+    }
+
+    // Read back edge count
+    {
+        void* ptr = md_gpu_map_buffer(staging_edge_count);
+        MEMCPY(&num_edges, ptr, sizeof(uint32_t));
+        md_gpu_unmap_buffer(staging_edge_count);
+    }
+
+    // Read back vertices (shader writes float4 per vertex: xyz = position, w = value)
+    md_topo_vert_t* vertices = md_alloc(alloc, num_vertices * sizeof(md_topo_vert_t));
+    {
+        float* ptr = (float*)md_gpu_map_buffer(staging_verts);
+        for (uint32_t i = 0; i < num_vertices; i++) {
+            vertices[i].x     = ptr[i * 4 + 0];
+            vertices[i].y     = ptr[i * 4 + 1];
+            vertices[i].z     = ptr[i * 4 + 2];
+            vertices[i].value = ptr[i * 4 + 3];
+        }
+        md_gpu_unmap_buffer(staging_verts);
+    }
+
+    // Read back edges
+    md_topo_edge_t* edges = NULL;
+    if (num_edges > 0) {
+        edges = md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
+        void* ptr = md_gpu_map_buffer(staging_edges);
+        MEMCPY(edges, ptr, num_edges * sizeof(md_topo_edge_t));
+        md_gpu_unmap_buffer(staging_edges);
+    }
+
+    // Fill output structure
+    MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+    out_graph->num_vertices     = num_vertices;
+    out_graph->vertices         = vertices;
+    out_graph->num_maxima       = num_maxima;
+    out_graph->num_split_saddles = num_split_saddles;
+    out_graph->num_minima       = num_minima;
+    out_graph->num_join_saddles = num_join_saddles;
+    out_graph->num_edges        = num_edges;
+    out_graph->edges            = edges;
+    out_graph->alloc            = alloc;
+    success = true;
+
+cleanup:
+    if (staging_counts)     md_gpu_destroy_buffer(staging_counts);
+    if (staging_edge_count) md_gpu_destroy_buffer(staging_edge_count);
+    if (staging_verts)      md_gpu_destroy_buffer(staging_verts);
+    if (staging_edges)      md_gpu_destroy_buffer(staging_edges);
+    if (ascending_buf)      md_gpu_destroy_buffer(ascending_buf);
+    if (descending_buf)     md_gpu_destroy_buffer(descending_buf);
+    if (types_buf)          md_gpu_destroy_buffer(types_buf);
+    if (counts_buf)         md_gpu_destroy_buffer(counts_buf);
+    if (changed_buf)        md_gpu_destroy_buffer(changed_buf);
+    if (indices_buf)        md_gpu_destroy_buffer(indices_buf);
+    if (counters_buf)       md_gpu_destroy_buffer(counters_buf);
+    if (type_counts_buf)    md_gpu_destroy_buffer(type_counts_buf);
+    if (vert_buf)           md_gpu_destroy_buffer(vert_buf);
+    if (edge_buf)           md_gpu_destroy_buffer(edge_buf);
+    if (edge_count_buf)     md_gpu_destroy_buffer(edge_count_buf);
+    return success;
+}
+
+#elif !MD_PLATFORM_OSX
 
 #include <core/md_gl_util.h>
 #include <topo_shaders.inl>
@@ -452,16 +752,13 @@ cleanup:
 
 #else
 
-#include <core/md_gpu.h>
-#include <topo_shaders.inl>
-
-// macOS stub implementation
+// macOS stub (no GL, no md_gpu)
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const md_grid_t* grid, float scalar_threshold) {
     (void)out_graph;
     (void)vol_tex;
     (void)grid;
     (void)scalar_threshold;
-    MD_LOG_ERROR("Topology computation not supported on macOS");
+    MD_LOG_ERROR("Topology GPU computation not available (enable MD_ENABLE_GPU)");
     return false;
 }
 

@@ -172,6 +172,18 @@ set(TOPO_SHADER_FILES
   src/shaders/topo/vertex_edge_extraction.comp
 )
 
+set(TOPO_SLANG_FILES
+  src/shaders/topo/critical_point_compaction.slang
+  src/shaders/topo/bidirectional_manifold.slang
+  src/shaders/topo/path_compression.slang
+  src/shaders/topo/critical_points.slang
+  src/shaders/topo/vertex_edge_extraction.slang
+)
+
+set(GTO_SLANG_FILES
+  src/shaders/gto/eval_gto_density.slang
+)
+
 set(GEN_FILES)
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN_DIR})
@@ -186,19 +198,24 @@ if (MD_ENABLE_GPU)
       PROPERTIES
       LANGUAGE OBJC
       )
-    find_program(SPIRV_CROSS_EXECUTABLE spirv-cross)
-    find_program(XCRUN_EXECUTABLE xcrun)
   else()
     set(MD_GPU_BACKEND "VULKAN")
     list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
   find_program(GLSLC_EXECUTABLE glslc)
+  find_program(SLANGC_EXECUTABLE slangc)
   include(cmake/CompileShaders.cmake)
-  list(APPEND GEN_FILES ${GEN_DIR}/topo_shaders.inl)
+  include(cmake/CompileSlangShaders.cmake)
+  list(APPEND GEN_FILES ${GEN_DIR}/topo_gpu_shaders.inl)
+  list(APPEND GEN_FILES ${GEN_DIR}/gto_gpu_shaders.inl)
 endif()
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
+
+if (MD_ENABLE_GPU)
+  list(APPEND MD_DEFINES MD_ENABLE_GPU=1)
+endif()
 
 if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
   set(MD_DEFINES ${MD_DEFINES} __BIG_ENDIAN__)
@@ -227,6 +244,12 @@ set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
 set(MD_PROPERTIES)
+
+if (MD_ENABLE_GPU AND APPLE)
+  find_library(METAL_FRAMEWORK Metal)
+  find_library(FOUNDATION_FRAMEWORK Foundation)
+  list(APPEND MD_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+endif()
 
 if (MD_ENABLE_VLX)
   list(APPEND SRC_FILES src/md_vlx.c src/md_vlx.h)
@@ -393,7 +416,7 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES})
+set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES})
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -422,10 +445,15 @@ target_include_directories(mdlib
 )
 
 if (MD_ENABLE_GPU)
-  compile_shaders(topo_shaders.inl
+  compile_slang_shaders(topo_gpu_shaders.inl
     TARGET mdlib
     NAMESPACE topo
-    SOURCES ${TOPO_SHADER_FILES}
+    SOURCES ${TOPO_SLANG_FILES}
+  )
+  compile_slang_shaders(gto_gpu_shaders.inl
+    TARGET mdlib
+    NAMESPACE gto
+    SOURCES ${GTO_SLANG_FILES}
   )
 endif()
 

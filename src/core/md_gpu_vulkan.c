@@ -283,8 +283,13 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
         dev_exts[dev_ext_count++] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
     }
 
+    VkPhysicalDeviceVulkan12Features f12 = {0};
+    f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    f12.bufferDeviceAddress = VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features f13 = {0};
     f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    f13.pNext = &f12;
     f13.synchronization2 = VK_TRUE;
 
     VkPhysicalDeviceFeatures2 feats2 = {0};
@@ -443,7 +448,7 @@ md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device, const md_gpu_buffer
     VkBufferCreateInfo bci = {0};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = buf->size;
-    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (!md_vk_check(vkCreateBuffer(dev->device, &bci, NULL, &buf->buffer), "vkCreateBuffer")) {
@@ -471,8 +476,13 @@ md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device, const md_gpu_buffer
         return NULL;
     }
 
+    VkMemoryAllocateFlagsInfo alloc_flags = {0};
+    alloc_flags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    alloc_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
     VkMemoryAllocateInfo mai = {0};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.pNext = &alloc_flags;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = mem_type;
 
@@ -554,6 +564,17 @@ void md_gpu_unmap_buffer(md_gpu_buffer_t buffer) {
 
     // We keep buffers persistently mapped for simplicity; unmap is a no-op.
     // If you later prefer explicit unmap, switch this to vkUnmapMemory.
+}
+
+uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
+    if (!buffer) return 0;
+    md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
+    md_gpu_device* dev = (md_gpu_device*)buf->device;
+
+    VkBufferDeviceAddressInfo info = {0};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    info.buffer = buf->buffer;
+    return (uint64_t)vkGetBufferDeviceAddress(dev->device, &info);
 }
 
 md_gpu_image_t md_gpu_create_image(md_gpu_device_t device, const md_gpu_image_desc_t* desc) {
