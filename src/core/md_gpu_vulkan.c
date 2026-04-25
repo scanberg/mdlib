@@ -4,7 +4,6 @@
 #include <core/md_log.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
 #if !defined(MD_GPU_VULKAN)
 // Allow forcing this compilation unit in non-Vulkan builds, but it should only
@@ -44,7 +43,6 @@ typedef struct md_gpu_device {
     VkCommandBuffer command_buffers[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint32_t command_buffer_free_list[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint32_t command_buffer_free_count;
-    pthread_mutex_t cmd_pool_mutex;
 } md_gpu_device;
 
 typedef struct md_gpu_queue {
@@ -422,7 +420,6 @@ void md_gpu_destroy_device(md_gpu_device_t device) {
     if (dev->instance) {
         vkDestroyInstance(dev->instance, NULL);
     }
-    pthread_mutex_destroy(&dev->cmd_pool_mutex);
     free(dev);
 }
 
@@ -690,7 +687,7 @@ void md_gpu_destroy_image(md_gpu_image_t image) {
 }
 
 md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(md_gpu_device_t device, const md_gpu_compute_pipeline_desc_t* desc) {
-    if (!device || !desc || !desc->shader.data || desc->shader.size == 0) return NULL;
+    if (!device || !desc || !desc->shader_bytes || desc->shader_byte_size == 0) return NULL;
     md_gpu_device* dev = (md_gpu_device*)device;
 
     md_gpu_compute_pipeline* pipeline = (md_gpu_compute_pipeline*)calloc(1, sizeof(md_gpu_compute_pipeline));
@@ -700,8 +697,8 @@ md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(md_gpu_device_t device,
     // Create shader module
     VkShaderModuleCreateInfo sm_ci = {0};
     sm_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    sm_ci.codeSize = desc->shader.size;
-    sm_ci.pCode = (const uint32_t*)desc->shader.data;
+    sm_ci.codeSize = desc->shader_byte_size;
+    sm_ci.pCode = (const uint32_t*)desc->shader_bytes;
 
     if (!md_vk_check(vkCreateShaderModule(dev->device, &sm_ci, NULL, &pipeline->shader_module), "vkCreateShaderModule")) {
         free(pipeline);
@@ -752,22 +749,16 @@ md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
     if (!device) return NULL;
     md_gpu_device* dev = (md_gpu_device*)device;
     
-    pthread_mutex_lock(&dev->cmd_pool_mutex);
-    
     if (dev->command_buffer_free_count == 0) {
-        pthread_mutex_unlock(&dev->cmd_pool_mutex);
         MD_LOG_ERROR("md_gpu_acquire_command_buffer: no free command buffers");
         return NULL;
     }
 
     uint32_t idx = dev->command_buffer_free_list[--dev->command_buffer_free_count];
-    pthread_mutex_unlock(&dev->cmd_pool_mutex);
 
     md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)calloc(1, sizeof(md_gpu_command_buffer));
     if (!cmd) {
-        pthread_mutex_lock(&dev->cmd_pool_mutex);
         dev->command_buffer_free_list[dev->command_buffer_free_count++] = idx;
-        pthread_mutex_unlock(&dev->cmd_pool_mutex);
         return NULL;
     }
 
@@ -783,9 +774,7 @@ md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
     dsa_i.pSetLayouts = &dev->descriptor_set_layout;
 
     if (!md_vk_check(vkAllocateDescriptorSets(dev->device, &dsa_i, &cmd->descriptor_set), "vkAllocateDescriptorSets")) {
-        pthread_mutex_lock(&dev->cmd_pool_mutex);
         dev->command_buffer_free_list[dev->command_buffer_free_count++] = idx;
-        pthread_mutex_unlock(&dev->cmd_pool_mutex);
         free(cmd);
         return NULL;
     }
@@ -797,9 +786,7 @@ md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
 
     if (!md_vk_check(vkBeginCommandBuffer(cmd->vk_cmd, &begin_info), "vkBeginCommandBuffer")) {
         vkFreeDescriptorSets(dev->device, dev->descriptor_pool, 1, &cmd->descriptor_set);
-        pthread_mutex_lock(&dev->cmd_pool_mutex);
         dev->command_buffer_free_list[dev->command_buffer_free_count++] = idx;
-        pthread_mutex_unlock(&dev->cmd_pool_mutex);
         free(cmd);
         return NULL;
     }
@@ -944,7 +931,7 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, si
     vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)size, data);
 }
 
-void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t total_x, uint32_t total_y, uint32_t total_z) {
+void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     if (!cmd) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_device* dev = (md_gpu_device*)c->device;
@@ -957,7 +944,7 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t total_x, uint32_t
     // Bind descriptor set
     vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &c->descriptor_set, 0, NULL);
 
-    vkCmdDispatch(c->vk_cmd, total_x, total_y, total_z);
+    vkCmdDispatch(c->vk_cmd, group_count_x, group_count_y, group_count_z);
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
@@ -1194,9 +1181,7 @@ void md_gpu_destroy_fence(md_gpu_fence_t fence) {
         // Now safe to recycle command buffer and descriptor set
         vkFreeDescriptorSets(dev->device, dev->descriptor_pool, 1, &f->descriptor_set);
         
-        pthread_mutex_lock(&dev->cmd_pool_mutex);
         dev->command_buffer_free_list[dev->command_buffer_free_count++] = f->cmd_buffer_index;
-        pthread_mutex_unlock(&dev->cmd_pool_mutex);
         
         vkDestroyFence(dev->device, f->vk_fence, NULL);
         f->vk_fence = VK_NULL_HANDLE;

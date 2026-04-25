@@ -3289,11 +3289,8 @@ const double* md_vlx_rsp_nto_coefficients(const md_vlx_t* vlx, size_t nto_idx, s
 	if (!nto->coefficients.data) return NULL;
 	size_t num_mo = nto->coefficients.size[0];
 	size_t num_ao = nto->coefficients.size[1];
-	// After ao_permute+transpose the matrix is [num_mo][num_ao].
-	// VeloxChem stores hole NTOs in the occupied block (rows 0..lumo_idx-1)
-	// and particle NTOs in the virtual block (rows lumo_idx..num_mo-1).
-	size_t lumo_idx = vlx->scf.lumo_idx[0];
-	size_t offset = (type == MD_VLX_NTO_TYPE_PARTICLE) ? lumo_idx : 0;
+	// NTO particle orbitals are stored in the first half, hole in the second half
+	size_t offset = (type == MD_VLX_NTO_TYPE_HOLE) ? (num_mo / 2) : 0;
 	size_t idx = offset + lambda_idx;
 	if (idx >= num_mo || num_ao == 0) return NULL;
 	return nto->coefficients.data + idx * num_ao;

@@ -53,7 +53,6 @@ typedef uint32_t md_gpu_image_flags_t;
 enum {
     MD_GPU_IMAGE_NONE        = 0,
     MD_GPU_IMAGE_STORAGE     = 1 << 0, /* shader read/write */
-    MD_GPU_IMAGE_CPU_VISIBLE = 1 << 1, /* readback via copy */
 };
 
 typedef enum md_gpu_image_format_t {
@@ -83,13 +82,9 @@ typedef struct md_gpu_image_desc_t {
     md_gpu_image_flags_t flags;
 } md_gpu_image_desc_t;
 
-typedef struct md_gpu_shader_blob_t {
-    const void* data;
-    size_t size;
-} md_gpu_shader_blob_t;
-
 typedef struct md_gpu_compute_pipeline_desc_t {
-    md_gpu_shader_blob_t shader;
+    const void* shader_bytes;
+    size_t      shader_byte_size;
     uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
 } md_gpu_compute_pipeline_desc_t;
 
@@ -157,17 +152,19 @@ enum {
     MD_GPU_MAX_PUSH_CONSTANTS = 256,
 };
 
-/* Command buffers are pooled and owned by the device.
+/* Command buffers are pooled and owned by the queue.
     Acquire returns a command buffer ready for recording.
     The command buffer is automatically recycled by md_gpu_queue_submit(). */
-md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device);
+md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_queue_t queue);
 
 void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_compute_pipeline_t pipeline);
 void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer);
 void md_gpu_cmd_bind_buffer_range(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size);
 void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image);
 void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, size_t size);
-void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t total_x, uint32_t total_y, uint32_t total_z);
+/* Dispatch compute work using workgroup counts. These values map directly to
+    Vulkan workgroup counts and Metal threadgroup counts. */
+void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
 
 /* Barrier model:
      - md_gpu_cmd_barrier(): conservative global barrier for the command buffer.

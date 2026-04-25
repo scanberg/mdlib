@@ -394,13 +394,13 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd,
 }
 
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
-                         uint32_t x, uint32_t y, uint32_t z) {
+                         uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_DISPATCH;
-    rc->u.dispatch_size[0] = x;
-    rc->u.dispatch_size[1] = y;
-    rc->u.dispatch_size[2] = z; 
+    rc->u.dispatch_size[0] = group_count_x;
+    rc->u.dispatch_size[1] = group_count_y;
+    rc->u.dispatch_size[2] = group_count_z; 
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
@@ -512,12 +512,8 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                 uint32_t gy = c->u.dispatch_size[1];
                 uint32_t gz = c->u.dispatch_size[2];
                 MTLSize tg = MTLSizeMake(p->tg_size[0], p->tg_size[1], p->tg_size[2]);
-                MTLSize grid = MTLSizeMake(
-                    ((gx + tg.width  - 1) / tg.width)  * tg.width,
-                    ((gy + tg.height - 1) / tg.height) * tg.height,
-                    ((gz + tg.depth  - 1) / tg.depth)  * tg.depth
-                );
-                [compute_enc dispatchThreads:grid threadsPerThreadgroup:tg];
+                MTLSize groups = MTLSizeMake(gx, gy, gz);
+                [compute_enc dispatchThreadgroups:groups threadsPerThreadgroup:tg];
                 break;
             }
 
