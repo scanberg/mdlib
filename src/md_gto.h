@@ -48,9 +48,8 @@ typedef struct md_orbital_data_t {
 typedef struct md_gto_shell_t {
     uint32_t  atom_idx;          // index of the parent atom in the caller-supplied atom_xyz array
     uint32_t  primitive_offset;  // first index into basis->alpha and basis->coeff arrays
-    uint16_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
-    uint16_t  num_primitives;    // number of Gaussian primitives in the contraction
-    uint32_t  _pad;
+    uint32_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
+    uint32_t  num_primitives;    // number of Gaussian primitives in the contraction
 } md_gto_shell_t;
 
 // A complete contracted Gaussian basis set for a molecular system.

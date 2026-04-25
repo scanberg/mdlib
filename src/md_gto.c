@@ -888,7 +888,7 @@ bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device
     }
 
     size_t temp_pos = md_temp_get_pos();
-    size_t tri_len  = ((size_t)num_cgtos * (num_cgtos + 1)) / 2;
+    size_t tri_len  = density_matrix_upper_tri_size(num_cgtos);
     vec4_t*   cgto_xyzr   = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
     uint32_t* cgto_offset = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_cgtos + 1));
     float*    pgto_alpha  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
@@ -898,7 +898,7 @@ bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device
     float*    matrix      = (float*)   md_temp_push(sizeof(float)    * tri_len);
 
     gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
-    density_matrix_to_upper_tri(matrix, density_matrix, num_cgtos);
+    density_matrix_upper_tri_extract_float(matrix, density_matrix, num_cgtos);
 
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
     MEMCPY(ptr + L.off_cgto_xyzr,   cgto_xyzr,   L.sz_cgto_xyzr);
@@ -949,10 +949,10 @@ void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
     ASSERT(buf->buffer);
     ASSERT(density_matrix);
 
-    size_t tri_len  = ((size_t)buf->matrix_dim * (buf->matrix_dim + 1)) / 2;
+    size_t tri_len  = density_matrix_upper_tri_size(buf->matrix_dim);
     size_t temp_pos = md_temp_get_pos();
     float* matrix   = (float*)md_temp_push(sizeof(float) * tri_len);
-    density_matrix_to_upper_tri(matrix, density_matrix, buf->matrix_dim);
+    density_matrix_upper_tri_extract_float(matrix, density_matrix, buf->matrix_dim);
 
     gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
