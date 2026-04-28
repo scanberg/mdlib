@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <core/md_str.h>
 #include <core/md_array.h>

@@ -58,10 +58,9 @@ typedef struct md_gto_shell_t {
 // MO coefficient vectors and AO-basis matrices must be in the same shell order.
 //
 // Contraction coefficients (coeff) are pure radial — spherical-to-Cartesian
-// transformation factors are applied internally at evaluation time.
-//
-// Atom coordinates are NOT stored here.  Pass them as a flat float array
-// (packed xyz, stride 3, length >= max(atom_idx)+1) to any function that needs them.
+// transformation factors are applied internally at evaluation time
+// to produce the final Cartesian GTO coefficients used in the evaluation.
+
 typedef struct md_gto_basis_t {
     uint32_t         num_shells;      // total number of contracted shells
     uint32_t         num_primitives;  // total number of Gaussian primitives (sum of num_primitives over all shells)
@@ -117,7 +116,7 @@ void md_gto_grid_evaluate_mo(
     const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
 
 // Evaluate full electron density via AO density matrix on a grid.
-// density_matrix: full N×N row-major double array, N = number of CGTOs implied by basis.
+// density_matrix: full symmetric N×N row-major double array, N = number of CGTOs implied by basis.
 // The function constructs a compact upper-triangular float representation internally.
 void md_gto_grid_evaluate_density(
     float* out, const md_grid_t* grid,
@@ -193,20 +192,24 @@ typedef struct md_gto_density_buf_t {
     md_gpu_buffer_t buffer;  // single backing GPU buffer
     uint32_t num_cgtos;
     uint32_t num_pgtos;
-    uint32_t matrix_dim;     // == num_cgtos
 } md_gto_density_buf_t;
 
 // Allocate and populate a GPU buffer from a basis, atom positions and density matrix.
 // density_matrix: full N×N row-major doubles; converted to upper-triangular floats internally.
+// cutoff:       spatial radius threshold for md_gto_compute_radius_of_influence (e.g. 1e-6).
+//               Pass 0.0 to disable spatial culling.
+// dm_threshold: density-matrix row screening threshold. CGTOs where max_nu |D[mu,nu]| < dm_threshold
+//               are removed entirely from the GPU buffer, shrinking the problem size.
+//               Pass 0.0 to disable DM compaction.
 bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device,
     const md_gto_basis_t* basis, const float* atom_xyz,
-    const double* density_matrix);
+    const double* density_matrix, double cutoff, double dm_threshold);
 
-// Re-upload atom positions (cgto_xyzr sub-region) into the existing buffer.
+// Update atom positions (cgto_xyzr sub-region) in the existing buffer.
 void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
     const md_gto_basis_t* basis, const float* atom_xyz);
 
-// Re-upload the density matrix into the existing buffer.
+// Update the density matrix in the existing buffer.
 // density_matrix: full N×N row-major doubles; converted to upper-triangular floats internally.
 void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
     const double* density_matrix);

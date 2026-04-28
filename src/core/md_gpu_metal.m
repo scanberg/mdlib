@@ -8,7 +8,6 @@
 
 #include <core/md_common.h> // Assert
 #include <stdlib.h>         // malloc, free
-#include <pthread.h>        // pthread_mutex_t
 
 /* Limits are defined in md_gpu.h */
 
@@ -22,7 +21,7 @@
 
 struct md_gpu_queue {
     struct md_gpu_device* dev;
-    pthread_mutex_t submit_mutex;
+    struct md_gpu_command_buffer* cmd_free_list;
 };
 
 struct md_gpu_device {
@@ -30,9 +29,6 @@ struct md_gpu_device {
     id<MTLCommandQueue> queue;
 
     struct md_gpu_queue compute_queue;
-
-    pthread_mutex_t cmd_pool_mutex;
-    struct md_gpu_command_buffer* cmd_free_list;
 };
 
 struct md_gpu_buffer {
@@ -95,10 +91,16 @@ struct md_gpu_cmd_barrier_image {
     struct md_gpu_image* image;
 };
 
+struct md_gpu_cmd_dispatch {
+    uint32_t group_count[3];
+    uint8_t  push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
+    size_t   push_constant_size;
+};
+
 struct md_gpu_recorded_cmd {
     md_gpu_cmd_type_t type;
     union {
-        uint32_t dispatch_size[3];
+        struct md_gpu_cmd_dispatch dispatch;
         struct md_gpu_cmd_copy_buffer copy_buf;
         struct md_gpu_cmd_copy_image_to_buffer copy_img_buf;
         struct md_gpu_cmd_copy_buffer_to_image copy_buf_img;
@@ -115,6 +117,7 @@ struct md_gpu_command_buffer {
     struct md_gpu_buffer* bound_buffers[MD_GPU_MAX_BIND_SLOTS];
     size_t bound_buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
     struct md_gpu_image*  bound_images[MD_GPU_MAX_BIND_SLOTS];
+    /* push_constants/push_constant_size: staging area, snapshotted into each dispatch record */
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t  push_constant_size;
 
@@ -177,28 +180,19 @@ md_gpu_device_t md_gpu_create_device(void) {
     dev->device = MTLCreateSystemDefaultDevice();
     ASSERT(dev->device);
     dev->queue = [dev->device newCommandQueue];
-
     dev->compute_queue.dev = dev;
-    pthread_mutex_init(&dev->compute_queue.submit_mutex, NULL);
-
-    pthread_mutex_init(&dev->cmd_pool_mutex, NULL);
-    dev->cmd_free_list = NULL;
+    /* cmd_free_list is zero-initialized by calloc */
     return dev;
 }
 
 void md_gpu_destroy_device(md_gpu_device_t device) {
-    pthread_mutex_destroy(&device->compute_queue.submit_mutex);
-
-    pthread_mutex_lock(&device->cmd_pool_mutex);
-    struct md_gpu_command_buffer* it = device->cmd_free_list;
+    struct md_gpu_command_buffer* it = device->compute_queue.cmd_free_list;
     while (it) {
         struct md_gpu_command_buffer* next = it->next_free;
         free(it);
         it = next;
     }
-    device->cmd_free_list = NULL;
-    pthread_mutex_unlock(&device->cmd_pool_mutex);
-    pthread_mutex_destroy(&device->cmd_pool_mutex);
+    device->compute_queue.cmd_free_list = NULL;
 
     [device->queue release];
     [device->device release];
@@ -282,11 +276,15 @@ md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
 {
     NSError* err = nil;
 
-    NSData* data = [NSData dataWithBytes:desc->shader.data
-                                  length:desc->shader.size];
+    dispatch_data_t data = dispatch_data_create(
+        desc->shader_bytes,
+        desc->shader_byte_size,
+        dispatch_get_main_queue(),
+        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 
     id<MTLLibrary> lib =
         [device->device newLibraryWithData:data error:&err];
+    dispatch_release(data);
     ASSERT(lib && !err);
 
     // Slang renames 'main' to 'main_0' for Metal (Metal reserves 'main').
@@ -331,17 +329,13 @@ void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
    Command buffers
    ============================= */
 
-md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
-    pthread_mutex_lock(&device->cmd_pool_mutex);
-    struct md_gpu_command_buffer* cmd = device->cmd_free_list;
+md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_queue_t queue) {
+    struct md_gpu_command_buffer* cmd = queue->cmd_free_list;
     if (cmd) {
-        device->cmd_free_list = cmd->next_free;
-    }
-    pthread_mutex_unlock(&device->cmd_pool_mutex);
-
-    if (!cmd) {
+        queue->cmd_free_list = cmd->next_free;
+    } else {
         cmd = (struct md_gpu_command_buffer*)calloc(1, sizeof(struct md_gpu_command_buffer));
-        cmd->dev = device;
+        cmd->dev = queue->dev;
     }
 
     cmd_reset(cmd);
@@ -398,9 +392,13 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_DISPATCH;
-    rc->u.dispatch_size[0] = group_count_x;
-    rc->u.dispatch_size[1] = group_count_y;
-    rc->u.dispatch_size[2] = group_count_z; 
+    rc->u.dispatch.group_count[0] = group_count_x;
+    rc->u.dispatch.group_count[1] = group_count_y;
+    rc->u.dispatch.group_count[2] = group_count_z;
+    /* Snapshot push constants at record time so each dispatch is independent */
+    rc->u.dispatch.push_constant_size = cmd->push_constant_size;
+    if (cmd->push_constant_size > 0)
+        MEMCPY(rc->u.dispatch.push_constants, cmd->push_constants, cmd->push_constant_size);
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
@@ -481,8 +479,6 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
 
 md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd) {
 
-    pthread_mutex_lock(&queue->submit_mutex);
-
     id<MTLCommandBuffer> mtl_cmd = [queue->dev->queue commandBuffer];
     id<MTLComputeCommandEncoder> compute_enc = nil;
 
@@ -498,21 +494,21 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
 
                 for (uint32_t s = 0; s < MD_GPU_MAX_BIND_SLOTS; ++s) {
                     if (cmd->bound_buffers[s])
-                        [compute_enc setBuffer:cmd->bound_buffers[s]->buffer offset:cmd->bound_buffer_offsets[s] atIndex:s];
+                        [compute_enc setBuffer:cmd->bound_buffers[s]->buffer offset:cmd->bound_buffer_offsets[s] atIndex:s + 1];
                     if (cmd->bound_images[s])
                         [compute_enc setTexture:cmd->bound_images[s]->texture atIndex:s];
                 }
 
-                if (cmd->push_constant_size > 0)
-                    [compute_enc setBytes:cmd->push_constants length:cmd->push_constant_size atIndex:MD_GPU_PUSH_CONSTANTS_SLOT];
+                if (c->u.dispatch.push_constant_size > 0)
+                    [compute_enc setBytes:c->u.dispatch.push_constants
+                                  length:c->u.dispatch.push_constant_size
+                                 atIndex:0];
 
                 struct md_gpu_compute_pipeline* p = cmd->bound_pipeline;
-
-                uint32_t gx = c->u.dispatch_size[0];
-                uint32_t gy = c->u.dispatch_size[1];
-                uint32_t gz = c->u.dispatch_size[2];
-                MTLSize tg = MTLSizeMake(p->tg_size[0], p->tg_size[1], p->tg_size[2]);
-                MTLSize groups = MTLSizeMake(gx, gy, gz);
+                MTLSize tg     = MTLSizeMake(p->tg_size[0], p->tg_size[1], p->tg_size[2]);
+                MTLSize groups = MTLSizeMake(c->u.dispatch.group_count[0],
+                                             c->u.dispatch.group_count[1],
+                                             c->u.dispatch.group_count[2]);
                 [compute_enc dispatchThreadgroups:groups threadsPerThreadgroup:tg];
                 break;
             }
@@ -625,13 +621,10 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
         [compute_enc endEncoding];
 
     [mtl_cmd commit];
-    pthread_mutex_unlock(&queue->submit_mutex);
 
     // Safe to recycle immediately: command translation/encoding is complete at commit.
-    pthread_mutex_lock(&queue->dev->cmd_pool_mutex);
-    cmd->next_free = queue->dev->cmd_free_list;
-    queue->dev->cmd_free_list = cmd;
-    pthread_mutex_unlock(&queue->dev->cmd_pool_mutex);
+    cmd->next_free = queue->cmd_free_list;
+    queue->cmd_free_list = cmd;
 
     struct md_gpu_fence* fence = (struct md_gpu_fence*)calloc(1, sizeof(struct md_gpu_fence));
     fence->cmd = [mtl_cmd retain];
@@ -640,7 +633,8 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
 }
 
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
-    return fence->cmd.status == MTLCommandBufferStatusCompleted;
+    MTLCommandBufferStatus s = fence->cmd.status;
+    return s == MTLCommandBufferStatusCompleted || s == MTLCommandBufferStatusError;
 }
 
 void md_gpu_fence_wait(md_gpu_fence_t fence) {

@@ -34,10 +34,10 @@ extern \"C\" {
 
         file(APPEND ${OUT_HEADER}
 "// From file: ${NAME_WITH_EXT}
-extern const uint32_t ${SYMBOL}_start[];
-extern const uint32_t ${SYMBOL}_end[];
+extern const uint8_t ${SYMBOL}_start[];
+extern const size_t ${SYMBOL}_byte_size;
 static inline size_t ${SYMBOL}_size(void) {
-    return (size_t)(${SYMBOL}_end - ${SYMBOL}_start) * sizeof(uint32_t);
+    return ${SYMBOL}_byte_size;
 }
 
 ")

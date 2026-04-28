@@ -7,31 +7,20 @@ struct PGTO {
 };
 
 struct CGTO {
-    vec3 coord;
-    uint pgto_off;
-    uint pgto_len;
+    vec3 center;
+    uvec2 pgto_range; // beg + end
 };
 
 layout (binding = 0, std430) readonly restrict buffer CGTO_XYZR_BUFFER {
     vec4 cgto_xyzr[];
 };
 layout (binding = 1, std430) readonly restrict buffer CGTO_OFFSET_BUFFER {
-    uint cgto_offset[];
+    uvec2 cgto_off_len[];
 };
-layout (binding = 2, std430) readonly restrict buffer PGTO_COEFF_BUFFER {
-    float pgto_coeff[];
+layout (binding = 2, std430) readonly restrict buffer PGTO_BUFFER {
+    PGTO pgto[];
 };
-layout (binding = 3, std430) readonly restrict buffer PGTO_ALPHA_BUFFER {
-    float pgto_alpha[];
-};
-layout (binding = 4, std430) readonly restrict buffer PGTO_RADIUS_BUFFER {
-    float pgto_radius[];
-};
-layout (binding = 5, std430) readonly restrict buffer PGTO_IJKL_BUFFER {
-    uint pgto_ijkl[];
-};
-
-layout (binding = 6, std430) readonly restrict buffer D_BUFFER {
+layout (binding = 3, std430) readonly restrict buffer D_BUFFER {
     float D_matrix[];
 };
 
@@ -44,37 +33,6 @@ layout(std140, binding = 0) uniform UniformBlock {
 
 layout(binding = 0) writeonly restrict uniform image3D out_vol;
 
-#if 1
-float safe_pow(float base, uint exponent) {
-    switch(exponent) {
-        case 0u: return 1.0;
-        case 1u: return base;
-        case 2u: return base * base;
-        case 3u: return base * base * base;
-        case 4u: {
-            float b2 = base * base;
-            return b2 * b2;
-        }
-        default: {
-            float v = 1.0;
-            for (uint e = 0u; e < exponent; ++e) {
-                v *= base;
-            }
-            return v;
-        }
-    }
-}
-#else
-float safe_pow(float base, uint exponent) {
-    // Handles any non-negative integer exponent
-    float v = 1.0;
-    for (uint e = 0u; e < exponent; ++e) {
-        v *= base;
-    }
-    return v;
-}
-#endif
-
 uvec4 unpack_ijkl(in uint ijkl) {
     return uvec4(
         (ijkl >>  0) & 0xFFu,
@@ -82,18 +40,6 @@ uvec4 unpack_ijkl(in uint ijkl) {
         (ijkl >> 16) & 0xFFu,
         (ijkl >> 24) & 0xFFu
     );
-}
-
-uint unpack_offset(uint x) {
-    return x & 0x00FFFFFFu;
-}
-
-uint unpack_length(uint x) {
-    return x >> 24u;
-}
-
-uint pack_offset_length(uint offset, uint length) {
-    return (length << 24u) | offset;
 }
 
 #define WG_X 8
@@ -104,7 +50,7 @@ uint pack_offset_length(uint offset, uint length) {
 #define TILE_SIZE 16
 #define TILE_AREA (TILE_SIZE*TILE_SIZE)
 #define MAX_SCREENED_CGTOS 2048
-#define MAX_TILE_PGTOS (TILE_SIZE * 16)
+#define MAX_TILE_PGTOS (TILE_SIZE * 32)
 #define INVALID_CGTO_IDX 0xFFFFFFFFu
 
 shared uint  screened_cgtos[MAX_SCREENED_CGTOS];
@@ -114,6 +60,10 @@ shared float D_tile[TILE_SIZE][TILE_SIZE];
 shared CGTO  cgtos_tile[TILE_SIZE];
 shared PGTO  pgtos_tile[MAX_TILE_PGTOS];
 shared uint  num_pgtos;
+
+// Per-CGTO source ranges written by phase 1 of fill_cgtos_tile,
+// read by all threads in phase 2.
+shared uvec2 gs_src_off_len[TILE_SIZE];
 
 // Calculates the D matrix index for the upper triangular symmetric matrix storage
 uint get_index(uint i, uint j, uint N) {
@@ -135,10 +85,10 @@ void fill_D_tile(uint tile_i, uint tile_j) {
         uint col = index % TILE_SIZE;
 
         uint idxI = baseI + row;
-        uint gi = (idxI < MAX_SCREENED_CGTOS) ? screened_cgtos[idxI] : INVALID_CGTO_IDX;
+        uint gi = (idxI < num_screened_cgtos) ? screened_cgtos[idxI] : INVALID_CGTO_IDX;
 
         uint idxJ = baseJ + col;
-        uint gj = (idxJ < MAX_SCREENED_CGTOS) ? screened_cgtos[idxJ] : INVALID_CGTO_IDX;
+        uint gj = (idxJ < num_screened_cgtos) ? screened_cgtos[idxJ] : INVALID_CGTO_IDX;
 
         float value = 0.0;
         if (gi != INVALID_CGTO_IDX && gj != INVALID_CGTO_IDX) {
@@ -148,119 +98,111 @@ void fill_D_tile(uint tile_i, uint tile_j) {
     }
 }
 
-// Populate CGTO and PGTO GSM with CGTOs found in tile
-void fill_cgtos_tile(uint tile_number, vec3 model_aabb_min, vec3 model_aabb_max) {
-    const uint tid  = gl_LocalInvocationIndex;
+// Two-phase CGTO/PGTO loader that utilises all WG_SIZE threads.
+//
+// Phase 1 (threads 0 .. TILE_SIZE-1):
+//   Read CGTO metadata, atomically reserve pgtos_tile slots, write
+//   cgtos_tile[] headers and gs_src_off_len[].
+//
+// [barrier]
+//
+// Phase 2 (all WG_SIZE threads):
+//   Cooperatively copy every PGTO belonging to this tile from the
+//   global buffers into pgtos_tile using a strided loop.
+void fill_cgtos_tile(uint tile_number) {
+    const uint tid = gl_LocalInvocationIndex;
 
-    // Only first TILE_SIZE threads participate
-    if (tid >= TILE_SIZE) return;
+    // --- Phase 1: metadata gather (TILE_SIZE threads) ---
+    if (tid < TILE_SIZE) {
+        uint slot = tile_number * TILE_SIZE + tid;
+        uint global_cgto_idx = (slot < num_screened_cgtos) ? screened_cgtos[slot] : INVALID_CGTO_IDX;
 
-    // Global CGTO index for this tile position
-    uint global_cgto_idx = screened_cgtos[tile_number * TILE_SIZE + tid];
+        vec3  cgto_center = vec3(0.0);
+        uvec2 off_len     = uvec2(0u, 0u);
+        uint  dst         = 0u;
 
-    vec3 cgto_center = vec3(0.0);
-    uint cgto_pgto_off = 0u;
-    uint cgto_pgto_len = 0u;
-
-    if (global_cgto_idx != INVALID_CGTO_IDX) {
-        // Load packed offset/length
-        uint src_beg = cgto_offset[global_cgto_idx];
-        uint src_end = cgto_offset[global_cgto_idx + 1u];
-        uint src_len = src_end - src_beg;
-
-        // Reserve contiguous space for this CGTO's PGTOs
-        uint dst = atomicAdd(num_pgtos, src_len);
-
-        cgto_center = cgto_xyzr[global_cgto_idx].xyz;
-        cgto_pgto_off = dst;
-        
-        vec3 model_xyz = vec3(world_to_model * vec4(cgto_center, 1.0));
-        vec3   d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
-        float d2 = dot(d, d);
-
-        // Copy PGTOs
-        for (uint k = 0; k < src_len; ++k) {
-            float r = pgto_radius[src_beg + k];
-            // Cull based on radius
-            if (d2 < r * r) {
-                PGTO g;
-                g.coeff = pgto_coeff[src_beg + k];
-                g.alpha = pgto_alpha[src_beg + k];
-                g.ijkl  = pgto_ijkl[src_beg + k];
-                pgtos_tile[cgto_pgto_off + cgto_pgto_len] = g;
-                cgto_pgto_len++;
-            }
+        if (global_cgto_idx != INVALID_CGTO_IDX) {
+            off_len = cgto_off_len[global_cgto_idx];
+            cgto_center = cgto_xyzr[global_cgto_idx].xyz;
+            dst = atomicAdd(num_pgtos, off_len.y);
         }
+
+        gs_src_off_len[tid]        = off_len;
+        cgtos_tile[tid].center     = cgto_center;
+        cgtos_tile[tid].pgto_range = uvec2(dst, dst + off_len.y);
     }
 
-    cgtos_tile[tid].coord    = cgto_center;
-    cgtos_tile[tid].pgto_off = cgto_pgto_off;
-    cgtos_tile[tid].pgto_len = cgto_pgto_len;
+    // Ensure metadata is visible to all threads before phase 2.
+    barrier();
+
+    // --- Phase 2: cooperative PGTO load (all WG_SIZE threads) ---
+    for (uint ci = 0u; ci < TILE_SIZE; ci++) {
+        uvec2 off_len = gs_src_off_len[ci];
+        uint src = off_len.x;
+        uint len = off_len.y;
+        uint dst = cgtos_tile[ci].pgto_range.x;
+        for (uint k = tid; k < len; k += WG_SIZE) {
+            pgtos_tile[dst + k] = pgto[src + k];
+        }
+    }
 }
 
-// One thread per CGTO
 void eval_phis(out float out_phi[TILE_SIZE], vec3 coord) {
-    // Initialize to zero to handle empty CGTO slots
-    for (uint i = 0; i < TILE_SIZE; ++i) out_phi[i] = 0.0;
-
-    // Compute φ_i(coord) for all CGTOs in the tile
     for (uint i = 0; i < TILE_SIZE; ++i) {
-        uint pgto_off = cgtos_tile[i].pgto_off;
-        uint pgto_len = cgtos_tile[i].pgto_len;
+        uvec2 pgto_range = cgtos_tile[i].pgto_range;
 
-        vec3 center = cgtos_tile[i].coord;
+        vec3 center = cgtos_tile[i].center;
         vec3 d   = coord - center;
         float r2 = dot(d, d);
 
-        // Precompute powers once per CGTO
         float dx2 = d.x * d.x;
         float dy2 = d.y * d.y;
         float dz2 = d.z * d.z;
 
         float phi = 0.0;
-        for (uint j = pgto_off; j < pgto_off + pgto_len; ++j) {
-            PGTO pgto = pgtos_tile[j];
-            uvec4 ijkl = unpack_ijkl(pgto.ijkl);
-            // Use ternary for common cases (no divergence, compiles to select)
-            float fx = (ijkl.x == 0u) ? 1.0 : 
+        for (uint j = pgto_range.x; j < pgto_range.y; ++j) {
+            PGTO p = pgtos_tile[j];
+            uvec4 ijkl = unpack_ijkl(p.ijkl);
+            float fx = (ijkl.x == 0u) ? 1.0 :
                        (ijkl.x == 1u) ? d.x :
                        (ijkl.x == 2u) ? dx2 :
                        (ijkl.x == 3u) ? dx2 * d.x : dx2 * dx2;
-            
-            float fy = (ijkl.y == 0u) ? 1.0 : 
+
+            float fy = (ijkl.y == 0u) ? 1.0 :
                        (ijkl.y == 1u) ? d.y :
                        (ijkl.y == 2u) ? dy2 :
                        (ijkl.y == 3u) ? dy2 * d.y : dy2 * dy2;
-            
-            float fz = (ijkl.z == 0u) ? 1.0 : 
+
+            float fz = (ijkl.z == 0u) ? 1.0 :
                        (ijkl.z == 1u) ? d.z :
                        (ijkl.z == 2u) ? dz2 :
                        (ijkl.z == 3u) ? dz2 * d.z : dz2 * dz2;
-            phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
+
+            phi += p.coeff * fx * fy * fz * exp(-p.alpha * r2);
         }
         out_phi[i] = phi;
     }
 }
 
-float symmetric_contraction(float phi[TILE_SIZE], float D[TILE_SIZE][TILE_SIZE]) {
+float symmetric_contraction(float phi[TILE_SIZE]) {
     float result = 0.0;
     for (uint i = 0; i < TILE_SIZE; ++i) {
         float ai = phi[i];
-        result = fma(D[i][i] * ai, ai, result);                     // Diagonal
+        result = fma(D_tile[i][i] * ai, ai, result);
         ai = 2.0 * ai;
         for (uint j = i + 1; j < TILE_SIZE; ++j) {
-            result = fma(D[i][j] * ai, phi[j], result);             // Off-diagonal
+            result = fma(D_tile[i][j] * ai, phi[j], result);
         }
     }
     return result;
 }
 
-float contraction(float phi_mu[TILE_SIZE], float phi_nu[TILE_SIZE], float D[TILE_SIZE][TILE_SIZE]) {
+float contraction(float phi_mu[TILE_SIZE], float phi_nu[TILE_SIZE]) {
     float result = 0.0;
     for (uint i = 0; i < TILE_SIZE; ++i) {
         float ai = 2.0 * phi_mu[i];
         for (uint j = 0; j < TILE_SIZE; ++j) {
-            result = fma(D[i][j] * ai, phi_nu[j], result);          // Off-diagonal
+            result = fma(D_tile[i][j] * ai, phi_nu[j], result);
         }
     }
     return result;
@@ -306,13 +248,6 @@ void main() {
         }
         barrier();
 
-        // Fill tail with INVALID_CGTO_IDX
-        for (uint i = tid; i < MAX_SCREENED_CGTOS; i += WG_SIZE) {
-            if (i >= num_screened_cgtos) {
-                screened_cgtos[i] = INVALID_CGTO_IDX;
-            }
-        }
-        barrier();
     }
 
     float phi_tile_mu[TILE_SIZE]; // evaluated φ_μ(r) in registers
@@ -341,7 +276,7 @@ void main() {
 
         // Populate GSM
         fill_D_tile(tile_i, tile_i);
-        fill_cgtos_tile(tile_i, model_aabb_min, model_aabb_max);
+        fill_cgtos_tile(tile_i);
 
         barrier();
 
@@ -349,7 +284,7 @@ void main() {
         eval_phis(phi_tile_mu, coord);
 
         // Diagonal tile Contribution
-        rho += symmetric_contraction(phi_tile_mu, D_tile);
+        rho += symmetric_contraction(phi_tile_mu);
 
         for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
             // OFF DIAGONAL TILE
@@ -361,7 +296,7 @@ void main() {
 
             // Populate GSM
             fill_D_tile(tile_i, tile_j);
-            fill_cgtos_tile(tile_j, model_aabb_min, model_aabb_max);
+            fill_cgtos_tile(tile_j);
 
             barrier();
 
@@ -369,7 +304,7 @@ void main() {
             eval_phis(phi_tile_nu, coord);
 
             // Off-diagonal tile Contribution
-            rho += contraction(phi_tile_mu, phi_tile_nu, D_tile);
+            rho += contraction(phi_tile_mu, phi_tile_nu);
         }
     }
     

@@ -9635,7 +9635,7 @@ void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, cons
     md_free(alloc, keys,    sizeof(uint32_t) * count);
 }
 
-void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count) {
+void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_in_bytes, size_t count) {
     if (!source || !xyz || count <= 0) return;
 
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -9645,7 +9645,7 @@ void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count
     const float* x = base + 0;
     const float* y = base + 1;
     const float* z = base + 2;
-    computeOrder(keys, x, y, z, count, sizeof(vec3_t));
+    computeOrder(keys, x, y, z, count, stride_in_bytes);
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};

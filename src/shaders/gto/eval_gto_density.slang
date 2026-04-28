@@ -9,9 +9,8 @@ struct PGTO {
 };
 
 struct CGTO {
-    float3 coord;
-    uint pgto_off;
-    uint pgto_len;
+    float3 center;
+    uint2  pgto_range; // beg + end
 };
 
 struct UBO {
@@ -31,21 +30,12 @@ ConstantBuffer<UBO> ubo;
 StructuredBuffer<float4> cgto_xyzr;
 
 [[vk::binding(1)]]
-StructuredBuffer<uint> cgto_offset;
+StructuredBuffer<uint2> cgto_off_len;
 
 [[vk::binding(2)]]
-StructuredBuffer<float> pgto_coeff;
+StructuredBuffer<PGTO> pgto;
 
 [[vk::binding(3)]]
-StructuredBuffer<float> pgto_alpha;
-
-[[vk::binding(4)]]
-StructuredBuffer<float> pgto_radius;
-
-[[vk::binding(5)]]
-StructuredBuffer<uint> pgto_ijkl;
-
-[[vk::binding(6)]]
 StructuredBuffer<float> D_matrix;
 
 [[vk::binding(16)]] // image slot 0 (slot + MD_GPU_MAX_BIND_SLOTS)
@@ -68,7 +58,7 @@ uint4 unpack_ijkl(uint packed) {
 #define TILE_SIZE 16
 #define TILE_AREA (TILE_SIZE*TILE_SIZE)
 #define MAX_SCREENED_CGTOS 2048
-#define MAX_TILE_PGTOS (TILE_SIZE * 16)
+#define MAX_TILE_PGTOS (TILE_SIZE * 32)
 #define INVALID_CGTO_IDX 0xFFFFFFFFu
 
 groupshared uint  screened_cgtos[MAX_SCREENED_CGTOS];
@@ -78,6 +68,10 @@ groupshared float D_tile[TILE_SIZE][TILE_SIZE];
 groupshared CGTO  cgtos_tile[TILE_SIZE];
 groupshared PGTO  pgtos_tile[MAX_TILE_PGTOS];
 groupshared uint  num_pgtos;
+
+// Per-CGTO source ranges written by phase 1 of fill_cgtos_tile,
+// read by all threads in phase 2.
+groupshared uint2  gs_src_off_len[TILE_SIZE];
 
 // Upper triangular symmetric matrix index
 uint get_index(uint i, uint j, uint N) {
@@ -96,10 +90,10 @@ void fill_D_tile(uint tile_i, uint tile_j, uint tid) {
         uint col = index % TILE_SIZE;
 
         uint idxI = baseI + row;
-        uint gi = (idxI < MAX_SCREENED_CGTOS) ? screened_cgtos[idxI] : INVALID_CGTO_IDX;
+        uint gi = (idxI < num_screened_cgtos) ? screened_cgtos[idxI] : INVALID_CGTO_IDX;
 
         uint idxJ = baseJ + col;
-        uint gj = (idxJ < MAX_SCREENED_CGTOS) ? screened_cgtos[idxJ] : INVALID_CGTO_IDX;
+        uint gj = (idxJ < num_screened_cgtos) ? screened_cgtos[idxJ] : INVALID_CGTO_IDX;
 
         float value = 0.0;
         if (gi != INVALID_CGTO_IDX && gj != INVALID_CGTO_IDX) {
@@ -109,57 +103,66 @@ void fill_D_tile(uint tile_i, uint tile_j, uint tid) {
     }
 }
 
-void fill_cgtos_tile(uint tile_number, float3 model_aabb_min, float3 model_aabb_max, uint tid) {
-    if (tid >= TILE_SIZE) return;
+// Two-phase CGTO/PGTO loader that utilises all WG_SIZE threads.
+//
+// Phase 1 (threads 0 .. TILE_SIZE-1):
+//   Read CGTO metadata, atomically reserve pgtos_tile slots, write
+//   cgtos_tile[] headers and gs_src_off_len[].
+//
+// [barrier]
+//
+// Phase 2 (all WG_SIZE threads):
+//   Cooperatively copy every PGTO belonging to this tile from the
+//   global buffers into pgtos_tile using a strided loop.
+//   Per-PGTO radius filtering is intentionally omitted here: the
+//   CGTO-level radius (cgto_xyzr.w = max PGTO radius) already screens
+//   out non-contributing CGTOs during Stage 1, so any PGTO whose
+//   parent CGTO survived screening is likely relevant. Tight PGTOs
+//   that still evaluate to near-zero contribute negligible error via
+//   exp(-alpha * r2) and avoiding the filtering removes a bottleneck.
+void fill_cgtos_tile(uint tile_number, uint tid) {
+    // --- Phase 1: metadata gather (TILE_SIZE threads) ---
+    if (tid < TILE_SIZE) {
+        uint slot = tile_number * TILE_SIZE + tid;
+        uint global_cgto_idx = (slot < num_screened_cgtos) ? screened_cgtos[slot] : INVALID_CGTO_IDX;
 
-    uint global_cgto_idx = screened_cgtos[tile_number * TILE_SIZE + tid];
+        float3 cgto_center = float3(0.0);
+        uint2 off_len = uint2(0, 0);
+        uint dst     = 0u;
 
-    float3 cgto_center = float3(0.0);
-    uint cgto_pgto_off = 0u;
-    uint cgto_pgto_len = 0u;
-
-    if (global_cgto_idx != INVALID_CGTO_IDX) {
-        uint src_beg = cgto_offset[global_cgto_idx];
-        uint src_end = cgto_offset[global_cgto_idx + 1u];
-        uint src_len = src_end - src_beg;
-
-        uint dst = 0;
-        InterlockedAdd(num_pgtos, src_len, dst);
-
-        cgto_center = cgto_xyzr[global_cgto_idx].xyz;
-        cgto_pgto_off = dst;
-
-        float3 model_xyz = mul(ubo.world_to_model, float4(cgto_center, 1.0)).xyz;
-        float3 d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
-        float d2 = dot(d, d);
-
-        for (uint k = 0; k < src_len; ++k) {
-            float r = pgto_radius[src_beg + k];
-            if (d2 < r * r) {
-                PGTO g;
-                g.coeff = pgto_coeff[src_beg + k];
-                g.alpha = pgto_alpha[src_beg + k];
-                g.ijkl  = pgto_ijkl[src_beg + k];
-                pgtos_tile[cgto_pgto_off + cgto_pgto_len] = g;
-                cgto_pgto_len++;
-            }
+        if (global_cgto_idx != INVALID_CGTO_IDX) {
+            off_len = cgto_off_len[global_cgto_idx];
+            cgto_center = cgto_xyzr[global_cgto_idx].xyz;
+            InterlockedAdd(num_pgtos, off_len.y, dst);
         }
+
+        gs_src_off_len[tid] = off_len;
+        cgtos_tile[tid].center = cgto_center;
+        cgtos_tile[tid].pgto_range = uint2(dst, dst + off_len.y);
     }
 
-    cgtos_tile[tid].coord    = cgto_center;
-    cgtos_tile[tid].pgto_off = cgto_pgto_off;
-    cgtos_tile[tid].pgto_len = cgto_pgto_len;
+    // Ensure gs_src_beg/gs_src_len and cgtos_tile headers are visible
+    // to all threads before phase 2.
+    GroupMemoryBarrierWithGroupSync();
+
+    // --- Phase 2: cooperative PGTO load (all WG_SIZE threads) ---
+    for (uint ci = 0; ci < TILE_SIZE; ci++) {
+        uint2 off_len = gs_src_off_len[ci];
+        uint src = off_len.x;
+        uint len = off_len.y;
+        uint dst = cgtos_tile[ci].pgto_range.x;
+        for (uint k = tid; k < len; k += WG_SIZE) {
+            PGTO g = pgto[src + k];
+            pgtos_tile[dst + k] = g;
+        }
+    }
 }
 
 void eval_phis(out float out_phi[TILE_SIZE], float3 coord) {
-    [unroll]
-    for (uint i = 0; i < TILE_SIZE; ++i) out_phi[i] = 0.0;
-
     for (uint i = 0; i < TILE_SIZE; ++i) {
-        uint pgto_off = cgtos_tile[i].pgto_off;
-        uint pgto_len = cgtos_tile[i].pgto_len;
+        uint2 pgto_range = cgtos_tile[i].pgto_range;
 
-        float3 center = cgtos_tile[i].coord;
+        float3 center = cgtos_tile[i].center;
         float3 d   = coord - center;
         float r2 = dot(d, d);
 
@@ -168,7 +171,7 @@ void eval_phis(out float out_phi[TILE_SIZE], float3 coord) {
         float dz2 = d.z * d.z;
 
         float phi = 0.0;
-        for (uint j = pgto_off; j < pgto_off + pgto_len; ++j) {
+        for (uint j = pgto_range.x; j < pgto_range.y; ++j) {
             PGTO pgto = pgtos_tile[j];
             uint4 ijkl = unpack_ijkl(pgto.ijkl);
 
@@ -256,13 +259,6 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
             }
         }
         GroupMemoryBarrierWithGroupSync();
-
-        for (uint i = tid; i < MAX_SCREENED_CGTOS; i += WG_SIZE) {
-            if (i >= num_screened_cgtos) {
-                screened_cgtos[i] = INVALID_CGTO_IDX;
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
     }
 
     uint3 vol_dim;
@@ -290,7 +286,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         GroupMemoryBarrierWithGroupSync();
 
         fill_D_tile(tile_i, tile_i, tid);
-        fill_cgtos_tile(tile_i, model_aabb_min, model_aabb_max, tid);
+        fill_cgtos_tile(tile_i, tid);
 
         GroupMemoryBarrierWithGroupSync();
 
@@ -306,7 +302,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
             GroupMemoryBarrierWithGroupSync();
 
             fill_D_tile(tile_i, tile_j, tid);
-            fill_cgtos_tile(tile_j, model_aabb_min, model_aabb_max, tid);
+            fill_cgtos_tile(tile_j, tid);
 
             GroupMemoryBarrierWithGroupSync();
 

@@ -1,4 +1,5 @@
 ﻿#include <md_gto.h>
+#include <md_util.h>
 
 #include <core/md_platform.h>
 
@@ -9,6 +10,14 @@
 
 #include <stdbool.h>
 #include <float.h>
+#include <math.h>
+
+typedef struct {
+    float coeff;
+    float alpha;
+    uint32_t ijkl;
+} PGTO;
+
 
 static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* grid) {
     // There is no scaling applied in this transformation, only rotation and translation
@@ -57,7 +66,7 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
 // ---------------------------------------------------------------------------
 // Spherical→Cartesian expansion tables
 // Converts md_gto_basis_t (radial shells, pure radial coefficients) into the
-// flat Cartesian SoA layout (md_gto_data_t / GPU buffer) used by evaluators.
+// Cartesian layout used by evaluators.
 // Coupling coefficients and Cartesian (l,m,n) tables ported from VeloxChem.
 // ---------------------------------------------------------------------------
 
@@ -178,12 +187,12 @@ static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
 
 // Expand md_gto_basis_t into the flat Cartesian SoA arrays expected by the GPU shader.
 // Spherical-to-Cartesian coupling factors (fcarts) are baked into pgto_coeff here.
-// pgto_radius is set to FLT_MAX (no pre-culling; the shader handles distance tests).
+// pgto_radius and cgto_xyzr.w are set from md_gto_compute_radius_of_influence(cutoff).
+// Pass cutoff <= 0.0 to disable culling (sets all radii to FLT_MAX).
 // All output arrays must be pre-allocated to num_cgtos / num_pgtos entries respectively.
 static void gto_expand_basis(
-    vec4_t* cgto_xyzr, uint32_t* cgto_offset,
-    float* pgto_alpha, float* pgto_coeff, float* pgto_radius, uint32_t* pgto_ijkl,
-    const md_gto_basis_t* basis, const float* atom_xyz)
+    vec4_t* out_cgto_xyzr, uint32_t* out_cgto_off_len, PGTO* out_pgto,
+    const md_gto_basis_t* basis, const float* atom_xyz, double cutoff)
 {
     uint32_t ci = 0, pi = 0;
     for (uint32_t si = 0; si < basis->num_shells; si++) {
@@ -209,24 +218,32 @@ static void gto_expand_basis(
                 lz[ic] = lmn[sidx[ic]][2];
             }
 
-            cgto_xyzr[ci]   = (vec4_t){ax, ay, az, FLT_MAX};
-            cgto_offset[ci] = pi;
-
+            uint32_t pi_beg = pi;
+            
+            double max_r = 0.0;
             for (int ip = 0; ip < nprims; ip++) {
                 float alpha = basis->alpha[prim_base + ip];
                 float coef1 = basis->coeff[prim_base + ip];
                 for (int ic = 0; ic < ncomp; ic++) {
-                    pgto_alpha[pi]  = alpha;
-                    pgto_coeff[pi]  = (float)(coef1 * fcarts[ic]);
-                    pgto_radius[pi] = FLT_MAX;
-                    pgto_ijkl[pi]   = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l);
-                    pi++;
+                    float coeff_val = (float)(coef1 * fcarts[ic]);
+                    double radius = md_gto_compute_radius_of_influence(lx[ic], ly[ic], lz[ic], (double)coeff_val, (double)alpha, cutoff);
+                    max_r = MAX(max_r, radius);
+
+                    PGTO pgto = {
+                        .coeff = coeff_val,
+                        .alpha = alpha,
+                        .ijkl = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l),
+                    };
+                    out_pgto[pi++] = pgto;
                 }
             }
+
+            out_cgto_xyzr[ci] = (vec4_t){ax, ay, az, max_r};
+            out_cgto_off_len[2 * ci + 0] = pi_beg;
+            out_cgto_off_len[2 * ci + 1] = pi - pi_beg;
             ci++;
         }
     }
-    cgto_offset[ci] = pi;  // sentinel
 }
 
 static size_t density_matrix_upper_tri_size(size_t n) {
@@ -241,6 +258,154 @@ static void density_matrix_upper_tri_extract_float(float* out, const double* dm,
             out[k++] = (float)dm[i * n + j];
         }
     }
+}
+
+// Extract the upper-triangular sub-block of a full N_full×N_full double density matrix
+// for a subset of row/column indices given by old_indices[0..num_kept-1].
+// D is symmetric so dm[gi * N_full + gj] is valid for any gi, gj pair.
+static void density_matrix_sub_block_upper_tri_float(float* out, const double* dm,
+    size_t N_full, const uint32_t* old_indices, uint32_t num_kept) {
+    size_t k = 0;
+    for (uint32_t i = 0; i < num_kept; i++) {
+        uint32_t gi = old_indices[i];
+        for (uint32_t j = i; j < num_kept; j++) {
+            uint32_t gj = old_indices[j];
+            out[k++] = (float)dm[(size_t)gi * N_full + gj];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sparse CGTO-pair evaluation: CPU-side pair list construction
+// ---------------------------------------------------------------------------
+//
+// The density can be written as:
+//   ρ(r) = Σ_{μ,ν} D_{μν} φ_μ(r) φ_ν(r)
+//        = Σ_{μ≤ν} D̃_{μν} φ_μ(r) φ_ν(r)    where D̃_{μν} = D_{μμ} (diagonal)
+//                                                             2·D_{μν} (off-diagonal)
+//
+// Rather than storing the full upper-triangular D matrix and iterating all
+// pairs per workgroup, we build a sparse pair list that:
+//   1. Morton-sorts CGTOs by center so spatially nearby CGTOs are contiguous.
+//   2. Groups them into fixed-size batches of GTO_SPARSE_BATCH_SIZE.
+//   3. Retains only pairs (μ,ν) within the same batch where:
+//        |D_{μν}| >= dm_threshold   AND   dist(R_μ,R_ν) < r_μ + r_ν
+//
+// The GPU evaluator holds GTO_SPARSE_BATCH_SIZE phi values in its register
+// file, evaluates only the CGTOs active for its 8×8×8 spatial region, and
+// plows through the pair list without touching shared memory for phi.
+//
+// Cross-batch pairs are dropped. For spatially-sorted, localised systems
+// these are exactly the long-range pairs with small |D_{μν}|, so the error
+// is bounded by dm_threshold. For fully delocalised systems (conjugated,
+// charge-transfer) this path degrades gracefully to a larger pair count.
+
+// Number of CGTOs per batch = number of φ registers per GPU thread.
+// Adjusting this trades register pressure against batch count.
+#define GTO_SPARSE_BATCH_SIZE 64
+
+// A single retained CGTO pair within a batch.
+// i, j are LOCAL indices within the batch (0..GTO_SPARSE_BATCH_SIZE-1), j >= i.
+// D is pre-doubled for off-diagonal pairs to account for both D_{μν} and D_{νμ}.
+typedef struct {
+    uint16_t i;
+    uint16_t j;
+    float    D;
+} gto_cgto_pair_t;
+
+// Descriptor for one batch of up to GTO_SPARSE_BATCH_SIZE CGTOs.
+typedef struct {
+    uint32_t cgto_start;   // First CGTO index in the Morton-sorted ordering
+    uint32_t cgto_count;   // Number of CGTOs in this batch (≤ GTO_SPARSE_BATCH_SIZE)
+    uint32_t pair_offset;  // Offset into the flat gto_cgto_pair_t array
+    uint32_t pair_count;   // Number of pairs in this batch
+    float    bbox_xyz[3];  // Bounding sphere center (centroid of member CGTO centers)
+    float    bbox_r;       // Bounding sphere radius enclosing all member CGTO spheres
+} gto_batch_t;
+
+typedef struct {
+    md_allocator_i* alloc;
+    size_t num_batches;
+    gto_batch_t* batches;          // [num_batches]
+    gto_cgto_pair_t* pairs;        // [Σ batch.pair_count] all pairs for all batches
+    size_t num_pairs;              // total number of pairs across all batches
+    uint32_t* cgto_order;          // [num_cgtos] Morton permutation: cgto_order[new_idx] = original_idx
+} gto_sparse_pair_list_t;
+
+// Build the sparse CGTO-pair batch list.
+//
+// cgto_xyzr    - expanded CGTO data in original order, xyzr = center xyz + cutoff radius
+// num_cgtos    - number of CGTOs
+// density_matrix - full N×N row-major double matrix (symmetric)
+// dm_threshold - pairs with |D_{μν}| < dm_threshold are dropped; pass 0.0 to keep all
+// cgto_order   - caller-allocated uint32_t[num_cgtos]; filled with Morton permutation
+//                cgto_order[new_idx] = original_idx
+//
+// out_batches and out_pairs point into temp memory allocated inside this function.
+// The caller must copy them (or use them) before calling md_temp_set_pos_back.
+//
+// Returns the number of batches.
+static void gto_build_sparse_pairs(
+    gto_sparse_pair_list_t* list,
+    const vec4_t*     cgto_xyzr,      // [num_cgtos] original order
+    size_t            num_cgtos,
+    const double*     density_matrix, // [num_cgtos × num_cgtos] row-major
+    double            dm_threshold)
+{
+    ASSERT(list);
+    ASSERT(list->alloc);
+    ASSERT(cgto_xyzr);
+    ASSERT(density_matrix);
+
+    if (num_cgtos == 0) {
+        return;
+    }
+
+    size_t num_batches = DIV_UP(num_cgtos, GTO_SPARSE_BATCH_SIZE);
+
+    // Reset data
+    //md_array_resize(list->cgto_order, num_cgtos, list->alloc);
+    //md_array_resize(list->batches, num_batches, list->alloc);
+    md_array_shrink(list->pairs, 0);
+    list->num_batches = 0;
+    list->num_pairs = 0;
+
+    // Step 1: Morton-sort CGTO centers.
+    // cgto_order[new_idx] = original_idx after the sort.
+    //md_util_sort_spatial_xyz(list->cgto_order, (const float*)cgto_xyzr, sizeof(vec4_t), num_cgtos);
+
+    //MEMSET(list->batches, 0, sizeof(gto_batch_t) * num_batches);
+
+    for (size_t i = 0; i < num_cgtos; i++) {
+        const float* vi = (const float*)&cgto_xyzr[i];
+        float ix = vi[0], iy = vi[1], iz = vi[2], ir = vi[3];
+
+        for (size_t j = i; j < num_cgtos; j++) {
+            const float* vj = (const float*)&cgto_xyzr[j];
+            float jx = vj[0], jy = vj[1], jz = vj[2], jr = vj[3];
+
+            // Sphere intersection: drop pairs whose CGTO support never overlaps.
+            float dx    = ix - jx, dy = iy - jy, dz = iz - jz;
+            float dist2 = dx*dx + dy*dy + dz*dz;
+            float rsum  = ir + jr;
+            if (dist2 > rsum * rsum) continue;
+
+            // Density matrix threshold.
+            // Use original row-major layout; matrix is symmetric so [i*N+j] == [j*N+i].
+            double dval = density_matrix[(size_t)i * num_cgtos + j];
+            if (dm_threshold > 0.0 && fabs(dval) < dm_threshold) continue;
+
+            gto_cgto_pair_t pair = {
+                .i = (uint16_t)i,
+                .j = (uint16_t)j,
+                // Off-diagonal pairs: pre-double to fold in the symmetric D_{νμ} term.
+                .D = (i == j) ? (float)dval : (float)(2.0 * dval),
+            };
+            md_array_push(list->pairs, pair, list->alloc);
+        }
+    }
+
+    list->num_pairs = md_array_size(list->pairs);
 }
 
 void md_gto_grid_evaluate_mo(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
@@ -498,7 +663,11 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* upper_triangular_matrix, size_t upper_triangular_len, bool include_gradients) {
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
+    uint32_t num_cgtos, const vec4_t* cgto_xyzr, const uint32_t* cgto_off_len,
+    uint32_t num_pgtos, const PGTO* pgto,
+    const float* upper_triangular_matrix, size_t upper_triangular_len,
+    bool include_gradients) {
     ASSERT(grid);
     ASSERT(gto_data);
     ASSERT(upper_triangular_matrix);
@@ -546,7 +715,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         goto done;
     }
 
-    size_t matrix_dim = gto_data->num_cgtos;
+    size_t matrix_dim = num_cgtos;
 
     typedef struct {
         mat4_t world_to_model;
@@ -563,24 +732,15 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
 
     GLintptr   ssbo_cgto_xyzr_base      = 0;
-    GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
+    GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * num_cgtos;
 
-    GLintptr   ssbo_cgto_offset_base    = ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
-    GLsizeiptr ssbo_cgto_offset_size    = sizeof(uint32_t) * (gto_data->num_cgtos + 1);
+    GLintptr   ssbo_cgto_off_len_base   = ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
+    GLsizeiptr ssbo_cgto_off_len_size   = sizeof(uint32_t) * num_cgtos * 2;
 
-    GLintptr   ssbo_pgto_coeff_base     = ALIGN_TO(ssbo_cgto_offset_base + ssbo_cgto_offset_size, 256);
-    GLsizeiptr ssbo_pgto_coeff_size     = sizeof(float) * (gto_data->num_pgtos);
+    GLintptr   ssbo_pgto_base           = ALIGN_TO(ssbo_cgto_off_len_base + ssbo_cgto_off_len_size, 256);
+    GLsizeiptr ssbo_pgto_size           = sizeof(PGTO) * num_pgtos;
 
-    GLintptr   ssbo_pgto_alpha_base     = ALIGN_TO(ssbo_pgto_coeff_base + ssbo_pgto_coeff_size, 256);
-    GLsizeiptr ssbo_pgto_alpha_size     = sizeof(float) * (gto_data->num_pgtos); 
-
-    GLintptr   ssbo_pgto_radius_base    = ALIGN_TO(ssbo_pgto_alpha_base + ssbo_pgto_alpha_size, 256);
-    GLsizeiptr ssbo_pgto_radius_size    = sizeof(float) * (gto_data->num_pgtos); 
-
-    GLintptr   ssbo_pgto_ijkl_base      = ALIGN_TO(ssbo_pgto_radius_base + ssbo_pgto_radius_size, 256);
-    GLsizeiptr ssbo_pgto_ijkl_size      = sizeof(uint32_t) * (gto_data->num_pgtos);
-
-    GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_ijkl_base + ssbo_pgto_ijkl_size, 256);
+    GLintptr   ssbo_matrix_base         = ALIGN_TO(ssbo_pgto_base + ssbo_pgto_size, 256);
     GLsizeiptr ssbo_matrix_size         = sizeof(float) * upper_triangular_len;
 
     GLintptr   ubo_base                 = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
@@ -590,21 +750,15 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
     GLuint buf = get_buffer(total_size);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_xyzr_base,      ssbo_cgto_xyzr_size,    gto_data->cgto_xyzr);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_offset_base,    ssbo_cgto_offset_size,  gto_data->cgto_offset);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_coeff_base,     ssbo_pgto_coeff_size,   gto_data->pgto_coeff);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_alpha_base,     ssbo_pgto_alpha_size,   gto_data->pgto_alpha);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_radius_base,    ssbo_pgto_radius_size,  gto_data->pgto_radius);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_ijkl_base,      ssbo_pgto_ijkl_size,    gto_data->pgto_ijkl);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       upper_triangular_matrix);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_xyzr_base,    ssbo_cgto_xyzr_size,    cgto_xyzr);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_off_len_base, ssbo_cgto_off_len_size, cgto_off_len);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_base,         ssbo_pgto_size,         pgto);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,       ssbo_matrix_size,       upper_triangular_matrix);
 
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buf, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buf, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, buf, ssbo_pgto_coeff_base,      ssbo_pgto_coeff_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, buf, ssbo_pgto_alpha_base,      ssbo_pgto_alpha_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 4, buf, ssbo_pgto_radius_base,     ssbo_pgto_radius_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 5, buf, ssbo_pgto_ijkl_base,       ssbo_pgto_ijkl_size);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 6, buf, ssbo_matrix_base,          ssbo_matrix_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buf, ssbo_cgto_xyzr_base,    ssbo_cgto_xyzr_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buf, ssbo_cgto_off_len_base, ssbo_cgto_off_len_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, buf, ssbo_pgto_base,         ssbo_pgto_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, buf, ssbo_matrix_base,       ssbo_matrix_size);
 
     glBindBuffer(GL_UNIFORM_BUFFER, buf);
     glBufferSubData(GL_UNIFORM_BUFFER, ubo_base, ubo_size, &ub_data);
@@ -738,30 +892,16 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
 
     size_t temp_pos = md_temp_get_pos();
-    vec4_t*   cgto_xyzr   = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
-    uint32_t* cgto_offset = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_cgtos + 1));
-    float*    pgto_alpha  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    float*    pgto_coeff  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    float*    pgto_radius = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    uint32_t* pgto_ijkl   = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_pgtos);
-    size_t    tri_len     = density_matrix_upper_tri_size(num_cgtos);
-    float*    upper_tri   = (float*)   md_temp_push(sizeof(float)    * tri_len);
+    vec4_t*   cgto_xyzr    = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_cgtos * 2);
+    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)     * num_pgtos);
+    size_t    tri_len      = density_matrix_upper_tri_size(num_cgtos);
+    float*    upper_tri    = (float*)   md_temp_push(sizeof(float)    * tri_len);
 
-    gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
+    gto_expand_basis(cgto_xyzr, cgto_off_len, pgto, basis, atom_xyz, 1.0e-6);
     density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
 
-    md_gto_data_t gto_data = {
-        .num_cgtos   = num_cgtos,
-        .cgto_xyzr   = cgto_xyzr,
-        .cgto_offset = cgto_offset,
-        .num_pgtos   = num_pgtos,
-        .pgto_alpha  = pgto_alpha,
-        .pgto_coeff  = pgto_coeff,
-        .pgto_radius = pgto_radius,
-        .pgto_ijkl   = pgto_ijkl,
-    };
-
-    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, &gto_data, upper_tri, tri_len, include_gradients);
+    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, num_cgtos, cgto_xyzr, cgto_off_len, num_pgtos, pgto, upper_tri, tri_len, include_gradients);
 
     md_temp_set_pos_back(temp_pos);
 }
@@ -806,7 +946,8 @@ static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t dev
     }
     if (!gto_pip_density) {
         md_gpu_compute_pipeline_desc_t desc = {
-            .shader = { .data = gto_eval_gto_density_start, .size = gto_eval_gto_density_size() },
+            .shader_bytes     = gto_eval_gto_density_start,
+            .shader_byte_size = gto_eval_gto_density_size(),
             .threadgroup_size = { 8, 8, 8 },
         };
         gto_pip_density = md_gpu_create_compute_pipeline(device, &desc);
@@ -820,40 +961,30 @@ static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t dev
 // Sub-region layout for the packed GPU buffer.
 // All offsets are 256-byte aligned to satisfy both Vulkan and Metal constraints.
 typedef struct {
-    size_t off_cgto_xyzr;   size_t sz_cgto_xyzr;
-    size_t off_cgto_offset; size_t sz_cgto_offset;
-    size_t off_pgto_coeff;  size_t sz_pgto_coeff;
-    size_t off_pgto_alpha;  size_t sz_pgto_alpha;
-    size_t off_pgto_radius; size_t sz_pgto_radius;
-    size_t off_pgto_ijkl;   size_t sz_pgto_ijkl;
-    size_t off_matrix;      size_t sz_matrix;
+    size_t off_cgto_xyzr;    size_t sz_cgto_xyzr;
+    size_t off_cgto_off_len; size_t sz_cgto_off_len;
+    size_t off_pgto;         size_t sz_pgto;
+    size_t off_matrix;       size_t sz_matrix;
     size_t total_size;
 } gto_buf_layout_t;
 
-static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint32_t num_pgtos, uint32_t matrix_dim) {
+static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint32_t num_pgtos) {
     gto_buf_layout_t L;
+
+    size_t matrix_dim = num_cgtos;
     size_t matrix_data_len = ((size_t)matrix_dim * (matrix_dim + 1)) / 2;
 
     L.off_cgto_xyzr   = 0;
-    L.sz_cgto_xyzr    = sizeof(float)    * 4 * num_cgtos;
+    L.sz_cgto_xyzr    = sizeof(float) * 4 * num_cgtos;
 
-    L.off_cgto_offset = ALIGN_TO(L.off_cgto_xyzr   + L.sz_cgto_xyzr,   256);
-    L.sz_cgto_offset  = sizeof(uint32_t) * (num_cgtos + 1);
+    L.off_cgto_off_len = ALIGN_TO(L.off_cgto_xyzr + L.sz_cgto_xyzr,   256);
+    L.sz_cgto_off_len  = sizeof(uint32_t) * (num_cgtos * 2);
 
-    L.off_pgto_coeff  = ALIGN_TO(L.off_cgto_offset  + L.sz_cgto_offset,  256);
-    L.sz_pgto_coeff   = sizeof(float)    * num_pgtos;
+    L.off_pgto        = ALIGN_TO(L.off_cgto_off_len + L.sz_cgto_off_len,  256);
+    L.sz_pgto         = sizeof(PGTO) * num_pgtos;
 
-    L.off_pgto_alpha  = ALIGN_TO(L.off_pgto_coeff   + L.sz_pgto_coeff,   256);
-    L.sz_pgto_alpha   = sizeof(float)    * num_pgtos;
-
-    L.off_pgto_radius = ALIGN_TO(L.off_pgto_alpha   + L.sz_pgto_alpha,   256);
-    L.sz_pgto_radius  = sizeof(float)    * num_pgtos;
-
-    L.off_pgto_ijkl   = ALIGN_TO(L.off_pgto_radius  + L.sz_pgto_radius,  256);
-    L.sz_pgto_ijkl    = sizeof(uint32_t) * num_pgtos;
-
-    L.off_matrix      = ALIGN_TO(L.off_pgto_ijkl    + L.sz_pgto_ijkl,    256);
-    L.sz_matrix       = sizeof(float)    * matrix_data_len;
+    L.off_matrix      = ALIGN_TO(L.off_pgto + L.sz_pgto,    256);
+    L.sz_matrix       = sizeof(float) * matrix_data_len;
 
     L.total_size      = ALIGN_TO(L.off_matrix + L.sz_matrix, 256);
     return L;
@@ -861,53 +992,55 @@ static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint3
 
 bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device,
     const md_gto_basis_t* basis, const float* atom_xyz,
-    const double* density_matrix) {
+    const double* density_matrix, double cutoff, double dm_threshold)
+{
     ASSERT(buf);
     ASSERT(device);
     ASSERT(basis);
     ASSERT(atom_xyz);
     ASSERT(density_matrix);
 
+    (void)dm_threshold; // Currently unused, but may be used in the future to cull small density matrix elements and further reduce the number of CGTOs.
+
     uint32_t num_cgtos = 0, num_pgtos = 0;
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
 
+    // All work is done in temp memory; the GPU buffer is allocated after
+    // compaction so its size reflects the final (possibly reduced) counts.
+    size_t temp_pos = md_temp_get_pos();
+
+    vec4_t*   cgto_xyzr    = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_cgtos * 2);
+    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)     * num_pgtos);
+
+    gto_expand_basis(cgto_xyzr, cgto_off_len, pgto, basis, atom_xyz, cutoff);
+
+    // Extract density matrix for the (possibly reduced) CGTO set.
+    size_t tri_len = density_matrix_upper_tri_size(num_cgtos);
+    float* matrix  = (float*)md_temp_push(sizeof(float) * tri_len);
+    density_matrix_upper_tri_extract_float(matrix, density_matrix, num_cgtos);
+
+    // --- Allocate right-sized GPU buffer and upload ---
     MEMSET(buf, 0, sizeof(*buf));
     buf->num_cgtos  = num_cgtos;
     buf->num_pgtos  = num_pgtos;
-    buf->matrix_dim = num_cgtos;
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(num_cgtos, num_pgtos, num_cgtos);
-
+    gto_buf_layout_t L = gto_density_buf_compute_layout(num_cgtos, num_pgtos);
     buf->buffer = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){
         .size  = L.total_size,
         .flags = MD_GPU_BUFFER_CPU_VISIBLE,
     });
     if (!buf->buffer) {
         MD_LOG_ERROR("md_gto_density_buf_create: failed to allocate GPU buffer (%zu bytes)", L.total_size);
+        md_temp_set_pos_back(temp_pos);
         return false;
     }
 
-    size_t temp_pos = md_temp_get_pos();
-    size_t tri_len  = density_matrix_upper_tri_size(num_cgtos);
-    vec4_t*   cgto_xyzr   = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
-    uint32_t* cgto_offset = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_cgtos + 1));
-    float*    pgto_alpha  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    float*    pgto_coeff  = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    float*    pgto_radius = (float*)   md_temp_push(sizeof(float)    * num_pgtos);
-    uint32_t* pgto_ijkl   = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_pgtos);
-    float*    matrix      = (float*)   md_temp_push(sizeof(float)    * tri_len);
-
-    gto_expand_basis(cgto_xyzr, cgto_offset, pgto_alpha, pgto_coeff, pgto_radius, pgto_ijkl, basis, atom_xyz);
-    density_matrix_upper_tri_extract_float(matrix, density_matrix, num_cgtos);
-
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
-    MEMCPY(ptr + L.off_cgto_xyzr,   cgto_xyzr,   L.sz_cgto_xyzr);
-    MEMCPY(ptr + L.off_cgto_offset, cgto_offset,  L.sz_cgto_offset);
-    MEMCPY(ptr + L.off_pgto_coeff,  pgto_coeff,   L.sz_pgto_coeff);
-    MEMCPY(ptr + L.off_pgto_alpha,  pgto_alpha,   L.sz_pgto_alpha);
-    MEMCPY(ptr + L.off_pgto_radius, pgto_radius,  L.sz_pgto_radius);
-    MEMCPY(ptr + L.off_pgto_ijkl,   pgto_ijkl,    L.sz_pgto_ijkl);
-    MEMCPY(ptr + L.off_matrix,      matrix,        L.sz_matrix);
+    MEMCPY(ptr + L.off_cgto_xyzr,    cgto_xyzr,    L.sz_cgto_xyzr);
+    MEMCPY(ptr + L.off_cgto_off_len, cgto_off_len, L.sz_cgto_off_len);
+    MEMCPY(ptr + L.off_pgto,         pgto,         L.sz_pgto);
+    MEMCPY(ptr + L.off_matrix,       matrix,       L.sz_matrix);
     md_gpu_unmap_buffer(buf->buffer);
 
     md_temp_set_pos_back(temp_pos);
@@ -935,7 +1068,7 @@ void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
         }
     }
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
     MEMCPY(ptr + L.off_cgto_xyzr, cgto_xyzr, L.sz_cgto_xyzr);
     md_gpu_unmap_buffer(buf->buffer);
@@ -949,12 +1082,12 @@ void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
     ASSERT(buf->buffer);
     ASSERT(density_matrix);
 
-    size_t tri_len  = density_matrix_upper_tri_size(buf->matrix_dim);
+    size_t tri_len  = density_matrix_upper_tri_size(buf->num_cgtos);
     size_t temp_pos = md_temp_get_pos();
     float* matrix   = (float*)md_temp_push(sizeof(float) * tri_len);
-    density_matrix_upper_tri_extract_float(matrix, density_matrix, buf->matrix_dim);
+    density_matrix_upper_tri_extract_float(matrix, density_matrix, buf->num_cgtos);
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
     uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
     MEMCPY(ptr + L.off_matrix, matrix, L.sz_matrix);
     md_gpu_unmap_buffer(buf->buffer);
@@ -970,8 +1103,8 @@ void md_gto_density_buf_destroy(md_gto_density_buf_t* buf) {
     MEMSET(buf, 0, sizeof(*buf));
 }
 
-bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf, md_gpu_image_t out_image, const md_grid_t* grid, md_gpu_fence_t* out_fence) {
-    if (!device || !buf || !buf->buffer || !out_image || !grid || !out_fence) {
+bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf, md_gpu_image_t image, const md_grid_t* grid, md_gpu_fence_t* out_fence) {
+    if (!device || !buf || !buf->buffer || !image || !grid || !out_fence) {
         MD_LOG_ERROR("md_gto_grid_evaluate_density_gpu: invalid input");
         return false;
     }
@@ -987,7 +1120,7 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
         uint32_t _pad[3];
     } ubo_t;
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos, buf->matrix_dim);
+    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
 
     ubo_t ubo = {0};
     world_to_model_matrix(ubo.world_to_model, grid);
@@ -996,22 +1129,25 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
     ubo.step[1]      = grid->spacing.elem[1];
     ubo.step[2]      = grid->spacing.elem[2];
     ubo.step[3]      = 0.0f;
-    ubo.D_matrix_dim = buf->matrix_dim;
+    ubo.D_matrix_dim = buf->num_cgtos;
 
     md_gpu_queue_t          queue = md_gpu_acquire_compute_queue(device);
-    md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(device);
+    md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(queue);
+    
+    uint32_t wg_size[3] = {
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
+    };
 
     md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
-    md_gpu_cmd_bind_buffer_range(cmd, 0, buf->buffer, L.off_cgto_xyzr,   L.sz_cgto_xyzr);
-    md_gpu_cmd_bind_buffer_range(cmd, 1, buf->buffer, L.off_cgto_offset,  L.sz_cgto_offset);
-    md_gpu_cmd_bind_buffer_range(cmd, 2, buf->buffer, L.off_pgto_coeff,   L.sz_pgto_coeff);
-    md_gpu_cmd_bind_buffer_range(cmd, 3, buf->buffer, L.off_pgto_alpha,   L.sz_pgto_alpha);
-    md_gpu_cmd_bind_buffer_range(cmd, 4, buf->buffer, L.off_pgto_radius,  L.sz_pgto_radius);
-    md_gpu_cmd_bind_buffer_range(cmd, 5, buf->buffer, L.off_pgto_ijkl,    L.sz_pgto_ijkl);
-    md_gpu_cmd_bind_buffer_range(cmd, 6, buf->buffer, L.off_matrix,       L.sz_matrix);
-    md_gpu_cmd_bind_image(cmd, 0, out_image);
-    md_gpu_cmd_dispatch(cmd, grid->dim[0], grid->dim[1], grid->dim[2]);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, buf->buffer, L.off_cgto_xyzr,    L.sz_cgto_xyzr);
+    md_gpu_cmd_bind_buffer_range(cmd, 1, buf->buffer, L.off_cgto_off_len, L.sz_cgto_off_len);
+    md_gpu_cmd_bind_buffer_range(cmd, 2, buf->buffer, L.off_pgto,         L.sz_pgto);
+    md_gpu_cmd_bind_buffer_range(cmd, 3, buf->buffer, L.off_matrix,       L.sz_matrix);
+    md_gpu_cmd_bind_image(cmd, 0, image);
+    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
 
     *out_fence = md_gpu_queue_submit(queue, cmd);
     return true;
@@ -1182,165 +1318,6 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
         }
     }
 }
-
-#if 0
-// These are old code-paths that were vectorized over the PGTOs
-// It is not ideal as the occupation of vector registers is quite poor due to the large variation
-// Of how many PGTOs that influence a spatial region
-
-#ifdef __AVX512F__
-static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
-    for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-        float z = grid_origin[2] + iz * grid_stepsize[2];
-        __m512 vz = _mm512_set1_ps(z);
-        int z_stride = iz * grid_dim[0] * grid_dim[1];
-        for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-            float y = grid_origin[1] + iy * grid_stepsize[1];
-            __m512 vy = _mm512_set1_ps(y);
-            int y_stride = iy * grid_dim[0];
-            for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
-                float x = grid_origin[0] + ix * grid_stepsize[0];
-                __m512 vx = _mm512_set1_ps(x);
-                int x_stride = ix;
-
-                __m512 vpsi = _mm512_setzero_ps();
-                for (size_t i = 0; i < gto->count; i += 16) {
-                    __m512  px = _mm512_loadu_ps(gto->x + i);
-                    __m512  py = _mm512_loadu_ps(gto->y + i);
-                    __m512  pz = _mm512_loadu_ps(gto->z + i);
-                    __m512  pa = _mm512_loadu_ps(gto->neg_alpha + i);
-                    __m512  pc = _mm512_loadu_ps(gto->coeff + i);
-                    __m512i pi = _mm512_loadu_si512(gto->i + i);
-                    __m512i pj = _mm512_loadu_si512(gto->j + i);
-                    __m512i pk = _mm512_loadu_si512(gto->k + i);
-
-                    __m512 dx = _mm512_sub_ps(vx, px);
-                    __m512 dy = _mm512_sub_ps(vy, py);
-                    __m512 dz = _mm512_sub_ps(vz, pz);
-                    __m512 d2 = _mm512_fmadd_ps(dx, dx, _mm512_fmadd_ps(dy, dy, _mm512_mul_ps(dz, dz)));
-                    __m512 fx = md_mm512_fast_pow(dx, pi);
-                    __m512 fy = md_mm512_fast_pow(dy, pj);
-                    __m512 fz = md_mm512_fast_pow(dz, pk);
-                    __m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
-
-                    __m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
-
-                    if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                        prod = _mm512_mul_ps(prod, prod);
-                    }
-
-                    vpsi = _mm512_add_ps(vpsi, prod);
-                }
-
-                float psi = _mm512_reduce_add_ps(vpsi);
-                int index = x_stride + y_stride + z_stride;
-                grid_data[index] = psi;
-            }
-        }
-    }
-}
-#endif
-
-static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
-    for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-        float z = grid_origin[2] + iz * grid_stepsize[2];
-        md_256 vz = md_mm256_set1_ps(z);
-        int z_stride = iz * grid_dim[0] * grid_dim[1];
-        for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-            float y = grid_origin[1] + iy * grid_stepsize[1];
-            md_256 vy = md_mm256_set1_ps(y);
-            int y_stride = iy * grid_dim[0];
-            for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
-                float x = grid_origin[0] + ix * grid_stepsize[0];
-                md_256 vx = md_mm256_set1_ps(x);
-                int x_stride = ix;
-
-                md_256 vpsi = md_mm256_setzero_ps();
-                for (size_t i = 0; i < gto->count; i += 8) {
-                    md_256  px = md_mm256_loadu_ps(gto->x + i);
-                    md_256  py = md_mm256_loadu_ps(gto->y + i);
-                    md_256  pz = md_mm256_loadu_ps(gto->z + i);
-                    md_256  pa = md_mm256_loadu_ps(gto->neg_alpha + i);
-                    md_256  pc = md_mm256_loadu_ps(gto->coeff + i);
-                    md_256i pi = md_mm256_loadu_si256((const md_256i*)(gto->i + i));
-                    md_256i pj = md_mm256_loadu_si256((const md_256i*)(gto->j + i));
-                    md_256i pk = md_mm256_loadu_si256((const md_256i*)(gto->k + i));
-
-                    md_256 dx = md_mm256_sub_ps(vx, px);
-                    md_256 dy = md_mm256_sub_ps(vy, py);
-                    md_256 dz = md_mm256_sub_ps(vz, pz);
-                    md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
-                    md_256 fx = md_mm256_fast_pow(dx, pi);
-                    md_256 fy = md_mm256_fast_pow(dy, pj);
-                    md_256 fz = md_mm256_fast_pow(dz, pk);
-                    md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
-
-                    md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
-                    if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                        prod = _mm256_mul_ps(prod, prod);
-                    }
-
-                    vpsi = md_mm256_add_ps(vpsi, prod);
-                }
-
-                float psi = md_mm256_reduce_add_ps(vpsi);
-                int index = x_stride + y_stride + z_stride;
-                grid_data[index] = psi;
-            }
-        }
-    }
-}
-
-static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
-    for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-        float z = grid_origin[2] + iz * grid_stepsize[2];
-        md_128 vz = md_mm_set1_ps(z);
-        int z_stride = iz * grid_dim[0] * grid_dim[1];
-        for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-            float y = grid_origin[1] + iy * grid_stepsize[1];
-            md_128 vy = md_mm_set1_ps(y);
-            int y_stride = iy * grid_dim[0];
-            for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
-                float x = grid_origin[0] + ix * grid_stepsize[0];
-                md_128 vx = md_mm_set1_ps(x);
-                int x_stride = ix;
-
-                md_128 vpsi = md_mm_setzero_ps();
-                for (size_t i = 0; i < gto->count; i += 4) {
-                    md_128  px = md_mm_loadu_ps(gto->x + i);
-                    md_128  py = md_mm_loadu_ps(gto->y + i);
-                    md_128  pz = md_mm_loadu_ps(gto->z + i);
-                    md_128  pa = md_mm_loadu_ps(gto->neg_alpha + i);
-                    md_128  pc = md_mm_loadu_ps(gto->coeff + i);
-                    md_128i pi = md_mm_loadu_si128((const md_128i*)(gto->i + i));
-                    md_128i pj = md_mm_loadu_si128((const md_128i*)(gto->j + i));
-                    md_128i pk = md_mm_loadu_si128((const md_128i*)(gto->k + i));
-
-                    md_128 dx = md_mm_sub_ps(vx, px);
-                    md_128 dy = md_mm_sub_ps(vy, py);
-                    md_128 dz = md_mm_sub_ps(vz, pz);
-                    md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
-                    md_128 fx = md_mm_fast_pow(dx, pi);
-                    md_128 fy = md_mm_fast_pow(dy, pj);
-                    md_128 fz = md_mm_fast_pow(dz, pk);
-                    md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
-
-                    md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
-                    if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                        prod = _mm_mul_ps(prod, prod);
-                    }
-
-                    vpsi = md_mm_add_ps(vpsi, prod);
-                }
-
-                float psi = md_mm_reduce_add_ps(vpsi);
-                int index = x_stride + y_stride + z_stride;
-                grid_data[index] = psi;
-            }
-        }
-    }
-}
-#endif
 
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
 

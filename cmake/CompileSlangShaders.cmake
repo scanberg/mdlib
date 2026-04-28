@@ -46,17 +46,34 @@ function(compile_slang_shaders OUT_FILE)
             set(BIN_FILE "${SPV_FILE}")
 
         elseif (MD_GPU_BACKEND STREQUAL "METAL")
+            set(MSL_FILE "${GEN_DIR}/${NAME}.metal")
             set(LIB_FILE "${GEN_DIR}/${NAME}.metallib")
             message(STATUS "Compiling Slang shader ${ABS_SRC} -> ${LIB_FILE}")
 
+            # Step 1: slangc -> MSL source
             add_custom_command(
-                OUTPUT ${LIB_FILE}
+                OUTPUT ${MSL_FILE}
                 COMMAND ${SLANGC_EXECUTABLE}
                     ${ABS_SRC}
-                    -target metallib
-                    -o ${LIB_FILE}
+                    -target metal
+                    -o ${MSL_FILE}
                 DEPENDS ${ABS_SRC}
-                COMMENT "slangc: ${NAME}.slang -> ${NAME}.metallib"
+                COMMENT "slangc: ${NAME}.slang -> ${NAME}.metal"
+            )
+
+            # Step 2: xcrun metal -> metallib, with explicit deployment target so
+            # the metallib doesn't claim a higher OS version than CMAKE_OSX_DEPLOYMENT_TARGET.
+            find_program(XCRUN_EXECUTABLE xcrun REQUIRED)
+            set(_METAL_FLAGS "")
+            if (CMAKE_OSX_DEPLOYMENT_TARGET)
+                list(APPEND _METAL_FLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+            endif()
+
+            add_custom_command(
+                OUTPUT ${LIB_FILE}
+                COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal ${_METAL_FLAGS} ${MSL_FILE} -o ${LIB_FILE}
+                DEPENDS ${MSL_FILE}
+                COMMENT "metal: ${NAME}.metal -> ${NAME}.metallib"
             )
 
             set(BIN_FILE "${LIB_FILE}")

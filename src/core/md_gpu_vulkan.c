@@ -26,13 +26,17 @@
 // which is the max number of recorded commands per command buffer)
 #define MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE 64
 
+typedef struct md_gpu_queue {
+    struct md_gpu_device* dev;
+    VkQueue vk_queue;
+} md_gpu_queue;
+
 typedef struct md_gpu_device {
     VkInstance instance;
     VkPhysicalDevice physical_device;
     VkDevice device;
 
     uint32_t compute_queue_family;
-    VkQueue compute_queue;
 
     VkCommandPool command_pool;
     VkDescriptorPool descriptor_pool;
@@ -43,11 +47,10 @@ typedef struct md_gpu_device {
     VkCommandBuffer command_buffers[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint32_t command_buffer_free_list[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint32_t command_buffer_free_count;
-} md_gpu_device;
 
-typedef struct md_gpu_queue {
-    md_gpu_device_t device;
-} md_gpu_queue;
+    // Embedded compute queue (returned by md_gpu_acquire_compute_queue)
+    struct md_gpu_queue compute_queue;
+} md_gpu_device;
 
 typedef struct md_gpu_buffer {
     md_gpu_device_t device;
@@ -93,7 +96,7 @@ typedef struct md_gpu_command_buffer {
 } md_gpu_command_buffer;
 
 typedef struct md_gpu_fence {
-    md_gpu_device_t device;
+    struct md_gpu_queue* queue;
     VkFence vk_fence;
     uint32_t cmd_buffer_index;
     VkDescriptorSet descriptor_set;
@@ -304,8 +307,9 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     if (!md_vk_check(vkCreateDevice(out_dev->physical_device, &dci, NULL, &out_dev->device), "vkCreateDevice")) return false;
 
-    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &out_dev->compute_queue);
-    if (out_dev->compute_queue == VK_NULL_HANDLE) return false;
+    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &out_dev->compute_queue.vk_queue);
+    out_dev->compute_queue.dev = out_dev;
+    if (out_dev->compute_queue.vk_queue == VK_NULL_HANDLE) return false;
 
     // Create command pool
     VkCommandPoolCreateInfo pool_ci = {0};
@@ -425,10 +429,8 @@ void md_gpu_destroy_device(md_gpu_device_t device) {
 
 md_gpu_queue_t md_gpu_acquire_compute_queue(md_gpu_device_t device) {
     if (!device) return NULL;
-    md_gpu_queue* q = (md_gpu_queue*)calloc(1, sizeof(md_gpu_queue));
-    if (!q) return NULL;
-    q->device = device;
-    return (md_gpu_queue_t)q;
+    md_gpu_device* dev = (md_gpu_device*)device;
+    return (md_gpu_queue_t)&dev->compute_queue;
 }
 
 md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device, const md_gpu_buffer_desc_t* desc) {
@@ -745,10 +747,11 @@ void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
     free(p);
 }
 
-md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
-    if (!device) return NULL;
-    md_gpu_device* dev = (md_gpu_device*)device;
-    
+md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_queue_t queue) {
+    if (!queue) return NULL;
+    md_gpu_queue* q = (md_gpu_queue*)queue;
+    md_gpu_device* dev = (md_gpu_device*)q->dev;
+
     if (dev->command_buffer_free_count == 0) {
         MD_LOG_ERROR("md_gpu_acquire_command_buffer: no free command buffers");
         return NULL;
@@ -762,7 +765,7 @@ md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_device_t device) {
         return NULL;
     }
 
-    cmd->device = device;
+    cmd->device = (md_gpu_device_t)dev;
     cmd->vk_cmd = dev->command_buffers[idx];
     cmd->index = idx;
 
@@ -1108,7 +1111,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
     if (!queue || !cmd) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_device* dev = (md_gpu_device*)q->device;
+    md_gpu_device* dev = (md_gpu_device*)q->dev;
 
     // End command buffer
     if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer")) {
@@ -1118,7 +1121,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
     // Create fence
     md_gpu_fence* fence = (md_gpu_fence*)calloc(1, sizeof(md_gpu_fence));
     if (!fence) return NULL;
-    fence->device = q->device;
+    fence->queue = q;
 
     VkFenceCreateInfo fence_ci = {0};
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1137,7 +1140,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cmd_info;
 
-    if (!md_vk_check(vkQueueSubmit2(dev->compute_queue, 1, &submit, fence->vk_fence), "vkQueueSubmit2")) {
+    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, fence->vk_fence), "vkQueueSubmit2")) {
         vkDestroyFence(dev->device, fence->vk_fence, NULL);
         free(fence);
         return NULL;
@@ -1154,7 +1157,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
     if (!fence) return true;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    md_gpu_device* dev = (md_gpu_device*)f->device;
+    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
     VkResult res = vkGetFenceStatus(dev->device, f->vk_fence);
     return (res == VK_SUCCESS);
 }
@@ -1162,18 +1165,18 @@ bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
 void md_gpu_fence_wait(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    md_gpu_device* dev = (md_gpu_device*)f->device;
+    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
     vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
 }
 
 void md_gpu_destroy_fence(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    md_gpu_device* dev = (md_gpu_device*)f->device;
-    if (!dev) {
+    if (!f->queue || !f->queue->dev) {
         free(f);
         return;
     }
+    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
     if (f->vk_fence) {
         // Wait for GPU to finish using the command buffer before recycling resources
         vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
