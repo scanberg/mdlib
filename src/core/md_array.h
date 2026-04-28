@@ -41,6 +41,8 @@ typedef struct md_array_header_t {
 #define md_array_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), alloc, __FILE__, __LINE__))
 #define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), (n)) ? md_array_set_capacity((a), (n), alloc) : 0), (a) ? md_array_header(a)->size = (n) : 0)
 #define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), (n)) ? md_array_grow((a), (n), alloc) : 0)
+#define md_array_extend(a, n, alloc)    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), md_array_header(a)->size += (n), &((a)[md_array_header(a)->size - (n)])) : 0)
+
 #if MD_COMPILER_MSVC
 // Suppress incorrect warnings for macros in MSVC
 #define md_array_push(a, item, alloc) \
