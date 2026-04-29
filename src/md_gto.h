@@ -181,48 +181,42 @@ static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, i
 void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 #if MD_ENABLE_GPU
-// GPU-resident buffer holding all input data for density evaluation.
-// Created once from a basis + initial positions + initial density matrix.
-// Static basis data (shell topology, primitives) is uploaded at creation and
-// never needs to change.  Positions and the density matrix can be updated
-// independently and cheaply via the update functions.
-// The caller must have waited on (or destroyed) the previous dispatch fence
-// before calling any update or destroy function.
-typedef struct md_gto_density_buf_t {
-    md_gpu_buffer_t buffer;  // single backing GPU buffer
+// Sub-region layout for the packed GPU density buffer.
+// All offsets are 256-byte aligned to satisfy both Vulkan and Metal constraints.
+// Compute via md_gto_density_buf_compute_layout(); use total_size to allocate
+// an md_gpu_buffer_t, then fill it with md_gto_density_buf_fill().
+// The caller owns the buffer lifetime entirely.
+typedef struct md_gto_density_buf_layout_t {
+    size_t   off_cgto_xyzr;    size_t sz_cgto_xyzr;    // vec4 (x,y,z,r) per CGTO
+    size_t   off_cgto_off_len; size_t sz_cgto_off_len;  // uint32 pair (offset,len) per CGTO into pgtos
+    size_t   off_pgto;         size_t sz_pgto;           // packed primitive GTO records
+    size_t   off_matrix;       size_t sz_matrix;         // upper-triangular density matrix (float)
+    size_t   total_size;
     uint32_t num_cgtos;
     uint32_t num_pgtos;
-} md_gto_density_buf_t;
+} md_gto_density_buf_layout_t;
 
-// Allocate and populate a GPU buffer from a basis, atom positions and density matrix.
-// density_matrix: full N×N row-major doubles; converted to upper-triangular floats internally.
-// cutoff:       spatial radius threshold for md_gto_compute_radius_of_influence (e.g. 1e-6).
-//               Pass 0.0 to disable spatial culling.
-// dm_threshold: density-matrix row screening threshold. CGTOs where max_nu |D[mu,nu]| < dm_threshold
-//               are removed entirely from the GPU buffer, shrinking the problem size.
-//               Pass 0.0 to disable DM compaction.
-bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device,
+// Compute the buffer layout from the basis, positions and density matrix.
+// Applies cutoff filtering so num_cgtos/num_pgtos in the layout may be smaller
+// than the full basis counts.  Use layout.total_size to allocate the GPU buffer.
+// cutoff:       spatial radius threshold (e.g. 1e-6); pass 0 to disable.
+// dm_threshold: unused (reserved for future DM compaction); pass 0.
+md_gto_density_buf_layout_t md_gto_density_buf_compute_layout(
     const md_gto_basis_t* basis, const float* atom_xyz,
     const double* density_matrix, double cutoff, double dm_threshold);
 
-// Update atom positions (cgto_xyzr sub-region) in the existing buffer.
-void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
-    const md_gto_basis_t* basis, const float* atom_xyz);
-
-// Update the density matrix in the existing buffer.
-// density_matrix: full N×N row-major doubles; converted to upper-triangular floats internally.
-void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
-    const double* density_matrix);
-
-// Destroy the backing GPU buffer. Safe to call on a zeroed struct.
-void md_gto_density_buf_destroy(md_gto_density_buf_t* buf);
+// Fill a caller-owned GPU buffer (must be CPU-visible, size >= layout.total_size)
+// with all density evaluation data derived from the layout.
+void md_gto_density_buf_fill(md_gpu_buffer_t buf, const md_gto_density_buf_layout_t* layout,
+    const md_gto_basis_t* basis, const float* atom_xyz, const double* density_matrix, double cutoff);
 
 // Dispatch an async electron density evaluation.
 // The image must be R32_FLOAT with MD_GPU_IMAGE_STORAGE.
-// *out_fence receives a fence the caller must wait on (md_gpu_fence_wait) or poll
-// (md_gpu_fence_is_signaled), then destroy with md_gpu_destroy_fence.
-bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf,
-    md_gpu_image_t out_image, const md_grid_t* grid, md_gpu_fence_t* out_fence);
+// Returns a fence the caller must wait on and destroy, or NULL on failure.
+md_gpu_fence_t md_gto_grid_evaluate_density_gpu(md_gpu_device_t device,
+    md_gpu_buffer_t buf, const md_gto_density_buf_layout_t* layout,
+    md_gpu_image_t out_image, const md_grid_t* grid);
+
 #endif
 
 // Evaluate GTOs over subportion of a grid

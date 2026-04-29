@@ -64,8 +64,10 @@ enum {
 
 typedef uint32_t md_gpu_image_flags_t;
 enum {
-    MD_GPU_IMAGE_NONE        = 0,
-    MD_GPU_IMAGE_STORAGE     = 1 << 0, /* shader read/write */
+    MD_GPU_IMAGE_NONE          = 0,
+    MD_GPU_IMAGE_STORAGE       = 1 << 0, /* shader read/write (random access); transfer src+dst set implicitly */
+    MD_GPU_IMAGE_SAMPLED       = 1 << 1, /* shader sampled read; transfer src+dst set implicitly */
+    MD_GPU_IMAGE_RENDER_TARGET = 1 << 2, /* color attachment; transfer NOT set implicitly (may be tile-memory resident) */
 };
 
 typedef enum md_gpu_image_format_t {

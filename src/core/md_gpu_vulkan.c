@@ -588,9 +588,15 @@ md_gpu_image_t md_gpu_image_create(md_gpu_device_t device, const md_gpu_image_de
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.usage = 0;
     if (desc->flags & MD_GPU_IMAGE_STORAGE) {
-        ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    }
+    if (desc->flags & MD_GPU_IMAGE_SAMPLED) {
+        ici.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    }
+    if (desc->flags & MD_GPU_IMAGE_RENDER_TARGET) {
+        ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

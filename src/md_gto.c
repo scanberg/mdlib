@@ -669,7 +669,6 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     const float* upper_triangular_matrix, size_t upper_triangular_len,
     bool include_gradients) {
     ASSERT(grid);
-    ASSERT(gto_data);
     ASSERT(upper_triangular_matrix);
 
     md_gl_debug_push("EVAL DENSITY");
@@ -958,156 +957,85 @@ static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t dev
     return gto_pip_density;
 }
 
-// Sub-region layout for the packed GPU buffer.
-// All offsets are 256-byte aligned to satisfy both Vulkan and Metal constraints.
-typedef struct {
-    size_t off_cgto_xyzr;    size_t sz_cgto_xyzr;
-    size_t off_cgto_off_len; size_t sz_cgto_off_len;
-    size_t off_pgto;         size_t sz_pgto;
-    size_t off_matrix;       size_t sz_matrix;
-    size_t total_size;
-} gto_buf_layout_t;
+static md_gto_density_buf_layout_t gto_density_buf_compute_layout_from_counts(uint32_t num_cgtos, uint32_t num_pgtos) {
+    md_gto_density_buf_layout_t L;
 
-static gto_buf_layout_t gto_density_buf_compute_layout(uint32_t num_cgtos, uint32_t num_pgtos) {
-    gto_buf_layout_t L;
+    size_t matrix_data_len = ((size_t)num_cgtos * (num_cgtos + 1)) / 2;
 
-    size_t matrix_dim = num_cgtos;
-    size_t matrix_data_len = ((size_t)matrix_dim * (matrix_dim + 1)) / 2;
+    L.num_cgtos = num_cgtos;
+    L.num_pgtos = num_pgtos;
 
-    L.off_cgto_xyzr   = 0;
-    L.sz_cgto_xyzr    = sizeof(float) * 4 * num_cgtos;
+    L.off_cgto_xyzr    = 0;
+    L.sz_cgto_xyzr     = sizeof(float) * 4 * num_cgtos;
 
-    L.off_cgto_off_len = ALIGN_TO(L.off_cgto_xyzr + L.sz_cgto_xyzr,   256);
+    L.off_cgto_off_len = ALIGN_TO(L.off_cgto_xyzr + L.sz_cgto_xyzr,    256);
     L.sz_cgto_off_len  = sizeof(uint32_t) * (num_cgtos * 2);
 
-    L.off_pgto        = ALIGN_TO(L.off_cgto_off_len + L.sz_cgto_off_len,  256);
-    L.sz_pgto         = sizeof(PGTO) * num_pgtos;
+    L.off_pgto         = ALIGN_TO(L.off_cgto_off_len + L.sz_cgto_off_len, 256);
+    L.sz_pgto          = sizeof(PGTO) * num_pgtos;
 
-    L.off_matrix      = ALIGN_TO(L.off_pgto + L.sz_pgto,    256);
-    L.sz_matrix       = sizeof(float) * matrix_data_len;
+    L.off_matrix       = ALIGN_TO(L.off_pgto + L.sz_pgto, 256);
+    L.sz_matrix        = sizeof(float) * matrix_data_len;
 
-    L.total_size      = ALIGN_TO(L.off_matrix + L.sz_matrix, 256);
+    L.total_size       = ALIGN_TO(L.off_matrix + L.sz_matrix, 256);
     return L;
 }
 
-bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device,
+md_gto_density_buf_layout_t md_gto_density_buf_compute_layout(
     const md_gto_basis_t* basis, const float* atom_xyz,
     const double* density_matrix, double cutoff, double dm_threshold)
 {
-    ASSERT(buf);
-    ASSERT(device);
     ASSERT(basis);
     ASSERT(atom_xyz);
     ASSERT(density_matrix);
-
-    (void)dm_threshold; // Currently unused, but may be used in the future to cull small density matrix elements and further reduce the number of CGTOs.
+    (void)dm_threshold;
 
     uint32_t num_cgtos = 0, num_pgtos = 0;
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
+    return gto_density_buf_compute_layout_from_counts(num_cgtos, num_pgtos);
+}
 
-    // All work is done in temp memory; the GPU buffer is allocated after
-    // compaction so its size reflects the final (possibly reduced) counts.
+void md_gto_density_buf_fill(md_gpu_buffer_t gpu_buf, const md_gto_density_buf_layout_t* layout,
+    const md_gto_basis_t* basis, const float* atom_xyz, const double* density_matrix, double cutoff)
+{
+    ASSERT(gpu_buf);
+    ASSERT(layout);
+    ASSERT(basis);
+    ASSERT(atom_xyz);
+    ASSERT(density_matrix);
+
     size_t temp_pos = md_temp_get_pos();
 
-    vec4_t*   cgto_xyzr    = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * num_cgtos);
-    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_cgtos * 2);
-    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)     * num_pgtos);
+    vec4_t*   cgto_xyzr    = (vec4_t*)  md_temp_push(sizeof(vec4_t)   * layout->num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * layout->num_cgtos * 2);
+    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)     * layout->num_pgtos);
 
     gto_expand_basis(cgto_xyzr, cgto_off_len, pgto, basis, atom_xyz, cutoff);
 
-    // Extract density matrix for the (possibly reduced) CGTO set.
-    size_t tri_len = density_matrix_upper_tri_size(num_cgtos);
+    size_t tri_len = density_matrix_upper_tri_size(layout->num_cgtos);
     float* matrix  = (float*)md_temp_push(sizeof(float) * tri_len);
-    density_matrix_upper_tri_extract_float(matrix, density_matrix, num_cgtos);
+    density_matrix_upper_tri_extract_float(matrix, density_matrix, layout->num_cgtos);
 
-    // --- Allocate right-sized GPU buffer and upload ---
-    MEMSET(buf, 0, sizeof(*buf));
-    buf->num_cgtos  = num_cgtos;
-    buf->num_pgtos  = num_pgtos;
-
-    gto_buf_layout_t L = gto_density_buf_compute_layout(num_cgtos, num_pgtos);
-    buf->buffer = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
-        .size  = L.total_size,
-        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-    });
-    if (!buf->buffer) {
-        MD_LOG_ERROR("md_gto_density_buf_create: failed to allocate GPU buffer (%zu bytes)", L.total_size);
-        md_temp_set_pos_back(temp_pos);
-        return false;
-    }
-
-    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
-    MEMCPY(ptr + L.off_cgto_xyzr,    cgto_xyzr,    L.sz_cgto_xyzr);
-    MEMCPY(ptr + L.off_cgto_off_len, cgto_off_len, L.sz_cgto_off_len);
-    MEMCPY(ptr + L.off_pgto,         pgto,         L.sz_pgto);
-    MEMCPY(ptr + L.off_matrix,       matrix,       L.sz_matrix);
-
-    md_temp_set_pos_back(temp_pos);
-    return true;
-}
-
-void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
-    const md_gto_basis_t* basis, const float* atom_xyz) {
-    ASSERT(buf);
-    ASSERT(buf->buffer);
-    ASSERT(basis);
-    ASSERT(atom_xyz);
-
-    size_t temp_pos = md_temp_get_pos();
-    vec4_t* cgto_xyzr = (vec4_t*)md_temp_push(sizeof(vec4_t) * buf->num_cgtos);
-
-    uint32_t ci = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        int   nsph = 2 * (int)basis->shells[si].l + 1;
-        float ax   = atom_xyz[basis->shells[si].atom_idx * 3 + 0];
-        float ay   = atom_xyz[basis->shells[si].atom_idx * 3 + 1];
-        float az   = atom_xyz[basis->shells[si].atom_idx * 3 + 2];
-        for (int isph = 0; isph < nsph; isph++) {
-            cgto_xyzr[ci++] = (vec4_t){ax, ay, az, FLT_MAX};
-        }
-    }
-
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
-    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
-    MEMCPY(ptr + L.off_cgto_xyzr, cgto_xyzr, L.sz_cgto_xyzr);
+    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(gpu_buf);
+    MEMCPY(ptr + layout->off_cgto_xyzr,    cgto_xyzr,    layout->sz_cgto_xyzr);
+    MEMCPY(ptr + layout->off_cgto_off_len, cgto_off_len, layout->sz_cgto_off_len);
+    MEMCPY(ptr + layout->off_pgto,         pgto,         layout->sz_pgto);
+    MEMCPY(ptr + layout->off_matrix,       matrix,       layout->sz_matrix);
 
     md_temp_set_pos_back(temp_pos);
 }
 
-void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
-    const double* density_matrix) {
-    ASSERT(buf);
-    ASSERT(buf->buffer);
-    ASSERT(density_matrix);
-
-    size_t tri_len  = density_matrix_upper_tri_size(buf->num_cgtos);
-    size_t temp_pos = md_temp_get_pos();
-    float* matrix   = (float*)md_temp_push(sizeof(float) * tri_len);
-    density_matrix_upper_tri_extract_float(matrix, density_matrix, buf->num_cgtos);
-
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
-    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
-    MEMCPY(ptr + L.off_matrix, matrix, L.sz_matrix);
-
-    md_temp_set_pos_back(temp_pos);
-}
-
-void md_gto_density_buf_destroy(md_gto_density_buf_t* buf) {
-    if (!buf) return;
-    if (buf->buffer) {
-        md_gpu_buffer_destroy(buf->buffer);
-    }
-    MEMSET(buf, 0, sizeof(*buf));
-}
-
-bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf_t* buf, md_gpu_image_t image, const md_grid_t* grid, md_gpu_fence_t* out_fence) {
-    if (!device || !buf || !buf->buffer || !image || !grid || !out_fence) {
+md_gpu_fence_t md_gto_grid_evaluate_density_gpu(md_gpu_device_t device,
+    md_gpu_buffer_t buf, const md_gto_density_buf_layout_t* layout,
+    md_gpu_image_t image, const md_grid_t* grid)
+{
+    if (!device || !buf || !layout || !image || !grid) {
         MD_LOG_ERROR("md_gto_grid_evaluate_density_gpu: invalid input");
-        return false;
+        return NULL;
     }
 
     md_gpu_compute_pipeline_t pipeline = gto_ensure_density_pipeline(device);
-    if (!pipeline) return false;
+    if (!pipeline) return NULL;
 
     typedef struct {
         float    world_to_model[4][4];
@@ -1117,8 +1045,6 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
         uint32_t _pad[3];
     } ubo_t;
 
-    gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
-
     ubo_t ubo = {0};
     world_to_model_matrix(ubo.world_to_model, grid);
     index_to_world_matrix(ubo.index_to_world, grid);
@@ -1126,11 +1052,11 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
     ubo.step[1]      = grid->spacing.elem[1];
     ubo.step[2]      = grid->spacing.elem[2];
     ubo.step[3]      = 0.0f;
-    ubo.D_matrix_dim = buf->num_cgtos;
+    ubo.D_matrix_dim = layout->num_cgtos;
 
     md_gpu_queue_t          queue = md_gpu_queue_acquire(device);
     md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-    
+
     uint32_t wg_size[3] = {
         DIV_UP(grid->dim[0], 8),
         DIV_UP(grid->dim[1], 8),
@@ -1139,15 +1065,14 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
 
     md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
-    md_gpu_cmd_bind_buffer_range(cmd, 0, buf->buffer, L.off_cgto_xyzr,    L.sz_cgto_xyzr);
-    md_gpu_cmd_bind_buffer_range(cmd, 1, buf->buffer, L.off_cgto_off_len, L.sz_cgto_off_len);
-    md_gpu_cmd_bind_buffer_range(cmd, 2, buf->buffer, L.off_pgto,         L.sz_pgto);
-    md_gpu_cmd_bind_buffer_range(cmd, 3, buf->buffer, L.off_matrix,       L.sz_matrix);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, buf, layout->off_cgto_xyzr,    layout->sz_cgto_xyzr);
+    md_gpu_cmd_bind_buffer_range(cmd, 1, buf, layout->off_cgto_off_len, layout->sz_cgto_off_len);
+    md_gpu_cmd_bind_buffer_range(cmd, 2, buf, layout->off_pgto,         layout->sz_pgto);
+    md_gpu_cmd_bind_buffer_range(cmd, 3, buf, layout->off_matrix,       layout->sz_matrix);
     md_gpu_cmd_bind_image(cmd, 0, image);
     md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
 
-    *out_fence = md_gpu_queue_submit(queue, cmd);
-    return true;
+    return md_gpu_queue_submit(queue, cmd);
 }
 
 #endif // MD_ENABLE_GPU

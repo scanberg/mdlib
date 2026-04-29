@@ -210,11 +210,7 @@ if (MD_ENABLE_GPU)
     find_library(FOUNDATION_FRAMEWORK Foundation)
     list(APPEND MD_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
     list(APPEND CORE_FILES src/core/md_gpu_metal.m)
-    set_source_files_properties(
-      src/core/md_gpu_metal.m
-      PROPERTIES
-      LANGUAGE OBJC
-      )
+    set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
     set(MD_GPU_BACKEND "VULKAN")
     find_package(Vulkan REQUIRED)

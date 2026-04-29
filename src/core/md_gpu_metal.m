@@ -258,7 +258,16 @@ md_gpu_image_t md_gpu_image_create(md_gpu_device_t device,
     td.height = desc->height;
     td.depth  = desc->depth;
     td.pixelFormat = to_mtl_format(desc->format);
-    td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    td.usage = MTLTextureUsageUnknown;
+    if (desc->flags & MD_GPU_IMAGE_STORAGE) {
+        td.usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    }
+    if (desc->flags & MD_GPU_IMAGE_SAMPLED) {
+        td.usage |= MTLTextureUsageShaderRead;
+    }
+    if (desc->flags & MD_GPU_IMAGE_RENDER_TARGET) {
+        td.usage |= MTLTextureUsageRenderTarget;
+    }
 
     img->texture = [device->device newTextureWithDescriptor:td];
     [td release];
