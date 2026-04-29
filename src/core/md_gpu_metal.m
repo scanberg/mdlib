@@ -81,7 +81,7 @@ struct md_gpu_cmd_fill_buffer {
     struct md_gpu_buffer* buffer;
     size_t offset;
     size_t size;
-    uint32_t value;
+    uint8_t value;
 };
 
 struct md_gpu_cmd_barrier_buffer {
@@ -495,7 +495,7 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t buffer,
                             size_t offset,
                             size_t size,
-                            uint32_t value) {
+                            uint8_t value) {
     ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_FILL_BUFFER;
@@ -639,10 +639,9 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                     compute_enc = nil;
                 }
                 id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
-                uint8_t byte_val = (uint8_t)(c->u.fill_buf.value & 0xFF);
                 [blit fillBuffer:c->u.fill_buf.buffer->buffer
                            range:NSMakeRange(c->u.fill_buf.offset, c->u.fill_buf.size)
-                           value:byte_val];
+                           value:c->u.fill_buf.value];
                 [blit endEncoding];
                 break;
             }

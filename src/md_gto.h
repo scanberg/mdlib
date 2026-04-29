@@ -181,41 +181,72 @@ static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, i
 void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 #if MD_ENABLE_GPU
-// Sub-region layout for the packed GPU density buffer.
+// Unified sub-region layout for packed GPU GTO evaluation buffers.
 // All offsets are 256-byte aligned to satisfy both Vulkan and Metal constraints.
-// Compute via md_gto_density_buf_compute_layout(); use total_size to allocate
-// an md_gpu_buffer_t, then fill it with md_gto_density_buf_fill().
-// The caller owns the buffer lifetime entirely.
-typedef struct md_gto_density_buf_layout_t {
-    size_t   off_cgto_xyzr;    size_t sz_cgto_xyzr;    // vec4 (x,y,z,r) per CGTO
-    size_t   off_cgto_off_len; size_t sz_cgto_off_len;  // uint32 pair (offset,len) per CGTO into pgtos
-    size_t   off_pgto;         size_t sz_pgto;           // packed primitive GTO records
-    size_t   off_matrix;       size_t sz_matrix;         // upper-triangular density matrix (float)
-    size_t   total_size;
+//
+// num_rows controls the interpretation of the coefficients section:
+//   density:    num_cgtos  (upper-triangular packed, num_cgtos*(num_cgtos+1)/2 floats)
+//   single MO:  1          (one float per CGTO, scales baked in at fill time)
+//   multi-MO:   num_mos    (one float[num_cgtos] row per MO, scales baked in at fill time)
+//
+// Use the appropriate md_gto_eval_buf_compute_layout_* to build this,
+// then allocate an md_gpu_buffer_t of total_size (CPU-visible) and fill it using the corresponding fill function.
+typedef struct md_gto_eval_buf_layout_t {
     uint32_t num_cgtos;
     uint32_t num_pgtos;
-} md_gto_density_buf_layout_t;
+    uint32_t num_rows;         // see above
+    uint32_t off_cgto_xyzr;
+    uint32_t off_cgto_off_len;
+    uint32_t off_pgto;
+    uint32_t off_coeffs;
+    uint64_t total_size;
+} md_gto_eval_buf_layout_t;
 
-// Compute the buffer layout from the basis, positions and density matrix.
-// Applies cutoff filtering so num_cgtos/num_pgtos in the layout may be smaller
-// than the full basis counts.  Use layout.total_size to allocate the GPU buffer.
-// cutoff:       spatial radius threshold (e.g. 1e-6); pass 0 to disable.
-// dm_threshold: unused (reserved for future DM compaction); pass 0.
-md_gto_density_buf_layout_t md_gto_density_buf_compute_layout(
-    const md_gto_basis_t* basis, const float* atom_xyz,
-    const double* density_matrix, double cutoff, double dm_threshold);
+// ---------------------------------------------------------------------------
+// Layout computation
+// ---------------------------------------------------------------------------
 
-// Fill a caller-owned GPU buffer (must be CPU-visible, size >= layout.total_size)
-// with all density evaluation data derived from the layout.
-void md_gto_density_buf_fill(md_gpu_buffer_t buf, const md_gto_density_buf_layout_t* layout,
+// Density: coefficients section is upper-triangular float matrix (N*(N+1)/2 floats).
+md_gto_eval_buf_layout_t md_gto_eval_buf_compute_layout_density(const md_gto_basis_t* basis);
+
+// Single or multi-MO: coefficients section is num_mos * num_cgtos floats.
+// Pass num_mos=1 for a single orbital.
+md_gto_eval_buf_layout_t md_gto_eval_buf_compute_layout_mo(const md_gto_basis_t* basis, uint32_t num_mos);
+
+// ---------------------------------------------------------------------------
+// Buffer fill
+// ---------------------------------------------------------------------------
+
+// Fill for density evaluation.
+// buf must be CPU-visible with size >= layout->total_size.
+// density_matrix: full N×N row-major doubles, N = num_cgtos.
+void md_gto_eval_buf_fill_density(md_gpu_buffer_t buf, const md_gto_eval_buf_layout_t* layout,
     const md_gto_basis_t* basis, const float* atom_xyz, const double* density_matrix, double cutoff);
+
+// Fill for MO evaluation (single or multi-MO).
+// mo_coeffs: array of num_mos pointers, each pointing to a double[num_cgtos] MO coefficient vector.
+// mo_scales: optional array of num_mos scale factors baked into the coefficients; pass NULL for uniform scale of 1.
+void md_gto_eval_buf_fill_mo(md_gpu_buffer_t buf, const md_gto_eval_buf_layout_t* layout,
+    const md_gto_basis_t* basis, const float* atom_xyz,
+    const double* const* mo_coeffs, const double* mo_scales, size_t num_mos, double cutoff);
+
+// ---------------------------------------------------------------------------
+// GPU dispatch
+// ---------------------------------------------------------------------------
 
 // Dispatch an async electron density evaluation.
 // The image must be R32_FLOAT with MD_GPU_IMAGE_STORAGE.
 // Returns a fence the caller must wait on and destroy, or NULL on failure.
 md_gpu_fence_t md_gto_grid_evaluate_density_gpu(md_gpu_device_t device,
-    md_gpu_buffer_t buf, const md_gto_density_buf_layout_t* layout,
+    md_gpu_buffer_t buf, const md_gto_eval_buf_layout_t* layout,
     md_gpu_image_t out_image, const md_grid_t* grid);
+
+// Dispatch an async MO (or linear combination of MOs) evaluation.
+// layout must have been built with md_gto_eval_buf_compute_layout_mo.
+// eval_mode controls whether psi or psi^2 is accumulated per MO row.
+md_gpu_fence_t md_gto_grid_evaluate_mo_gpu(md_gpu_device_t device,
+    md_gpu_buffer_t buf, const md_gto_eval_buf_layout_t* layout,
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode);
 
 #endif
 

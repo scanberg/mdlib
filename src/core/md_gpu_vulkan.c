@@ -1157,7 +1157,7 @@ void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd, md_gpu_buffer_
     vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
-void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer, size_t offset, size_t size, uint32_t value) {
+void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
     if (!cmd || !buffer) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
@@ -1165,7 +1165,8 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
     ASSERT((offset % 4 == 0) && "vkCmdFillBuffer offset must be 4-byte aligned");
     ASSERT((size == VK_WHOLE_SIZE || size % 4 == 0) && "vkCmdFillBuffer size must be 4-byte aligned or VK_WHOLE_SIZE");
 
-    vkCmdFillBuffer(c->vk_cmd, buf->buffer, offset, size, value);
+    uint32_t pattern = (value << 24) | (value << 16) | (value << 8) | value;
+    vkCmdFillBuffer(c->vk_cmd, buf->buffer, offset, size, pattern);
 }
 
 md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd) {

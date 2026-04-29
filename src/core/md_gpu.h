@@ -162,7 +162,8 @@ Command buffers
      - Do not bind user buffers/images to the reserved slot.
      - Preferred pattern: pass GPU buffer addresses via push constants using
          md_gpu_buffer_address(). Explicit slot binds remain available for images
-         and legacy shaders. */
+         and legacy shaders.
+*/
 enum {
     MD_GPU_MAX_BIND_SLOTS = 16,
     MD_GPU_PUSH_CONSTANTS_SLOT = (MD_GPU_MAX_BIND_SLOTS - 1),
@@ -223,12 +224,13 @@ void md_gpu_cmd_copy_buffer_to_image(
     md_gpu_buffer_t src_buffer,
     md_gpu_image_t dst_image);
 
+// NOTICE: this is a byte-fill operation, so the value is repeated to fill the specified range.
 void md_gpu_cmd_fill_buffer(
     md_gpu_command_buffer_t cmd,
     md_gpu_buffer_t buffer,
     size_t offset,
     size_t size,
-    uint32_t value);
+    uint8_t value);
 
 /* =============================
 Submission & synchronization
