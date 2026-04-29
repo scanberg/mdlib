@@ -50,7 +50,7 @@ struct EdgeCounter {
 RWStructuredBuffer<EdgeCounter> edge_counter; // edge_counter[0]
 
 [[vk::binding(7)]]
-RWStructuredBuffer<int> voxel_to_vertex_idx;
+RWStructuredBuffer<int> voxel_to_vertex_idx; // -1 for non-CP voxels, vertex index for CP voxels
 
 groupshared uint local_edge_count;
 groupshared uint global_edge_offset;

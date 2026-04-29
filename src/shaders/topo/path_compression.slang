@@ -16,14 +16,27 @@ RWStructuredBuffer<uint> ascending;
 [[vk::binding(1)]]
 RWStructuredBuffer<uint> descending;
 
+// changed_read[0]: non-zero if the previous iteration made any changes.
+// If zero, all paths are already compressed — this dispatch is a no-op.
 [[vk::binding(2)]]
-RWStructuredBuffer<uint> changed_flag; // changed_flag[0]
+RWStructuredBuffer<uint> changed_read;
+
+// changed_write[0]: set non-zero by this iteration if any path step was taken.
+// Caller clears this to 0 before each dispatch, then copies it to changed_read
+// after the dispatch so the next iteration can check it.
+[[vk::binding(3)]]
+RWStructuredBuffer<uint> changed_write;
 
 groupshared uint local_changed;
 
 [shader("compute")]
 [numthreads(8, 8, 8)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
+    // Early exit: previous iteration changed nothing → already converged.
+    if (changed_read[0] == 0u) {
+        return;
+    }
+
     if (any(gid >= ubo.dims)) {
         return;
     }
@@ -61,6 +74,6 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
 
     if (gtid == 0) {
         uint _orig;
-        InterlockedOr(changed_flag[0], local_changed, _orig);
+        InterlockedOr(changed_write[0], local_changed, _orig);
     }
 }

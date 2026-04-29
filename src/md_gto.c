@@ -941,7 +941,7 @@ static md_gpu_compute_pipeline_t gto_pip_density = NULL;
 
 static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t device) {
     if (gto_cached_device != device) {
-        if (gto_pip_density) { md_gpu_destroy_compute_pipeline(gto_pip_density); gto_pip_density = NULL; }
+        if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
         gto_cached_device = device;
     }
     if (!gto_pip_density) {
@@ -950,7 +950,7 @@ static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t dev
             .shader_byte_size = gto_eval_gto_density_size(),
             .threadgroup_size = { 8, 8, 8 },
         };
-        gto_pip_density = md_gpu_create_compute_pipeline(device, &desc);
+        gto_pip_density = md_gpu_compute_pipeline_create(device, &desc);
         if (!gto_pip_density) {
             MD_LOG_ERROR("Failed to create GTO density compute pipeline");
         }
@@ -1026,7 +1026,7 @@ bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device
     buf->num_pgtos  = num_pgtos;
 
     gto_buf_layout_t L = gto_density_buf_compute_layout(num_cgtos, num_pgtos);
-    buf->buffer = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){
+    buf->buffer = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
         .size  = L.total_size,
         .flags = MD_GPU_BUFFER_CPU_VISIBLE,
     });
@@ -1036,12 +1036,11 @@ bool md_gto_density_buf_create(md_gto_density_buf_t* buf, md_gpu_device_t device
         return false;
     }
 
-    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
     MEMCPY(ptr + L.off_cgto_xyzr,    cgto_xyzr,    L.sz_cgto_xyzr);
     MEMCPY(ptr + L.off_cgto_off_len, cgto_off_len, L.sz_cgto_off_len);
     MEMCPY(ptr + L.off_pgto,         pgto,         L.sz_pgto);
     MEMCPY(ptr + L.off_matrix,       matrix,       L.sz_matrix);
-    md_gpu_unmap_buffer(buf->buffer);
 
     md_temp_set_pos_back(temp_pos);
     return true;
@@ -1069,9 +1068,8 @@ void md_gto_density_buf_update_positions(md_gto_density_buf_t* buf,
     }
 
     gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
-    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
     MEMCPY(ptr + L.off_cgto_xyzr, cgto_xyzr, L.sz_cgto_xyzr);
-    md_gpu_unmap_buffer(buf->buffer);
 
     md_temp_set_pos_back(temp_pos);
 }
@@ -1088,9 +1086,8 @@ void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
     density_matrix_upper_tri_extract_float(matrix, density_matrix, buf->num_cgtos);
 
     gto_buf_layout_t L = gto_density_buf_compute_layout(buf->num_cgtos, buf->num_pgtos);
-    uint8_t* ptr = (uint8_t*)md_gpu_map_buffer(buf->buffer);
+    uint8_t* ptr = (uint8_t*)md_gpu_buffer_cpu_ptr(buf->buffer);
     MEMCPY(ptr + L.off_matrix, matrix, L.sz_matrix);
-    md_gpu_unmap_buffer(buf->buffer);
 
     md_temp_set_pos_back(temp_pos);
 }
@@ -1098,7 +1095,7 @@ void md_gto_density_buf_update_matrix(md_gto_density_buf_t* buf,
 void md_gto_density_buf_destroy(md_gto_density_buf_t* buf) {
     if (!buf) return;
     if (buf->buffer) {
-        md_gpu_destroy_buffer(buf->buffer);
+        md_gpu_buffer_destroy(buf->buffer);
     }
     MEMSET(buf, 0, sizeof(*buf));
 }
@@ -1131,8 +1128,8 @@ bool md_gto_grid_evaluate_density_gpu(md_gpu_device_t device, md_gto_density_buf
     ubo.step[3]      = 0.0f;
     ubo.D_matrix_dim = buf->num_cgtos;
 
-    md_gpu_queue_t          queue = md_gpu_acquire_compute_queue(device);
-    md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(queue);
+    md_gpu_queue_t          queue = md_gpu_queue_acquire(device);
+    md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
     
     uint32_t wg_size[3] = {
         DIV_UP(grid->dim[0], 8),

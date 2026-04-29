@@ -49,6 +49,19 @@ enum {
     MD_GPU_BUFFER_CPU_VISIBLE = 1 << 0,
 };
 
+/* Pipeline stages for fine-grained barrier synchronization.
+   Used with md_gpu_cmd_barrier_buffer_ex / md_gpu_cmd_barrier_image_ex.
+   Specifying explicit src/dst stages lets the backend avoid inserting a full
+   pipeline stall when only a subset of stages are involved.
+   On Metal, stage hints are accepted but ignored (the resource-scoped barrier
+   call is already as granular as the API allows).
+   On Vulkan, they map to VkPipelineStageFlags2. */
+typedef uint32_t md_gpu_barrier_stage_t;
+enum {
+    MD_GPU_BARRIER_STAGE_COMPUTE  = 1 << 0,  /* compute shader dispatch */
+    MD_GPU_BARRIER_STAGE_TRANSFER = 1 << 1,  /* copy / fill operations  */
+};
+
 typedef uint32_t md_gpu_image_flags_t;
 enum {
     MD_GPU_IMAGE_NONE        = 0,
@@ -93,42 +106,44 @@ typedef struct md_gpu_compute_pipeline_desc_t {
 Device / queue
 ============================= */
 
-md_gpu_device_t md_gpu_create_device(void);
-void            md_gpu_destroy_device(md_gpu_device_t device);
+md_gpu_device_t md_gpu_device_create(void);
+void            md_gpu_device_destroy(md_gpu_device_t device);
 
 /* Returns a compute queue intended for use by the calling thread.
     The implementation may return a unique queue if available, otherwise a shared queue.
     The returned handle is owned by the device (no destroy required).
     The caller may cache and reuse the returned queue.
     Note: submission may be internally serialized if the queue is shared. */
-md_gpu_queue_t  md_gpu_acquire_compute_queue(md_gpu_device_t device);
+md_gpu_queue_t  md_gpu_queue_acquire(md_gpu_device_t device);
 
 /* =============================
 Buffers
 ============================= */
 
-md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device, const md_gpu_buffer_desc_t* desc);
+md_gpu_buffer_t md_gpu_buffer_create(md_gpu_device_t device, const md_gpu_buffer_desc_t* desc);
 
-void md_gpu_destroy_buffer(md_gpu_buffer_t buffer);
+void md_gpu_buffer_destroy(md_gpu_buffer_t buffer);
 
-void*    md_gpu_map_buffer(md_gpu_buffer_t buffer);
-void     md_gpu_unmap_buffer(md_gpu_buffer_t buffer);
+/* Returns the persistent CPU-accessible pointer for a CPU_VISIBLE buffer.
+   The pointer is valid from creation until md_gpu_buffer_destroy.
+   Returns NULL if the buffer was not created with MD_GPU_BUFFER_CPU_VISIBLE. */
+void*    md_gpu_buffer_cpu_ptr(md_gpu_buffer_t buffer);
 uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer);
 
 /* =============================
 Images (volumes, storage images)
 ============================= */
 
-md_gpu_image_t md_gpu_create_image(md_gpu_device_t device, const md_gpu_image_desc_t* desc);
+md_gpu_image_t md_gpu_image_create(md_gpu_device_t device, const md_gpu_image_desc_t* desc);
 
-void md_gpu_destroy_image(md_gpu_image_t image);
+void md_gpu_image_destroy(md_gpu_image_t image);
 
 /* =============================
 Pipelines
 ============================= */
 
-md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(md_gpu_device_t device, const md_gpu_compute_pipeline_desc_t* desc);
-void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline);
+md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device, const md_gpu_compute_pipeline_desc_t* desc);
+void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 
 /* =============================
 Command buffers
@@ -155,7 +170,7 @@ enum {
 /* Command buffers are pooled and owned by the queue.
     Acquire returns a command buffer ready for recording.
     The command buffer is automatically recycled by md_gpu_queue_submit(). */
-md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_queue_t queue);
+md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue);
 
 void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_compute_pipeline_t pipeline);
 void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer);
@@ -168,12 +183,21 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, ui
 
 /* Barrier model:
      - md_gpu_cmd_barrier(): conservative global barrier for the command buffer.
-     - md_gpu_cmd_barrier_buffer/image(): resource-scoped barrier.
+     - md_gpu_cmd_barrier_buffer/image(): resource-scoped barrier, conservative stages.
          Guarantees all prior GPU writes to that resource in this command buffer are
-         visible to all subsequent GPU reads/writes of that resource in this command buffer. */
+         visible to all subsequent GPU reads/writes of that resource in this command buffer.
+     - md_gpu_cmd_barrier_buffer_ex / md_gpu_cmd_barrier_image_ex(): resource-scoped barrier
+         with explicit source and destination pipeline stage hints.  Use these when you know
+         exactly which stage produced the data (src_stage) and which stage will consume it
+         (dst_stage).  On Vulkan this allows a tighter barrier; on Metal the stage arguments
+         are ignored and the call is equivalent to the non-_ex variant. */
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd);
 void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer);
 void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image);
+void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
+                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
+                                  md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
 /* =============================
 Copy / readback
@@ -212,7 +236,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
 
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence);
 void md_gpu_fence_wait(md_gpu_fence_t fence);
-void md_gpu_destroy_fence(md_gpu_fence_t fence);
+void md_gpu_fence_destroy(md_gpu_fence_t fence);
 
 #ifdef __cplusplus
 }

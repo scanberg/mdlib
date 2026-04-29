@@ -83,7 +83,7 @@ typedef struct md_topo_gpu_work md_topo_gpu_work_t;
 //   Phase 2 (compaction + graph extraction + readback copy) is submitted
 //   asynchronously and the function returns immediately.
 // Returns NULL on failure. The caller owns the returned handle.
-md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(
+md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu(
     md_gpu_device_t device,
     md_gpu_image_t  volume,
     const struct md_grid_t* grid,
@@ -92,25 +92,9 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(
 // Returns true if the GPU has finished phase 2 (non-blocking poll).
 bool md_topo_gpu_work_is_done(const md_topo_gpu_work_t* work);
 
-// Wait for GPU completion, read back results into out_graph, then free all GPU
-// resources and the work handle.  out_graph->alloc may be set beforehand;
-// the heap allocator is used when NULL.
-// Always frees the handle (even on failure). Returns false only on NULL input.
-bool md_topo_gpu_work_complete(md_topo_gpu_work_t* work, md_topo_extremum_graph_t* out_graph);
-
-// Abandon in-flight work: wait for GPU safety, free all GPU resources, free the handle.
-void md_topo_gpu_work_free(md_topo_gpu_work_t* work);
-
-// Synchronous convenience wrapper: equivalent to _async() + complete().
-// - out_graph: must be non-NULL; set out_graph->alloc before calling (or NULL for heap)
-// - volume: 3D image (MD_GPU_IMAGE_FORMAT_R32_FLOAT, MD_GPU_IMAGE_STORAGE flag)
-// - scalar_threshold: minimum scalar value for critical-point candidates (noise filter)
-bool md_topo_compute_extremum_graph_gpu(
-    md_topo_extremum_graph_t* out_graph,
-    md_gpu_device_t device,
-    md_gpu_image_t  volume,
-    const struct md_grid_t* grid,
-    float scalar_threshold);
+// Block until GPU work completes, optionally extract results into out_graph, then free work.
+// Pass out_graph = NULL to discard results (cancel-like).
+bool md_topo_gpu_work_finish(md_topo_extremum_graph_t* out_graph, md_topo_gpu_work_t* work);
 
 #else
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);

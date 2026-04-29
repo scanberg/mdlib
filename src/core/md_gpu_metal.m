@@ -33,6 +33,7 @@ struct md_gpu_device {
 
 struct md_gpu_buffer {
     id<MTLBuffer> buffer;
+    void* cpu_ptr;  /* non-NULL for CPU_VISIBLE buffers; valid until destroy */
     size_t size;
     md_gpu_buffer_flags_t flags;
 };
@@ -95,6 +96,11 @@ struct md_gpu_cmd_dispatch {
     uint32_t group_count[3];
     uint8_t  push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t   push_constant_size;
+    /* Full binding snapshot captured at record time — not read from live cmd->bound_* at submit */
+    struct md_gpu_compute_pipeline* pipeline;
+    struct md_gpu_buffer*           buffers[MD_GPU_MAX_BIND_SLOTS];
+    size_t                          buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
+    struct md_gpu_image*            images[MD_GPU_MAX_BIND_SLOTS];
 };
 
 struct md_gpu_recorded_cmd {
@@ -175,7 +181,7 @@ static inline void cmd_reset(struct md_gpu_command_buffer* cmd) {
    Device / queue
    ============================= */
 
-md_gpu_device_t md_gpu_create_device(void) {
+md_gpu_device_t md_gpu_device_create(void) {
     struct md_gpu_device* dev = (struct md_gpu_device*)calloc(1, sizeof(struct md_gpu_device));
     dev->device = MTLCreateSystemDefaultDevice();
     ASSERT(dev->device);
@@ -185,7 +191,7 @@ md_gpu_device_t md_gpu_create_device(void) {
     return dev;
 }
 
-void md_gpu_destroy_device(md_gpu_device_t device) {
+void md_gpu_device_destroy(md_gpu_device_t device) {
     struct md_gpu_command_buffer* it = device->compute_queue.cmd_free_list;
     while (it) {
         struct md_gpu_command_buffer* next = it->next_free;
@@ -199,7 +205,7 @@ void md_gpu_destroy_device(md_gpu_device_t device) {
     free(device);
 }
 
-md_gpu_queue_t md_gpu_acquire_compute_queue(md_gpu_device_t device) {
+md_gpu_queue_t md_gpu_queue_acquire(md_gpu_device_t device) {
     return &device->compute_queue;
 }
 
@@ -207,7 +213,7 @@ md_gpu_queue_t md_gpu_acquire_compute_queue(md_gpu_device_t device) {
    Buffers
    ============================= */
 
-md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device,
+md_gpu_buffer_t md_gpu_buffer_create(md_gpu_device_t device,
                                      const md_gpu_buffer_desc_t* desc) {
     struct md_gpu_buffer* buf = (struct md_gpu_buffer*)calloc(1, sizeof(struct md_gpu_buffer));
     buf->size = desc->size;
@@ -218,21 +224,19 @@ md_gpu_buffer_t md_gpu_create_buffer(md_gpu_device_t device,
         opts = MTLResourceStorageModeShared;
 
     buf->buffer = [device->device newBufferWithLength:desc->size options:opts];
+    if (desc->flags & MD_GPU_BUFFER_CPU_VISIBLE)
+        buf->cpu_ptr = [buf->buffer contents];
     return buf;
 }
 
-void md_gpu_destroy_buffer(md_gpu_buffer_t buffer) {
+void md_gpu_buffer_destroy(md_gpu_buffer_t buffer) {
     [buffer->buffer release];
     free(buffer);
 }
 
-void* md_gpu_map_buffer(md_gpu_buffer_t buffer) {
+void* md_gpu_buffer_cpu_ptr(md_gpu_buffer_t buffer) {
     ASSERT(buffer->flags & MD_GPU_BUFFER_CPU_VISIBLE);
-    return [buffer->buffer contents];
-}
-
-void md_gpu_unmap_buffer(md_gpu_buffer_t buffer) {
-    (void)buffer;
+    return buffer->cpu_ptr;
 }
 
 uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
@@ -243,7 +247,7 @@ uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
    Images
    ============================= */
 
-md_gpu_image_t md_gpu_create_image(md_gpu_device_t device,
+md_gpu_image_t md_gpu_image_create(md_gpu_device_t device,
                                    const md_gpu_image_desc_t* desc) {
     struct md_gpu_image* img = (struct md_gpu_image*)calloc(1, sizeof(struct md_gpu_image));
     img->desc = *desc;
@@ -261,7 +265,7 @@ md_gpu_image_t md_gpu_create_image(md_gpu_device_t device,
     return img;
 }
 
-void md_gpu_destroy_image(md_gpu_image_t image) {
+void md_gpu_image_destroy(md_gpu_image_t image) {
     [image->texture release];
     free(image);
 }
@@ -270,7 +274,7 @@ void md_gpu_destroy_image(md_gpu_image_t image) {
    Pipelines
    ============================= */
 
-md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
+md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(
     md_gpu_device_t device,
     const md_gpu_compute_pipeline_desc_t* desc)
 {
@@ -320,7 +324,7 @@ md_gpu_compute_pipeline_t md_gpu_create_compute_pipeline(
     return p;
 }
 
-void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
+void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline) {
     [pipeline->pso release];
     free(pipeline);
 }
@@ -329,7 +333,7 @@ void md_gpu_destroy_compute_pipeline(md_gpu_compute_pipeline_t pipeline) {
    Command buffers
    ============================= */
 
-md_gpu_command_buffer_t md_gpu_acquire_command_buffer(md_gpu_queue_t queue) {
+md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     struct md_gpu_command_buffer* cmd = queue->cmd_free_list;
     if (cmd) {
         queue->cmd_free_list = cmd->next_free;
@@ -399,6 +403,11 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
     rc->u.dispatch.push_constant_size = cmd->push_constant_size;
     if (cmd->push_constant_size > 0)
         MEMCPY(rc->u.dispatch.push_constants, cmd->push_constants, cmd->push_constant_size);
+    /* Snapshot pipeline and bindings — the live cmd->bound_* state must not be read at submit time */
+    rc->u.dispatch.pipeline = cmd->bound_pipeline;
+    MEMCPY(rc->u.dispatch.buffers,        cmd->bound_buffers,        sizeof(cmd->bound_buffers));
+    MEMCPY(rc->u.dispatch.buffer_offsets, cmd->bound_buffer_offsets, sizeof(cmd->bound_buffer_offsets));
+    MEMCPY(rc->u.dispatch.images,         cmd->bound_images,         sizeof(cmd->bound_images));
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
@@ -421,6 +430,20 @@ void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image)
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_BARRIER_IMAGE;
     rc->u.barrier_img.image = image;
+}
+
+/* _ex variants: stage hints accepted but ignored — Metal resource-scoped barriers
+   are already as granular as the API allows. Forwards to the non-_ex path. */
+void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
+                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    (void)src_stage; (void)dst_stage;
+    md_gpu_cmd_barrier_buffer(cmd, buffer);
+}
+
+void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
+                                  md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    (void)src_stage; (void)dst_stage;
+    md_gpu_cmd_barrier_image(cmd, image);
 }
 
 void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
@@ -490,13 +513,13 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                 if (!compute_enc)
                     compute_enc = [mtl_cmd computeCommandEncoder];
 
-                [compute_enc setComputePipelineState:cmd->bound_pipeline->pso];
+                [compute_enc setComputePipelineState:c->u.dispatch.pipeline->pso];
 
                 for (uint32_t s = 0; s < MD_GPU_MAX_BIND_SLOTS; ++s) {
-                    if (cmd->bound_buffers[s])
-                        [compute_enc setBuffer:cmd->bound_buffers[s]->buffer offset:cmd->bound_buffer_offsets[s] atIndex:s + 1];
-                    if (cmd->bound_images[s])
-                        [compute_enc setTexture:cmd->bound_images[s]->texture atIndex:s];
+                    if (c->u.dispatch.buffers[s])
+                        [compute_enc setBuffer:c->u.dispatch.buffers[s]->buffer offset:c->u.dispatch.buffer_offsets[s] atIndex:s + 1];
+                    if (c->u.dispatch.images[s])
+                        [compute_enc setTexture:c->u.dispatch.images[s]->texture atIndex:s];
                 }
 
                 if (c->u.dispatch.push_constant_size > 0)
@@ -504,7 +527,7 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                                   length:c->u.dispatch.push_constant_size
                                  atIndex:0];
 
-                struct md_gpu_compute_pipeline* p = cmd->bound_pipeline;
+                struct md_gpu_compute_pipeline* p = c->u.dispatch.pipeline;
                 MTLSize tg     = MTLSizeMake(p->tg_size[0], p->tg_size[1], p->tg_size[2]);
                 MTLSize groups = MTLSizeMake(c->u.dispatch.group_count[0],
                                              c->u.dispatch.group_count[1],
@@ -641,7 +664,7 @@ void md_gpu_fence_wait(md_gpu_fence_t fence) {
     [fence->cmd waitUntilCompleted];
 }
 
-void md_gpu_destroy_fence(md_gpu_fence_t fence) {
+void md_gpu_fence_destroy(md_gpu_fence_t fence) {
     [fence->cmd release];
     free(fence);
 }

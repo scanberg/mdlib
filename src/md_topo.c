@@ -1,10 +1,11 @@
-﻿#include <md_topo.h>
+#include <md_topo.h>
 
 #include <core/md_platform.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_grid.h>
+#include <core/md_array.h>
 
 #if DEBUG
 #include <core/md_hash.h>
@@ -60,11 +61,11 @@ static md_gpu_compute_pipeline_t pip_vertex_edge_extraction = NULL;
 static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* cached, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
     if (cached_device != device) {
         // Device changed, invalidate all cached pipelines
-        if (pip_bidirectional_manifold)    { md_gpu_destroy_compute_pipeline(pip_bidirectional_manifold);    pip_bidirectional_manifold = NULL; }
-        if (pip_path_compression)          { md_gpu_destroy_compute_pipeline(pip_path_compression);          pip_path_compression = NULL; }
-        if (pip_critical_points)           { md_gpu_destroy_compute_pipeline(pip_critical_points);           pip_critical_points = NULL; }
-        if (pip_critical_point_compaction) { md_gpu_destroy_compute_pipeline(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
-        if (pip_vertex_edge_extraction)    { md_gpu_destroy_compute_pipeline(pip_vertex_edge_extraction);    pip_vertex_edge_extraction = NULL; }
+        if (pip_bidirectional_manifold)    { md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);    pip_bidirectional_manifold = NULL; }
+        if (pip_path_compression)          { md_gpu_compute_pipeline_destroy(pip_path_compression);          pip_path_compression = NULL; }
+        if (pip_critical_points)           { md_gpu_compute_pipeline_destroy(pip_critical_points);           pip_critical_points = NULL; }
+        if (pip_critical_point_compaction) { md_gpu_compute_pipeline_destroy(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
+        if (pip_vertex_edge_extraction)    { md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);    pip_vertex_edge_extraction = NULL; }
         cached_device = device;
     }
     if (*cached == NULL) {
@@ -73,7 +74,7 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
             .shader_byte_size = blob_size,
             .threadgroup_size = { wg_x, wg_y, wg_z },
         };
-        *cached = md_gpu_create_compute_pipeline(device, &desc);
+        *cached = md_gpu_compute_pipeline_create(device, &desc);
         if (*cached == NULL) {
             MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
         }
@@ -100,6 +101,7 @@ struct md_topo_gpu_work {
     md_gpu_buffer_t descending_buf;
     md_gpu_buffer_t types_buf;
     md_gpu_buffer_t indices_buf;
+    md_gpu_buffer_t voxel_to_vertex_idx_buf;  // int32, -1 for non-CP voxels
     md_gpu_buffer_t counters_buf;
     md_gpu_buffer_t type_counts_buf;
     md_gpu_buffer_t vert_buf;
@@ -113,23 +115,24 @@ struct md_topo_gpu_work {
 };
 
 static void topo_work_destroy_buffers(struct md_topo_gpu_work* w) {
-    if (w->ascending_buf)      { md_gpu_destroy_buffer(w->ascending_buf);      w->ascending_buf      = NULL; }
-    if (w->descending_buf)     { md_gpu_destroy_buffer(w->descending_buf);     w->descending_buf     = NULL; }
-    if (w->types_buf)          { md_gpu_destroy_buffer(w->types_buf);          w->types_buf          = NULL; }
-    if (w->indices_buf)        { md_gpu_destroy_buffer(w->indices_buf);        w->indices_buf        = NULL; }
-    if (w->counters_buf)       { md_gpu_destroy_buffer(w->counters_buf);       w->counters_buf       = NULL; }
-    if (w->type_counts_buf)    { md_gpu_destroy_buffer(w->type_counts_buf);    w->type_counts_buf    = NULL; }
-    if (w->vert_buf)           { md_gpu_destroy_buffer(w->vert_buf);           w->vert_buf           = NULL; }
-    if (w->edge_buf)           { md_gpu_destroy_buffer(w->edge_buf);           w->edge_buf           = NULL; }
-    if (w->edge_count_buf)     { md_gpu_destroy_buffer(w->edge_count_buf);     w->edge_count_buf     = NULL; }
-    if (w->staging_edge_count) { md_gpu_destroy_buffer(w->staging_edge_count); w->staging_edge_count = NULL; }
-    if (w->staging_verts)      { md_gpu_destroy_buffer(w->staging_verts);      w->staging_verts      = NULL; }
-    if (w->staging_edges)      { md_gpu_destroy_buffer(w->staging_edges);      w->staging_edges      = NULL; }
+    if (w->ascending_buf)            { md_gpu_buffer_destroy(w->ascending_buf);            w->ascending_buf            = NULL; }
+    if (w->descending_buf)           { md_gpu_buffer_destroy(w->descending_buf);           w->descending_buf           = NULL; }
+    if (w->types_buf)                { md_gpu_buffer_destroy(w->types_buf);                w->types_buf                = NULL; }
+    if (w->indices_buf)              { md_gpu_buffer_destroy(w->indices_buf);              w->indices_buf              = NULL; }
+    if (w->voxel_to_vertex_idx_buf)  { md_gpu_buffer_destroy(w->voxel_to_vertex_idx_buf);  w->voxel_to_vertex_idx_buf  = NULL; }
+    if (w->counters_buf)             { md_gpu_buffer_destroy(w->counters_buf);             w->counters_buf             = NULL; }
+    if (w->type_counts_buf)          { md_gpu_buffer_destroy(w->type_counts_buf);          w->type_counts_buf          = NULL; }
+    if (w->vert_buf)           { md_gpu_buffer_destroy(w->vert_buf);           w->vert_buf           = NULL; }
+    if (w->edge_buf)           { md_gpu_buffer_destroy(w->edge_buf);           w->edge_buf           = NULL; }
+    if (w->edge_count_buf)     { md_gpu_buffer_destroy(w->edge_count_buf);     w->edge_count_buf     = NULL; }
+    if (w->staging_edge_count) { md_gpu_buffer_destroy(w->staging_edge_count); w->staging_edge_count = NULL; }
+    if (w->staging_verts)      { md_gpu_buffer_destroy(w->staging_verts);      w->staging_verts      = NULL; }
+    if (w->staging_edges)      { md_gpu_buffer_destroy(w->staging_edges);      w->staging_edges      = NULL; }
 }
 
-md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t device, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
+md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu(md_gpu_device_t device, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
     if (!device || !volume || !grid) {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu_async: invalid input");
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: invalid input");
         return NULL;
     }
 
@@ -137,14 +140,17 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
 
     struct {
         float    index_to_world[4][4];
-        uint32_t dims[3];
+        uint32_t dims[4];
         float    scalar_threshold;
+        float    _pad[3];
     } ubo_data;
     index_to_world_matrix(ubo_data.index_to_world, grid);
     ubo_data.dims[0] = grid->dim[0];
     ubo_data.dims[1] = grid->dim[1];
     ubo_data.dims[2] = grid->dim[2];
     ubo_data.scalar_threshold = scalar_threshold;
+    
+    uint32_t wg_size[3] = { DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8) };
 
     // Ensure pipelines (lazy, cached)
     md_gpu_compute_pipeline_t p_manifold = ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8, 8, 8);
@@ -154,7 +160,7 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
     md_gpu_compute_pipeline_t p_extract  = ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1, 1);
 
     if (!p_manifold || !p_compress || !p_critical || !p_compact || !p_extract) {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu_async: failed to ensure pipelines");
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to ensure pipelines");
         return NULL;
     }
 
@@ -162,33 +168,40 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
     if (!w) return NULL;
 
     w->device = device;
-    w->queue  = md_gpu_acquire_compute_queue(device);
+    w->queue  = md_gpu_queue_acquire(device);
 
     // Phase-1 compute buffers
-    w->ascending_buf  = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
-    w->descending_buf = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
-    w->types_buf      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(int32_t)  });
+    w->ascending_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
+    w->descending_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
+    w->types_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(int32_t)  });
 
     // Transient phase-1 buffers (freed after sync readback)
-    md_gpu_buffer_t counts_buf     = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
-    md_gpu_buffer_t changed_buf    = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
-    md_gpu_buffer_t staging_counts = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    md_gpu_buffer_t counts_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
+    // changed_read:  shader reads this at the start of each dispatch to decide early exit.
+    // changed_write: shader atomics write here; copied to changed_read after each dispatch.
+    md_gpu_buffer_t changed_read_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
+    md_gpu_buffer_t changed_write_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
+    // staging_changed: CPU reads this after the fence to confirm convergence.
+    md_gpu_buffer_t staging_changed   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    md_gpu_buffer_t staging_counts    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
 
     if (!w->ascending_buf || !w->descending_buf || !w->types_buf ||
-        !counts_buf || !changed_buf || !staging_counts)
+        !counts_buf || !changed_read_buf || !changed_write_buf || !staging_changed || !staging_counts)
     {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu_async: failed to create phase-1 buffers");
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-1 buffers");
         topo_work_destroy_buffers(w);
-        if (counts_buf)     md_gpu_destroy_buffer(counts_buf);
-        if (changed_buf)    md_gpu_destroy_buffer(changed_buf);
-        if (staging_counts) md_gpu_destroy_buffer(staging_counts);
+        if (counts_buf)        md_gpu_buffer_destroy(counts_buf);
+        if (changed_read_buf)  md_gpu_buffer_destroy(changed_read_buf);
+        if (changed_write_buf) md_gpu_buffer_destroy(changed_write_buf);
+        if (staging_changed)   md_gpu_buffer_destroy(staging_changed);
+        if (staging_counts)    md_gpu_buffer_destroy(staging_counts);
         free(w);
         return NULL;
     }
 
     // === Phase 1: manifold + compression + critical points (synchronous) ===
     {
-        md_gpu_command_buffer_t cmd = md_gpu_acquire_command_buffer(w->queue);
+        md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(w->queue);
 
         // Step 1: Bidirectional manifold
         md_gpu_cmd_bind_compute_pipeline(cmd, p_manifold);
@@ -196,26 +209,49 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
         md_gpu_cmd_bind_image(cmd, 0, volume);
         md_gpu_cmd_bind_buffer(cmd, 0, w->ascending_buf);
         md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
-        md_gpu_cmd_dispatch(cmd, (grid->dim[0]+7)/8, (grid->dim[1]+7)/8, (grid->dim[2]+7)/8);
+        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
         md_gpu_cmd_barrier(cmd);
 
-        // Step 2: Path compression (iterative)
+        // Step 2: Path compression (iterative with GPU-side early exit)
+        // Each dispatch does one grandparent pointer-jump.  A path of length L needs
+        // ceil(log2(L)) iterations to collapse.  2 * ceil(log2(max_dim)) is a generous
+        // upper bound; the early-exit path makes excess iterations essentially free.
         uint32_t num_iterations = 0;
-        uint32_t max_dim = grid->dim[0];
-        if (grid->dim[1] > max_dim) max_dim = grid->dim[1];
-        if (grid->dim[2] > max_dim) max_dim = grid->dim[2];
+        uint32_t max_dim = (uint32_t)MAX(grid->dim[0], MAX(grid->dim[1], grid->dim[2]));
         while (max_dim > (1U << num_iterations)) num_iterations++;
-        num_iterations += 2;
+        num_iterations *= 2;
+
+        // Seed changed_read = 1 so the first dispatch always runs.
+        md_gpu_cmd_fill_buffer(cmd, changed_read_buf, 0, sizeof(uint32_t), 1);
+        md_gpu_cmd_barrier_buffer_ex(cmd, changed_read_buf,
+            MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
         md_gpu_cmd_bind_compute_pipeline(cmd, p_compress);
         md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
         md_gpu_cmd_bind_buffer(cmd, 0, w->ascending_buf);
         md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 2, changed_buf);
+        md_gpu_cmd_bind_buffer(cmd, 2, changed_read_buf);
+        md_gpu_cmd_bind_buffer(cmd, 3, changed_write_buf);
         for (uint32_t i = 0; i < num_iterations; i++) {
-            md_gpu_cmd_dispatch(cmd, (grid->dim[0]+7)/8, (grid->dim[1]+7)/8, (grid->dim[2]+7)/8);
-            md_gpu_cmd_barrier(cmd);
+            md_gpu_cmd_fill_buffer(cmd, changed_write_buf, 0, sizeof(uint32_t), 0);
+            md_gpu_cmd_barrier_buffer_ex(cmd, changed_write_buf,
+                MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+            md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
+
+            md_gpu_cmd_barrier_buffer_ex(cmd, w->ascending_buf,
+                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+            md_gpu_cmd_barrier_buffer_ex(cmd, w->descending_buf,
+                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+            md_gpu_cmd_barrier_buffer_ex(cmd, changed_write_buf,
+                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+
+            md_gpu_cmd_copy_buffer(cmd, changed_write_buf, changed_read_buf, sizeof(uint32_t), 0, 0);
+            md_gpu_cmd_barrier_buffer_ex(cmd, changed_read_buf,
+                MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
         }
+        // Copy final convergence flag to CPU-visible staging for post-fence validation.
+        md_gpu_cmd_copy_buffer(cmd, changed_read_buf, staging_changed, sizeof(uint32_t), 0, 0);
 
         // Step 3: Critical points
         md_gpu_cmd_fill_buffer(cmd, counts_buf, 0, 4 * sizeof(uint32_t), 0);
@@ -228,30 +264,39 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
         md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
         md_gpu_cmd_bind_buffer(cmd, 2, w->types_buf);
         md_gpu_cmd_bind_buffer(cmd, 3, counts_buf);
-        md_gpu_cmd_dispatch(cmd, (grid->dim[0]+7)/8, (grid->dim[1]+7)/8, (grid->dim[2]+7)/8);
+        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
         md_gpu_cmd_barrier(cmd);
 
         md_gpu_cmd_copy_buffer(cmd, counts_buf, staging_counts, 4 * sizeof(uint32_t), 0, 0);
 
         md_gpu_fence_t fence = md_gpu_queue_submit(w->queue, cmd);
         md_gpu_fence_wait(fence);
-        md_gpu_destroy_fence(fence);
+        md_gpu_fence_destroy(fence);
     }
 
     // Read back counts (CPU-side, now available)
     {
-        const uint32_t* ptr = (const uint32_t*)md_gpu_map_buffer(staging_counts);
+        const uint32_t* ptr = (const uint32_t*)md_gpu_buffer_cpu_ptr(staging_counts);
         w->num_maxima        = ptr[0];
         w->num_split_saddles = ptr[1];
         w->num_minima        = ptr[2];
         w->num_join_saddles  = ptr[3];
-        md_gpu_unmap_buffer(staging_counts);
+    }
+
+    // Convergence check: warn if path compression did not fully converge.
+    {
+        const uint32_t* ptr = (const uint32_t*)md_gpu_buffer_cpu_ptr(staging_changed);
+        if (*ptr != 0) {
+            MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: path compression did not converge within the iteration budget — results may be approximate");
+        }
     }
 
     // Free transient phase-1 buffers
-    md_gpu_destroy_buffer(counts_buf);
-    md_gpu_destroy_buffer(changed_buf);
-    md_gpu_destroy_buffer(staging_counts);
+    md_gpu_buffer_destroy(counts_buf);
+    md_gpu_buffer_destroy(changed_read_buf);
+    md_gpu_buffer_destroy(changed_write_buf);
+    md_gpu_buffer_destroy(staging_changed);
+    md_gpu_buffer_destroy(staging_counts);
 
     w->num_vertices = w->num_maxima + w->num_split_saddles + w->num_minima + w->num_join_saddles;
     w->num_edges    = 8 * (w->num_split_saddles + w->num_join_saddles);
@@ -264,38 +309,73 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
         return (md_topo_gpu_work_t*)w;
     }
 
-    // Create phase-2 buffers
-    w->indices_buf     = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * sizeof(uint32_t) });
-    w->counters_buf    = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
-    w->type_counts_buf = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = 5 * sizeof(uint32_t) });
-    w->vert_buf        = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float) });
-    w->edge_buf        = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t) });
-    w->edge_count_buf  = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
+    // Create phase-2 buffers (all device-local)
+    w->indices_buf            = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * sizeof(uint32_t) });
+    w->voxel_to_vertex_idx_buf= md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points     * sizeof(int32_t)  });
+    w->counters_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
+    w->type_counts_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 5 * sizeof(uint32_t) });
+    w->vert_buf               = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float) });
+    w->edge_buf               = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t) });
+    w->edge_count_buf         = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
 
-    w->staging_edge_count = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t),                              .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    w->staging_verts      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float),           .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    w->staging_edges      = md_gpu_create_buffer(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t),         .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    w->staging_edge_count = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t),                            .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    w->staging_verts      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float),         .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    w->staging_edges      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t),       .flags = MD_GPU_BUFFER_CPU_VISIBLE });
 
-    if (!w->indices_buf || !w->counters_buf || !w->type_counts_buf ||
-        !w->vert_buf   || !w->edge_buf      || !w->edge_count_buf  ||
-        !w->staging_edge_count || !w->staging_verts || !w->staging_edges)
+    if (!w->indices_buf         || !w->voxel_to_vertex_idx_buf || !w->counters_buf    ||
+        !w->type_counts_buf     || !w->vert_buf                || !w->edge_buf        ||
+        !w->edge_count_buf      || !w->staging_edge_count      || !w->staging_verts   ||
+        !w->staging_edges)
     {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu_async: failed to create phase-2 buffers");
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-2 buffers");
         topo_work_destroy_buffers(w);
         free(w);
         return NULL;
     }
 
+    // Upload per-type initial values via a CPU_VISIBLE staging buffer.
+    // counters_buf: write-position cursors, pre-offset to each type's section.
+    // type_counts_buf: read-only counts used by the extraction shader.
+    // voxel_to_vertex_idx_buf: must be pre-filled with -1 (0xFF bytes = 0xFFFFFFFF = -1 as int32).
+    {
+        uint32_t counters_init[4] = {
+            0,                                                              // maximaWritePos
+            w->num_maxima,                                                  // splitSaddleWritePos
+            w->num_maxima + w->num_split_saddles,                           // minimaWritePos
+            w->num_maxima + w->num_split_saddles + w->num_minima,           // joinSaddleWritePos
+        };
+        uint32_t type_counts_init[5] = {
+            w->num_maxima, w->num_split_saddles, w->num_minima,
+            w->num_join_saddles, w->num_vertices,
+        };
+        md_gpu_buffer_t staging_init = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
+            .size = sizeof(counters_init) + sizeof(type_counts_init),
+            .flags = MD_GPU_BUFFER_CPU_VISIBLE,
+        });
+        if (!staging_init) {
+            MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-2 staging init buffer");
+            topo_work_destroy_buffers(w);
+            free(w);
+            return NULL;
+        }
+        uint8_t* p = (uint8_t*)md_gpu_buffer_cpu_ptr(staging_init);
+        MEMCPY(p,                         counters_init,    sizeof(counters_init));
+        MEMCPY(p + sizeof(counters_init), type_counts_init, sizeof(type_counts_init));
+
+        md_gpu_command_buffer_t init_cmd = md_gpu_command_buffer_acquire(w->queue);
+        // voxel_to_vertex_idx: fill with 0xFF bytes → each int32 reads as -1
+        md_gpu_cmd_fill_buffer(init_cmd, w->voxel_to_vertex_idx_buf, 0, num_points * sizeof(int32_t), 0xFF);
+        md_gpu_cmd_copy_buffer(init_cmd, staging_init, w->counters_buf,    sizeof(counters_init),    0, 0);
+        md_gpu_cmd_copy_buffer(init_cmd, staging_init, w->type_counts_buf,  sizeof(type_counts_init), sizeof(counters_init), 0);
+        md_gpu_fence_t init_fence = md_gpu_queue_submit(w->queue, init_cmd);
+        md_gpu_fence_wait(init_fence);
+        md_gpu_fence_destroy(init_fence);
+        md_gpu_buffer_destroy(staging_init);
+    }
+
     // === Phase 2: compaction + extraction (asynchronous) ===
     {
-        md_gpu_command_buffer_t cmd = md_gpu_acquire_command_buffer(w->queue);
-
-        // Initialise write-offset counters for the compaction shader
-        md_gpu_cmd_fill_buffer(cmd, w->counters_buf, 0 * sizeof(uint32_t), sizeof(uint32_t), 0);
-        md_gpu_cmd_fill_buffer(cmd, w->counters_buf, 1 * sizeof(uint32_t), sizeof(uint32_t), w->num_maxima);
-        md_gpu_cmd_fill_buffer(cmd, w->counters_buf, 2 * sizeof(uint32_t), sizeof(uint32_t), w->num_maxima + w->num_split_saddles);
-        md_gpu_cmd_fill_buffer(cmd, w->counters_buf, 3 * sizeof(uint32_t), sizeof(uint32_t), w->num_maxima + w->num_split_saddles + w->num_minima);
-        md_gpu_cmd_barrier(cmd);
+        md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(w->queue);
 
         // Step 4: Critical-point compaction
         md_gpu_cmd_bind_compute_pipeline(cmd, p_compact);
@@ -303,15 +383,11 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
         md_gpu_cmd_bind_buffer(cmd, 0, w->types_buf);
         md_gpu_cmd_bind_buffer(cmd, 1, w->indices_buf);
         md_gpu_cmd_bind_buffer(cmd, 2, w->counters_buf);
-        md_gpu_cmd_dispatch(cmd, (grid->dim[0]+7)/8, (grid->dim[1]+7)/8, (grid->dim[2]+7)/8);
+        md_gpu_cmd_bind_buffer(cmd, 3, w->voxel_to_vertex_idx_buf);
+        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
         md_gpu_cmd_barrier(cmd);
 
-        // Upload per-type counts for the extraction shader
-        md_gpu_cmd_fill_buffer(cmd, w->type_counts_buf, 0 * sizeof(uint32_t), sizeof(uint32_t), w->num_maxima);
-        md_gpu_cmd_fill_buffer(cmd, w->type_counts_buf, 1 * sizeof(uint32_t), sizeof(uint32_t), w->num_split_saddles);
-        md_gpu_cmd_fill_buffer(cmd, w->type_counts_buf, 2 * sizeof(uint32_t), sizeof(uint32_t), w->num_minima);
-        md_gpu_cmd_fill_buffer(cmd, w->type_counts_buf, 3 * sizeof(uint32_t), sizeof(uint32_t), w->num_join_saddles);
-        md_gpu_cmd_fill_buffer(cmd, w->type_counts_buf, 4 * sizeof(uint32_t), sizeof(uint32_t), w->num_vertices);
+        // Zero the edge counter (byte-fill of 0 is always correct)
         md_gpu_cmd_fill_buffer(cmd, w->edge_count_buf, 0, sizeof(uint32_t), 0);
         md_gpu_cmd_barrier(cmd);
 
@@ -325,9 +401,9 @@ md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu_async(md_gpu_device_t dev
         md_gpu_cmd_bind_buffer(cmd, 4, w->vert_buf);
         md_gpu_cmd_bind_buffer(cmd, 5, w->edge_buf);
         md_gpu_cmd_bind_buffer(cmd, 6, w->edge_count_buf);
-        md_gpu_cmd_bind_buffer(cmd, 7, w->types_buf);
+        md_gpu_cmd_bind_buffer(cmd, 7, w->voxel_to_vertex_idx_buf);
         md_gpu_cmd_bind_image(cmd, 0, volume);
-        md_gpu_cmd_dispatch(cmd, (w->num_vertices + 63) / 64, 1, 1);
+        md_gpu_cmd_dispatch(cmd, DIV_UP(w->num_vertices, 64), 1, 1);
         md_gpu_cmd_barrier(cmd);
 
         // Copy outputs to CPU-visible staging
@@ -349,22 +425,56 @@ bool md_topo_gpu_work_is_done(const md_topo_gpu_work_t* work) {
     return md_gpu_fence_is_signaled(w->fence);
 }
 
-bool md_topo_gpu_work_complete(md_topo_gpu_work_t* work, md_topo_extremum_graph_t* out_graph) {
+bool md_topo_gpu_work_finish(md_topo_extremum_graph_t* out_graph, md_topo_gpu_work_t* work) {
     if (!work) return false;
     struct md_topo_gpu_work* w = (struct md_topo_gpu_work*)work;
-
-    md_allocator_i* alloc = (out_graph && out_graph->alloc) ? out_graph->alloc : md_get_heap_allocator();
 
     // Wait for phase-2 GPU completion
     if (w->fence) {
         md_gpu_fence_wait(w->fence);
-        md_gpu_destroy_fence(w->fence);
+        md_gpu_fence_destroy(w->fence);
         w->fence = NULL;
     }
 
+#if DEBUG
+    // === Diagnostic readback ===
+    if (w->num_vertices > 0) {
+        uint32_t n = w->num_vertices < 8u ? w->num_vertices : 8u;
+
+        // Copy first n cp_indices to a temporary staging buffer for readback.
+        md_gpu_buffer_t dbg_staging = md_gpu_buffer_create(w->device, &(md_gpu_buffer_desc_t){
+            .size = n * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+        if (dbg_staging) {
+            md_gpu_command_buffer_t dbg_cmd = md_gpu_command_buffer_acquire(w->queue);
+            md_gpu_cmd_copy_buffer(dbg_cmd, w->indices_buf, dbg_staging, n * sizeof(uint32_t), 0, 0);
+            md_gpu_fence_t dbg_fence = md_gpu_queue_submit(w->queue, dbg_cmd);
+            md_gpu_fence_wait(dbg_fence);
+            md_gpu_fence_destroy(dbg_fence);
+
+            const uint32_t* idx = (const uint32_t*)md_gpu_buffer_cpu_ptr(dbg_staging);
+            MD_LOG_DEBUG("[topo] First %u cp_indices (voxel IDs):", n);
+            for (uint32_t i = 0; i < n; i++) {
+                MD_LOG_DEBUG("  cp_indices[%u] = %u", i, idx[i]);
+            }
+            md_gpu_buffer_destroy(dbg_staging);
+        }
+
+        // Vertex positions are already in staging_verts (CPU_VISIBLE).
+        const float* vrt = (const float*)md_gpu_buffer_cpu_ptr(w->staging_verts);
+        MD_LOG_DEBUG("[topo] First %u vertex positions:", n);
+        for (uint32_t i = 0; i < n; i++) {
+            MD_LOG_DEBUG("  vertex[%u]: pos=(%.4f, %.4f, %.4f)  val=%.6f",
+                i, vrt[i*4+0], vrt[i*4+1], vrt[i*4+2], vrt[i*4+3]);
+        }
+    }
+#endif
+
     if (out_graph) {
+        ASSERT(out_graph->alloc);
+        md_allocator_i* alloc = out_graph->alloc;
         MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
-        out_graph->alloc             = alloc;
+
+        out_graph->alloc = alloc;
         out_graph->num_maxima        = w->num_maxima;
         out_graph->num_split_saddles = w->num_split_saddles;
         out_graph->num_minima        = w->num_minima;
@@ -373,31 +483,24 @@ bool md_topo_gpu_work_complete(md_topo_gpu_work_t* work, md_topo_extremum_graph_
 
         if (w->num_vertices > 0) {
             // Actual edge count (may be less than the estimated upper bound)
-            {
-                const uint32_t* ptr = (const uint32_t*)md_gpu_map_buffer(w->staging_edge_count);
-                out_graph->num_edges = *ptr;
-                md_gpu_unmap_buffer(w->staging_edge_count);
-            }
+            out_graph->num_edges = *(const uint32_t*)md_gpu_buffer_cpu_ptr(w->staging_edge_count);
 
             // Vertices (float4: xyz = world position, w = scalar value)
-            out_graph->vertices = (md_topo_vert_t*)md_alloc(alloc, w->num_vertices * sizeof(md_topo_vert_t));
+            md_array_resize(out_graph->vertices, w->num_vertices, out_graph->alloc);
             {
-                const float* ptr = (const float*)md_gpu_map_buffer(w->staging_verts);
+                const float* ptr = (const float*)md_gpu_buffer_cpu_ptr(w->staging_verts);
                 for (uint32_t i = 0; i < w->num_vertices; i++) {
                     out_graph->vertices[i].x     = ptr[i * 4 + 0];
                     out_graph->vertices[i].y     = ptr[i * 4 + 1];
                     out_graph->vertices[i].z     = ptr[i * 4 + 2];
                     out_graph->vertices[i].value = ptr[i * 4 + 3];
                 }
-                md_gpu_unmap_buffer(w->staging_verts);
             }
 
             // Edges
             if (out_graph->num_edges > 0) {
-                out_graph->edges = (md_topo_edge_t*)md_alloc(alloc, out_graph->num_edges * sizeof(md_topo_edge_t));
-                const void* ptr  = md_gpu_map_buffer(w->staging_edges);
-                MEMCPY(out_graph->edges, ptr, out_graph->num_edges * sizeof(md_topo_edge_t));
-                md_gpu_unmap_buffer(w->staging_edges);
+                md_array_resize(out_graph->edges, out_graph->num_edges, out_graph->alloc);
+                MEMCPY(out_graph->edges, md_gpu_buffer_cpu_ptr(w->staging_edges), out_graph->num_edges * sizeof(md_topo_edge_t));
             }
         }
     }
@@ -405,28 +508,6 @@ bool md_topo_gpu_work_complete(md_topo_gpu_work_t* work, md_topo_extremum_graph_
     topo_work_destroy_buffers(w);
     free(w);
     return true;
-}
-
-void md_topo_gpu_work_free(md_topo_gpu_work_t* work) {
-    if (!work) return;
-    struct md_topo_gpu_work* w = (struct md_topo_gpu_work*)work;
-    if (w->fence) {
-        md_gpu_fence_wait(w->fence);
-        md_gpu_destroy_fence(w->fence);
-        w->fence = NULL;
-    }
-    topo_work_destroy_buffers(w);
-    free(w);
-}
-
-bool md_topo_compute_extremum_graph_gpu(md_topo_extremum_graph_t* out_graph, md_gpu_device_t device, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
-    if (!out_graph || !device || !volume || !grid) {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: invalid input");
-        return false;
-    }
-    md_topo_gpu_work_t* work = md_topo_compute_extremum_graph_gpu_async(device, volume, grid, scalar_threshold);
-    if (!work) return false;
-    return md_topo_gpu_work_complete(work, out_graph);
 }
 
 #elif !MD_PLATFORM_OSX
