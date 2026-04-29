@@ -1279,6 +1279,10 @@ done:
 }
 
 static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const char* field_name) {
+    ASSERT(out_str);
+	ASSERT(str_cap > 0);
+	out_str[0] = '\0';
+
 	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
 	if (exists == 0) {
 		return 0;
@@ -1295,21 +1299,61 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 
 	// Get the datatype and space
 	hid_t datatype_id = H5Dget_type(dataset_id);  // Get datatype
+	if (datatype_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to query H5 datatype for dataset: '%s'", field_name);
+		goto done;
+	}
 
-	// Determine size of string (assume variable-length string)
-	size_t size = H5Tget_size(datatype_id);
-	if (size < str_cap) {
-		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_str);
+	if (H5Tget_class(datatype_id) != H5T_STRING) {
+		MD_LOG_ERROR("H5 dataset is not a string: '%s'", field_name);
+		goto done;
+	}
+
+	if (H5Tis_variable_str(datatype_id)) {
+		// Variable-length string
+		char* tmp = NULL;
+		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, &tmp);
 		if (status != 0) {
-			MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
+			MD_LOG_ERROR("Failed to read variable-length string for H5 dataset: '%s'", field_name);
 			goto done;
 		}
-		result = size;
+
+		if (tmp) {
+			size_t len = strlen(tmp);
+			result = MIN(len, str_cap - 1);
+			MEMCPY(out_str, tmp, result);
+			out_str[result] = '\0';
+			H5free_memory(tmp);
+		}
+	} else {
+      // Fixed-length strings may not be null-terminated, so read into a temporary buffer first.
+		size_t size = H5Tget_size(datatype_id);
+		char* tmp = md_alloc(md_get_heap_allocator(), size + 1);
+		if (!tmp) {
+			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
+			goto done;
+		}
+		MEMSET(tmp, 0, size + 1);
+
+		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read fixed-length string for H5 dataset: '%s'", field_name);
+			md_free(md_get_heap_allocator(), tmp, size + 1);
+			goto done;
+		}
+
+		size_t len = strnlen(tmp, size);
+		result = MIN(len, str_cap - 1);
+		MEMCPY(out_str, tmp, result);
+		out_str[result] = '\0';
+
+		md_free(md_get_heap_allocator(), tmp, size + 1);
 	}
+
 done:
 
 	// Close HDF5 resources
-	H5Tclose(datatype_id);
+  if (datatype_id != H5I_INVALID_HID) H5Tclose(datatype_id);
 	H5Dclose(dataset_id);
 
 	return result;
@@ -1663,34 +1707,93 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		//return false;
 	}
 
-	size_t scf_hist_iter = 0;
-	if (!h5_read_dataset_dims(&scf_hist_iter, 1, handle, "scf_history_diff_density")) {
-		return false;
-	}
+	if (H5Lexists(handle, "scf_history", H5P_DEFAULT)) {
+		// Extract new history format. This contains individual groups for each iteration labeled '0' ... 'N'.
+		// Each group contains scalar datasets for the values of that iteration.
+		// The individual datasets are named:
+		// - 'diff_density'
+		// - 'diff_energy'
+		// - 'energy'
+		// - 'gradient_norm'
+		// - 'max_gradient'
 
-	if (scf_hist_iter > 0) {
-		vlx->scf.history.number_of_iterations = scf_hist_iter;
-		md_array_resize(vlx->scf.history.density_diff, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.energy, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.energy_diff, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.gradient_norm, scf_hist_iter, vlx->arena);
-		md_array_resize(vlx->scf.history.max_gradient, scf_hist_iter, vlx->arena);
-	}
+		hid_t scf_history = H5Gopen(handle, "scf_history", H5P_DEFAULT);
+		if (scf_history < 0) {
+			return false;
+		}
 
-	if (!h5_read_dataset_data(vlx->scf.history.density_diff, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_density")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.energy_diff, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_energy")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.energy, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_energy")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.gradient_norm, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_gradient_norm")) {
-		return false;
-	}
-	if (!h5_read_dataset_data(vlx->scf.history.max_gradient, scf_hist_iter, handle, H5T_NATIVE_DOUBLE, "scf_history_max_gradient")) {
-		return false;
+		// Determine number of iterations by counting number of groups. Assume that all groups are iterations.
+		size_t num_links = 0;
+		if (H5Gget_num_objs(scf_history, &num_links) < 0) {
+			return false;
+		}
+
+		md_array_resize(vlx->scf.history.density_diff,	num_links, vlx->arena);
+		md_array_resize(vlx->scf.history.energy_diff,	num_links, vlx->arena);
+		md_array_resize(vlx->scf.history.energy,		num_links, vlx->arena);
+		md_array_resize(vlx->scf.history.gradient_norm, num_links, vlx->arena);
+		md_array_resize(vlx->scf.history.max_gradient,  num_links, vlx->arena);
+
+		size_t num_iter = 0;
+		for (size_t i = 0; i < num_links; ++i) {
+			// We check and read them in iteration order
+			char name_buf[64];
+			snprintf(name_buf, sizeof(name_buf), "%zu", i);
+			if (H5Lexists(scf_history, name_buf, H5P_DEFAULT) > 0) {
+				hid_t iter_group = H5Gopen(scf_history, name_buf, H5P_DEFAULT);
+				if (iter_group < 0) {
+					return false;
+				}
+				if (!h5_read_dataset_data(&vlx->scf.history.density_diff[i], 1, iter_group, H5T_NATIVE_DOUBLE, "diff_density")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(&vlx->scf.history.energy_diff[i], 1, iter_group, H5T_NATIVE_DOUBLE, "diff_energy")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(&vlx->scf.history.energy[i], 1, iter_group, H5T_NATIVE_DOUBLE, "energy")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(&vlx->scf.history.gradient_norm[i], 1, iter_group, H5T_NATIVE_DOUBLE, "gradient_norm")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(&vlx->scf.history.max_gradient[i], 1, iter_group, H5T_NATIVE_DOUBLE, "max_gradient")) {
+					return false;
+				}
+				H5Gclose(iter_group);
+				num_iter += 1;
+			}
+		}
+		vlx->scf.history.number_of_iterations = num_iter;
+	} else if (H5Lexists(handle, "scf_history_energy", H5P_DEFAULT)) {
+		size_t scf_hist_len = 0;
+		if (!h5_read_dataset_dims(&scf_hist_len, 1, handle, "scf_history_energy")) {
+			return false;
+		}
+
+		if (scf_hist_len > 0) {
+			vlx->scf.history.number_of_iterations = scf_hist_len;
+			md_array_resize(vlx->scf.history.density_diff, scf_hist_len, vlx->arena);
+			md_array_resize(vlx->scf.history.energy, scf_hist_len, vlx->arena);
+			md_array_resize(vlx->scf.history.energy_diff, scf_hist_len, vlx->arena);
+			md_array_resize(vlx->scf.history.gradient_norm, scf_hist_len, vlx->arena);
+			md_array_resize(vlx->scf.history.max_gradient, scf_hist_len, vlx->arena);
+		}
+
+		if (!h5_read_dataset_data(vlx->scf.history.density_diff, scf_hist_len, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_density")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.history.energy_diff, scf_hist_len, handle, H5T_NATIVE_DOUBLE, "scf_history_diff_energy")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.history.energy, scf_hist_len, handle, H5T_NATIVE_DOUBLE, "scf_history_energy")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.history.gradient_norm, scf_hist_len, handle, H5T_NATIVE_DOUBLE, "scf_history_gradient_norm")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.history.max_gradient, scf_hist_len, handle, H5T_NATIVE_DOUBLE, "scf_history_max_gradient")) {
+			return false;
+		}
 	}
 
 	{
