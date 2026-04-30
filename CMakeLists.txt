@@ -196,6 +196,7 @@ set(TOPO_SLANG_FILES
 
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
+  src/shaders/gto/eval_gto_mo.slang
 )
 
 set(GEN_FILES)

@@ -963,6 +963,25 @@ static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t dev
     return gto_pip_density;
 }
 
+static md_gpu_compute_pipeline_t gto_ensure_mo_pipeline(md_gpu_device_t device) {
+    if (gto_cached_device != device) {
+        gto_invalidate_pipelines();
+        gto_cached_device = device;
+    }
+    if (!gto_pip_mo) {
+        md_gpu_compute_pipeline_desc_t desc = {
+            .shader_bytes     = gto_eval_gto_mo_start,
+            .shader_byte_size = gto_eval_gto_mo_size(),
+            .threadgroup_size = { 8, 8, 8 },
+        };
+        gto_pip_mo = md_gpu_compute_pipeline_create(device, &desc);
+        if (!gto_pip_mo) {
+            MD_LOG_ERROR("Failed to create GTO MO compute pipeline");
+        }
+    }
+    return gto_pip_mo;
+}
+
 // Shared helper: compute the common cgto/pgto section layout and return a partially-filled struct.
 // Caller sets num_rows, off_coeffs, and total_size after this returns.
 static md_gto_eval_buf_layout_t gto_eval_buf_compute_base_layout(uint32_t num_cgtos, uint32_t num_pgtos) {
@@ -1151,14 +1170,54 @@ md_gpu_fence_t md_gto_grid_evaluate_mo_gpu(md_gpu_device_t device,
         return NULL;
     }
 
-    // @TODO: Implement MO GPU evaluation shader (eval_gto_mo.slang) and embed it in gto_gpu_shaders.inl.
-    // The shader needs: same cgto_xyzr/cgto_off_len/pgto bindings as density,
-    // plus a float[num_rows][num_cgtos] coefficient buffer (binding 3),
-    // push constants for num_cgtos, num_rows, and eval_mode.
-    // For PSI mode: accumulate sum_m(coeff_row_m * psi_m); for PSI_SQUARED: accumulate sum_m(coeff_row_m * psi_m^2).
-    MD_LOG_ERROR("md_gto_grid_evaluate_mo_gpu: MO GPU shader not yet implemented");
-    (void)eval_mode;
-    return NULL;
+    md_gpu_compute_pipeline_t pipeline = gto_ensure_mo_pipeline(device);
+    if (!pipeline) return NULL;
+
+    typedef struct {
+        float    world_to_model[4][4];
+        float    index_to_world[4][4];
+        float    step[4];
+        uint32_t num_cgtos;
+        uint32_t num_rows;
+        uint32_t eval_mode;
+        uint32_t _pad;
+    } ubo_t;
+
+    ubo_t ubo = {0};
+    world_to_model_matrix(ubo.world_to_model, grid);
+    index_to_world_matrix(ubo.index_to_world, grid);
+    ubo.step[0]   = grid->spacing.elem[0];
+    ubo.step[1]   = grid->spacing.elem[1];
+    ubo.step[2]   = grid->spacing.elem[2];
+    ubo.step[3]   = 0.0f;
+    ubo.num_cgtos = layout->num_cgtos;
+    ubo.num_rows  = layout->num_rows;
+    ubo.eval_mode = (uint32_t)eval_mode;
+
+    size_t sz_cgto_xyzr    = layout->off_cgto_off_len - layout->off_cgto_xyzr;
+    size_t sz_cgto_off_len = layout->off_pgto          - layout->off_cgto_off_len;
+    size_t sz_pgto         = layout->off_coeffs        - layout->off_pgto;
+    size_t sz_coeffs       = (size_t)(layout->total_size - layout->off_coeffs);
+
+    md_gpu_queue_t          queue = md_gpu_queue_acquire(device);
+    md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+
+    uint32_t wg_size[3] = {
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
+    };
+
+    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_buffer_range(cmd, 0, buf, layout->off_cgto_xyzr,    sz_cgto_xyzr);
+    md_gpu_cmd_bind_buffer_range(cmd, 1, buf, layout->off_cgto_off_len, sz_cgto_off_len);
+    md_gpu_cmd_bind_buffer_range(cmd, 2, buf, layout->off_pgto,         sz_pgto);
+    md_gpu_cmd_bind_buffer_range(cmd, 3, buf, layout->off_coeffs,       sz_coeffs);
+    md_gpu_cmd_bind_image(cmd, 0, out_image);
+    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
+
+    return md_gpu_queue_submit(queue, cmd);
 }
 
 #endif // MD_ENABLE_GPU
