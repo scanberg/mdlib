@@ -14,10 +14,11 @@
 // density shader instead.
 //
 // Buffer bindings:
-//   0  cgto_xyzr    float4[num_cgtos]         (xyz = center, w = cutoff radius)
-//   1  cgto_off_len uint2[num_cgtos]           (offset, length into pgto buffer)
-//   2  pgto         PGTO[num_pgtos]            (coeff, alpha, ijkl)
-//   3  coeffs       float[num_rows * num_cgtos] row-major MO coefficient matrix
+//   0  cgto_xyz     float3[num_cgtos]          (center position)
+//   1  cgto_r       float[num_cgtos]            (cutoff radius)
+//   2  cgto_off_len uint2[num_cgtos]            (offset, length into pgto buffer)
+//   3  pgto         PGTO[num_pgtos]             (coeff, alpha, ijkl)
+//   4  coeffs       float[num_rows * num_cgtos] row-major MO coefficient matrix
 //  16  out_vol      RWTexture3D<float>          output grid
 
 struct PGTO {
@@ -39,10 +40,11 @@ struct UBO {
 [[vk::push_constant]]
 ConstantBuffer<UBO> ubo;
 
-[[vk::binding(0)]] StructuredBuffer<float4> cgto_xyzr;
-[[vk::binding(1)]] StructuredBuffer<uint2>  cgto_off_len;
-[[vk::binding(2)]] StructuredBuffer<PGTO>   pgto;
-[[vk::binding(3)]] StructuredBuffer<float>  coeffs;   // float[num_rows][num_cgtos], row-major
+[[vk::binding(0)]] StructuredBuffer<float3> cgto_xyz;
+[[vk::binding(1)]] StructuredBuffer<float>  cgto_r;
+[[vk::binding(2)]] StructuredBuffer<uint2>  cgto_off_len;
+[[vk::binding(3)]] StructuredBuffer<PGTO>   pgto;
+[[vk::binding(4)]] StructuredBuffer<float>  coeffs;   // float[num_rows][num_cgtos], row-major
 
 [[vk::binding(16)]] // image slot 0  (slot + MD_GPU_MAX_BIND_SLOTS)
 RWTexture3D<float> out_vol;
@@ -94,7 +96,7 @@ void fill_cgtos_tile(uint tile_number, uint tid) {
 
         if (gi != 0xFFFFFFFFu) {
             off_len = cgto_off_len[gi];
-            center  = cgto_xyzr[gi].xyz;
+            center  = cgto_xyz[gi];
             InterlockedAdd(num_pgtos_tile, off_len.y, dst);
         }
 
@@ -180,11 +182,11 @@ void main(
     float3 model_aabb_max = float3((gid + uint3(1,1,1)) * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
 
     for (uint i = tid; i < ubo.num_cgtos; i += WG_SIZE) {
-        float4 cgto = cgto_xyzr[i];
-        if (cgto.w == 0.0f) continue;
+        float3 center = cgto_xyz[i];
+        float  r      = cgto_r[i];
+        if (r == 0.0f) continue;
 
-        float3 model_xyz = mul(ubo.world_to_model, float4(cgto.xyz, 1.0f)).xyz;
-        float  r         = cgto.w;
+        float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0f)).xyz;
         float3 d         = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
 
         if (dot(d, d) < r * r) {

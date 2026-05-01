@@ -67,6 +67,7 @@ set(CORE_FILES
   src/core/md_gl_util.c
   src/core/md_gl_util.h
   src/core/md_gpu.h
+  src/core/md_gpu_util.h
   src/core/md_grid.c
   src/core/md_grid.h
   src/core/md_handle.c

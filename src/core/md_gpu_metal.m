@@ -52,7 +52,9 @@ typedef enum md_gpu_cmd_type_t {
     CMD_DISPATCH,
     CMD_COPY_BUFFER,
     CMD_COPY_IMAGE_TO_BUFFER,
+    CMD_COPY_IMAGE_REGION_TO_BUFFER,
     CMD_COPY_BUFFER_TO_IMAGE,
+    CMD_COPY_BUFFER_TO_IMAGE_REGION,
     CMD_FILL_BUFFER,
     CMD_BARRIER,
     CMD_BARRIER_BUFFER,
@@ -72,9 +74,23 @@ struct md_gpu_cmd_copy_image_to_buffer {
     struct md_gpu_buffer* buffer;
 };
 
+struct md_gpu_cmd_copy_image_region_to_buffer {
+    struct md_gpu_image*  image;
+    struct md_gpu_buffer* buffer;
+    md_gpu_image_region_t region;
+    size_t dst_offset;
+};
+
 struct md_gpu_cmd_copy_buffer_to_image {
     struct md_gpu_buffer* buffer;
     struct md_gpu_image* image;
+};
+
+struct md_gpu_cmd_copy_buffer_to_image_region {
+    struct md_gpu_buffer* buffer;
+    struct md_gpu_image*  image;
+    md_gpu_image_region_t region;
+    size_t src_offset;
 };
 
 struct md_gpu_cmd_fill_buffer {
@@ -108,8 +124,10 @@ struct md_gpu_recorded_cmd {
     union {
         struct md_gpu_cmd_dispatch dispatch;
         struct md_gpu_cmd_copy_buffer copy_buf;
-        struct md_gpu_cmd_copy_image_to_buffer copy_img_buf;
-        struct md_gpu_cmd_copy_buffer_to_image copy_buf_img;
+        struct md_gpu_cmd_copy_image_to_buffer        copy_img_buf;
+        struct md_gpu_cmd_copy_image_region_to_buffer  copy_img_region_buf;
+        struct md_gpu_cmd_copy_buffer_to_image         copy_buf_img;
+        struct md_gpu_cmd_copy_buffer_to_image_region  copy_buf_img_region;
         struct md_gpu_cmd_fill_buffer fill_buf;
         struct md_gpu_cmd_barrier_buffer barrier_buf;
         struct md_gpu_cmd_barrier_image  barrier_img;
@@ -241,6 +259,16 @@ void* md_gpu_buffer_cpu_ptr(md_gpu_buffer_t buffer) {
 
 uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
     return (uint64_t)[buffer->buffer gpuAddress];
+}
+
+md_gpu_buffer_flags_t md_gpu_buffer_flags(md_gpu_buffer_t buffer) {
+    if (!buffer) return MD_GPU_BUFFER_NONE;
+    return buffer->flags;
+}
+
+size_t md_gpu_buffer_size(md_gpu_buffer_t buffer) {
+    if (!buffer) return 0;
+    return buffer->size;
 }
 
 /* =============================
@@ -491,6 +519,34 @@ void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
     rc->u.copy_buf_img.image = dst_image;
 }
 
+void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
+                                            md_gpu_image_t src_image,
+                                            md_gpu_image_region_t src_region,
+                                            md_gpu_buffer_t dst_buffer,
+                                            size_t dst_offset) {
+    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    rc->type = CMD_COPY_IMAGE_REGION_TO_BUFFER;
+    rc->u.copy_img_region_buf.image      = src_image;
+    rc->u.copy_img_region_buf.buffer     = dst_buffer;
+    rc->u.copy_img_region_buf.region     = src_region;
+    rc->u.copy_img_region_buf.dst_offset = dst_offset;
+}
+
+void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
+                                            md_gpu_buffer_t src_buffer,
+                                            size_t src_offset,
+                                            md_gpu_image_t dst_image,
+                                            md_gpu_image_region_t dst_region) {
+    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    rc->type = CMD_COPY_BUFFER_TO_IMAGE_REGION;
+    rc->u.copy_buf_img_region.buffer     = src_buffer;
+    rc->u.copy_buf_img_region.image      = dst_image;
+    rc->u.copy_buf_img_region.region     = dst_region;
+    rc->u.copy_buf_img_region.src_offset = src_offset;
+}
+
 void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t buffer,
                             size_t offset,
@@ -629,6 +685,58 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                     destinationSlice:0
                     destinationLevel:0
                    destinationOrigin:MTLOriginMake(0,0,0)];
+                [blit endEncoding];
+                break;
+            }
+
+            case CMD_COPY_IMAGE_REGION_TO_BUFFER: {
+                if (compute_enc) {
+                    [compute_enc endEncoding];
+                    compute_enc = nil;
+                }
+                id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
+                const md_gpu_image_region_t* r = &c->u.copy_img_region_buf.region;
+                MTLOrigin origin = MTLOriginMake(r->x, r->y, r->z);
+                MTLSize   sz     = MTLSizeMake(r->width, r->height, r->depth);
+                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_img_region_buf.image->desc.format);
+                ASSERT(bpp > 0);
+                const size_t bytes_per_row   = (size_t)r->width * (size_t)bpp;
+                const size_t bytes_per_image = bytes_per_row * (size_t)r->height;
+                [blit copyFromTexture:c->u.copy_img_region_buf.image->texture
+                           sourceSlice:0
+                           sourceLevel:0
+                          sourceOrigin:origin
+                            sourceSize:sz
+                              toBuffer:c->u.copy_img_region_buf.buffer->buffer
+                     destinationOffset:c->u.copy_img_region_buf.dst_offset
+                destinationBytesPerRow:bytes_per_row
+              destinationBytesPerImage:bytes_per_image];
+                [blit endEncoding];
+                break;
+            }
+
+            case CMD_COPY_BUFFER_TO_IMAGE_REGION: {
+                if (compute_enc) {
+                    [compute_enc endEncoding];
+                    compute_enc = nil;
+                }
+                id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
+                const md_gpu_image_region_t* r = &c->u.copy_buf_img_region.region;
+                MTLOrigin origin = MTLOriginMake(r->x, r->y, r->z);
+                MTLSize   sz     = MTLSizeMake(r->width, r->height, r->depth);
+                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_buf_img_region.image->desc.format);
+                ASSERT(bpp > 0);
+                const size_t bytes_per_row   = (size_t)r->width * (size_t)bpp;
+                const size_t bytes_per_image = bytes_per_row * (size_t)r->height;
+                [blit copyFromBuffer:c->u.copy_buf_img_region.buffer->buffer
+                        sourceOffset:c->u.copy_buf_img_region.src_offset
+                   sourceBytesPerRow:bytes_per_row
+                 sourceBytesPerImage:bytes_per_image
+                          sourceSize:sz
+                           toTexture:c->u.copy_buf_img_region.image->texture
+                    destinationSlice:0
+                    destinationLevel:0
+                   destinationOrigin:origin];
                 [blit endEncoding];
                 break;
             }

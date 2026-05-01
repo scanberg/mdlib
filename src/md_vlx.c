@@ -401,6 +401,21 @@ static size_t basis_set_extract_atomic_basis_func_angl(basis_func_t* out_funcs, 
     return count;
 }
 
+static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, int atomic_number, int angl) {
+    size_t count = 0;
+    basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
+    if (atom_basis) {
+        int beg = atom_basis->basis_func_offset;
+        int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
+        for (int i = beg; i < end; ++i) {
+            if (basis_set->basis_func.data[i].type == angl) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 // This is a ported reference implementation from VeloxChem found in VisualizationDriver.cpp
 static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 	const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t num_atoms,
@@ -487,7 +502,7 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 // to VeloxChem matrix row order (angl→isph→atom→func).
 // ao_remap[shell_ao_idx] = vlx_ao_idx.
 // Returns the total number of AOs (length of the table), or 0 on failure.
-static size_t build_ao_remap(int** out_remap, const md_vlx_t* vlx, md_allocator_i* alloc) {
+static bool build_ao_remap(int* out_remap, size_t capacity, const md_vlx_t* vlx, md_allocator_i* alloc) {
 	ASSERT(out_remap);
 	ASSERT(vlx);
 	ASSERT(alloc);
@@ -501,17 +516,17 @@ static size_t build_ao_remap(int** out_remap, const md_vlx_t* vlx, md_allocator_
 		int nsph = spherical_momentum_num_components(angl);
 		for (int atomidx = 0; atomidx < natoms; atomidx++) {
 			int idelem = vlx->atomic_numbers[atomidx];
-			basis_func_t basis_funcs[128];
-			size_t num_funcs = basis_set_extract_atomic_basis_func_angl(
-				basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
+			size_t num_funcs = basis_set_count_atomic_basis_func(&vlx->basis_set, idelem, angl);
 			num_aos += (size_t)nsph * num_funcs;
 		}
 	}
 
-	if (num_aos == 0) return 0;
+	if (num_aos != capacity) {
+		MD_LOG_ERROR("Capacity of remap table did not match the number of AOs found in the basis set");
+		return false;
+	}
 
-	int* remap = (int*)md_alloc(alloc, sizeof(int) * num_aos);
-	MEMSET(remap, 0, sizeof(int) * num_aos);
+	MEMSET(out_remap, 0, sizeof(int) * num_aos);
 
 	// VeloxChem matrix AO index: angl → isph → atom → func
 	// Shell AO index:            angl → atom → func → isph
@@ -561,15 +576,14 @@ static size_t build_ao_remap(int** out_remap, const md_vlx_t* vlx, md_allocator_
 			for (int funcidx = 0; funcidx < nfuncs; funcidx++) {
 				for (int isph = 0; isph < nsph; isph++, shell_idx++) {
 					int base = vlx_base[angl * max_nsph * natoms + isph * natoms + atomidx];
-					remap[shell_idx] = base + funcidx;
+					out_remap[shell_idx] = base + funcidx;
 				}
 			}
 		}
 	}
 
 	md_temp_set_pos_back(temp_pos);
-	*out_remap = remap;
-	return num_aos;
+	return true;
 }
 
 static size_t vlx_pgto_count(const md_vlx_t* vlx) {
@@ -2672,8 +2686,14 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	// Build the AO remap table and apply it to all loaded matrices.
 	// This must happen after the basis set has been successfully resolved,
 	// since build_ao_remap() requires basis topology to be valid.
-	if (vlx->ao_remap == NULL && vlx->basis_set.atom_basis.count > 0) {
-		size_t num_ao = build_ao_remap(&vlx->ao_remap, vlx, vlx->arena);
+	if ((flags & VLX_FLAG_SCF) && vlx->basis_set.atom_basis.count > 0) {
+		size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        md_array_resize(vlx->ao_remap, num_ao, vlx->arena);
+		if (!build_ao_remap(vlx->ao_remap, num_ao, vlx, vlx->arena)) {
+			MD_LOG_ERROR("Failed to build AO remap table");
+			goto done;
+		}
+
 		if (num_ao > 0 && vlx->ao_remap) {
 			// SCF: permute+transpose C [num_ao x num_mo] -> [num_mo x num_ao] in shell order
 			if (vlx->scf.alpha.coefficients.data && num_ao == vlx->scf.alpha.coefficients.size[0]) {
@@ -2705,9 +2725,9 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 					md_vlx_orbital_t* nto = &vlx->rsp.nto[ni];
 					if (!nto->coefficients.data) continue;
 					if (num_ao != nto->coefficients.size[0]) continue;
-					size_t nmo = nto->coefficients.size[1];
-					ao_permute(nto->coefficients.data, num_ao, nmo, vlx->ao_remap);
-					nto->coefficients.size[0] = nmo;
+					size_t num_mo = nto->coefficients.size[1];
+					ao_permute(nto->coefficients.data, num_ao, num_mo, vlx->ao_remap);
+					nto->coefficients.size[0] = num_mo;
 					nto->coefficients.size[1] = num_ao;
 				}
 			}
@@ -3390,11 +3410,20 @@ const double* md_vlx_rsp_nto_coefficients(const md_vlx_t* vlx, size_t nto_idx, s
 	if (nto_idx >= vlx->rsp.number_of_excited_states) return NULL;
 	const md_vlx_orbital_t* nto = &vlx->rsp.nto[nto_idx];
 	if (!nto->coefficients.data) return NULL;
-	size_t num_mo = nto->coefficients.size[0];
-	size_t num_ao = nto->coefficients.size[1];
-	// NTO particle orbitals are stored in the first half, hole in the second half
-	size_t offset = (type == MD_VLX_NTO_TYPE_HOLE) ? (num_mo / 2) : 0;
-	size_t idx = offset + lambda_idx;
+	size_t num_mo = number_of_molecular_orbitals(nto);
+    size_t num_ao = number_of_atomic_orbitals(nto);
+	// NTO coefficients are stored with the highest lamdbda at lumo_idx and falling from there.
+    // We use same positive coefficients for both particle and hole NTOs, so the indexing is the same for both.
+	size_t idx = 0;
+	if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+		idx = vlx->scf.lumo_idx[MD_VLX_SPIN_ALPHA] + lambda_idx;
+    }
+    else if (type == MD_VLX_NTO_TYPE_HOLE) {
+        idx = vlx->scf.homo_idx[MD_VLX_SPIN_ALPHA] - lambda_idx;
+    }
+    else {
+        return NULL;
+    }
 	if (idx >= num_mo || num_ao == 0) return NULL;
 	return nto->coefficients.data + idx * num_ao;
 }
@@ -3403,8 +3432,7 @@ const double* md_vlx_rsp_nto_coefficients(const md_vlx_t* vlx, size_t nto_idx, s
 size_t md_vlx_scf_mo_coefficients_extract(double* out, const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type) {
 	const double* src = md_vlx_scf_mo_coefficients(vlx, mo_idx, type);
 	if (!src) return 0;
-	size_t num_ao = vlx->scf.alpha.coefficients.size[1];
-	if (type == MD_VLX_SPIN_BETA) num_ao = vlx->scf.beta.coefficients.size[1];
+	size_t num_ao = number_of_ao_coefficients(&vlx->scf.alpha); 
 	if (out) MEMCPY(out, src, sizeof(double) * num_ao);
 	return num_ao;
 }

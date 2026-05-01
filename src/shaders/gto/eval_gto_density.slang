@@ -27,15 +27,18 @@ struct UBO {
 ConstantBuffer<UBO> ubo;
 
 [[vk::binding(0)]]
-StructuredBuffer<float4> cgto_xyzr;
+StructuredBuffer<float3> cgto_xyz;
 
 [[vk::binding(1)]]
-StructuredBuffer<uint2> cgto_off_len;
+StructuredBuffer<float> cgto_r;
 
 [[vk::binding(2)]]
-StructuredBuffer<PGTO> pgto;
+StructuredBuffer<uint2> cgto_off_len;
 
 [[vk::binding(3)]]
+StructuredBuffer<PGTO> pgto;
+
+[[vk::binding(4)]]
 StructuredBuffer<float> D_matrix;
 
 [[vk::binding(16)]] // image slot 0 (slot + MD_GPU_MAX_BIND_SLOTS)
@@ -132,7 +135,7 @@ void fill_cgtos_tile(uint tile_number, uint tid) {
 
         if (global_cgto_idx != INVALID_CGTO_IDX) {
             off_len = cgto_off_len[global_cgto_idx];
-            cgto_center = cgto_xyzr[global_cgto_idx].xyz;
+            cgto_center = cgto_xyz[global_cgto_idx];
             InterlockedAdd(num_pgtos, off_len.y, dst);
         }
 
@@ -233,11 +236,12 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     // Stage 1: Screening - Prune CGTOs relevant for this workgroup region
     {
         for (uint i = tid; i < ubo.D_matrix_dim; i += WG_SIZE) {
-            float4 cgto = cgto_xyzr[i];
-            if (cgto.w == 0.0) continue;
+            float3 center = cgto_xyz[i];
+            float  r      = cgto_r[i];
+            if (r == 0.0) continue;
 
-            float3 model_xyz = mul(ubo.world_to_model, float4(cgto.xyz, 1.0)).xyz;
-            float r2 = cgto.w * cgto.w;
+            float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0)).xyz;
+            float r2 = r * r;
 
             float3 d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
             float d2 = dot(d, d);

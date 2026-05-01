@@ -97,12 +97,40 @@ typedef struct md_gpu_image_desc_t {
     md_gpu_image_flags_t flags;
 } md_gpu_image_desc_t;
 
+/* A subregion of a 3-D image in texel coordinates. */
+typedef struct md_gpu_image_region_t {
+    uint32_t x, y, z;           /* origin (inclusive)          */
+    uint32_t width, height, depth; /* extent in texels            */
+} md_gpu_image_region_t;
+
 typedef struct md_gpu_compute_pipeline_desc_t {
     const void* shader_bytes;
     size_t      shader_byte_size;
     uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
 } md_gpu_compute_pipeline_desc_t;
 
+
+/* =============================
+Device info / hints
+============================= */
+
+/* Hints about the physical device, intended to help callers make allocation decisions.
+   Fields may be left zero-initialized on backends that cannot determine them. */
+typedef struct md_gpu_device_info_t {
+    /* True if device and host memory are in the same physical pool (integrated GPU,
+       Apple Silicon, most mobile hardware).  On UMA you can safely allocate buffers
+       with MD_GPU_BUFFER_CPU_VISIBLE for all upload/readback purposes and avoid a
+       separate staging copy. */
+    bool is_uma;
+
+    /* Human-readable device name for logging / diagnostics. */
+    char name[256];
+} md_gpu_device_info_t;
+
+/* Populate *info with hints for the given device.
+   Returns false if the device handle is null, true otherwise.
+   Any field that cannot be determined is left at its zero value. */
+bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info);
 
 /* =============================
 Device / queue
@@ -129,8 +157,10 @@ void md_gpu_buffer_destroy(md_gpu_buffer_t buffer);
 /* Returns the persistent CPU-accessible pointer for a CPU_VISIBLE buffer.
    The pointer is valid from creation until md_gpu_buffer_destroy.
    Returns NULL if the buffer was not created with MD_GPU_BUFFER_CPU_VISIBLE. */
-void*    md_gpu_buffer_cpu_ptr(md_gpu_buffer_t buffer);
-uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer);
+void*                 md_gpu_buffer_cpu_ptr(md_gpu_buffer_t buffer);
+uint64_t              md_gpu_buffer_address(md_gpu_buffer_t buffer);
+md_gpu_buffer_flags_t md_gpu_buffer_flags(md_gpu_buffer_t buffer);
+size_t                md_gpu_buffer_size(md_gpu_buffer_t buffer);
 
 /* =============================
 Images (volumes, storage images)
@@ -174,6 +204,9 @@ enum {
     Acquire returns a command buffer ready for recording.
     The command buffer is automatically recycled by md_gpu_queue_submit(). */
 md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue);
+
+/* Returns the device that owns the queue this command buffer was acquired from. */
+md_gpu_device_t md_gpu_command_buffer_device(md_gpu_command_buffer_t cmd);
 
 void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_compute_pipeline_t pipeline);
 void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer);
@@ -219,10 +252,29 @@ void md_gpu_cmd_copy_image_to_buffer(
     md_gpu_image_t src_image,
     md_gpu_buffer_t dst_buffer);
 
+/* Copy a subregion of src_image (in texel coordinates) into dst_buffer
+   starting at dst_offset bytes.  The texels are written tightly packed
+   (row-major, no padding). */
+void md_gpu_cmd_copy_image_region_to_buffer(
+    md_gpu_command_buffer_t cmd,
+    md_gpu_image_t src_image,
+    md_gpu_image_region_t src_region,
+    md_gpu_buffer_t dst_buffer,
+    size_t dst_offset);
+
 void md_gpu_cmd_copy_buffer_to_image(
     md_gpu_command_buffer_t cmd,
     md_gpu_buffer_t src_buffer,
     md_gpu_image_t dst_image);
+
+/* Copy src_buffer starting at src_offset bytes into a subregion of dst_image.
+   The source data must be tightly packed (row-major, no padding). */
+void md_gpu_cmd_copy_buffer_to_image_region(
+    md_gpu_command_buffer_t cmd,
+    md_gpu_buffer_t src_buffer,
+    size_t src_offset,
+    md_gpu_image_t dst_image,
+    md_gpu_image_region_t dst_region);
 
 // NOTICE: this is a byte-fill operation, so the value is repeated to fill the specified range.
 void md_gpu_cmd_fill_buffer(

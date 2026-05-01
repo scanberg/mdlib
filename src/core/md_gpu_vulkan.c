@@ -434,6 +434,33 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     free(dev);
 }
 
+bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
+    if (!device || !info) return false;
+    md_gpu_device* dev = (md_gpu_device*)device;
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->physical_device, &props);
+    size_t name_len = strlen(props.deviceName);
+    if (name_len >= sizeof(info->name)) name_len = sizeof(info->name) - 1;
+    memcpy(info->name, props.deviceName, name_len);
+    info->name[name_len] = '\0';
+
+    // Detect UMA: any memory type that is both DEVICE_LOCAL and HOST_VISIBLE
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(dev->physical_device, &mem_props);
+    info->is_uma = false;
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+        VkMemoryPropertyFlags flags = mem_props.memoryTypes[i].propertyFlags;
+        if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+            info->is_uma = true;
+            break;
+        }
+    }
+
+    return true;
+}
+
 md_gpu_queue_t md_gpu_queue_acquire(md_gpu_device_t device) {
     if (!device) return NULL;
     md_gpu_device* dev = (md_gpu_device*)device;
@@ -561,6 +588,16 @@ uint64_t md_gpu_buffer_address(md_gpu_buffer_t buffer) {
     info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     info.buffer = buf->buffer;
     return (uint64_t)vkGetBufferDeviceAddress(dev->device, &info);
+}
+
+md_gpu_buffer_flags_t md_gpu_buffer_flags(md_gpu_buffer_t buffer) {
+    if (!buffer) return MD_GPU_BUFFER_NONE;
+    return ((md_gpu_buffer*)buffer)->flags;
+}
+
+size_t md_gpu_buffer_size(md_gpu_buffer_t buffer) {
+    if (!buffer) return 0;
+    return (size_t)((md_gpu_buffer*)buffer)->size;
 }
 
 md_gpu_image_t md_gpu_image_create(md_gpu_device_t device, const md_gpu_image_desc_t* desc) {
@@ -776,7 +813,11 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     return (md_gpu_command_buffer_t)cmd;
 }
 
-// Helper: transition image layout if needed
+md_gpu_device_t md_gpu_command_buffer_device(md_gpu_command_buffer_t cmd) {
+    if (!cmd) return NULL;
+    return ((md_gpu_command_buffer*)cmd)->device;
+}
+
 static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, VkImageLayout new_layout, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     if (img->layout == new_layout) return;
 
@@ -1153,6 +1194,70 @@ void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd, md_gpu_buffer_
     region.imageExtent.width = dst->width;
     region.imageExtent.height = dst->height;
     region.imageExtent.depth = dst->depth;
+
+    vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
+void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
+                                             md_gpu_image_t src_image,
+                                             md_gpu_image_region_t src_region,
+                                             md_gpu_buffer_t dst_buffer,
+                                             size_t dst_offset) {
+    if (!cmd || !src_image || !dst_buffer) return;
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    md_gpu_image* src = (md_gpu_image*)src_image;
+    md_gpu_buffer* dst = (md_gpu_buffer*)dst_buffer;
+
+    md_vk_transition_image(c->vk_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = dst_offset;
+    region.bufferRowLength = 0; /* tight packing */
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset.x = (int32_t)src_region.x;
+    region.imageOffset.y = (int32_t)src_region.y;
+    region.imageOffset.z = (int32_t)src_region.z;
+    region.imageExtent.width  = src_region.width;
+    region.imageExtent.height = src_region.height;
+    region.imageExtent.depth  = src_region.depth;
+
+    vkCmdCopyImageToBuffer(c->vk_cmd, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->buffer, 1, &region);
+}
+
+void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
+                                             md_gpu_buffer_t src_buffer,
+                                             size_t src_offset,
+                                             md_gpu_image_t dst_image,
+                                             md_gpu_image_region_t dst_region) {
+    if (!cmd || !src_buffer || !dst_image) return;
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    md_gpu_buffer* src = (md_gpu_buffer*)src_buffer;
+    md_gpu_image* dst = (md_gpu_image*)dst_image;
+
+    md_vk_transition_image(c->vk_cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = src_offset;
+    region.bufferRowLength = 0; /* tight packing */
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset.x = (int32_t)dst_region.x;
+    region.imageOffset.y = (int32_t)dst_region.y;
+    region.imageOffset.z = (int32_t)dst_region.z;
+    region.imageExtent.width  = dst_region.width;
+    region.imageExtent.height = dst_region.height;
+    region.imageExtent.depth  = dst_region.depth;
 
     vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
