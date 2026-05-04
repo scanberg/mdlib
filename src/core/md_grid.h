@@ -53,7 +53,7 @@ static inline vec3_t md_grid_extent(const md_grid_t* grid) {
 
 static inline vec3_t md_grid_center(const md_grid_t* grid) {
     ASSERT(grid);
-    vec3_t center = vec3_add(grid->origin, vec3_mul_f(md_grid_extent(grid), 0.5f));
+    vec3_t center = vec3_add(grid->origin, vec3_mul1(md_grid_extent(grid), 0.5f));
     return center;
 }
 

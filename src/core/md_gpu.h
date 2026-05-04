@@ -99,8 +99,8 @@ typedef struct md_gpu_image_desc_t {
 
 /* A subregion of a 3-D image in texel coordinates. */
 typedef struct md_gpu_image_region_t {
-    uint32_t x, y, z;           /* origin (inclusive)          */
-    uint32_t width, height, depth; /* extent in texels            */
+    uint32_t offset[3]; /* origin in texels (x, y, z) */
+    uint32_t extent[3]; /* size   in texels (w, h, d) */
 } md_gpu_image_region_t;
 
 typedef struct md_gpu_compute_pipeline_desc_t {
@@ -117,11 +117,10 @@ Device info / hints
 /* Hints about the physical device, intended to help callers make allocation decisions.
    Fields may be left zero-initialized on backends that cannot determine them. */
 typedef struct md_gpu_device_info_t {
-    /* True if device and host memory are in the same physical pool (integrated GPU,
-       Apple Silicon, most mobile hardware).  On UMA you can safely allocate buffers
-       with MD_GPU_BUFFER_CPU_VISIBLE for all upload/readback purposes and avoid a
-       separate staging copy. */
-    bool is_uma;
+    /* True for dedicated discrete GPUs (e.g. NVIDIA, AMD dGPU).
+       When false, assume UMA / integrated and skip staging copies — buffers
+       allocated with MD_GPU_BUFFER_CPU_VISIBLE are accessible directly. */
+    bool is_discrete;
 
     /* Human-readable device name for logging / diagnostics. */
     char name[256];
@@ -247,14 +246,9 @@ void md_gpu_cmd_copy_buffer(
     size_t src_offset,
     size_t dst_offset);
 
-void md_gpu_cmd_copy_image_to_buffer(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_image_t src_image,
-    md_gpu_buffer_t dst_buffer);
-
-/* Copy a subregion of src_image (in texel coordinates) into dst_buffer
-   starting at dst_offset bytes.  The texels are written tightly packed
-   (row-major, no padding). */
+/* Copy a subregion of src_image into dst_buffer at dst_offset bytes.
+   Texels are written tightly packed (row-major, no padding).
+   Pass a zero-initialized region (extent all zero) to copy the full image. */
 void md_gpu_cmd_copy_image_region_to_buffer(
     md_gpu_command_buffer_t cmd,
     md_gpu_image_t src_image,
@@ -262,13 +256,15 @@ void md_gpu_cmd_copy_image_region_to_buffer(
     md_gpu_buffer_t dst_buffer,
     size_t dst_offset);
 
+/* Copy the full src_buffer into dst_image (convenience: zero-extent region). */
 void md_gpu_cmd_copy_buffer_to_image(
     md_gpu_command_buffer_t cmd,
     md_gpu_buffer_t src_buffer,
     md_gpu_image_t dst_image);
 
-/* Copy src_buffer starting at src_offset bytes into a subregion of dst_image.
-   The source data must be tightly packed (row-major, no padding). */
+/* Copy src_buffer at src_offset bytes into a subregion of dst_image.
+   Source data must be tightly packed (row-major, no padding).
+   Pass a zero-initialized region (extent all zero) to copy into the full image. */
 void md_gpu_cmd_copy_buffer_to_image_region(
     md_gpu_command_buffer_t cmd,
     md_gpu_buffer_t src_buffer,
@@ -288,7 +284,15 @@ void md_gpu_cmd_fill_buffer(
 Submission & synchronization
 ============================= */
 
-md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd);
+/* Create a fence that can be passed to md_gpu_queue_submit for async tracking.
+   The caller owns the fence and must eventually call md_gpu_fence_destroy on it. */
+md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device);
+
+/* Submit a recorded command buffer for execution.
+   If fence is NULL the call blocks until GPU completion (vkQueueWaitIdle or equivalent).
+   If fence is non-NULL it must have been created with md_gpu_fence_create; the GPU will
+   signal it on completion and the caller must eventually call md_gpu_fence_destroy on it. */
+bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence);
 
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence);
 void md_gpu_fence_wait(md_gpu_fence_t fence);

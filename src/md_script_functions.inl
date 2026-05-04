@@ -270,8 +270,8 @@ BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    md_mm256_add_ps)
 BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, md_mm256_sub_ps)
 BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    md_mm256_sub_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, md_mm256_mul_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    md_mm256_mul_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_mul1arr_farr, md_mm256_mul_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_mul1arr_f,    md_mm256_mul_ps)
 
 BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_mm256_div_ps)
 BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_mm256_div_ps)
@@ -285,19 +285,19 @@ BAKE_SIMDF_OP_M_S(_op_simd_max_farr_f,    md_mm256_max_ps)
 
 BAKE_OP_S_S(_op_add_f_f,        +, float)
 BAKE_OP_S_S(_op_sub_f_f,        -, float)
-BAKE_OP_S_S(_op_mul_f_f,        *, float)
+BAKE_OP_S_S(_op_mul1_f,        *, float)
 BAKE_OP_S_S(_op_div_f_f,        /, float)
 BAKE_OP_UNARY_S(_op_neg_f,      -, float)
 BAKE_OP_UNARY_M(_op_neg_farr,   -, float)
 
 BAKE_OP_M_S(_op_add_farr_f, +, float)
 BAKE_OP_M_S(_op_sub_farr_f, -, float)
-BAKE_OP_M_S(_op_mul_farr_f, *, float)
+BAKE_OP_M_S(_op_mul1arr_f, *, float)
 BAKE_OP_M_S(_op_div_farr_f, /, float)
 
 BAKE_OP_M_M(_op_add_farr_farr, +, float)
 BAKE_OP_M_M(_op_sub_farr_farr, -, float)
-BAKE_OP_M_M(_op_mul_farr_farr, *, float)
+BAKE_OP_M_M(_op_mul1arr_farr, *, float)
 BAKE_OP_M_M(_op_div_farr_farr, /, float)
 
 // Forward declarations of functions
@@ -541,15 +541,15 @@ static procedure_t operators[] = {
     {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
-    {CSTR("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul_f_f},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul1_f},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul1arr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul1arr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
     {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
@@ -866,11 +866,11 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
         const int64_t idx = md_bitfield_iter_idx(&it);
         const float weight = w ? w[idx] : 1.0f;
         vec4_t v = vec4_set(x[idx], y[idx], z[idx], 1.0f);
-        v = vec4_mul_f(v, weight);
+        v = vec4_mul1(v, weight);
         sum = vec4_add(sum, v);
     }
     if (sum.w == 0) sum.w = 1.0f;
-    return vec3_div_f(vec3_from_vec4(sum), sum.w);
+    return vec3_div1(vec3_from_vec4(sum), sum.w);
 }
 
 static inline vec3_t* extract_vec3(const float* x, const float* y, const float* z, const md_bitfield_t* bf, md_allocator_i* alloc) {
@@ -3799,7 +3799,7 @@ static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // Property Compute
 
 static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis) {
-    vec3_t c = vec3_mul_f(vec3_add(c_a, c_b), 0.5f);
+    vec3_t c = vec3_mul1(vec3_add(c_a, c_b), 0.5f);
     char buf[32];
     snprintf(buf, sizeof(buf), "%.2f", value);
     push_text(c, buf, vis);
@@ -4058,19 +4058,19 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
     ASSERT(vis);
     const float len = 0.5f;
     /*if (angle < 0.0f) {
-        axis = vec3_mul_f(axis, -1.0f);
+        axis = vec3_mul1(axis, -1.0f);
         angle = -angle;
     }*/
     const size_t num_segments = MAX(1, (size_t)(fabs(angle) / DEG_TO_RAD(10)));
     const float scl = 1.0f / (float)num_segments;
     md_script_vis_vertex_t vb = vertex(c, color);
-    md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul_f(v, len)), color);
+    md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul1(v, len)), color);
     push_line(vb, vp, vis);
     for (size_t i = 1; i <= num_segments; ++i) {
         const float t = i * scl;
         quat_t q = quat_axis_angle(axis, angle * t);
         vec3_t n = quat_mul_vec3(q, v);
-        md_script_vis_vertex_t vn = vertex(vec3_add(c, vec3_mul_f(n, len)), color);
+        md_script_vis_vertex_t vn = vertex(vec3_add(c, vec3_mul1(n, len)), color);
         push_triangle(vb, vp, vn, vis);
         push_line(vp, vn, vis);
         vp = vn;
@@ -4080,7 +4080,7 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
     // Add text
     quat_t q = quat_axis_angle(axis, angle * 0.5f);
     vec3_t n = quat_mul_vec3(q, v);
-    c = vec3_add(c, vec3_mul_f(n, len + 0.1f));
+    c = vec3_add(c, vec3_mul1(n, len + 0.1f));
     char buf[32];
     angle = (float)RAD_TO_DEG(angle);
     snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", angle);
@@ -4129,13 +4129,13 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 /*
                 const size_t num_segments = 10;
                 const float scl = 1.0 / num_segments;
-                md_script_vis_vertex_t vp = vertex(vec3_add(b, vec3_mul_f(v0, 0.5f)), COLOR_WHITE);
+                md_script_vis_vertex_t vp = vertex(vec3_add(b, vec3_mul1(v0, 0.5f)), COLOR_WHITE);
                 push_line(vb, vp, ctx->vis);
                 for (size_t i = 1; i <= num_segments; ++i) {
                     const float t = i * scl;
                     quat_t q = quat_axis_angle(axis, angle * t);
                     vec3_t n = quat_mul_vec3(q, v0);
-                    md_script_vis_vertex_t v = vertex(vec3_add(b, vec3_mul_f(n, 0.5f)), COLOR_WHITE);
+                    md_script_vis_vertex_t v = vertex(vec3_add(b, vec3_mul1(n, 0.5f)), COLOR_WHITE);
                     push_triangle(vb, vp, v, ctx->vis);
                     push_line(vp, v, ctx->vis);
                     vp = v;
@@ -4215,14 +4215,14 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 vec3_t cd = vec3_sub(x[3], x[2]);
 
                 vec3_t u  = vec3_normalize(bc); // Axis
-                vec3_t vp = vec3_mul_f(u, vec3_dot(ba, u));
+                vec3_t vp = vec3_mul1(u, vec3_dot(ba, u));
                 vec3_t vo = vec3_sub(ba, vp);
-                vec3_t wp = vec3_mul_f(u, vec3_dot(cd, u));
+                vec3_t wp = vec3_mul1(u, vec3_dot(cd, u));
                 vec3_t wo = vec3_sub(cd, wp);
 
                 // Plane 1
                 {
-                    vec3_t d = vec3_mul_f(vec3_normalize(vo), 1.0f);
+                    vec3_t d = vec3_mul1(vec3_normalize(vo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vb,
                         vc,
@@ -4238,7 +4238,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                 // Plane 2
                 {
-                    vec3_t d = vec3_mul_f(vec3_normalize(wo), 1.0f);
+                    vec3_t d = vec3_mul1(vec3_normalize(wo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vc,
                         vb,
@@ -4775,8 +4775,8 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                vec3_t v = vec3_mul_f(eigen.vectors.col[0], eigen.values.elem[0]);
-                vec3_t u = vec3_mul_f(eigen.vectors.col[1], eigen.values.elem[1]);
+                vec3_t v = vec3_mul1(eigen.vectors.col[0], eigen.values.elem[0]);
+                vec3_t u = vec3_mul1(eigen.vectors.col[1], eigen.values.elem[1]);
 
                 // Draw something plane-ish
                 md_script_vis_vertex_t ci = vertex(com, COLOR_WHITE);
@@ -4887,7 +4887,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             0.0f
         };
 
-        vec4_t min_point = vec4_sub(mid_point, vec4_mul_f(ext, 0.5f));
+        vec4_t min_point = vec4_sub(mid_point, vec4_mul1(ext, 0.5f));
 
         // @TODO: This is conceptually not correct in the periferi of the system as it does not count multiple occurences of atoms
         // This should be resolved with spatial hashing and counting occurrences within the cells
@@ -4965,7 +4965,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             // Reference half extent
             mat3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, unit_cell);
-            vec3_t re = vec3_mul_f(mat3_diag(A), 0.5f);
+            vec3_t re = vec3_mul1(mat3_diag(A), 0.5f);
 
             // We use the max axis half ext as we cannot output three individual value_ranges
             float rad = 0;

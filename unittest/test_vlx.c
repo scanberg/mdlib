@@ -162,7 +162,7 @@ UTEST(vlx, minimal_example) {
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_ALPHA);
 
-    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, 1.0e-6);
+    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);
@@ -176,17 +176,17 @@ UTEST(vlx, minimal_example) {
 
     // Add some padding
     const float pad = 6.0f;
-    min_aabb = vec3_sub_f(min_aabb, pad);
-    max_aabb = vec3_add_f(max_aabb, pad);
+    min_aabb = vec3_sub1(min_aabb, pad);
+    max_aabb = vec3_add1(max_aabb, pad);
 
     printf("min_box: %g %g %g \n", min_aabb.x, min_aabb.y, min_aabb.z);
     printf("max_box: %g %g %g \n", max_aabb.x, max_aabb.y, max_aabb.z);
 
     vec3_t ext_aabb = vec3_sub(max_aabb, min_aabb);
-    vec3_t step_size = vec3_div_f(ext_aabb, (float)vol_dim);
+    vec3_t step_size = vec3_div1(ext_aabb, (float)vol_dim);
 
     // Shift origin by half a voxel such that the samples are constructed from the center of each voxel
-    vec3_t origin = vec3_add(min_aabb, vec3_mul_f(step_size, 0.5f));
+    vec3_t origin = vec3_add(min_aabb, vec3_mul1(step_size, 0.5f));
 
     // Allocate data for storing the result
     float* vol_data = md_arena_allocator_push(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);

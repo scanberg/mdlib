@@ -103,16 +103,17 @@ extern "C" {
 // data that changes at runtime: atom positions and electronic-state data
 // (MO coefficient vector or AO density matrix).
 //
-// atom_xyz : packed xyz in Bohr, stride 3 floats, length >= max(shell.atom_idx)+1
-// cutoff   : value threshold for pruning GTOs by radius of influence (e.g. 1e-6);
-//            pass 0 to disable pruning.
+// atom_xyz        : xyz positions in Bohr, length >= max(shell.atom_idx)+1
+// atom_xyz_stride  : stride in bytes between consecutive positions; pass 0 for tightly packed (12 bytes)
+// cutoff           : value threshold for pruning GTOs by radius of influence (e.g. 1e-6);
+//                    pass 0 to disable pruning.
 // Coefficients are double to preserve QM-code precision at the boundary.
 
 // Evaluate a single molecular orbital on a grid (psi or psi^2).
 // mo_coeffs: AO coefficient vector, length = total num_cgtos implied by basis.
 void md_gto_grid_evaluate_mo(
     float* out, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
 
 // Evaluate full electron density via AO density matrix on a grid.
@@ -120,7 +121,7 @@ void md_gto_grid_evaluate_mo(
 // The function constructs a compact upper-triangular float representation internally.
 void md_gto_grid_evaluate_density(
     float* out, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* density_matrix);
 
 // Returns the upper bound on the number of Cartesian GTOs produced when
@@ -130,21 +131,22 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis);
 
 // Expand a contracted GTO basis with baked MO coefficients into a flat md_gto_t[] array.
 // mo_coeffs: one double per spherical AO (length = sum of (2*l+1) over all shells)
-// atom_xyz:  packed xyz in Bohr, stride 3 floats, length >= max(shell.atom_idx)+1
+// atom_xyz:  packed xyz in Bohr, length >= max(shell.atom_idx)+1
+// atom_xyz_stride: stride in bytes between consecutive atom positions in atom_xyz; pass 0 for tightly packed (12 bytes)
 // cutoff:    if > 0, applies md_gto_cutoff_compute_and_filter; pass 0 to skip
 // out:       caller-allocated array of length >= md_gto_pgto_count(basis)
 // Returns:   number of elements written (after pruning, or total if cutoff == 0)
 size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
-    const float* atom_xyz, const double* mo_coeffs, double cutoff);
+    const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff);
 
 // GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
 void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
 
 // mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
 void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode);
 
 // Basis-centric GL density evaluation.
@@ -152,7 +154,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
 // and dispatches the existing GL density compute shader.
 // density_matrix: full N×N row-major doubles, N = number of spherical AOs in basis.
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* density_matrix, bool include_gradients);
 
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
@@ -211,13 +213,15 @@ uint32_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t basis_buf);
 // Atom buffer layout expected by the GPU shaders:
 //   float4[num_atoms], xyz in Bohr and .w ignored.
 size_t md_gto_gpu_atom_buffer_size(size_t num_atoms);
-void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t num_atoms);
+
+// atom_xyz_stride: stride in bytes between consecutive positions; pass 0 for tightly packed (12 bytes)
+void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t atom_xyz_stride, size_t num_atoms);
 
 // ---------------------------------------------------------------------------
 // Coefficient buffer helpers
 // Coefficients live in a plain md_gpu_buffer_t owned by the caller.
 // Tightly packed floats, no padding.
-//   density : float[(num_cgtos*(num_cgtos+1))/2]  — packed upper-triangular
+//   density : float[(num_cgtos*(num_cgtos+1))/2]   — packed upper-triangular
 //   MO      : float[num_mos * num_cgtos]           — packed row-major
 // ---------------------------------------------------------------------------
 
@@ -253,7 +257,7 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
 // (use md_gto_gpu_coeff_upload_density to fill it).
 // A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
 // earlier in the same command buffer are visible to the shader.
-void md_gto_grid_evaluate_density_gpu(md_gpu_command_buffer_t cmd,
+void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
     md_gpu_image_t out_image, const md_grid_t* grid);
 

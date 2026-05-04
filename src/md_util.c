@@ -1974,7 +1974,7 @@ static inline vec4_t estimate_HN(vec4_t N, vec4_t CA, vec4_t C_prev) {
     const float NH_dist = 1.01f;
     vec4_t U = vec4_normalize(vec4_sub(N, CA));
     vec4_t V = vec4_normalize(vec4_sub(N, C_prev));
-    return vec4_add(N, vec4_mul_f(vec4_normalize(vec4_add(U, V)), NH_dist));
+    return vec4_add(N, vec4_mul1(vec4_normalize(vec4_add(U, V)), NH_dist));
 }
 
 static inline vec4_t estimate_HN_term(vec4_t N, vec4_t CA, vec4_t C) {
@@ -5860,8 +5860,8 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 1.0f };
 
         vec4_t p = mat4_mul_vec4(Ri, c);
-        min_ext = vec4_min(min_ext, vec4_sub_f(p, r));
-        max_ext = vec4_max(max_ext, vec4_add_f(p, r));
+        min_ext = vec4_min(min_ext, vec4_sub1(p, r));
+        max_ext = vec4_max(max_ext, vec4_add1(p, r));
     }
 
     MEMCPY(out_basis,   &basis,   sizeof(mat3_t));
@@ -8424,7 +8424,7 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
     if (cell) {
         vec3_t diag = { 0 };
         md_unitcell_diag_extract_float(diag.elem, cell);
-        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
@@ -8444,7 +8444,7 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
     if (cell) {
         vec3_t diag = { 0 };
         md_unitcell_diag_extract_float(diag.elem, cell);
-        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
@@ -8466,7 +8466,7 @@ static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size
     ASSERT(z);
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    const vec4_t ref = vec4_mul1(ext, 0.5f);
 
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
@@ -8490,7 +8490,7 @@ static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size
 
 static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    const vec4_t ref = vec4_mul1(ext, 0.5f);
     for (size_t i = 0; i < count; ++i) {
         xyzw[i] = vec4_deperiodize_ortho(xyzw[i], ref, ext);
     }

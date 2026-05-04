@@ -259,8 +259,9 @@ static void gto_expand_basis_gpu_meta(
 // All output arrays must be pre-allocated to num_cgtos / num_pgtos entries respectively.
 static void gto_expand_basis(
     float* out_cgto_xyz, float* out_cgto_r, uint32_t* out_cgto_off_len, PGTO* out_pgto,
-    const md_gto_basis_t* basis, const float* atom_xyz, double cutoff)
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, double cutoff)
 {
+    const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
     uint32_t ci = 0, pi = 0;
     for (uint32_t si = 0; si < basis->num_shells; si++) {
         const md_gto_shell_t* shell = &basis->shells[si];
@@ -269,9 +270,10 @@ static void gto_expand_basis(
         int nprims = (int)shell->num_primitives;
         uint32_t   prim_base = shell->primitive_offset;
         const gto_lmn_t* lmn = gto_cart_lmn(l);
-        float ax = atom_xyz[shell->atom_idx * 3 + 0];
-        float ay = atom_xyz[shell->atom_idx * 3 + 1];
-        float az = atom_xyz[shell->atom_idx * 3 + 2];
+        const float* ap = (const float*)((const uint8_t*)atom_xyz + shell->atom_idx * stride);
+        float ax = ap[0];
+        float ay = ap[1];
+        float az = ap[2];
 
         for (int isph = 0; isph < nsph; isph++) {
             int           ncomp   = gto_sph_num_factors(l, isph);
@@ -478,13 +480,13 @@ static void gto_build_sparse_pairs(
     list->num_pairs = md_array_size(list->pairs);
 }
 
-void md_gto_grid_evaluate_mo(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_mo(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
 }
 
-void md_gto_grid_evaluate_density(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* density_matrix)
+void md_gto_grid_evaluate_density(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* density_matrix)
 {}
 
-void md_gto_grid_evaluate_mo_sum(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* const* mo_coeffs, const double* weights, size_t num_mos, double cutoff) {
+void md_gto_grid_evaluate_mo_sum(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* const* mo_coeffs, const double* weights, size_t num_mos, double cutoff) {
 }
 
 size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
@@ -494,12 +496,14 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
 }
 
 size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
-    const float* atom_xyz, const double* mo_coeffs, double cutoff)
+    const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff)
 {
     ASSERT(out);
     ASSERT(basis);
     ASSERT(atom_xyz);
     ASSERT(mo_coeffs);
+
+    const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
 
     size_t num_gtos = 0;
     uint32_t cgto_idx = 0;
@@ -510,9 +514,10 @@ size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
         int nprims = (int)shell->num_primitives;
         uint32_t prim_base = shell->primitive_offset;
         const gto_lmn_t* lmn = gto_cart_lmn(l);
-        float ax = atom_xyz[shell->atom_idx * 3 + 0];
-        float ay = atom_xyz[shell->atom_idx * 3 + 1];
-        float az = atom_xyz[shell->atom_idx * 3 + 2];
+        const float* ap = (const float*)((const uint8_t*)atom_xyz + shell->atom_idx * stride);
+        float ax = ap[0];
+        float ay = ap[1];
+        float az = ap[2];
 
         for (int isph = 0; isph < nsph; isph++) {
             double mo_coeff = mo_coeffs[cgto_idx++];
@@ -872,7 +877,7 @@ done:
     md_gl_debug_pop();
 }
 
-void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
     ASSERT(grid);
     ASSERT(basis);
     ASSERT(atom_xyz);
@@ -884,7 +889,7 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     size_t temp_pos  = md_temp_get_pos();
     size_t max_gtos  = md_gto_pgto_count(basis);
     md_gto_t* gtos   = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos);
-    size_t num_gtos  = md_gto_expand_with_mo(gtos, basis, atom_xyz, mo_coeffs, cutoff);
+    size_t num_gtos  = md_gto_expand_with_mo(gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs, cutoff);
 
     if (num_gtos > 0) {
         uint32_t orb_offsets[2] = { 0, (uint32_t)num_gtos };
@@ -902,7 +907,7 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     md_temp_set_pos_back(temp_pos);
 }
 
-void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
     ASSERT(grid);
     ASSERT(basis);
     ASSERT(atom_xyz);
@@ -927,7 +932,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
 
     for (size_t i = 0; i < num_mos; i++) {
         if (!mo_coeffs[i]) continue;
-        size_t n = md_gto_expand_with_mo(gtos + total_gtos, basis, atom_xyz, mo_coeffs[i], cutoff);
+        size_t n = md_gto_expand_with_mo(gtos + total_gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs[i], cutoff);
         if (n == 0) continue;
         total_gtos            += n;
         orb_scaling[num_valid] = (float)(mo_scl ? mo_scl[i] : 1.0);
@@ -949,7 +954,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
 }
 
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* density_matrix, bool include_gradients)
 {
     ASSERT(grid);
@@ -968,7 +973,7 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     size_t    tri_len      = density_matrix_upper_tri_size(num_cgtos);
     float*    upper_tri    = (float*)   md_temp_push(sizeof(float)    * tri_len);
 
-    gto_expand_basis(cgto_xyz, cgto_r, cgto_off_len, pgto, basis, atom_xyz, 1.0e-6);
+    gto_expand_basis(cgto_xyz, cgto_r, cgto_off_len, pgto, basis, atom_xyz, atom_xyz_stride, 1.0e-6);
     density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
 
     // Recombine into float4 for the GL path, which keeps its own xyzr SSBO layout.
@@ -1124,9 +1129,7 @@ static bool gto_local_staging_upload_at(md_gpu_device_t device, md_gpu_buffer_t 
     md_gpu_queue_t          queue = md_gpu_queue_acquire(device);
     md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
     md_gpu_cmd_copy_buffer(cmd, bump.buffer, dst, size, a.offset, dst_offset);
-    md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
-    md_gpu_fence_wait(fence);
-    md_gpu_fence_destroy(fence);
+    md_gpu_queue_submit(queue, cmd, NULL);
     md_gpu_bump_free(&bump);
     return true;
 }
@@ -1229,13 +1232,19 @@ size_t md_gto_gpu_atom_buffer_size(size_t num_atoms) {
     return sizeof(float) * 4 * num_atoms;
 }
 
-void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t num_atoms) {
+void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t atom_xyz_stride, size_t num_atoms) {
     ASSERT(dst_atom_xyzw && atom_xyz);
-    for (size_t i = 0; i < num_atoms; ++i) {
-        dst_atom_xyzw[i * 4 + 0] = atom_xyz[i * 3 + 0];
-        dst_atom_xyzw[i * 4 + 1] = atom_xyz[i * 3 + 1];
-        dst_atom_xyzw[i * 4 + 2] = atom_xyz[i * 3 + 2];
-        dst_atom_xyzw[i * 4 + 3] = 0.0f;
+    const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
+    if (stride == 16) {
+        MEMCPY(dst_atom_xyzw, atom_xyz, sizeof(float) * 4 * num_atoms);
+    } else {
+        for (size_t i = 0; i < num_atoms; ++i) {
+            const float* ap = (const float*)((const uint8_t*)atom_xyz + i * stride);
+            dst_atom_xyzw[i * 4 + 0] = ap[0];
+            dst_atom_xyzw[i * 4 + 1] = ap[1];
+            dst_atom_xyzw[i * 4 + 2] = ap[2];
+            dst_atom_xyzw[i * 4 + 3] = 0.0f;
+        }
     }
 }
 
@@ -1293,7 +1302,7 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
-void md_gto_grid_evaluate_density_gpu(md_gpu_command_buffer_t cmd,
+void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
     md_gpu_image_t image, const md_grid_t* grid)
 {
@@ -1372,7 +1381,7 @@ void md_gto_grid_evaluate_mo_gpu(md_gpu_command_buffer_t cmd,
         float    step[4];
         uint32_t num_cgtos;
         uint32_t num_rows;
-        uint32_t _pad0;
+        uint32_t mode;    /* 0 = PSI, 1 = PSI_SQUARED */
         uint32_t _pad1;
     } ubo_t;
 
@@ -1385,6 +1394,7 @@ void md_gto_grid_evaluate_mo_gpu(md_gpu_command_buffer_t cmd,
     ubo.step[3]   = 0.0f;
     ubo.num_cgtos = L->num_cgtos;
     ubo.num_rows  = num_mos;
+    ubo.mode      = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
 
     size_t sz_cgto_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
     size_t sz_cgto_r       = L->off_cgto_off_len - L->off_cgto_r;
@@ -2018,9 +2028,9 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
         (grid->orientation.elem[1][0] == 0 && grid->orientation.elem[1][2] == 0) &&
         (grid->orientation.elem[2][0] == 0 && grid->orientation.elem[2][1] == 0);
 
-    vec3_t step_x = vec3_mul_f(grid->orientation.col[0], grid->spacing.x);
-    vec3_t step_y = vec3_mul_f(grid->orientation.col[1], grid->spacing.y);
-    vec3_t step_z = vec3_mul_f(grid->orientation.col[2], grid->spacing.z);
+    vec3_t step_x = vec3_mul1(grid->orientation.col[0], grid->spacing.x);
+    vec3_t step_y = vec3_mul1(grid->orientation.col[1], grid->spacing.y);
+    vec3_t step_z = vec3_mul1(grid->orientation.col[2], grid->spacing.z);
 
     // There are specialized versions for evaluating 8x8x8 subgrids
     // 8x8x8 Is a good chunk size to operate on as it probably fits in L1 Cache together with the GTOs

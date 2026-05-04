@@ -280,7 +280,7 @@ MD_VEC_INLINE vec2_t vec2_add(vec2_t a, vec2_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec2_t vec2_add_f(vec2_t a, float f) {
+MD_VEC_INLINE vec2_t vec2_add1(vec2_t a, float f) {
     vec2_t res = {a.x + f, a.y + f};
     return res;
 }
@@ -290,7 +290,7 @@ MD_VEC_INLINE vec2_t vec2_sub(vec2_t a, vec2_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec2_t vec2_sub_f(vec2_t a, float s) {
+MD_VEC_INLINE vec2_t vec2_sub1(vec2_t a, float s) {
     vec2_t res = {a.x - s, a.y - s};
     return res;
 }
@@ -300,7 +300,7 @@ MD_VEC_INLINE vec2_t vec2_mul(vec2_t a, vec2_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec2_t vec2_mul_f(vec2_t a, float s) {
+MD_VEC_INLINE vec2_t vec2_mul1(vec2_t a, float s) {
     vec2_t res = {a.x * s, a.y * s};
     return res;
 }
@@ -315,7 +315,7 @@ MD_VEC_INLINE vec2_t vec2_div(vec2_t a, vec2_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec2_t vec2_div_f(vec2_t a, float s) {
+MD_VEC_INLINE vec2_t vec2_div1(vec2_t a, float s) {
     vec2_t res = {a.x / s, a.y / s};
     return res;
 }
@@ -347,7 +347,7 @@ static inline vec2_t vec2_normalize(vec2_t v) {
 
 MD_VEC_INLINE vec2_t vec2_lerp(vec2_t a, vec2_t b, float t) {
     ASSERT(0 <= t && t <= 1);
-    return vec2_add(vec2_mul_f(a, 1.0f - t), vec2_mul_f(b, t));
+    return vec2_add(vec2_mul1(a, 1.0f - t), vec2_mul1(b, t));
 }
 
 MD_VEC_INLINE vec2_t vec2_fract(vec2_t v) {
@@ -438,7 +438,7 @@ MD_VEC_INLINE vec3_t vec3_add(vec3_t a, vec3_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec3_t vec3_add_f(vec3_t a, float f) {
+MD_VEC_INLINE vec3_t vec3_add1(vec3_t a, float f) {
     vec3_t res = {a.x + f, a.y + f, a.z + f};
     return res;
 }
@@ -448,7 +448,7 @@ MD_VEC_INLINE vec3_t vec3_sub(vec3_t a, vec3_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec3_t vec3_sub_f(vec3_t a, float f) {
+MD_VEC_INLINE vec3_t vec3_sub1(vec3_t a, float f) {
     vec3_t res = {a.x - f, a.y - f, a.z - f};
     return res;
 }
@@ -458,7 +458,7 @@ MD_VEC_INLINE vec3_t vec3_mul(vec3_t a, vec3_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec3_t vec3_mul_f(vec3_t a, float f) {
+MD_VEC_INLINE vec3_t vec3_mul1(vec3_t a, float f) {
     vec3_t res = {a.x * f, a.y * f, a.z * f};
     return res;
 }
@@ -468,7 +468,7 @@ MD_VEC_INLINE vec3_t vec3_div(vec3_t a, vec3_t b) {
     return res;
 }
 
-MD_VEC_INLINE vec3_t vec3_div_f(vec3_t a, float f) {
+MD_VEC_INLINE vec3_t vec3_div1(vec3_t a, float f) {
     vec3_t res = {a.x / f, a.y / f, a.z / f};
     return res;
 }
@@ -515,7 +515,7 @@ MD_VEC_INLINE vec3_t vec3_normalize(vec3_t v) {
 
 MD_VEC_INLINE vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
     ASSERT(0 <= t && t <= 1);
-    return vec3_add(vec3_mul_f(a, 1.0f - t), vec3_mul_f(b, t));
+    return vec3_add(vec3_mul1(a, 1.0f - t), vec3_mul1(b, t));
 }
 
 MD_VEC_INLINE vec3_t vec3_deperiodize_ortho(vec3_t v, vec3_t ref, vec3_t period) {
@@ -653,7 +653,7 @@ MD_VEC_INLINE vec4_t vec4_mul(vec4_t a, vec4_t b) {
     return c;
 }
 
-MD_VEC_INLINE vec4_t vec4_mul_f(vec4_t a, float s) {
+MD_VEC_INLINE vec4_t vec4_mul1(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
     c.m128 = md_mm_mul_ps(a.m128, md_mm_set1_ps(s));
@@ -679,7 +679,7 @@ MD_VEC_INLINE vec4_t vec4_div(vec4_t a, vec4_t b) {
     return c;
 }
 
-MD_VEC_INLINE vec4_t vec4_div_f(vec4_t a, float s) {
+MD_VEC_INLINE vec4_t vec4_div1(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
     c.m128 = md_mm_div_ps(a.m128, md_mm_set1_ps(s));
@@ -705,7 +705,7 @@ MD_VEC_INLINE vec4_t vec4_add(vec4_t a, vec4_t b) {
     return c;
 }
 
-MD_VEC_INLINE vec4_t vec4_add_f(vec4_t a, float s) {
+MD_VEC_INLINE vec4_t vec4_add1(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
     c.m128 = md_mm_add_ps(a.m128, md_mm_set1_ps(s));
@@ -731,7 +731,7 @@ MD_VEC_INLINE vec4_t vec4_sub(vec4_t a, vec4_t b) {
     return c;
 }
 
-MD_VEC_INLINE vec4_t vec4_sub_f(vec4_t a, float s) {
+MD_VEC_INLINE vec4_t vec4_sub1(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
     c.m128 = md_mm_sub_ps(a.m128, md_mm_set1_ps(s));
@@ -855,7 +855,7 @@ MD_VEC_INLINE float vec4_length(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
     float mag2 = vec4_dot(v,v);
     if (mag2 > 1.0e-5f) {
-        v = vec4_mul_f(v, 1.0f / sqrtf(mag2));
+        v = vec4_mul1(v, 1.0f / sqrtf(mag2));
     }
     return v;
 }
@@ -887,7 +887,7 @@ MD_VEC_INLINE float vec4_angle(vec4_t v1, vec4_t v2) {
 }
 
 MD_VEC_INLINE vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
-    return vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
+    return vec4_add(vec4_mul1(a, 1.0f - t), vec4_mul1(b, t));
 }
 
 MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float s) {
@@ -1274,7 +1274,7 @@ MD_VEC_INLINE float vec4_periodic_distance(vec4_t a, vec4_t b, vec4_t period) {
 
 MD_VEC_INLINE vec4_t vec4_from_u32(uint32_t rgba) {
     vec4_t v = {(float)((rgba >> 0) & 0xFF), (float)((rgba >> 8) & 0xFF), (float)((rgba >> 16) & 0xFF), (float)((rgba >> 24) & 0xFF)};
-    return vec4_mul_f(v, 1.0f / 255.0f);
+    return vec4_mul1(v, 1.0f / 255.0f);
 }
 
 MD_VEC_INLINE uint32_t u32_from_vec4(vec4_t v) {
@@ -1380,7 +1380,7 @@ MD_VEC_INLINE quat_t quat_mul(quat_t a, quat_t b) {
     return c;
 }
 
-MD_VEC_INLINE quat_t quat_mul_f(quat_t q, float s) {
+MD_VEC_INLINE quat_t quat_mul1(quat_t q, float s) {
     quat_t r;
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_mul_ps(q.m128, md_mm_set1_ps(s));
@@ -1395,8 +1395,8 @@ MD_VEC_INLINE quat_t quat_mul_f(quat_t q, float s) {
 
 MD_VEC_INLINE vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
     vec3_t u = {q.x, q.y, q.z};
-    vec3_t t = vec3_mul_f(vec3_cross(u, v), 2.0f);
-    vec3_t r = vec3_add(v, vec3_mul_f(t, q.w));
+    vec3_t t = vec3_mul1(vec3_cross(u, v), 2.0f);
+    vec3_t r = vec3_add(v, vec3_mul1(t, q.w));
     return vec3_add(r, vec3_cross(u, t));
 }
 
@@ -1426,7 +1426,7 @@ MD_VEC_INLINE quat_t quat_axis_angle(vec3_t axis, float angle) {
 MD_VEC_INLINE quat_t quat_normalize(quat_t q) {
     float mag2 = quat_dot(q,q);
     if (mag2 > 0.000001f) {
-        q = quat_mul_f(q, 1.0f / sqrtf(mag2));
+        q = quat_mul1(q, 1.0f / sqrtf(mag2));
     }
     return q;
 }
@@ -1646,11 +1646,11 @@ MD_VEC_INLINE mat3_t mat3_mul(mat3_t A, mat3_t B) {
     return C;
 }
 
-MD_VEC_INLINE mat3_t mat3_mul_f(mat3_t M, float s) {
+MD_VEC_INLINE mat3_t mat3_mul1(mat3_t M, float s) {
     mat3_t R;
-    R.col[0] = vec3_mul_f(M.col[0], s);
-    R.col[1] = vec3_mul_f(M.col[1], s);
-    R.col[2] = vec3_mul_f(M.col[2], s);    
+    R.col[0] = vec3_mul1(M.col[0], s);
+    R.col[1] = vec3_mul1(M.col[1], s);
+    R.col[2] = vec3_mul1(M.col[2], s);    
     return R;
 }
 
@@ -1762,7 +1762,6 @@ MD_VEC_INLINE dvec2_t dvec2_add(dvec2_t a, dvec2_t b) {
     return r;
 }
 
-
 // dvec3
 MD_VEC_INLINE dvec3_t dvec3_set(double x, double y, double z) {
     dvec3_t v = {x, y, z};
@@ -1801,6 +1800,33 @@ MD_VEC_INLINE dvec3_t dvec3_add(dvec3_t a, dvec3_t b) {
     return r;
 }
 
+MD_VEC_INLINE dvec3_t dvec3_add1(dvec3_t v, double s) {
+    dvec3_t r = {
+        v.x + s,
+        v.y + s,
+        v.z + s,
+    };
+    return r;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_sub(dvec3_t a, dvec3_t b) {
+    dvec3_t r = {
+        a.x - b.x,
+        a.y - b.y,
+        a.z - b.z,
+    };
+    return r;
+}   
+
+MD_VEC_INLINE dvec3_t dvec3_sub1(dvec3_t v, double s) {
+    dvec3_t r = {
+        v.x - s,
+        v.y - s,
+        v.z - s,
+    };
+    return r;
+}
+
 MD_VEC_INLINE dvec3_t dvec3_mul(dvec3_t a, dvec3_t b) {
     dvec3_t r = {
         a.x * b.x,
@@ -1810,7 +1836,7 @@ MD_VEC_INLINE dvec3_t dvec3_mul(dvec3_t a, dvec3_t b) {
     return r;
 }
 
-MD_VEC_INLINE dvec3_t dvec3_mul_f(dvec3_t v, float s) {
+MD_VEC_INLINE dvec3_t dvec3_mul1(dvec3_t v, double s) {
     dvec3_t r = {
         v.x * s,
         v.y * s,
@@ -1819,6 +1845,23 @@ MD_VEC_INLINE dvec3_t dvec3_mul_f(dvec3_t v, float s) {
     return r;
 }
 
+MD_VEC_INLINE dvec3_t dvec3_div(dvec3_t a, dvec3_t b) {
+    dvec3_t r = {
+        a.x / b.x,
+        a.y / b.y,
+        a.z / b.z,
+    };
+    return r;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_div1(dvec3_t v, double s) {
+    dvec3_t r = {
+        v.x / s,
+        v.y / s,
+        v.z / s,
+    };
+    return r;
+}
 
 // dvec4
 MD_VEC_INLINE dvec4_t dvec4_set(double x, double y, double z, double w) {
@@ -2109,13 +2152,13 @@ MD_VEC_INLINE vec3_t mat4_mul_vec3(mat4_t M, vec3_t v, float w) {
     return vec3_from_vec4(r);
 }
 
-MD_VEC_INLINE mat4_t mat4_mul_f(mat4_t M, float s) {
+MD_VEC_INLINE mat4_t mat4_mul1(mat4_t M, float s) {
     mat4_t C = {0};
 #if MD_VEC_MATH_USE_SIMD
-    C.col[0] = vec4_mul_f(M.col[0], s);
-    C.col[1] = vec4_mul_f(M.col[1], s);
-    C.col[2] = vec4_mul_f(M.col[2], s);
-    C.col[3] = vec4_mul_f(M.col[3], s);
+    C.col[0] = vec4_mul1(M.col[0], s);
+    C.col[1] = vec4_mul1(M.col[1], s);
+    C.col[2] = vec4_mul1(M.col[2], s);
+    C.col[3] = vec4_mul1(M.col[3], s);
 #else
     C.elem[0][0] = M.elem[0][0] * s;
     C.elem[0][1] = M.elem[0][1] * s;
@@ -2303,7 +2346,7 @@ static inline vec2_t operator *= (vec2_t& a, vec2_t b) {
 }
 
 static inline vec2_t operator *= (vec2_t& v, float s) {
-    v = vec2_mul_f(v, s);
+    v = vec2_mul1(v, s);
     return v;
 }
 
@@ -2313,7 +2356,7 @@ static inline vec2_t operator /= (vec2_t& a, vec2_t b) {
 }
 
 static inline vec2_t operator /= (vec2_t& v, float s) {
-    v = vec2_div_f(v, s);
+    v = vec2_div1(v, s);
     return v;
 }
 
@@ -2323,7 +2366,7 @@ static inline vec2_t operator += (vec2_t& a, vec2_t b) {
 }
 
 static inline vec2_t operator += (vec2_t& v, float s) {
-    v = vec2_add_f(v, s);
+    v = vec2_add1(v, s);
     return v;
 }
 
@@ -2333,7 +2376,7 @@ static inline vec2_t operator -= (vec2_t& a, vec2_t b) {
 }
 
 static inline vec2_t operator -= (vec2_t& v, float s) {
-    v = vec2_sub_f(v, s);
+    v = vec2_sub1(v, s);
     return v;
 }
 
@@ -2351,11 +2394,11 @@ static inline vec3_t operator + (vec3_t a, vec3_t b) {
 }
 
 static inline vec3_t operator + (vec3_t v, float s) {
-    return vec3_add_f(v, s);
+    return vec3_add1(v, s);
 }
 
 static inline vec3_t operator + (float s, vec3_t v) {
-    return vec3_add_f(v, s);
+    return vec3_add1(v, s);
 }
 
 static inline vec3_t operator += (vec3_t& a, vec3_t b) {
@@ -2364,7 +2407,7 @@ static inline vec3_t operator += (vec3_t& a, vec3_t b) {
 }
 
 static inline vec3_t operator += (vec3_t& v, float s) {
-    v = vec3_add_f(v, s);
+    v = vec3_add1(v, s);
     return v;
 }
 
@@ -2394,7 +2437,7 @@ static inline vec3_t operator -= (vec3_t& a, vec3_t b) {
 }
 
 static inline vec3_t operator -= (vec3_t& v, float s) {
-    v = vec3_sub_f(v, s);
+    v = vec3_sub1(v, s);
     return v;
 }
 
@@ -2419,7 +2462,7 @@ static inline vec3_t operator *= (vec3_t& a, vec3_t b) {
 }
 
 static inline vec3_t operator *= (vec3_t& v, float s) {
-    v = vec3_mul_f(v, s);
+    v = vec3_mul1(v, s);
     return v;
 }
 
@@ -2444,7 +2487,118 @@ static inline vec3_t operator /= (vec3_t& a, vec3_t b) {
 }
 
 static inline vec3_t operator /= (vec3_t& v, float s) {
-    v = vec3_div_f(v, s);
+    v = vec3_div1(v, s);
+    return v;
+}
+
+// dvec3
+static inline bool operator == (dvec3_t a, dvec3_t b){
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+static inline bool operator != (dvec3_t a, dvec3_t b){
+    return !(a == b);
+}
+
+static inline dvec3_t operator + (dvec3_t a, dvec3_t b) {
+    return dvec3_add(a, b);
+}
+
+static inline dvec3_t operator + (dvec3_t v, double s) {
+    return dvec3_add1(v, s);
+}
+
+static inline dvec3_t operator + (double s, dvec3_t v) {
+    return dvec3_add1(v, s);
+}
+
+static inline dvec3_t operator += (dvec3_t& a, dvec3_t b) {
+    a = dvec3_add(a, b);
+    return a;
+}
+
+static inline dvec3_t operator += (dvec3_t& v, double s) {
+    v = dvec3_add1(v, s);
+    return v;
+}
+
+static inline dvec3_t operator - (dvec3_t a, dvec3_t b) {
+    dvec3_t c = {a.x - b.x, a.y - b.y, a.z - b.z};
+    return c;
+}
+
+static inline dvec3_t operator - (dvec3_t a, double s) {
+    dvec3_t c = {a.x - s, a.y - s, a.z - s};
+    return c;
+}
+
+static inline dvec3_t operator - (double s, dvec3_t a) {
+    dvec3_t c = {s - a.x, s - a.y, s - a.z};
+    return c;
+}
+
+static inline dvec3_t operator - (const dvec3_t &a) {
+    dvec3_t c = {-a.x, -a.y, -a.z};
+    return c;
+}
+
+static inline dvec3_t operator -= (dvec3_t& a, dvec3_t b) {
+    a = dvec3_sub(a, b);
+    return a;
+}
+
+static inline dvec3_t operator -= (dvec3_t& v, double s) {
+    v = dvec3_sub1(v, s);
+    return v;
+}
+
+static inline dvec3_t operator * (dvec3_t a, dvec3_t b) {
+    dvec3_t c = {a.x * b.x, a.y * b.y, a.z * b.z};
+    return c;
+}
+
+static inline dvec3_t operator * (dvec3_t a, double s) {
+    dvec3_t c = {a.x * s, a.y * s, a.z * s};
+    return c;
+}
+
+static inline dvec3_t operator * (double s, dvec3_t a) {
+    dvec3_t c = {a.x * s, a.y * s, a.z * s};
+    return c;
+}
+
+static inline dvec3_t operator *= (dvec3_t& a, dvec3_t b) {
+    a = dvec3_mul(a, b);
+    return a;
+}
+
+static inline dvec3_t operator *= (dvec3_t& v, double s) {
+    v = dvec3_mul1(v, s);
+    return v;
+}
+
+static inline dvec3_t operator / (dvec3_t a, dvec3_t b) {
+    dvec3_t c = {a.x / b.x, a.y / b.y, a.z / b.z};
+    return c;
+}
+
+static inline dvec3_t operator / (dvec3_t a, double s) {
+    dvec3_t c = {a.x / s, a.y / s, a.z / s};
+    return c;
+}
+
+static inline dvec3_t operator / (double s, dvec3_t a) {
+    dvec3_t c = {s / a.x, s / a.y, s / a.z};
+    return c;
+}
+
+static inline dvec3_t operator /= (dvec3_t& a, dvec3_t b) {
+    a = dvec3_div(a, b);
+    return a;
+}
+
+static inline dvec3_t operator /= (dvec3_t& v, double s) {
+    v = dvec3_div1(v, s);
     return v;
 }
 
@@ -2463,7 +2617,7 @@ static inline vec4_t& operator += (vec4_t& a, vec4_t b) {
 }
 
 static inline vec4_t& operator += (vec4_t& v, float s) {
-    v = vec4_add_f(v,s);
+    v = vec4_add1(v,s);
     return v;
 }
 
@@ -2472,11 +2626,11 @@ static inline vec4_t operator + (vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t operator + (vec4_t v, float s) {
-    return vec4_add_f(v, s);
+    return vec4_add1(v, s);
 }
 
 static inline vec4_t operator + (float s, vec4_t v) {
-    return vec4_add_f(v, s);
+    return vec4_add1(v, s);
 }
 
 static inline vec4_t& operator -= (vec4_t& a, vec4_t b) {
@@ -2485,7 +2639,7 @@ static inline vec4_t& operator -= (vec4_t& a, vec4_t b) {
 }
 
 static inline vec4_t& operator -= (vec4_t& v, float s) {
-    v = vec4_sub_f(v,s);
+    v = vec4_sub1(v,s);
     return v;
 }
 
@@ -2494,7 +2648,7 @@ static inline vec4_t operator - (vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t operator - (vec4_t v, float s) {
-    return vec4_sub_f(v, s);
+    return vec4_sub1(v, s);
 }
 
 static inline vec4_t operator - (float s, vec4_t v) {
@@ -2512,7 +2666,7 @@ static inline vec4_t& operator *= (vec4_t& a, vec4_t b) {
 }
 
 static inline vec4_t& operator *= (vec4_t& v, float s) {
-    v = vec4_mul_f(v,s);
+    v = vec4_mul1(v,s);
     return v;
 }
 
@@ -2521,11 +2675,11 @@ static inline vec4_t operator * (vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t operator * (vec4_t v, float s) {
-    return vec4_mul_f(v, s);
+    return vec4_mul1(v, s);
 }
 
 static inline vec4_t operator * (float s, vec4_t v) {
-    return vec4_mul_f(v, s);
+    return vec4_mul1(v, s);
 }
 
 static inline vec4_t& operator /= (vec4_t& a, vec4_t b) {
@@ -2534,7 +2688,7 @@ static inline vec4_t& operator /= (vec4_t& a, vec4_t b) {
 }
 
 static inline vec4_t& operator /= (vec4_t& v, float s) {
-    v = vec4_div_f(v,s);
+    v = vec4_div1(v,s);
     return v;
 }
 
@@ -2543,7 +2697,7 @@ static inline vec4_t operator / (vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t operator / (vec4_t v, float s) {
-    return vec4_div_f(v, s);
+    return vec4_div1(v, s);
 }
 
 static inline vec4_t operator / (float s, vec4_t v) {
@@ -2567,11 +2721,11 @@ static inline mat3_t operator * (mat3_t A, mat3_t B) {
 }
 
 static inline mat3_t operator * (mat3_t A, float s) {
-    return mat3_mul_f(A, s);
+    return mat3_mul1(A, s);
 }
 
 static inline mat3_t operator * (float s, mat3_t A) {
-    return mat3_mul_f(A, s);
+    return mat3_mul1(A, s);
 }
 
 static inline mat3_t operator + (mat3_t A, mat3_t B) {

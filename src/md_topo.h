@@ -13,6 +13,8 @@ struct md_allocator_i;
 // Topology analysis for scalar fields
 // Constructs extremum graphs using Morse-Smale complex decomposition
 
+#define MD_TOPO_NUM_TYPES 5
+
 // Critical point types
 typedef enum md_topo_critical_point_type_t {
     MD_TOPO_UNDEFINED = 0,      // Sentinel value (should not appear in extremum graph)
@@ -46,25 +48,18 @@ typedef struct md_topo_vert_t {
     float value;   // Scalar field value at the vertex
 } md_topo_vert_t;
 
-// Result structure containing the Morse-Smale complex
-// Vertices are stored contiguously: [maxima, split_saddles, minima, join_saddles]
-// Edges encode connectivity between critical points
+// Result structure containing the Morse-Smale complex.
+// vertices[i] holds position + scalar value; types[i] holds the critical-point type.
+// Edge indices (from, to) are indices into the vertices/types arrays.
 typedef struct md_topo_extremum_graph_t {
-    // Vertex data
-    uint32_t  num_vertices;       // Total number of critical points
-    md_topo_vert_t* vertices;     // Vertex array [num_vertices]
-    
-    // Count by type (for efficient indexing into vertex arrays)
-    uint32_t num_maxima;          // Maxima are at indices [0, num_maxima)
-    uint32_t num_split_saddles;   // Split saddles at [num_maxima, num_maxima + num_split_saddles)
-    uint32_t num_minima;          // Minima at [num_maxima + num_split_saddles, ...)
-    uint32_t num_join_saddles;    // Join saddles at [... + num_minima, num_vertices)
-    
-    // Edge connectivity (Morse-Smale complex structure)
-    uint32_t        num_edges;
-    md_topo_edge_t* edges;        // Edge list [num_edges]
+    md_topo_vert_t*                vertices;    // [num_vertices] position + value
+    md_topo_critical_point_type_t* types;       // [num_vertices] per-vertex type
+    uint32_t                       num_vertices;
 
-    struct md_allocator_i* alloc; // Allocator used for this structure
+    md_topo_edge_t*                edges;       // [num_edges]
+    uint32_t                       num_edges;
+
+    struct md_allocator_i*         alloc;
 } md_topo_extremum_graph_t;
 
 #ifdef __cplusplus
@@ -73,28 +68,30 @@ extern "C" {
 
 #if MD_ENABLE_GPU
 
-// Opaque handle for an in-flight GPU topology computation.
-// Owns all intermediate GPU buffers and the submission fence.
-typedef struct md_topo_gpu_work md_topo_gpu_work_t;
+// Persistent context for GPU topology computation.
+// Create once per volume size; reuse across multiple computations.
+// All scratch and result buffers are pre-allocated at create time.
+typedef struct md_topo_gpu_context md_topo_gpu_context_t;
 
-// Asynchronously compute the extremum graph on the GPU.
-//   Phase 1 (manifold + critical-point detection) blocks internally to read back
-//   vertex counts, which are required to size the phase-2 allocations.
-//   Phase 2 (compaction + graph extraction + readback copy) is submitted
-//   asynchronously and the function returns immediately.
-// Returns NULL on failure. The caller owns the returned handle.
-md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu(
-    md_gpu_device_t device,
-    md_gpu_image_t  volume,
-    const struct md_grid_t* grid,
-    float scalar_threshold);
+// Allocate a context sized for a dim_x × dim_y × dim_z volume.
+// Result buffers are pre-allocated to a worst-case vertex/edge capacity.
+// Returns NULL on failure.
+md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z);
 
-// Returns true if the GPU has finished phase 2 (non-blocking poll).
-bool md_topo_gpu_work_is_done(const md_topo_gpu_work_t* work);
+// Release all GPU resources owned by the context.
+void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context);
 
-// Block until GPU work completes, optionally extract results into out_graph, then free work.
-// Pass out_graph = NULL to discard results (cancel-like).
-bool md_topo_gpu_work_finish(md_topo_extremum_graph_t* out_graph, md_topo_gpu_work_t* work);
+// Record the full topology pipeline into caller-supplied cmd:
+//   bidirectional manifold → path compression → critical-point detection
+//   → compaction setup → compaction → vertex/edge extraction → staging copies.
+// Submit cmd with NULL fence (implicit sync), then call get_result.
+void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* context,
+    md_gpu_image_t volume, const struct md_grid_t* grid, float scalar_threshold);
+
+// Call after cmd has been submitted and completed.
+// Reads CPU-visible staging into out_graph (vertices, types, edges).
+// Returns false if zero critical points were found (out_graph left unchanged).
+bool md_topo_gpu_context_get_result(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context);
 
 #else
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);
@@ -106,78 +103,27 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph);
 // Copy an extremum graph structure (deep copy)
 void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph);
 
-// Total counts
-static inline size_t md_topo_total_critical_points(const md_topo_extremum_graph_t* graph) {
+// Simplify an extremum graph into out_graph.
+// - threshold: vertices with value < threshold are killed (pass 0 to skip).
+// - prune_duplicate_saddles: for each pair of maxima connected by more than one
+//   split-saddle, keep only the highest-value saddle and remove the rest.
+// out_graph->alloc must be set before calling; it is freed and rebuilt.
+void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* in_graph,
+    float threshold, bool prune_duplicate_saddles);
+
+void md_topo_count_vertex_types(uint32_t out_counts[MD_TOPO_NUM_TYPES], const md_topo_extremum_graph_t* graph);
+
+static inline size_t md_topo_num_critical_points(const md_topo_extremum_graph_t* graph) {
     return graph ? graph->num_vertices : 0;
 }
 
-static inline size_t md_topo_total_edges(const md_topo_extremum_graph_t* graph) {
+static inline size_t md_topo_num_edges(const md_topo_extremum_graph_t* graph) {
     return graph ? graph->num_edges : 0;
 }
 
-// Count by type
-static inline size_t md_topo_count_maxima(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_maxima : 0;
-}
-
-static inline size_t md_topo_count_split_saddles(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_split_saddles : 0;
-}
-
-static inline size_t md_topo_count_minima(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_minima : 0;
-}
-
-static inline size_t md_topo_count_join_saddles(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_join_saddles : 0;
-}
-
-// Vertex offsets by type
-static inline size_t md_topo_offset_maxima(const md_topo_extremum_graph_t* graph) {
-    (void)graph;
-    return 0;
-}
-
-static inline size_t md_topo_offset_split_saddles(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_maxima : 0;
-}
-
-static inline size_t md_topo_offset_minima(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_maxima + graph->num_split_saddles : 0;
-}
-
-static inline size_t md_topo_offset_join_saddles(const md_topo_extremum_graph_t* graph) {
-    return graph ? graph->num_maxima + graph->num_split_saddles + graph->num_minima : 0;
-}
-
 static inline md_topo_critical_point_type_t md_topo_vertex_type(const md_topo_extremum_graph_t* graph, size_t vertex_idx) {
-    if (!graph || vertex_idx >= graph->num_vertices) return MD_TOPO_UNDEFINED;
-    if (vertex_idx < graph->num_maxima) return MD_TOPO_MAXIMUM;
-    if (vertex_idx < graph->num_maxima + graph->num_split_saddles) return MD_TOPO_SPLIT_SADDLE;
-    if (vertex_idx < graph->num_maxima + graph->num_split_saddles + graph->num_minima) return MD_TOPO_MINIMUM;
-    return MD_TOPO_JOIN_SADDLE;
-}
-
-// Extract vertex types into separate array (returns number of types written)
-static inline size_t md_topo_extract_vertex_types(int* out_types, size_t capacity, const md_topo_extremum_graph_t* graph) {
-    if (!graph || !out_types) return 0;
-    size_t total_cp = md_topo_total_critical_points(graph);
-    if (capacity < total_cp) return 0;
-
-    size_t offset = 0;
-    for (size_t i = 0; i < graph->num_maxima; ++i) {
-        out_types[offset++] = MD_TOPO_MAXIMUM;
-    }
-    for (size_t i = 0; i < graph->num_split_saddles; ++i) {
-        out_types[offset++] = MD_TOPO_SPLIT_SADDLE;
-    }
-    for (size_t i = 0; i < graph->num_minima; ++i) {
-        out_types[offset++] = MD_TOPO_MINIMUM;
-    }
-    for (size_t i = 0; i < graph->num_join_saddles; ++i) {
-        out_types[offset++] = MD_TOPO_JOIN_SADDLE;
-    }
-    return offset;
+    if (!graph || !graph->types || vertex_idx >= graph->num_vertices) return MD_TOPO_UNDEFINED;
+    return graph->types[vertex_idx];
 }
 
 #ifdef __cplusplus

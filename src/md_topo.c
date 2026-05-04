@@ -1,4 +1,4 @@
-#include <md_topo.h>
+﻿#include <md_topo.h>
 
 #include <core/md_platform.h>
 #include <core/md_log.h>
@@ -52,20 +52,22 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
 
 // Pipeline cache
 static md_gpu_device_t cached_device = NULL;
-static md_gpu_compute_pipeline_t pip_bidirectional_manifold = NULL;
-static md_gpu_compute_pipeline_t pip_path_compression = NULL;
-static md_gpu_compute_pipeline_t pip_critical_points = NULL;
+static md_gpu_compute_pipeline_t pip_bidirectional_manifold    = NULL;
+static md_gpu_compute_pipeline_t pip_path_compression          = NULL;
+static md_gpu_compute_pipeline_t pip_critical_points           = NULL;
+static md_gpu_compute_pipeline_t pip_topo_setup                = NULL;
 static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
-static md_gpu_compute_pipeline_t pip_vertex_edge_extraction = NULL;
+static md_gpu_compute_pipeline_t pip_vertex_edge_extraction    = NULL;
 
 static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* cached, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
     if (cached_device != device) {
         // Device changed, invalidate all cached pipelines
-        if (pip_bidirectional_manifold)    { md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);    pip_bidirectional_manifold = NULL; }
-        if (pip_path_compression)          { md_gpu_compute_pipeline_destroy(pip_path_compression);          pip_path_compression = NULL; }
-        if (pip_critical_points)           { md_gpu_compute_pipeline_destroy(pip_critical_points);           pip_critical_points = NULL; }
+        if (pip_bidirectional_manifold)    { md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);    pip_bidirectional_manifold    = NULL; }
+        if (pip_path_compression)          { md_gpu_compute_pipeline_destroy(pip_path_compression);          pip_path_compression          = NULL; }
+        if (pip_critical_points)           { md_gpu_compute_pipeline_destroy(pip_critical_points);           pip_critical_points           = NULL; }
+        if (pip_topo_setup)                { md_gpu_compute_pipeline_destroy(pip_topo_setup);                pip_topo_setup                = NULL; }
         if (pip_critical_point_compaction) { md_gpu_compute_pipeline_destroy(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
-        if (pip_vertex_edge_extraction)    { md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);    pip_vertex_edge_extraction = NULL; }
+        if (pip_vertex_edge_extraction)    { md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);    pip_vertex_edge_extraction    = NULL; }
         cached_device = device;
     }
     if (*cached == NULL) {
@@ -82,431 +84,328 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
     return *cached;
 }
 
-// Async GPU work handle — owns all intermediate buffers and the phase-2 fence.
-struct md_topo_gpu_work {
+// ---------------------------------------------------------------------------
+// Scratch buffer layout:
+//   ascending          @ [0 * stride .. 1 * stride)
+//   descending         @ [1 * stride .. 2 * stride)
+//   types              @ [2 * stride .. 3 * stride)
+//   voxel_to_vert_idx  @ [3 * stride .. 4 * stride)
+// where stride = ALIGN_UP(num_points * sizeof(uint32_t), 256)
+//
+// Meta buffer layout (device-local, 256-byte aligned slots):
+//   [   0..  16) counts[4]         critical-point type counts (critical_points output)
+//   [ 256.. 260) changed_read      path-compression flag, read  by shader
+//   [ 512.. 516) changed_write     path-compression flag, write by shader
+//   [ 768.. 784) counters[4]       write-cursor offsets for compaction (topo_setup output)
+//   [1024..1044) type_counts[5]    per-type counts + total for extraction (topo_setup output)
+//   [1280..1284) edge_count        actual edge count (extraction output)
+//
+// Staging buffer layout (CPU-visible, 256-byte aligned slots):
+//   [   0..  16) counts[4]         readback of type counts
+//   [ 256.. 260) changed           readback of convergence flag
+//   [ 512.. 516) edge_count        readback of actual edge count
+// ---------------------------------------------------------------------------
+#define TOPO_BUF_ALIGN            256
+
+#define TOPO_META_COUNTS_OFF         0
+#define TOPO_META_CHANGED_R_OFF    256
+#define TOPO_META_CHANGED_W_OFF    512
+#define TOPO_META_COUNTERS_OFF     768
+#define TOPO_META_TYPE_COUNTS_OFF 1024
+#define TOPO_META_EDGE_COUNT_OFF  1280
+#define TOPO_META_BUF_SIZE        1536
+
+#define TOPO_STAGING_COUNTS_OFF    0
+#define TOPO_STAGING_CHANGED_OFF   256
+#define TOPO_STAGING_EDGE_CNT_OFF  512
+#define TOPO_STAGING_BUF_SIZE      768
+
+// Worst-case capacity ratios:
+//   vert_cap = num_points / TOPO_VERT_RATIO  (1 CP per 8 voxels is very generous)
+//   edge_cap = vert_cap * TOPO_EDGE_RATIO
+#define TOPO_VERT_RATIO  8
+#define TOPO_EDGE_RATIO  4
+#define TOPO_VERT_CAP_MIN 64
+
+struct md_topo_gpu_context {
     md_gpu_device_t device;
-    md_gpu_queue_t  queue;
-    md_gpu_fence_t  fence;  // NULL until phase-2 is submitted; NULL again after destroy
+    uint32_t        num_points;
+    uint32_t        dim[3];
+    uint32_t        vert_cap;      // pre-allocated worst-case vertex capacity
+    uint32_t        edge_cap;      // pre-allocated worst-case edge capacity
 
-    // Phase-1 readback (available as soon as _async() returns)
-    uint32_t num_maxima;
-    uint32_t num_split_saddles;
-    uint32_t num_minima;
-    uint32_t num_join_saddles;
-    uint32_t num_vertices;
-    uint32_t num_edges;         // estimated upper bound used for allocation
+    // Persistent GPU buffers — scratch
+    md_gpu_buffer_t scratch_buf;   // scratch_stride*4 bytes, device-local (stride=ALIGN_UP(num_points*4,256))
+    md_gpu_buffer_t meta_buf;      // TOPO_META_BUF_SIZE bytes, device-local
+    md_gpu_buffer_t staging_buf;   // TOPO_STAGING_BUF_SIZE bytes, CPU-visible
 
-    // Phase-1/2 compute buffers (owned by this handle)
-    md_gpu_buffer_t ascending_buf;
-    md_gpu_buffer_t descending_buf;
-    md_gpu_buffer_t types_buf;
-    md_gpu_buffer_t indices_buf;
-    md_gpu_buffer_t voxel_to_vertex_idx_buf;  // int32, -1 for non-CP voxels
-    md_gpu_buffer_t counters_buf;
-    md_gpu_buffer_t type_counts_buf;
-    md_gpu_buffer_t vert_buf;
-    md_gpu_buffer_t edge_buf;
-    md_gpu_buffer_t edge_count_buf;
-
-    // CPU-visible staging buffers for readback after the fence signals
-    md_gpu_buffer_t staging_edge_count;
-    md_gpu_buffer_t staging_verts;
-    md_gpu_buffer_t staging_edges;
+    // Persistent GPU buffers — results (pre-allocated to worst-case capacity)
+    md_gpu_buffer_t indices_buf;   // u32[vert_cap]
+    md_gpu_buffer_t vert_buf;      // float4[vert_cap]
+    md_gpu_buffer_t staging_verts; // float4[vert_cap], CPU-visible
+    md_gpu_buffer_t edge_buf;      // md_topo_edge_t[edge_cap]
+    md_gpu_buffer_t staging_edges; // md_topo_edge_t[edge_cap], CPU-visible
 };
 
-static void topo_work_destroy_buffers(struct md_topo_gpu_work* w) {
-    if (w->ascending_buf)            { md_gpu_buffer_destroy(w->ascending_buf);            w->ascending_buf            = NULL; }
-    if (w->descending_buf)           { md_gpu_buffer_destroy(w->descending_buf);           w->descending_buf           = NULL; }
-    if (w->types_buf)                { md_gpu_buffer_destroy(w->types_buf);                w->types_buf                = NULL; }
-    if (w->indices_buf)              { md_gpu_buffer_destroy(w->indices_buf);              w->indices_buf              = NULL; }
-    if (w->voxel_to_vertex_idx_buf)  { md_gpu_buffer_destroy(w->voxel_to_vertex_idx_buf);  w->voxel_to_vertex_idx_buf  = NULL; }
-    if (w->counters_buf)             { md_gpu_buffer_destroy(w->counters_buf);             w->counters_buf             = NULL; }
-    if (w->type_counts_buf)          { md_gpu_buffer_destroy(w->type_counts_buf);          w->type_counts_buf          = NULL; }
-    if (w->vert_buf)           { md_gpu_buffer_destroy(w->vert_buf);           w->vert_buf           = NULL; }
-    if (w->edge_buf)           { md_gpu_buffer_destroy(w->edge_buf);           w->edge_buf           = NULL; }
-    if (w->edge_count_buf)     { md_gpu_buffer_destroy(w->edge_count_buf);     w->edge_count_buf     = NULL; }
-    if (w->staging_edge_count) { md_gpu_buffer_destroy(w->staging_edge_count); w->staging_edge_count = NULL; }
-    if (w->staging_verts)      { md_gpu_buffer_destroy(w->staging_verts);      w->staging_verts      = NULL; }
-    if (w->staging_edges)      { md_gpu_buffer_destroy(w->staging_edges);      w->staging_edges      = NULL; }
-}
-
-md_topo_gpu_work_t* md_topo_compute_extremum_graph_gpu(md_gpu_device_t device, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
-    if (!device || !volume || !grid) {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: invalid input");
+md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z) {
+    if (!device || !dim_x || !dim_y || !dim_z) {
+        MD_LOG_ERROR("md_topo_gpu_context_create: invalid arguments");
         return NULL;
     }
 
-    const uint32_t num_points = (uint32_t)(grid->dim[0] * grid->dim[1] * grid->dim[2]);
+    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8,  8,  8) ||
+        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8,  8,  8) ||
+        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8,  8,  8) ||
+        !ensure_pipeline(device, &pip_topo_setup,                topo_topo_setup_start,                topo_topo_setup_size(),                "topo_setup",                1,  1,  1) ||
+        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8,  8,  8) ||
+        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1,  1))
+    {
+        MD_LOG_ERROR("md_topo_gpu_context_create: failed to create compute pipelines");
+        return NULL;
+    }
+
+    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)calloc(1, sizeof(*ctx));
+    if (!ctx) return NULL;
+
+    ctx->device     = device;
+    ctx->num_points = dim_x * dim_y * dim_z;
+    ctx->dim[0]     = dim_x;
+    ctx->dim[1]     = dim_y;
+    ctx->dim[2]     = dim_z;
+
+    uint32_t vert_cap = ctx->num_points / TOPO_VERT_RATIO;
+    if (vert_cap < TOPO_VERT_CAP_MIN) vert_cap = TOPO_VERT_CAP_MIN;
+    uint32_t edge_cap = vert_cap * TOPO_EDGE_RATIO;
+    ctx->vert_cap = vert_cap;
+    ctx->edge_cap = edge_cap;
+
+    size_t scratch_stride = ((size_t)ctx->num_points * sizeof(uint32_t) + (TOPO_BUF_ALIGN - 1)) & ~(size_t)(TOPO_BUF_ALIGN - 1);
+    ctx->scratch_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = scratch_stride * 4 });
+    ctx->meta_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_META_BUF_SIZE });
+    ctx->staging_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_STAGING_BUF_SIZE, .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->indices_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t) });
+    ctx->vert_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float) });
+    ctx->staging_verts = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->edge_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t) });
+    ctx->staging_edges = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+
+    if (!ctx->scratch_buf || !ctx->meta_buf || !ctx->staging_buf ||
+        !ctx->indices_buf || !ctx->vert_buf || !ctx->staging_verts ||
+        !ctx->edge_buf    || !ctx->staging_edges)
+    {
+        MD_LOG_ERROR("md_topo_gpu_context_create: failed to allocate GPU buffers");
+        md_topo_gpu_context_destroy((md_topo_gpu_context_t*)ctx);
+        return NULL;
+    }
+
+    MD_LOG_DEBUG("md_topo_gpu_context_create: %ux%ux%u (%u voxels), vert_cap=%u edge_cap=%u",
+                 dim_x, dim_y, dim_z, ctx->num_points, vert_cap, edge_cap);
+    return (md_topo_gpu_context_t*)ctx;
+}
+
+void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
+    if (!context) return;
+    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
+    if (ctx->scratch_buf)   md_gpu_buffer_destroy(ctx->scratch_buf);
+    if (ctx->meta_buf)      md_gpu_buffer_destroy(ctx->meta_buf);
+    if (ctx->staging_buf)   md_gpu_buffer_destroy(ctx->staging_buf);
+    if (ctx->indices_buf)   md_gpu_buffer_destroy(ctx->indices_buf);
+    if (ctx->vert_buf)      md_gpu_buffer_destroy(ctx->vert_buf);
+    if (ctx->staging_verts) md_gpu_buffer_destroy(ctx->staging_verts);
+    if (ctx->edge_buf)      md_gpu_buffer_destroy(ctx->edge_buf);
+    if (ctx->staging_edges) md_gpu_buffer_destroy(ctx->staging_edges);
+    free(ctx);
+}
+
+void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* context, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
+    if (!cmd || !context || !volume || !grid) return;
+    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
 
     struct {
         float    index_to_world[4][4];
         uint32_t dims[4];
         float    scalar_threshold;
         float    _pad[3];
-    } ubo_data;
-    index_to_world_matrix(ubo_data.index_to_world, grid);
-    ubo_data.dims[0] = grid->dim[0];
-    ubo_data.dims[1] = grid->dim[1];
-    ubo_data.dims[2] = grid->dim[2];
-    ubo_data.scalar_threshold = scalar_threshold;
-    
-    uint32_t wg_size[3] = { DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8) };
+    } ubo;
+    index_to_world_matrix(ubo.index_to_world, grid);
+    ubo.dims[0] = grid->dim[0];
+    ubo.dims[1] = grid->dim[1];
+    ubo.dims[2] = grid->dim[2];
+    ubo.dims[3] = 0;
+    ubo.scalar_threshold = scalar_threshold;
+    ubo._pad[0] = ubo._pad[1] = ubo._pad[2] = 0.0f;
 
-    // Ensure pipelines (lazy, cached)
-    md_gpu_compute_pipeline_t p_manifold = ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8, 8, 8);
-    md_gpu_compute_pipeline_t p_compress = ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8, 8, 8);
-    md_gpu_compute_pipeline_t p_critical = ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8, 8, 8);
-    md_gpu_compute_pipeline_t p_compact  = ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8, 8, 8);
-    md_gpu_compute_pipeline_t p_extract  = ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1, 1);
+    const uint32_t wg[3]  = { DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8) };
+    const size_t   stride = ((size_t)ctx->num_points * sizeof(uint32_t) + (TOPO_BUF_ALIGN - 1)) & ~(size_t)(TOPO_BUF_ALIGN - 1);
 
-    if (!p_manifold || !p_compress || !p_critical || !p_compact || !p_extract) {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to ensure pipelines");
-        return NULL;
-    }
+    // Per-call resets (voxel_to_vert_idx = -1, edge_count = 0, counts = 0)
+    md_gpu_cmd_fill_buffer(cmd, ctx->scratch_buf, stride * 3,               stride, 0xFF); // voxel_to_vert_idx = -1
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,    TOPO_META_COUNTS_OFF,     16,     0);    // counts[4] = 0
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,    TOPO_META_EDGE_COUNT_OFF, 4,      0);    // edge_count = 0
+    md_gpu_cmd_barrier(cmd);
 
-    struct md_topo_gpu_work* w = (struct md_topo_gpu_work*)calloc(1, sizeof(struct md_topo_gpu_work));
-    if (!w) return NULL;
+    // Step 1: Bidirectional manifold
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_bidirectional_manifold);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_image(cmd, 0, volume);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, 0,      stride);  // ascending
+    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->scratch_buf, stride, stride);  // descending
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
+    md_gpu_cmd_barrier(cmd);
 
-    w->device = device;
-    w->queue  = md_gpu_queue_acquire(device);
-
-    // Phase-1 compute buffers
-    w->ascending_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
-    w->descending_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(uint32_t) });
-    w->types_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points * sizeof(int32_t)  });
-
-    // Transient phase-1 buffers (freed after sync readback)
-    md_gpu_buffer_t counts_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
-    // changed_read:  shader reads this at the start of each dispatch to decide early exit.
-    // changed_write: shader atomics write here; copied to changed_read after each dispatch.
-    md_gpu_buffer_t changed_read_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
-    md_gpu_buffer_t changed_write_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
-    // staging_changed: CPU reads this after the fence to confirm convergence.
-    md_gpu_buffer_t staging_changed   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    md_gpu_buffer_t staging_counts    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-
-    if (!w->ascending_buf || !w->descending_buf || !w->types_buf ||
-        !counts_buf || !changed_read_buf || !changed_write_buf || !staging_changed || !staging_counts)
+    // Step 2: Path compression (iterative, GPU-side early-exit via changed flag)
+    // Each dispatch does one grandparent pointer-jump. A path of length L needs
+    // ceil(log2(L)) iterations; 2 * ceil(log2(max_dim)) is a safe upper bound.
+    uint32_t num_iterations = 0;
     {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-1 buffers");
-        topo_work_destroy_buffers(w);
-        if (counts_buf)        md_gpu_buffer_destroy(counts_buf);
-        if (changed_read_buf)  md_gpu_buffer_destroy(changed_read_buf);
-        if (changed_write_buf) md_gpu_buffer_destroy(changed_write_buf);
-        if (staging_changed)   md_gpu_buffer_destroy(staging_changed);
-        if (staging_counts)    md_gpu_buffer_destroy(staging_counts);
-        free(w);
-        return NULL;
-    }
-
-    // === Phase 1: manifold + compression + critical points (synchronous) ===
-    {
-        md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(w->queue);
-
-        // Step 1: Bidirectional manifold
-        md_gpu_cmd_bind_compute_pipeline(cmd, p_manifold);
-        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
-        md_gpu_cmd_bind_image(cmd, 0, volume);
-        md_gpu_cmd_bind_buffer(cmd, 0, w->ascending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
-        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
-        md_gpu_cmd_barrier(cmd);
-
-        // Step 2: Path compression (iterative with GPU-side early exit)
-        // Each dispatch does one grandparent pointer-jump.  A path of length L needs
-        // ceil(log2(L)) iterations to collapse.  2 * ceil(log2(max_dim)) is a generous
-        // upper bound; the early-exit path makes excess iterations essentially free.
-        uint32_t num_iterations = 0;
         uint32_t max_dim = (uint32_t)MAX(grid->dim[0], MAX(grid->dim[1], grid->dim[2]));
         while (max_dim > (1U << num_iterations)) num_iterations++;
         num_iterations *= 2;
-
-        // Seed changed_read = 1 so the first dispatch always runs.
-        md_gpu_cmd_fill_buffer(cmd, changed_read_buf, 0, sizeof(uint32_t), 1);
-        md_gpu_cmd_barrier_buffer_ex(cmd, changed_read_buf,
-            MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-        md_gpu_cmd_bind_compute_pipeline(cmd, p_compress);
-        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
-        md_gpu_cmd_bind_buffer(cmd, 0, w->ascending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 2, changed_read_buf);
-        md_gpu_cmd_bind_buffer(cmd, 3, changed_write_buf);
-        for (uint32_t i = 0; i < num_iterations; i++) {
-            md_gpu_cmd_fill_buffer(cmd, changed_write_buf, 0, sizeof(uint32_t), 0);
-            md_gpu_cmd_barrier_buffer_ex(cmd, changed_write_buf,
-                MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-            md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
-
-            md_gpu_cmd_barrier_buffer_ex(cmd, w->ascending_buf,
-                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-            md_gpu_cmd_barrier_buffer_ex(cmd, w->descending_buf,
-                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-            md_gpu_cmd_barrier_buffer_ex(cmd, changed_write_buf,
-                MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-
-            md_gpu_cmd_copy_buffer(cmd, changed_write_buf, changed_read_buf, sizeof(uint32_t), 0, 0);
-            md_gpu_cmd_barrier_buffer_ex(cmd, changed_read_buf,
-                MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-        }
-        // Copy final convergence flag to CPU-visible staging for post-fence validation.
-        md_gpu_cmd_copy_buffer(cmd, changed_read_buf, staging_changed, sizeof(uint32_t), 0, 0);
-
-        // Step 3: Critical points
-        md_gpu_cmd_fill_buffer(cmd, counts_buf, 0, 4 * sizeof(uint32_t), 0);
-        md_gpu_cmd_barrier(cmd);
-
-        md_gpu_cmd_bind_compute_pipeline(cmd, p_critical);
-        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
-        md_gpu_cmd_bind_image(cmd, 0, volume);
-        md_gpu_cmd_bind_buffer(cmd, 0, w->ascending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 1, w->descending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 2, w->types_buf);
-        md_gpu_cmd_bind_buffer(cmd, 3, counts_buf);
-        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
-        md_gpu_cmd_barrier(cmd);
-
-        md_gpu_cmd_copy_buffer(cmd, counts_buf, staging_counts, 4 * sizeof(uint32_t), 0, 0);
-
-        md_gpu_fence_t fence = md_gpu_queue_submit(w->queue, cmd);
-        md_gpu_fence_wait(fence);
-        md_gpu_fence_destroy(fence);
     }
 
-    // Read back counts (CPU-side, now available)
-    {
-        const uint32_t* ptr = (const uint32_t*)md_gpu_buffer_cpu_ptr(staging_counts);
-        w->num_maxima        = ptr[0];
-        w->num_split_saddles = ptr[1];
-        w->num_minima        = ptr[2];
-        w->num_join_saddles  = ptr[3];
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, TOPO_META_CHANGED_R_OFF, 4, 1);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_path_compression);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, 0,      stride);          // ascending
+    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->scratch_buf, stride, stride);          // descending
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_CHANGED_R_OFF, 4); // changed_read
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->meta_buf, TOPO_META_CHANGED_W_OFF, 4); // changed_write
+    for (uint32_t i = 0; i < num_iterations; i++) {
+        md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, TOPO_META_CHANGED_W_OFF, 4, 0);
+        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+        md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
+
+        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,    MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+
+        // Rotate changed_write → changed_read (non-overlapping self-copy)
+        md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, TOPO_META_CHANGED_W_OFF, TOPO_META_CHANGED_R_OFF);
+        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
 
-    // Convergence check: warn if path compression did not fully converge.
-    {
-        const uint32_t* ptr = (const uint32_t*)md_gpu_buffer_cpu_ptr(staging_changed);
-        if (*ptr != 0) {
-            MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: path compression did not converge within the iteration budget — results may be approximate");
-        }
-    }
+    // Step 3: Critical-point detection → meta_buf.counts[4]
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_points);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_image(cmd, 0, volume);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, 0,          stride);  // ascending
+    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->scratch_buf, stride,     stride);  // descending
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->scratch_buf, stride * 2, stride);  // types
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->meta_buf, TOPO_META_COUNTS_OFF, 16); // counts
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
-    // Free transient phase-1 buffers
-    md_gpu_buffer_destroy(counts_buf);
-    md_gpu_buffer_destroy(changed_read_buf);
-    md_gpu_buffer_destroy(changed_write_buf);
-    md_gpu_buffer_destroy(staging_changed);
-    md_gpu_buffer_destroy(staging_counts);
+    // Step 3.5: topo_setup (1,1,1) — prefix-sum: counts → counters + type_counts
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_topo_setup);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->meta_buf, TOPO_META_COUNTS_OFF,       16); // counts[4]
+    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->meta_buf, TOPO_META_COUNTERS_OFF,     16); // counters[4]
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_TYPE_COUNTS_OFF,  20); // type_counts[5]
+    md_gpu_cmd_dispatch(cmd, 1, 1, 1);
+    md_gpu_cmd_barrier(cmd);
 
-    w->num_vertices = w->num_maxima + w->num_split_saddles + w->num_minima + w->num_join_saddles;
-    w->num_edges    = 8 * (w->num_split_saddles + w->num_join_saddles);
+    // Step 4: Critical-point compaction
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_point_compaction);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, stride * 2, stride);           // types
+    md_gpu_cmd_bind_buffer(cmd, 1, ctx->indices_buf);                                     // indices (out)
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_COUNTERS_OFF,    16);   // counters
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride * 3, stride);           // voxel_to_vert_idx
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
+    md_gpu_cmd_barrier(cmd);
 
-    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
-                 w->num_maxima, w->num_split_saddles, w->num_minima, w->num_join_saddles, w->num_vertices);
+    // Step 5: Vertex + edge extraction
+    // Dispatched at worst-case capacity; shader exits early for indices >= num_vertices.
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_vertex_edge_extraction);
+    md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
+    md_gpu_cmd_bind_buffer(cmd, 0, ctx->indices_buf);                                     // cp_indices
+    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->meta_buf, TOPO_META_TYPE_COUNTS_OFF, 20);   // type_counts
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->scratch_buf, 0,          stride);           // ascending
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride,     stride);           // descending
+    md_gpu_cmd_bind_buffer(cmd, 4, ctx->vert_buf);
+    md_gpu_cmd_bind_buffer(cmd, 5, ctx->edge_buf);
+    md_gpu_cmd_bind_buffer_range(cmd, 6, ctx->meta_buf, TOPO_META_EDGE_COUNT_OFF, 4);     // edge_count
+    md_gpu_cmd_bind_buffer_range(cmd, 7, ctx->scratch_buf, stride * 3, stride);           // voxel_to_vert_idx
+    md_gpu_cmd_bind_image(cmd, 0, volume);
+    md_gpu_cmd_dispatch(cmd, DIV_UP(ctx->vert_cap, 64), 1, 1);
+    md_gpu_cmd_barrier(cmd);
 
-    if (w->num_vertices == 0) {
-        // Nothing to extract — phase-2 is a no-op; fence stays NULL
-        return (md_topo_gpu_work_t*)w;
-    }
-
-    // Create phase-2 buffers (all device-local)
-    w->indices_buf            = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * sizeof(uint32_t) });
-    w->voxel_to_vertex_idx_buf= md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = num_points     * sizeof(int32_t)  });
-    w->counters_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 4 * sizeof(uint32_t) });
-    w->type_counts_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = 5 * sizeof(uint32_t) });
-    w->vert_buf               = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float) });
-    w->edge_buf               = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t) });
-    w->edge_count_buf         = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t) });
-
-    w->staging_edge_count = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(uint32_t),                            .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    w->staging_verts      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_vertices * 4 * sizeof(float),         .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    w->staging_edges      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = w->num_edges * sizeof(md_topo_edge_t),       .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-
-    if (!w->indices_buf         || !w->voxel_to_vertex_idx_buf || !w->counters_buf    ||
-        !w->type_counts_buf     || !w->vert_buf                || !w->edge_buf        ||
-        !w->edge_count_buf      || !w->staging_edge_count      || !w->staging_verts   ||
-        !w->staging_edges)
-    {
-        MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-2 buffers");
-        topo_work_destroy_buffers(w);
-        free(w);
-        return NULL;
-    }
-
-    // Upload per-type initial values via a CPU_VISIBLE staging buffer.
-    // counters_buf: write-position cursors, pre-offset to each type's section.
-    // type_counts_buf: read-only counts used by the extraction shader.
-    // voxel_to_vertex_idx_buf: must be pre-filled with -1 (0xFF bytes = 0xFFFFFFFF = -1 as int32).
-    {
-        uint32_t counters_init[4] = {
-            0,                                                              // maximaWritePos
-            w->num_maxima,                                                  // splitSaddleWritePos
-            w->num_maxima + w->num_split_saddles,                           // minimaWritePos
-            w->num_maxima + w->num_split_saddles + w->num_minima,           // joinSaddleWritePos
-        };
-        uint32_t type_counts_init[5] = {
-            w->num_maxima, w->num_split_saddles, w->num_minima,
-            w->num_join_saddles, w->num_vertices,
-        };
-        md_gpu_buffer_t staging_init = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
-            .size = sizeof(counters_init) + sizeof(type_counts_init),
-            .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-        });
-        if (!staging_init) {
-            MD_LOG_ERROR("md_topo_compute_extremum_graph_gpu: failed to create phase-2 staging init buffer");
-            topo_work_destroy_buffers(w);
-            free(w);
-            return NULL;
-        }
-        uint8_t* p = (uint8_t*)md_gpu_buffer_cpu_ptr(staging_init);
-        MEMCPY(p,                         counters_init,    sizeof(counters_init));
-        MEMCPY(p + sizeof(counters_init), type_counts_init, sizeof(type_counts_init));
-
-        md_gpu_command_buffer_t init_cmd = md_gpu_command_buffer_acquire(w->queue);
-        // voxel_to_vertex_idx: fill with 0xFF bytes → each int32 reads as -1
-        md_gpu_cmd_fill_buffer(init_cmd, w->voxel_to_vertex_idx_buf, 0, num_points * sizeof(int32_t), 0xFF);
-        md_gpu_cmd_copy_buffer(init_cmd, staging_init, w->counters_buf,    sizeof(counters_init),    0, 0);
-        md_gpu_cmd_copy_buffer(init_cmd, staging_init, w->type_counts_buf,  sizeof(type_counts_init), sizeof(counters_init), 0);
-        md_gpu_fence_t init_fence = md_gpu_queue_submit(w->queue, init_cmd);
-        md_gpu_fence_wait(init_fence);
-        md_gpu_fence_destroy(init_fence);
-        md_gpu_buffer_destroy(staging_init);
-    }
-
-    // === Phase 2: compaction + extraction (asynchronous) ===
-    {
-        md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(w->queue);
-
-        // Step 4: Critical-point compaction
-        md_gpu_cmd_bind_compute_pipeline(cmd, p_compact);
-        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
-        md_gpu_cmd_bind_buffer(cmd, 0, w->types_buf);
-        md_gpu_cmd_bind_buffer(cmd, 1, w->indices_buf);
-        md_gpu_cmd_bind_buffer(cmd, 2, w->counters_buf);
-        md_gpu_cmd_bind_buffer(cmd, 3, w->voxel_to_vertex_idx_buf);
-        md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
-        md_gpu_cmd_barrier(cmd);
-
-        // Zero the edge counter (byte-fill of 0 is always correct)
-        md_gpu_cmd_fill_buffer(cmd, w->edge_count_buf, 0, sizeof(uint32_t), 0);
-        md_gpu_cmd_barrier(cmd);
-
-        // Step 5: Vertex + edge extraction
-        md_gpu_cmd_bind_compute_pipeline(cmd, p_extract);
-        md_gpu_cmd_push_constants(cmd, &ubo_data, sizeof(ubo_data));
-        md_gpu_cmd_bind_buffer(cmd, 0, w->indices_buf);
-        md_gpu_cmd_bind_buffer(cmd, 1, w->type_counts_buf);
-        md_gpu_cmd_bind_buffer(cmd, 2, w->ascending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 3, w->descending_buf);
-        md_gpu_cmd_bind_buffer(cmd, 4, w->vert_buf);
-        md_gpu_cmd_bind_buffer(cmd, 5, w->edge_buf);
-        md_gpu_cmd_bind_buffer(cmd, 6, w->edge_count_buf);
-        md_gpu_cmd_bind_buffer(cmd, 7, w->voxel_to_vertex_idx_buf);
-        md_gpu_cmd_bind_image(cmd, 0, volume);
-        md_gpu_cmd_dispatch(cmd, DIV_UP(w->num_vertices, 64), 1, 1);
-        md_gpu_cmd_barrier(cmd);
-
-        // Copy outputs to CPU-visible staging
-        md_gpu_cmd_copy_buffer(cmd, w->edge_count_buf, w->staging_edge_count, sizeof(uint32_t), 0, 0);
-        md_gpu_cmd_copy_buffer(cmd, w->vert_buf,       w->staging_verts,      w->num_vertices * 4 * sizeof(float),   0, 0);
-        md_gpu_cmd_copy_buffer(cmd, w->edge_buf,       w->staging_edges,      w->num_edges * sizeof(md_topo_edge_t),  0, 0);
-
-        // Submit asynchronously — caller polls/waits via the returned handle
-        w->fence = md_gpu_queue_submit(w->queue, cmd);
-    }
-
-    return (md_topo_gpu_work_t*)w;
+    // Copy all results + counts to CPU-visible staging in one batch
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,    16, TOPO_META_COUNTS_OFF,     TOPO_STAGING_COUNTS_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,     4, TOPO_META_CHANGED_R_OFF,  TOPO_STAGING_CHANGED_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,     4, TOPO_META_EDGE_COUNT_OFF, TOPO_STAGING_EDGE_CNT_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf,  ctx->staging_verts,   ctx->vert_cap * 4 * sizeof(float),        0, 0);
+    md_gpu_cmd_copy_buffer(cmd, ctx->edge_buf,  ctx->staging_edges,   ctx->edge_cap * sizeof(md_topo_edge_t),   0, 0);
 }
 
-bool md_topo_gpu_work_is_done(const md_topo_gpu_work_t* work) {
-    if (!work) return true;
-    const struct md_topo_gpu_work* w = (const struct md_topo_gpu_work*)work;
-    if (!w->fence) return true;
-    return md_gpu_fence_is_signaled(w->fence);
-}
+bool md_topo_gpu_context_get_result(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context) {
+    if (!context || !out_graph) return false;
+    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
 
-bool md_topo_gpu_work_finish(md_topo_extremum_graph_t* out_graph, md_topo_gpu_work_t* work) {
-    if (!work) return false;
-    struct md_topo_gpu_work* w = (struct md_topo_gpu_work*)work;
+    ASSERT(out_graph->alloc);
 
-    // Wait for phase-2 GPU completion
-    if (w->fence) {
-        md_gpu_fence_wait(w->fence);
-        md_gpu_fence_destroy(w->fence);
-        w->fence = NULL;
+    const uint8_t* stg = (const uint8_t*)md_gpu_buffer_cpu_ptr(ctx->staging_buf);
+
+    const uint32_t* counts = (const uint32_t*)(stg + TOPO_STAGING_COUNTS_OFF);
+    const uint32_t num_maxima        = counts[0];
+    const uint32_t num_split_saddles = counts[1];
+    const uint32_t num_minima        = counts[2];
+    const uint32_t num_join_saddles  = counts[3];
+    const uint32_t num_vertices      = num_maxima + num_split_saddles + num_minima + num_join_saddles;
+    const uint32_t num_edges         = *(const uint32_t*)(stg + TOPO_STAGING_EDGE_CNT_OFF);
+
+    if (*(const uint32_t*)(stg + TOPO_STAGING_CHANGED_OFF) != 0) {
+        MD_LOG_ERROR("md_topo_gpu_context_get_result: path compression did not fully converge — results may be approximate");
+    }
+
+    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total %u vertices, %u edges)",
+                 num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices, num_edges);
+
+    if (num_vertices == 0) return false;
+
+    md_allocator_i* alloc = out_graph->alloc;
+    MEMSET(out_graph, 0, sizeof(*out_graph));
+    out_graph->alloc       = alloc;
+    out_graph->num_vertices = num_vertices;
+    out_graph->num_edges    = num_edges;
+
+    out_graph->vertices = (md_topo_vert_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_vert_t));
+    out_graph->types    = (md_topo_critical_point_type_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_critical_point_type_t));
+
+    const float* vp = (const float*)md_gpu_buffer_cpu_ptr(ctx->staging_verts);
+    for (uint32_t i = 0; i < num_vertices; i++) {
+        out_graph->vertices[i].x     = vp[i * 4 + 0];
+        out_graph->vertices[i].y     = vp[i * 4 + 1];
+        out_graph->vertices[i].z     = vp[i * 4 + 2];
+        out_graph->vertices[i].value = vp[i * 4 + 3];
+    }
+
+    // Vertices are type-sorted: [maxima, split_saddles, minima, join_saddles]
+    uint32_t off = 0;
+    for (uint32_t i = 0; i < num_maxima;        i++) out_graph->types[off++] = MD_TOPO_MAXIMUM;
+    for (uint32_t i = 0; i < num_split_saddles; i++) out_graph->types[off++] = MD_TOPO_SPLIT_SADDLE;
+    for (uint32_t i = 0; i < num_minima;        i++) out_graph->types[off++] = MD_TOPO_MINIMUM;
+    for (uint32_t i = 0; i < num_join_saddles;  i++) out_graph->types[off++] = MD_TOPO_JOIN_SADDLE;
+
+    if (num_edges > 0) {
+        out_graph->edges = (md_topo_edge_t*)md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
+        MEMCPY(out_graph->edges, md_gpu_buffer_cpu_ptr(ctx->staging_edges), num_edges * sizeof(md_topo_edge_t));
     }
 
 #if DEBUG
-    // === Diagnostic readback ===
-    if (w->num_vertices > 0) {
-        uint32_t n = w->num_vertices < 8u ? w->num_vertices : 8u;
-
-        // Copy first n cp_indices to a temporary staging buffer for readback.
-        md_gpu_buffer_t dbg_staging = md_gpu_buffer_create(w->device, &(md_gpu_buffer_desc_t){
-            .size = n * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-        if (dbg_staging) {
-            md_gpu_command_buffer_t dbg_cmd = md_gpu_command_buffer_acquire(w->queue);
-            md_gpu_cmd_copy_buffer(dbg_cmd, w->indices_buf, dbg_staging, n * sizeof(uint32_t), 0, 0);
-            md_gpu_fence_t dbg_fence = md_gpu_queue_submit(w->queue, dbg_cmd);
-            md_gpu_fence_wait(dbg_fence);
-            md_gpu_fence_destroy(dbg_fence);
-
-            const uint32_t* idx = (const uint32_t*)md_gpu_buffer_cpu_ptr(dbg_staging);
-            MD_LOG_DEBUG("[topo] First %u cp_indices (voxel IDs):", n);
-            for (uint32_t i = 0; i < n; i++) {
-                MD_LOG_DEBUG("  cp_indices[%u] = %u", i, idx[i]);
-            }
-            md_gpu_buffer_destroy(dbg_staging);
-        }
-
-        // Vertex positions are already in staging_verts (CPU_VISIBLE).
-        const float* vrt = (const float*)md_gpu_buffer_cpu_ptr(w->staging_verts);
-        MD_LOG_DEBUG("[topo] First %u vertex positions:", n);
+    {
+        uint32_t n = num_vertices < 8u ? num_vertices : 8u;
+        MD_LOG_DEBUG("[topo] First %u vertices:", n);
         for (uint32_t i = 0; i < n; i++) {
-            MD_LOG_DEBUG("  vertex[%u]: pos=(%.4f, %.4f, %.4f)  val=%.6f",
-                i, vrt[i*4+0], vrt[i*4+1], vrt[i*4+2], vrt[i*4+3]);
+            MD_LOG_DEBUG("  vertex[%u]: type=%u pos=(%.4f, %.4f, %.4f)  val=%.6f",
+                i, (uint32_t)out_graph->types[i],
+                out_graph->vertices[i].x, out_graph->vertices[i].y,
+                out_graph->vertices[i].z, out_graph->vertices[i].value);
         }
     }
 #endif
 
-    if (out_graph) {
-        ASSERT(out_graph->alloc);
-        md_allocator_i* alloc = out_graph->alloc;
-        MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
-
-        out_graph->alloc = alloc;
-        out_graph->num_maxima        = w->num_maxima;
-        out_graph->num_split_saddles = w->num_split_saddles;
-        out_graph->num_minima        = w->num_minima;
-        out_graph->num_join_saddles  = w->num_join_saddles;
-        out_graph->num_vertices      = w->num_vertices;
-
-        if (w->num_vertices > 0) {
-            // Actual edge count (may be less than the estimated upper bound)
-            out_graph->num_edges = *(const uint32_t*)md_gpu_buffer_cpu_ptr(w->staging_edge_count);
-
-            // Vertices (float4: xyz = world position, w = scalar value)
-            md_array_resize(out_graph->vertices, w->num_vertices, out_graph->alloc);
-            {
-                const float* ptr = (const float*)md_gpu_buffer_cpu_ptr(w->staging_verts);
-                for (uint32_t i = 0; i < w->num_vertices; i++) {
-                    out_graph->vertices[i].x     = ptr[i * 4 + 0];
-                    out_graph->vertices[i].y     = ptr[i * 4 + 1];
-                    out_graph->vertices[i].z     = ptr[i * 4 + 2];
-                    out_graph->vertices[i].value = ptr[i * 4 + 3];
-                }
-            }
-
-            // Edges
-            if (out_graph->num_edges > 0) {
-                md_array_resize(out_graph->edges, out_graph->num_edges, out_graph->alloc);
-                MEMCPY(out_graph->edges, md_gpu_buffer_cpu_ptr(w->staging_edges), out_graph->num_edges * sizeof(md_topo_edge_t));
-            }
-        }
-    }
-
-    topo_work_destroy_buffers(w);
-    free(w);
     return true;
 }
 
@@ -930,36 +829,194 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 #endif
 
+void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* in_graph,
+    float threshold, bool do_prune_duplicate_saddles)
+{
+    ASSERT(out_graph);
+    ASSERT(in_graph);
+
+    md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
+    md_topo_extremum_graph_free(out_graph);
+    out_graph->alloc = alloc;
+
+    if (!in_graph->vertices || in_graph->num_vertices == 0) return;
+
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    // Working copies (may grow during pruning)
+    md_array(int)             vertex_type = md_array_create(int,            in_graph->num_vertices, temp_alloc);
+    md_array(md_topo_vert_t)  vertex      = md_array_create(md_topo_vert_t, in_graph->num_vertices, temp_alloc);
+    md_array(md_topo_edge_t)  edge        = md_array_create(md_topo_edge_t, in_graph->num_edges,    temp_alloc);
+    md_array(md_array(int))   vertex_adj  = md_array_create(md_array(int),  in_graph->num_vertices, temp_alloc);
+
+    MEMCPY(vertex_type, in_graph->types,    in_graph->num_vertices * sizeof(int));
+    MEMCPY(vertex,      in_graph->vertices, in_graph->num_vertices * sizeof(md_topo_vert_t));
+    MEMSET(vertex_adj,  0,                  in_graph->num_vertices * sizeof(md_array(int)));
+    MEMCPY(edge,        in_graph->edges,    in_graph->num_edges    * sizeof(md_topo_edge_t));
+
+    // Build adjacency
+    for (size_t i = 0; i < md_array_size(edge); ++i) {
+        md_topo_edge_t e = edge[i];
+        md_array_push(vertex_adj[e.from], (int)e.to,   temp_alloc);
+        md_array_push(vertex_adj[e.to],   (int)e.from, temp_alloc);
+    }
+
+    // Kill vertices below threshold
+    if (threshold > 0.0f) {
+        for (size_t i = 0; i < md_array_size(vertex); ++i) {
+            if (vertex[i].value < threshold) {
+                vertex_type[i] = 0;
+            }
+        }
+    }
+
+    // Prune duplicate saddles between maxima pairs
+    if (do_prune_duplicate_saddles) {
+        // Split multi-connected saddles (3+ adjacencies) into per-pair saddles
+        for (size_t i = 0; i < md_array_size(vertex); ++i) {
+            if (vertex_type[i] != MD_TOPO_SPLIT_SADDLE) continue;
+            size_t num_adj = md_array_size(vertex_adj[i]);
+            if (num_adj <= 2) continue;
+            for (size_t j = 0; j < num_adj - 1; ++j) {
+                for (size_t k = j + 1; k < num_adj; ++k) {
+                    int max_a = vertex_adj[i][j];
+                    int max_b = vertex_adj[i][k];
+                    md_topo_vert_t new_saddle = vertex[i];
+                    md_array_push(vertex,      new_saddle,           temp_alloc);
+                    md_array_push(vertex_adj,  NULL,                 temp_alloc);
+                    md_array_push(vertex_type, MD_TOPO_SPLIT_SADDLE, temp_alloc);
+                    int ns = (int)(md_array_size(vertex) - 1);
+                    md_array_push(vertex_adj[ns], max_a, temp_alloc);
+                    md_array_push(vertex_adj[ns], max_b, temp_alloc);
+                    md_topo_edge_t ea = { (uint32_t)max_a, (uint32_t)ns };
+                    md_topo_edge_t eb = { (uint32_t)max_b, (uint32_t)ns };
+                    md_array_push(edge, ea, temp_alloc);
+                    md_array_push(edge, eb, temp_alloc);
+                }
+            }
+            vertex_type[i] = 0;  // Kill original multi-saddle
+        }
+
+        // For each maxima pair, keep only the highest-valued connecting saddle
+        md_array(int) saddle_list = 0;
+        for (size_t i = 0; i < md_array_size(vertex) - 1; ++i) {
+            if (vertex_type[i] != MD_TOPO_MAXIMUM) continue;
+            for (size_t j = i + 1; j < md_array_size(vertex); ++j) {
+                if (vertex_type[j] != MD_TOPO_MAXIMUM) continue;
+
+                md_array_shrink(saddle_list, 0);
+                for (size_t k = 0; k < md_array_size(vertex); ++k) {
+                    if (vertex_type[k] != MD_TOPO_SPLIT_SADDLE) continue;
+                    if (md_array_size(vertex_adj[k]) != 2) continue;
+                    bool ci = false, cj = false;
+                    for (size_t m = 0; m < 2; ++m) {
+                        int v = vertex_adj[k][m];
+                        if (v == (int)i) ci = true;
+                        if (v == (int)j) cj = true;
+                    }
+                    if (ci && cj) md_array_push(saddle_list, (int)k, temp_alloc);
+                }
+
+                if (md_array_size(saddle_list) > 1) {
+                    float best_val = -FLT_MAX;
+                    int   best_idx = -1;
+                    for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
+                        int idx = saddle_list[k];
+                        if (vertex[idx].value > best_val) {
+                            best_val = vertex[idx].value;
+                            best_idx = idx;
+                        }
+                    }
+                    for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
+                        int idx = saddle_list[k];
+                        if (idx != best_idx) vertex_type[idx] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    // Build compact remap: surviving vertices get sequential indices
+    uint32_t num_vertices = 0;
+    md_array(int) vertex_remap = md_array_create(int, md_array_size(vertex), temp_alloc);
+    MEMSET(vertex_remap, -1, md_array_bytes(vertex_remap));
+    for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
+        if (vertex_type[i] == 0) continue;
+        vertex_remap[i] = (int)num_vertices++;
+    }
+
+    if (num_vertices == 0) {
+        md_arena_allocator_destroy(temp_alloc);
+        return;
+    }
+
+    out_graph->num_vertices = num_vertices;
+    out_graph->vertices     = (md_topo_vert_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_vert_t));
+    out_graph->types        = (md_topo_critical_point_type_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_critical_point_type_t));
+
+    for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
+        int idx = vertex_remap[i];
+        if (idx == -1) continue;
+        out_graph->vertices[idx] = vertex[i];
+        out_graph->types[idx]    = (md_topo_critical_point_type_t)vertex_type[i];
+    }
+
+    // Count surviving edges
+    uint32_t num_edges = 0;
+    for (size_t i = 0; i < md_array_size(edge); ++i) {
+        if (vertex_remap[edge[i].from] != -1 && vertex_remap[edge[i].to] != -1) num_edges++;
+    }
+    out_graph->num_edges = num_edges;
+    out_graph->edges     = (md_topo_edge_t*)md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
+
+    uint32_t ec = 0;
+    for (size_t i = 0; i < md_array_size(edge); ++i) {
+        int from = vertex_remap[edge[i].from];
+        int to   = vertex_remap[edge[i].to];
+        if (from != -1 && to != -1) {
+            out_graph->edges[ec].from = (uint32_t)from;
+            out_graph->edges[ec].to   = (uint32_t)to;
+            ec++;
+        }
+    }
+
+    md_arena_allocator_destroy(temp_alloc);
+}
+
+void md_topo_count_vertex_types(uint32_t out_counts[MD_TOPO_NUM_TYPES], const md_topo_extremum_graph_t* graph) {
+    if (!graph || !out_counts) return;
+    MEMSET(out_counts, 0, sizeof(uint32_t) * MD_TOPO_NUM_TYPES);
+    for (uint32_t i = 0; i < graph->num_vertices; ++i) {
+        md_topo_critical_point_type_t type = graph->types[i];
+        if (0 <= type && type < MD_TOPO_NUM_TYPES) {
+            out_counts[type]++;
+        }
+    }
+}
+
 void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
     if (graph && graph->alloc) {
         md_allocator_i* alloc = graph->alloc;
-        if (graph->vertices) {
-            md_free(alloc, graph->vertices, graph->num_vertices * sizeof(md_topo_vert_t));
-        }
-        if (graph->edges) {
-            md_free(alloc, graph->edges, graph->num_edges * sizeof(md_topo_edge_t));
-        }
+        if (graph->vertices) md_free(alloc, graph->vertices, graph->num_vertices * sizeof(md_topo_vert_t));
+        if (graph->types)    md_free(alloc, graph->types,    graph->num_vertices * sizeof(md_topo_critical_point_type_t));
+        if (graph->edges)    md_free(alloc, graph->edges,    graph->num_edges    * sizeof(md_topo_edge_t));
         MEMSET(graph, 0, sizeof(md_topo_extremum_graph_t));
         graph->alloc = alloc;
     }
 }
 
 void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph) {
-    // Copy structure, assume that the allocator is set within out_graph
     md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
     MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
-    out_graph->alloc = alloc;
+    out_graph->alloc        = alloc;
     out_graph->num_vertices = src_graph->num_vertices;
-    out_graph->num_maxima = src_graph->num_maxima;
-    out_graph->num_split_saddles = src_graph->num_split_saddles;
-    out_graph->num_minima = src_graph->num_minima;
-    out_graph->num_join_saddles = src_graph->num_join_saddles;
-    out_graph->num_edges = src_graph->num_edges;
+    out_graph->num_edges    = src_graph->num_edges;
 
-    out_graph->vertices = md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_t));
-    out_graph->edges    = md_alloc(alloc, src_graph->num_edges    * sizeof(md_topo_edge_t));
-
+    out_graph->vertices = (md_topo_vert_t*)md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    out_graph->types    = (md_topo_critical_point_type_t*)md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
+    out_graph->edges    = (md_topo_edge_t*)md_alloc(alloc, src_graph->num_edges * sizeof(md_topo_edge_t));
 
     MEMCPY(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
-    MEMCPY(out_graph->edges, src_graph->edges, src_graph->num_edges * sizeof(md_topo_edge_t));
+    MEMCPY(out_graph->types,    src_graph->types,    src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
+    MEMCPY(out_graph->edges,    src_graph->edges,    src_graph->num_edges    * sizeof(md_topo_edge_t));
 }

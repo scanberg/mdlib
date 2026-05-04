@@ -2148,7 +2148,7 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 
 	if (vlx->opt.coordinates) {
 		for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
-			vlx->opt.coordinates[i] = dvec3_mul_f(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
+			vlx->opt.coordinates[i] = dvec3_mul1(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
 		}
 	}
 

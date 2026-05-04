@@ -28,17 +28,17 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
         max_box = vec3_max(max_box, c);
     }
 
-    min_box = vec3_sub_f(min_box, 2.0f);
-    max_box = vec3_add_f(max_box, 2.0f);
+    min_box = vec3_sub1(min_box, 2.0f);
+    max_box = vec3_add1(max_box, 2.0f);
 
-    min_box = vec3_mul_f(min_box, ANGSTROM_TO_BOHR);
-    max_box = vec3_mul_f(max_box, ANGSTROM_TO_BOHR);
+    min_box = vec3_mul1(min_box, ANGSTROM_TO_BOHR);
+    max_box = vec3_mul1(max_box, ANGSTROM_TO_BOHR);
 
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
 
-    vec3_t step = vec3_div_f(vec3_sub(max_box, min_box), (float)vol_dim);
+    vec3_t step = vec3_div1(vec3_sub(max_box, min_box), (float)vol_dim);
 
     *grid = (md_grid_t) {
         .orientation = mat3_ident(),
@@ -66,7 +66,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    *num_gtos = md_gto_expand_with_mo(*gtos, &basis, atom_xyz, mo_coeffs, 1.0e-6);
+    *num_gtos = md_gto_expand_with_mo(*gtos, &basis, atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 }
 
 UTEST(gto, evaluate_grid) {
@@ -115,9 +115,9 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
     float y_len = vec3_length(y_axis);
     float z_len = vec3_length(z_axis);
 
-    orientation.col[0] = vec3_div_f(x_axis, x_len);
-    orientation.col[1] = vec3_div_f(y_axis, y_len);
-    orientation.col[2] = vec3_div_f(z_axis, z_len);
+    orientation.col[0] = vec3_div1(x_axis, x_len);
+    orientation.col[1] = vec3_div1(y_axis, y_len);
+    orientation.col[2] = vec3_div1(z_axis, z_len);
 
     md_grid_t grid = {
         .orientation = orientation,
@@ -144,7 +144,7 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
 
     size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    num_gtos = md_gto_expand_with_mo(gtos, &basis, atom_xyz, mo_coeffs, cutoff_value);
+    num_gtos = md_gto_expand_with_mo(gtos, &basis, atom_xyz, sizeof(vec3_t), mo_coeffs, cutoff_value);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 

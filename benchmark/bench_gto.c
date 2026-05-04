@@ -32,21 +32,21 @@ UBENCH_EX(gto, evaluate_grid) {
         max_box = vec3_max(max_box, atom_xyz[i]);
     }
 
-    min_box = vec3_sub_f(min_box, 2.0f);
-    max_box = vec3_add_f(max_box, 2.0f);
+    min_box = vec3_sub1(min_box, 2.0f);
+    max_box = vec3_add1(max_box, 2.0f);
 
     // Conversion from Ångström to Bohr
     const float factor = ANGSTROM_TO_BOHR;
 
-    min_box = vec3_mul_f(min_box, factor);
-    max_box = vec3_mul_f(max_box, factor);
+    min_box = vec3_mul1(min_box, factor);
+    max_box = vec3_mul1(max_box, factor);
 
     int vol_dim = 256;
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
 
-    vec3_t step = vec3_div_f(vec3_sub(max_box, min_box), (float)vol_dim);
+    vec3_t step = vec3_div1(vec3_sub(max_box, min_box), (float)vol_dim);
 
     md_grid_t grid = {
         .orientation = mat3_ident(),
@@ -65,7 +65,7 @@ UBENCH_EX(gto, evaluate_grid) {
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
 
-    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, 1.0e-6);
+    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 
     md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
 

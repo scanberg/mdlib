@@ -1,15 +1,17 @@
 // eval_gto_mo.slang
-// Evaluates molecular orbital electron density on a 3D grid.
+// Evaluates molecular orbital wavefunction or electron density on a 3D grid.
 //
-//   result[voxel] = sum_m( (sum_c C[m][c] * phi_c(voxel))^2 )
+//   mode == 0 (PSI):         result[voxel] = sum_m( sum_c C[m][c] * phi_c(voxel) )
+//   mode == 1 (PSI_SQUARED): result[voxel] = sum_m( (sum_c C[m][c] * phi_c(voxel))^2 )
 //
 // Design:
 //   1) Screening pass does minimal work: append CGTO index if it overlaps tile AABB.
 //   2) For each CGTO tile, all threads cooperatively build a flat PGTO list in
 //      groupshared memory.  Each primitive entry is annotated with its parent CGTO
 //      tile-slot index for center and coefficient lookup.
-//   3) The evaluation loop is a uniform flat iteration over num_pgtos_tile — no CSR
-//      indirection, no empty-slot guards, no serial CGTO nesting.
+//   3) Phase 3 of fill_pgto_tile is a flat scatter: all WG_SIZE threads iterate
+//      output indices in stride WG_SIZE and look up the owning CGTO slot from
+//      the prefix array — 100% utilisation regardless of per-CGTO primitive counts.
 //   4) MO rows are processed in blocks; coefficients are staged in groupshared.
 
 struct PGTO {
@@ -24,7 +26,7 @@ struct UBO {
     float4   step;            // xyz = voxel spacing in model-space units
     uint     num_cgtos;
     uint     num_rows;
-    uint     _pad0;
+    uint     mode;    // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
     uint     _pad1;
 };
 
@@ -68,7 +70,6 @@ groupshared uint num_screened_cgtos;
 groupshared uint   tile_cgto_idx[TILE_SIZE];
 groupshared float4 tile_cgto_xyz[TILE_SIZE];    // xyz used, w ignored
 groupshared uint   tile_src_pgto_beg[TILE_SIZE];
-groupshared uint   tile_src_pgto_len[TILE_SIZE];
 groupshared uint   tile_dst_pgto_beg[TILE_SIZE + 1];  // CSR prefix, [ci, ci+1)
 groupshared uint   num_pgtos_tile;
 
@@ -101,22 +102,20 @@ void fill_pgto_tile(uint tile_number, uint tid) {
 
         tile_cgto_idx[tid]     = cgto_idx;
         tile_src_pgto_beg[tid] = src_beg;
-        tile_src_pgto_len[tid] = src_len;
+        tile_dst_pgto_beg[tid] = src_len;   // temporarily store len; Phase 2 will prefix-sum
         tile_cgto_xyz[tid]     = center;
     }
 
     GroupMemoryBarrierWithGroupSync();
 
-    // Phase 2: build CSR destination ranges for the flat PGTO tile pool.
+    // Phase 2: build CSR destination ranges from lengths stored in tile_dst_pgto_beg[0..TILE_SIZE-1].
     if (tid == 0u) {
         uint running = 0u;
         for (uint ci = 0u; ci < TILE_SIZE; ++ci) {
-            tile_dst_pgto_beg[ci] = running;
-
-            uint len = tile_src_pgto_len[ci];
+            uint len = tile_dst_pgto_beg[ci];   // read the temporarily stored len
             uint avail = (running < (uint)MAX_TILE_PGTOS) ? ((uint)MAX_TILE_PGTOS - running) : 0u;
             uint clamped_len = min(len, avail);
-            tile_src_pgto_len[ci] = clamped_len;
+            tile_dst_pgto_beg[ci] = running;    // overwrite with the prefix offset
             running += clamped_len;
         }
         tile_dst_pgto_beg[TILE_SIZE] = running;
@@ -125,20 +124,22 @@ void fill_pgto_tile(uint tile_number, uint tid) {
 
     GroupMemoryBarrierWithGroupSync();
 
-    // Phase 3: copy PGTO primitives into SoA tile pool.
-    for (uint ci = 0u; ci < TILE_SIZE; ++ci) {
-        uint src_beg = tile_src_pgto_beg[ci];
-        uint len     = tile_src_pgto_len[ci];
-        uint dst_beg = tile_dst_pgto_beg[ci];
-
-        for (uint k = tid; k < len; k += WG_SIZE) {
-            PGTO p = pgto[src_beg + k];
-            uint dst = dst_beg + k;
-            pgto_coeff_tile[dst] = p.coeff;
-            pgto_alpha_tile[dst] = p.alpha;
-            pgto_ijkl_tile[dst]  = p.ijkl;
-            pgto_slot_tile[dst]  = ci;   // annotate with parent CGTO slot
+    // Phase 3: flat scatter — all threads cooperate over the output range.
+    // A branchless unrolled scan over the TILE_SIZE+1 prefix entries finds the
+    // owning CGTO slot for each output index without any serial outer loop.
+    for (uint k = tid; k < num_pgtos_tile; k += WG_SIZE) {
+        // Find ci = max{ s : tile_dst_pgto_beg[s] <= k }, i.e. the CGTO slot
+        // whose destination range contains k.
+        uint ci = 0u;
+        [[unroll]]
+        for (uint s = 1u; s <= (uint)TILE_SIZE; ++s) {
+            ci = (tile_dst_pgto_beg[s] <= k) ? s : ci;
         }
+        PGTO p = pgto[tile_src_pgto_beg[ci] + (k - tile_dst_pgto_beg[ci])];
+        pgto_coeff_tile[k] = p.coeff;
+        pgto_alpha_tile[k] = p.alpha;
+        pgto_ijkl_tile[k]  = p.ijkl;
+        pgto_slot_tile[k]  = ci;
     }
 }
 
@@ -256,7 +257,8 @@ void main(
         }
 
         for (uint mb = 0u; mb < mo_count; ++mb) {
-            result += psi_block[mb] * psi_block[mb];
+            float psi = psi_block[mb];
+            result += (ubo.mode != 0u) ? psi * psi : psi;
         }
     }
 

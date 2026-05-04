@@ -1042,7 +1042,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
             grp_inst_idx[i] = -1;
         }
         aabb_t aabb = {aabb_min, aabb_max};
-        vec3_t cent = vec3_mul_f(vec3_add(aabb_min, aabb_max), 0.5f);
+        vec3_t cent = vec3_mul1(vec3_add(aabb_min, aabb_max), 0.5f);
         grp_aabb[g_idx] = aabb;
         grp_cent[g_idx] = cent;
     }

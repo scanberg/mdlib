@@ -36,7 +36,7 @@ mat4_t md_grid_world_to_model(const md_grid_t* grid) {
     ASSERT(grid);
     // These are the inverse matrices
     mat4_t R = mat4_from_mat3(mat3_transpose(grid->orientation));
-    mat4_t T = mat4_translate_vec3(vec3_mul_f(grid->origin, -1.0f));
+    mat4_t T = mat4_translate_vec3(vec3_mul1(grid->origin, -1.0f));
     return mat4_mul(R, T);
 }
 
@@ -56,7 +56,7 @@ mat4_t md_grid_world_to_index(const md_grid_t* grid) {
     // These are the inverse matrices
     mat4_t S = mat4_scale_vec3(vec3_div(vec3_set1(1.0f), grid->spacing));
     mat4_t R = mat4_from_mat3(mat3_transpose(grid->orientation));
-    mat4_t T = mat4_translate_vec3(vec3_mul_f(grid->origin, -1.0f));
+    mat4_t T = mat4_translate_vec3(vec3_mul1(grid->origin, -1.0f));
 
     return mat4_mul(S, mat4_mul(R, T));
 }

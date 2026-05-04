@@ -316,10 +316,10 @@ static vec3_t highp_normalize(vec3_t v) {
 mat3_t mat3_orthonormalize(mat3_t M) {
     M.col[0] = vec3_normalize(M.col[0]);
 
-    M.col[1] = vec3_sub(M.col[1], vec3_mul_f(M.col[0], vec3_dot(M.col[0], M.col[1])));
+    M.col[1] = vec3_sub(M.col[1], vec3_mul1(M.col[0], vec3_dot(M.col[0], M.col[1])));
     M.col[1] = vec3_normalize(M.col[1]);
 
-    M.col[2] = vec3_sub(M.col[2], vec3_add(vec3_mul_f(M.col[0], vec3_dot(M.col[0], M.col[2])), vec3_mul_f(M.col[1], vec3_dot(M.col[1], M.col[2]))));
+    M.col[2] = vec3_sub(M.col[2], vec3_add(vec3_mul1(M.col[0], vec3_dot(M.col[0], M.col[2])), vec3_mul1(M.col[1], vec3_dot(M.col[1], M.col[2]))));
     M.col[2] = vec3_normalize(M.col[2]);
 
     return M;
@@ -397,17 +397,17 @@ mat4_t mat4_inverse(mat4_t M) {
     const vec4_t row0 = {I.elem[0][0], I.elem[1][0], I.elem[2][0], I.elem[3][0]};
     const vec4_t dot0 = vec4_mul(M.col[0], row0);
 
-    return mat4_mul_f(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
+    return mat4_mul1(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
 
 vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport) {
     vec4_t tmp = vec4_from_vec3(window_coords, 1.f);
     tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
     tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
-    tmp = vec4_sub_f(vec4_mul_f(tmp, 2.f), 1.f);
+    tmp = vec4_sub1(vec4_mul1(tmp, 2.f), 1.f);
 
     vec4_t obj = mat4_mul_vec4(inv_view_proj_mat, tmp);
-    obj = vec4_div_f(obj, obj.w);
+    obj = vec4_div1(obj, obj.w);
 
     return vec3_from_vec4(obj);
 }

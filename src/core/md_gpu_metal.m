@@ -51,7 +51,6 @@ struct md_gpu_compute_pipeline {
 typedef enum md_gpu_cmd_type_t {
     CMD_DISPATCH,
     CMD_COPY_BUFFER,
-    CMD_COPY_IMAGE_TO_BUFFER,
     CMD_COPY_IMAGE_REGION_TO_BUFFER,
     CMD_COPY_BUFFER_TO_IMAGE,
     CMD_COPY_BUFFER_TO_IMAGE_REGION,
@@ -67,11 +66,6 @@ struct md_gpu_cmd_copy_buffer {
     size_t size;
     size_t src_offset;
     size_t dst_offset;
-};
-
-struct md_gpu_cmd_copy_image_to_buffer {
-    struct md_gpu_image* image;
-    struct md_gpu_buffer* buffer;
 };
 
 struct md_gpu_cmd_copy_image_region_to_buffer {
@@ -124,7 +118,6 @@ struct md_gpu_recorded_cmd {
     union {
         struct md_gpu_cmd_dispatch dispatch;
         struct md_gpu_cmd_copy_buffer copy_buf;
-        struct md_gpu_cmd_copy_image_to_buffer        copy_img_buf;
         struct md_gpu_cmd_copy_image_region_to_buffer  copy_img_region_buf;
         struct md_gpu_cmd_copy_buffer_to_image         copy_buf_img;
         struct md_gpu_cmd_copy_buffer_to_image_region  copy_buf_img_region;
@@ -228,9 +221,8 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
 
     MEMSET(info, 0, sizeof(*info));
 
-    if ([device->device respondsToSelector:@selector(hasUnifiedMemory)]) {
-        info->is_uma = device->device.hasUnifiedMemory;
-    }
+    // Metal targets Apple Silicon and Intel iGPUs — always UMA, never discrete.
+    info->is_discrete = false;
 
     NSString* name = [device->device name];
     if (name) {
@@ -520,16 +512,6 @@ void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
     rc->u.copy_buf.dst_offset = dst_offset;
 }
 
-void md_gpu_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd,
-                                     md_gpu_image_t src_image,
-                                     md_gpu_buffer_t dst_buffer) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
-    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
-    rc->type = CMD_COPY_IMAGE_TO_BUFFER;
-    rc->u.copy_img_buf.image = src_image;
-    rc->u.copy_img_buf.buffer = dst_buffer;
-}
-
 void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
                                      md_gpu_buffer_t src_buffer,
                                      md_gpu_image_t dst_image) {
@@ -586,7 +568,7 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
    Submission & fences
    ============================= */
 
-md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd) {
+bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence) {
 
     id<MTLCommandBuffer> mtl_cmd = [queue->dev->queue commandBuffer];
     id<MTLComputeCommandEncoder> compute_enc = nil;
@@ -658,32 +640,6 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                 break;
             }
 
-            case CMD_COPY_IMAGE_TO_BUFFER: {
-                if (compute_enc) {
-                    [compute_enc endEncoding];
-                    compute_enc = nil;
-                }
-                id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
-                MTLSize sz = MTLSizeMake(c->u.copy_img_buf.image->desc.width,
-                                         c->u.copy_img_buf.image->desc.height,
-                                         c->u.copy_img_buf.image->desc.depth);
-                                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_img_buf.image->desc.format);
-                                ASSERT(bpp > 0);
-                                const size_t bytes_per_row   = (size_t)sz.width * (size_t)bpp;
-                                const size_t bytes_per_image = bytes_per_row * (size_t)sz.height;
-                [blit copyFromTexture:c->u.copy_img_buf.image->texture
-                           sourceSlice:0
-                           sourceLevel:0
-                          sourceOrigin:MTLOriginMake(0,0,0)
-                            sourceSize:sz
-                              toBuffer:c->u.copy_img_buf.buffer->buffer
-                     destinationOffset:0
-                                destinationBytesPerRow:bytes_per_row
-                            destinationBytesPerImage:bytes_per_image];
-                [blit endEncoding];
-                break;
-            }
-
             case CMD_COPY_BUFFER_TO_IMAGE: {
                 if (compute_enc) {
                     [compute_enc endEncoding];
@@ -717,13 +673,17 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                 }
                 id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
                 const md_gpu_image_region_t* r = &c->u.copy_img_region_buf.region;
-                MTLOrigin origin = MTLOriginMake(r->x, r->y, r->z);
-                MTLSize   sz     = MTLSizeMake(r->width, r->height, r->depth);
-                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_img_region_buf.image->desc.format);
+                const struct md_gpu_image* img = c->u.copy_img_region_buf.image;
+                MTLOrigin origin = MTLOriginMake(r->offset[0], r->offset[1], r->offset[2]);
+                uint32_t ew = r->extent[0] ? r->extent[0] : img->desc.width;
+                uint32_t eh = r->extent[1] ? r->extent[1] : img->desc.height;
+                uint32_t ed = r->extent[2] ? r->extent[2] : img->desc.depth;
+                MTLSize   sz = MTLSizeMake(ew, eh, ed);
+                const uint32_t bpp = md_gpu_format_bytes_per_pixel(img->desc.format);
                 ASSERT(bpp > 0);
-                const size_t bytes_per_row   = (size_t)r->width * (size_t)bpp;
-                const size_t bytes_per_image = bytes_per_row * (size_t)r->height;
-                [blit copyFromTexture:c->u.copy_img_region_buf.image->texture
+                const size_t bytes_per_row   = (size_t)ew * (size_t)bpp;
+                const size_t bytes_per_image = bytes_per_row * (size_t)eh;
+                [blit copyFromTexture:img->texture
                            sourceSlice:0
                            sourceLevel:0
                           sourceOrigin:origin
@@ -743,18 +703,22 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
                 }
                 id<MTLBlitCommandEncoder> blit = [mtl_cmd blitCommandEncoder];
                 const md_gpu_image_region_t* r = &c->u.copy_buf_img_region.region;
-                MTLOrigin origin = MTLOriginMake(r->x, r->y, r->z);
-                MTLSize   sz     = MTLSizeMake(r->width, r->height, r->depth);
-                const uint32_t bpp = md_gpu_format_bytes_per_pixel(c->u.copy_buf_img_region.image->desc.format);
+                const struct md_gpu_image* img = c->u.copy_buf_img_region.image;
+                uint32_t ew = r->extent[0] ? r->extent[0] : img->desc.width;
+                uint32_t eh = r->extent[1] ? r->extent[1] : img->desc.height;
+                uint32_t ed = r->extent[2] ? r->extent[2] : img->desc.depth;
+                MTLOrigin origin = MTLOriginMake(r->offset[0], r->offset[1], r->offset[2]);
+                MTLSize   sz     = MTLSizeMake(ew, eh, ed);
+                const uint32_t bpp = md_gpu_format_bytes_per_pixel(img->desc.format);
                 ASSERT(bpp > 0);
-                const size_t bytes_per_row   = (size_t)r->width * (size_t)bpp;
-                const size_t bytes_per_image = bytes_per_row * (size_t)r->height;
+                const size_t bytes_per_row   = (size_t)ew * (size_t)bpp;
+                const size_t bytes_per_image = bytes_per_row * (size_t)eh;
                 [blit copyFromBuffer:c->u.copy_buf_img_region.buffer->buffer
                         sourceOffset:c->u.copy_buf_img_region.src_offset
                    sourceBytesPerRow:bytes_per_row
                  sourceBytesPerImage:bytes_per_image
                           sourceSize:sz
-                           toTexture:c->u.copy_buf_img_region.image->texture
+                           toTexture:img->texture
                     destinationSlice:0
                     destinationLevel:0
                    destinationOrigin:origin];
@@ -786,10 +750,19 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
     cmd->next_free = queue->cmd_free_list;
     queue->cmd_free_list = cmd;
 
-    struct md_gpu_fence* fence = (struct md_gpu_fence*)calloc(1, sizeof(struct md_gpu_fence));
-    fence->cmd = [mtl_cmd retain];
+    if (fence) {
+        fence->cmd = [mtl_cmd retain];
+        return true;
+    }
 
-    return fence;
+    [mtl_cmd waitUntilCompleted];
+    return true;
+}
+
+md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device) {
+    (void)device;
+    struct md_gpu_fence* f = (struct md_gpu_fence*)calloc(1, sizeof(struct md_gpu_fence));
+    return f; // cmd is set by md_gpu_queue_submit
 }
 
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
@@ -802,6 +775,7 @@ void md_gpu_fence_wait(md_gpu_fence_t fence) {
 }
 
 void md_gpu_fence_destroy(md_gpu_fence_t fence) {
-    [fence->cmd release];
+    if (!fence) return;
+    if (fence->cmd) [fence->cmd release];
     free(fence);
 }

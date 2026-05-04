@@ -5,19 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(MD_GPU_VULKAN)
-// Allow forcing this compilation unit in non-Vulkan builds, but it should only
-// be compiled/linked when Vulkan is available.
-#define MD_GPU_VULKAN 1
-#endif
-
 // We avoid including platform-specific Vulkan headers via GLFW here.
 // This is a compute-only backend for now, so no surface extensions are required.
 #include <vulkan/vulkan.h>
-
-#ifndef MD_ENABLE_GPU
-#define MD_ENABLE_GPU 0
-#endif
 
 // Vulkan backend (C).
 // Compute-only for now; designed to be extended with graphics later.
@@ -28,11 +18,17 @@
 // Maximum number of md_gpu_cmd_dispatch calls recorded per command buffer.
 // One fresh descriptor set is allocated per dispatch, so the descriptor pool is
 // sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
-#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
+#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 64
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
-    VkQueue vk_queue;
+    VkQueue               vk_queue;
+    uint32_t              family_index;
+    VkCommandPool         command_pool;
+    // Command buffer pool - wrappers allocated once per queue, recycled by index
+    struct md_gpu_command_buffer* cmd_wrappers;
+    uint32_t              free_list[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
+    uint32_t              free_count;
 } md_gpu_queue;
 
 typedef struct md_gpu_device {
@@ -42,15 +38,9 @@ typedef struct md_gpu_device {
 
     uint32_t compute_queue_family;
 
-    VkCommandPool command_pool;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
-
-    // Command buffer pool
-    VkCommandBuffer command_buffers[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
-    uint32_t command_buffer_free_list[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
-    uint32_t command_buffer_free_count;
 
     // Embedded compute queue (returned by md_gpu_queue_acquire)
     struct md_gpu_queue compute_queue;
@@ -85,12 +75,12 @@ typedef struct md_gpu_compute_pipeline {
 } md_gpu_compute_pipeline;
 
 typedef struct md_gpu_command_buffer {
-    md_gpu_device_t device;
+    struct md_gpu_device* dev;
     VkCommandBuffer vk_cmd;
-    /* Per-dispatch descriptor sets, allocated at dispatch-record time and freed by the fence */
+    /* Per-dispatch descriptor sets, allocated at dispatch-record time and freed on recycle */
     VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
     uint32_t dispatch_count;
-    uint32_t index; // for recycling
+    uint32_t index; /* position in queue->cmd_wrappers[], used to return slot to free list */
 
     // Bound state
     md_gpu_compute_pipeline_t bound_pipeline;
@@ -102,11 +92,9 @@ typedef struct md_gpu_command_buffer {
 } md_gpu_command_buffer;
 
 typedef struct md_gpu_fence {
-    struct md_gpu_queue* queue;
-    VkFence vk_fence;
-    uint32_t cmd_buffer_index;
-    VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
-    uint32_t dispatch_count;
+    struct md_gpu_queue*          queue; /* originating queue; set by md_gpu_queue_submit */
+    VkFence                       vk_fence;
+    struct md_gpu_command_buffer* cmd; /* set by md_gpu_queue_submit; freed by md_gpu_fence_destroy */
 } md_gpu_fence;
 
 static bool md_vk_check(VkResult res, const char* what) {
@@ -314,30 +302,39 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     if (!md_vk_check(vkCreateDevice(out_dev->physical_device, &dci, NULL, &out_dev->device), "vkCreateDevice")) return false;
 
-    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &out_dev->compute_queue.vk_queue);
-    out_dev->compute_queue.dev = out_dev;
-    if (out_dev->compute_queue.vk_queue == VK_NULL_HANDLE) return false;
+    md_gpu_queue* q = &out_dev->compute_queue;
+    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &q->vk_queue);
+    q->dev          = out_dev;
+    q->family_index = out_dev->compute_queue_family;
+    if (q->vk_queue == VK_NULL_HANDLE) return false;
 
-    // Create command pool
+    // Create command pool owned by the compute queue
     VkCommandPoolCreateInfo pool_ci = {0};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_ci.queueFamilyIndex = out_dev->compute_queue_family;
-    if (!md_vk_check(vkCreateCommandPool(out_dev->device, &pool_ci, NULL, &out_dev->command_pool), "vkCreateCommandPool")) return false;
+    if (!md_vk_check(vkCreateCommandPool(out_dev->device, &pool_ci, NULL, &q->command_pool), "vkCreateCommandPool")) return false;
 
-    // Allocate command buffers
+    // Allocate command buffer wrappers owned by the queue
+    q->cmd_wrappers = (struct md_gpu_command_buffer*)calloc(MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE, sizeof(struct md_gpu_command_buffer));
+    if (!q->cmd_wrappers) return false;
+
+    VkCommandBuffer vk_cmds[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     VkCommandBufferAllocateInfo cb_ai = {0};
     cb_ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cb_ai.commandPool = out_dev->command_pool;
+    cb_ai.commandPool = q->command_pool;
     cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cb_ai.commandBufferCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
-    if (!md_vk_check(vkAllocateCommandBuffers(out_dev->device, &cb_ai, out_dev->command_buffers), "vkAllocateCommandBuffers")) return false;
+    if (!md_vk_check(vkAllocateCommandBuffers(out_dev->device, &cb_ai, vk_cmds), "vkAllocateCommandBuffers")) return false;
 
-    // Initialize free list
+    // Wire each wrapper to its VkCommandBuffer slot
     for (uint32_t i = 0; i < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE; ++i) {
-        out_dev->command_buffer_free_list[i] = i;
+        q->cmd_wrappers[i].dev   = out_dev;
+        q->cmd_wrappers[i].vk_cmd = vk_cmds[i];
+        q->cmd_wrappers[i].index  = i;
+        q->free_list[i] = i;
     }
-    out_dev->command_buffer_free_count = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
+    q->free_count = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
 
     // Create descriptor set layout: buffers at binding 0..(MAX_BIND_SLOTS-1), images at MAX_BIND_SLOTS..(2*MAX_BIND_SLOTS-1)
     VkDescriptorSetLayoutBinding bindings[2 * MD_GPU_MAX_BIND_SLOTS];
@@ -384,11 +381,37 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     VkDescriptorPoolCreateInfo dp_ci = {0};
     dp_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dp_ci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    dp_ci.flags = 0; /* no FREE_DESCRIPTOR_SET_BIT; sets are pre-allocated and reused */
     dp_ci.maxSets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
     dp_ci.poolSizeCount = 2;
     dp_ci.pPoolSizes = pool_sizes;
     if (!md_vk_check(vkCreateDescriptorPool(out_dev->device, &dp_ci, NULL, &out_dev->descriptor_pool), "vkCreateDescriptorPool")) return false;
+
+    // Pre-allocate all descriptor sets for every command buffer slot so they can be
+    // reused without per-submission alloc/free (vkUpdateDescriptorSets overwrites in-place).
+    {
+        const uint32_t total_sets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
+        VkDescriptorSetLayout* set_layouts = (VkDescriptorSetLayout*)malloc(total_sets * sizeof(VkDescriptorSetLayout));
+        VkDescriptorSet*       all_sets    = (VkDescriptorSet*)      malloc(total_sets * sizeof(VkDescriptorSet));
+        if (!set_layouts || !all_sets) { free(set_layouts); free(all_sets); return false; }
+        for (uint32_t i = 0; i < total_sets; ++i)
+            set_layouts[i] = out_dev->descriptor_set_layout;
+        VkDescriptorSetAllocateInfo all_ds_ai = {0};
+        all_ds_ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        all_ds_ai.descriptorPool = out_dev->descriptor_pool;
+        all_ds_ai.descriptorSetCount = total_sets;
+        all_ds_ai.pSetLayouts = set_layouts;
+        bool ok = md_vk_check(vkAllocateDescriptorSets(out_dev->device, &all_ds_ai, all_sets), "vkAllocateDescriptorSets (pre-alloc)");
+        if (ok) {
+            for (uint32_t i = 0; i < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE; ++i) {
+                for (uint32_t j = 0; j < MD_GPU_VK_MAX_DISPATCHES_PER_CMD; ++j)
+                    q->cmd_wrappers[i].dispatch_sets[j] = all_sets[i * MD_GPU_VK_MAX_DISPATCHES_PER_CMD + j];
+            }
+        }
+        free(set_layouts);
+        free(all_sets);
+        if (!ok) return false;
+    }
 
     return true;
 }
@@ -425,12 +448,13 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
         if (dev->descriptor_pool) vkDestroyDescriptorPool(dev->device, dev->descriptor_pool, NULL);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         if (dev->descriptor_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layout, NULL);
-        if (dev->command_pool) vkDestroyCommandPool(dev->device, dev->command_pool, NULL);
+        if (dev->compute_queue.command_pool) vkDestroyCommandPool(dev->device, dev->compute_queue.command_pool, NULL);
         vkDestroyDevice(dev->device, NULL);
     }
     if (dev->instance) {
         vkDestroyInstance(dev->instance, NULL);
     }
+    free(dev->compute_queue.cmd_wrappers);
     free(dev);
 }
 
@@ -445,18 +469,10 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
     memcpy(info->name, props.deviceName, name_len);
     info->name[name_len] = '\0';
 
-    // Detect UMA: any memory type that is both DEVICE_LOCAL and HOST_VISIBLE
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(dev->physical_device, &mem_props);
-    info->is_uma = false;
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
-        VkMemoryPropertyFlags flags = mem_props.memoryTypes[i].propertyFlags;
-        if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
-            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-            info->is_uma = true;
-            break;
-        }
-    }
+    // Discrete GPUs have dedicated VRAM separate from host memory and require staging.
+    // Integrated GPUs (UMA) share memory and can skip staging.
+    // deviceType is the authoritative Vulkan signal for this distinction.
+    info->is_discrete = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
 
     return true;
 }
@@ -495,8 +511,7 @@ md_gpu_buffer_t md_gpu_buffer_create(md_gpu_device_t device, const md_gpu_buffer
     VkMemoryPropertyFlags required = 0;
     VkMemoryPropertyFlags preferred = 0;
     if (desc->flags & MD_GPU_BUFFER_CPU_VISIBLE) {
-        required |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        preferred |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        required |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     } else {
         preferred |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     }
@@ -782,22 +797,22 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     md_gpu_queue* q = (md_gpu_queue*)queue;
     md_gpu_device* dev = (md_gpu_device*)q->dev;
 
-    if (dev->command_buffer_free_count == 0) {
+    if (q->free_count == 0) {
         MD_LOG_ERROR("md_gpu_command_buffer_acquire: no free command buffers");
         return NULL;
     }
 
-    uint32_t idx = dev->command_buffer_free_list[--dev->command_buffer_free_count];
+    uint32_t idx = q->free_list[--q->free_count];
 
-    md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)calloc(1, sizeof(md_gpu_command_buffer));
-    if (!cmd) {
-        dev->command_buffer_free_list[dev->command_buffer_free_count++] = idx;
-        return NULL;
-    }
-
-    cmd->device = (md_gpu_device_t)dev;
-    cmd->vk_cmd = dev->command_buffers[idx];
-    cmd->index = idx;
+    md_gpu_command_buffer* cmd = &q->cmd_wrappers[idx];
+    /* Zero-init transient fields; dev, vk_cmd, and index are permanent and already set */
+    cmd->dispatch_count      = 0;
+    cmd->bound_pipeline      = NULL;
+    cmd->descriptor_set_dirty = false;
+    memset(cmd->bound_buffers,       0, sizeof(cmd->bound_buffers));
+    memset(cmd->bound_buffer_offsets,0, sizeof(cmd->bound_buffer_offsets));
+    memset(cmd->bound_buffer_sizes,  0, sizeof(cmd->bound_buffer_sizes));
+    memset(cmd->bound_images,        0, sizeof(cmd->bound_images));
 
     // Begin command buffer
     VkCommandBufferBeginInfo begin_info = {0};
@@ -805,8 +820,7 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     if (!md_vk_check(vkBeginCommandBuffer(cmd->vk_cmd, &begin_info), "vkBeginCommandBuffer")) {
-        dev->command_buffer_free_list[dev->command_buffer_free_count++] = idx;
-        free(cmd);
+        q->free_list[q->free_count++] = idx;
         return NULL;
     }
 
@@ -815,7 +829,7 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
 
 md_gpu_device_t md_gpu_command_buffer_device(md_gpu_command_buffer_t cmd) {
     if (!cmd) return NULL;
-    return ((md_gpu_command_buffer*)cmd)->device;
+    return (md_gpu_device_t)((md_gpu_command_buffer*)cmd)->dev;
 }
 
 static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, VkImageLayout new_layout, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
@@ -849,7 +863,7 @@ static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, Vk
 
 // Helper: flush current bound state into the given descriptor set
 static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorSet ds) {
-    md_gpu_device* dev = (md_gpu_device*)cmd->device;
+    md_gpu_device* dev = cmd->dev;
 
     VkWriteDescriptorSet writes[2 * MD_GPU_MAX_BIND_SLOTS];
     VkDescriptorBufferInfo buffer_infos[MD_GPU_MAX_BIND_SLOTS];
@@ -947,36 +961,29 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, si
     if (!cmd || !data || size == 0) return;
     ASSERT(size <= MD_GPU_MAX_PUSH_CONSTANTS);
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_device* dev = (md_gpu_device*)c->device;
+    md_gpu_device* dev = c->dev;
     vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)size, data);
 }
 
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     if (!cmd) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_device* dev = (md_gpu_device*)c->device;
+    md_gpu_device* dev = c->dev;
 
     ASSERT(c->bound_pipeline && "Pipeline must be bound before dispatch");
     ASSERT(c->dispatch_count < MD_GPU_VK_MAX_DISPATCHES_PER_CMD && "Too many dispatches per command buffer");
 
-    // Allocate a fresh descriptor set for this dispatch so each dispatch has an independent binding snapshot
-    VkDescriptorSet ds = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo dsa_i = {0};
-    dsa_i.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsa_i.descriptorPool = dev->descriptor_pool;
-    dsa_i.descriptorSetCount = 1;
-    dsa_i.pSetLayouts = &dev->descriptor_set_layout;
-    if (!md_vk_check(vkAllocateDescriptorSets(dev->device, &dsa_i, &ds), "vkAllocateDescriptorSets (dispatch)")) return;
+    // Reuse the pre-allocated descriptor set for this dispatch slot (updated in-place).
+    VkDescriptorSet ds = c->dispatch_sets[c->dispatch_count];
 
-    // Write current bindings into the fresh per-dispatch set (also performs implicit image layout transitions)
+    // Write current bindings into the descriptor set (also performs implicit image layout transitions)
     md_vk_flush_descriptor_set(c, ds);
 
     // Bind and dispatch using the snapshot set
     vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(c->vk_cmd, group_count_x, group_count_y, group_count_z);
 
-    // Track for deferred cleanup via fence
-    c->dispatch_sets[c->dispatch_count++] = ds;
+    c->dispatch_count++;
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
@@ -1140,35 +1147,6 @@ void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t src, md
     vkCmdCopyBuffer(c->vk_cmd, src_buf->buffer, dst_buf->buffer, 1, &region);
 }
 
-void md_gpu_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd, md_gpu_image_t src_image, md_gpu_buffer_t dst_buffer) {
-    if (!cmd || !src_image || !dst_buffer) return;
-    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_image* src = (md_gpu_image*)src_image;
-    md_gpu_buffer* dst = (md_gpu_buffer*)dst_buffer;
-
-    // Transition to TRANSFER_SRC_OPTIMAL
-    md_vk_transition_image(c->vk_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
-    VkBufferImageCopy region = {0};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0; // tight packing
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = 0;
-    region.imageOffset.y = 0;
-    region.imageOffset.z = 0;
-    region.imageExtent.width = src->width;
-    region.imageExtent.height = src->height;
-    region.imageExtent.depth = src->depth;
-
-    vkCmdCopyImageToBuffer(c->vk_cmd, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->buffer, 1, &region);
-}
-
 void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
     if (!cmd || !src_buffer || !dst_image) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
@@ -1220,12 +1198,13 @@ void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
     region.imageSubresource.mipLevel = 0;
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = (int32_t)src_region.x;
-    region.imageOffset.y = (int32_t)src_region.y;
-    region.imageOffset.z = (int32_t)src_region.z;
-    region.imageExtent.width  = src_region.width;
-    region.imageExtent.height = src_region.height;
-    region.imageExtent.depth  = src_region.depth;
+    region.imageOffset.x = (int32_t)src_region.offset[0];
+    region.imageOffset.y = (int32_t)src_region.offset[1];
+    region.imageOffset.z = (int32_t)src_region.offset[2];
+    /* zero extent means full image */
+    region.imageExtent.width  = src_region.extent[0] ? src_region.extent[0] : src->width;
+    region.imageExtent.height = src_region.extent[1] ? src_region.extent[1] : src->height;
+    region.imageExtent.depth  = src_region.extent[2] ? src_region.extent[2] : src->depth;
 
     vkCmdCopyImageToBuffer(c->vk_cmd, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->buffer, 1, &region);
 }
@@ -1252,12 +1231,13 @@ void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
     region.imageSubresource.mipLevel = 0;
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = (int32_t)dst_region.x;
-    region.imageOffset.y = (int32_t)dst_region.y;
-    region.imageOffset.z = (int32_t)dst_region.z;
-    region.imageExtent.width  = dst_region.width;
-    region.imageExtent.height = dst_region.height;
-    region.imageExtent.depth  = dst_region.depth;
+    region.imageOffset.x = (int32_t)dst_region.offset[0];
+    region.imageOffset.y = (int32_t)dst_region.offset[1];
+    region.imageOffset.z = (int32_t)dst_region.offset[2];
+    /* zero extent means full image */
+    region.imageExtent.width  = dst_region.extent[0] ? dst_region.extent[0] : dst->width;
+    region.imageExtent.height = dst_region.extent[1] ? dst_region.extent[1] : dst->height;
+    region.imageExtent.depth  = dst_region.extent[2] ? dst_region.extent[2] : dst->depth;
 
     vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
@@ -1274,30 +1254,20 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
     vkCmdFillBuffer(c->vk_cmd, buf->buffer, offset, size, pattern);
 }
 
-md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd) {
-    if (!queue || !cmd) return NULL;
+bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence) {
+    if (!queue || !cmd) return false;
     md_gpu_queue* q = (md_gpu_queue*)queue;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_device* dev = (md_gpu_device*)q->dev;
 
     // End command buffer
     if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer")) {
-        return NULL;
+        return false;
     }
 
-    // Create fence
-    md_gpu_fence* fence = (md_gpu_fence*)calloc(1, sizeof(md_gpu_fence));
-    if (!fence) return NULL;
-    fence->queue = q;
+    md_gpu_fence* f = (md_gpu_fence*)fence;
+    VkFence vk_fence = f ? f->vk_fence : VK_NULL_HANDLE;
 
-    VkFenceCreateInfo fence_ci = {0};
-    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    if (!md_vk_check(vkCreateFence(dev->device, &fence_ci, NULL, &fence->vk_fence), "vkCreateFence")) {
-        free(fence);
-        return NULL;
-    }
-
-    // Submit
     VkCommandBufferSubmitInfo cmd_info = {0};
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     cmd_info.commandBuffer = c->vk_cmd;
@@ -1307,56 +1277,69 @@ md_gpu_fence_t md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cmd_info;
 
-    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, fence->vk_fence), "vkQueueSubmit2")) {
-        vkDestroyFence(dev->device, fence->vk_fence, NULL);
-        free(fence);
+    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, vk_fence), "vkQueueSubmit2")) {
+        return false;
+    }
+
+    if (f) {
+        // Attach the originating queue and in-flight command buffer to the fence; recycled on fence_destroy
+        f->queue = q;
+        f->cmd   = c;
+        return true;
+    }
+
+    // No fence: block until the queue is idle, then recycle the command buffer
+    vkQueueWaitIdle(q->vk_queue);
+
+    q->free_list[q->free_count++] = c->index;
+    return true;
+}
+
+md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device) {
+    md_gpu_device* dev = (md_gpu_device*)device;
+    if (!dev) return NULL;
+
+    md_gpu_fence* f = (md_gpu_fence*)calloc(1, sizeof(md_gpu_fence));
+    if (!f) return NULL;
+
+    VkFenceCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (!md_vk_check(vkCreateFence(dev->device, &ci, NULL, &f->vk_fence), "vkCreateFence")) {
+        free(f);
         return NULL;
     }
 
-    // Store command buffer resources in fence for later recycling (after GPU completes)
-    fence->cmd_buffer_index = c->index;
-    fence->dispatch_count = c->dispatch_count;
-    memcpy(fence->dispatch_sets, c->dispatch_sets, c->dispatch_count * sizeof(VkDescriptorSet));
-    free(c);
-
-    return (md_gpu_fence_t)fence;
+    return (md_gpu_fence_t)f;
 }
-
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
     if (!fence) return true;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
-    VkResult res = vkGetFenceStatus(dev->device, f->vk_fence);
+    VkResult res = vkGetFenceStatus(f->queue->dev->device, f->vk_fence);
     return (res == VK_SUCCESS);
 }
 
 void md_gpu_fence_wait(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
-    vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
+    vkWaitForFences(f->queue->dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
 }
 
 void md_gpu_fence_destroy(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    if (!f->queue || !f->queue->dev) {
+    if (!f->queue) {
+        vkDestroyFence(f->queue->dev->device, f->vk_fence, NULL);
         free(f);
         return;
     }
-    md_gpu_device* dev = (md_gpu_device*)f->queue->dev;
-    if (f->vk_fence) {
-        // Wait for GPU to finish using the command buffer before recycling resources
-        vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
-        
-        // Now safe to recycle command buffer and descriptor sets
-        if (f->dispatch_count > 0)
-            vkFreeDescriptorSets(dev->device, dev->descriptor_pool, f->dispatch_count, f->dispatch_sets);
-        
-        dev->command_buffer_free_list[dev->command_buffer_free_count++] = f->cmd_buffer_index;
-        
-        vkDestroyFence(dev->device, f->vk_fence, NULL);
-        f->vk_fence = VK_NULL_HANDLE;
+    md_gpu_device* dev = f->queue->dev;
+    ASSERT(dev);
+    vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
+
+    if (f->cmd) {
+        f->queue->free_list[f->queue->free_count++] = f->cmd->index;
     }
+
+    vkDestroyFence(dev->device, f->vk_fence, NULL);
     free(f);
 }

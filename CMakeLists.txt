@@ -188,6 +188,7 @@ set(TOPO_SHADER_FILES
 )
 
 set(TOPO_SLANG_FILES
+  src/shaders/topo/topo_setup.slang
   src/shaders/topo/critical_point_compaction.slang
   src/shaders/topo/bidirectional_manifold.slang
   src/shaders/topo/path_compression.slang

@@ -211,12 +211,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
         vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
 
         // Round up to nearest N * CELL_EXT
-        aabb_ext = vec4_mul_f(vec4_ceil(vec4_div_f(aabb_ext, (float)CELL_EXT)), (float)CELL_EXT);
+        aabb_ext = vec4_mul1(vec4_ceil(vec4_div1(aabb_ext, (float)CELL_EXT)), (float)CELL_EXT);
 
         // Set min as center - half extent
-        vec4_t aabb_center = vec4_mul_f(vec4_add(aabb_min, aabb_max), 0.5f);
-        aabb_min = vec4_sub(aabb_center, vec4_mul_f(aabb_ext, 0.5f));
-        aabb_max = vec4_add(aabb_center, vec4_mul_f(aabb_ext, 0.5f));
+        vec4_t aabb_center = vec4_mul1(vec4_add(aabb_min, aabb_max), 0.5f);
+        aabb_min = vec4_sub(aabb_center, vec4_mul1(aabb_ext, 0.5f));
+        aabb_max = vec4_add(aabb_center, vec4_mul1(aabb_ext, 0.5f));
 
         if ((flags & MD_UNITCELL_PBC_X) == 0) {
             origin.x = aabb_min.x;
