@@ -183,7 +183,6 @@ typedef struct md_vlx_t {
 	md_vlx_vib_t vib;
 	md_vlx_opt_t opt;
 
-
 	md_element_t* atomic_numbers;
 	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices (shell order)
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.

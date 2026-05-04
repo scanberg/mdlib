@@ -182,16 +182,15 @@ void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const m
 
 #if MD_ENABLE_GPU
 // ---------------------------------------------------------------------------
-// GPU basis buffer  (owns device-local xyz, r, off_len, pgto regions)
+// GPU basis buffer  (owns device-local atom_idx, r, off_len, pgto regions)
 // Create once per basis set; reuse across all density and MO evaluations.
 // ---------------------------------------------------------------------------
 
 typedef struct md_gto_gpu_basis* md_gto_gpu_basis_t;
 
 typedef struct md_gto_gpu_basis_desc_t {
-    const md_gto_basis_t* basis;      // basis set topology (required)
-    const float*          atom_xyz;   // atom positions in Bohr, xyz-interleaved (required)
-    double                cutoff;     // pgto radius pruning threshold; pass 0 to disable
+	const md_gto_basis_t* basis;      // basis set topology (required)
+	double                cutoff;     // pgto radius pruning threshold; pass 0 to disable
 } md_gto_gpu_basis_desc_t;
 
 // Allocate a device-local basis buffer and fully populate it from desc.
@@ -200,9 +199,19 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
 
 void md_gto_gpu_basis_destroy(md_gto_gpu_basis_t basis_buf);
 
-// Update only atom coordinates, leaving cutoff radii and pgto topology untouched.
-// Records a staging copy + barrier into the caller's command buffer.
-void md_gto_gpu_basis_upload_xyz(md_gpu_command_buffer_t cmd, md_gto_gpu_basis_t basis_buf, const md_gto_basis_t* basis, const float* atom_xyz);
+// Return the underlying GPU basis buffer (CGTO metadata + PGTO data).
+md_gpu_buffer_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
+
+// Basis metadata queries.
+uint32_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
+uint32_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t basis_buf);
+uint32_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t basis_buf);
+
+// Atom buffer helpers.
+// Atom buffer layout expected by the GPU shaders:
+//   float4[num_atoms], xyz in Bohr and .w ignored.
+size_t md_gto_gpu_atom_buffer_size(size_t num_atoms);
+void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t num_atoms);
 
 // ---------------------------------------------------------------------------
 // Coefficient buffer helpers
@@ -239,20 +248,22 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
 // ---------------------------------------------------------------------------
 
 // Record an electron density evaluation dispatch into the caller's command buffer.
+// atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain packed upper-triangular float coefficients
 // (use md_gto_gpu_coeff_upload_density to fill it).
 // A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
 // earlier in the same command buffer are visible to the shader.
 void md_gto_grid_evaluate_density_gpu(md_gpu_command_buffer_t cmd,
-    md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t coeff_buf,
+	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
     md_gpu_image_t out_image, const md_grid_t* grid);
 
 // Record an MO evaluation dispatch into the caller's command buffer.
+// atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain num_mos packed rows of num_cgtos floats
 // (use md_gto_gpu_coeff_upload_mo to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
 void md_gto_grid_evaluate_mo_gpu(md_gpu_command_buffer_t cmd,
-    md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t coeff_buf, uint32_t num_mos,
+	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, uint32_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode);
 
 #endif

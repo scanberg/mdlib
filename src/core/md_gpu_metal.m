@@ -223,6 +223,23 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     free(device);
 }
 
+bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
+    if (!device || !info) return false;
+
+    MEMSET(info, 0, sizeof(*info));
+
+    if ([device->device respondsToSelector:@selector(hasUnifiedMemory)]) {
+        info->is_uma = device->device.hasUnifiedMemory;
+    }
+
+    NSString* name = [device->device name];
+    if (name) {
+        [name getCString:info->name maxLength:sizeof(info->name) encoding:NSUTF8StringEncoding];
+    }
+
+    return true;
+}
+
 md_gpu_queue_t md_gpu_queue_acquire(md_gpu_device_t device) {
     return &device->compute_queue;
 }
@@ -381,6 +398,10 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
 
     cmd_reset(cmd);
     return cmd;
+}
+
+md_gpu_device_t md_gpu_command_buffer_device(md_gpu_command_buffer_t cmd) {
+    return cmd ? cmd->dev : NULL;
 }
 
 void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
