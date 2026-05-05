@@ -42,6 +42,10 @@ typedef struct md_gpu_device {
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
 
+    /* VK_EXT_debug_utils — NULL when the extension is not available */
+    PFN_vkCmdBeginDebugUtilsLabelEXT fn_begin_debug_label;
+    PFN_vkCmdEndDebugUtilsLabelEXT   fn_end_debug_label;
+
     // Embedded compute queue (returned by md_gpu_queue_acquire)
     struct md_gpu_queue compute_queue;
 } md_gpu_device;
@@ -1252,6 +1256,23 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
 
     uint32_t pattern = (value << 24) | (value << 16) | (value << 8) | value;
     vkCmdFillBuffer(c->vk_cmd, buf->buffer, offset, size, pattern);
+}
+
+void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
+    if (!cmd || !label) return;
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    if (!c->dev->fn_begin_debug_label) return;
+    VkDebugUtilsLabelEXT info = {0};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    info.pLabelName = label;
+    c->dev->fn_begin_debug_label(c->vk_cmd, &info);
+}
+
+void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
+    if (!cmd) return;
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    if (!c->dev->fn_end_debug_label) return;
+    c->dev->fn_end_debug_label(c->vk_cmd);
 }
 
 bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence) {

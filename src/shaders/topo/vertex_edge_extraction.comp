@@ -11,17 +11,18 @@ layout(std140, binding = 0) uniform UBO {
     float scalar_threshold;
 };
 
-// Input: critical point indices (ordered: maxima, split_saddles, minima, join_saddles)
+// Input: critical point indices (one entry per vertex)
 layout(std430, binding = 1) readonly buffer CriticalPointIndices {
     uint cp_indices[];
 };
 
-// Input: type counts for indexing
-layout(std430, binding = 2) readonly buffer TypeCounts {
-    uint num_maxima;
-    uint num_split_saddles;
-    uint num_minima;
-    uint num_join_saddles;
+// Input: per-vertex critical point type
+layout(std430, binding = 2) readonly buffer VertexTypes {
+    uint vertex_types[];
+};
+
+// Input: total vertex count
+layout(std430, binding = 9) readonly buffer NumVertices {
     uint num_vertices;
 };
 
@@ -81,12 +82,9 @@ float get_scalar(ivec3 ijk) {
     return imageLoad(volumeTex, ijk).r;
 }
 
-// Get critical point type based on vertex index
+// Get critical point type from per-vertex type buffer
 uint get_type(uint vert_idx) {
-    if (vert_idx < num_maxima) return 1; // MAXIMUM
-    if (vert_idx < num_maxima + num_split_saddles) return 2; // SPLIT_SADDLE
-    if (vert_idx < num_maxima + num_split_saddles + num_minima) return 3; // MINIMUM
-    return 4; // JOIN_SADDLE
+    return vertex_types[vert_idx];
 }
 
 // Get vertex index for a given voxel ID using direct mapping
@@ -128,13 +126,9 @@ void main() {
         
         vertex_data[vert_idx] = vec4(world_pos, value);
         
-        uint split_saddle_beg = num_maxima;
-        uint split_saddle_end = num_maxima + num_split_saddles;
-        uint join_saddle_beg  = num_maxima + num_split_saddles + num_minima;
-        uint join_saddle_end  = num_vertices;
-
-        bool is_split_saddle = (split_saddle_beg <= vert_idx) && (vert_idx < split_saddle_end);
-        bool is_join_saddle  = (join_saddle_beg  <= vert_idx) && (vert_idx < join_saddle_end);
+        uint type = vertex_types[vert_idx];
+        bool is_split_saddle = (type == 2u); // SPLIT_SADDLE
+        bool is_join_saddle  = (type == 4u); // JOIN_SADDLE
         
         // Store edges in local shared memory first
         uint target_voxel = 0xFFFFFFFFu;

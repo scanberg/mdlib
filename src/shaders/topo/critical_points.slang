@@ -21,7 +21,7 @@
 
 struct UBO {
     float4x4 index_to_world;
-    uint3 dims;
+    uint4 dims;
     float scalar_threshold;
 };
 
@@ -40,18 +40,11 @@ RWStructuredBuffer<uint> descending;
 [[vk::binding(2)]]
 RWStructuredBuffer<int> types;
 
-struct CriticalPointCounts {
-    uint maximaCount;
-    uint splitSaddleCount;
-    uint minimaCount;
-    uint joinSaddleCount;
-};
-
 [[vk::binding(3)]]
-RWStructuredBuffer<CriticalPointCounts> counts; // counts[0]
+RWStructuredBuffer<uint> counts; // counts[0] = total critical point count
 
 bool is_valid_voxel(int3 ijk) {
-    return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(ubo.dims));
+    return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(ubo.dims.xyz));
 }
 
 float get_scalar(int3 ijk) {
@@ -122,10 +115,7 @@ int count_link_components(uint link_mask) {
     return num_components;
 }
 
-groupshared uint numMaxima;
-groupshared uint numSplitSaddles;
-groupshared uint numMinima;
-groupshared uint numJoinSaddles;
+groupshared uint numCriticalPoints;
 
 groupshared float sharedScalars[SG_X][SG_Y][SG_Z];
 groupshared uint sharedIds[SG_X][SG_Y][SG_Z];
@@ -133,21 +123,18 @@ groupshared uint sharedIds[SG_X][SG_Y][SG_Z];
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 group_id : SV_GroupID, uint3 local_id_3 : SV_GroupThreadID) {
-    if (any(gid >= ubo.dims)) {
+    if (any(gid >= ubo.dims.xyz)) {
         return;
     }
     uint voxel_id = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
 
     if (gtid == 0) {
-        numMaxima = 0u;
-        numSplitSaddles = 0u;
-        numMinima = 0u;
-        numJoinSaddles = 0u;
+        numCriticalPoints = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
 
     int3 local_idx = int3(local_id_3) + int3(1, 1, 1);
-    int3 dims_i = int3(ubo.dims);
+    int3 dims_i = int3(ubo.dims.xyz);
 
     // Cooperative linear fill of the shared region
     {
@@ -211,14 +198,10 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
 
         if (reachable_maxima_count == 0) {
             type = MAXIMUM;
-            uint _orig;
-            InterlockedAdd(numMaxima, 1u, _orig);
         } else if (reachable_maxima_count > 1) {
             int num_components = count_link_components(upper_link_mask);
             if (num_components > 1) {
                 type = SPLIT_SADDLE;
-                uint _orig;
-                InterlockedAdd(numSplitSaddles, 1u, _orig);
             }
         }
 
@@ -251,16 +234,17 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
 
             if (reachable_minima_count == 0) {
                 type = MINIMUM;
-                uint _orig;
-                InterlockedAdd(numMinima, 1u, _orig);
             } else {
                 int num_components = count_link_components(lower_link_mask);
                 if (num_components > 1) {
                     type = JOIN_SADDLE;
-                    uint _orig;
-                    InterlockedAdd(numJoinSaddles, 1u, _orig);
                 }
             }
+        }
+
+        if (type != REGULAR) {
+            uint _orig;
+            InterlockedAdd(numCriticalPoints, 1u, _orig);
         }
     }
 
@@ -269,9 +253,6 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
     GroupMemoryBarrierWithGroupSync();
     if (gtid == 0) {
         uint _orig;
-        InterlockedAdd(counts[0].maximaCount, numMaxima, _orig);
-        InterlockedAdd(counts[0].splitSaddleCount, numSplitSaddles, _orig);
-        InterlockedAdd(counts[0].minimaCount, numMinima, _orig);
-        InterlockedAdd(counts[0].joinSaddleCount, numJoinSaddles, _orig);
+        InterlockedAdd(counts[0], numCriticalPoints, _orig);
     }
 }

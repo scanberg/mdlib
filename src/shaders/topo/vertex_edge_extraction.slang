@@ -6,7 +6,7 @@
 
 struct UBO {
     float4x4 index_to_world;
-    uint3 dims;
+    uint4 dims;
     float scalar_threshold;
 };
 
@@ -16,16 +16,13 @@ ConstantBuffer<UBO> ubo;
 [[vk::binding(0)]]
 RWStructuredBuffer<uint> cp_indices;
 
-struct TypeCounts {
-    uint num_maxima;
-    uint num_split_saddles;
-    uint num_minima;
-    uint num_join_saddles;
-    uint num_vertices;
-};
-
+// Input: per-vertex critical point type (0 = unused/REGULAR)
 [[vk::binding(1)]]
-RWStructuredBuffer<TypeCounts> type_counts; // type_counts[0]
+RWStructuredBuffer<uint> vertex_types;
+
+// Input: total vertex count
+[[vk::binding(8)]]
+RWStructuredBuffer<uint> num_vertices_buf; // num_vertices_buf[0]
 
 [[vk::binding(2)]]
 RWStructuredBuffer<uint> ascending;
@@ -51,7 +48,6 @@ RWStructuredBuffer<EdgeCounter> edge_counter; // edge_counter[0]
 
 [[vk::binding(7)]]
 RWStructuredBuffer<int> voxel_to_vertex_idx; // -1 for non-CP voxels, vertex index for CP voxels
-
 groupshared uint local_edge_count;
 groupshared uint global_edge_offset;
 groupshared uint2 local_edges[MAX_LOCAL_EDGES];
@@ -97,10 +93,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint local_id : SV_GroupIndex) {
     }
     GroupMemoryBarrierWithGroupSync();
 
-    uint num_vertices = type_counts[0].num_vertices;
-    uint num_maxima = type_counts[0].num_maxima;
-    uint num_split_saddles = type_counts[0].num_split_saddles;
-    uint num_minima = type_counts[0].num_minima;
+    uint num_vertices = num_vertices_buf[0];
 
     if (vert_idx < num_vertices) {
         // === Extract vertex data ===
@@ -111,13 +104,9 @@ void main(uint3 gid : SV_DispatchThreadID, uint local_id : SV_GroupIndex) {
 
         vertex_data[vert_idx] = float4(world_pos, value);
 
-        uint split_saddle_beg = num_maxima;
-        uint split_saddle_end = num_maxima + num_split_saddles;
-        uint join_saddle_beg = num_maxima + num_split_saddles + num_minima;
-        uint join_saddle_end = num_vertices;
-
-        bool is_split_saddle = (split_saddle_beg <= vert_idx) && (vert_idx < split_saddle_end);
-        bool is_join_saddle = (join_saddle_beg <= vert_idx) && (vert_idx < join_saddle_end);
+        uint type = vertex_types[vert_idx];
+        bool is_split_saddle = (type == 2u); // SPLIT_SADDLE
+        bool is_join_saddle  = (type == 4u); // JOIN_SADDLE
 
         if (is_split_saddle || is_join_saddle) {
             // Iterate over 26-neighborhood
@@ -125,7 +114,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint local_id : SV_GroupIndex) {
             uint unique_count = 0;
             for (int n = 0; n < NUM_NEIGHBORS; ++n) {
                 int3 nc = voxel_coords + neighbors[n];
-                if (any(nc < int3(0, 0, 0)) || any(nc >= int3(ubo.dims))) continue;
+                if (any(nc < int3(0, 0, 0)) || any(nc >= int3(ubo.dims.xyz))) continue;
                 uint nid = uint(nc.x) + uint(nc.y) * ubo.dims.x + uint(nc.z) * ubo.dims.x * ubo.dims.y;
 
                 // Follow manifold from neighbor to its CP

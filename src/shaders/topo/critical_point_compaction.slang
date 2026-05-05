@@ -1,18 +1,18 @@
 // critical_point_compaction.slang
 // Compacts critical points into a contiguous array, writing global vertex indices.
-// Each critical-point voxel atomically claims a slot in cp_indices and records its
-// vertex index in voxel_to_vertex_idx (a separate buffer, initialized to -1).
+// Each critical-point voxel atomically claims a slot via a single counter and records
+// its vertex index in voxel_to_vertex_idx. Vertex types are written to vertex_types[].
 // Non-critical voxels leave voxel_to_vertex_idx untouched (still -1).
 
-#define REGULAR 0
-#define MAXIMUM 1
+#define REGULAR      0
+#define MAXIMUM      1
 #define SPLIT_SADDLE 2
-#define MINIMUM 3
-#define JOIN_SADDLE 4
+#define MINIMUM      3
+#define JOIN_SADDLE  4
 
 struct UBO {
     float4x4 index_to_world;
-    uint3 dims;
+    uint4 dims;
     float scalar_threshold;
 };
 
@@ -25,18 +25,14 @@ RWStructuredBuffer<int> types;           // read-only after critical_points pass
 [[vk::binding(1)]]
 RWStructuredBuffer<uint> cp_indices;     // output: voxel_id at each vertex index
 
-struct Counters {
-    uint maximaWritePos;
-    uint splitSaddleWritePos;
-    uint minimaWritePos;
-    uint joinSaddleWritePos;
-};
-
 [[vk::binding(2)]]
-RWStructuredBuffer<Counters> counters;   // counters[0], initialized with per-type base offsets
+RWStructuredBuffer<uint> counter;        // counter[0]: single atomic write cursor
 
 [[vk::binding(3)]]
 RWStructuredBuffer<int> voxel_to_vertex_idx; // output: vertex index for each CP voxel (-1 = not a CP)
+
+[[vk::binding(4)]]
+RWStructuredBuffer<uint> vertex_types;   // output: per-vertex critical point type
 
 [shader("compute")]
 [numthreads(8, 8, 8)]
@@ -48,19 +44,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int type = types[voxel_id];
     if (type == REGULAR) return;
 
-    // Claim a slot in the appropriate section of cp_indices via atomic.
     uint vtx_idx;
-    if (type == MAXIMUM) {
-        InterlockedAdd(counters[0].maximaWritePos, 1u, vtx_idx);
-    } else if (type == SPLIT_SADDLE) {
-        InterlockedAdd(counters[0].splitSaddleWritePos, 1u, vtx_idx);
-    } else if (type == MINIMUM) {
-        InterlockedAdd(counters[0].minimaWritePos, 1u, vtx_idx);
-    } else { // JOIN_SADDLE
-        InterlockedAdd(counters[0].joinSaddleWritePos, 1u, vtx_idx);
-    }
+    InterlockedAdd(counter[0], 1u, vtx_idx);
 
-    cp_indices[vtx_idx] = voxel_id;
+    cp_indices[vtx_idx]           = voxel_id;
+    vertex_types[vtx_idx]         = uint(type);
     voxel_to_vertex_idx[voxel_id] = int(vtx_idx);
 }
 

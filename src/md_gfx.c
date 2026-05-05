@@ -1061,7 +1061,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     }
 
     uint32_t* grp_src_indices = md_vm_arena_push(arena, sizeof(uint32_t) * grp_count);
-    md_util_sort_spatial_xyz(grp_src_indices, grp_cent, sizeof(vec3_t), grp_count);
+    md_util_sort_spatial_xyz(grp_src_indices, (const float*)grp_cent, sizeof(vec3_t), grp_count);
 
     uint32_t* src_indices = NULL;
     range_t* base_groups  = NULL;

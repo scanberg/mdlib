@@ -57,7 +57,9 @@ typedef enum md_gpu_cmd_type_t {
     CMD_FILL_BUFFER,
     CMD_BARRIER,
     CMD_BARRIER_BUFFER,
-    CMD_BARRIER_IMAGE
+    CMD_BARRIER_IMAGE,
+    CMD_PUSH_DEBUG_GROUP,
+    CMD_POP_DEBUG_GROUP
 } md_gpu_cmd_type_t;
 
 struct md_gpu_cmd_copy_buffer {
@@ -102,6 +104,10 @@ struct md_gpu_cmd_barrier_image {
     struct md_gpu_image* image;
 };
 
+struct md_gpu_cmd_debug_label {
+    char label[128];
+};
+
 struct md_gpu_cmd_dispatch {
     uint32_t group_count[3];
     uint8_t  push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
@@ -124,6 +130,7 @@ struct md_gpu_recorded_cmd {
         struct md_gpu_cmd_fill_buffer fill_buf;
         struct md_gpu_cmd_barrier_buffer barrier_buf;
         struct md_gpu_cmd_barrier_image  barrier_img;
+        struct md_gpu_cmd_debug_label    debug_label;
     } u;
 };
 
@@ -567,9 +574,24 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
     rc->u.fill_buf.value = value;
 }
 
-/* =============================
-   Submission & fences
-   ============================= */
+void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
+    if (!cmd || !label) return;
+    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    rc->type = CMD_PUSH_DEBUG_GROUP;
+    /* Truncate silently if the label is too long */
+    size_t len = strlen(label);
+    if (len >= sizeof(rc->u.debug_label.label)) len = sizeof(rc->u.debug_label.label) - 1;
+    memcpy(rc->u.debug_label.label, label, len);
+    rc->u.debug_label.label[len] = '\0';
+}
+
+void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
+    if (!cmd) return;
+    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
+    rc->type = CMD_POP_DEBUG_GROUP;
+}
 
 bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence) {
 
@@ -625,6 +647,23 @@ bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_g
                     id<MTLResource> res = c->u.barrier_img.image->texture;
                     [compute_enc memoryBarrierWithResources:&res count:1];
                 }
+                break;
+            }
+
+            case CMD_PUSH_DEBUG_GROUP: {
+                NSString* ns_label = [NSString stringWithUTF8String:c->u.debug_label.label];
+                if (compute_enc)
+                    [compute_enc pushDebugGroup:ns_label];
+                else
+                    [mtl_cmd pushDebugGroup:ns_label];
+                break;
+            }
+
+            case CMD_POP_DEBUG_GROUP: {
+                if (compute_enc)
+                    [compute_enc popDebugGroup];
+                else
+                    [mtl_cmd popDebugGroup];
                 break;
             }
 

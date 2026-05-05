@@ -58,14 +58,7 @@ const ivec3 neighbor_offset[NUM_NEIGHBORS] = ivec3[](
 );
 
 void main() {
-    // Compute global voxel index from 3D thread indices
-    uvec3 gid = gl_GlobalInvocationID.xyz;
-    if (any(greaterThanEqual(gid, dims))) {
-        return;
-    }
-    uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
     ivec3 dims_i = ivec3(dims);
-    ivec3 pos = ivec3(gid);
 
     // Compute local index inside shared 10x10x10 (offset by +1 for padding)
     ivec3 local_idx = ivec3(gl_LocalInvocationID) + ivec3(1);
@@ -91,6 +84,14 @@ void main() {
 
     // Ensure all shared loads are visible
     barrier();
+
+    // Compute global voxel index from 3D thread indices
+    uvec3 gid = gl_GlobalInvocationID.xyz;
+
+    if (any(greaterThanEqual(gid, dims))) {
+        return;
+    }
+    uint i = gid.x + gid.y * dims.x + gid.z * dims.x * dims.y;
 
     float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
 

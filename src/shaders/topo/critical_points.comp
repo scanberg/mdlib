@@ -44,10 +44,7 @@ layout(std430, binding = 3) writeonly buffer CriticalPointTypes {
 };
 
 layout (std430, binding = 4) buffer CriticalPointCounts {
-    uint maximaCount;
-    uint splitSaddleCount;  // saddles in ascending manifold
-    uint minimaCount;
-    uint joinSaddleCount;   // saddles in descending manifold
+    uint count;  // total number of critical points
 };
 
 bool is_valid_voxel(ivec3 ijk) {
@@ -148,11 +145,7 @@ int count_link_components(uint link_mask) {
 }
 
 // Shared memory for workgroup-local compaction
-shared uint numMaxima;
-shared uint numSplitSaddles;
-shared uint numMinima;
-shared uint numJoinSaddles;
-shared uint numEdges;
+shared uint numCriticalPoints;
 
 // Shared memory for scalar values and voxel IDs in a 10x10x10 region (8x8x8 block + 1 padding in each direction)
 shared float sharedScalars[SG_X][SG_Y][SG_Z];
@@ -168,11 +161,7 @@ void main() {
 
     // Initialize shared memory for counters
     if (gl_LocalInvocationIndex == 0) {
-        numMaxima = 0u;
-        numSplitSaddles = 0u;
-        numMinima = 0u;
-        numJoinSaddles = 0u;
-        numEdges = 0u;
+        numCriticalPoints = 0u;
     }
     // Ensure all threads see the zeroed counters before proceeding
     barrier();
@@ -250,12 +239,12 @@ void main() {
         
         if (reachable_maxima_count == 0) {
             type = MAXIMUM;
-            atomicAdd(numMaxima, 1u);
+            atomicAdd(numCriticalPoints, 1u);
         } else if (reachable_maxima_count > 1) {
             int num_components = count_link_components(upper_link_mask);
             if (num_components > 1) {
                 type = SPLIT_SADDLE;
-                atomicAdd(numSplitSaddles, 1u);
+                atomicAdd(numCriticalPoints, 1u);
             }
         }
         
@@ -289,12 +278,12 @@ void main() {
             
             if (reachable_minima_count == 0) {
                 type = MINIMUM;
-                atomicAdd(numMinima, 1u);
+                atomicAdd(numCriticalPoints, 1u);
             } else {
                 int num_components = count_link_components(lower_link_mask);
                 if (num_components > 1) {
                     type = JOIN_SADDLE;
-                    atomicAdd(numJoinSaddles, 1u);
+                    atomicAdd(numCriticalPoints, 1u);
                 }
             }
         }
@@ -304,9 +293,6 @@ void main() {
 
     barrier();
     if (gl_LocalInvocationIndex == 0) {
-        atomicAdd(maximaCount,      numMaxima);
-        atomicAdd(splitSaddleCount, numSplitSaddles);
-        atomicAdd(minimaCount,      numMinima);
-        atomicAdd(joinSaddleCount,  numJoinSaddles);
+        atomicAdd(count, numCriticalPoints);
     }
 }

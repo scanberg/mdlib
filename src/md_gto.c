@@ -1348,6 +1348,7 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
         DIV_UP(grid->dim[2], 8),
     };
 
+    md_gpu_cmd_push_debug_group(cmd, "GTO Density");
     md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
     md_gpu_cmd_bind_buffer_range(cmd, 0, gb->buffer, L->off_cgto_atom_idx, sz_cgto_atom_idx);
@@ -1358,9 +1359,10 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
     md_gpu_cmd_bind_buffer_range(cmd, 5, coeff_buf,  0,                   sz_coeffs);
     md_gpu_cmd_bind_image(cmd, 0, image);
     md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
+    md_gpu_cmd_pop_debug_group(cmd);
 }
 
-void md_gto_grid_evaluate_mo_gpu(md_gpu_command_buffer_t cmd,
+void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, uint32_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode)
 {
