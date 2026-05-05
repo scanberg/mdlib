@@ -257,6 +257,7 @@ md_gpu_buffer_t md_gpu_buffer_create(md_gpu_device_t device,
 }
 
 void md_gpu_buffer_destroy(md_gpu_buffer_t buffer) {
+    if (!buffer) return;
     [buffer->buffer release];
     free(buffer);
 }
@@ -312,6 +313,7 @@ md_gpu_image_t md_gpu_image_create(md_gpu_device_t device,
 }
 
 void md_gpu_image_destroy(md_gpu_image_t image) {
+    if (!image) return;
     [image->texture release];
     free(image);
 }
@@ -371,6 +373,7 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(
 }
 
 void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline) {
+    if (!pipeline) return;
     [pipeline->pso release];
     free(pipeline);
 }
