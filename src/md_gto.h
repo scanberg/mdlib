@@ -266,7 +266,7 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 // coeff_buf must contain num_mos packed rows of num_cgtos floats
 // (use md_gto_gpu_coeff_upload_mo to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
-void md_gto_grid_evaluate_mo_gpu(md_gpu_command_buffer_t cmd,
+void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, uint32_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode);
 

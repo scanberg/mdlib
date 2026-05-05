@@ -3,7 +3,7 @@
 
 struct UBO {
     float4x4 index_to_world;
-    uint3 dims;
+    uint4 dims;
     float scalar_threshold;
 };
 
@@ -37,43 +37,45 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
         return;
     }
 
-    if (any(gid >= ubo.dims)) {
+    if (any(gid >= ubo.dims.xyz)) {
         return;
     }
 
     uint i = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
+    uint parent_asc  = ascending[i];
+    uint parent_desc = descending[i];
 
     if (gtid == 0) {
         local_changed = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
 
+    uint change = 0u;
+
     // Single-step pointer jump for ascending manifold
-    uint parent_asc = ascending[i];
     if (parent_asc != i) {
         uint grandparent_asc = ascending[parent_asc];
         if (parent_asc != grandparent_asc) {
             ascending[i] = grandparent_asc;
-            uint _orig;
-            InterlockedOr(local_changed, 1u, _orig);
+            change = 1u;
         }
     }
 
     // Single-step pointer jump for descending manifold
-    uint parent_desc = descending[i];
     if (parent_desc != i) {
         uint grandparent_desc = descending[parent_desc];
         if (parent_desc != grandparent_desc) {
             descending[i] = grandparent_desc;
-            uint _orig;
-            InterlockedOr(local_changed, 1u, _orig);
+            change = 1u;
         }
     }
+
+    uint _orig;
+    InterlockedOr(local_changed, change, _orig);
 
     GroupMemoryBarrierWithGroupSync();
 
     if (gtid == 0) {
-        uint _orig;
         InterlockedOr(changed_write[0], local_changed, _orig);
     }
 }

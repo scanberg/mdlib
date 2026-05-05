@@ -15,7 +15,7 @@
 
 struct UBO {
     float4x4 index_to_world;
-    uint3 dims;
+    uint4 dims;
     float scalar_threshold;
 };
 
@@ -56,13 +56,7 @@ static const int3 neighbor_offset[NUM_NEIGHBORS] = {
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) {
-    if (any(gid >= ubo.dims)) {
-        return;
-    }
-    uint i = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
-    int3 dims_i = int3(ubo.dims);
-
-    int3 local_idx = int3(local_id) + int3(1, 1, 1);
+    int3 dims_i = int3(ubo.dims.xyz);
 
     // Cooperative linear fill of the shared region
     int tid = int(gtid);
@@ -81,6 +75,13 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
     }
 
     GroupMemoryBarrierWithGroupSync();
+
+    if (any(gid >= ubo.dims.xyz)) {
+        return;
+    }
+
+    uint i = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
+    int3 local_idx = int3(local_id) + int3(1, 1, 1);
 
     float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
 

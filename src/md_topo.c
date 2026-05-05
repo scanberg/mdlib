@@ -55,7 +55,6 @@ static md_gpu_device_t cached_device = NULL;
 static md_gpu_compute_pipeline_t pip_bidirectional_manifold    = NULL;
 static md_gpu_compute_pipeline_t pip_path_compression          = NULL;
 static md_gpu_compute_pipeline_t pip_critical_points           = NULL;
-static md_gpu_compute_pipeline_t pip_topo_setup                = NULL;
 static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
 static md_gpu_compute_pipeline_t pip_vertex_edge_extraction    = NULL;
 
@@ -65,7 +64,6 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
         if (pip_bidirectional_manifold)    { md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);    pip_bidirectional_manifold    = NULL; }
         if (pip_path_compression)          { md_gpu_compute_pipeline_destroy(pip_path_compression);          pip_path_compression          = NULL; }
         if (pip_critical_points)           { md_gpu_compute_pipeline_destroy(pip_critical_points);           pip_critical_points           = NULL; }
-        if (pip_topo_setup)                { md_gpu_compute_pipeline_destroy(pip_topo_setup);                pip_topo_setup                = NULL; }
         if (pip_critical_point_compaction) { md_gpu_compute_pipeline_destroy(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
         if (pip_vertex_edge_extraction)    { md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);    pip_vertex_edge_extraction    = NULL; }
         cached_device = device;
@@ -93,29 +91,27 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
 // where stride = ALIGN_UP(num_points * sizeof(uint32_t), 256)
 //
 // Meta buffer layout (device-local, 256-byte aligned slots):
-//   [   0..  16) counts[4]         critical-point type counts (critical_points output)
-//   [ 256.. 260) changed_read      path-compression flag, read  by shader
-//   [ 512.. 516) changed_write     path-compression flag, write by shader
-//   [ 768.. 784) counters[4]       write-cursor offsets for compaction (topo_setup output)
-//   [1024..1044) type_counts[5]    per-type counts + total for extraction (topo_setup output)
-//   [1280..1284) edge_count        actual edge count (extraction output)
+//   [   0..   4) count          total critical-point count (critical_points output)
+//   [ 256.. 260) changed_read   path-compression flag, read  by shader
+//   [ 512.. 516) changed_write  path-compression flag, write by shader
+//   [ 768.. 772) counter        single compaction write cursor (reset to 0 before compaction)
+//   [1024..1028) edge_count     actual edge count (extraction output)
 //
 // Staging buffer layout (CPU-visible, 256-byte aligned slots):
-//   [   0..  16) counts[4]         readback of type counts
-//   [ 256.. 260) changed           readback of convergence flag
-//   [ 512.. 516) edge_count        readback of actual edge count
+//   [   0..   4) count          readback of total CP count (= num_vertices)
+//   [ 256.. 260) changed        readback of convergence flag
+//   [ 512.. 516) edge_count     readback of actual edge count
 // ---------------------------------------------------------------------------
 #define TOPO_BUF_ALIGN            256
 
-#define TOPO_META_COUNTS_OFF         0
+#define TOPO_META_COUNT_OFF          0
 #define TOPO_META_CHANGED_R_OFF    256
 #define TOPO_META_CHANGED_W_OFF    512
-#define TOPO_META_COUNTERS_OFF     768
-#define TOPO_META_TYPE_COUNTS_OFF 1024
-#define TOPO_META_EDGE_COUNT_OFF  1280
-#define TOPO_META_BUF_SIZE        1536
+#define TOPO_META_COUNTER_OFF      768
+#define TOPO_META_EDGE_COUNT_OFF  1024
+#define TOPO_META_BUF_SIZE        1280
 
-#define TOPO_STAGING_COUNTS_OFF    0
+#define TOPO_STAGING_COUNT_OFF     0
 #define TOPO_STAGING_CHANGED_OFF   256
 #define TOPO_STAGING_EDGE_CNT_OFF  512
 #define TOPO_STAGING_BUF_SIZE      768
@@ -143,8 +139,14 @@ struct md_topo_gpu_context {
     md_gpu_buffer_t indices_buf;   // u32[vert_cap]
     md_gpu_buffer_t vert_buf;      // float4[vert_cap]
     md_gpu_buffer_t staging_verts; // float4[vert_cap], CPU-visible
+    md_gpu_buffer_t type_buf;      // u32[vert_cap]: per-vertex CP type
+    md_gpu_buffer_t staging_types; // u32[vert_cap], CPU-visible
     md_gpu_buffer_t edge_buf;      // md_topo_edge_t[edge_cap]
     md_gpu_buffer_t staging_edges; // md_topo_edge_t[edge_cap], CPU-visible
+
+#if DEBUG
+    //md_gpu_buffer_t debug_buf;     // optional larger scratch buffer for dumping intermediate results, CPU-visible
+#endif
 };
 
 md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z) {
@@ -156,7 +158,6 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
     if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8,  8,  8) ||
         !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8,  8,  8) ||
         !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8,  8,  8) ||
-        !ensure_pipeline(device, &pip_topo_setup,                topo_topo_setup_start,                topo_topo_setup_size(),                "topo_setup",                1,  1,  1) ||
         !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8,  8,  8) ||
         !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1,  1))
     {
@@ -180,18 +181,29 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
     ctx->edge_cap = edge_cap;
 
     size_t scratch_stride = ((size_t)ctx->num_points * sizeof(uint32_t) + (TOPO_BUF_ALIGN - 1)) & ~(size_t)(TOPO_BUF_ALIGN - 1);
-    ctx->scratch_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = scratch_stride * 4 });
-    ctx->meta_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_META_BUF_SIZE });
-    ctx->staging_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_STAGING_BUF_SIZE, .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    ctx->indices_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t) });
-    ctx->vert_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float) });
-    ctx->staging_verts = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    ctx->edge_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t) });
-    ctx->staging_edges = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->scratch_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = scratch_stride * 4 });
+    ctx->meta_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_META_BUF_SIZE });
+    ctx->staging_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = TOPO_STAGING_BUF_SIZE, .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->indices_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t) });
+    ctx->vert_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float) });
+    ctx->staging_verts  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->type_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t) });
+    ctx->staging_types  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+    ctx->edge_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t) });
+    ctx->staging_edges  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+
+#if DEBUG
+    //ctx->debug_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){.size = ctx->num_points * sizeof(uint32_t), .flags = MD_GPU_BUFFER_CPU_VISIBLE });
+#endif
 
     if (!ctx->scratch_buf || !ctx->meta_buf || !ctx->staging_buf ||
         !ctx->indices_buf || !ctx->vert_buf || !ctx->staging_verts ||
-        !ctx->edge_buf    || !ctx->staging_edges)
+        !ctx->type_buf || !ctx->staging_types ||
+        !ctx->edge_buf    || !ctx->staging_edges
+#if DEBUG
+        //|| !ctx->debug_buf
+#endif
+    )
     {
         MD_LOG_ERROR("md_topo_gpu_context_create: failed to allocate GPU buffers");
         md_topo_gpu_context_destroy((md_topo_gpu_context_t*)ctx);
@@ -212,8 +224,13 @@ void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
     if (ctx->indices_buf)   md_gpu_buffer_destroy(ctx->indices_buf);
     if (ctx->vert_buf)      md_gpu_buffer_destroy(ctx->vert_buf);
     if (ctx->staging_verts) md_gpu_buffer_destroy(ctx->staging_verts);
+    if (ctx->type_buf)      md_gpu_buffer_destroy(ctx->type_buf);
+    if (ctx->staging_types) md_gpu_buffer_destroy(ctx->staging_types);
     if (ctx->edge_buf)      md_gpu_buffer_destroy(ctx->edge_buf);
     if (ctx->staging_edges) md_gpu_buffer_destroy(ctx->staging_edges);
+#if DEBUG
+    //if (ctx->debug_buf)     md_gpu_buffer_destroy(ctx->debug_buf);
+#endif
     free(ctx);
 }
 
@@ -238,13 +255,21 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     const uint32_t wg[3]  = { DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8) };
     const size_t   stride = ((size_t)ctx->num_points * sizeof(uint32_t) + (TOPO_BUF_ALIGN - 1)) & ~(size_t)(TOPO_BUF_ALIGN - 1);
 
-    // Per-call resets (voxel_to_vert_idx = -1, edge_count = 0, counts = 0)
-    md_gpu_cmd_fill_buffer(cmd, ctx->scratch_buf, stride * 3,               stride, 0xFF); // voxel_to_vert_idx = -1
-    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,    TOPO_META_COUNTS_OFF,     16,     0);    // counts[4] = 0
-    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,    TOPO_META_EDGE_COUNT_OFF, 4,      0);    // edge_count = 0
+    // Per-call resets (voxel_to_vert_idx = -1, count = 0, counter = 0, edge_count = 0, vertex_types = 0)
+    md_gpu_cmd_push_debug_group(cmd, "Per-call resets");
+    md_gpu_cmd_fill_buffer(cmd, ctx->scratch_buf,      stride * 3,             stride, 0xFF); // voxel_to_vert_idx = -1
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,         TOPO_META_COUNT_OFF,    4,      0);    // count = 0
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,         TOPO_META_COUNTER_OFF,  4,      0);    // counter = 0
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,         TOPO_META_EDGE_COUNT_OFF, 4,    0);    // edge_count = 0
+    md_gpu_cmd_fill_buffer(cmd, ctx->type_buf, 0, ctx->vert_cap * sizeof(uint32_t),  0); // vertex_types = 0
+#if DEBUG
+    //md_gpu_cmd_fill_buffer(cmd, ctx->debug_buf, 0, ctx->num_points * sizeof(uint32_t), 0); // debug buffer = 0
+#endif
     md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 1: Bidirectional manifold
+    md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_bidirectional_manifold);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
     md_gpu_cmd_bind_image(cmd, 0, volume);
@@ -252,6 +277,7 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->scratch_buf, stride, stride);  // descending
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
     md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 2: Path compression (iterative, GPU-side early-exit via changed flag)
     // Each dispatch does one grandparent pointer-jump. A path of length L needs
@@ -263,6 +289,7 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
         num_iterations *= 2;
     }
 
+    md_gpu_cmd_push_debug_group(cmd, "Path compression");
     md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, TOPO_META_CHANGED_R_OFF, 4, 1);
     md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
@@ -277,69 +304,73 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
         md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
         md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-
-        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,    MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-
+        
         // Rotate changed_write → changed_read (non-overlapping self-copy)
         md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, TOPO_META_CHANGED_W_OFF, TOPO_META_CHANGED_R_OFF);
         md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    // Step 3: Critical-point detection → meta_buf.counts[4]
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+    // Step 3: Critical-point detection → meta_buf.count
+    md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_points);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
     md_gpu_cmd_bind_image(cmd, 0, volume);
     md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, 0,          stride);  // ascending
     md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->scratch_buf, stride,     stride);  // descending
     md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->scratch_buf, stride * 2, stride);  // types
-    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->meta_buf, TOPO_META_COUNTS_OFF, 16); // counts
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->meta_buf, TOPO_META_COUNT_OFF, 4); // count (4 bytes)
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,    MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    // Step 3.5: topo_setup (1,1,1) — prefix-sum: counts → counters + type_counts
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_topo_setup);
-    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->meta_buf, TOPO_META_COUNTS_OFF,       16); // counts[4]
-    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->meta_buf, TOPO_META_COUNTERS_OFF,     16); // counters[4]
-    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_TYPE_COUNTS_OFF,  20); // type_counts[5]
-    md_gpu_cmd_dispatch(cmd, 1, 1, 1);
-    md_gpu_cmd_barrier(cmd);
-
-    // Step 4: Critical-point compaction
+    // Step 4: Critical-point compaction (single atomic counter)
+    md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_point_compaction);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
-    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, stride * 2, stride);           // types
-    md_gpu_cmd_bind_buffer(cmd, 1, ctx->indices_buf);                                     // indices (out)
-    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_COUNTERS_OFF,    16);   // counters
-    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride * 3, stride);           // voxel_to_vert_idx
+    md_gpu_cmd_bind_buffer_range(cmd, 0, ctx->scratch_buf, stride * 2, stride);          // types
+    md_gpu_cmd_bind_buffer(cmd, 1, ctx->indices_buf);                                    // indices (out)
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->meta_buf, TOPO_META_COUNTER_OFF,    4);   // counter
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride * 3, stride);          // voxel_to_vert_idx
+    md_gpu_cmd_bind_buffer(cmd, 4, ctx->type_buf);                               // vertex_types (out)
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-    md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,    MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 5: Vertex + edge extraction
-    // Dispatched at worst-case capacity; shader exits early for indices >= num_vertices.
+    // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
+    md_gpu_cmd_push_debug_group(cmd, "Vertex + edge extraction");
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_vertex_edge_extraction);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
-    md_gpu_cmd_bind_buffer(cmd, 0, ctx->indices_buf);                                     // cp_indices
-    md_gpu_cmd_bind_buffer_range(cmd, 1, ctx->meta_buf, TOPO_META_TYPE_COUNTS_OFF, 20);   // type_counts
-    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->scratch_buf, 0,          stride);           // ascending
-    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride,     stride);           // descending
+    md_gpu_cmd_bind_buffer(cmd, 0, ctx->indices_buf);                           // cp_indices
+    md_gpu_cmd_bind_buffer(cmd, 1, ctx->type_buf);                              // vertex_types
+    md_gpu_cmd_bind_buffer_range(cmd, 2, ctx->scratch_buf, 0,       stride);    // ascending
+    md_gpu_cmd_bind_buffer_range(cmd, 3, ctx->scratch_buf, stride,  stride);    // descending
     md_gpu_cmd_bind_buffer(cmd, 4, ctx->vert_buf);
     md_gpu_cmd_bind_buffer(cmd, 5, ctx->edge_buf);
-    md_gpu_cmd_bind_buffer_range(cmd, 6, ctx->meta_buf, TOPO_META_EDGE_COUNT_OFF, 4);     // edge_count
-    md_gpu_cmd_bind_buffer_range(cmd, 7, ctx->scratch_buf, stride * 3, stride);           // voxel_to_vert_idx
+    md_gpu_cmd_bind_buffer_range(cmd, 6, ctx->meta_buf, TOPO_META_EDGE_COUNT_OFF, 4);   // edge_count
+    md_gpu_cmd_bind_buffer_range(cmd, 7, ctx->scratch_buf, stride * 3, stride);         // voxel_to_vert_idx
+    md_gpu_cmd_bind_buffer_range(cmd, 8, ctx->meta_buf, TOPO_META_COUNT_OFF, 4);        // num_vertices
     md_gpu_cmd_bind_image(cmd, 0, volume);
     md_gpu_cmd_dispatch(cmd, DIV_UP(ctx->vert_cap, 64), 1, 1);
-    md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->scratch_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,    MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    // Copy all results + counts to CPU-visible staging in one batch
-    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,    16, TOPO_META_COUNTS_OFF,     TOPO_STAGING_COUNTS_OFF);
-    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,     4, TOPO_META_CHANGED_R_OFF,  TOPO_STAGING_CHANGED_OFF);
-    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf,  ctx->staging_buf,     4, TOPO_META_EDGE_COUNT_OFF, TOPO_STAGING_EDGE_CNT_OFF);
-    md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf,  ctx->staging_verts,   ctx->vert_cap * 4 * sizeof(float),        0, 0);
-    md_gpu_cmd_copy_buffer(cmd, ctx->edge_buf,  ctx->staging_edges,   ctx->edge_cap * sizeof(md_topo_edge_t),   0, 0);
+    // Copy all results to CPU-visible staging in one batch
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf,   4,  TOPO_META_COUNT_OFF,       TOPO_STAGING_COUNT_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf,   4,  TOPO_META_CHANGED_R_OFF,   TOPO_STAGING_CHANGED_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf,   4,  TOPO_META_EDGE_COUNT_OFF,  TOPO_STAGING_EDGE_CNT_OFF);
+    md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf, ctx->staging_verts, ctx->vert_cap * 4 * sizeof(float),       0, 0);
+    md_gpu_cmd_copy_buffer(cmd, ctx->type_buf, ctx->staging_types, ctx->vert_cap * 1 * sizeof(uint32_t),    0, 0);
+    md_gpu_cmd_copy_buffer(cmd, ctx->edge_buf, ctx->staging_edges, ctx->edge_cap * 2 * sizeof(uint32_t),    0, 0);
 }
 
-bool md_topo_gpu_context_get_result(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context) {
+bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context) {
     if (!context || !out_graph) return false;
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
 
@@ -347,20 +378,14 @@ bool md_topo_gpu_context_get_result(md_topo_extremum_graph_t* out_graph, md_topo
 
     const uint8_t* stg = (const uint8_t*)md_gpu_buffer_cpu_ptr(ctx->staging_buf);
 
-    const uint32_t* counts = (const uint32_t*)(stg + TOPO_STAGING_COUNTS_OFF);
-    const uint32_t num_maxima        = counts[0];
-    const uint32_t num_split_saddles = counts[1];
-    const uint32_t num_minima        = counts[2];
-    const uint32_t num_join_saddles  = counts[3];
-    const uint32_t num_vertices      = num_maxima + num_split_saddles + num_minima + num_join_saddles;
-    const uint32_t num_edges         = *(const uint32_t*)(stg + TOPO_STAGING_EDGE_CNT_OFF);
+    const uint32_t num_vertices = *(const uint32_t*)(stg + TOPO_STAGING_COUNT_OFF);
+    const uint32_t num_edges    = *(const uint32_t*)(stg + TOPO_STAGING_EDGE_CNT_OFF);
 
     if (*(const uint32_t*)(stg + TOPO_STAGING_CHANGED_OFF) != 0) {
-        MD_LOG_ERROR("md_topo_gpu_context_get_result: path compression did not fully converge — results may be approximate");
+        MD_LOG_ERROR("md_topo_gpu_context_extract: path compression did not fully converge — results may be approximate");
     }
 
-    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total %u vertices, %u edges)",
-                 num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices, num_edges);
+    MD_LOG_DEBUG("Topology: %u vertices, %u edges", num_vertices, num_edges);
 
     if (num_vertices == 0) return false;
 
@@ -381,12 +406,11 @@ bool md_topo_gpu_context_get_result(md_topo_extremum_graph_t* out_graph, md_topo
         out_graph->vertices[i].value = vp[i * 4 + 3];
     }
 
-    // Vertices are type-sorted: [maxima, split_saddles, minima, join_saddles]
-    uint32_t off = 0;
-    for (uint32_t i = 0; i < num_maxima;        i++) out_graph->types[off++] = MD_TOPO_MAXIMUM;
-    for (uint32_t i = 0; i < num_split_saddles; i++) out_graph->types[off++] = MD_TOPO_SPLIT_SADDLE;
-    for (uint32_t i = 0; i < num_minima;        i++) out_graph->types[off++] = MD_TOPO_MINIMUM;
-    for (uint32_t i = 0; i < num_join_saddles;  i++) out_graph->types[off++] = MD_TOPO_JOIN_SADDLE;
+    // Read vertex types directly from the staging buffer
+    const uint32_t* tp = (const uint32_t*)md_gpu_buffer_cpu_ptr(ctx->staging_types);
+    for (uint32_t i = 0; i < num_vertices; i++) {
+        out_graph->types[i] = (md_topo_critical_point_type_t)tp[i];
+    }
 
     if (num_edges > 0) {
         out_graph->edges = (md_topo_edge_t*)md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
@@ -565,6 +589,25 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
 	md_gl_debug_pop(); // Bidirectional Manifolds
+
+#if DEBUG
+    // Download ascending_buffer into local uint32_t array for debugging
+    {
+        uint32_t* asc_data = (uint32_t*)md_alloc(alloc, num_points * sizeof(uint32_t));
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ascending_buf);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_points * sizeof(uint32_t), asc_data);
+
+        size_t count = 0;
+        for (size_t i = 0; i < num_points; ++i) {
+            if (asc_data[i] == i) {
+                // This voxel is a minima (self-pointing in ascending manifold)
+                count++;
+            }
+        }
+        MD_LOG_INFO("Number of minima: %zu", count);
+        md_free(alloc, asc_data, num_points * sizeof(uint32_t));
+    }
+#endif
     
     // === Step 2: Path compression (iteratively) ===
     GLuint compression_prog = get_path_compression_program();
@@ -631,9 +674,9 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     
     types_buf = create_buffer(num_points * sizeof(int), NULL, GL_DYNAMIC_COPY);
     
-    // Counts buffer: maximaCount, splitSaddleCount, minimaCount, joinSaddleCount
-    uint32_t counts_init[4] = {0};
-    counts_buf = create_buffer(sizeof(counts_init), counts_init, GL_DYNAMIC_COPY);
+    // Counts buffer: single total critical-point count
+    uint32_t counts_init = 0;
+    counts_buf = create_buffer(sizeof(counts_init), &counts_init, GL_DYNAMIC_COPY);
     
     glUseProgram(critical_prog);
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32F);
@@ -648,21 +691,15 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 	md_gl_debug_pop(); // Critical Points
     
-    // Read back counts
-    uint32_t counts[4] = {0};
+    // Read back single count
+    uint32_t num_vertices = 0;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, counts_buf);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(counts), counts);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &num_vertices);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
-    uint32_t num_maxima = counts[0];
-    uint32_t num_split_saddles = counts[1];
-    uint32_t num_minima = counts[2];
-    uint32_t num_join_saddles = counts[3];
-    uint32_t num_vertices = num_maxima + num_split_saddles + num_minima + num_join_saddles;
-    uint32_t num_edges = 8 * (num_split_saddles + num_join_saddles); // We estimate this from split saddles + join saddles for allocation, this will be updated later to the exact count
+    uint32_t num_edges = 8 * num_vertices; // conservative estimate; updated after extraction
     
-    MD_LOG_DEBUG("Topology: %u maxima, %u split saddles, %u minima, %u join saddles (total: %u)",
-                num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices);
+    MD_LOG_DEBUG("Topology: %u critical points", num_vertices);
     
     // === Step 4: Compact critical point indices into ordered array ===
     GLuint compaction_prog = get_critical_point_compaction_program();
@@ -670,7 +707,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 	md_gl_debug_push("Critical Point Compaction");
 
-    // Allocate unified indices buffer (packed: maxima, split saddles, minima, join saddles)
+    // Allocate indices buffer for all critical points
     if (num_vertices > 0) {
         indices_buf = create_buffer(num_vertices * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
         if (!indices_buf) {
@@ -681,15 +718,19 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         indices_buf = 0;
     }
     
-    // These are the write offsets into the unified indices buffer
-    uint32_t counters_init[4] = {0, num_maxima, num_maxima + num_split_saddles, num_maxima + num_split_saddles + num_minima};
-    counter_buf = create_buffer(sizeof(counters_init), counters_init, GL_DYNAMIC_COPY);
+    // Single atomic write cursor, starting at 0
+    uint32_t counter_init = 0;
+    counter_buf = create_buffer(sizeof(counter_init), &counter_init, GL_DYNAMIC_COPY);
+
+    // Per-vertex type buffer (written by compaction, read by extraction)
+    GLuint type_buf = create_buffer(num_vertices * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
     
     glUseProgram(compaction_prog);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, types_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, indices_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, counter_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, type_buf);
 
     glDispatchCompute(num_workgroups[0], num_workgroups[1], num_workgroups[2]);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -723,16 +764,6 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 	md_gl_debug_push("Graph Extraction");
     
-    // Create type counts buffer
-    struct {
-        uint32_t num_maxima;
-        uint32_t num_split_saddles;
-        uint32_t num_minima;
-        uint32_t num_join_saddles;
-        uint32_t num_vertices;
-    } type_counts = {num_maxima, num_split_saddles, num_minima, num_join_saddles, num_vertices};
-    GLuint type_counts_buf = create_buffer(sizeof(type_counts), &type_counts, GL_STATIC_DRAW);
-    
     // Create output buffers for vertices and edges
     GLuint vert_buf = create_buffer(num_vertices * sizeof(md_topo_vert_t), NULL, GL_DYNAMIC_COPY);
     GLuint edge_buf = create_buffer(num_edges    * sizeof(md_topo_edge_t), NULL, GL_DYNAMIC_COPY);
@@ -744,14 +775,14 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32F);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, indices_buf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, type_counts_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, type_buf);  // per-vertex type
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ascending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, descending_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, vert_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, edge_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, edge_count_buf);
-    // Bind types buffer as voxel_id -> vertex_index mapping (binding = 8)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, types_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, types_buf);         // voxel -> vertex index
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, counts_buf);        // num_vertices
     
     uint32_t num_extraction_workgroups = (num_vertices + 63) / 64;
     glDispatchCompute(num_extraction_workgroups, 1, 1);
@@ -773,6 +804,14 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_vertices * sizeof(md_topo_vert_t), vertices);
     }
 
+    // Read back vertex types
+    md_topo_critical_point_type_t* types_out = NULL;
+    if (num_vertices > 0) {
+        types_out = md_alloc(alloc, num_vertices * sizeof(md_topo_critical_point_type_t));
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, type_buf);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, num_vertices * sizeof(uint32_t), types_out);
+    }
+
     // Read back edges
     md_topo_edge_t* edges = NULL;
     if (num_edges > 0) {
@@ -785,7 +824,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     md_gl_debug_pop(); // Readback Results
     
     delete_buffer(indices_buf);
-    delete_buffer(type_counts_buf);
+    delete_buffer(type_buf);
     delete_buffer(vert_buf);
     delete_buffer(edge_buf);
     delete_buffer(edge_count_buf);
@@ -793,14 +832,11 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // Fill output structure
     MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
     out_graph->num_vertices = num_vertices;
-    out_graph->vertices = vertices;
-    out_graph->num_maxima = num_maxima;
-    out_graph->num_split_saddles = num_split_saddles;
-    out_graph->num_minima = num_minima;
-    out_graph->num_join_saddles = num_join_saddles;
-    out_graph->num_edges = num_edges;
-    out_graph->edges = edges;
-    out_graph->alloc = alloc;
+    out_graph->vertices     = vertices;
+    out_graph->types        = types_out;
+    out_graph->num_edges    = num_edges;
+    out_graph->edges        = edges;
+    out_graph->alloc        = alloc;
     
     success = true;
 cleanup:

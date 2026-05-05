@@ -234,6 +234,12 @@ void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t b
 void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
+/* Debug markers — no-op on release builds or drivers without debug-utils support.
+   Groups may be nested. On Metal they map to pushDebugGroup/popDebugGroup on the
+   active encoder; on Vulkan they use VK_EXT_debug_utils when available. */
+void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label);
+void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd);
+
 /* =============================
 Copy / readback
 ============================= */
