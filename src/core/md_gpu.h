@@ -216,23 +216,22 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, si
     Vulkan workgroup counts and Metal threadgroup counts. */
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
 
-/* Barrier model:
-     - md_gpu_cmd_barrier(): conservative global barrier for the command buffer.
+/*
+    Barrier model:
+     - md_gpu_cmd_barrier(): conservative global memory barrier for the command buffer.
      - md_gpu_cmd_barrier_buffer/image(): resource-scoped barrier, conservative stages.
          Guarantees all prior GPU writes to that resource in this command buffer are
          visible to all subsequent GPU reads/writes of that resource in this command buffer.
-     - md_gpu_cmd_barrier_buffer_ex / md_gpu_cmd_barrier_image_ex(): resource-scoped barrier
-         with explicit source and destination pipeline stage hints.  Use these when you know
-         exactly which stage produced the data (src_stage) and which stage will consume it
-         (dst_stage).  On Vulkan this allows a tighter barrier; on Metal the stage arguments
-         are ignored and the call is equivalent to the non-_ex variant. */
-void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd);
-void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer);
-void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image);
-void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
-                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
-                                  md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+*/
+
+void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+
+// These will be removed in the future once a bindless model is adopted, but for now they allow safe synchronization of explicitly bound resources.
+void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
+                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+
+void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
+                              md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
 /* Debug markers — no-op on release builds or drivers without debug-utils support.
    Groups may be nested. On Metal they map to pushDebugGroup/popDebugGroup on the

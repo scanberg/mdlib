@@ -1286,7 +1286,7 @@ void md_gto_gpu_coeff_upload_density(md_gpu_command_buffer_t cmd, md_gpu_buffer_
     if (!cmd || !coeff_buf || !src_buf) return;
     size_t sz = md_gto_gpu_coeff_size_density(num_cgtos);
     md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_cmd_barrier_buffer_ex(cmd, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer(cmd, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 }
 
 void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coeff_buf,
@@ -1294,7 +1294,7 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
     if (!cmd || !coeff_buf || !src_buf) return;
     size_t sz = md_gto_gpu_coeff_size_mo(num_mos, num_cgtos);
     md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_cmd_barrier_buffer_ex(cmd, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer(cmd, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 }
 
 // ---------------------------------------------------------------------------

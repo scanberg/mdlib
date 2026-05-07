@@ -247,7 +247,7 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_fill_buffer(cmd, ctx->voxel_to_vert_buf, 0, voxel_buf_size, 0xFF); // voxel_to_vert_idx = -1
     md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf,      0, sizeof(topo_meta_t), 0);
     md_gpu_cmd_fill_buffer(cmd, ctx->type_buf,      0, ctx->vert_cap * sizeof(uint32_t), 0); // vertex_types = 0
-    md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 1: Bidirectional manifold
@@ -258,7 +258,7 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer(cmd, 0, ctx->ascending_buf);  // ascending
     md_gpu_cmd_bind_buffer(cmd, 1, ctx->descending_buf); // descending
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-    md_gpu_cmd_barrier(cmd);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
     md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 2: Path compression (iterative, GPU-side early-exit via changed flag)
@@ -273,7 +273,7 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
 
     md_gpu_cmd_push_debug_group(cmd, "Path compression");
     md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_read), 4, 0xFF);
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier_buffer(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_path_compression);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
@@ -281,19 +281,14 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer(cmd, 1, ctx->descending_buf); // descending
     md_gpu_cmd_bind_buffer(cmd, 2, ctx->meta_buf);       // meta (changed_read, changed_write)
     for (uint32_t i = 0; i < num_iterations; i++) {
-        md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
-        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-
         md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-        
-        // Rotate changed_write → changed_read (non-overlapping self-copy)
         md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, offsetof(topo_meta_t, changed_write), offsetof(topo_meta_t, changed_read));
-        md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+        md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
+        md_gpu_cmd_barrier_buffer(cmd, ctx->meta_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
     md_gpu_cmd_pop_debug_group(cmd);
 
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->ascending_buf,  MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->descending_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 3: Critical-point detection → meta_buf.count
     md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
@@ -305,9 +300,9 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer(cmd, 2, ctx->voxel_types_buf);  // per-voxel CP type
     md_gpu_cmd_bind_buffer(cmd, 3, ctx->meta_buf);         // meta (vertex_count)
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->voxel_types_buf, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_cmd_barrier_buffer_ex(cmd, ctx->meta_buf,        MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
     md_gpu_cmd_pop_debug_group(cmd);
+
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 4: Critical-point compaction (single atomic counter)
     md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
@@ -319,8 +314,9 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer(cmd, 3, ctx->voxel_to_vert_buf); // voxel_to_vert_idx
     md_gpu_cmd_bind_buffer(cmd, 4, ctx->type_buf);          // vertex_types (out)
     md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2]);
-    md_gpu_cmd_barrier(cmd);
     md_gpu_cmd_pop_debug_group(cmd);
+
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 5: Vertex + edge extraction
     // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
@@ -336,13 +332,12 @@ void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* 
     md_gpu_cmd_bind_buffer(cmd, 6, ctx->voxel_to_vert_buf); // voxel_to_vert_idx
     md_gpu_cmd_bind_buffer(cmd, 7, ctx->meta_buf);
     md_gpu_cmd_bind_image(cmd, 0, volume);
-
     md_gpu_cmd_dispatch(cmd, DIV_UP(ctx->vert_cap, 64), 1, 1);
-    md_gpu_cmd_barrier(cmd);
     md_gpu_cmd_pop_debug_group(cmd);
 
     // Copy all results to CPU-visible staging in one batch, only if we have a staging buffers (discrete GPU).
     if (ctx->staging_buf) {
+        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
         md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf, sizeof(topo_meta_t), 0, 0);
         md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf, ctx->staging_verts, ctx->vert_cap * 4 * sizeof(float),       0, 0);
         md_gpu_cmd_copy_buffer(cmd, ctx->type_buf, ctx->staging_types, ctx->vert_cap * 1 * sizeof(uint32_t),    0, 0);

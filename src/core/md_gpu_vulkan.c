@@ -7,7 +7,8 @@
 
 // We avoid including platform-specific Vulkan headers via GLFW here.
 // This is a compute-only backend for now, so no surface extensions are required.
-#include <vulkan/vulkan.h>
+#define VOLK_IMPLEMENTATION
+#include <Volk/volk.h>
 
 // Vulkan backend (C).
 // Compute-only for now; designed to be extended with graphics later.
@@ -18,7 +19,7 @@
 // Maximum number of md_gpu_cmd_dispatch calls recorded per command buffer.
 // One fresh descriptor set is allocated per dispatch, so the descriptor pool is
 // sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
-#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 64
+#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
@@ -41,10 +42,6 @@ typedef struct md_gpu_device {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
-
-    /* VK_EXT_debug_utils — NULL when the extension is not available */
-    PFN_vkCmdBeginDebugUtilsLabelEXT fn_begin_debug_label;
-    PFN_vkCmdEndDebugUtilsLabelEXT   fn_end_debug_label;
 
     // Embedded compute queue (returned by md_gpu_queue_acquire)
     struct md_gpu_queue compute_queue;
@@ -229,6 +226,10 @@ static bool md_vk_create_instance(md_gpu_device* out_dev) {
     if (avail && md_vk_has_extension(avail_count, avail, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         instance_exts[instance_ext_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
         flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
+
+    if (avail && md_vk_has_extension(avail_count, avail, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+        instance_exts[instance_ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     }
 
     free(avail);
@@ -421,6 +422,10 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 }
 
 md_gpu_device_t md_gpu_device_create(void) {
+    if (volkInitialize() != VK_SUCCESS) {
+        return NULL;
+    }
+
     md_gpu_device* dev = (md_gpu_device*)calloc(1, sizeof(md_gpu_device));
     if (!dev) return NULL;
 
@@ -428,6 +433,8 @@ md_gpu_device_t md_gpu_device_create(void) {
         free(dev);
         return NULL;
     }
+
+    volkLoadInstance(dev->instance);
 
     if (!md_vk_pick_physical_device(dev)) {
         vkDestroyInstance(dev->instance, NULL);
@@ -440,6 +447,8 @@ md_gpu_device_t md_gpu_device_create(void) {
         free(dev);
         return NULL;
     }
+
+    volkLoadDevice(dev->device);
 
     return (md_gpu_device_t)dev;
 }
@@ -990,80 +999,6 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, ui
     c->dispatch_count++;
 }
 
-void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
-    if (!cmd) return;
-    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-
-    VkMemoryBarrier2 barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.memoryBarrierCount = 1;
-    dep.pMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(c->vk_cmd, &dep);
-}
-
-void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer) {
-    if (!cmd || !buffer) return;
-    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
-
-    VkBufferMemoryBarrier2 barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buf->buffer;
-    barrier.offset = 0;
-    barrier.size = VK_WHOLE_SIZE;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(c->vk_cmd, &dep);
-}
-
-void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image) {
-    if (!cmd || !image) return;
-    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_image* img = (md_gpu_image*)image;
-
-    VkImageMemoryBarrier2 barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    barrier.oldLayout = img->layout;
-    barrier.newLayout = img->layout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = img->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(c->vk_cmd, &dep);
-}
-
 static VkPipelineStageFlags2 md_vk_stage_flags(md_gpu_barrier_stage_t stages) {
     VkPipelineStageFlags2 flags = 0;
     if (stages & MD_GPU_BARRIER_STAGE_COMPUTE)  flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -1072,16 +1007,40 @@ static VkPipelineStageFlags2 md_vk_stage_flags(md_gpu_barrier_stage_t stages) {
     return flags;
 }
 
-static VkAccessFlags2 md_vk_access_flags(md_gpu_barrier_stage_t stages) {
+static VkAccessFlags2 md_vk_access_flags_read(md_gpu_barrier_stage_t stages) {
     VkAccessFlags2 flags = 0;
-    if (stages & MD_GPU_BARRIER_STAGE_COMPUTE)  flags |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    if (stages & MD_GPU_BARRIER_STAGE_TRANSFER) flags |= VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    if (flags == 0) flags = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT; // safe fallback
+    if (stages & MD_GPU_BARRIER_STAGE_COMPUTE)  flags |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    if (stages & MD_GPU_BARRIER_STAGE_TRANSFER) flags |= VK_ACCESS_2_TRANSFER_READ_BIT;
+    if (flags == 0) flags = VK_ACCESS_2_MEMORY_READ_BIT; // safe fallback
     return flags;
 }
 
-void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
-                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+static VkAccessFlags2 md_vk_access_flags_write(md_gpu_barrier_stage_t stages) {
+    VkAccessFlags2 flags = 0;
+    if (stages & MD_GPU_BARRIER_STAGE_COMPUTE)  flags |= VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    if (stages & MD_GPU_BARRIER_STAGE_TRANSFER) flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    if (flags == 0) flags = VK_ACCESS_2_MEMORY_WRITE_BIT; // safe fallback
+    return flags;
+}
+
+void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd) return;
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    VkMemoryBarrier2 barrier = { 0 };
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = md_vk_stage_flags(src_stage);
+    barrier.srcAccessMask = md_vk_access_flags_write(src_stage);
+    barrier.dstStageMask = md_vk_stage_flags(dst_stage);
+    barrier.dstAccessMask = md_vk_access_flags_read(dst_stage);
+    VkDependencyInfo dep = { 0 };
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(c->vk_cmd, &dep);
+}
+
+void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
+                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
     if (!cmd || !buffer) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
@@ -1089,9 +1048,9 @@ void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t b
     VkBufferMemoryBarrier2 barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     barrier.srcStageMask  = md_vk_stage_flags(src_stage);
-    barrier.srcAccessMask = md_vk_access_flags(src_stage);
+    barrier.srcAccessMask = md_vk_access_flags_write(src_stage);
     barrier.dstStageMask  = md_vk_stage_flags(dst_stage);
-    barrier.dstAccessMask = md_vk_access_flags(dst_stage);
+    barrier.dstAccessMask = md_vk_access_flags_read(dst_stage);
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.buffer = buf->buffer;
@@ -1106,8 +1065,8 @@ void md_gpu_cmd_barrier_buffer_ex(md_gpu_command_buffer_t cmd, md_gpu_buffer_t b
     vkCmdPipelineBarrier2(c->vk_cmd, &dep);
 }
 
-void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
-                                  md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
+                              md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
     if (!cmd || !image) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_image* img = (md_gpu_image*)image;
@@ -1115,9 +1074,9 @@ void md_gpu_cmd_barrier_image_ex(md_gpu_command_buffer_t cmd, md_gpu_image_t ima
     VkImageMemoryBarrier2 barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask  = md_vk_stage_flags(src_stage);
-    barrier.srcAccessMask = md_vk_access_flags(src_stage);
+    barrier.srcAccessMask = md_vk_access_flags_write(src_stage);
     barrier.dstStageMask  = md_vk_stage_flags(dst_stage);
-    barrier.dstAccessMask = md_vk_access_flags(dst_stage);
+    barrier.dstAccessMask = md_vk_access_flags_read(dst_stage);
     barrier.oldLayout = img->layout;
     barrier.newLayout = img->layout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1261,18 +1220,16 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
 void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
     if (!cmd || !label) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    if (!c->dev->fn_begin_debug_label) return;
     VkDebugUtilsLabelEXT info = {0};
     info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
     info.pLabelName = label;
-    c->dev->fn_begin_debug_label(c->vk_cmd, &info);
+    if (vkCmdBeginDebugUtilsLabelEXT) vkCmdBeginDebugUtilsLabelEXT(c->vk_cmd, &info);
 }
 
 void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
     if (!cmd) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    if (!c->dev->fn_end_debug_label) return;
-    c->dev->fn_end_debug_label(c->vk_cmd);
+    if (vkCmdEndDebugUtilsLabelEXT) vkCmdEndDebugUtilsLabelEXT(c->vk_cmd);
 }
 
 bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence) {
