@@ -25,6 +25,14 @@ struct UBO {
     float scalar_threshold;
 };
 
+struct MetaData {
+    uint32_t vertex_count;
+    uint32_t edge_count;
+    uint32_t changed_read;
+    uint32_t changed_write;
+    uint32_t counter;
+};
+
 [[vk::push_constant]]
 ConstantBuffer<UBO> ubo;
 
@@ -41,7 +49,7 @@ RWStructuredBuffer<uint> descending;
 RWStructuredBuffer<int> types;
 
 [[vk::binding(3)]]
-RWStructuredBuffer<uint> counts; // counts[0] = total critical point count
+RWStructuredBuffer<MetaData> meta; // meta[0].vertex_count = total critical point count
 
 bool is_valid_voxel(int3 ijk) {
     return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(ubo.dims.xyz));
@@ -243,8 +251,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
         }
 
         if (type != REGULAR) {
-            uint _orig;
-            InterlockedAdd(numCriticalPoints, 1u, _orig);
+            InterlockedAdd(numCriticalPoints, 1u);
         }
     }
 
@@ -252,7 +259,6 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
 
     GroupMemoryBarrierWithGroupSync();
     if (gtid == 0) {
-        uint _orig;
-        InterlockedAdd(counts[0], numCriticalPoints, _orig);
+        InterlockedAdd(meta[0].vertex_count, numCriticalPoints);
     }
 }

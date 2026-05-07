@@ -10,8 +10,12 @@ struct UBO {
     float scalar_threshold;
 };
 
-struct EdgeCounter {
-    uint edge_count;
+struct MetaData {
+    uint32_t vertex_count;
+    uint32_t edge_count;
+    uint32_t changed_read;
+    uint32_t changed_write;
+    uint32_t counter;
 };
 
 [[vk::push_constant]]
@@ -25,25 +29,22 @@ RWStructuredBuffer<uint> cp_indices;
 RWStructuredBuffer<uint> vertex_types;
 
 [[vk::binding(2)]]
-RWStructuredBuffer<uint> ascending;
-
-[[vk::binding(3)]]
-RWStructuredBuffer<uint> descending;
-
-[[vk::binding(4)]]
 RWStructuredBuffer<float4> vertex_data; // xyz = position, w = value
 
-[[vk::binding(5)]]
+[[vk::binding(3)]]
 RWStructuredBuffer<uint2> edges; // x = from vertex index, y = to vertex index
 
-[[vk::binding(6)]]
-RWStructuredBuffer<EdgeCounter> edge_counter; // edge_counter[0]
+[[vk::binding(4)]]
+RWStructuredBuffer<uint> ascending;
 
-[[vk::binding(7)]]
+[[vk::binding(5)]]
+RWStructuredBuffer<uint> descending;
+
+[[vk::binding(6)]]
 RWStructuredBuffer<int> voxel_to_vertex_idx; // -1 for non-CP voxels, vertex index for CP voxels
 
-[[vk::binding(8)]]
-RWStructuredBuffer<uint> num_vertices_buf;  // num_vertices_buf[0]
+[[vk::binding(7)]]
+RWStructuredBuffer<MetaData> meta;
 
 [[vk::binding(16)]]  // image slot 0 (binding = slot + MD_GPU_MAX_BIND_SLOTS)
 RWTexture3D<float> volumeTex;
@@ -93,7 +94,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint local_id : SV_GroupIndex) {
     }
     GroupMemoryBarrierWithGroupSync();
 
-    uint num_vertices = num_vertices_buf[0];
+    uint num_vertices = meta[0].vertex_count;
 
     if (vert_idx < num_vertices) {
         // === Extract vertex data ===
@@ -149,7 +150,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint local_id : SV_GroupIndex) {
     uint write_count = min(local_edge_count, MAX_LOCAL_EDGES);
     // One thread reserves space in global buffer
     if (local_id == 0 && write_count > 0) {
-        InterlockedAdd(edge_counter[0].edge_count, write_count, global_edge_offset);
+        InterlockedAdd(meta[0].edge_count, write_count, global_edge_offset);
     }
     GroupMemoryBarrierWithGroupSync();
 

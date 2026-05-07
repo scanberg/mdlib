@@ -7,6 +7,14 @@ struct UBO {
     float scalar_threshold;
 };
 
+struct MetaData {
+    uint32_t vertex_count;
+    uint32_t edge_count;
+    uint32_t changed_read;
+    uint32_t changed_write;
+    uint32_t counter;       
+};
+
 [[vk::push_constant]]
 ConstantBuffer<UBO> ubo;
 
@@ -19,13 +27,7 @@ RWStructuredBuffer<uint> descending;
 // changed_read[0]: non-zero if the previous iteration made any changes.
 // If zero, all paths are already compressed — this dispatch is a no-op.
 [[vk::binding(2)]]
-RWStructuredBuffer<uint> changed_read;
-
-// changed_write[0]: set non-zero by this iteration if any path step was taken.
-// Caller clears this to 0 before each dispatch, then copies it to changed_read
-// after the dispatch so the next iteration can check it.
-[[vk::binding(3)]]
-RWStructuredBuffer<uint> changed_write;
+RWStructuredBuffer<MetaData> meta;
 
 groupshared uint local_changed;
 
@@ -33,7 +35,7 @@ groupshared uint local_changed;
 [numthreads(8, 8, 8)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
     // Early exit: previous iteration changed nothing → already converged.
-    if (changed_read[0] == 0u) {
+    if (meta[0].changed_read == 0u) {
         return;
     }
 
@@ -70,12 +72,11 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
         }
     }
 
-    uint _orig;
-    InterlockedOr(local_changed, change, _orig);
+    InterlockedOr(local_changed, change);
 
     GroupMemoryBarrierWithGroupSync();
 
     if (gtid == 0) {
-        InterlockedOr(changed_write[0], local_changed, _orig);
+        InterlockedOr(meta[0].changed_write, local_changed);
     }
 }

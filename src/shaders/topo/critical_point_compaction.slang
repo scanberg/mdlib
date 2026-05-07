@@ -16,6 +16,14 @@ struct UBO {
     float scalar_threshold;
 };
 
+struct MetaData {
+    uint32_t vertex_count;
+    uint32_t edge_count;
+    uint32_t changed_read;
+    uint32_t changed_write;
+    uint32_t counter;
+};
+
 [[vk::push_constant]]
 ConstantBuffer<UBO> ubo;
 
@@ -26,7 +34,7 @@ RWStructuredBuffer<int> types;           // read-only after critical_points pass
 RWStructuredBuffer<uint> cp_indices;     // output: voxel_id at each vertex index
 
 [[vk::binding(2)]]
-RWStructuredBuffer<uint> counter;        // counter[0]: single atomic write cursor
+RWStructuredBuffer<MetaData> meta;        // meta[0].counter: single atomic write cursor
 
 [[vk::binding(3)]]
 RWStructuredBuffer<int> voxel_to_vertex_idx; // output: vertex index for each CP voxel (-1 = not a CP)
@@ -45,7 +53,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     if (type == REGULAR) return;
 
     uint vtx_idx;
-    InterlockedAdd(counter[0], 1u, vtx_idx);
+    InterlockedAdd(meta[0].counter, 1u, vtx_idx);
 
     cp_indices[vtx_idx]           = voxel_id;
     vertex_types[vtx_idx]         = uint(type);
