@@ -19,7 +19,6 @@ typedef struct {
     uint32_t ijkl;
 } PGTO;
 
-
 static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* grid) {
     // There is no scaling applied in this transformation, only rotation and translation
     out_mat[0][0] = grid->orientation.elem[0][0];
@@ -1351,19 +1350,19 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
     md_gpu_cmd_push_debug_group(cmd, "GTO Density");
     md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
     md_gpu_cmd_push_constants(cmd, &ubo, sizeof(ubo));
-    md_gpu_cmd_bind_buffer_range(cmd, 0, gb->buffer, L->off_cgto_atom_idx, sz_cgto_atom_idx);
-    md_gpu_cmd_bind_buffer_range(cmd, 1, gb->buffer, L->off_cgto_r,       sz_cgto_r);
-    md_gpu_cmd_bind_buffer_range(cmd, 2, gb->buffer, L->off_cgto_off_len, sz_cgto_off_len);
-    md_gpu_cmd_bind_buffer_range(cmd, 3, gb->buffer, L->off_pgto,         sz_pgto);
-    md_gpu_cmd_bind_buffer_range(cmd, 4, atom_buf,   0,                   sz_atoms);
-    md_gpu_cmd_bind_buffer_range(cmd, 5, coeff_buf,  0,                   sz_coeffs);
+    md_gpu_cmd_bind_buffer_range(cmd, 0, gb->buffer, L->off_cgto_atom_idx,  sz_cgto_atom_idx);
+    md_gpu_cmd_bind_buffer_range(cmd, 1, gb->buffer, L->off_cgto_r,         sz_cgto_r);
+    md_gpu_cmd_bind_buffer_range(cmd, 2, gb->buffer, L->off_cgto_off_len,   sz_cgto_off_len);
+    md_gpu_cmd_bind_buffer_range(cmd, 3, gb->buffer, L->off_pgto,           sz_pgto);
+    md_gpu_cmd_bind_buffer_range(cmd, 4, atom_buf,   0,                     sz_atoms);
+    md_gpu_cmd_bind_buffer_range(cmd, 5, coeff_buf,  0,                     sz_coeffs);
     md_gpu_cmd_bind_image(cmd, 0, image);
     md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
     md_gpu_cmd_pop_debug_group(cmd);
 }
 
 void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
-    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, uint32_t num_mos,
+    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode)
 {
     if (!cmd || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
@@ -1395,7 +1394,7 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     ubo.step[2]   = grid->spacing.elem[2];
     ubo.step[3]   = 0.0f;
     ubo.num_cgtos = L->num_cgtos;
-    ubo.num_rows  = num_mos;
+    ubo.num_rows  = (uint32_t)num_mos;
     ubo.mode      = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
 
     size_t sz_cgto_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;

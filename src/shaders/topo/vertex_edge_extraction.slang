@@ -10,6 +10,10 @@ struct UBO {
     float scalar_threshold;
 };
 
+struct EdgeCounter {
+    uint edge_count;
+};
+
 [[vk::push_constant]]
 ConstantBuffer<UBO> ubo;
 
@@ -20,18 +24,11 @@ RWStructuredBuffer<uint> cp_indices;
 [[vk::binding(1)]]
 RWStructuredBuffer<uint> vertex_types;
 
-// Input: total vertex count
-[[vk::binding(8)]]
-RWStructuredBuffer<uint> num_vertices_buf; // num_vertices_buf[0]
-
 [[vk::binding(2)]]
 RWStructuredBuffer<uint> ascending;
 
 [[vk::binding(3)]]
 RWStructuredBuffer<uint> descending;
-
-[[vk::binding(16)]] // image slot 0 (binding = slot + MD_GPU_MAX_BIND_SLOTS)
-RWTexture3D<float> volumeTex;
 
 [[vk::binding(4)]]
 RWStructuredBuffer<float4> vertex_data; // xyz = position, w = value
@@ -39,15 +36,18 @@ RWStructuredBuffer<float4> vertex_data; // xyz = position, w = value
 [[vk::binding(5)]]
 RWStructuredBuffer<uint2> edges; // x = from vertex index, y = to vertex index
 
-struct EdgeCounter {
-    uint edge_count;
-};
-
 [[vk::binding(6)]]
 RWStructuredBuffer<EdgeCounter> edge_counter; // edge_counter[0]
 
 [[vk::binding(7)]]
 RWStructuredBuffer<int> voxel_to_vertex_idx; // -1 for non-CP voxels, vertex index for CP voxels
+
+[[vk::binding(8)]]
+RWStructuredBuffer<uint> num_vertices_buf;  // num_vertices_buf[0]
+
+[[vk::binding(16)]]  // image slot 0 (binding = slot + MD_GPU_MAX_BIND_SLOTS)
+RWTexture3D<float> volumeTex;
+
 groupshared uint local_edge_count;
 groupshared uint global_edge_offset;
 groupshared uint2 local_edges[MAX_LOCAL_EDGES];
