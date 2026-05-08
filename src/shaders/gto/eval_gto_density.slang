@@ -277,7 +277,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         }
 
         uint wave_count  = WaveActiveCountBits(passed);
-        uint wave_offset = WavePrefixCountBits(passed);
+        uint wave_offset = WavePrefixSum(passed ? 1u : 0u);
         uint wave_base   = 0u;
         if (WaveIsFirstLane() && wave_count > 0u) {
             InterlockedAdd(num_screened_cgtos, wave_count, wave_base);
