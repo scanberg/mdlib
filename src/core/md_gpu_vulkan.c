@@ -77,22 +77,26 @@ typedef struct md_gpu_compute_pipeline {
 
 typedef struct md_gpu_command_buffer {
     struct md_gpu_device* dev;
+    struct md_gpu_queue*  queue;
     VkCommandBuffer vk_cmd;
     /* Per-dispatch descriptor sets, allocated at dispatch-record time and freed on recycle */
     VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
     uint32_t dispatch_count;
     uint32_t index; /* position in queue->cmd_wrappers[], used to return slot to free list */
+    bool is_recording;
 
-    // Bound state
+    // Live bound state consumed by dispatch
     md_gpu_compute_pipeline_t bound_pipeline;
     md_gpu_buffer_t bound_buffers[MD_GPU_MAX_BIND_SLOTS];
     size_t bound_buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
     size_t bound_buffer_sizes[MD_GPU_MAX_BIND_SLOTS];
     md_gpu_image_t bound_images[MD_GPU_MAX_BIND_SLOTS];
-    bool descriptor_set_dirty;
+    uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
+    size_t push_constant_size;
 } md_gpu_command_buffer;
 
 typedef struct md_gpu_fence {
+    struct md_gpu_device*         dev;   /* owning device; valid from create to destroy */
     struct md_gpu_queue*          queue; /* originating queue; set by md_gpu_queue_submit */
     VkFence                       vk_fence;
     struct md_gpu_command_buffer* cmd; /* set by md_gpu_queue_submit; freed by md_gpu_fence_destroy */
@@ -102,6 +106,19 @@ static bool md_vk_check(VkResult res, const char* what) {
     if (res == VK_SUCCESS) return true;
     MD_LOG_ERROR("Vulkan error %d: %s", (int)res, what ? what : "(unknown)");
     return false;
+}
+
+static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queue) {
+    cmd->queue = queue;
+    cmd->dispatch_count = 0;
+    cmd->is_recording = false;
+    cmd->bound_pipeline = NULL;
+    memset(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
+    memset(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
+    memset(cmd->bound_buffer_sizes, 0, sizeof(cmd->bound_buffer_sizes));
+    memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
+    memset(cmd->push_constants, 0, sizeof(cmd->push_constants));
+    cmd->push_constant_size = 0;
 }
 
 static bool md_vk_has_extension(uint32_t count, const VkExtensionProperties* props, const char* name) {
@@ -335,6 +352,7 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     // Wire each wrapper to its VkCommandBuffer slot
     for (uint32_t i = 0; i < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE; ++i) {
         q->cmd_wrappers[i].dev   = out_dev;
+        q->cmd_wrappers[i].queue = q;
         q->cmd_wrappers[i].vk_cmd = vk_cmds[i];
         q->cmd_wrappers[i].index  = i;
         q->free_list[i] = i;
@@ -818,14 +836,8 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     uint32_t idx = q->free_list[--q->free_count];
 
     md_gpu_command_buffer* cmd = &q->cmd_wrappers[idx];
-    /* Zero-init transient fields; dev, vk_cmd, and index are permanent and already set */
-    cmd->dispatch_count      = 0;
-    cmd->bound_pipeline      = NULL;
-    cmd->descriptor_set_dirty = false;
-    memset(cmd->bound_buffers,       0, sizeof(cmd->bound_buffers));
-    memset(cmd->bound_buffer_offsets,0, sizeof(cmd->bound_buffer_offsets));
-    memset(cmd->bound_buffer_sizes,  0, sizeof(cmd->bound_buffer_sizes));
-    memset(cmd->bound_images,        0, sizeof(cmd->bound_images));
+    /* Reset transient recording state; dev, vk_cmd, dispatch_sets, and index are permanent */
+    md_vk_reset_cmd_state(cmd, q);
 
     // Begin command buffer
     VkCommandBufferBeginInfo begin_info = {0};
@@ -836,6 +848,8 @@ md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
         q->free_list[q->free_count++] = idx;
         return NULL;
     }
+
+    cmd->is_recording = true;
 
     return (md_gpu_command_buffer_t)cmd;
 }
@@ -937,54 +951,62 @@ static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorS
 void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_compute_pipeline_t pipeline) {
     if (!cmd || !pipeline) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_compute_pipeline* p = (md_gpu_compute_pipeline*)pipeline;
+    ASSERT(c->is_recording);
     c->bound_pipeline = pipeline;
-    vkCmdBindPipeline(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline);
 }
 
 void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer) {
     if (!cmd) return;
     ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    ASSERT(c->is_recording);
     c->bound_buffers[slot] = buffer;
     c->bound_buffer_offsets[slot] = 0;
     c->bound_buffer_sizes[slot] = 0;
-    c->descriptor_set_dirty = true;
 }
 
 void md_gpu_cmd_bind_buffer_range(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size) {
     if (!cmd) return;
     ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    ASSERT(c->is_recording);
     c->bound_buffers[slot] = buffer;
     c->bound_buffer_offsets[slot] = offset;
     c->bound_buffer_sizes[slot] = size;
-    c->descriptor_set_dirty = true;
 }
 
 void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image) {
     if (!cmd) return;
     ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    ASSERT(c->is_recording);
     c->bound_images[slot] = image;
-    c->descriptor_set_dirty = true;
 }
 
 void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, size_t size) {
     if (!cmd || !data || size == 0) return;
     ASSERT(size <= MD_GPU_MAX_PUSH_CONSTANTS);
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_device* dev = c->dev;
-    vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)size, data);
+    ASSERT(c->is_recording);
+    memcpy(c->push_constants, data, size);
+    c->push_constant_size = size;
 }
 
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     if (!cmd) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     md_gpu_device* dev = c->dev;
+    md_gpu_compute_pipeline* pipeline = (md_gpu_compute_pipeline*)c->bound_pipeline;
 
+    ASSERT(c->is_recording);
     ASSERT(c->bound_pipeline && "Pipeline must be bound before dispatch");
     ASSERT(c->dispatch_count < MD_GPU_VK_MAX_DISPATCHES_PER_CMD && "Too many dispatches per command buffer");
+
+    vkCmdBindPipeline(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+
+    if (c->push_constant_size > 0) {
+        vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)c->push_constant_size, c->push_constants);
+    }
 
     // Reuse the pre-allocated descriptor set for this dispatch slot (updated in-place).
     VkDescriptorSet ds = c->dispatch_sets[c->dispatch_count];
@@ -1236,15 +1258,28 @@ bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_g
     if (!queue || !cmd) return false;
     md_gpu_queue* q = (md_gpu_queue*)queue;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
-    md_gpu_device* dev = (md_gpu_device*)q->dev;
+    md_gpu_device* dev = q->dev;
+    ASSERT(c->queue == q);
+    ASSERT(c->is_recording);
 
     // End command buffer
     if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer")) {
         return false;
     }
 
+    c->is_recording = false;
+
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    VkFence vk_fence = f ? f->vk_fence : VK_NULL_HANDLE;
+    VkFence vk_fence = VK_NULL_HANDLE;
+    if (f) {
+        ASSERT(f->dev == dev);
+        if (!md_vk_check(vkResetFences(dev->device, 1, &f->vk_fence), "vkResetFences")) {
+            return false;
+        }
+        f->queue = NULL;
+        f->cmd = NULL;
+        vk_fence = f->vk_fence;
+    }
 
     VkCommandBufferSubmitInfo cmd_info = {0};
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -1256,6 +1291,7 @@ bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_g
     submit.pCommandBufferInfos = &cmd_info;
 
     if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, vk_fence), "vkQueueSubmit2")) {
+        md_vk_reset_cmd_state(c, q);
         return false;
     }
 
@@ -1269,6 +1305,7 @@ bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_g
     // No fence: block until the queue is idle, then recycle the command buffer
     vkQueueWaitIdle(q->vk_queue);
 
+    md_vk_reset_cmd_state(c, q);
     q->free_list[q->free_count++] = c->index;
     return true;
 }
@@ -1279,6 +1316,7 @@ md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device) {
 
     md_gpu_fence* f = (md_gpu_fence*)calloc(1, sizeof(md_gpu_fence));
     if (!f) return NULL;
+    f->dev = dev;
 
     VkFenceCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1292,29 +1330,25 @@ md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device) {
 bool md_gpu_fence_is_signaled(md_gpu_fence_t fence) {
     if (!fence) return true;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    VkResult res = vkGetFenceStatus(f->queue->dev->device, f->vk_fence);
+    VkResult res = vkGetFenceStatus(f->dev->device, f->vk_fence);
     return (res == VK_SUCCESS);
 }
 
 void md_gpu_fence_wait(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    vkWaitForFences(f->queue->dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
+    vkWaitForFences(f->dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
 }
 
 void md_gpu_fence_destroy(md_gpu_fence_t fence) {
     if (!fence) return;
     md_gpu_fence* f = (md_gpu_fence*)fence;
-    if (!f->queue) {
-        vkDestroyFence(f->queue->dev->device, f->vk_fence, NULL);
-        free(f);
-        return;
-    }
-    md_gpu_device* dev = f->queue->dev;
+    md_gpu_device* dev = f->dev;
     ASSERT(dev);
     vkWaitForFences(dev->device, 1, &f->vk_fence, VK_TRUE, UINT64_MAX);
 
-    if (f->cmd) {
+    if (f->queue && f->cmd) {
+        md_vk_reset_cmd_state(f->cmd, f->queue);
         f->queue->free_list[f->queue->free_count++] = f->cmd->index;
     }
 

@@ -479,15 +479,6 @@ static void gto_build_sparse_pairs(
     list->num_pairs = md_array_size(list->pairs);
 }
 
-void md_gto_grid_evaluate_mo(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
-}
-
-void md_gto_grid_evaluate_density(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* density_matrix)
-{}
-
-void md_gto_grid_evaluate_mo_sum(float* out, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* const* mo_coeffs, const double* weights, size_t num_mos, double cutoff) {
-}
-
 size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
     uint32_t nc, np;
     gto_basis_count(&nc, &np, basis);
@@ -621,11 +612,13 @@ static void free_buffer(GLuint id) {
     }
 }
 
-static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
+static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md_gto_t* gtos, uint32_t* orb_offsets, float* orb_scaling, uint32_t num_orbs, md_gto_eval_mode_t mode, GLuint program) {
     ASSERT(grid);
-    ASSERT(orb);
+    ASSERT(gtos);
+    ASSERT(orb_offsets);
+    ASSERT(orb_scaling);
 
-    if (orb->num_gtos == 0 || orb->num_orbs == 0) {
+    if (num_orbs == 0) {
         return;
     }
 
@@ -655,24 +648,26 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
         goto done;
     }
 
+    size_t num_gtos = orb_offsets[num_orbs - 1] + 1;
+
     GLintptr   ssbo_gto_offset = 0;
-    GLsizeiptr ssbo_gto_size   = sizeof(md_gto_t) * orb->num_gtos;
+    GLsizeiptr ssbo_gto_size   = sizeof(md_gto_t) * num_gtos;
 
     GLintptr   ssbo_orb_offset = ALIGN_TO(ssbo_gto_offset + ssbo_gto_size, 256);
-    GLsizeiptr ssbo_orb_size   = sizeof(uint32_t) * (orb->num_orbs + 1);
+    GLsizeiptr ssbo_orb_size   = sizeof(uint32_t) * (num_orbs + 1);
 
     GLintptr   ssbo_scl_offset = ALIGN_TO(ssbo_orb_offset + ssbo_orb_size, 256);
-    GLsizeiptr ssbo_scl_size   = sizeof(float) * (orb->num_orbs);
+    GLsizeiptr ssbo_scl_size   = sizeof(float) * (num_orbs);
 
     size_t total_size = ALIGN_TO(ssbo_scl_offset + ssbo_scl_size, 256);
     GLuint ssbo = get_buffer(total_size);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_gto_offset, ssbo_gto_size, orb->gtos);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_gto_offset, ssbo_gto_size, gtos);
 
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_orb_offset, ssbo_orb_size, orb->orb_offsets);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_orb_offset, ssbo_orb_size, orb_offsets);
     // Fill last portion of buffer with point indices
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_scl_offset, ssbo_scl_size, orb->orb_scaling);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_scl_offset, ssbo_scl_size, orb_scaling);
 
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_gto_offset, ssbo_gto_size);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_orb_offset, ssbo_orb_size);
@@ -691,7 +686,7 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
     glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
     glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
     glUniform3fv(2, 1, grid->spacing.elem);
-    glUniform1ui(3, (GLuint)orb->num_orbs);
+    glUniform1ui(3, (GLuint)num_orbs);
     glUniform1i(4, (GLint)mode);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
@@ -712,29 +707,6 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
     free_buffer(ssbo);
 done:
     md_gl_debug_pop();
-}
-
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-    ASSERT(vol_grid);
-    ASSERT(orb);
-
-    GLuint program = get_gto_program();
-    gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
-}
-
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-    uint32_t orb_offsets[2] = {0, (uint32_t)num_gtos};
-    float orb_scaling[1] = {1.0f};
-
-    md_orbital_data_t orb = {
-        .num_gtos = num_gtos,
-        .gtos = (md_gto_t*)gtos,
-        .num_orbs = 1,
-        .orb_offsets = orb_offsets,
-        .orb_scaling = orb_scaling,
-    };
-
-    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
 void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
@@ -893,14 +865,7 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     if (num_gtos > 0) {
         uint32_t orb_offsets[2] = { 0, (uint32_t)num_gtos };
         float    orb_scaling[1] = { 1.0f };
-        md_orbital_data_t orb = {
-            .num_gtos    = num_gtos,
-            .gtos        = gtos,
-            .num_orbs    = 1,
-            .orb_offsets = orb_offsets,
-            .orb_scaling = orb_scaling,
-        };
-        gto_grid_evaluate_orb_GPU(vol_tex, grid, &orb, mode, program);
+        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, 1, mode, program);
     }
 
     md_temp_set_pos_back(temp_pos);
@@ -926,27 +891,20 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
     float*    orb_scaling = (float*)   md_temp_push(sizeof(float)    *  num_mos);
 
     size_t total_gtos = 0;
-    size_t num_valid  = 0;
+    size_t num_orbs   = 0;
     orb_offsets[0]    = 0;
 
     for (size_t i = 0; i < num_mos; i++) {
         if (!mo_coeffs[i]) continue;
         size_t n = md_gto_expand_with_mo(gtos + total_gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs[i], cutoff);
         if (n == 0) continue;
-        total_gtos            += n;
-        orb_scaling[num_valid] = (float)(mo_scl ? mo_scl[i] : 1.0);
-        orb_offsets[++num_valid] = (uint32_t)total_gtos;
+        total_gtos += n;
+        orb_scaling[num_orbs] = (float)(mo_scl ? mo_scl[i] : 1.0);
+        orb_offsets[++num_orbs] = (uint32_t)total_gtos;
     }
 
     if (total_gtos > 0) {
-        md_orbital_data_t orb = {
-            .num_gtos    = total_gtos,
-            .gtos        = gtos,
-            .num_orbs    = num_valid,
-            .orb_offsets = orb_offsets,
-            .orb_scaling = orb_scaling,
-        };
-        gto_grid_evaluate_orb_GPU(vol_tex, grid, &orb, mode, program);
+        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, num_orbs, mode, program);
     }
 
     md_temp_set_pos_back(temp_pos);

@@ -22,18 +22,6 @@ typedef struct md_gto_t {
 	uint32_t _pad;
 } md_gto_t;
 
-// Orbital Data 
-typedef struct md_orbital_data_t {
-	size_t num_gtos;
-	md_gto_t* gtos;
-
-	// Optional parameters to evaluate multiple orbitals in one 'go'
-	// This is necessary in case the evaluation mode is psi squared as the squaring has to occur after each orbital
-	size_t num_orbs;
-	uint32_t* orb_offsets;
-	float* orb_scaling;
-} md_orbital_data_t;
-
 // ---------------------------------------------------------------------------
 // General basis representation
 // ---------------------------------------------------------------------------
@@ -69,24 +57,6 @@ typedef struct md_gto_basis_t {
     float*           coeff;           // [num_primitives]  normalized radial contraction coefficients
 } md_gto_basis_t;
 
-// ---------------------------------------------------------------------------
-// Compute-optimized (derived) representation
-// ---------------------------------------------------------------------------
-// Flat SoA layout ready for CPU/GPU evaluation. Built from md_gto_basis_t via
-// md_gto_data_build(). Each CGTO corresponds to one cartesian angular component
-// of a shell; primitives are purely radial (ijkl lives at the CGTO level).
-typedef struct md_gto_data_t {
-	size_t     num_cgtos;
-	vec4_t*    cgto_xyzr;
-	uint32_t*  cgto_offset;		// offsets into pgtos (contains num_cgtos + 1 entries) such that a 'range' can be represented by cgto_offset[i] -> cgto_offset[i+1]
-
-	size_t     num_pgtos;
-	float*     pgto_alpha;
-	float*     pgto_coeff;
-	float*     pgto_radius;
-	uint32_t*  pgto_ijkl;
-} md_gto_data_t;
-
 typedef enum {
 	MD_GTO_EVAL_MODE_PSI = 0,
 	MD_GTO_EVAL_MODE_PSI_SQUARED = 1,
@@ -108,21 +78,7 @@ extern "C" {
 // cutoff           : value threshold for pruning GTOs by radius of influence (e.g. 1e-6);
 //                    pass 0 to disable pruning.
 // Coefficients are double to preserve QM-code precision at the boundary.
-
-// Evaluate a single molecular orbital on a grid (psi or psi^2).
-// mo_coeffs: AO coefficient vector, length = total num_cgtos implied by basis.
-void md_gto_grid_evaluate_mo(
-    float* out, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
-
-// Evaluate full electron density via AO density matrix on a grid.
-// density_matrix: full symmetric N×N row-major double array, N = number of CGTOs implied by basis.
-// The function constructs a compact upper-triangular float representation internally.
-void md_gto_grid_evaluate_density(
-    float* out, const md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* density_matrix);
+// Internally, lower-precision is used for coefficients.
 
 // Returns the upper bound on the number of Cartesian GTOs produced when
 // fully expanding all shells in the basis (before any cutoff filtering).
@@ -159,16 +115,16 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;
-	res |= ((uint32_t)i) << 0;
-	res |= ((uint32_t)j) << 8;
+	res |= ((uint32_t)i) <<  0;
+	res |= ((uint32_t)j) <<  8;
 	res |= ((uint32_t)k) << 16;
 	res |= ((uint32_t)l) << 24;
 	return res;
 }
 
 static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, int* l) {
-	if (i) *i = (packed >> 0) & 0xFF;
-	if (j) *j = (packed >> 8) & 0xFF;
+	if (i) *i = (packed >>  0) & 0xFF;
+	if (j) *j = (packed >>  8) & 0xFF;
 	if (k) *k = (packed >> 16) & 0xFF;
 	if (l) *l = (packed >> 24) & 0xFF;
 }
@@ -271,6 +227,11 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode);
 
 #endif
+
+
+// ---------------------------------------------------------------------------
+// LEGACY CPU API
+// ---------------------------------------------------------------------------
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
