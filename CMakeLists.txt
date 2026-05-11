@@ -42,6 +42,7 @@ set(MD_LINK_FLAGS)
 set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
+set(MD_INCLUDE_DIRS)
 set(MD_PROPERTIES)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
@@ -217,7 +218,14 @@ if (MD_ENABLE_GPU)
   else()
     set(MD_GPU_BACKEND "VULKAN")
     find_package(Vulkan REQUIRED)
-    #list(APPEND MD_LIBS Vulkan::Vulkan)
+    if (Vulkan_INCLUDE_DIRS)
+      list(APPEND MD_INCLUDE_DIRS ${Vulkan_INCLUDE_DIRS})
+    elseif (TARGET Vulkan::Vulkan)
+      get_target_property(VULKAN_INCLUDE_DIRS Vulkan::Vulkan INTERFACE_INCLUDE_DIRECTORIES)
+      if (VULKAN_INCLUDE_DIRS)
+        list(APPEND MD_INCLUDE_DIRS ${VULKAN_INCLUDE_DIRS})
+      endif()
+    endif()
     list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
@@ -429,6 +437,7 @@ target_include_directories(mdlib
 
   PRIVATE
   gen/
+  ${MD_INCLUDE_DIRS}
   ext/fastlz/
   ext/dcd/
   ext/xtc/
