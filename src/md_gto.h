@@ -8,6 +8,14 @@
 #include <core/md_gpu.h>
 #endif
 
+typedef enum md_gto_op_t {
+	MD_GTO_OP_SET = 0,
+	MD_GTO_OP_ADD = 1,
+	MD_GTO_OP_SUB = 2,
+	MD_GTO_OP_MAX = 3,
+	MD_GTO_OP_MIN = 4,
+} md_gto_op_t;
+
 // Stand Alone Gaussian Type Orbital
 // Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
 // Where x' y' and z' are the observer coordinates we evaluate the function at
@@ -215,7 +223,7 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
 // earlier in the same command buffer are visible to the shader.
 void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
-    md_gpu_image_t out_image, const md_grid_t* grid);
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_op_t op);
 
 // Record an MO evaluation dispatch into the caller's command buffer.
 // atom_buf must contain packed float4 atom positions (xyz in Bohr).
@@ -224,7 +232,7 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
 void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
-    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode);
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
 
 #endif
 

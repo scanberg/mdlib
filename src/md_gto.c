@@ -1261,7 +1261,7 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
 
 void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
-    md_gpu_image_t image, const md_grid_t* grid)
+    md_gpu_image_t image, const md_grid_t* grid, md_gto_op_t op)
 {
     if (!cmd || !gb || !atom_buf || !coeff_buf || !image || !grid) {
         MD_LOG_ERROR("md_gto_grid_evaluate_density_gpu: invalid input");
@@ -1278,8 +1278,9 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
         float    world_to_model[4][4];
         float    index_to_world[4][4];
         float    step[4];
-        uint32_t D_matrix_dim;
-        uint32_t _pad[3];
+        uint32_t num_cgtos;
+        uint32_t op;           /* 0 = SET, 1 = ADD, 2 = SUB, 3 = MAX, 4 = MIN */
+        uint32_t _pad[2];
     } ubo_t;
 
     ubo_t ubo = {0};
@@ -1289,13 +1290,14 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
     ubo.step[1]      = grid->spacing.elem[1];
     ubo.step[2]      = grid->spacing.elem[2];
     ubo.step[3]      = 0.0f;
-    ubo.D_matrix_dim = L->num_cgtos;
+    ubo.num_cgtos    = L->num_cgtos;
+    ubo.op           = (uint32_t)op;
 
     size_t sz_cgto_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
-    size_t sz_cgto_r       = L->off_cgto_off_len - L->off_cgto_r;
-    size_t sz_cgto_off_len = L->off_pgto         - L->off_cgto_off_len;
-    size_t sz_pgto         = (size_t)L->total_size - L->off_pgto;
-    size_t sz_atoms        = md_gto_gpu_atom_buffer_size(L->num_atoms);
+    size_t sz_cgto_r        = L->off_cgto_off_len - L->off_cgto_r;
+    size_t sz_cgto_off_len  = L->off_pgto         - L->off_cgto_off_len;
+    size_t sz_pgto          = (size_t)L->total_size - L->off_pgto;
+    size_t sz_atoms         = md_gto_gpu_atom_buffer_size(L->num_atoms);
     size_t tri_len = (L->num_cgtos * (L->num_cgtos + 1)) / 2;
     size_t sz_coeffs = sizeof(float) * tri_len;
 
@@ -1321,7 +1323,7 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 
 void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
-    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode)
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op)
 {
     if (!cmd || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
         MD_LOG_ERROR("md_gto_grid_evaluate_mo_gpu: invalid input");
@@ -1341,7 +1343,7 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
         uint32_t num_cgtos;
         uint32_t num_rows;
         uint32_t mode;    /* 0 = PSI, 1 = PSI_SQUARED */
-        uint32_t _pad1;
+        uint32_t op;      /* 0 = SET, 1 = ADD, 2 = SUB, 3 = MAX, 4 = MIN */
     } ubo_t;
 
     ubo_t ubo = {0};
@@ -1354,13 +1356,14 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     ubo.num_cgtos = L->num_cgtos;
     ubo.num_rows  = (uint32_t)num_mos;
     ubo.mode      = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
+    ubo.op        = (uint32_t)op;
 
-    size_t sz_cgto_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
-    size_t sz_cgto_r       = L->off_cgto_off_len - L->off_cgto_r;
-    size_t sz_cgto_off_len = L->off_pgto         - L->off_cgto_off_len;
-    size_t sz_pgto         = (size_t)L->total_size - L->off_pgto;
-    size_t sz_atoms        = md_gto_gpu_atom_buffer_size(L->num_atoms);
-    size_t sz_coeffs       = sizeof(float) * L->num_cgtos * num_mos;
+    size_t sz_cgto_atom_idx = L->off_cgto_r         - L->off_cgto_atom_idx;
+    size_t sz_cgto_r        = L->off_cgto_off_len   - L->off_cgto_r;
+    size_t sz_cgto_off_len  = L->off_pgto           - L->off_cgto_off_len;
+    size_t sz_pgto          = (size_t)L->total_size - L->off_pgto;
+    size_t sz_atoms         = md_gto_gpu_atom_buffer_size(L->num_atoms);
+    size_t sz_coeffs        = sizeof(float) * L->num_cgtos * num_mos;
 
     uint32_t wg_size[3] = {
         DIV_UP(grid->dim[0], 8),
