@@ -14,6 +14,14 @@
 //      the prefix array — 100% utilisation regardless of per-CGTO primitive counts.
 //   4) MO rows are processed in blocks; coefficients are staged in groupshared.
 
+#define OP_SET 0
+#define OP_ADD 1
+#define OP_SUB 2
+#define OP_MAX 3
+#define OP_MIN 4
+#define OP_ACCUM_MASK 0x0000000Fu
+#define OP_ABS 0x00000100u
+
 struct PGTO {
     float coeff;
     float alpha;
@@ -26,8 +34,8 @@ struct UBO {
     float4   step;            // xyz = voxel spacing in model-space units
     uint     num_cgtos;
     uint     num_rows;
-    uint     mode;    // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
-    uint     _pad1;
+    uint     mode;            // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
+    uint     operation;       // low bits = set/add/sub/max/min, high bits = transforms
 };
 
 [[vk::push_constant]]
@@ -82,7 +90,7 @@ groupshared uint  pgto_slot_tile [MAX_TILE_PGTOS];  // 2 KB — parent CGTO slot
 // Coefficient tile: coeff_tile[mb][ci] = C[mo_base+mb][tile_cgto_idx[ci]]
 groupshared float coeff_tile[MO_BLOCK][TILE_SIZE];
 
-void fill_pgto_tile(uint tile_number, uint tid) {
+void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
     // Phase 1: first TILE_SIZE threads gather CGTO headers for this tile.
     if (tid < TILE_SIZE) {
         uint slot = tile_number * TILE_SIZE + tid;
@@ -92,7 +100,7 @@ void fill_pgto_tile(uint tile_number, uint tid) {
         uint   src_len  = 0u;
         float4 center   = float4(0.0f);
 
-        if (slot < num_screened_cgtos) {
+        if (slot < num_cgtos) {
             cgto_idx = screened_cgtos[slot];
             uint2 off_len = cgto_off_len[cgto_idx];
             src_beg = off_len.x;
@@ -144,125 +152,133 @@ void fill_pgto_tile(uint tile_number, uint tid) {
 }
 
 [numthreads(WG_X, WG_Y, WG_Z)]
-void main(
-    uint3 gid  : SV_GroupID,
-    uint3 gtid : SV_GroupThreadID,
-    uint  tid  : SV_GroupIndex,
-    uint3 dtid : SV_DispatchThreadID)
-{
-    if (tid == 0u) {
-        num_screened_cgtos = 0u;
+void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_GroupIndex, uint3 dtid: SV_DispatchThreadID) {
+    if (tid == 0) {
+        num_screened_cgtos = 0;
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Minimal screening pass: test overlap and append index if passed.
-    float3 model_aabb_min = float3( gid                 * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
-    float3 model_aabb_max = float3((gid + uint3(1,1,1)) * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
+    float3 model_aabb_min = float3(gid * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
+    float3 model_aabb_max = float3((gid + uint3(1, 1, 1)) * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
 
+    // Stage 1: Screening - Prune CGTOs relevant for this workgroup region.
+    // Wave-coalesced allocation: one LDS atomic per wave instead of per thread.
     for (uint i = tid; i < ubo.num_cgtos; i += WG_SIZE) {
-        float3 center = atom_xyz[cgto_atom_idx[i]].xyz;
-        float  r      = cgto_r[i];
-        if (r == 0.0f) continue;
+        bool passed = false;
+        if (i < ubo.num_cgtos) {
+            float r = cgto_r[i];
+            if (r != 0.0) {
+                uint atom_idx = cgto_atom_idx[i];
+                float3 center = atom_xyz[atom_idx].xyz;
+                float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0)).xyz;
+                float r2 = r * r;
+                float3 d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
+                passed = (dot(d, d) < r2);
+            }
+        }
 
-        float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0f)).xyz;
-        float3 d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
+        uint wave_count = WaveActiveCountBits(passed);
+        uint wave_offset = WavePrefixSum(passed ? 1u : 0u);
+        uint wave_base = 0u;
+        if (WaveIsFirstLane() && wave_count > 0u) {
+            InterlockedAdd(num_screened_cgtos, wave_count, wave_base);
+        }
+        wave_base = WaveReadLaneFirst(wave_base);
 
-        if (dot(d, d) < r * r) {
-            uint idx;
-            InterlockedAdd(num_screened_cgtos, 1u, idx);
-            if (idx < (uint)MAX_SCREENED) {
+        if (passed) {
+            uint idx = wave_base + wave_offset;
+            if (idx < MAX_SCREENED) {
                 screened_cgtos[idx] = i;
             }
         }
     }
     GroupMemoryBarrierWithGroupSync();
 
-    if (tid == 0u) {
-        num_screened_cgtos = min(num_screened_cgtos, (uint)MAX_SCREENED);
-    }
-    GroupMemoryBarrierWithGroupSync();
+    float result = 0.0f;
 
-    uint3 vol_dim;
-    out_vol.GetDimensions(vol_dim.x, vol_dim.y, vol_dim.z);
+    uint num_cgtos = min(num_screened_cgtos, (uint)MAX_SCREENED);
+    if (num_cgtos > 0) {
+        float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0f)).xyz;
+        uint   num_tiles = (num_screened_cgtos + (uint)TILE_SIZE - 1u) / (uint)TILE_SIZE;
 
-    if (num_screened_cgtos == 0u) {
-        if (all(dtid < vol_dim)) {
-            out_vol[dtid] = 0.0f;
-        }
-        return;
-    }
+        // MO-blocked contraction: reuse phi over a block of MO rows.
+        for (uint mo_base = 0u; mo_base < ubo.num_rows; mo_base += (uint)MO_BLOCK) {
+            uint mo_count = min((uint)MO_BLOCK, ubo.num_rows - mo_base);
+            float psi_block[MO_BLOCK] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0f)).xyz;
-    float  result = 0.0f;
-    uint   num_tiles = (num_screened_cgtos + (uint)TILE_SIZE - 1u) / (uint)TILE_SIZE;
+            for (uint tile = 0u; tile < num_tiles; ++tile) {
+                fill_pgto_tile(tile, num_cgtos, tid);
+                GroupMemoryBarrierWithGroupSync();
 
-    // MO-blocked contraction: reuse phi over a block of MO rows.
-    for (uint mo_base = 0u; mo_base < ubo.num_rows; mo_base += (uint)MO_BLOCK) {
-        uint mo_count = min((uint)MO_BLOCK, ubo.num_rows - mo_base);
-        float psi_block[MO_BLOCK] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-        for (uint tile = 0u; tile < num_tiles; ++tile) {
-            fill_pgto_tile(tile, tid);
-            GroupMemoryBarrierWithGroupSync();
-
-            // Load MO coefficients for this tile's CGTOs into groupshared.
-            uint work_count = mo_count * (uint)TILE_SIZE;
-            for (uint work = tid; work < work_count; work += WG_SIZE) {
-                uint mb       = work / (uint)TILE_SIZE;
-                uint ci       = work % (uint)TILE_SIZE;
-                uint cgto_idx = tile_cgto_idx[ci];
-                float c = (cgto_idx != INVALID_IDX)
-                        ? coeffs[(mo_base + mb) * ubo.num_cgtos + cgto_idx]
-                        : 0.0f;
-                coeff_tile[mb][ci] = c;
-            }
-            GroupMemoryBarrierWithGroupSync();
-
-            // Flat primitive evaluation loop — uniform iteration, no CSR indirection,
-            // no empty-slot guards.  Each primitive carries its parent slot index for
-            // center and coefficient lookup.
-            uint num_prims = num_pgtos_tile;
-            for (uint j = 0u; j < num_prims; ++j) {
-                uint   slot = pgto_slot_tile[j];
-                float3 d    = coord - tile_cgto_xyz[slot].xyz;
-                float  r2   = dot(d, d);
-                float  dx2  = d.x * d.x;
-                float  dy2  = d.y * d.y;
-                float  dz2  = d.z * d.z;
-
-                uint4 ijkl = unpack_ijkl(pgto_ijkl_tile[j]);
-
-                float fx = (ijkl.x == 0u) ? 1.0f :
-                           (ijkl.x == 1u) ? d.x  :
-                           (ijkl.x == 2u) ? dx2  :
-                           (ijkl.x == 3u) ? dx2 * d.x : dx2 * dx2;
-
-                float fy = (ijkl.y == 0u) ? 1.0f :
-                           (ijkl.y == 1u) ? d.y  :
-                           (ijkl.y == 2u) ? dy2  :
-                           (ijkl.y == 3u) ? dy2 * d.y : dy2 * dy2;
-
-                float fz = (ijkl.z == 0u) ? 1.0f :
-                           (ijkl.z == 1u) ? d.z  :
-                           (ijkl.z == 2u) ? dz2  :
-                           (ijkl.z == 3u) ? dz2 * d.z : dz2 * dz2;
-
-                float prim_val = pgto_coeff_tile[j] * fx * fy * fz * exp(-pgto_alpha_tile[j] * r2);
-
-                for (uint mb = 0u; mb < mo_count; ++mb) {
-                    psi_block[mb] += coeff_tile[mb][slot] * prim_val;
+                // Load MO coefficients for this tile's CGTOs into groupshared.
+                uint work_count = mo_count * (uint)TILE_SIZE;
+                for (uint work = tid; work < work_count; work += WG_SIZE) {
+                    uint mb       = work / (uint)TILE_SIZE;
+                    uint ci       = work % (uint)TILE_SIZE;
+                    uint cgto_idx = tile_cgto_idx[ci];
+                    float c = (cgto_idx != INVALID_IDX)
+                            ? coeffs[(mo_base + mb) * ubo.num_cgtos + cgto_idx]
+                            : 0.0f;
+                    coeff_tile[mb][ci] = c;
                 }
+                GroupMemoryBarrierWithGroupSync();
+
+                // Flat primitive evaluation loop — uniform iteration, no CSR indirection,
+                // no empty-slot guards.  Each primitive carries its parent slot index for
+                // center and coefficient lookup.
+                uint num_prims = num_pgtos_tile;
+                for (uint j = 0u; j < num_prims; ++j) {
+                    uint   slot = pgto_slot_tile[j];
+                    float3 d    = coord - tile_cgto_xyz[slot].xyz;
+                    float  r2   = dot(d, d);
+                    float  dx2  = d.x * d.x;
+                    float  dy2  = d.y * d.y;
+                    float  dz2  = d.z * d.z;
+
+                    uint4 ijkl = unpack_ijkl(pgto_ijkl_tile[j]);
+
+                    float fx = (ijkl.x == 0u) ? 1.0f :
+                            (ijkl.x == 1u) ? d.x  :
+                            (ijkl.x == 2u) ? dx2  :
+                            (ijkl.x == 3u) ? dx2 * d.x : dx2 * dx2;
+
+                    float fy = (ijkl.y == 0u) ? 1.0f :
+                            (ijkl.y == 1u) ? d.y  :
+                            (ijkl.y == 2u) ? dy2  :
+                            (ijkl.y == 3u) ? dy2 * d.y : dy2 * dy2;
+
+                    float fz = (ijkl.z == 0u) ? 1.0f :
+                            (ijkl.z == 1u) ? d.z  :
+                            (ijkl.z == 2u) ? dz2  :
+                            (ijkl.z == 3u) ? dz2 * d.z : dz2 * dz2;
+
+                    float prim_val = pgto_coeff_tile[j] * fx * fy * fz * exp(-pgto_alpha_tile[j] * r2);
+
+                    for (uint mb = 0u; mb < mo_count; ++mb) {
+                        psi_block[mb] += coeff_tile[mb][slot] * prim_val;
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();
             }
-            GroupMemoryBarrierWithGroupSync();
-        }
 
-        for (uint mb = 0u; mb < mo_count; ++mb) {
-            float psi = psi_block[mb];
-            result += (ubo.mode != 0u) ? psi * psi : psi;
+            for (uint mb = 0u; mb < mo_count; ++mb) {
+                float psi = psi_block[mb];
+                result += (ubo.mode != 0u) ? psi * psi : psi;
+            }
         }
     }
 
-    if (all(dtid < vol_dim)) {
-        out_vol[dtid] = result;
+    if ((ubo.operation & OP_ABS) != 0u) {
+        result = abs(result);
     }
+
+    switch (ubo.operation & OP_ACCUM_MASK) {
+        case OP_SET: break; // result is already the new value
+        case OP_ADD: result += out_vol[dtid]; break;
+        case OP_SUB: result = out_vol[dtid] - result; break;
+        case OP_MAX: result = max(result, out_vol[dtid]); break;
+        case OP_MIN: result = min(result, out_vol[dtid]); break;
+        default: break;  // invalid operation code, treat as OP_SET
+    }
+    out_vol[dtid] = result;
 }

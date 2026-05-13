@@ -3371,8 +3371,8 @@ bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const md_vlx_t* vlx, md_alloc
 				md_gto_shell_t shell = {
 					.atom_idx         = (uint32_t)atomidx,
 					.primitive_offset = out->num_primitives,
-					.l                = (uint16_t)angl,
-					.num_primitives   = (uint16_t)bf->count,
+					.num_primitives   = (uint32_t)bf->count,
+					.l                = (uint32_t)angl,
 				};
 				md_array_push(out->shells, shell, alloc);
 				out->num_shells++;

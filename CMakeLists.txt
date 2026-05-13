@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 include(cmake/CheckVCPKG.cmake)
 
@@ -19,8 +19,14 @@ include(cmake/Common.cmake)
 option(MD_UNITTEST "Enable unittests" ON)
 option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
-option(MD_ENABLE_GPU "Enable GPU acceleration" OFF)
-option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
+
+if (APPLE)
+  set(MD_ENABLE_GPU ON CACHE INTERNAL "GPU acceleration is required on Apple")
+else()
+  option(MD_ENABLE_GPU "Enable GPU acceleration" OFF)
+endif()
+
+option(MD_ENABLE_AVX "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)

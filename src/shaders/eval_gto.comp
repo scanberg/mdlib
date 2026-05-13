@@ -17,7 +17,7 @@ struct CompGTO {
     uint  packed_ijkl;
 };
 
-layout(binding = 0) writeonly restrict uniform image3D out_vol;
+layout(binding = 0) restrict uniform image3D out_vol;
 
 layout (binding = 0, std430) readonly restrict buffer GTOBuffer {
     GTO in_gtos[];
@@ -36,6 +36,15 @@ layout(location = 1) uniform mat4 in_index_to_world;
 layout(location = 2) uniform vec3 in_step;
 layout(location = 3) uniform uint in_num_orb;
 layout(location = 4) uniform int  in_mode;
+layout(location = 5) uniform uint in_operation;
+
+#define OP_SET 0u
+#define OP_ADD 1u
+#define OP_SUB 2u
+#define OP_MAX 3u
+#define OP_MIN 4u
+#define OP_ACCUM_MASK 0x0000000Fu
+#define OP_ABS 0x00000100u
 
 float safe_pow(float base, uint exponent) {
     switch(exponent) {
@@ -144,6 +153,29 @@ void main() {
     
     // Step 3: Write result
     if (all(lessThan(vol_idx, imageSize(out_vol)))) {
+        if ((in_operation & OP_ABS) != 0u) {
+            out_psi = abs(out_psi);
+        }
+
+        switch (in_operation & OP_ACCUM_MASK) {
+        case OP_SET:
+            break;
+        case OP_ADD:
+            out_psi += imageLoad(out_vol, vol_idx).x;
+            break;
+        case OP_SUB:
+            out_psi = imageLoad(out_vol, vol_idx).x - out_psi;
+            break;
+        case OP_MAX:
+            out_psi = max(out_psi, imageLoad(out_vol, vol_idx).x);
+            break;
+        case OP_MIN:
+            out_psi = min(out_psi, imageLoad(out_vol, vol_idx).x);
+            break;
+        default:
+            break;
+        }
+
         imageStore(out_vol, vol_idx, vec4(out_psi));
     }
 }

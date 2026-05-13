@@ -2,6 +2,14 @@
 // Evaluates electron density from density matrix and contracted GTO basis on a 3D grid.
 // Ported from eval_gto_density.comp to Slang for md_gpu backend.
 
+#define OP_SET 0
+#define OP_ADD 1
+#define OP_SUB 2
+#define OP_MAX 3
+#define OP_MIN 4
+#define OP_ACCUM_MASK 0x0000000Fu
+#define OP_ABS 0x00000100u
+
 struct PGTO {
     float coeff;
     float alpha;
@@ -13,7 +21,7 @@ struct UBO {
     float4x4 index_to_world;
     float4   step;
     uint     num_cgtos;
-    uint     _pad0;
+    uint     operation;
     uint     _pad1;
     uint     _pad2;
 };
@@ -292,66 +300,63 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         }
     }
     GroupMemoryBarrierWithGroupSync();
-
-    uint num_cgtos = min(num_screened_cgtos, MAX_SCREENED_CGTOS);
-
-    uint3 vol_dim;
-    out_vol.GetDimensions(vol_dim.x, vol_dim.y, vol_dim.z);
-    bool active = all(dtid < vol_dim);
-
-    if (num_cgtos == 0u) {
-        if (active) {
-            out_vol[dtid] = 0.0;
-        }
-        return;
-    }
-
-    float phi_tile_mu[TILE_SIZE];
-    float phi_tile_nu[TILE_SIZE];
-    float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0)).xyz;
     float rho = 0.0;
 
-    uint num_tiles = (num_cgtos + TILE_SIZE - 1) / TILE_SIZE;
+    uint num_cgtos = min(num_screened_cgtos, MAX_SCREENED_CGTOS);
+    if (num_cgtos > 0) {
+        float phi_tile_mu[TILE_SIZE];
+        float phi_tile_nu[TILE_SIZE];
+        float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0)).xyz;
 
-    for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
-        // DIAGONAL TILE
-        if (tid == 0) {
-            num_pgtos = 0;
-        }
-        GroupMemoryBarrierWithGroupSync();
+        uint num_tiles = (num_cgtos + TILE_SIZE - 1) / TILE_SIZE;
 
-        fill_D_tile(tile_i, tile_i, num_cgtos, tid);
-        fill_cgtos_tile(tile_i, num_cgtos, tid);
-
-        GroupMemoryBarrierWithGroupSync();
-
-        // Inactive (out-of-bounds) voxels must still participate in the
-        // collaborative fills + barriers above, but skip the per-voxel work.
-        if (active) {
-            eval_phis(phi_tile_mu, coord);
-            rho += symmetric_contraction(phi_tile_mu);
-        }
-
-        for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
-            // OFF DIAGONAL TILE
+        for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
+            // DIAGONAL TILE
             if (tid == 0) {
                 num_pgtos = 0;
             }
             GroupMemoryBarrierWithGroupSync();
 
-            fill_D_tile(tile_i, tile_j, num_cgtos, tid);
-            fill_cgtos_tile(tile_j, num_cgtos, tid);
+            fill_D_tile(tile_i, tile_i, num_cgtos, tid);
+            fill_cgtos_tile(tile_i, num_cgtos, tid);
 
             GroupMemoryBarrierWithGroupSync();
 
-            if (active) {
+            // Inactive (out-of-bounds) voxels must still participate in the
+            // collaborative fills + barriers above, but skip the per-voxel work.
+            eval_phis(phi_tile_mu, coord);
+            rho += symmetric_contraction(phi_tile_mu);
+
+            for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
+                // OFF DIAGONAL TILE
+                if (tid == 0) {
+                    num_pgtos = 0;
+                }
+                GroupMemoryBarrierWithGroupSync();
+
+                fill_D_tile(tile_i, tile_j, num_cgtos, tid);
+                fill_cgtos_tile(tile_j, num_cgtos, tid);
+
+                GroupMemoryBarrierWithGroupSync();
+
                 eval_phis(phi_tile_nu, coord);
                 rho += contraction(phi_tile_mu, phi_tile_nu);
             }
         }
     }
 
-    if (active) {
-        out_vol[dtid] = rho;
+    if ((ubo.operation & OP_ABS) != 0u) {
+        rho = abs(rho);
     }
+
+    switch (ubo.operation & OP_ACCUM_MASK) {
+        case OP_SET: break; // rho is already the new value
+        case OP_ADD: rho += out_vol[dtid]; break;
+        case OP_SUB: rho = out_vol[dtid] - rho; break;
+        case OP_MAX: rho = max(rho, out_vol[dtid]); break;
+        case OP_MIN: rho = min(rho, out_vol[dtid]); break;
+        default: break; // invalid operation code, treat as OP_SET
+    }
+    
+    out_vol[dtid] = rho;
 }

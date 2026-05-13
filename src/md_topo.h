@@ -68,6 +68,9 @@ extern "C" {
 
 #if MD_ENABLE_GPU
 
+void md_topo_gpu_initialize(md_gpu_device_t device);
+void md_topo_gpu_shutdown(void);
+
 // Persistent context for GPU topology computation.
 // Create once per volume size; reuse across multiple computations.
 // All scratch and result buffers are pre-allocated at create time.
