@@ -977,51 +977,43 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 #include <core/md_gpu.h>
 #include <gto_gpu_shaders.inl>
 
-static md_gpu_device_t           gto_cached_device = NULL;
 static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
 static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
 
-static void gto_invalidate_pipelines(void) {
-    if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
-    if (gto_pip_mo)      { md_gpu_compute_pipeline_destroy(gto_pip_mo);      gto_pip_mo      = NULL; }
+static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
+    if (*pipeline == NULL) {
+        md_gpu_compute_pipeline_desc_t desc = {
+            .shader_bytes     = blob_start,
+            .shader_byte_size = blob_size,
+            .threadgroup_size = { wg_x, wg_y, wg_z },
+        };
+        *pipeline = md_gpu_compute_pipeline_create(device, &desc);
+        if (*pipeline == NULL) {
+            MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
+        }
+    }
+    return *pipeline;
 }
 
-static md_gpu_compute_pipeline_t gto_ensure_density_pipeline(md_gpu_device_t device) {
-    if (gto_cached_device != device) {
-        gto_invalidate_pipelines();
-        gto_cached_device = device;
-    }
+void md_gto_gpu_initialize(md_gpu_device_t device) {
     if (!gto_pip_density) {
-        md_gpu_compute_pipeline_desc_t desc = {
-            .shader_bytes     = gto_eval_gto_density_start,
-            .shader_byte_size = gto_eval_gto_density_size(),
-            .threadgroup_size = { 8, 8, 8 },
-        };
-        gto_pip_density = md_gpu_compute_pipeline_create(device, &desc);
+        gto_pip_density = ensure_compute_pipeline(device, &gto_pip_density, gto_eval_gto_density_start, gto_eval_gto_density_size(), "GTO density", 8, 8, 8);
         if (!gto_pip_density) {
             MD_LOG_ERROR("Failed to create GTO density compute pipeline");
         }
     }
-    return gto_pip_density;
-}
 
-static md_gpu_compute_pipeline_t gto_ensure_mo_pipeline(md_gpu_device_t device) {
-    if (gto_cached_device != device) {
-        gto_invalidate_pipelines();
-        gto_cached_device = device;
-    }
     if (!gto_pip_mo) {
-        md_gpu_compute_pipeline_desc_t desc = {
-            .shader_bytes     = gto_eval_gto_mo_start,
-            .shader_byte_size = gto_eval_gto_mo_size(),
-            .threadgroup_size = { 8, 8, 8 },
-        };
-        gto_pip_mo = md_gpu_compute_pipeline_create(device, &desc);
+        gto_pip_mo = ensure_compute_pipeline(device, &gto_pip_mo, gto_eval_gto_mo_start, gto_eval_gto_mo_size(), "GTO MO", 8, 8, 8);
         if (!gto_pip_mo) {
             MD_LOG_ERROR("Failed to create GTO MO compute pipeline");
         }
     }
-    return gto_pip_mo;
+}
+
+void md_gto_gpu_shutdown(void) {
+    if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
+    if (gto_pip_mo)      { md_gpu_compute_pipeline_destroy(gto_pip_mo);      gto_pip_mo      = NULL; }
 }
 
 // Internal layout descriptor for the basis GPU buffer.
@@ -1036,10 +1028,10 @@ typedef struct {
     uint32_t num_cgtos;
     uint32_t num_pgtos;
     uint32_t num_atoms;
-    uint32_t off_cgto_atom_idx; // uint × num_cgtos
-    uint32_t off_cgto_r;        // float  × num_cgtos
-    uint32_t off_cgto_off_len;  // uint2  × num_cgtos
-    uint32_t off_pgto;          // PGTO   × num_pgtos
+    uint32_t off_cgto_atom_idx; // uint  × num_cgtos
+    uint32_t off_cgto_r;        // float × num_cgtos
+    uint32_t off_cgto_off_len;  // uint2 × num_cgtos
+    uint32_t off_pgto;          // PGTO  × num_pgtos
     uint64_t total_size;
 } md_gto_basis_layout_t;
 
@@ -1271,11 +1263,13 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
         return;
     }
 
-    md_gpu_device_t device = gb->device;
     const md_gto_basis_layout_t* L = &gb->layout;
 
-    md_gpu_compute_pipeline_t pipeline = gto_ensure_density_pipeline(device);
-    if (!pipeline) return;
+    md_gpu_compute_pipeline_t pipeline = gto_pip_density;
+    if (!pipeline) {
+        MD_LOG_ERROR("md_gto_grid_evaluate_density_gpu: compute pipeline not initialized");
+        return;
+    }
 
     typedef struct {
         float    world_to_model[4][4];
@@ -1333,11 +1327,12 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
         return;
     }
 
-    md_gpu_device_t device = gb->device;
     const md_gto_basis_layout_t* L = &gb->layout;
-
-    md_gpu_compute_pipeline_t pipeline = gto_ensure_mo_pipeline(device);
-    if (!pipeline) return;
+    md_gpu_compute_pipeline_t pipeline = gto_pip_mo;
+    if (!pipeline) {
+        MD_LOG_ERROR("md_gto_grid_evaluate_mo_gpu: compute pipeline not initialized");
+        return;
+    }
 
     typedef struct {
         float    world_to_model[4][4];

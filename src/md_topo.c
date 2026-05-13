@@ -53,35 +53,49 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
 #include <topo_gpu_shaders.inl>
 
 // Pipeline cache
-static md_gpu_device_t cached_device = NULL;
 static md_gpu_compute_pipeline_t pip_bidirectional_manifold    = NULL;
 static md_gpu_compute_pipeline_t pip_path_compression          = NULL;
 static md_gpu_compute_pipeline_t pip_critical_points           = NULL;
 static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
 static md_gpu_compute_pipeline_t pip_vertex_edge_extraction    = NULL;
 
-static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* cached, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
-    if (cached_device != device) {
-        // Device changed, invalidate all cached pipelines
-        if (pip_bidirectional_manifold)    { md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);    pip_bidirectional_manifold    = NULL; }
-        if (pip_path_compression)          { md_gpu_compute_pipeline_destroy(pip_path_compression);          pip_path_compression          = NULL; }
-        if (pip_critical_points)           { md_gpu_compute_pipeline_destroy(pip_critical_points);           pip_critical_points           = NULL; }
-        if (pip_critical_point_compaction) { md_gpu_compute_pipeline_destroy(pip_critical_point_compaction); pip_critical_point_compaction = NULL; }
-        if (pip_vertex_edge_extraction)    { md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);    pip_vertex_edge_extraction    = NULL; }
-        cached_device = device;
-    }
-    if (*cached == NULL) {
+static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
+    if (*pipeline == NULL) {
         md_gpu_compute_pipeline_desc_t desc = {
             .shader_bytes     = blob_start,
             .shader_byte_size = blob_size,
             .threadgroup_size = { wg_x, wg_y, wg_z },
         };
-        *cached = md_gpu_compute_pipeline_create(device, &desc);
-        if (*cached == NULL) {
+        *pipeline = md_gpu_compute_pipeline_create(device, &desc);
+        if (*pipeline == NULL) {
             MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
         }
     }
-    return *cached;
+    return *pipeline;
+}
+
+void md_topo_gpu_initialize(md_gpu_device_t device) {
+    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8,  8,  8) ||
+        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8,  8,  8) ||
+        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8,  8,  8) ||
+        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8,  8,  8) ||
+        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1,  1))
+    {
+        MD_LOG_ERROR("md_topo_gpu_initialize: failed to create compute pipelines");
+    }
+}
+
+void md_topo_gpu_shutdown(void) {
+    if (pip_bidirectional_manifold)    md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);
+    if (pip_path_compression)          md_gpu_compute_pipeline_destroy(pip_path_compression);
+    if (pip_critical_points)           md_gpu_compute_pipeline_destroy(pip_critical_points);
+    if (pip_critical_point_compaction) md_gpu_compute_pipeline_destroy(pip_critical_point_compaction);
+    if (pip_vertex_edge_extraction)    md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);
+    pip_bidirectional_manifold = NULL;
+    pip_path_compression = NULL;
+    pip_critical_points = NULL;
+    pip_critical_point_compaction = NULL;
+    pip_vertex_edge_extraction = NULL;
 }
 
 // Meta buffer: bound as a single SSBO to all compute shaders.
@@ -133,16 +147,6 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
         return NULL;
     }
 
-    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8,  8,  8) ||
-        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8,  8,  8) ||
-        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8,  8,  8) ||
-        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8,  8,  8) ||
-        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1,  1))
-    {
-        MD_LOG_ERROR("md_topo_gpu_context_create: failed to create compute pipelines");
-        return NULL;
-    }
-
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
 
@@ -167,16 +171,16 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
     ctx->edge_cap = edge_cap;
 
     const size_t voxel_buf_size = ctx->num_points * sizeof(uint32_t);
-    ctx->ascending_buf     = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->descending_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->voxel_types_buf   = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->voxel_to_vert_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->meta_buf          = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(topo_meta_t), .flags = buf_flags });
-    ctx->indices_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
+    ctx->ascending_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
+    ctx->descending_buf     = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
+    ctx->voxel_types_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
+    ctx->voxel_to_vert_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
+    ctx->meta_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(topo_meta_t), .flags = buf_flags });
+    ctx->indices_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
     
-    ctx->vert_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float),       .flags = buf_flags });
-    ctx->type_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
-    ctx->edge_buf       = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t),  .flags = buf_flags });
+    ctx->vert_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float),       .flags = buf_flags });
+    ctx->type_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
+    ctx->edge_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t),  .flags = buf_flags });
     
     if (info.is_discrete) {
         // For discrete GPUs, we need staging buffers for readback

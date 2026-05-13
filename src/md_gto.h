@@ -151,6 +151,10 @@ static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, i
 void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 #if MD_ENABLE_GPU
+
+void md_gto_gpu_initialize(md_gpu_device_t device);
+void md_gto_gpu_shutdown(void);
+
 // ---------------------------------------------------------------------------
 // GPU basis buffer  (owns device-local atom_idx, r, off_len, pgto regions)
 // Create once per basis set; reuse across all density and MO evaluations.

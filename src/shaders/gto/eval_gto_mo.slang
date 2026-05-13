@@ -34,8 +34,8 @@ struct UBO {
     float4   step;            // xyz = voxel spacing in model-space units
     uint     num_cgtos;
     uint     num_rows;
-    uint     mode;    // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
-    uint     operation; // low bits = set/add/sub/max/min, high bits = transforms
+    uint     mode;            // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
+    uint     operation;       // low bits = set/add/sub/max/min, high bits = transforms
 };
 
 [[vk::push_constant]]
