@@ -612,7 +612,7 @@ static void free_buffer(GLuint id) {
     }
 }
 
-static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md_gto_t* gtos, uint32_t* orb_offsets, float* orb_scaling, uint32_t num_orbs, md_gto_eval_mode_t mode, GLuint program) {
+static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md_gto_t* gtos, uint32_t* orb_offsets, float* orb_scaling, uint32_t num_orbs, md_gto_eval_mode_t mode, md_gto_op_t op, GLuint program) {
     ASSERT(grid);
     ASSERT(gtos);
     ASSERT(orb_offsets);
@@ -688,6 +688,7 @@ static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md
     glUniform3fv(2, 1, grid->spacing.elem);
     glUniform1ui(3, (GLuint)num_orbs);
     glUniform1i(4, (GLint)mode);
+    glUniform1ui(5, (GLuint)op);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
 
@@ -713,7 +714,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     uint32_t num_cgtos, const vec4_t* cgto_xyzr, const uint32_t* cgto_off_len,
     uint32_t num_pgtos, const PGTO* pgto,
     const float* upper_triangular_matrix, size_t upper_triangular_len,
-    bool include_gradients) {
+    bool include_gradients, md_gto_op_t op) {
     ASSERT(grid);
     ASSERT(upper_triangular_matrix);
 
@@ -767,7 +768,8 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
         mat4_t index_to_world;
         vec4_t step;
         uint32_t D_matrix_dim;
-        uint32_t _pad[3];
+        uint32_t operation;
+        uint32_t _pad[2];
     } uniform_block_t;
 
     uniform_block_t ub_data = {0};
@@ -775,6 +777,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     index_to_world_matrix(ub_data.index_to_world.elem, grid);
     ub_data.step = vec4_from_vec3(grid->spacing, 0);
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
+    ub_data.operation = (uint32_t)op;
 
     GLintptr   ssbo_cgto_xyzr_base      = 0;
     GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * num_cgtos;
@@ -848,7 +851,7 @@ done:
     md_gl_debug_pop();
 }
 
-void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op) {
     ASSERT(grid);
     ASSERT(basis);
     ASSERT(atom_xyz);
@@ -865,13 +868,13 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     if (num_gtos > 0) {
         uint32_t orb_offsets[2] = { 0, (uint32_t)num_gtos };
         float    orb_scaling[1] = { 1.0f };
-        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, 1, mode, program);
+        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, 1, mode, op, program);
     }
 
     md_temp_set_pos_back(temp_pos);
 }
 
-void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op) {
     ASSERT(grid);
     ASSERT(basis);
     ASSERT(atom_xyz);
@@ -904,7 +907,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
     }
 
     if (total_gtos > 0) {
-        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, num_orbs, mode, program);
+        gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, num_orbs, mode, op, program);
     }
 
     md_temp_set_pos_back(temp_pos);
@@ -912,7 +915,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
 
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* density_matrix, bool include_gradients)
+    const double* density_matrix, bool include_gradients, md_gto_op_t op)
 {
     ASSERT(grid);
     ASSERT(basis);
@@ -939,7 +942,7 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
         cgto_xyzr[i] = (vec4_t){cgto_xyz[i*3+0], cgto_xyz[i*3+1], cgto_xyz[i*3+2], cgto_r[i]};
     }
 
-    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, num_cgtos, cgto_xyzr, cgto_off_len, num_pgtos, pgto, upper_tri, tri_len, include_gradients);
+    md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, num_cgtos, cgto_xyzr, cgto_off_len, num_pgtos, pgto, upper_tri, tri_len, include_gradients, op);
 
     md_temp_set_pos_back(temp_pos);
 }
@@ -950,21 +953,21 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 // GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
 void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode) {
-    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)mo_coeffs; (void)cutoff; (void)mode;
+    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)atom_xyz_stride; (void)mo_coeffs; (void)cutoff; (void)mode; (void)op;
 }
 
 // mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
 void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode) {
-    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)mo_coeffs; (void)mo_scl; (void)num_mos; (void)cutoff; (void)mode;
+    const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)atom_xyz_stride; (void)mo_coeffs; (void)mo_scl; (void)num_mos; (void)cutoff; (void)mode; (void)op;
 }
 
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* density_matrix, bool include_gradients) {
-    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)density_matrix; (void)include_gradients;
+    const double* density_matrix, bool include_gradients, md_gto_op_t op) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)atom_xyz_stride; (void)density_matrix; (void)include_gradients; (void)op;
 }
 
 #endif
@@ -1279,7 +1282,7 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
         float    index_to_world[4][4];
         float    step[4];
         uint32_t num_cgtos;
-        uint32_t op;           /* 0 = SET, 1 = ADD, 2 = SUB, 3 = MAX, 4 = MIN */
+        uint32_t op;           /* low bits = SET/ADD/SUB/MAX/MIN, high bits = transforms */
         uint32_t _pad[2];
     } ubo_t;
 
@@ -1343,7 +1346,7 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
         uint32_t num_cgtos;
         uint32_t num_rows;
         uint32_t mode;    /* 0 = PSI, 1 = PSI_SQUARED */
-        uint32_t op;      /* 0 = SET, 1 = ADD, 2 = SUB, 3 = MAX, 4 = MIN */
+        uint32_t op;      /* low bits = SET/ADD/SUB/MAX/MIN, high bits = transforms */
     } ubo_t;
 
     ubo_t ubo = {0};

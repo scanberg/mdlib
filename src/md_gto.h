@@ -8,13 +8,17 @@
 #include <core/md_gpu.h>
 #endif
 
-typedef enum md_gto_op_t {
-	MD_GTO_OP_SET = 0,
-	MD_GTO_OP_ADD = 1,
-	MD_GTO_OP_SUB = 2,
-	MD_GTO_OP_MAX = 3,
-	MD_GTO_OP_MIN = 4,
-} md_gto_op_t;
+typedef uint32_t md_gto_op_t;
+
+enum {
+	MD_GTO_OP_ACCUM_MASK = 0x0000000F,
+	MD_GTO_OP_SET        = 0,
+	MD_GTO_OP_ADD        = 1,
+	MD_GTO_OP_SUB        = 2,
+	MD_GTO_OP_MAX        = 3,
+	MD_GTO_OP_MIN        = 4,
+	MD_GTO_OP_ABS        = 1u << 8,
+};
 
 // Stand Alone Gaussian Type Orbital
 // Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
@@ -44,8 +48,8 @@ typedef struct md_gto_t {
 typedef struct md_gto_shell_t {
     uint32_t  atom_idx;          // index of the parent atom in the caller-supplied atom_xyz array
     uint32_t  primitive_offset;  // first index into basis->alpha and basis->coeff arrays
-    uint32_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
     uint32_t  num_primitives;    // number of Gaussian primitives in the contraction
+    uint32_t  l;                 // angular momentum quantum number (0=s, 1=p, 2=d, 3=f, ...)
 } md_gto_shell_t;
 
 // A complete contracted Gaussian basis set for a molecular system.
@@ -106,12 +110,12 @@ size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
 // GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
 void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode);
+	const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
 
 // mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
 void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode);
+	const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
 
 // Basis-centric GL density evaluation.
 // Expands the basis, converts the NxN double density matrix to upper-triangular float,
@@ -119,7 +123,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
 // density_matrix: full N×N row-major doubles, N = number of spherical AOs in basis.
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-    const double* density_matrix, bool include_gradients);
+	const double* density_matrix, bool include_gradients, md_gto_op_t op);
 
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;

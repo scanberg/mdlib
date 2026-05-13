@@ -19,6 +19,8 @@
 #define OP_SUB 2
 #define OP_MAX 3
 #define OP_MIN 4
+#define OP_ACCUM_MASK 0x0000000Fu
+#define OP_ABS 0x00000100u
 
 struct PGTO {
     float coeff;
@@ -33,7 +35,7 @@ struct UBO {
     uint     num_cgtos;
     uint     num_rows;
     uint     mode;    // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
-    uint     operation; // 0 = set, 1 = add, 2 = sub, 3 = max, 4 = min
+    uint     operation; // low bits = set/add/sub/max/min, high bits = transforms
 };
 
 [[vk::push_constant]]
@@ -266,7 +268,11 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
         }
     }
 
-    switch (ubo.operation) {
+    if ((ubo.operation & OP_ABS) != 0u) {
+        result = abs(result);
+    }
+
+    switch (ubo.operation & OP_ACCUM_MASK) {
         case OP_SET: break; // result is already the new value
         case OP_ADD: result += out_vol[dtid]; break;
         case OP_SUB: result = out_vol[dtid] - result; break;

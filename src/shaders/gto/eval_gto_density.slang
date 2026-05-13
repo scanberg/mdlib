@@ -7,6 +7,8 @@
 #define OP_SUB 2
 #define OP_MAX 3
 #define OP_MIN 4
+#define OP_ACCUM_MASK 0x0000000Fu
+#define OP_ABS 0x00000100u
 
 struct PGTO {
     float coeff;
@@ -343,7 +345,11 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         }
     }
 
-    switch (ubo.operation) {
+    if ((ubo.operation & OP_ABS) != 0u) {
+        rho = abs(rho);
+    }
+
+    switch (ubo.operation & OP_ACCUM_MASK) {
         case OP_SET: break; // rho is already the new value
         case OP_ADD: rho += out_vol[dtid]; break;
         case OP_SUB: rho = out_vol[dtid] - rho; break;
