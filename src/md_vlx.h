@@ -32,6 +32,12 @@ typedef enum {
 } md_vlx_nto_type_t;
 
 typedef enum {
+	MD_VLX_TRANSITION_DENSITY_ATTACHMENT = 0,
+	MD_VLX_TRANSITION_DENSITY_DETACHMENT = 1,
+	MD_VLX_TRANSITION_DENSITY_DIFFERENCE = 2,
+} md_vlx_transition_density_type_t;
+
+typedef enum {
 	MD_VLX_SCF_TYPE_UNKNOWN = 0,
 	MD_VLX_SCF_TYPE_RESTRICTED,
 	MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL,
@@ -165,11 +171,11 @@ const double* md_vlx_rsp_cpp_delta_epsilon(const struct md_vlx_t* vlx);
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
 size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count);
 
-// Attachment / detachment matrices are square AO matrices [N][N] in shell order.
-size_t md_vlx_rsp_attachment_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
-const double* md_vlx_rsp_attachment_matrix_data(const struct md_vlx_t* vlx, size_t state_idx);
-size_t md_vlx_rsp_detachment_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
-const double* md_vlx_rsp_detachment_matrix_data(const struct md_vlx_t* vlx, size_t state_idx);
+// Extract transition-density AO matrix [N][N] in shell order from response eigenvectors.
+// out_matrix must hold md_vlx_rsp_transition_density_matrix_size(vlx, state_idx)^2 doubles.
+// Attachment = T^T T, Detachment = T T^T, Difference = Attachment - Detachment, where T = Z - Y.
+size_t md_vlx_rsp_transition_density_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
+size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const struct md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)

@@ -144,8 +144,6 @@ typedef struct md_vlx_rsp_t {
 	double* absorption_ev;
 	// Should have length of number_of_excited_states
 	md_vlx_1d_data_t* solution_vectors;
-	md_vlx_2d_data_t* detachment_density;
-	md_vlx_2d_data_t* attachment_density;
 	md_vlx_cpp_t cpp;
 } md_vlx_rsp_t;
 
@@ -509,10 +507,9 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 // to VeloxChem matrix row order (angl→isph→atom→func).
 // ao_remap[shell_ao_idx] = vlx_ao_idx.
 // Returns the total number of AOs (length of the table), or 0 on failure.
-static bool build_ao_remap(int* out_remap, size_t capacity, const md_vlx_t* vlx, md_allocator_i* alloc) {
+static bool build_ao_remap(int* out_remap, size_t capacity, const md_vlx_t* vlx) {
 	ASSERT(out_remap);
 	ASSERT(vlx);
-	ASSERT(alloc);
 
 	int natoms   = (int)vlx->number_of_atoms;
 	int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
@@ -1847,18 +1844,6 @@ static bool vlx_rsp_ensure_state_storage(md_vlx_rsp_t* rsp, md_allocator_i* aren
 		MEMSET(rsp->solution_vectors + old_count, 0, sizeof(md_vlx_1d_data_t) * (state_count - old_count));
 	}
 
-	old_count = md_array_size(rsp->detachment_density);
-	md_array_resize(rsp->detachment_density, state_count, arena);
-	if (old_count < state_count) {
-		MEMSET(rsp->detachment_density + old_count, 0, sizeof(md_vlx_2d_data_t) * (state_count - old_count));
-	}
-
-	old_count = md_array_size(rsp->attachment_density);
-	md_array_resize(rsp->attachment_density, state_count, arena);
-	if (old_count < state_count) {
-		MEMSET(rsp->attachment_density + old_count, 0, sizeof(md_vlx_2d_data_t) * (state_count - old_count));
-	}
-
 	return true;
 }
 
@@ -2353,7 +2338,8 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 	md_temp_set_pos_back(temp_pos);
 }
 
-static bool vlx_rsp_compute_detachment_attachment(md_vlx_t* vlx, size_t state_idx) {
+static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type) {
+	ASSERT(out_matrix);
 	ASSERT(vlx);
 
 	size_t nocc = 0;
@@ -2369,20 +2355,10 @@ static bool vlx_rsp_compute_detachment_attachment(md_vlx_t* vlx, size_t state_id
 	const double* coeff_data = coeff->data;
 	const md_vlx_1d_data_t* solution = &vlx->rsp.solution_vectors[state_idx];
 
-	md_vlx_2d_data_t* detach = &vlx->rsp.detachment_density[state_idx];
-	md_vlx_2d_data_t* attach = &vlx->rsp.attachment_density[state_idx];
-	md_array_resize(detach->data, num_ao * num_ao, vlx->arena);
-	md_array_resize(attach->data, num_ao * num_ao, vlx->arena);
-	MEMSET(detach->data, 0, md_array_bytes(detach->data));
-	MEMSET(attach->data, 0, md_array_bytes(attach->data));
-	detach->size[0] = num_ao;
-	detach->size[1] = num_ao;
-	attach->size[0] = num_ao;
-	attach->size[1] = num_ao;
-
 	const size_t temp_pos = md_temp_get_pos();
 	double* detach_mo = (double*)md_temp_push(sizeof(double) * nocc * nocc);
 	double* attach_mo = (double*)md_temp_push(sizeof(double) * nvir * nvir);
+	double* detach_ao = NULL;
 	MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
 	MEMSET(attach_mo, 0, sizeof(double) * nvir * nvir);
 
@@ -2392,11 +2368,9 @@ static bool vlx_rsp_compute_detachment_attachment(md_vlx_t* vlx, size_t state_id
 			for (size_t a = 0; a < nvir; ++a) {
 				const size_t ia = i * nvir + a;
 				const size_t ja = j * nvir + a;
-				const double z_i = vlx_rsp_solution_z(solution, ia);
-				const double z_j = vlx_rsp_solution_z(solution, ja);
-				const double y_i = vlx_rsp_solution_y(solution, amp_count, ia, has_y);
-				const double y_j = vlx_rsp_solution_y(solution, amp_count, ja, has_y);
-				value += y_i * y_j - z_i * z_j;
+				const double t_i = vlx_rsp_solution_z(solution, ia) - vlx_rsp_solution_y(solution, amp_count, ia, has_y);
+				const double t_j = vlx_rsp_solution_z(solution, ja) - vlx_rsp_solution_y(solution, amp_count, ja, has_y);
+				value += t_i * t_j;
 			}
 			detach_mo[i * nocc + j] = value;
 			detach_mo[j * nocc + i] = value;
@@ -2409,44 +2383,31 @@ static bool vlx_rsp_compute_detachment_attachment(md_vlx_t* vlx, size_t state_id
 			for (size_t i = 0; i < nocc; ++i) {
 				const size_t ia = i * nvir + a;
 				const size_t ib = i * nvir + b;
-				const double z_a = vlx_rsp_solution_z(solution, ia);
-				const double z_b = vlx_rsp_solution_z(solution, ib);
-				const double y_a = vlx_rsp_solution_y(solution, amp_count, ia, has_y);
-				const double y_b = vlx_rsp_solution_y(solution, amp_count, ib, has_y);
-				value += z_a * z_b - y_a * y_b;
+				const double t_a = vlx_rsp_solution_z(solution, ia) - vlx_rsp_solution_y(solution, amp_count, ia, has_y);
+				const double t_b = vlx_rsp_solution_z(solution, ib) - vlx_rsp_solution_y(solution, amp_count, ib, has_y);
+				value += t_a * t_b;
 			}
 			attach_mo[a * nvir + b] = value;
 			attach_mo[b * nvir + a] = value;
 		}
 	}
 
-	vlx_transform_mo_density_to_ao(detach->data, detach_mo, coeff_data, 0, nocc, num_ao);
-	vlx_transform_mo_density_to_ao(attach->data, attach_mo, coeff_data, nocc, nvir, num_ao);
-	vlx_symmetrize_square(detach->data, num_ao);
-	vlx_symmetrize_square(attach->data, num_ao);
-
-	md_temp_set_pos_back(temp_pos);
-	return true;
-}
-
-static void vlx_rsp_resolve_detachment_attachment(md_vlx_t* vlx) {
-	ASSERT(vlx);
-
-	if (!vlx->rsp.solution_vectors || vlx->rsp.number_of_excited_states == 0) {
-		return;
-	}
-
-	if (!vlx_rsp_ensure_state_storage(&vlx->rsp, vlx->arena)) {
-		return;
-	}
-
-	for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
-		if (vlx->rsp.solution_vectors[state_idx].data) {
-			if (!vlx_rsp_compute_detachment_attachment(vlx, state_idx)) {
-				MD_LOG_DEBUG("Failed to derive attachment/detachment matrices for response state %zu", state_idx + 1);
+	if (type == MD_VLX_TRANSITION_DENSITY_DETACHMENT) {
+		vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff_data, 0, nocc, num_ao);
+	} else {
+		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff_data, nocc, nvir, num_ao);
+		if (type == MD_VLX_TRANSITION_DENSITY_DIFFERENCE) {
+			detach_ao = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff_data, 0, nocc, num_ao);
+			for (size_t i = 0; i < num_ao * num_ao; ++i) {
+				out_matrix[i] -= detach_ao[i];
 			}
 		}
 	}
+
+	vlx_symmetrize_square(out_matrix, num_ao);
+	md_temp_set_pos_back(temp_pos);
+	return true;
 }
 
 static double vlx_dot(const double* a, const double* b, size_t count) {
@@ -3121,7 +3082,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	if ((flags & VLX_FLAG_SCF) && vlx->basis_set.atom_basis.count > 0) {
 		size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
         md_array_resize(vlx->ao_remap, num_ao, vlx->arena);
-		if (!build_ao_remap(vlx->ao_remap, num_ao, vlx, vlx->arena)) {
+		if (!build_ao_remap(vlx->ao_remap, num_ao, vlx)) {
 			MD_LOG_ERROR("Failed to build AO remap table");
 			goto done;
 		}
@@ -3151,23 +3112,6 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
 				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
 			}
-			if (vlx->rsp.detachment_density) {
-				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
-					md_vlx_2d_data_t* matrix = &vlx->rsp.detachment_density[state_idx];
-					if (matrix->data && matrix->size[0] == num_ao && matrix->size[1] == num_ao) {
-						ao_permute_square(matrix->data, num_ao, vlx->ao_remap);
-					}
-				}
-			}
-			if (vlx->rsp.attachment_density) {
-				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
-					md_vlx_2d_data_t* matrix = &vlx->rsp.attachment_density[state_idx];
-					if (matrix->data && matrix->size[0] == num_ao && matrix->size[1] == num_ao) {
-						ao_permute_square(matrix->data, num_ao, vlx->ao_remap);
-					}
-				}
-			}
-			vlx_rsp_resolve_detachment_attachment(vlx);
 		}
 	}
 
@@ -3355,32 +3299,37 @@ size_t md_vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out
 	return vlx_rsp_extract_nto(out_coefficients, out_lambdas, vlx, state_idx, type, lambda_count);
 }
 
-size_t md_vlx_rsp_detachment_matrix_size(const md_vlx_t* vlx, size_t state_idx) {
-	if (vlx && vlx->rsp.detachment_density && state_idx < vlx->rsp.number_of_excited_states) {
-		return vlx->rsp.detachment_density[state_idx].size[0];
+size_t md_vlx_rsp_transition_density_matrix_size(const md_vlx_t* vlx, size_t state_idx) {
+	if (!vlx || state_idx >= vlx->rsp.number_of_excited_states) {
+		return 0;
 	}
-	return 0;
+
+	size_t nocc = 0;
+	size_t nvir = 0;
+	if (!vlx_rsp_get_solution_dims(vlx, state_idx, &nocc, &nvir, NULL, NULL)) {
+		return 0;
+	}
+	(void)nocc;
+	(void)nvir;
+
+	return vlx->scf.alpha.coefficients.size[1];
 }
 
-const double* md_vlx_rsp_detachment_matrix_data(const md_vlx_t* vlx, size_t state_idx) {
-	if (vlx && vlx->rsp.detachment_density && state_idx < vlx->rsp.number_of_excited_states) {
-		return vlx->rsp.detachment_density[state_idx].data;
+size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type) {
+	if (!out_matrix || !vlx || state_idx >= vlx->rsp.number_of_excited_states) {
+		return 0;
 	}
-	return NULL;
-}
 
-size_t md_vlx_rsp_attachment_matrix_size(const md_vlx_t* vlx, size_t state_idx) {
-	if (vlx && vlx->rsp.attachment_density && state_idx < vlx->rsp.number_of_excited_states) {
-		return vlx->rsp.attachment_density[state_idx].size[0];
+	const size_t dim = md_vlx_rsp_transition_density_matrix_size(vlx, state_idx);
+	if (dim == 0) {
+		return 0;
 	}
-	return 0;
-}
 
-const double* md_vlx_rsp_attachment_matrix_data(const md_vlx_t* vlx, size_t state_idx) {
-	if (vlx && vlx->rsp.attachment_density && state_idx < vlx->rsp.number_of_excited_states) {
-		return vlx->rsp.attachment_density[state_idx].data;
+	if (!vlx_rsp_extract_transition_density_matrix(out_matrix, vlx, state_idx, type)) {
+		return 0;
 	}
-	return NULL;
+
+	return dim;
 }
 
 size_t md_vlx_vib_number_of_normal_modes(const md_vlx_t* vlx) {
