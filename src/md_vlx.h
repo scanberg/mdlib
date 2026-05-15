@@ -175,7 +175,7 @@ const double* md_vlx_rsp_detachment_matrix_data(const struct md_vlx_t* vlx, size
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)
 size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx);
 
-// Returns arrays of length D
+// Returns arrays of length D (Number of normal modes)
 const double* md_vlx_vib_ir_intensities(const struct md_vlx_t* vlx); 	// Unit: km/mol
 const double* md_vlx_vib_frequencies(const struct md_vlx_t* vlx);		// Unit: cm^-1
 const double* md_vlx_vib_reduced_masses(const struct md_vlx_t* vlx);	// Unit: amu
@@ -186,8 +186,8 @@ size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx);
 
 // Returns atom coordinates for a given optimization step
 const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx);
-const double* md_vlx_opt_energies(const struct md_vlx_t* vlx);
-const double* md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx);
+const double*  md_vlx_opt_energies(const struct md_vlx_t* vlx);
+const double*  md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx);
 
 // The normal mode for each atom
 // Returns array of length N (Number of atoms)
@@ -195,7 +195,7 @@ const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx);
 
 size_t md_vlx_vib_num_raman_activity(const struct md_vlx_t* vlx);
 
-// Returns array of length D
+// Returns array of length D (Number of normal modes)
 const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx);
 
 // Atomic properties

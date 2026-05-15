@@ -1,5 +1,6 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
+# Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(cmake/CheckVCPKG.cmake)
 
 project(mdlib LANGUAGES C)
@@ -221,12 +222,16 @@ if (MD_ENABLE_GPU)
     list(APPEND CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
+    include(cmake/ResolveVulkan.cmake)
+    resolve_vulkan()
     set(MD_GPU_BACKEND "VULKAN")
-    find_package(Vulkan REQUIRED)
+    list(APPEND MD_LIBS vulkan_backend)
     list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
+
+  include(cmake/ResolveSlang.cmake)
+  resolve_slang(VERSION 2026.8.1)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
-  find_program(SLANGC_EXECUTABLE slangc)
   include(cmake/CompileSlangShaders.cmake)
   list(APPEND GEN_FILES ${GEN_DIR}/topo_gpu_shaders.inl)
   list(APPEND GEN_FILES ${GEN_DIR}/gto_gpu_shaders.inl)
@@ -255,11 +260,6 @@ if (MD_ENABLE_VLX)
     set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
   endif()
   list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
-endif()
-
-if (MD_ENABLE_NETCDF)
-  find_package(NetCDF REQUIRED)
-  list(APPEND MD_LIBS NetCDF::NetCDF_C)
 endif()
 
 if (MD_ENABLE_HDF5)
