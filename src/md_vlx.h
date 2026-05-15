@@ -103,9 +103,11 @@ bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const struct md_vlx_t* vlx, s
 // Returns NULL on failure (out-of-range mo_idx, missing data, etc.).
 const double* md_vlx_scf_mo_coefficients(const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type);
 
-// Direct pointer to the AO coefficient vector for NTO lambda_idx / type (shell order).
-// Returns NULL on failure.
-const double* md_vlx_rsp_nto_coefficients(const struct md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
+// Extract NTO AO coefficient vectors for the first lambda_count lambdas of one state/type.
+// out_coefficients must hold lambda_count * md_vlx_scf_number_of_atomic_orbitals() doubles
+// and is written as [lambda_count][num_ao] in shell order. out_lambdas is optional and,
+// when non-NULL, must hold lambda_count doubles. Returns the number of lambdas written.
+size_t md_vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_lambdas, const struct md_vlx_t* vlx, size_t state_idx, md_vlx_nto_type_t type, size_t lambda_count);
 
 // The overlap matrix (S) is a square, symmetric matrix [N][N], this returns the length N
 size_t  md_vlx_scf_overlap_matrix_size(const struct md_vlx_t* vlx);
@@ -161,9 +163,13 @@ const double* md_vlx_rsp_cpp_sigma(const struct md_vlx_t* vlx);
 const double* md_vlx_rsp_cpp_delta_epsilon(const struct md_vlx_t* vlx);
 
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
-const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
-const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
-const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
+size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count);
+
+// Attachment / detachment matrices are square AO matrices [N][N] in shell order.
+size_t md_vlx_rsp_attachment_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
+const double* md_vlx_rsp_attachment_matrix_data(const struct md_vlx_t* vlx, size_t state_idx);
+size_t md_vlx_rsp_detachment_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
+const double* md_vlx_rsp_detachment_matrix_data(const struct md_vlx_t* vlx, size_t state_idx);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)

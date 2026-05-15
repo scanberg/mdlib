@@ -14,11 +14,16 @@
 #include <hdf5_hl.h>
 
 #include <float.h>
+#include <math.h>
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.5291772109029999
 
 #define HARTREE_TO_EV 27.2114079527
+
+#define VLX_NTO_POWER_ITERATIONS 256
+#define VLX_NTO_EIGENVALUE_EPSILON 1.0e-14
+#define VLX_NTO_CONVERGENCE_EPSILON 1.0e-10
 
 typedef enum {
 	VLX_FLAG_CORE = 1,
@@ -137,7 +142,10 @@ typedef struct md_vlx_rsp_t {
 	double* rotatory_strengths;		// unit = 10^-40 cgs
 	double* oscillator_strengths;
 	double* absorption_ev;
-	md_vlx_orbital_t* nto;
+	// Should have length of number_of_excited_states
+	md_vlx_1d_data_t* solution_vectors;
+	md_vlx_2d_data_t* detachment_density;
+	md_vlx_2d_data_t* attachment_density;
 	md_vlx_cpp_t cpp;
 } md_vlx_rsp_t;
 
@@ -1736,10 +1744,11 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		}
 
 		// Determine number of iterations by counting number of groups. Assume that all groups are iterations.
-		size_t num_links = 0;
-		if (H5Gget_num_objs(scf_history, &num_links) < 0) {
+		hsize_t h5_num_links = 0;
+		if (H5Gget_num_objs(scf_history, &h5_num_links) < 0) {
 			return false;
 		}
+		size_t num_links = (size_t)h5_num_links;
 
 		md_array_resize(vlx->scf.history.density_diff,	num_links, vlx->arena);
 		md_array_resize(vlx->scf.history.energy_diff,	num_links, vlx->arena);
@@ -1823,55 +1832,85 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_nto_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* arena) {
+static bool vlx_rsp_ensure_state_storage(md_vlx_rsp_t* rsp, md_allocator_i* arena) {
 	ASSERT(rsp);
-	char buf[64];
-	size_t dim[2];
+	ASSERT(arena);
 
-	// Test to read first NTO entry to get dimensions, NTO is optional and may not exist
-	if (!h5_read_dataset_dims(dim, 2, handle, "NTO_S1_alpha_orbitals")) {
-		// No NTO data present, do not fail here
+	const size_t state_count = rsp->number_of_excited_states;
+	if (state_count == 0) {
+		return false;
+	}
+
+	size_t old_count = md_array_size(rsp->solution_vectors);
+	md_array_resize(rsp->solution_vectors, state_count, arena);
+	if (old_count < state_count) {
+		MEMSET(rsp->solution_vectors + old_count, 0, sizeof(md_vlx_1d_data_t) * (state_count - old_count));
+	}
+
+	old_count = md_array_size(rsp->detachment_density);
+	md_array_resize(rsp->detachment_density, state_count, arena);
+	if (old_count < state_count) {
+		MEMSET(rsp->detachment_density + old_count, 0, sizeof(md_vlx_2d_data_t) * (state_count - old_count));
+	}
+
+	old_count = md_array_size(rsp->attachment_density);
+	md_array_resize(rsp->attachment_density, state_count, arena);
+	if (old_count < state_count) {
+		MEMSET(rsp->attachment_density + old_count, 0, sizeof(md_vlx_2d_data_t) * (state_count - old_count));
+	}
+
+	return true;
+}
+
+static bool h5_read_optional_1d_data(md_vlx_1d_data_t* out_data, hid_t handle, const char* field_name, md_allocator_i* arena) {
+	ASSERT(out_data);
+	ASSERT(field_name);
+	ASSERT(arena);
+
+	if (!h5_check_dataset_exists(handle, field_name)) {
 		return true;
 	}
 
-	md_array_resize(rsp->nto, rsp->number_of_excited_states, arena);
-	MEMSET(rsp->nto, 0, rsp->number_of_excited_states * sizeof(md_vlx_orbital_t));
+	size_t dim[2] = {0};
+	int num_dims = h5_read_dataset_dims(dim, 2, handle, field_name);
+	if (num_dims <= 0) {
+		MD_LOG_ERROR("Invalid dimensions in H5 vector dataset '%s'", field_name);
+		return false;
+	}
 
-	for (size_t i = 0; i < rsp->number_of_excited_states; ++i) {
-		int idx = (int)(i + 1);
+	size_t sample_count = 1;
+	for (int dim_idx = 0; dim_idx < num_dims; ++dim_idx) {
+		sample_count *= dim[dim_idx];
+	}
 
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
-		if (!h5_read_dataset_dims(dim, 2, handle, buf)) {
-			return false;
-		}
-		if (dim[0] == 0 || dim[1] == 0) {
-			MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
-			return false;
-		}
+	if (sample_count == 0) {
+		MD_LOG_ERROR("Empty H5 vector dataset '%s'", field_name);
+		return false;
+	}
 
-		md_array_resize(rsp->nto[i].coefficients.data, dim[0] * dim[1], arena);
-		MEMSET(rsp->nto[i].coefficients.data, 0, md_array_bytes(rsp->nto[i].coefficients.data));
-		MEMCPY(rsp->nto[i].coefficients.size, dim, sizeof(dim));
+	md_array_resize(out_data->data, sample_count, arena);
+	MEMSET(out_data->data, 0, md_array_bytes(out_data->data));
+	out_data->size = sample_count;
 
-		md_array_resize(rsp->nto[i].energy.data, dim[1], arena);
-		MEMSET(rsp->nto[i].energy.data, 0, md_array_bytes(rsp->nto[i].energy.data));
-		rsp->nto[i].energy.size = dim[1];
+	if (!h5_read_dataset_data(out_data->data, sample_count, handle, H5T_NATIVE_DOUBLE, field_name)) {
+		return false;
+	}
 
-		md_array_resize(rsp->nto[i].occupancy.data, dim[1], arena);
-		MEMSET(rsp->nto[i].occupancy.data, 0, md_array_bytes(rsp->nto[i].occupancy.data));
-		rsp->nto[i].occupancy.size = dim[1];
+	return true;
+}
 
-		if (!h5_read_dataset_data(rsp->nto[i].coefficients.data, md_array_size(rsp->nto[i].coefficients.data), handle, H5T_NATIVE_DOUBLE, buf)) {
-			return false;
-		}
+static bool h5_read_rsp_state_data(md_vlx_rsp_t* rsp, hid_t handle, md_allocator_i* arena) {
+	ASSERT(rsp);
+	ASSERT(arena);
 
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_occupations", idx);
-		if (!h5_read_dataset_data(rsp->nto[i].occupancy.data, md_array_size(rsp->nto[i].occupancy.data), handle, H5T_NATIVE_DOUBLE, buf)) {
-			return false;
-		}
+	if (!vlx_rsp_ensure_state_storage(rsp, arena)) {
+		return true;
+	}
 
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
-		if (!h5_read_dataset_data(rsp->nto[i].energy.data, md_array_size(rsp->nto[i].energy.data), handle, H5T_NATIVE_DOUBLE, buf)) {
+	char field_name[64];
+	for (size_t state_idx = 0; state_idx < rsp->number_of_excited_states; ++state_idx) {
+		snprintf(field_name, sizeof(field_name), "S%zu", state_idx + 1);
+		if (!h5_read_optional_1d_data(&rsp->solution_vectors[state_idx], handle, field_name, arena)) {
 			return false;
 		}
 	}
@@ -1903,22 +1942,10 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
 		MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
 
-		// NTO data
-		if (h5_check_dataset_exists(handle, "NTO_S1_alpha_orbitals")) {
-			if (!h5_read_nto_data(&vlx->rsp, handle, vlx->arena)) {
+		// Response eigenvectors used to derive NTOs and attachment/detachment matrices.
+		if (h5_check_dataset_exists(handle, "S1")) {
+			if (!h5_read_rsp_state_data(&vlx->rsp, handle, vlx->arena)) {
 				return false;
-			}
-		} else {
-			// Check for 'nto' folder inside
-			if (H5Lexists(handle, "nto", H5P_DEFAULT)) {
-				hid_t nto_group = H5Gopen(handle, "nto", H5P_DEFAULT);
-				if (nto_group >= 0) {
-					bool result = h5_read_nto_data(&vlx->rsp, nto_group, vlx->arena);
-					H5Gclose(nto_group);
-					if (!result) {
-						return false;
-					}
-				}
 			}
 		}
 
@@ -2230,6 +2257,473 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
+static bool vlx_rsp_get_solution_dims(const md_vlx_t* vlx, size_t state_idx, size_t* out_nocc, size_t* out_nvir, size_t* out_amp_count, bool* out_has_y) {
+	ASSERT(vlx);
+
+	if (!vlx->rsp.solution_vectors || state_idx >= vlx->rsp.number_of_excited_states) {
+		return false;
+	}
+
+	const md_vlx_1d_data_t* solution = &vlx->rsp.solution_vectors[state_idx];
+	if (!solution->data || solution->size == 0) {
+		return false;
+	}
+
+	const md_vlx_2d_data_t* coeff = &vlx->scf.alpha.coefficients;
+	if (!coeff->data || coeff->size[0] == 0 || coeff->size[1] == 0) {
+		return false;
+	}
+
+	const size_t num_mo = coeff->size[0];
+	const size_t nocc = vlx->number_of_alpha_electrons;
+	if (nocc == 0 || nocc >= num_mo) {
+		return false;
+	}
+
+	const size_t nvir = num_mo - nocc;
+	if (nvir != 0 && nocc > SIZE_MAX / nvir) {
+		return false;
+	}
+
+	const size_t amp_count = nocc * nvir;
+	bool has_y = false;
+	if (solution->size == amp_count) {
+		has_y = false;
+	} else if (solution->size == 2 * amp_count) {
+		has_y = true;
+	} else {
+		MD_LOG_ERROR("Unexpected response eigenvector length for state %zu: got %zu, expected %zu or %zu", state_idx + 1, solution->size, amp_count, 2 * amp_count);
+		return false;
+	}
+
+	if (out_nocc) *out_nocc = nocc;
+	if (out_nvir) *out_nvir = nvir;
+	if (out_amp_count) *out_amp_count = amp_count;
+	if (out_has_y) *out_has_y = has_y;
+	return true;
+}
+
+static inline double vlx_rsp_solution_z(const md_vlx_1d_data_t* solution, size_t amp_idx) {
+	return solution->data[amp_idx];
+}
+
+static inline double vlx_rsp_solution_y(const md_vlx_1d_data_t* solution, size_t amp_count, size_t amp_idx, bool has_y) {
+	return has_y ? solution->data[amp_count + amp_idx] : 0.0;
+}
+
+static void vlx_symmetrize_square(double* mat, size_t dim) {
+	ASSERT(mat);
+	for (size_t i = 0; i < dim; ++i) {
+		for (size_t j = i + 1; j < dim; ++j) {
+			const double value = 0.5 * (mat[i * dim + j] + mat[j * dim + i]);
+			mat[i * dim + j] = value;
+			mat[j * dim + i] = value;
+		}
+	}
+}
+
+static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_density, const double* coeff, size_t mo_offset, size_t mo_count, size_t num_ao) {
+	ASSERT(out_ao);
+	ASSERT(mo_density);
+	ASSERT(coeff);
+
+	const size_t temp_pos = md_temp_get_pos();
+	double* work = (double*)md_temp_push(sizeof(double) * mo_count * num_ao);
+
+	for (size_t i = 0; i < mo_count; ++i) {
+		for (size_t ao = 0; ao < num_ao; ++ao) {
+			double sum = 0.0;
+			for (size_t j = 0; j < mo_count; ++j) {
+				sum += mo_density[i * mo_count + j] * coeff[(mo_offset + j) * num_ao + ao];
+			}
+			work[i * num_ao + ao] = sum;
+		}
+	}
+
+	for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
+		for (size_t ao_j = 0; ao_j < num_ao; ++ao_j) {
+			double sum = 0.0;
+			for (size_t i = 0; i < mo_count; ++i) {
+				sum += coeff[(mo_offset + i) * num_ao + ao_i] * work[i * num_ao + ao_j];
+			}
+			out_ao[ao_i * num_ao + ao_j] = sum;
+		}
+	}
+
+	md_temp_set_pos_back(temp_pos);
+}
+
+static bool vlx_rsp_compute_detachment_attachment(md_vlx_t* vlx, size_t state_idx) {
+	ASSERT(vlx);
+
+	size_t nocc = 0;
+	size_t nvir = 0;
+	size_t amp_count = 0;
+	bool has_y = false;
+	if (!vlx_rsp_get_solution_dims(vlx, state_idx, &nocc, &nvir, &amp_count, &has_y)) {
+		return false;
+	}
+
+	const md_vlx_2d_data_t* coeff = &vlx->scf.alpha.coefficients;
+	const size_t num_ao = coeff->size[1];
+	const double* coeff_data = coeff->data;
+	const md_vlx_1d_data_t* solution = &vlx->rsp.solution_vectors[state_idx];
+
+	md_vlx_2d_data_t* detach = &vlx->rsp.detachment_density[state_idx];
+	md_vlx_2d_data_t* attach = &vlx->rsp.attachment_density[state_idx];
+	md_array_resize(detach->data, num_ao * num_ao, vlx->arena);
+	md_array_resize(attach->data, num_ao * num_ao, vlx->arena);
+	MEMSET(detach->data, 0, md_array_bytes(detach->data));
+	MEMSET(attach->data, 0, md_array_bytes(attach->data));
+	detach->size[0] = num_ao;
+	detach->size[1] = num_ao;
+	attach->size[0] = num_ao;
+	attach->size[1] = num_ao;
+
+	const size_t temp_pos = md_temp_get_pos();
+	double* detach_mo = (double*)md_temp_push(sizeof(double) * nocc * nocc);
+	double* attach_mo = (double*)md_temp_push(sizeof(double) * nvir * nvir);
+	MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
+	MEMSET(attach_mo, 0, sizeof(double) * nvir * nvir);
+
+	for (size_t i = 0; i < nocc; ++i) {
+		for (size_t j = i; j < nocc; ++j) {
+			double value = 0.0;
+			for (size_t a = 0; a < nvir; ++a) {
+				const size_t ia = i * nvir + a;
+				const size_t ja = j * nvir + a;
+				const double z_i = vlx_rsp_solution_z(solution, ia);
+				const double z_j = vlx_rsp_solution_z(solution, ja);
+				const double y_i = vlx_rsp_solution_y(solution, amp_count, ia, has_y);
+				const double y_j = vlx_rsp_solution_y(solution, amp_count, ja, has_y);
+				value += y_i * y_j - z_i * z_j;
+			}
+			detach_mo[i * nocc + j] = value;
+			detach_mo[j * nocc + i] = value;
+		}
+	}
+
+	for (size_t a = 0; a < nvir; ++a) {
+		for (size_t b = a; b < nvir; ++b) {
+			double value = 0.0;
+			for (size_t i = 0; i < nocc; ++i) {
+				const size_t ia = i * nvir + a;
+				const size_t ib = i * nvir + b;
+				const double z_a = vlx_rsp_solution_z(solution, ia);
+				const double z_b = vlx_rsp_solution_z(solution, ib);
+				const double y_a = vlx_rsp_solution_y(solution, amp_count, ia, has_y);
+				const double y_b = vlx_rsp_solution_y(solution, amp_count, ib, has_y);
+				value += z_a * z_b - y_a * y_b;
+			}
+			attach_mo[a * nvir + b] = value;
+			attach_mo[b * nvir + a] = value;
+		}
+	}
+
+	vlx_transform_mo_density_to_ao(detach->data, detach_mo, coeff_data, 0, nocc, num_ao);
+	vlx_transform_mo_density_to_ao(attach->data, attach_mo, coeff_data, nocc, nvir, num_ao);
+	vlx_symmetrize_square(detach->data, num_ao);
+	vlx_symmetrize_square(attach->data, num_ao);
+
+	md_temp_set_pos_back(temp_pos);
+	return true;
+}
+
+static void vlx_rsp_resolve_detachment_attachment(md_vlx_t* vlx) {
+	ASSERT(vlx);
+
+	if (!vlx->rsp.solution_vectors || vlx->rsp.number_of_excited_states == 0) {
+		return;
+	}
+
+	if (!vlx_rsp_ensure_state_storage(&vlx->rsp, vlx->arena)) {
+		return;
+	}
+
+	for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
+		if (vlx->rsp.solution_vectors[state_idx].data) {
+			if (!vlx_rsp_compute_detachment_attachment(vlx, state_idx)) {
+				MD_LOG_DEBUG("Failed to derive attachment/detachment matrices for response state %zu", state_idx + 1);
+			}
+		}
+	}
+}
+
+static double vlx_dot(const double* a, const double* b, size_t count) {
+	double sum = 0.0;
+	for (size_t i = 0; i < count; ++i) {
+		sum += a[i] * b[i];
+	}
+	return sum;
+}
+
+static double vlx_normalize(double* vec, size_t count) {
+	double norm = sqrt(vlx_dot(vec, vec, count));
+	if (norm > 0.0) {
+		const double inv_norm = 1.0 / norm;
+		for (size_t i = 0; i < count; ++i) {
+			vec[i] *= inv_norm;
+		}
+	}
+	return norm;
+}
+
+static void vlx_orthogonalize(double* vec, const double* basis, size_t basis_count, size_t dim) {
+	for (size_t basis_idx = 0; basis_idx < basis_count; ++basis_idx) {
+		const double* b = basis + basis_idx * dim;
+		const double projection = vlx_dot(vec, b, dim);
+		for (size_t i = 0; i < dim; ++i) {
+			vec[i] -= projection * b[i];
+		}
+	}
+}
+
+static bool vlx_symmetric_top_eigenpairs(double* out_values, double* out_vectors, const double* matrix, size_t dim, size_t pair_count) {
+	ASSERT(out_values);
+	ASSERT(out_vectors);
+	ASSERT(matrix);
+
+	if (dim == 0 || pair_count == 0) {
+		return false;
+	}
+
+	const size_t temp_pos = md_temp_get_pos();
+	double* work = (double*)md_temp_push(sizeof(double) * dim * dim);
+	double* vec = (double*)md_temp_push(sizeof(double) * dim);
+	double* next = (double*)md_temp_push(sizeof(double) * dim);
+	MEMCPY(work, matrix, sizeof(double) * dim * dim);
+	MEMSET(out_values, 0, sizeof(double) * pair_count);
+	MEMSET(out_vectors, 0, sizeof(double) * pair_count * dim);
+
+	for (size_t pair_idx = 0; pair_idx < pair_count; ++pair_idx) {
+		for (size_t i = 0; i < dim; ++i) {
+			vec[i] = 1.0 + 0.013 * (double)(((i + 1) * (pair_idx + 3)) % 17);
+		}
+		vlx_orthogonalize(vec, out_vectors, pair_idx, dim);
+		if (vlx_normalize(vec, dim) <= DBL_EPSILON) {
+			vec[pair_idx % dim] = 1.0;
+			vlx_orthogonalize(vec, out_vectors, pair_idx, dim);
+			vlx_normalize(vec, dim);
+		}
+
+		for (size_t iter = 0; iter < VLX_NTO_POWER_ITERATIONS; ++iter) {
+			for (size_t i = 0; i < dim; ++i) {
+				double sum = 0.0;
+				for (size_t j = 0; j < dim; ++j) {
+					sum += work[i * dim + j] * vec[j];
+				}
+				next[i] = sum;
+			}
+
+			vlx_orthogonalize(next, out_vectors, pair_idx, dim);
+			if (vlx_normalize(next, dim) <= DBL_EPSILON) {
+				break;
+			}
+
+			double diff = 0.0;
+			double neg_diff = 0.0;
+			for (size_t i = 0; i < dim; ++i) {
+				const double d = next[i] - vec[i];
+				const double nd = next[i] + vec[i];
+				diff += d * d;
+				neg_diff += nd * nd;
+				vec[i] = next[i];
+			}
+			if (sqrt(MIN(diff, neg_diff)) < VLX_NTO_CONVERGENCE_EPSILON) {
+				break;
+			}
+		}
+
+		double eigenvalue = 0.0;
+		for (size_t i = 0; i < dim; ++i) {
+			double row_sum = 0.0;
+			for (size_t j = 0; j < dim; ++j) {
+				row_sum += work[i * dim + j] * vec[j];
+			}
+			eigenvalue += vec[i] * row_sum;
+		}
+
+		if (eigenvalue < VLX_NTO_EIGENVALUE_EPSILON) {
+			break;
+		}
+
+		out_values[pair_idx] = eigenvalue;
+		MEMCPY(out_vectors + pair_idx * dim, vec, sizeof(double) * dim);
+
+		for (size_t i = 0; i < dim; ++i) {
+			for (size_t j = 0; j < dim; ++j) {
+				work[i * dim + j] -= eigenvalue * vec[i] * vec[j];
+			}
+		}
+	}
+
+	md_temp_set_pos_back(temp_pos);
+	return true;
+}
+
+static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, md_vlx_nto_type_t type, size_t lambda_count) {
+	ASSERT(vlx);
+
+	if (lambda_count == 0 || (!out_coefficients && !out_lambdas)) {
+		return 0;
+	}
+
+	size_t nocc = 0;
+	size_t nvir = 0;
+	size_t amp_count = 0;
+	bool has_y = false;
+	if (!vlx_rsp_get_solution_dims(vlx, state_idx, &nocc, &nvir, &amp_count, &has_y)) {
+		return 0;
+	}
+
+	const size_t pair_count = MIN(MIN(nocc, nvir), lambda_count);
+	if (pair_count == 0) {
+		return 0;
+	}
+
+	const md_vlx_2d_data_t* scf_coeff = &vlx->scf.alpha.coefficients;
+	const size_t num_ao = scf_coeff->size[1];
+	const double* coeff = scf_coeff->data;
+	const md_vlx_1d_data_t* solution = &vlx->rsp.solution_vectors[state_idx];
+
+	if (out_coefficients) {
+		MEMSET(out_coefficients, 0, sizeof(double) * lambda_count * num_ao);
+	}
+	if (out_lambdas) {
+		MEMSET(out_lambdas, 0, sizeof(double) * lambda_count);
+	}
+
+	const bool use_left_gram = nocc <= nvir;
+	const size_t small_dim = use_left_gram ? nocc : nvir;
+	const size_t large_dim = use_left_gram ? nvir : nocc;
+
+	const size_t temp_pos = md_temp_get_pos();
+	double* transition = (double*)md_temp_push(sizeof(double) * nocc * nvir);
+	double* gram = (double*)md_temp_push(sizeof(double) * small_dim * small_dim);
+	double* eigenvalues = (double*)md_temp_push(sizeof(double) * pair_count);
+	double* small_vectors = (double*)md_temp_push(sizeof(double) * pair_count * small_dim);
+	double* large_vectors = (double*)md_temp_push(sizeof(double) * pair_count * large_dim);
+	MEMSET(gram, 0, sizeof(double) * small_dim * small_dim);
+	MEMSET(large_vectors, 0, sizeof(double) * pair_count * large_dim);
+
+	for (size_t i = 0; i < nocc; ++i) {
+		for (size_t a = 0; a < nvir; ++a) {
+			const size_t idx = i * nvir + a;
+			transition[idx] = vlx_rsp_solution_z(solution, idx) - vlx_rsp_solution_y(solution, amp_count, idx, has_y);
+		}
+	}
+
+	if (use_left_gram) {
+		for (size_t i = 0; i < nocc; ++i) {
+			for (size_t j = i; j < nocc; ++j) {
+				double value = 0.0;
+				for (size_t a = 0; a < nvir; ++a) {
+					value += transition[i * nvir + a] * transition[j * nvir + a];
+				}
+				gram[i * nocc + j] = value;
+				gram[j * nocc + i] = value;
+			}
+		}
+	} else {
+		for (size_t a = 0; a < nvir; ++a) {
+			for (size_t b = a; b < nvir; ++b) {
+				double value = 0.0;
+				for (size_t i = 0; i < nocc; ++i) {
+					value += transition[i * nvir + a] * transition[i * nvir + b];
+				}
+				gram[a * nvir + b] = value;
+				gram[b * nvir + a] = value;
+			}
+		}
+	}
+
+	if (!vlx_symmetric_top_eigenpairs(eigenvalues, small_vectors, gram, small_dim, pair_count)) {
+		md_temp_set_pos_back(temp_pos);
+		return 0;
+	}
+
+	size_t written_count = 0;
+	for (size_t pair_idx = 0; pair_idx < pair_count; ++pair_idx) {
+		const double lambda = eigenvalues[pair_idx];
+		if (lambda < VLX_NTO_EIGENVALUE_EPSILON) {
+			break;
+		}
+
+		const double sigma = sqrt(lambda);
+		if (sigma <= DBL_EPSILON) {
+			break;
+		}
+
+		if (out_lambdas) {
+			out_lambdas[pair_idx] = lambda;
+		}
+
+		if (out_coefficients) {
+			const double* small = small_vectors + pair_idx * small_dim;
+			double* large = large_vectors + pair_idx * large_dim;
+
+			if (use_left_gram) {
+				for (size_t a = 0; a < nvir; ++a) {
+					double value = 0.0;
+					for (size_t i = 0; i < nocc; ++i) {
+						value += transition[i * nvir + a] * small[i];
+					}
+					large[a] = value / sigma;
+				}
+			} else {
+				for (size_t i = 0; i < nocc; ++i) {
+					double value = 0.0;
+					for (size_t a = 0; a < nvir; ++a) {
+						value += transition[i * nvir + a] * small[a];
+					}
+					large[i] = value / sigma;
+				}
+			}
+			vlx_normalize(large, large_dim);
+
+			const double* u = use_left_gram ? small : large;
+			const double* v = use_left_gram ? large : small;
+			double* out_coeff = out_coefficients + pair_idx * num_ao;
+
+			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+				for (size_t ao = 0; ao < num_ao; ++ao) {
+					double value = 0.0;
+					for (size_t a = 0; a < nvir; ++a) {
+						value += coeff[(nocc + a) * num_ao + ao] * v[a];
+					}
+					out_coeff[ao] = value;
+				}
+			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
+				for (size_t ao = 0; ao < num_ao; ++ao) {
+					double value = 0.0;
+					for (size_t i = 0; i < nocc; ++i) {
+						value += coeff[i * num_ao + ao] * u[i];
+					}
+					out_coeff[ao] = value;
+				}
+			} else {
+				break;
+			}
+		}
+
+		written_count++;
+	}
+
+	md_temp_set_pos_back(temp_pos);
+	return written_count;
+}
+
+static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, md_vlx_nto_type_t type, size_t lambda_count) {
+	if (!vlx || state_idx >= vlx->rsp.number_of_excited_states || lambda_count == 0) {
+		return 0;
+	}
+
+	if (vlx->rsp.solution_vectors && vlx->rsp.solution_vectors[state_idx].data) {
+		return vlx_rsp_extract_nto_from_solution(out_coefficients, out_lambdas, vlx, state_idx, type, lambda_count);
+	}
+
+	return 0;
+}
 static bool vlx_read_scf_results(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	ASSERT(vlx);
 
@@ -2492,67 +2986,6 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 			}
 		}
 	}
-	if (flags & VLX_FLAG_RSP) {
-		// Test if we can read the first NTO file
-		md_strb_reset(&sb);
-		md_strb_fmt(&sb, STR_FMT "_S1_NTO.h5", STR_ARG(base_file));
-		if (H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT) != H5I_INVALID_HID) {
-			for (int i = 0; i < (int)vlx->rsp.number_of_excited_states; ++i) {
-				md_strb_reset(&sb);
-				md_strb_fmt(&sb, STR_FMT "_S%i_NTO.h5", STR_ARG(base_file), i + 1);
-				if (md_path_is_valid(md_strb_to_str(sb))) {
-					// Open an existing file
-					hid_t file_id = H5Fopen(md_strb_to_cstr(sb), H5F_ACC_RDONLY, H5P_DEFAULT);
-					if (file_id == H5I_INVALID_HID) {
-						MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
-						goto done;
-					}
-
-					size_t dim[2];
-					if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
-						goto done;
-					}
-					if (dim[0] == 0 || dim[1] == 0) {
-						MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
-						goto done;
-					}
-
-					md_array_push(vlx->rsp.nto, (md_vlx_orbital_t) { 0 }, vlx->arena);
-					md_vlx_orbital_t* nto = md_array_last(vlx->rsp.nto);
-
-					md_array_resize(nto->coefficients.data, dim[0] * dim[1], vlx->arena);
-					MEMCPY(nto->coefficients.size, dim, sizeof(dim));
-
-					md_array_resize(nto->occupancy.data, dim[1], vlx->arena);
-					nto->occupancy.size = dim[1];
-
-					if (!h5_read_dataset_data(nto->coefficients.data, md_array_size(nto->coefficients.data), file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
-						goto done;
-					}
-					if (!h5_read_dataset_data(nto->occupancy.data, md_array_size(nto->occupancy.data), file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
-						goto done;
-					}
-
-					// Permute+transpose into [num_mo][num_ao] shell order
-					if (vlx->ao_remap) {
-						size_t nao = nto->coefficients.size[0];
-						size_t nmo = nto->coefficients.size[1];
-						ao_permute(nto->coefficients.data, nao, nmo, vlx->ao_remap);
-						nto->coefficients.size[0] = nmo;
-						nto->coefficients.size[1] = nao;
-					}
-				}
-				else {
-					MD_LOG_INFO("The veloxchem object specified %zu excited states, but the matching NTOs could not be found.", vlx->rsp.number_of_excited_states);
-					if (vlx->rsp.nto) {
-						md_array_free(vlx->rsp.nto, vlx->arena);
-						vlx->rsp.nto = NULL;
-						break;
-					}
-				}
-			}
-		}
-	}
 
 	result = true;
 done:
@@ -2718,18 +3151,23 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
 				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
 			}
-			// NTO: permute+transpose each [num_ao x num_mo] -> [num_mo x num_ao] in shell order
-			if (vlx->rsp.nto) {
-				for (size_t ni = 0; ni < vlx->rsp.number_of_excited_states; ni++) {
-					md_vlx_orbital_t* nto = &vlx->rsp.nto[ni];
-					if (!nto->coefficients.data) continue;
-					if (num_ao != nto->coefficients.size[0]) continue;
-					size_t num_mo = nto->coefficients.size[1];
-					ao_permute(nto->coefficients.data, num_ao, num_mo, vlx->ao_remap);
-					nto->coefficients.size[0] = num_mo;
-					nto->coefficients.size[1] = num_ao;
+			if (vlx->rsp.detachment_density) {
+				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
+					md_vlx_2d_data_t* matrix = &vlx->rsp.detachment_density[state_idx];
+					if (matrix->data && matrix->size[0] == num_ao && matrix->size[1] == num_ao) {
+						ao_permute_square(matrix->data, num_ao, vlx->ao_remap);
+					}
 				}
 			}
+			if (vlx->rsp.attachment_density) {
+				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
+					md_vlx_2d_data_t* matrix = &vlx->rsp.attachment_density[state_idx];
+					if (matrix->data && matrix->size[0] == num_ao && matrix->size[1] == num_ao) {
+						ao_permute_square(matrix->data, num_ao, vlx->ao_remap);
+					}
+				}
+			}
+			vlx_rsp_resolve_detachment_attachment(vlx);
 		}
 	}
 
@@ -2898,32 +3336,49 @@ const double* md_vlx_rsp_cpp_delta_epsilon(const md_vlx_t* vlx) {
 }
 
 bool md_vlx_rsp_has_nto(const md_vlx_t* vlx) {
-	return vlx && vlx->rsp.nto;
+	if (!vlx) return false;
+	if (vlx->rsp.solution_vectors) {
+		for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_excited_states; ++state_idx) {
+			if (vlx->rsp.solution_vectors[state_idx].data) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
-const double* md_vlx_rsp_nto_occupancy(const md_vlx_t* vlx, size_t nto_idx) {
-	if (vlx) {
-		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			return vlx->rsp.nto[nto_idx].occupancy.data;
-		}
+size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count) {
+	return vlx_rsp_extract_nto(NULL, out_lambdas, vlx, state_idx, MD_VLX_NTO_TYPE_PARTICLE, lambda_count);
+}
+
+size_t md_vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, md_vlx_nto_type_t type, size_t lambda_count) {
+	return vlx_rsp_extract_nto(out_coefficients, out_lambdas, vlx, state_idx, type, lambda_count);
+}
+
+size_t md_vlx_rsp_detachment_matrix_size(const md_vlx_t* vlx, size_t state_idx) {
+	if (vlx && vlx->rsp.detachment_density && state_idx < vlx->rsp.number_of_excited_states) {
+		return vlx->rsp.detachment_density[state_idx].size[0];
+	}
+	return 0;
+}
+
+const double* md_vlx_rsp_detachment_matrix_data(const md_vlx_t* vlx, size_t state_idx) {
+	if (vlx && vlx->rsp.detachment_density && state_idx < vlx->rsp.number_of_excited_states) {
+		return vlx->rsp.detachment_density[state_idx].data;
 	}
 	return NULL;
 }
 
-const double* md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx) {
-	if (vlx) {
-		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			return vlx->rsp.nto[nto_idx].occupancy.data + vlx->scf.lumo_idx[0];
-		}
+size_t md_vlx_rsp_attachment_matrix_size(const md_vlx_t* vlx, size_t state_idx) {
+	if (vlx && vlx->rsp.attachment_density && state_idx < vlx->rsp.number_of_excited_states) {
+		return vlx->rsp.attachment_density[state_idx].size[0];
 	}
-	return NULL;
+	return 0;
 }
 
-const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
-	if (vlx) {
-		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
-			return vlx->rsp.nto[nto_idx].energy.data;
-		}
+const double* md_vlx_rsp_attachment_matrix_data(const md_vlx_t* vlx, size_t state_idx) {
+	if (vlx && vlx->rsp.attachment_density && state_idx < vlx->rsp.number_of_excited_states) {
+		return vlx->rsp.attachment_density[state_idx].data;
 	}
 	return NULL;
 }
@@ -3180,7 +3635,8 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) 
 		
 		size_t vlx_num_atoms = 0;
 		if (!h5_read_scalar(&vlx_num_atoms, file_id, H5T_NATIVE_UINT64, "number_of_atoms")) {
-			return false;
+			md_arena_allocator_destroy(temp_arena);
+			goto done;
 		}
 
 		md_array(int) qm_atom_indices = md_array_create(int, vlx_num_atoms, temp_arena);
@@ -3400,31 +3856,6 @@ const double* md_vlx_scf_mo_coefficients(const md_vlx_t* vlx, size_t mo_idx, md_
 	size_t num_ao = orb->coefficients.size[1];
 	if (mo_idx >= num_mo || num_ao == 0) return NULL;
 	return orb->coefficients.data + mo_idx * num_ao;
-}
-
-// Returns a direct pointer to the AO coefficient vector for NTO lambda_idx / type.
-// Layout is [num_mo][num_ao] after permutation at load time.
-const double* md_vlx_rsp_nto_coefficients(const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
-	if (!vlx || !vlx->rsp.nto) return NULL;
-	if (nto_idx >= vlx->rsp.number_of_excited_states) return NULL;
-	const md_vlx_orbital_t* nto = &vlx->rsp.nto[nto_idx];
-	if (!nto->coefficients.data) return NULL;
-	size_t num_mo = number_of_molecular_orbitals(nto);
-    size_t num_ao = number_of_atomic_orbitals(nto);
-	// NTO coefficients are stored with the highest lamdbda at lumo_idx and falling from there.
-    // We use same positive coefficients for both particle and hole NTOs, so the indexing is the same for both.
-	size_t idx = 0;
-	if (type == MD_VLX_NTO_TYPE_PARTICLE) {
-		idx = vlx->scf.lumo_idx[MD_VLX_SPIN_ALPHA] + lambda_idx;
-    }
-    else if (type == MD_VLX_NTO_TYPE_HOLE) {
-        idx = vlx->scf.homo_idx[MD_VLX_SPIN_ALPHA] - lambda_idx;
-    }
-    else {
-        return NULL;
-    }
-	if (idx >= num_mo || num_ao == 0) return NULL;
-	return nto->coefficients.data + idx * num_ao;
 }
 
 // Deprecated extraction wrappers kept for backward compatibility.
