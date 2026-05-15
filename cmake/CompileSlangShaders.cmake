@@ -15,8 +15,8 @@ function(compile_slang_shaders OUT_FILE)
 
     set(COMPILED_SHADERS "")
 
-    if (NOT DEFINED SLANGC_EXECUTABLE)
-        message(FATAL_ERROR "SLANGC_EXECUTABLE not defined but required for shader compilation")
+    if (NOT DEFINED SLANG_EXECUTABLE)
+        message(FATAL_ERROR "SLANG_EXECUTABLE not defined but required for shader compilation")
     endif()
 
     foreach(SRC ${SHADER_SOURCES})
@@ -33,7 +33,7 @@ function(compile_slang_shaders OUT_FILE)
 
             add_custom_command(
                 OUTPUT ${SPV_FILE}
-                COMMAND ${SLANGC_EXECUTABLE}
+                COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     -target spirv
                     -emit-spirv-directly
@@ -53,7 +53,7 @@ function(compile_slang_shaders OUT_FILE)
             # Step 1: slangc -> MSL source
             add_custom_command(
                 OUTPUT ${MSL_FILE}
-                COMMAND ${SLANGC_EXECUTABLE}
+                COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     -target metal
                     -o ${MSL_FILE}

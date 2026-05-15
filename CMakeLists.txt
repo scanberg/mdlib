@@ -1,5 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.20)
 
+# Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(cmake/CheckVCPKG.cmake)
 
 project(mdlib LANGUAGES C)
@@ -48,7 +49,6 @@ set(MD_LINK_FLAGS)
 set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
-set(MD_INCLUDE_DIRS)
 set(MD_PROPERTIES)
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
@@ -213,9 +213,6 @@ set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
 if (MD_ENABLE_GPU)
-  include(cmake/ResolveSlang.cmake)
-  resolve_slang(VERSION 2026.8.1)
-
   if (APPLE)
     set(MD_GPU_BACKEND "METAL")
     enable_language(OBJC)
@@ -225,19 +222,15 @@ if (MD_ENABLE_GPU)
     list(APPEND CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
+    include(cmake/ResolveVulkan.cmake)
+    resolve_vulkan()
     set(MD_GPU_BACKEND "VULKAN")
-    find_package(Vulkan REQUIRED)
-    if (Vulkan_INCLUDE_DIRS)
-      list(APPEND MD_INCLUDE_DIRS ${Vulkan_INCLUDE_DIRS})
-    elseif (TARGET Vulkan::Vulkan)
-      get_target_property(VULKAN_INCLUDE_DIRS Vulkan::Vulkan INTERFACE_INCLUDE_DIRECTORIES)
-      if (VULKAN_INCLUDE_DIRS)
-        list(APPEND MD_INCLUDE_DIRS ${VULKAN_INCLUDE_DIRS})
-      endif()
-    endif()
+    list(APPEND MD_LIBS vulkan_backend)
     list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
 
+  include(cmake/ResolveSlang.cmake)
+  resolve_slang(VERSION 2026.8.1)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
   include(cmake/CompileSlangShaders.cmake)
   list(APPEND GEN_FILES ${GEN_DIR}/topo_gpu_shaders.inl)
@@ -267,11 +260,6 @@ if (MD_ENABLE_VLX)
     set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
   endif()
   list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
-endif()
-
-if (MD_ENABLE_NETCDF)
-  find_package(NetCDF REQUIRED)
-  list(APPEND MD_LIBS NetCDF::NetCDF_C)
 endif()
 
 if (MD_ENABLE_HDF5)
@@ -446,7 +434,6 @@ target_include_directories(mdlib
 
   PRIVATE
   gen/
-  ${MD_INCLUDE_DIRS}
   ext/fastlz/
   ext/dcd/
   ext/xtc/
