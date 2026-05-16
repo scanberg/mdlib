@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <core/md_common.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_os.h>
@@ -25,6 +26,7 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)
 // Returns the number of atoms decoded, or zero if the frame could not be decoded. The frame should be decoded into `out_header` and `out_xyz`, which should have capacity for at least three floats per atom.
 // Note that the data is only decoded and length units are typically nm.
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_xyz, size_t num_atoms);
+bool md_xtc_decode_frame_data_soa(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, size_t num_atoms);
 
 // TRAJECTORY
 bool md_xtc_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);

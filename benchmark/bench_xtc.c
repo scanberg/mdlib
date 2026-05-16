@@ -210,7 +210,8 @@ UBENCH_EX(xtc, xtc_catalyst) {
 			size_t frame_size = frame_end - frame_beg;
 			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
         }
     }
 
@@ -252,7 +253,8 @@ UBENCH_EX(xtc, xtc_amyloid) {
 			size_t frame_size = frame_end - frame_beg;
 			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
         }
     }
 
@@ -293,7 +295,8 @@ UBENCH_EX(xtc, xtc_aspirin) {
 			size_t frame_size = frame_end - frame_beg;
 			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
         }
     }
 
@@ -334,7 +337,8 @@ UBENCH_EX(xtc, xtc_ion_channel) {
 			size_t frame_size = frame_end - frame_beg;
 			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
+            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
         }
     }
 
