@@ -11,7 +11,6 @@
 #include <md_gto.h>
 
 #include <hdf5.h>
-#include <hdf5_hl.h>
 
 #include <float.h>
 #include <math.h>
