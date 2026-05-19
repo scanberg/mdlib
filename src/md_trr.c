@@ -223,7 +223,6 @@ static int calc_framebytes(const trr_header_t* sh) {
 }
 
 static bool trr_read_frame_header(md_file_t xd, trr_header_t* sh) {
-    ASSERT(xd);
     ASSERT(sh);
 
     const char version[] = "GMX_trn_file";
