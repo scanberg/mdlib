@@ -11,6 +11,15 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
+#if defined(__AVX2__)
+#ifndef LIBDIVIDE_AVX2
+#define LIBDIVIDE_AVX2
+#endif
+#define MD_XTC_AVX2_FASTPATH 1
+#else
+#define MD_XTC_AVX2_FASTPATH 0
+#endif
+
 #include <libdivide.h>
 #include <stdio.h>
 
@@ -58,6 +67,12 @@
 #define DIV_INIT(x) libdivide_u64_branchfree_gen(x)
 #define DIV(x, y) libdivide_u64_branchfree_do(x, y)
 
+#if MD_XTC_AVX2_FASTPATH
+#define DIV32_T struct libdivide_u32_branchfree_t
+#define DIV32_INIT(x) libdivide_u32_branchfree_gen(x)
+#define DIV32_VEC(x, y) libdivide_u32_branchfree_do_vec256(x, y)
+#endif
+
 typedef md_128i v4i_t;
 #define v4i_set(x, y, z, w) md_mm_set_epi32(w, z, y, x)
 #define v4i_set1(x)         md_mm_set1_epi32(x)
@@ -86,8 +101,8 @@ typedef struct xtc_reader_t {
 } xtc_reader_t;
 
 // Number of guard bytes that must be readable past the end of a bitstream so
-// the stateless 16-byte unaligned reads in extract_bits_be_raw_* never overrun.
-#define MD_XTC_STREAM_GUARD_BYTES 16
+// the stateless unaligned reads in extract_bits_be_raw_* never overrun.
+#define MD_XTC_STREAM_GUARD_BYTES 64
 // Required alignment (in bytes) for the bitstream buffer.
 #define MD_XTC_STREAM_ALIGNMENT   16
 
@@ -105,6 +120,16 @@ typedef struct unpack_data_t {
     DIV_T      div_zy;
     DIV_T      div_z;
 } unpack_data_t;
+
+#if MD_XTC_AVX2_FASTPATH
+typedef struct unpack_data32_t {
+    uint32_t   size_y;
+    uint32_t   size_z;
+    bit_data_t bit;
+    DIV32_T    div_zy;
+    DIV32_T    div_z;
+} unpack_data32_t;
+#endif
 
 static const uint32_t magicints[] = {
     0,        0,        0,       0,       0,       0,       0,       0,       0,       8,
@@ -149,8 +174,9 @@ static const DIV_T denoms_64_2[] = {
 // dependency chain through a stateful bitreader and exposes much more
 // instruction-level parallelism (each extract is independent given an offset).
 //
-// All extractors load up to 16 bytes from `base + (bit_offset >> 3)`. The
-// caller MUST ensure that `MD_XTC_STREAM_GUARD_BYTES` (16) bytes past the
+// All scalar extractors load up to 16 bytes from `base + (bit_offset >> 3)`;
+// the AVX2 small-run extractor reads two 32-byte chunks. The
+// caller MUST ensure that `MD_XTC_STREAM_GUARD_BYTES` bytes past the
 // logical end of the bitstream are readable.
 // =====================================================================
 
@@ -278,6 +304,118 @@ static FORCE_INLINE uint32_t extract_bits_be_raw_32(const uint8_t* base, size_t 
 #endif
     return (uint32_t)((raw << bit_in_byte) >> (64 - bit_length));
 }
+
+#if MD_XTC_AVX2_FASTPATH
+static FORCE_INLINE __m256i bswap_epi32x8_avx2(__m256i v) {
+    const __m256i shuf = _mm256_setr_epi8(
+        3,  2,  1,  0,  7,  6,  5,  4, 11, 10,  9,  8, 15, 14, 13, 12,
+        3,  2,  1,  0,  7,  6,  5,  4, 11, 10,  9,  8, 15, 14, 13, 12);
+    return _mm256_shuffle_epi8(v, shuf);
+}
+
+static FORCE_INLINE unpack_data32_t init_small_unpack32_avx2(uint32_t smallidx) {
+    ASSERT(FIRSTIDX <= smallidx && smallidx <= 32);
+    const uint32_t smallsize = magicints[smallidx];
+    unpack_data32_t unpack = {
+        .size_y = smallsize,
+        .size_z = smallsize,
+        .div_zy = DIV32_INIT(smallsize * smallsize),
+        .div_z  = DIV32_INIT(smallsize),
+    };
+    init_unpack_bit_data(&unpack.bit, smallidx);
+    return unpack;
+}
+
+static FORCE_INLINE __m256i extract_bits_be_raw_32x8_avx2(const uint8_t* base, size_t bit_offset, uint32_t bit_length) {
+    ASSERT(0 < bit_length && bit_length <= 32);
+
+    const uint8_t* ptr = base + (bit_offset >> 3);
+    const uint32_t bit_in_byte = (uint32_t)(bit_offset & 7);
+
+    __m256i w0 = _mm256_loadu_si256((const __m256i*)((const void*)ptr));
+    __m256i w1 = _mm256_loadu_si256((const __m256i*)((const void*)(ptr + 32)));
+    w0 = bswap_epi32x8_avx2(w0);
+    w1 = bswap_epi32x8_avx2(w1);
+
+    const __m256i lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    const __m256i start = _mm256_add_epi32(_mm256_mullo_epi32(lane, _mm256_set1_epi32((int)bit_length)), _mm256_set1_epi32((int)bit_in_byte));
+    const __m256i word_idx = _mm256_srli_epi32(start, 5);
+    const __m256i bit_idx  = _mm256_and_si256(start, _mm256_set1_epi32(31));
+
+    const __m256i word = _mm256_permutevar8x32_epi32(w0, word_idx);
+    const __m256i next_idx = _mm256_add_epi32(word_idx, _mm256_set1_epi32(1));
+    const __m256i next0 = _mm256_permutevar8x32_epi32(w0, next_idx);
+    const __m256i next1 = _mm256_permutevar8x32_epi32(w1, _mm256_sub_epi32(next_idx, _mm256_set1_epi32(8)));
+    const __m256i next = _mm256_blendv_epi8(next0, next1, _mm256_cmpgt_epi32(next_idx, _mm256_set1_epi32(7)));
+
+    const __m256i lo = _mm256_sllv_epi32(word, bit_idx);
+    const __m256i hi = _mm256_srlv_epi32(next, _mm256_sub_epi32(_mm256_set1_epi32(32), bit_idx));
+    return _mm256_srlv_epi32(_mm256_or_si256(lo, hi), _mm256_set1_epi32((int)(32 - bit_length)));
+}
+
+static FORCE_INLINE void unpack_coord32x8_avx2(__m256i* out_x, __m256i* out_y, __m256i* out_z, __m256i w, const unpack_data32_t* unpack) {
+    const __m256i t0 = _mm256_sllv_epi32(w, _mm256_set1_epi32((int)unpack->bit.sml_shift));
+    const __m256i t1 = _mm256_and_si256(t0, _mm256_set1_epi32((int)~0xFFu));
+    const __m256i t2 = _mm256_and_si256(w,  _mm256_set1_epi32((int)unpack->bit.part_mask));
+    const __m256i t  = bswap_epi32x8_avx2(_mm256_or_si256(t1, t2));
+    const uint32_t packed_bits = (unpack->bit.num_of_bits + 7u) & ~7u;
+    const __m256i v = _mm256_srlv_epi32(t, _mm256_set1_epi32((int)(32u - packed_bits)));
+
+    const __m256i x  = DIV32_VEC(v,  &unpack->div_zy);
+    const __m256i yz = DIV32_VEC(v,  &unpack->div_z);
+    const __m256i y  = _mm256_sub_epi32(yz, _mm256_mullo_epi32(x,  _mm256_set1_epi32((int)unpack->size_y)));
+    const __m256i z  = _mm256_sub_epi32(v,  _mm256_mullo_epi32(yz, _mm256_set1_epi32((int)unpack->size_z)));
+
+    *out_x = x;
+    *out_y = y;
+    *out_z = z;
+}
+
+static FORCE_INLINE __m256i prefix_sum_epi32x8_avx2(__m256i v) {
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 4));
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 8));
+    const __m256i lo_sum = _mm256_permutevar8x32_epi32(v, _mm256_set1_epi32(3));
+    return _mm256_add_epi32(v, _mm256_blend_epi32(_mm256_setzero_si256(), lo_sum, 0xF0));
+}
+
+static FORCE_INLINE __m256i propagate_small_axis8_avx2(__m256i coord, int32_t prev, int32_t smallnum) {
+    const __m256i delta = _mm256_sub_epi32(coord, _mm256_set1_epi32(smallnum));
+    return _mm256_add_epi32(prefix_sum_epi32x8_avx2(delta), _mm256_set1_epi32(prev));
+}
+
+static FORCE_INLINE void decode_small_run8_avx2(__m256i* out_x, __m256i* out_y, __m256i* out_z, const uint8_t* stream, size_t bit_offset, const unpack_data32_t* unpack, int32_t prev_x, int32_t prev_y, int32_t prev_z, int32_t smallnum) {
+    __m256i x, y, z;
+    __m256i w = extract_bits_be_raw_32x8_avx2(stream, bit_offset, unpack->bit.num_of_bits);
+    unpack_coord32x8_avx2(&x, &y, &z, w, unpack);
+    *out_x = propagate_small_axis8_avx2(x, prev_x, smallnum);
+    *out_y = propagate_small_axis8_avx2(y, prev_y, smallnum);
+    *out_z = propagate_small_axis8_avx2(z, prev_z, smallnum);
+}
+
+static FORCE_INLINE void store_small_run8_axis_soa_avx2(float* RESTRICT out, int atom_idx, int run_count, __m256i coord, int32_t big, __m256 scale_vec, float scale) {
+    out[atom_idx] = (float)_mm_cvtsi128_si32(_mm256_castsi256_si128(coord)) * scale;
+
+    __m256i ordered = _mm256_blend_epi32(coord, _mm256_set1_epi32(big), 0x01);
+    __m256i mask = _mm256_cmpgt_epi32(_mm256_set1_epi32(run_count), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+    _mm256_maskstore_ps(out + atom_idx + 1, mask, _mm256_mul_ps(_mm256_cvtepi32_ps(ordered), scale_vec));
+}
+
+static FORCE_INLINE void store_small_run8_soa_avx2(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, int atom_idx, int run_count, __m256i x, __m256i y, __m256i z, int32_t big_x, int32_t big_y, int32_t big_z, __m256 scale_vec, float scale) {
+    store_small_run8_axis_soa_avx2(out_x, atom_idx, run_count, x, big_x, scale_vec, scale);
+    store_small_run8_axis_soa_avx2(out_y, atom_idx, run_count, y, big_y, scale_vec, scale);
+    store_small_run8_axis_soa_avx2(out_z, atom_idx, run_count, z, big_z, scale_vec, scale);
+}
+
+static FORCE_INLINE int32_t extract_lane_epi32x8_avx2(__m256i v, int lane) {
+    __m256i splat = _mm256_permutevar8x32_epi32(v, _mm256_set1_epi32(lane));
+    return _mm_cvtsi128_si32(_mm256_castsi256_si128(splat));
+}
+
+static FORCE_INLINE v4i_t last_coord_avx2(__m256i x, __m256i y, __m256i z, int run_count) {
+    int lane = run_count - 1;
+    return v4i_set(extract_lane_epi32x8_avx2(x, lane), extract_lane_epi32x8_avx2(y, lane), extract_lane_epi32x8_avx2(z, lane), 0);
+}
+#endif
 
 // Peek-style helper for the run-length 6-bit field. Reads up to 32 bits.
 static FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size_t bit_offset, size_t bit_length) {
@@ -835,6 +973,13 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
     };
     init_unpack_bit_data(&sml_unpack.bit, smallidx);
 
+#if MD_XTC_AVX2_FASTPATH
+    unpack_data32_t sml_unpack32 = {0};
+    if (smallidx <= 32) {
+        sml_unpack32 = init_small_unpack32_avx2((uint32_t)smallidx);
+    }
+#endif
+
     int32_t num_bytes = 0;
     extract_int32(&num_bytes, 1, frame_ptr + offset); offset += 4;
     (void)num_bytes;
@@ -842,7 +987,11 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
     const uint8_t* stream = frame_ptr + offset;
     size_t bit_offset = 0;
 
-    md_128 coord_scale = md_mm_set1_ps(scale / precision);
+    const float coord_scale_val = scale / precision;
+    md_128 coord_scale = md_mm_set1_ps(coord_scale_val);
+#if MD_XTC_AVX2_FASTPATH
+    __m256 coord_scale_avx = _mm256_set1_ps(coord_scale_val);
+#endif
     v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
     v4i_t thiscoord;
     int run = 0;
@@ -885,20 +1034,39 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
             v4i_t vsmall = v4i_set1(smallnum);
             uint32_t sml_bits = sml_unpack.bit.num_of_bits;
 
-            uint64_t w = extract_bits_be_raw_57(stream, bit_offset, sml_bits);
-            v4i_t coord = unpack_coord64(w, &sml_unpack);
-            bit_offset += sml_bits;
-            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+#if MD_XTC_AVX2_FASTPATH
+            if (sml_bits <= 32) {
+                ASSERT(run_count <= 8); // 8 runs of 32 bits fits in 256-bit register
+                const int32_t big_x = simde_mm_extract_epi32(prevcoord, 0);
+                const int32_t big_y = simde_mm_extract_epi32(prevcoord, 1);
+                const int32_t big_z = simde_mm_extract_epi32(prevcoord, 2);
 
-            write_coord_soa(out_x, out_y, out_z, atom_idx++, thiscoord, coord_scale);
-            write_coord_soa(out_x, out_y, out_z, atom_idx++, prevcoord, coord_scale);
+                __m256i x, y, z;
+                decode_small_run8_avx2(&x, &y, &z, stream, bit_offset, &sml_unpack32, big_x, big_y, big_z, smallnum);
+                bit_offset += (size_t)sml_bits * run_count;
 
-            for (int i = 1; i < run_count; ++i) {
-                w = extract_bits_be_raw_57(stream, bit_offset, sml_bits);
-                coord = unpack_coord64(w, &sml_unpack);
+                store_small_run8_soa_avx2(out_x, out_y, out_z, atom_idx, run_count, x, y, z, big_x, big_y, big_z, coord_scale_avx, coord_scale_val);
+                atom_idx += run_count + 1;
+                thiscoord = last_coord_avx2(x, y, z, run_count);
+            } else
+#endif
+            {
+                uint64_t w = extract_bits_be_raw_57(stream, bit_offset, sml_bits);
+                v4i_t coord = unpack_coord64(w, &sml_unpack);
                 bit_offset += sml_bits;
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                // Write second before first coord as is required by the compression scheme
                 write_coord_soa(out_x, out_y, out_z, atom_idx++, thiscoord, coord_scale);
+                write_coord_soa(out_x, out_y, out_z, atom_idx++, prevcoord, coord_scale);
+
+                for (int i = 1; i < run_count; ++i) {
+                    w = extract_bits_be_raw_57(stream, bit_offset, sml_bits);
+                    coord = unpack_coord64(w, &sml_unpack);
+                    bit_offset += sml_bits;
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord_soa(out_x, out_y, out_z, atom_idx++, thiscoord, coord_scale);
+                }
             }
         } else {
             write_coord_soa(out_x, out_y, out_z, atom_idx++, thiscoord, coord_scale);
@@ -923,6 +1091,11 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
             sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
             sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
             init_unpack_bit_data(&sml_unpack.bit, smallidx);
+#if MD_XTC_AVX2_FASTPATH
+            if (smallidx <= 32) {
+                sml_unpack32 = init_small_unpack32_avx2((uint32_t)smallidx);
+            }
+#endif
         }
     }
 
