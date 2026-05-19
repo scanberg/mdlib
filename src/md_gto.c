@@ -612,7 +612,7 @@ static void free_buffer(GLuint id) {
     }
 }
 
-static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md_gto_t* gtos, uint32_t* orb_offsets, float* orb_scaling, uint32_t num_orbs, md_gto_eval_mode_t mode, md_gto_op_t op, GLuint program) {
+static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md_gto_t* gtos, uint32_t* orb_offsets, float* orb_scaling, size_t num_orbs, md_gto_eval_mode_t mode, md_gto_op_t op, GLuint program) {
     ASSERT(grid);
     ASSERT(gtos);
     ASSERT(orb_offsets);
