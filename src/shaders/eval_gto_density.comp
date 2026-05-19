@@ -32,7 +32,7 @@ layout(std140, binding = 0) uniform UniformBlock {
     uint operation;
 };
 
-layout(binding = 0) restrict uniform image3D out_vol;
+layout(binding = 0, r32f) uniform image3D vol;
 
 #define OP_SET 0u
 #define OP_ADD 1u
@@ -264,61 +264,55 @@ void main() {
     vec3 coord = (index_to_world * vec4(gl_GlobalInvocationID.xyz, 1.0)).xyz;
     float rho = 0.0;
 
-    if (num_screened_cgtos == 0u) {
-        // No CGTOs contribute to this region
-        if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
-            imageStore(out_vol, ivec3(gl_GlobalInvocationID.xyz), vec4(0.0));
-        }
-        return;
-    }
+    if (num_screened_cgtos > 0u) {
+        // DIV UP
+        uint num_tiles = (num_screened_cgtos + TILE_SIZE - 1) / TILE_SIZE;
 
-    // DIV UP
-    uint num_tiles = (num_screened_cgtos + TILE_SIZE - 1) / TILE_SIZE;
+        for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
+            // DIAGONAL TILE
 
-    for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
-        // DIAGONAL TILE
-
-        if (tid == 0) {
-            num_pgtos = 0;
-        }
-        barrier();
-
-        // Populate GSM
-        fill_D_tile(tile_i, tile_i);
-        fill_cgtos_tile(tile_i);
-
-        barrier();
-
-        // Evaluate into phi mu
-        eval_phis(phi_tile_mu, coord);
-
-        // Diagonal tile Contribution
-        rho += symmetric_contraction(phi_tile_mu);
-
-        for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
-            // OFF DIAGONAL TILE
             if (tid == 0) {
                 num_pgtos = 0;
             }
-
             barrier();
 
             // Populate GSM
-            fill_D_tile(tile_i, tile_j);
-            fill_cgtos_tile(tile_j);
+            fill_D_tile(tile_i, tile_i);
+            fill_cgtos_tile(tile_i);
 
             barrier();
 
-            // Evaluate into phi nu
-            eval_phis(phi_tile_nu, coord);
+            // Evaluate into phi mu
+            eval_phis(phi_tile_mu, coord);
 
-            // Off-diagonal tile Contribution
-            rho += contraction(phi_tile_mu, phi_tile_nu);
+            // Diagonal tile Contribution
+            rho += symmetric_contraction(phi_tile_mu);
+
+            for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
+                // OFF DIAGONAL TILE
+                if (tid == 0) {
+                    num_pgtos = 0;
+                }
+
+                barrier();
+
+                // Populate GSM
+                fill_D_tile(tile_i, tile_j);
+                fill_cgtos_tile(tile_j);
+
+                barrier();
+
+                // Evaluate into phi nu
+                eval_phis(phi_tile_nu, coord);
+
+                // Off-diagonal tile Contribution
+                rho += contraction(phi_tile_mu, phi_tile_nu);
+            }
         }
     }
     
     // Step 3: Write result
-    if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(out_vol)))) {
+    if (all(lessThan(gl_GlobalInvocationID.xyz, imageSize(vol)))) {
         ivec3 vol_idx = ivec3(gl_GlobalInvocationID.xyz);
         if ((operation & OP_ABS) != 0u) {
             rho = abs(rho);
@@ -328,21 +322,21 @@ void main() {
         case OP_SET:
             break;
         case OP_ADD:
-            rho += imageLoad(out_vol, vol_idx).x;
+            rho += imageLoad(vol, vol_idx).x;
             break;
         case OP_SUB:
-            rho = imageLoad(out_vol, vol_idx).x - rho;
+            rho = imageLoad(vol, vol_idx).x - rho;
             break;
         case OP_MAX:
-            rho = max(rho, imageLoad(out_vol, vol_idx).x);
+            rho = max(rho, imageLoad(vol, vol_idx).x);
             break;
         case OP_MIN:
-            rho = min(rho, imageLoad(out_vol, vol_idx).x);
+            rho = min(rho, imageLoad(vol, vol_idx).x);
             break;
         default:
             break;
         }
 
-        imageStore(out_vol, vol_idx, vec4(rho));
+        imageStore(vol, vol_idx, vec4(rho));
     }
 }

@@ -648,7 +648,7 @@ static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md
         goto done;
     }
 
-    size_t num_gtos = orb_offsets[num_orbs - 1] + 1;
+    size_t num_gtos = orb_offsets[num_orbs];
 
     GLintptr   ssbo_gto_offset = 0;
     GLsizeiptr ssbo_gto_size   = sizeof(md_gto_t) * num_gtos;
@@ -690,7 +690,7 @@ static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md
     glUniform1i(4, (GLint)mode);
     glUniform1ui(5, (GLuint)op);
 
-    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
+    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_WRITE, format);
 
     int num_groups[3] = {
         DIV_UP(grid->dim[0], 8),
@@ -816,7 +816,7 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     GLuint block = glGetUniformBlockIndex(program, "UniformBlock");
     glUniformBlockBinding(program, block, 0);
 
-    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
+    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_READ_WRITE, format);
 
     GLuint query;
     glGenQueries(1, &query);

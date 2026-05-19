@@ -17,7 +17,7 @@ struct CompGTO {
     uint  packed_ijkl;
 };
 
-layout(binding = 0) restrict uniform image3D out_vol;
+layout(binding = 0, r32f) uniform image3D vol;
 
 layout (binding = 0, std430) readonly restrict buffer GTOBuffer {
     GTO in_gtos[];
@@ -152,7 +152,7 @@ void main() {
     }
     
     // Step 3: Write result
-    if (all(lessThan(vol_idx, imageSize(out_vol)))) {
+    if (all(lessThan(vol_idx, imageSize(vol)))) {
         if ((in_operation & OP_ABS) != 0u) {
             out_psi = abs(out_psi);
         }
@@ -161,21 +161,21 @@ void main() {
         case OP_SET:
             break;
         case OP_ADD:
-            out_psi += imageLoad(out_vol, vol_idx).x;
+            out_psi += imageLoad(vol, vol_idx).x;
             break;
         case OP_SUB:
-            out_psi = imageLoad(out_vol, vol_idx).x - out_psi;
+            out_psi = imageLoad(vol, vol_idx).x - out_psi;
             break;
         case OP_MAX:
-            out_psi = max(out_psi, imageLoad(out_vol, vol_idx).x);
+            out_psi = max(out_psi, imageLoad(vol, vol_idx).x);
             break;
         case OP_MIN:
-            out_psi = min(out_psi, imageLoad(out_vol, vol_idx).x);
+            out_psi = min(out_psi, imageLoad(vol, vol_idx).x);
             break;
         default:
             break;
         }
 
-        imageStore(out_vol, vol_idx, vec4(out_psi));
+        imageStore(vol, vol_idx, vec4(out_psi));
     }
 }
