@@ -27,7 +27,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
 #define MD_PDB_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
-#define MD_PDB_CACHE_VERSION 15
+#define MD_PDB_CACHE_VERSION 16
 #define MD_PDB_PARSE_BIOMT 1
 
 // The opaque blob
@@ -798,7 +798,7 @@ typedef struct pdb_cache_t {
     int64_t* frame_offsets;
 } pdb_cache_t;
 
-static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_file_time_t traj_last_modified, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
 
@@ -816,9 +816,14 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num
         }
         if (cache->header.version != MD_PDB_CACHE_VERSION) {
             MD_LOG_INFO("PDB trajectory cache: version mismatch, expected %i, got %i", MD_PDB_CACHE_VERSION, (int)cache->header.version);
+            goto done;
         }
         if (cache->header.num_bytes != traj_num_bytes) {
             MD_LOG_INFO("PDB trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
+        }
+        if (traj_last_modified != 0 && cache->header.last_modified != traj_last_modified) {
+            MD_LOG_INFO("PDB trajectory cache: source file has been modified, cache is stale");
+            goto done;
         }
         if (cache->header.num_atoms == 0) {
             MD_LOG_ERROR("PDB trajectory cache: num atoms was zero");
@@ -919,7 +924,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     pdb_cache_t cache = {0};
-    if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
+    if (!try_read_cache(&cache, cache_file, filesize, file_info.modified_time, alloc)) {
         md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
         bool result = false;
@@ -952,6 +957,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
         cache.header.num_bytes = filesize;
         cache.header.num_atoms = num_atoms;
         cache.header.num_frames = data.num_models;
+        cache.header.last_modified = file_info.modified_time;
 
         cache.frame_offsets = md_alloc(alloc, (cache.header.num_frames + 1) * sizeof(int64_t));
         for (size_t i = 0; i < cache.header.num_frames; ++i) {

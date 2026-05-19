@@ -2,6 +2,7 @@
 
 #include <md_types.h>
 #include <core/md_unit.h>
+#include <core/md_os.h>
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -38,6 +39,7 @@ typedef struct md_trajectory_cache_header_t {
 	size_t num_bytes;
 	size_t num_atoms;
 	size_t num_frames;
+	md_file_time_t last_modified; // modification timestamp of the source trajectory file
 } md_trajectory_cache_header_t;
 
 #ifdef __cplusplus

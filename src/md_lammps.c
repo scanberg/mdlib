@@ -14,7 +14,7 @@
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
 #define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
 #define MD_LAMMPS_CACHE_MAGIC 0x89172bab
-#define MD_LAMMPS_CACHE_VERSION 15
+#define MD_LAMMPS_CACHE_VERSION 16
 #define MD_LAMMPS_SYSTEM_LOADER_ARG_TYPE 0x341293abc8273650
 
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags);
@@ -1567,14 +1567,14 @@ static bool lammps_trajectory_reader_init(md_trajectory_reader_i* reader, struct
 	return true;
 }
 
-static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_num_bytes, md_file_time_t traj_last_modified, md_allocator_i* alloc) {
 	ASSERT(cache);
 	ASSERT(alloc);
 
 	md_file_t file = {0};
 	bool result = false;
 	if (md_file_open(&file, cache_file, MD_FILE_READ)) {
-		
+
 		if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
 			MD_LOG_ERROR("LAMMPS trajectory cache: failed to read header");
 			goto done;
@@ -1586,9 +1586,14 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 		}
 		if (cache->header.version != MD_LAMMPS_CACHE_VERSION) {
 			MD_LOG_INFO("LAMMPS trajectory cache: version mismatch, expected %i, got %i", MD_LAMMPS_CACHE_VERSION, (int)cache->header.version);
+			goto done;
 		}
 		if (cache->header.num_bytes != traj_num_bytes) {
 			MD_LOG_INFO("LAMMPS trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+		}
+		if (traj_last_modified != 0 && cache->header.last_modified != traj_last_modified) {
+			MD_LOG_INFO("LAMMPS trajectory cache: source file has been modified, cache is stale");
+			goto done;
 		}
 		if (cache->header.num_atoms == 0) {
 			MD_LOG_ERROR("LAMMPS trajectory cache: num atoms was zero");
@@ -1714,17 +1719,18 @@ struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 	lammps_cache_t cache = {0};
 	md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-	if (!try_read_cache(cache_file, &cache, filesize, alloc)) {
+	if (!try_read_cache(cache_file, &cache, filesize, file_info.modified_time, alloc)) {
 		//If the cache file does not exist, we create one
 		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
-            md_arena_allocator_destroy(alloc);
+			md_arena_allocator_destroy(alloc);
 			return NULL;
 		}
 
 		cache.header.magic     = MD_LAMMPS_CACHE_MAGIC;
 		cache.header.version   = MD_LAMMPS_CACHE_VERSION;
 		cache.header.num_bytes = filesize;
+		cache.header.last_modified = file_info.modified_time;
 
 		if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
 			// If we fail to write the cache, that's ok, we can inform about it, but do not halt

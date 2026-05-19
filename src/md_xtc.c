@@ -19,7 +19,7 @@
 #endif
 
 #define MD_XTC_CACHE_MAGIC   0x8281237612371
-#define MD_XTC_CACHE_VERSION 3
+#define MD_XTC_CACHE_VERSION 4
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
 #define MD_XTC_TRAJ_READER_MAGIC 0x162365dac721996
 
@@ -1117,7 +1117,7 @@ typedef struct xtc_cache_t {
     double*  frame_times;
 } xtc_cache_t;
 
-static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_file_time_t traj_last_modified, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
 
@@ -1135,9 +1135,14 @@ static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num
         }
         if (cache->header.version != MD_XTC_CACHE_VERSION) {
             MD_LOG_INFO("XTC trajectory cache: version mismatch, expected %i, got %i", MD_XTC_CACHE_VERSION, (int)cache->header.version);
+            goto done;
         }
         if (cache->header.num_bytes != traj_num_bytes) {
             MD_LOG_INFO("XTC trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
+        }
+        if (traj_last_modified != 0 && cache->header.last_modified != traj_last_modified) {
+            MD_LOG_INFO("XTC trajectory cache: source file has been modified, cache is stale");
+            goto done;
         }
         if (cache->header.num_atoms == 0) {
             MD_LOG_ERROR("XTC trajectory cache: num atoms was zero");
@@ -1237,6 +1242,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_file_t file = {0};
     if (md_file_open(&file, path, MD_FILE_READ)) {
         const size_t filesize = md_file_size(file);
+        md_file_info_t file_info = {0};
+        md_file_info_extract(file, &file_info);
 
         uint8_t frame_header_data[XTC_SMALL_HEADER_SIZE];
         if (md_file_read(file, frame_header_data, XTC_SMALL_HEADER_SIZE) != XTC_SMALL_HEADER_SIZE) {
@@ -1261,11 +1268,12 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         str_t cache_path = { cache_buf, (size_t)len };
 
         xtc_cache_t cache = {0};
-        if (!try_read_cache(&cache, cache_path, filesize, alloc)) {
+        if (!try_read_cache(&cache, cache_path, filesize, file_info.modified_time, alloc)) {
             cache.header.magic = MD_XTC_CACHE_MAGIC;
             cache.header.version = MD_XTC_CACHE_VERSION;
             cache.header.num_bytes = filesize;
             cache.header.num_atoms = xtc_header.natoms;
+            cache.header.last_modified = file_info.modified_time;
             cache.header.num_frames = md_xtc_read_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
             if (!cache.header.num_frames) {
                 goto fail;
