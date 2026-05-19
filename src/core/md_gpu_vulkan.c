@@ -8,7 +8,7 @@
 // We avoid including platform-specific Vulkan headers via GLFW here.
 // This is a compute-only backend for now, so no surface extensions are required.
 #define VOLK_IMPLEMENTATION
-#include <Volk/volk.h>
+#include <volk.h>
 
 // Vulkan backend (C).
 // Compute-only for now; designed to be extended with graphics later.
