@@ -933,6 +933,14 @@ static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_id
     md_bond_remove(&sys->bond, bond_idx);
 }
 
+static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bond_idx_t bond_idx) {
+    ASSERT(sys);
+    if (bond_idx < (md_bond_idx_t)sys->bond.count) {
+        return sys->bond.flags[bond_idx];
+    }
+    return MD_BOND_FLAG_NONE;
+}
+
 static inline void md_bond_conn_clear(md_bond_conn_data_t* conn_data) {
     ASSERT(conn_data);
     conn_data->count = 0;

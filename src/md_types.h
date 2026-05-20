@@ -88,6 +88,7 @@ ENUM_FLAGS(md_flags_t)
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
 typedef enum {
+	MD_BOND_FLAG_NONE           = 0,
     MD_BOND_FLAG_COVALENT       = 0x1,
     MD_BOND_FLAG_DOUBLE         = 0x2,
     MD_BOND_FLAG_TRIPLE         = 0x4,
