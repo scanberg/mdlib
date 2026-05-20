@@ -9353,7 +9353,7 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
 #endif
 
     if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
-        if (sys->instance.count == 0) {
+        if (sys->instance.count == 0 || sys->entity.count == 0) {
             md_util_system_infer_entity_and_instance(sys, NULL);
         }
     }

@@ -879,6 +879,8 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             md_array_push_no_grow(sys->entity.description, str_copy(entities[i].description, alloc));
         }
     }
+    
+    md_array(str_t) comp_auth_asym_ids = NULL;
 
     // Populate molecule from parsed data
     if (atom_site_parsed) {
@@ -895,6 +897,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
 
         uint64_t prev_comp_key = 0; // Key of active componenent
         uint64_t prev_inst_key = 0; // Key of active instance
+
 
         for (size_t i = 0; i < num_atoms; ++i) {
             // Ignore alt loc entries unless 'A'
@@ -930,21 +933,25 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
 
                 // Start residue (store atom offset before adding any residue atoms)
                 md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-                md_array_push(sys->component.name,   make_label(comp_id), alloc);
+                md_array_push(sys->component.name, make_label(comp_id), alloc);
                 md_array_push(sys->component.seq_id, seq_id, alloc);
-                md_array_push(sys->component.flags,  comp_flags, alloc);
+                md_array_push(sys->component.flags, comp_flags, alloc);
+
+                md_array_push(comp_auth_asym_ids, auth_asym_id, temp_arena);
 
                 // Instance handling
-                if (inst_key != prev_inst_key) {
-                    // Start a new instance
-                    md_label_t inst_id      = make_label(label_asym_id);
-                    md_label_t inst_auth_id = make_label(auth_asym_id);
+                if (entity_idx != -1) {
+                    if (inst_key != prev_inst_key) {
+                        // Start a new instance
+                        md_label_t inst_id = make_label(label_asym_id);
+                        md_label_t inst_auth_id = make_label(auth_asym_id);
 
-                    md_array_push(sys->instance.id, inst_id, alloc);
-                    md_array_push(sys->instance.auth_id, inst_auth_id, alloc);
-                    md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
-                    md_array_push(sys->instance.entity_idx, entity_idx, alloc);
-                    sys->instance.count += 1;
+                        md_array_push(sys->instance.id, inst_id, alloc);
+                        md_array_push(sys->instance.auth_id, inst_auth_id, alloc);
+                        md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
+                        md_array_push(sys->instance.entity_idx, entity_idx, alloc);
+                        sys->instance.count += 1;
+                    }
                 }
                 sys->component.count += 1;
             }
@@ -977,6 +984,10 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
 
 	md_util_system_infer_covalent_bonds(sys);
     md_util_system_infer_comp_flags(sys);
+    if (sys->entity.count == 0 && comp_auth_asym_ids) {
+        // Fallback path if no entities are defined within the cif
+		md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
+    }
 
     return sys->atom.count > 0;
 }
