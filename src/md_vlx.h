@@ -193,7 +193,6 @@ size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx);
 // Returns atom coordinates for a given optimization step
 const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx);
 const double*  md_vlx_opt_energies(const struct md_vlx_t* vlx);
-const double*  md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx);
 
 // The normal mode for each atom
 // Returns array of length N (Number of atoms)

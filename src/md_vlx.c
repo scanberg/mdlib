@@ -157,7 +157,6 @@ typedef struct md_vlx_vib_t {
 
 typedef struct md_vlx_opt_t {
 	size_t number_of_steps;
-	double* nuclear_repulsion_energies;
 	double* energies;
 	dvec3_t* coordinates;
 } md_vlx_opt_t;
@@ -1185,6 +1184,21 @@ static bool vlx_parse_out(md_vlx_t* vlx, md_buffered_reader_t* reader) {
 	return true;
 }
 
+static H5I_type_t h5_get_object_type(hid_t loc_id, const char* name) {
+    if (H5Lexists(loc_id, name, H5P_DEFAULT) <= 0) {
+        return H5I_UNINIT;
+    }
+
+    hid_t obj_id = H5Oopen(loc_id, name, H5P_DEFAULT);
+    if (obj_id < 0) {
+        return H5I_BADID;
+    }
+
+    H5I_type_t type = H5Iget_type(obj_id);
+    H5Oclose(obj_id);
+    return type;
+}
+
 static bool h5_read_scalar(void* buf, hid_t file_id, hid_t mem_type_id, const char* field_name) {
 	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
 	if (exists == 0) {
@@ -2106,64 +2120,97 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
-	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
-	size_t dim[3];
-	int num_dim;
-	
-	num_dim = h5_read_dataset_dims(dim, 3, handle, "nuclear_repulsion_energies");
-	if (num_dim <= 0) {
-		return false;
-	}
+	const char* coord_ident  = NULL;
+	const char* energy_ident = NULL;
+	H5I_type_t energy_obj_type = -1;
 
-	// This is a fix because the input data in one version is supplied as a 2D object
-	size_t len = dim[0];
-	vlx->opt.number_of_steps = len;
-
-	md_array_resize(vlx->opt.nuclear_repulsion_energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.nuclear_repulsion_energies, md_array_size(vlx->opt.nuclear_repulsion_energies), handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion_energies")) {
-		return false;
-	}
-
-	const char* energy_ident = "";
-	const char* coord_ident  = "";
-
-	if (h5_check_dataset_exists(handle, "opt_energies")) {
-		energy_ident = "opt_energies";
-		coord_ident  = "opt_coordinates_au";
-	}
-	else if (h5_check_dataset_exists(handle, "scan_energies")) {
-		energy_ident = "scan_energies";
-		coord_ident  = "scan_coordinates_au";
-	}
-
-	if (strlen(energy_ident) == 0 || strlen(coord_ident) == 0) {
-		MD_LOG_ERROR("No optimization or scan data found in HDF5 file");
-		return false;
-	}
-
-	md_array_resize(vlx->opt.energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
-		return false;
-	}
-
-	num_dim = h5_read_dataset_dims(dim, 3, handle, coord_ident);
-	if (dim[0] != len || dim[1] != vlx->number_of_atoms || dim[2] != 3) {
-		MD_LOG_ERROR("Inconsistent or invalid opt_coordinates dimensions");
-		return false;
-	}
-
-	md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
-		return false;
-	}
-
-	if (vlx->opt.coordinates) {
-		for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
-			vlx->opt.coordinates[i] = dvec3_mul1(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
+	if (h5_get_object_type(handle, "opt_coordinates_au") == H5I_DATASET) {
+		coord_ident = "opt_coordinates_au";
+		energy_obj_type = h5_get_object_type(handle, "opt_energies");
+		if (energy_obj_type == H5I_DATASET || energy_obj_type == H5I_GROUP) {
+			energy_ident = "opt_energies";
+		}
+	} else if (h5_get_object_type(handle, "scan_coordinates_au") == H5I_DATASET) {
+		coord_ident = "scan_coordinates_au";
+		energy_obj_type = h5_get_object_type(handle, "scan_energies");
+		if (energy_obj_type == H5I_DATASET || energy_obj_type == H5I_GROUP) {
+			energy_ident = "scan_energies";
 		}
 	}
 
-	return true;
+	if (coord_ident && energy_ident) {
+		size_t dim[3];
+		int num_dim = h5_read_dataset_dims(dim, 3, handle, coord_ident);
+		if (num_dim <= 0) {
+			MD_LOG_ERROR("Invalid dimensions in %s dataset", coord_ident);
+			return false;
+		}
+
+		if (dim[1] != vlx->number_of_atoms || dim[2] != 3) {
+			MD_LOG_ERROR("Unexpected %s dimensions", coord_ident);
+			return false;
+		}
+
+		// Read coordinate data
+		md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
+		if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
+			return false;
+		}
+
+		if (vlx->opt.coordinates) {
+			for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
+				vlx->opt.coordinates[i] = dvec3_mul1(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
+			}
+		}
+
+		// This is the expected length we want to read for the corresponding energies
+		size_t len = dim[0];
+
+		if (energy_obj_type == H5I_GROUP) {
+			hid_t energy_group = H5Gopen(handle, energy_ident, H5P_DEFAULT);
+			if (energy_group < 0) {
+				MD_LOG_ERROR("Failed to open energy group '%s'", energy_ident);
+				return false;
+			}
+
+			// Energies are given as group with each step as an individual dataset, check that number of datasets matches number of steps
+			hsize_t num_links = 0;
+			if (H5Gget_num_objs(energy_group, &num_links) < 0) {
+				MD_LOG_ERROR("Failed to get number of links in energy group");
+				H5Gclose(energy_group);
+				return false;
+			}
+			if ((size_t)num_links != dim[0]) {
+				MD_LOG_ERROR("Number of datasets in energy group does not match number of steps in coordinates dataset");
+				H5Gclose(energy_group);
+				return false;
+			}
+			// Extract energies
+			md_array_resize(vlx->opt.energies, len, vlx->arena);
+			for (size_t i = 0; i < len; ++i) {
+				char name_buf[64];
+				snprintf(name_buf, sizeof(name_buf), "%zu", i);
+				if (!h5_read_dataset_data(&vlx->opt.energies[i], 1, energy_group, H5T_NATIVE_DOUBLE, name_buf)) {
+					MD_LOG_ERROR("Failed to read energy dataset '%s' in energy group", name_buf);
+					H5Gclose(energy_group);
+					return false;
+				}
+			}
+			H5Gclose(energy_group);
+		} else {
+			// Read energies directly from dataset
+			md_array_resize(vlx->opt.energies, len, vlx->arena);
+			if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
+				return false;
+			}
+		}
+
+		vlx->opt.number_of_steps = len;
+		return true;
+	} else {
+		MD_LOG_ERROR("Missing optimization/scan data, expected datasets '%s' and '%s'", coord_ident ? coord_ident : "opt_coordinates_au / scan_coordinates_au", energy_ident ? energy_ident : "opt_energies / scan_energies");
+	}
+	return false;
 }
 
 static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
@@ -3397,13 +3444,6 @@ const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx
 const double* md_vlx_opt_energies(const struct md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->opt.energies;
-	}
-	return NULL;
-}
-
-const double* md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx) {
-	if (vlx) {
-		return vlx->opt.nuclear_repulsion_energies;
 	}
 	return NULL;
 }
