@@ -39,6 +39,10 @@ struct md_gpu_image {
     md_gpu_image_desc_t desc;
 };
 
+struct md_gpu_sampler {
+    id<MTLSamplerState> sampler;
+};
+
 struct md_gpu_compute_pipeline {
     id<MTLComputePipelineState> pso;
     uint32_t tg_size[3];
@@ -57,6 +61,8 @@ struct md_gpu_command_buffer {
     struct md_gpu_buffer* bound_buffers[MD_GPU_MAX_BIND_SLOTS];
     size_t bound_buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
     struct md_gpu_image*  bound_images[MD_GPU_MAX_BIND_SLOTS];
+    struct md_gpu_image*  bound_sampled_images[MD_GPU_MAX_BIND_SLOTS];
+    struct md_gpu_sampler* bound_samplers[MD_GPU_MAX_BIND_SLOTS];
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t  push_constant_size;
 
@@ -81,6 +87,23 @@ static MTLPixelFormat to_mtl_format(md_gpu_image_format_t fmt) {
         case MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT: return MTLPixelFormatRGBA16Float;
         case MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT: return MTLPixelFormatRGBA32Float;
         default: return MTLPixelFormatInvalid;
+    }
+}
+
+static MTLSamplerMinMagFilter to_mtl_filter(md_gpu_filter_t filter) {
+    switch (filter) {
+        case MD_GPU_FILTER_NEAREST: return MTLSamplerMinMagFilterNearest;
+        case MD_GPU_FILTER_LINEAR:  return MTLSamplerMinMagFilterLinear;
+        default: return MTLSamplerMinMagFilterNearest;
+    }
+}
+
+static MTLSamplerAddressMode to_mtl_address_mode(md_gpu_address_mode_t mode) {
+    switch (mode) {
+        case MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE:   return MTLSamplerAddressModeClampToEdge;
+        case MD_GPU_ADDRESS_MODE_REPEAT:          return MTLSamplerAddressModeRepeat;
+        case MD_GPU_ADDRESS_MODE_MIRRORED_REPEAT: return MTLSamplerAddressModeMirrorRepeat;
+        default: return MTLSamplerAddressModeClampToEdge;
     }
 }
 
@@ -116,6 +139,8 @@ static inline void cmd_reset(struct md_gpu_command_buffer* cmd) {
     MEMSET(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
     MEMSET(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
     MEMSET(cmd->bound_images,  0, sizeof(cmd->bound_images));
+    MEMSET(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
+    MEMSET(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
     cmd->push_constant_size = 0;
     cmd->next_free = NULL;
 }
@@ -248,6 +273,43 @@ void md_gpu_image_destroy(md_gpu_image_t image) {
     if (!image) return;
     [image->texture release];
     free(image);
+}
+
+bool md_gpu_image_extract_desc(md_gpu_image_t image, md_gpu_image_desc_t* out_desc) {
+    if (!image || !out_desc) return false;
+    *out_desc = image->desc;
+    return true;
+}
+
+md_gpu_sampler_t md_gpu_sampler_create(md_gpu_device_t device,
+                                       const md_gpu_sampler_desc_t* desc) {
+    if (!device || !desc) return NULL;
+    struct md_gpu_sampler* sampler = (struct md_gpu_sampler*)calloc(1, sizeof(struct md_gpu_sampler));
+    if (!sampler) return NULL;
+
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = to_mtl_filter(desc->min_filter);
+    sd.magFilter = to_mtl_filter(desc->mag_filter);
+    sd.mipFilter = MTLSamplerMipFilterNotMipmapped;
+    sd.sAddressMode = to_mtl_address_mode(desc->address_u);
+    sd.tAddressMode = to_mtl_address_mode(desc->address_v);
+    sd.rAddressMode = to_mtl_address_mode(desc->address_w);
+    sd.normalizedCoordinates = YES;
+
+    sampler->sampler = [device->device newSamplerStateWithDescriptor:sd];
+    [sd release];
+    if (!sampler->sampler) {
+        free(sampler);
+        return NULL;
+    }
+
+    return sampler;
+}
+
+void md_gpu_sampler_destroy(md_gpu_sampler_t sampler) {
+    if (!sampler) return;
+    [sampler->sampler release];
+    free(sampler);
 }
 
 /* =============================
@@ -411,6 +473,22 @@ void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd,
     cmd->bound_images[slot] = image;
 }
 
+void md_gpu_cmd_bind_sampled_image(md_gpu_command_buffer_t cmd,
+                                   uint32_t slot,
+                                   md_gpu_image_t image) {
+    ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
+    ASSERT(slot != MD_GPU_PUSH_CONSTANTS_SLOT);
+    cmd->bound_sampled_images[slot] = image;
+}
+
+void md_gpu_cmd_bind_sampler(md_gpu_command_buffer_t cmd,
+                             uint32_t slot,
+                             md_gpu_sampler_t sampler) {
+    ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
+    ASSERT(slot != MD_GPU_PUSH_CONSTANTS_SLOT);
+    cmd->bound_samplers[slot] = sampler;
+}
+
 void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd,
                                const void* data,
                                size_t size) {
@@ -431,6 +509,10 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
             [enc setBuffer:cmd->bound_buffers[s]->buffer offset:cmd->bound_buffer_offsets[s] atIndex:s + 1];
         if (cmd->bound_images[s])
             [enc setTexture:cmd->bound_images[s]->texture atIndex:s];
+        if (cmd->bound_sampled_images[s])
+            [enc setTexture:cmd->bound_sampled_images[s]->texture atIndex:s];
+        if (cmd->bound_samplers[s])
+            [enc setSamplerState:cmd->bound_samplers[s]->sampler atIndex:s];
     }
 
     if (cmd->push_constant_size > 0)

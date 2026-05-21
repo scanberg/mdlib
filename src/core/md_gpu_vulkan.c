@@ -69,6 +69,11 @@ typedef struct md_gpu_image {
     VkImageLayout layout; // current layout for implicit transitions
 } md_gpu_image;
 
+typedef struct md_gpu_sampler {
+    md_gpu_device_t device;
+    VkSampler sampler;
+} md_gpu_sampler;
+
 typedef struct md_gpu_compute_pipeline {
     md_gpu_device_t device;
     VkPipeline pipeline;
@@ -91,6 +96,8 @@ typedef struct md_gpu_command_buffer {
     size_t bound_buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
     size_t bound_buffer_sizes[MD_GPU_MAX_BIND_SLOTS];
     md_gpu_image_t bound_images[MD_GPU_MAX_BIND_SLOTS];
+    md_gpu_image_t bound_sampled_images[MD_GPU_MAX_BIND_SLOTS];
+    md_gpu_sampler_t bound_samplers[MD_GPU_MAX_BIND_SLOTS];
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t push_constant_size;
 } md_gpu_command_buffer;
@@ -117,6 +124,8 @@ static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queu
     memset(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
     memset(cmd->bound_buffer_sizes, 0, sizeof(cmd->bound_buffer_sizes));
     memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
+    memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
+    memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
     memset(cmd->push_constants, 0, sizeof(cmd->push_constants));
     cmd->push_constant_size = 0;
 }
@@ -155,6 +164,23 @@ static VkFormat md_vk_format_from_md(md_gpu_image_format_t fmt) {
         case MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT:  return VK_FORMAT_R16G16B16A16_SFLOAT;
         case MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT:  return VK_FORMAT_R32G32B32A32_SFLOAT;
         default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+static VkFilter md_vk_filter_from_md(md_gpu_filter_t filter) {
+    switch (filter) {
+        case MD_GPU_FILTER_NEAREST: return VK_FILTER_NEAREST;
+        case MD_GPU_FILTER_LINEAR:  return VK_FILTER_LINEAR;
+        default: return VK_FILTER_NEAREST;
+    }
+}
+
+static VkSamplerAddressMode md_vk_address_mode_from_md(md_gpu_address_mode_t mode) {
+    switch (mode) {
+        case MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE:    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        case MD_GPU_ADDRESS_MODE_REPEAT:           return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        case MD_GPU_ADDRESS_MODE_MIRRORED_REPEAT:  return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        default: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
 }
 
@@ -359,8 +385,8 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     }
     q->free_count = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
 
-    // Create descriptor set layout: buffers at binding 0..(MAX_BIND_SLOTS-1), images at MAX_BIND_SLOTS..(2*MAX_BIND_SLOTS-1)
-    VkDescriptorSetLayoutBinding bindings[2 * MD_GPU_MAX_BIND_SLOTS];
+    // Create descriptor set layout: buffers, storage images, sampled images, and samplers occupy separate Vulkan binding ranges.
+    VkDescriptorSetLayoutBinding bindings[4 * MD_GPU_MAX_BIND_SLOTS];
     for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -368,16 +394,28 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[i].pImmutableSamplers = NULL;
 
-        bindings[MD_GPU_MAX_BIND_SLOTS + i].binding = MD_GPU_MAX_BIND_SLOTS + i;
-        bindings[MD_GPU_MAX_BIND_SLOTS + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings[MD_GPU_MAX_BIND_SLOTS + i].descriptorCount = 1;
-        bindings[MD_GPU_MAX_BIND_SLOTS + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[MD_GPU_MAX_BIND_SLOTS + i].pImmutableSamplers = NULL;
+        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].binding = MD_GPU_STORAGE_IMAGE_BINDING_BASE + i;
+        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].descriptorCount = 1;
+        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].pImmutableSamplers = NULL;
+
+        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].binding = MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i;
+        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].descriptorCount = 1;
+        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].pImmutableSamplers = NULL;
+
+        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].binding = MD_GPU_SAMPLER_BINDING_BASE + i;
+        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].descriptorCount = 1;
+        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].pImmutableSamplers = NULL;
     }
 
     VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dsl_ci.bindingCount = 2 * MD_GPU_MAX_BIND_SLOTS;
+    dsl_ci.bindingCount = 4 * MD_GPU_MAX_BIND_SLOTS;
     dsl_ci.pBindings = bindings;
     if (!md_vk_check(vkCreateDescriptorSetLayout(out_dev->device, &dsl_ci, NULL, &out_dev->descriptor_set_layout), "vkCreateDescriptorSetLayout")) return false;
 
@@ -396,17 +434,21 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     if (!md_vk_check(vkCreatePipelineLayout(out_dev->device, &pl_ci, NULL, &out_dev->pipeline_layout), "vkCreatePipelineLayout")) return false;
 
     // Create descriptor pool
-    VkDescriptorPoolSize pool_sizes[2];
+    VkDescriptorPoolSize pool_sizes[4];
     pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     pool_sizes[0].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
     pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     pool_sizes[1].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
+    pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    pool_sizes[2].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
+    pool_sizes[3].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+    pool_sizes[3].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
 
     VkDescriptorPoolCreateInfo dp_ci = {0};
     dp_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dp_ci.flags = 0; /* no FREE_DESCRIPTOR_SET_BIT; sets are pre-allocated and reused */
     dp_ci.maxSets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
-    dp_ci.poolSizeCount = 2;
+    dp_ci.poolSizeCount = 4;
     dp_ci.pPoolSizes = pool_sizes;
     if (!md_vk_check(vkCreateDescriptorPool(out_dev->device, &dp_ci, NULL, &out_dev->descriptor_pool), "vkCreateDescriptorPool")) return false;
 
@@ -764,6 +806,63 @@ void md_gpu_image_destroy(md_gpu_image_t image) {
     free(img);
 }
 
+bool md_gpu_image_extract_desc(md_gpu_image_t image, md_gpu_image_desc_t* out_desc) {
+    if (!image || !out_desc) return false;
+    md_gpu_image* img = (md_gpu_image*)image;
+
+    out_desc->width = img->width;
+    out_desc->height = img->height;
+    out_desc->depth = img->depth;
+    out_desc->format = md_vk_format_to_md(img->format);
+    out_desc->flags = img->flags;
+
+    return true;
+}
+
+md_gpu_sampler_t md_gpu_sampler_create(md_gpu_device_t device, const md_gpu_sampler_desc_t* desc) {
+    if (!device || !desc) return NULL;
+    md_gpu_device* dev = (md_gpu_device*)device;
+
+    md_gpu_sampler* sampler = (md_gpu_sampler*)calloc(1, sizeof(md_gpu_sampler));
+    if (!sampler) return NULL;
+    sampler->device = device;
+
+    VkSamplerCreateInfo sci = {0};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = md_vk_filter_from_md(desc->mag_filter);
+    sci.minFilter = md_vk_filter_from_md(desc->min_filter);
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = md_vk_address_mode_from_md(desc->address_u);
+    sci.addressModeV = md_vk_address_mode_from_md(desc->address_v);
+    sci.addressModeW = md_vk_address_mode_from_md(desc->address_w);
+    sci.mipLodBias = 0.0f;
+    sci.anisotropyEnable = VK_FALSE;
+    sci.maxAnisotropy = 1.0f;
+    sci.compareEnable = VK_FALSE;
+    sci.compareOp = VK_COMPARE_OP_ALWAYS;
+    sci.minLod = 0.0f;
+    sci.maxLod = 0.0f;
+    sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    sci.unnormalizedCoordinates = VK_FALSE;
+
+    if (!md_vk_check(vkCreateSampler(dev->device, &sci, NULL, &sampler->sampler), "vkCreateSampler")) {
+        free(sampler);
+        return NULL;
+    }
+
+    return (md_gpu_sampler_t)sampler;
+}
+
+void md_gpu_sampler_destroy(md_gpu_sampler_t sampler) {
+    if (!sampler) return;
+    md_gpu_sampler* smp = (md_gpu_sampler*)sampler;
+    md_gpu_device* dev = (md_gpu_device*)smp->device;
+    if (dev && smp->sampler) {
+        vkDestroySampler(dev->device, smp->sampler, NULL);
+    }
+    free(smp);
+}
+
 md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device, const md_gpu_compute_pipeline_desc_t* desc) {
     if (!device || !desc || !desc->shader_bytes || desc->shader_byte_size == 0) return NULL;
     md_gpu_device* dev = (md_gpu_device*)device;
@@ -892,9 +991,11 @@ static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, Vk
 static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorSet ds) {
     md_gpu_device* dev = cmd->dev;
 
-    VkWriteDescriptorSet writes[2 * MD_GPU_MAX_BIND_SLOTS];
+    VkWriteDescriptorSet writes[4 * MD_GPU_MAX_BIND_SLOTS];
     VkDescriptorBufferInfo buffer_infos[MD_GPU_MAX_BIND_SLOTS];
-    VkDescriptorImageInfo image_infos[MD_GPU_MAX_BIND_SLOTS];
+    VkDescriptorImageInfo storage_image_infos[MD_GPU_MAX_BIND_SLOTS];
+    VkDescriptorImageInfo sampled_image_infos[MD_GPU_MAX_BIND_SLOTS];
+    VkDescriptorImageInfo sampler_infos[MD_GPU_MAX_BIND_SLOTS];
     uint32_t write_count = 0;
 
     for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
@@ -925,19 +1026,63 @@ static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorS
                                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
-            image_infos[i].sampler = VK_NULL_HANDLE;
-            image_infos[i].imageView = img->view;
-            image_infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            storage_image_infos[i].sampler = VK_NULL_HANDLE;
+            storage_image_infos[i].imageView = img->view;
+            storage_image_infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
             writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[write_count].pNext = NULL;
             writes[write_count].dstSet = ds;
-            writes[write_count].dstBinding = MD_GPU_MAX_BIND_SLOTS + i;
+            writes[write_count].dstBinding = MD_GPU_STORAGE_IMAGE_BINDING_BASE + i;
             writes[write_count].dstArrayElement = 0;
             writes[write_count].descriptorCount = 1;
             writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
             writes[write_count].pBufferInfo = NULL;
-            writes[write_count].pImageInfo = &image_infos[i];
+            writes[write_count].pImageInfo = &storage_image_infos[i];
+            writes[write_count].pTexelBufferView = NULL;
+            write_count++;
+        }
+
+        if (cmd->bound_sampled_images[i]) {
+            md_gpu_image* img = (md_gpu_image*)cmd->bound_sampled_images[i];
+
+            md_vk_transition_image(cmd->vk_cmd, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+
+            sampled_image_infos[i].sampler = VK_NULL_HANDLE;
+            sampled_image_infos[i].imageView = img->view;
+            sampled_image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[write_count].pNext = NULL;
+            writes[write_count].dstSet = ds;
+            writes[write_count].dstBinding = MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i;
+            writes[write_count].dstArrayElement = 0;
+            writes[write_count].descriptorCount = 1;
+            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[write_count].pBufferInfo = NULL;
+            writes[write_count].pImageInfo = &sampled_image_infos[i];
+            writes[write_count].pTexelBufferView = NULL;
+            write_count++;
+        }
+
+        if (cmd->bound_samplers[i]) {
+            md_gpu_sampler* sampler = (md_gpu_sampler*)cmd->bound_samplers[i];
+
+            sampler_infos[i].sampler = sampler->sampler;
+            sampler_infos[i].imageView = VK_NULL_HANDLE;
+            sampler_infos[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[write_count].pNext = NULL;
+            writes[write_count].dstSet = ds;
+            writes[write_count].dstBinding = MD_GPU_SAMPLER_BINDING_BASE + i;
+            writes[write_count].dstArrayElement = 0;
+            writes[write_count].descriptorCount = 1;
+            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            writes[write_count].pBufferInfo = NULL;
+            writes[write_count].pImageInfo = &sampler_infos[i];
             writes[write_count].pTexelBufferView = NULL;
             write_count++;
         }
@@ -981,6 +1126,22 @@ void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_im
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
     ASSERT(c->is_recording);
     c->bound_images[slot] = image;
+}
+
+void md_gpu_cmd_bind_sampled_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image) {
+    if (!cmd) return;
+    ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    ASSERT(c->is_recording);
+    c->bound_sampled_images[slot] = image;
+}
+
+void md_gpu_cmd_bind_sampler(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_sampler_t sampler) {
+    if (!cmd) return;
+    ASSERT(slot < MD_GPU_MAX_BIND_SLOTS);
+    md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd;
+    ASSERT(c->is_recording);
+    c->bound_samplers[slot] = sampler;
 }
 
 void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, size_t size) {

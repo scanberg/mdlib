@@ -34,6 +34,7 @@ typedef struct md_gpu_command_buffer*   md_gpu_command_buffer_t;
 typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
 typedef struct md_gpu_image*            md_gpu_image_t;
+typedef struct md_gpu_sampler*          md_gpu_sampler_t;
 typedef struct md_gpu_fence*            md_gpu_fence_t;
 
 // =============================
@@ -79,7 +80,21 @@ enum {
     MD_GPU_MAX_BIND_SLOTS = 16,
     MD_GPU_PUSH_CONSTANTS_SLOT = (MD_GPU_MAX_BIND_SLOTS - 1),
     MD_GPU_MAX_PUSH_CONSTANTS = 256,
+    MD_GPU_STORAGE_IMAGE_BINDING_BASE = MD_GPU_MAX_BIND_SLOTS,
+    MD_GPU_SAMPLED_IMAGE_BINDING_BASE = 2 * MD_GPU_MAX_BIND_SLOTS,
+    MD_GPU_SAMPLER_BINDING_BASE = 3 * MD_GPU_MAX_BIND_SLOTS,
 };
+
+typedef enum md_gpu_filter_t {
+    MD_GPU_FILTER_NEAREST,
+    MD_GPU_FILTER_LINEAR,
+} md_gpu_filter_t;
+
+typedef enum md_gpu_address_mode_t {
+    MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE,
+    MD_GPU_ADDRESS_MODE_REPEAT,
+    MD_GPU_ADDRESS_MODE_MIRRORED_REPEAT,
+} md_gpu_address_mode_t;
 
 // =============================
 // Descriptors
@@ -97,6 +112,14 @@ typedef struct md_gpu_image_desc_t {
     md_gpu_image_format_t format;
     md_gpu_image_flags_t flags;
 } md_gpu_image_desc_t;
+
+typedef struct md_gpu_sampler_desc_t {
+    md_gpu_filter_t min_filter;
+    md_gpu_filter_t mag_filter;
+    md_gpu_address_mode_t address_u;
+    md_gpu_address_mode_t address_v;
+    md_gpu_address_mode_t address_w;
+} md_gpu_sampler_desc_t;
 
 // A subregion of a 3-D image in texel coordinates.
 typedef struct md_gpu_image_region_t {
@@ -161,12 +184,20 @@ md_gpu_buffer_flags_t md_gpu_buffer_flags(md_gpu_buffer_t buffer);
 size_t                md_gpu_buffer_size(md_gpu_buffer_t buffer);
 
 // =============================
-// Images (volumes, storage images)
+// Images (volumes, storage/sampled images)
 // =============================
 
 md_gpu_image_t md_gpu_image_create(md_gpu_device_t device, const md_gpu_image_desc_t* desc);
-
 void md_gpu_image_destroy(md_gpu_image_t image);
+
+bool md_gpu_image_extract_desc(md_gpu_image_t image, md_gpu_image_desc_t* out_desc);
+
+// =============================
+// Samplers (filtering/addressing for sampled images)
+// =============================
+
+md_gpu_sampler_t md_gpu_sampler_create(md_gpu_device_t device, const md_gpu_sampler_desc_t* desc);
+void md_gpu_sampler_destroy(md_gpu_sampler_t sampler);
 
 // =============================
 // Pipelines
@@ -179,11 +210,15 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 // Command buffers
 // =============================
 // Binding model:
-//   Binding slots share a single 0..N-1 index namespace for both buffers and images.
+//   Binding slots share a single 0..N-1 index namespace for buffers, storage images, sampled images, and samplers.
 //   Push constants occupy a reserved slot (MD_GPU_PUSH_CONSTANTS_SLOT) and must not be used for explicit binds.
-//   Vulkan convention: buffers at descriptor set 0, binding = slot; images at binding = slot + MD_GPU_MAX_BIND_SLOTS.
+//   Vulkan convention:
+//     buffers        at descriptor set 0, binding = slot;
+//     storage images at binding = slot + MD_GPU_STORAGE_IMAGE_BINDING_BASE;
+//     sampled images at binding = slot + MD_GPU_SAMPLED_IMAGE_BINDING_BASE;
+//     samplers       at binding = slot + MD_GPU_SAMPLER_BINDING_BASE.
 //   This avoids descriptor-type collisions since Vulkan cannot share a binding number between buffers and images,
-//   while Metal has separate hardware index spaces for buffers and textures.
+//   while Metal has separate hardware index spaces for buffers, textures, and samplers.
 //   Preferred pattern: pass GPU buffer device addresses via push constants using md_gpu_buffer_address()
 //   and rely on the bindless address path; explicit slot binds remain available for images and legacy shaders.
 
@@ -199,6 +234,8 @@ void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_comput
 void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer);
 void md_gpu_cmd_bind_buffer_range(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size);
 void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image);
+void md_gpu_cmd_bind_sampled_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image);
+void md_gpu_cmd_bind_sampler(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_sampler_t sampler);
 void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, size_t size);
 // Dispatch compute work. group_count_* map directly to Vulkan workgroup counts / Metal threadgroup counts.
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
