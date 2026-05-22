@@ -167,6 +167,19 @@ static VkFormat md_vk_format_from_md(md_gpu_image_format_t fmt) {
     }
 }
 
+static md_gpu_image_format_t md_vk_format_to_md(VkFormat fmt) {
+    switch (fmt) {
+        case VK_FORMAT_R8_UINT:       return MD_GPU_IMAGE_FORMAT_R8_UINT;
+        case VK_FORMAT_R16_UINT:      return MD_GPU_IMAGE_FORMAT_R16_UINT;
+        case VK_FORMAT_R32_UINT:      return MD_GPU_IMAGE_FORMAT_R32_UINT;
+        case VK_FORMAT_R32_SFLOAT:    return MD_GPU_IMAGE_FORMAT_R32_FLOAT;
+        case VK_FORMAT_R8G8B8A8_UNORM: return MD_GPU_IMAGE_FORMAT_RGBA8_UNORM;
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT;
+        default: return MD_GPU_IMAGE_FORMAT_R8_UINT;
+    }
+}
+
 static VkFilter md_vk_filter_from_md(md_gpu_filter_t filter) {
     switch (filter) {
         case MD_GPU_FILTER_NEAREST: return VK_FILTER_NEAREST;
