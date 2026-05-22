@@ -6841,6 +6841,11 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
 
     md_bitfield_clear(dst_bf);
 
+    if (str_empty(expr)) {
+        if (err_buf) snprintf(err_buf, err_cap, "Expression is empty\n");
+        return false;
+    }
+
     bool success = false;
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
