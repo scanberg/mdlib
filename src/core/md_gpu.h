@@ -190,7 +190,7 @@ size_t                md_gpu_buffer_size(md_gpu_buffer_t buffer);
 md_gpu_image_t md_gpu_image_create(md_gpu_device_t device, const md_gpu_image_desc_t* desc);
 void md_gpu_image_destroy(md_gpu_image_t image);
 
-bool md_gpu_image_extract_desc(md_gpu_image_t image, md_gpu_image_desc_t* out_desc);
+bool md_gpu_image_desc_extract(md_gpu_image_t image, md_gpu_image_desc_t* out_desc);
 
 // =============================
 // Samplers (filtering/addressing for sampled images)

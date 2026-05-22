@@ -275,7 +275,7 @@ void md_gpu_image_destroy(md_gpu_image_t image) {
     free(image);
 }
 
-bool md_gpu_image_extract_desc(md_gpu_image_t image, md_gpu_image_desc_t* out_desc) {
+bool md_gpu_image_desc_extract(md_gpu_image_t image, md_gpu_image_desc_t* out_desc) {
     if (!image || !out_desc) return false;
     *out_desc = image->desc;
     return true;
