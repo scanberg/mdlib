@@ -1188,6 +1188,7 @@ void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t at
     ASSERT(dst_atom_xyzw && atom_xyz);
     const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
     if (stride == 16) {
+        if (num_atoms > SIZE_MAX / (sizeof(float) * 4)) return;
         MEMCPY(dst_atom_xyzw, atom_xyz, sizeof(float) * 4 * num_atoms);
     } else {
         for (size_t i = 0; i < num_atoms; ++i) {
