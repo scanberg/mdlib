@@ -1605,21 +1605,27 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 // On entry  mat is [num_ao][num_mo] in VeloxChem AO order.
 // On return mat is [num_mo][num_ao] in shell order — each MO is a contiguous row.
 static void ao_permute(double* mat, size_t num_ao, size_t num_mo, const int* remap) {
-	size_t temp_pos = md_temp_get_pos();
-	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_mo);
+	double* tmp = (double*)malloc(sizeof(double) * num_ao * num_mo);
+    if (!tmp) {
+        MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
+        return;
+    }
 	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_mo);
 	for (size_t mo = 0; mo < num_mo; mo++) {
 		for (size_t ao = 0; ao < num_ao; ao++) {
 			mat[mo * num_ao + ao] = tmp[(size_t)remap[ao] * num_mo + mo];
 		}
 	}
-	md_temp_set_pos_back(temp_pos);
+	free(tmp);
 }
 
 // Permute both rows and columns of a square AO×AO matrix (num_ao × num_ao, row-major).
 static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
-	size_t temp_pos = md_temp_get_pos();
-	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+	double* tmp = (double*)malloc(sizeof(double) * num_ao * num_ao);
+    if (!tmp) {
+        MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
+        return;
+    }
 	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_ao);
 	for (size_t i = 0; i < num_ao; i++) {
 		size_t si = (size_t)remap[i];
@@ -1628,7 +1634,7 @@ static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
 			mat[i * num_ao + j] = tmp[si * num_ao + sj];
 		}
 	}
-	md_temp_set_pos_back(temp_pos);
+	free(tmp);
 }
 
 // Data extraction procedures
