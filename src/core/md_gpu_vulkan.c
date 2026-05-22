@@ -938,7 +938,6 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline) {
 md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     if (!queue) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
-    md_gpu_device* dev = (md_gpu_device*)q->dev;
 
     if (q->free_count == 0) {
         MD_LOG_ERROR("md_gpu_command_buffer_acquire: no free command buffers");

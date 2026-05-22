@@ -3745,9 +3745,26 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     ASSERT(sys);
     ASSERT(alloc);
 
-    md_bond_data_clear(bond);
-
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+
+    // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
+    md_array(md_atom_pair_t)  bond_pairs = 0;
+    md_array(md_bond_flags_t) bond_flags = 0;
+
+    int64_t num_bonds = (int64_t)md_array_size(bond->pairs);
+    if (num_bonds > 0) {
+        // User defined bonds are stored at the end of the arrays, so we can iterate backwards until we find the first non user defined bond
+        for (int64_t i = num_bonds - 1; i >= 0; --i) {
+            if (bond->flags[i] & MD_BOND_FLAG_USER_DEFINED) {
+                md_array_push(bond_pairs, bond->pairs[i], temp_arena);
+                md_array_push(bond_flags, bond->flags[i], temp_arena);
+            } else {
+                break;
+            }
+        }
+    }
+
+    md_bond_data_clear(bond);
     
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
@@ -4020,15 +4037,11 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         }
     }
 
-    size_t num_comp = md_system_component_count(sys);
-    if (num_comp > 0) {
-        // Create map from atom to component index
-        md_component_idx_t* atom_comp_idx = md_vm_arena_push(temp_arena, sizeof(md_component_idx_t) * num_atoms);
-        for (size_t i = 0; i < num_comp; ++i) {
-            md_urange_t range = md_system_component_atom_range(sys, i);
-            for (uint32_t j = range.beg; j < range.end; ++j) {
-                atom_comp_idx[j] = (md_component_idx_t)i;
-            }
+    // Add back user defined bonds
+    if (md_array_size(bond_pairs) > 0) {
+        for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
+            md_array_push(bond->pairs, bond_pairs[i], alloc);
+            md_array_push(bond->flags, bond_flags[i], alloc);
         }
     }
     
