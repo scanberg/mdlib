@@ -1841,7 +1841,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
 
     for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
         const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
-        ASSERT(range.end <= (int)capacity);
+        ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
             continue;
@@ -2582,7 +2582,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 
     for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
         const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
-        ASSERT(range.end <= (int)capacity);
+        ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
             continue;
@@ -4997,10 +4997,6 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     color_t current_color = 1;
     mark_t  current_mark  = 1;
 
-#if DEBUG
-    size_t processed_ring_elements = 0;
-#endif
-
     for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
         if (sys->atom.flags[atom_idx] & (MD_FLAG_WATER | MD_FLAG_ION)) continue;
 
@@ -5016,10 +5012,6 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         fifo_push(&queue, atom_idx);
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
-
-#if DEBUG
-            processed_ring_elements += 1;
-#endif
 
             md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
             while (md_bond_iter_has_next(&it)) {
@@ -5116,10 +5108,6 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     }
     
     md_temp_end(temp_scope);
-
-#if 0
-    MD_LOG_DEBUG("Processed ring elements: %llu\n", processed_ring_elements);
-#endif
 
     return true;
 }

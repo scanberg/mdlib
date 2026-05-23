@@ -19,6 +19,10 @@ function(compile_slang_shaders OUT_FILE)
         message(FATAL_ERROR "SLANG_EXECUTABLE not defined but required for shader compilation")
     endif()
 
+    # Metal reserves 'main', so Slang renames shader entry points to 'main_0'.
+    # Runtime Metal loading explicitly requests that generated entry point name.
+    set(SLANG_FLAGS "-Wno-40100")
+
     foreach(SRC ${SHADER_SOURCES})
         get_filename_component(NAME ${SRC} NAME_WE)
         get_filename_component(ABS_SRC ${SRC} ABSOLUTE)
@@ -35,6 +39,7 @@ function(compile_slang_shaders OUT_FILE)
                 OUTPUT ${SPV_FILE}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
+                    ${SLANG_FLAGS}
                     -target spirv
                     -emit-spirv-directly
                     -force-glsl-scalar-layout
@@ -55,6 +60,7 @@ function(compile_slang_shaders OUT_FILE)
                 OUTPUT ${MSL_FILE}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
+                    ${SLANG_FLAGS}
                     -target metal
                     -o ${MSL_FILE}
                 DEPENDS ${ABS_SRC}
@@ -64,7 +70,9 @@ function(compile_slang_shaders OUT_FILE)
             # Step 2: xcrun metal -> metallib, with explicit deployment target so
             # the metallib doesn't claim a higher OS version than CMAKE_OSX_DEPLOYMENT_TARGET.
             find_program(XCRUN_EXECUTABLE xcrun REQUIRED)
-            set(_METAL_FLAGS "")
+            # Slang lowers two-argument Interlocked* calls to Metal atomic_fetch_*
+            # expressions whose returned old value is intentionally ignored.
+            set(_METAL_FLAGS "-Wno-unused-variable")
             if (CMAKE_OSX_DEPLOYMENT_TARGET)
                 list(APPEND _METAL_FLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
             endif()

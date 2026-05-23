@@ -634,7 +634,7 @@ static inline bool md_atom_coord_iter_indexed_next_xyz(float* out_xyz, md_atom_c
         int idx = iter->idx[iter->it];
         int chunk_idx = idx / 4;
         int within_chunk_idx = idx % 4;
-        ASSERT(0 <= chunk_idx && chunk_idx < iter->coord->num_chunks);
+        ASSERT(chunk_idx < (int)iter->coord->num_chunks);
         const md_coord_chunk_t* chunk = &iter->coord->chunks[chunk_idx];
         out_xyz[0] = chunk->x[within_chunk_idx];
         out_xyz[1] = chunk->y[within_chunk_idx];

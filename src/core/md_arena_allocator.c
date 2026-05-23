@@ -158,7 +158,7 @@ void* md_arena_allocator_push_aligned(struct md_allocator_i* alloc, size_t size,
     ASSERT(alloc->inst); \
     vm_arena_t* arena = (vm_arena_t*)alloc->inst; \
     ASSERT(arena->magic == VM_MAGIC);
-#define MIN_VM_POS sizeof(vm_arena_t) + sizeof(md_allocator_i)
+#define MIN_VM_POS (sizeof(vm_arena_t) + sizeof(md_allocator_i))
 
 typedef struct vm_arena_t {
     void* base;   // Base adress of reserved memory space

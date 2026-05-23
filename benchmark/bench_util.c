@@ -42,7 +42,7 @@ static const int size = 1024 * 1024;
 
 #if defined(_MSC_VER)
 #pragma float_control(precise, on, push)
-#elif defined (MD_COMPILER_GCC)
+#elif MD_COMPILER_GCC
 #pragma GCC push_options
 #pragma GCC optimize ("no-fast-math")
 #endif
@@ -91,7 +91,7 @@ static double com_min_image_ref(const float* in_x, const float* in_w, int64_t co
 }
 #if defined(_MSC_VER)
 #pragma float_control(pop)
-#elif defined (MD_COMPILER_GCC)
+#elif MD_COMPILER_GCC
 #pragma GCC pop_options
 #endif
 
@@ -288,6 +288,14 @@ static double touch_mem(const float* in_x, const float* in_w, int64_t count, flo
 	    v_acc_w = md_mm_add_ps(v_acc_w, w);
     }
     return md_mm_cvtss_f32(v_acc_x) + md_mm_cvtss_f32(v_acc_w);
+#else
+    double acc_x = 0.0;
+    double acc_w = 0.0;
+    for (int64_t i = 0; i < count; ++i) {
+        acc_x += in_x[i];
+        acc_w += in_w[i];
+    }
+    return acc_x + acc_w;
 #endif
 }
 
@@ -338,6 +346,7 @@ void bench_com(void) {
         }
         double GBps = (double)(size * sizeof(float) * 4) / (double)min_time;
         double MBps = GBps * 1024.0;
+        UBENCH_DO_NOTHING(&acc);
         double ms = (double)min_time / 1000000.0;
         double ns = (double)min_time / (double)(size * 3);
         printf("%-20s%25.2f%25.2f%25.2f\n", tests[i].name, ms, ns, MBps);

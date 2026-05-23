@@ -280,19 +280,19 @@ static inline int spherical_momentum_num_components(int angl) {
 static inline int spherical_momentum_num_factors(int angl, int isph) {
 	switch(angl) {
 	case 0:
-		ASSERT(isph < ARRAY_SIZE(S_num_fac));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(S_num_fac));
 		return S_num_fac[isph];
 	case 1:
-		ASSERT(isph < ARRAY_SIZE(P_num_fac));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(P_num_fac));
 		return P_num_fac[isph];
 	case 2:
-		ASSERT(isph < ARRAY_SIZE(D_num_fac));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(D_num_fac));
 		return D_num_fac[isph];
 	case 3:
-		ASSERT(isph < ARRAY_SIZE(F_num_fac));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(F_num_fac));
 		return F_num_fac[isph];
 	case 4:
-		ASSERT(isph < ARRAY_SIZE(G_num_fac));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(G_num_fac));
 		return G_num_fac[isph];
 	default:
 		ASSERT(false);
@@ -306,16 +306,16 @@ static inline const double* spherical_momentum_factors(int angl, int isph) {
 		ASSERT(isph == 0);
 		return S_factors;
 	case 1:
-		ASSERT(isph < ARRAY_SIZE(P_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(P_offsets));
 		return P_factors + P_offsets[isph];
 	case 2:
-		ASSERT(isph < ARRAY_SIZE(D_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(D_offsets));
 		return D_factors + D_offsets[isph];
 	case 3:
-		ASSERT(isph < ARRAY_SIZE(F_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(F_offsets));
 		return F_factors + F_offsets[isph];
 	case 4:
-		ASSERT(isph < ARRAY_SIZE(G_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(G_offsets));
 		return G_factors + G_offsets[isph];
 	default:
 		ASSERT(false);
@@ -329,16 +329,16 @@ static inline const uint8_t* spherical_momentum_indices(int angl, int isph) {
 		ASSERT(isph == 0);
 		return S_indices;
 	case 1:
-		ASSERT(isph < ARRAY_SIZE(P_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(P_offsets));
 		return P_indices + P_offsets[isph];
 	case 2:
-		ASSERT(isph < ARRAY_SIZE(D_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(D_offsets));
 		return D_indices + D_offsets[isph];
 	case 3:
-		ASSERT(isph < ARRAY_SIZE(F_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(F_offsets));
 		return F_indices + F_offsets[isph];
 	case 4:
-		ASSERT(isph < ARRAY_SIZE(G_offsets));
+		ASSERT(0 <= isph && (size_t)isph < ARRAY_SIZE(G_offsets));
 		return G_indices + G_offsets[isph];
 	default:
 		ASSERT(false);
