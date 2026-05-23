@@ -81,10 +81,6 @@
 #define MAX_NUM_DIMS 4
 #define TIMESTAMP_ERROR_MARGIN 1.0e-4
 
-#define SETUP_TEMP_ALLOC(reserve_size) md_temp_t temp_scope = md_temp_begin(); md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-#define SETUP_TEMP_ALLOC_AVOID(conflicts, conflict_count, reserve_size) md_temp_t temp_scope = md_temp_begin_avoid(conflicts, conflict_count); md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-#define FREE_TEMP_ALLOC md_temp_end(temp_scope);
-
 // ################################
 // ###   FORWARD DECLARATIONS   ###
 // ################################
@@ -5540,7 +5536,8 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
     ASSERT(mol);
 
     md_allocator_i* conflicts[] = { ir->arena };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4))
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     const size_t temp_reset_pos = md_vm_arena_get_pos(temp_alloc);
 
     eval_context_t ctx = {
@@ -5558,7 +5555,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
         md_vm_arena_set_pos_back(temp_alloc, temp_reset_pos);
     }
 
-    FREE_TEMP_ALLOC
+    md_temp_end(temp_scope);
 
     return result;
 }
@@ -5745,7 +5742,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     ast_node_t** const expr = ir->eval_targets;
     
     md_allocator_i* conflicts[] = { eval->arena };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     bool result = true;
 
     // coordinate data for reading trajectory frames into
@@ -5972,7 +5970,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     }
 done:
     //md_logf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
     md_trajectory_reader_free(&traj_reader);
     return result;
 }
@@ -6223,7 +6221,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
     }
 
     md_allocator_i* conflicts[] = { ir->arena };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     ir->compile_success =
         parse_script(ir, temp_alloc) &&
@@ -6236,7 +6235,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
 
     extract_vis_tokens(ir);
 
-    FREE_TEMP_ALLOC
+    md_temp_end(temp_scope);
 
 #if DEBUG
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
@@ -6668,7 +6667,8 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
 
 static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_allocator_i* alloc) {
     md_allocator_i* conflicts[] = { alloc };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -6708,15 +6708,15 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_alloca
         }
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
 
     return result;
 }
 
 #if DEBUG
 static void parse_type_check_and_print_expression_to_json(str_t expr, const md_system_t* mol, str_t filename) {
-    md_allocator_i* conflicts[] = { alloc };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
 
@@ -6741,7 +6741,7 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
         }
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
 }
 #endif
 
@@ -6753,7 +6753,8 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     bool success = false;
 
     md_allocator_i* conflicts[] = { alloc };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -6833,7 +6834,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         }
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
     return success;
 }
 
@@ -6865,7 +6866,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
     bool success = false;
 
     md_allocator_i* conflicts[] = { dst_bf->alloc };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -6959,7 +6961,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
         }
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
     return success;
 }
 
@@ -7083,7 +7085,8 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     md_bitfield_clear(&vis->atom_mask);
 
     md_allocator_i* conflicts[] = { vis->alloc };
-    SETUP_TEMP_ALLOC_AVOID(conflicts, ARRAY_SIZE(conflicts), GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
     float* init_x = md_temp_push(num_atoms * sizeof(float));
@@ -7135,7 +7138,7 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
         md_bitfield_or_inplace(&vis->atom_mask, &vis->structures[i]);
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
 
     return true;
 }
@@ -7153,7 +7156,8 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
 
     bool success = false;
 
-    SETUP_TEMP_ALLOC(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -7217,7 +7221,7 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
         }
     }
 
-    FREE_TEMP_ALLOC;
+    md_temp_end(temp_scope);
     return success;
 }
 
