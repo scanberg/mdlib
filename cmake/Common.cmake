@@ -6,20 +6,33 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 
 function(create_copy_resource_dir_target target_name SRC_DIR DST_DIR)
+    if (CMAKE_VERSION VERSION_LESS 3.26)
+      message(FATAL_ERROR "create_copy_resource_dir_target requires CMake 3.26 or newer")
+    endif()
+
+    file(GLOB_RECURSE COPY_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false RELATIVE "${SRC_DIR}" "${SRC_DIR}/*")
+
+    set(SRC_FILES)
     set(DST_FILES)
-    file(GLOB_RECURSE COPY_FILES RELATIVE "${SRC_DIR}/" "${SRC_DIR}/*")
-    foreach(FILE ${COPY_FILES})
-      set(SRC "${SRC_DIR}/${FILE}")
-      set(DST "${DST_DIR}/${FILE}")
-      add_custom_command(
-        OUTPUT  ${DST}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${DST_DIR}
-        COMMAND ${CMAKE_COMMAND} -E copy ${SRC} ${DST}
-        DEPENDS ${SRC}
-      )
-      list(APPEND DST_FILES ${DST})
-    endforeach(FILE)
-    add_custom_target(${target_name} DEPENDS ${DST_FILES})
+    foreach(FILE IN LISTS COPY_FILES)
+      list(APPEND SRC_FILES "${SRC_DIR}/${FILE}")
+      list(APPEND DST_FILES "${DST_DIR}/${FILE}")
+    endforeach()
+
+    set(MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_resources.txt")
+    string(REPLACE ";" "\n" MANIFEST_CONTENT "${COPY_FILES}")
+    file(WRITE "${MANIFEST}" "${MANIFEST_CONTENT}\n")
+
+    set(STAMP "${DST_DIR}/.${target_name}.stamp")
+    add_custom_command(
+      OUTPUT ${DST_FILES} "${STAMP}"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DST_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E touch ${DST_FILES} "${STAMP}"
+      DEPENDS ${SRC_FILES} "${MANIFEST}"
+      COMMENT "Copying ${target_name} resources"
+      VERBATIM
+    )
+    add_custom_target(${target_name} DEPENDS "${STAMP}" ${DST_FILES})
 endfunction()
 
 # https://stackoverflow.com/questions/11813271/embed-resources-eg-shader-code-images-into-executable-library-with-cmake
