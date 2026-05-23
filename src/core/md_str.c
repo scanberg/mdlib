@@ -3,6 +3,7 @@
 #include <core/md_common.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_parse.h>
@@ -479,8 +480,8 @@ int str_edit_distance(str_t s1, str_t s2) {
     if (m == 0) return n;
     if (n == 0) return m;
 
-    const int64_t bytes = ALIGN_TO(sizeof(int) * (n + 1), 16);
-    int* costs = md_temp_push(bytes);
+    md_temp_t temp = md_temp_begin();
+    int* costs = md_temp_push_array(int, n + 1);
 
     for (int k=0; k<=n; k++) {
         // Seller's variant (=0) for fuzzy matching
@@ -509,7 +510,7 @@ int str_edit_distance(str_t s1, str_t s2) {
     }
 
     int result = costs[n];
-    md_temp_pop(bytes);
+    md_temp_end(temp);
 
     return result;
 }

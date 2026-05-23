@@ -89,7 +89,9 @@ UTEST_F_TEARDOWN(util) {
 }
 
 UTEST(util, hbonds) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* default_temp = md_get_temp_arena();
+    md_temp_t temp_scope = md_temp_begin_avoid(&default_temp, 1);
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     md_system_t sys = { .alloc = arena };
     md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
@@ -104,7 +106,7 @@ UTEST(util, hbonds) {
     md_util_hydrogen_bond_infer(&hbond_data, sys.atom.x, sys.atom.y, sys.atom.z, &sys.unitcell, 3.0, 150.0);
     EXPECT_LT(0, hbond_data.num_bonds);
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 } 
 
 UTEST_F(util, bonds) {
@@ -342,7 +344,8 @@ UTEST_F(util, rings_common) {
 }
 
 UTEST(util, rings_c60) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
 	md_system_t sys = { .alloc = alloc };
 	md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE);
 	md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -356,11 +359,12 @@ UTEST(util, rings_c60) {
     const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_c720) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), MD_XYZ_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -374,11 +378,12 @@ UTEST(util, rings_c720) {
     const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_14kr) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -386,11 +391,12 @@ UTEST(util, rings_14kr) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 207);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_trytophan_pdb) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -401,11 +407,12 @@ UTEST(util, rings_trytophan_pdb) {
     const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_trytophan_xyz) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), MD_XYZ_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -416,11 +423,12 @@ UTEST(util, rings_trytophan_xyz) {
     const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_full) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), MD_XYZ_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -431,11 +439,12 @@ UTEST(util, rings_full) {
     const size_t num_structures = md_structure_count(&sys.structure);
     EXPECT_EQ(num_structures, 1);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST(util, rings_ciprofloxacin) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
@@ -447,7 +456,7 @@ UTEST(util, rings_ciprofloxacin) {
     EXPECT_EQ(md_index_range_size(&sys.ring, 2), 6);
     EXPECT_EQ(md_index_range_size(&sys.ring, 3), 6);
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }
 
 UTEST_F(util, structure_matching_amyloid_chain) {
@@ -763,7 +772,7 @@ UTEST_F(util, structure_matching_smiles) {
 
     md_timestamp_t t0 = md_time_now();
     for (const test_sys_t* test = test_mols; test != test_mols + ARRAY_SIZE(test_mols); ++test) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
+        md_temp_t temp = md_temp_begin_arena(alloc);
         for (const res_t* res = residues; res != residues + ARRAY_SIZE(residues); ++res) {
             const md_system_t* sys = test->sys;
             md_array(md_component_idx_t) ref_list = 0;
@@ -845,7 +854,7 @@ UTEST_F(util, structure_matching_smiles) {
                 }
             }
         }
-        md_vm_arena_temp_end(temp);
+        md_temp_end(temp);
     }
     md_timestamp_t t1 = md_time_now();
     printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
@@ -853,8 +862,6 @@ UTEST_F(util, structure_matching_smiles) {
 }
 
 UTEST(util, parse_smiles) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-
     {
         const char input[] = "C1=CC=CC=C1";
         md_smiles_node_t smiles[sizeof(input)];
@@ -904,8 +911,6 @@ UTEST(util, parse_smiles) {
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
         EXPECT_EQ(smiles[0].atom.element, 6);
     }
-
-    md_vm_arena_destroy(alloc);
 }
 
 UTEST(util, radix_sort) {
@@ -926,12 +931,13 @@ UTEST(util, radix_sort) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     size_t N = 10000000;
-    uint32_t* values  = md_vm_arena_push(arena, N * sizeof(uint32_t));
-    uint32_t* indices = md_vm_arena_push(arena, N * sizeof(uint32_t));
-    uint32_t* temp    = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* values  = md_temp_push(N * sizeof(uint32_t));
+    uint32_t* indices = md_temp_push(N * sizeof(uint32_t));
+    uint32_t* temp    = md_temp_push(N * sizeof(uint32_t));
 
     for (size_t i = 0; i < N; ++i) {
         values[i] = (uint32_t)rand() * rand();
@@ -950,6 +956,7 @@ UTEST(util, radix_sort) {
     t1 = md_time_now();
 
     printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
+    md_temp_end(temp_scope);
 }
 
 static inline bool init_system(md_system_t* sys, str_t path) {
@@ -972,7 +979,8 @@ static inline bool init_system(md_system_t* sys, str_t path) {
 }
 
 UTEST(util, entity_instance) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
     ASSERT(alloc);
 
     {
@@ -1103,5 +1111,5 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_instance_entity_idx(&sys, 64), 1);
     }
 
-    md_vm_arena_destroy(alloc);
+    md_temp_end(temp_scope);
 }

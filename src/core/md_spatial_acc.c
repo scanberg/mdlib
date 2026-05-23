@@ -1,5 +1,6 @@
 ﻿#include "md_spatial_acc.h"
 
+#include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_intrinsics.h>
@@ -305,11 +306,11 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 #endif
 
     // Temporary arrays
-    const size_t temp_arena_page_size = MEGABYTES(4);
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), temp_arena_page_size);
-    uint32_t* local_idx = (uint32_t*)md_arena_allocator_push(temp_arena, stream->count * sizeof(uint32_t));
-    uint32_t* cell_idx  = (uint32_t*)md_arena_allocator_push(temp_arena, stream->count * sizeof(uint32_t));
-    elem_t* scratch_s   = (elem_t*)  md_arena_allocator_push(temp_arena, stream->count * sizeof(elem_t));  // unsorted fractional coords
+    md_allocator_i* conflicts[] = { acc->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    uint32_t* local_idx = (uint32_t*)md_temp_push(stream->count * sizeof(uint32_t));
+    uint32_t* cell_idx  = (uint32_t*)md_temp_push(stream->count * sizeof(uint32_t));
+    elem_t* scratch_s   = (elem_t*)  md_temp_push(stream->count * sizeof(elem_t));  // unsorted fractional coords
 
     // Resize / allocate persistent arrays
     size_t alloc_len = ALIGN_TO(stream->count, 16);
@@ -434,7 +435,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 
     acc->flags = flags;
 
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
 }
 
 // Generate forward neighbor offsets for a 3D grid cell

@@ -43,7 +43,7 @@ UTEST(allocator, default) {
 }
 
 UTEST(allocator, default_temp) {
-    md_allocator_i* alloc = md_get_temp_allocator();
+    md_allocator_i* alloc = md_get_temp_arena();
     COMMON_ALLOCATOR_TEST_BODY
 }
 
@@ -174,18 +174,47 @@ UTEST(allocator, ring) {
 }
 
 UTEST(allocator, temp) {
-    md_allocator_i* ring = md_get_temp_allocator();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp);
 
     for (uint32_t i = 0; i < 100000; ++i) {
         uint32_t size = i % 20 + 1;
-        md_ring_allocator_push(ring, size);
+        md_temp_push(size);
     }
 
     for (uint32_t i = 0; i < 500; ++i) {
-        md_ring_allocator_pop(ring, sizeof(uint64_t));
+        md_vm_arena_pop(arena, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_ring_allocator_push_aligned(ring, sizeof(uint64_t), 32);
+        md_temp_push_aligned(sizeof(uint64_t), 32);
     }
+
+    md_temp_end(temp);
+}
+
+UTEST(allocator, temp_scope) {
+    md_temp_t outer = md_temp_begin();
+    md_allocator_i* outer_alloc = md_temp_allocator(outer);
+
+    uint64_t* outer_data = md_temp_push_zero_array(uint64_t, 4);
+    outer_data[0] = 0x1234;
+
+    md_allocator_i* conflicts[] = { outer_alloc };
+    md_temp_t inner = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    EXPECT_NE(md_temp_allocator(inner), outer_alloc);
+
+    void* aligned = md_temp_push_aligned(64, 64);
+    EXPECT_EQ((uint64_t)aligned % 64, 0ULL);
+
+    uint32_t* zero_data = md_temp_push_zero_array(uint32_t, 8);
+    for (size_t i = 0; i < 8; ++i) {
+        EXPECT_EQ(zero_data[i], 0U);
+    }
+
+    md_temp_end(inner);
+
+    EXPECT_EQ(outer_data[0], 0x1234ULL);
+
+    md_temp_end(outer);
 }

@@ -1104,7 +1104,7 @@ static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t
         .bond_idx_map = md_vm_arena_push     (vm_arena, sizeof(uint32_t) * edge_data_cap),
     };
 
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(vm_arena);
+    md_temp_t temp = md_temp_begin_arena(vm_arena);
 
     // Map from global indices (which the connectivity info is given in) to local (graph) indices
     md_hashmap32_t global_to_local = { .allocator = vm_arena };
@@ -1162,7 +1162,7 @@ static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t
         offset += len;
     }
 
-    md_vm_arena_temp_end(temp);
+    md_temp_end(temp);
     return graph;
 }
 
@@ -1827,9 +1827,9 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
     if (!backbone->segment.atoms) return false;
     if (!backbone->range.offset)  return false;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-    int* type_mask = md_vm_arena_push(temp_arena, sizeof(int)    * backbone->segment.count);
-    vec3_t* ca_pos = md_vm_arena_push(temp_arena, sizeof(vec3_t) * backbone->segment.count);
+    md_temp_t temp_scope = md_temp_begin();
+    int* type_mask = md_temp_push(sizeof(int)    * backbone->segment.count);
+    vec3_t* ca_pos = md_temp_push(sizeof(vec3_t) * backbone->segment.count);
 
     for (size_t i = 0; i < backbone->segment.count; ++i) {
         const md_atom_idx_t ca_idx = backbone->segment.atoms[i].ca;
@@ -1883,7 +1883,7 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
         if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
     }
 
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 
     return true;
 }
@@ -2061,15 +2061,16 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         return;
     }
 
-    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
-    dssp_res_coords_t* res_coords = md_vm_arena_push(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
-    dssp_res_hbonds_t* res_hbonds = md_vm_arena_push(temp_alloc, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
-    uint32_t* res_range_id = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
-    uint8_t* turn_mask = md_vm_arena_push_zero(temp_alloc, sizeof(uint8_t) * backbone_segment_count);
-    float* res_ca_x = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
-    float* res_ca_y = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
-    float* res_ca_z = md_vm_arena_push(temp_alloc, sizeof(float) * backbone_segment_count);
+    dssp_res_coords_t* res_coords = md_temp_push(sizeof(dssp_res_coords_t) * backbone_segment_count);
+    dssp_res_hbonds_t* res_hbonds = md_temp_push(sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+    uint32_t* res_range_id = md_temp_push_zero(sizeof(uint32_t) * backbone_segment_count);
+    uint8_t* turn_mask = md_temp_push_zero(sizeof(uint8_t) * backbone_segment_count);
+    float* res_ca_x = md_temp_push(sizeof(float) * backbone_segment_count);
+    float* res_ca_y = md_temp_push(sizeof(float) * backbone_segment_count);
+    float* res_ca_z = md_temp_push(sizeof(float) * backbone_segment_count);
 
     md_array(residue_pair_t) sheet_candidates = NULL;
 	md_array_ensure(sheet_candidates, 1024, temp_alloc);
@@ -2080,7 +2081,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             res_range_id[i] = range_idx;
         }
     }
-    uint32_t* ss_flags = md_vm_arena_push_zero(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
+    uint32_t* ss_flags = md_temp_push_zero(sizeof(uint32_t) * backbone_segment_count);
 
     for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
         const md_irange_t range = {(int)backbone_range_offsets[range_idx], (int)backbone_range_offsets[range_idx + 1]};
@@ -2233,7 +2234,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     } dssp_bridge_t;
 
     // Worst-case: could be large; allocate generously but not insanely.
-    dssp_bridge_t* bridges = md_vm_arena_push(temp_alloc, sizeof(dssp_bridge_t) * backbone_segment_count * 8);
+    dssp_bridge_t* bridges = md_temp_push(sizeof(dssp_bridge_t) * backbone_segment_count * 8);
     size_t num_bridges = 0;
 
     // Helper lambdas are not allowed in C; keep as local inline-ish macros
@@ -2385,7 +2386,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 #if 1
 	// ---- Build ladders by directly looking up bridges in hashmaps ----
     // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_vm_arena_push_zero(temp_alloc, sizeof(bool) * num_bridges);
+    bool* used = md_temp_push_zero(sizeof(bool) * num_bridges);
     for (size_t b = 0; b < num_bridges; ++b) {
         if (used[b]) continue;
         const dssp_bridge_t seed = bridges[b];
@@ -2452,7 +2453,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 #else
     // ---- Build ladders by chaining bridges ----
     // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_vm_arena_push_zero(temp_alloc, sizeof(bool) * num_bridges);
+    bool* used = md_temp_push_zero(sizeof(bool) * num_bridges);
 
     for (size_t b = 0; b < num_bridges; ++b) {
         if (used[b]) continue;
@@ -2544,7 +2545,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         }
     }
 
-    md_vm_arena_destroy(temp_alloc);
+    md_temp_end(temp_scope);
 }
 
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
@@ -2854,9 +2855,9 @@ static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md
     } vertex_t;
 
     size_t node_cap = str_len(smiles_str);
-    md_smiles_node_t* nodes = md_vm_arena_push_array(temp_arena, md_smiles_node_t, node_cap);
+    md_smiles_node_t* nodes = md_temp_push_array(md_smiles_node_t, node_cap);
     const size_t num_nodes = md_smiles_parse(nodes, node_cap, str_ptr(smiles_str), str_len(smiles_str));
-    vertex_t* verts = md_vm_arena_push(temp_arena, sizeof(vertex_t) * num_nodes * 4);
+    vertex_t* verts = md_temp_push(sizeof(vertex_t) * num_nodes * 4);
     size_t num_verts = 0;
 
     graph_t graph = {0};
@@ -3075,9 +3076,9 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
 }
 
 static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp_arena) {
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
+    md_temp_t temp = md_temp_begin_arena(temp_arena);
 
-    int* depth = md_vm_arena_push_zero_array(temp_arena, int, graph->vertex_count);
+    int* depth = md_temp_push_zero_array(int, graph->vertex_count);
     fifo_t fifo = fifo_create(32, temp_arena);
 
     fifo_push(&fifo, start_idx);
@@ -3101,7 +3102,7 @@ static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp
         max_depth = MAX(max_depth, depth[i]);
     }
 
-    md_vm_arena_temp_end(temp);
+    md_temp_end(temp);
 
     return max_depth;
 }
@@ -3153,9 +3154,10 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         bond_order[i] = order;
     }
 #else
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
-    uint8_t* type = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom->count);
-    uint8_t* elements = md_vm_arena_push_array(temp_arena, uint8_t, atom->count);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+    uint8_t* type = md_temp_push_zero_array(uint8_t, atom->count);
+    uint8_t* elements = md_temp_push_array(uint8_t, atom->count);
 
     md_atom_extract_atomic_numbers(elements, 0, atom->count, atom);
 
@@ -3397,7 +3399,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
         if (pattern_count == 0) continue;
 
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
+        md_temp_t temp = md_temp_begin_arena(temp_arena);
 
         // Extract neighborhood of atom i
         md_atom_idx_t n_idx[32];
@@ -3434,7 +3436,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             find_isomorphisms_callback(pattern, &neighborhood, pattern->vertex_type[0], &state);
         }
 
-        md_vm_arena_temp_end(temp);
+        md_temp_end(temp);
     }
 
     md_timestamp_t t1 = md_time_current();
@@ -3648,7 +3650,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         }
     }
 
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 #endif
     
     return true;
@@ -3745,7 +3747,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     ASSERT(sys);
     ASSERT(alloc);
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
     md_array(md_atom_pair_t)  bond_pairs = 0;
@@ -3850,15 +3854,15 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
         double max_atom_rad = 0.0;
 
-        float* atom_radius = md_vm_arena_push_array(temp_arena, float, num_atoms);
-        md_atomic_number_t* atomic_nr = md_vm_arena_push_array(temp_arena, md_atomic_number_t, num_atoms);
+        float* atom_radius = md_temp_push_array(float, num_atoms);
+        md_atomic_number_t* atomic_nr = md_temp_push_array(md_atomic_number_t, num_atoms);
         for (size_t i = 0; i < num_atoms; ++i) {
             atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
             atom_radius[i] = is_metal(atomic_nr[i]) ? element_ionic_radius(atomic_nr[i]) : element_covalent_radius(atomic_nr[i]);
             max_atom_rad = MAX(max_atom_rad, atom_radius[i]);
         }
 
-        int* comp_id = md_vm_arena_push_array(temp_arena, int, num_atoms);
+        int* comp_id = md_temp_push_array(int, num_atoms);
         MEMSET(comp_id, -1, sizeof(int) * num_atoms);
         size_t num_comp = md_system_component_count(sys);
 
@@ -3871,7 +3875,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
         // The component flags have not been resolved yet, so we do not know if for example if a component is a water molecule or not.
         // There are some occasions where this is required to ensure correct bond perception.
-        md_flags_t* comp_flags = md_vm_arena_push_array(temp_arena, md_flags_t, num_comp);
+        md_flags_t* comp_flags = md_temp_push_array(md_flags_t, num_comp);
         for (size_t i = 0; i < num_comp; ++i) {
             comp_flags[i] = md_component_flags(&sys->component, i);
             // Check if water component (2 hydrogen + 1 oxygen)
@@ -4046,7 +4050,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
     }
     
 done:
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 }
 
 void md_util_system_infer_covalent_bonds(md_system_t* sys) {
@@ -4120,8 +4124,8 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
 }
 
 static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_flags_t flag) {
-	size_t temp_pos = md_temp_get_pos();
-	md_allocator_i* alloc = md_get_temp_allocator();
+	md_temp_t temp = md_temp_begin();
+	md_allocator_i* alloc = md_temp_allocator(temp);
     md_array(int) stack = 0;
     md_array_push(stack, start_atom, alloc);
     while (md_array_size(stack) > 0) {
@@ -4139,7 +4143,7 @@ static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exc
             }
         }
     }
-	md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 // infer component types (e.g. amino acid, nucleotide, water, ion) based on heuristics such as:
@@ -4149,8 +4153,8 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         return false;
     }
 
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_array(int) ambigous_amino_acid_indices = 0;
     md_array(int) ambigous_nucleotide_indices = 0;
 
@@ -4380,7 +4384,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         }
     }
     
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     return true;
 }
 
@@ -4496,15 +4500,16 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     hbond_data->num_bonds = 0;
     md_array_shrink(hbond_data->bonds, 0);
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     // Clamp to some form of reasonable value range
     max_dist  = CLAMP(max_dist, 1.0, 7.0);
     min_angle = CLAMP(min_angle, 100.0, 180.0);
 
     size_t num_acc = hbond_data->candidate.acceptor.count;
-    vec4_t*  acc_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_acc);
-    int32_t* acc_idx = md_vm_arena_push_array(temp_arena, int32_t, num_acc);
+    vec4_t*  acc_xyz = md_temp_push_array(vec4_t, num_acc);
+    int32_t* acc_idx = md_temp_push_array(int32_t, num_acc);
 
     for (size_t i = 0; i < num_acc; ++i) {
         int idx = hbond_data->candidate.acceptor.idx[i];
@@ -4513,10 +4518,10 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     }
 
     size_t num_don = hbond_data->candidate.donor.count;
-    vec4_t*  don_xyz = md_vm_arena_push_array(temp_arena, vec4_t,  num_don);
-    vec4_t*  hyd_xyz = md_vm_arena_push_array(temp_arena, vec4_t, num_don);
-    int32_t* don_idx = md_vm_arena_push_array(temp_arena, int32_t, num_don);
-    hbond_donor_energy_t* donor_energies = md_vm_arena_push_array(temp_arena, hbond_donor_energy_t, num_don);
+    vec4_t*  don_xyz = md_temp_push_array(vec4_t, num_don);
+    vec4_t*  hyd_xyz = md_temp_push_array(vec4_t, num_don);
+    int32_t* don_idx = md_temp_push_array(int32_t, num_don);
+    hbond_donor_energy_t* donor_energies = md_temp_push_array(hbond_donor_energy_t, num_don);
     MEMSET(donor_energies, 0, sizeof(hbond_donor_energy_t) * num_don);
     
     for (size_t i = 0; i < num_don; ++i) {
@@ -4550,7 +4555,7 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
         int don_idx[4];
     } acceptor_assignment_t;
 
-    acceptor_assignment_t* assignments = md_vm_arena_push_zero_array(temp_arena, acceptor_assignment_t, num_acc);
+    acceptor_assignment_t* assignments = md_temp_push_zero_array(acceptor_assignment_t, num_acc);
 
     // Try to assign donors to acceptors based on the best score, respecting acceptor capacities
     for (size_t i = 0; i < num_don; ++i) {
@@ -4594,7 +4599,7 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
         }
     }
 
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 }
 
 // Excel-style chain-id generator: A..Z, AA..ZZ, AAA..
@@ -4683,12 +4688,14 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
     ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     uint64_t* connected_to_prev = make_bitfield(sys->component.count, temp_arena);
     if (sys->bond.count > 0) {
         // Pass 1: map atoms to components
-        md_component_idx_t* atom_comp_idx = md_vm_arena_push_array(temp_arena, md_component_idx_t, sys->atom.count);
+        md_component_idx_t* atom_comp_idx = md_temp_push_array(md_component_idx_t, sys->atom.count);
         MEMSET(atom_comp_idx, 0, sizeof(md_component_idx_t) * sys->atom.count);
         for (size_t i = 0; i < sys->component.count; ++i) {
             md_urange_t atom_range = md_component_atom_range(&sys->component, i);
@@ -4844,7 +4851,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
         md_array_push(sys->instance.comp_offset, (uint32_t)i, alloc);
     }
 
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return true;
 }
 
@@ -4895,6 +4902,7 @@ static void sort_ring(int* arr, int n) {
 
     // Rotate ring such that the lowest index in the first slot
     if (lowest_idx != 0) {
+        md_temp_t temp = md_temp_begin();
         int* buf = md_temp_push(sizeof(*arr) * n);
         int j = 0;
         for (int i = lowest_idx; i < n; ++i) {
@@ -4904,6 +4912,7 @@ static void sort_ring(int* arr, int n) {
             buf[j++] = arr[i];
         }
         MEMCPY(arr, buf, sizeof(*arr) * n);
+        md_temp_end(temp);
     }
 
 #if SORT_RING_PRINT
@@ -4964,7 +4973,9 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     sys->ring.alloc = alloc;
     md_index_data_clear(&sys->ring);
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     // Some typedefs to enable laboration of types
     typedef uint16_t color_t;
@@ -4972,9 +4983,9 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     typedef uint16_t mark_t;
     typedef  int32_t pred_t;
         
-    color_t* color = md_vm_arena_push_zero_array(temp_arena, color_t, num_atoms);
-    depth_t* depth = md_vm_arena_push_zero_array(temp_arena, depth_t, num_atoms);
-    mark_t*  mark  = md_vm_arena_push_zero_array(temp_arena, mark_t,  num_atoms);
+    color_t* color = md_temp_push_zero_array(color_t, num_atoms);
+    depth_t* depth = md_temp_push_zero_array(depth_t, num_atoms);
+    mark_t*  mark  = md_temp_push_zero_array(mark_t, num_atoms);
     pred_t*  pred  = md_vm_arena_push_array     (temp_arena, pred_t,  num_atoms);
     MEMSET(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
@@ -5104,7 +5115,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         }
     }
     
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 
 #if 0
     MD_LOG_DEBUG("Processed ring elements: %llu\n", processed_ring_elements);
@@ -5128,7 +5139,9 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_array_shrink(sys->structure.atom_idx, 0);
     md_array_shrink(sys->structure.parent_idx, 0);
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     const size_t atom_count = md_system_atom_count(sys);
 
@@ -5182,7 +5195,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         md_array_push(sys->structure.offset, (uint32_t)md_array_size(sys->structure.atom_idx), alloc);
     }
     
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 
     return true;
 }
@@ -5452,9 +5465,10 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
     }
     md_allocator_i* alloc = sys->alloc;
 
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
-    md_hashmap32_t atom_type_cache = {.allocator = md_get_temp_allocator() };
+    md_hashmap32_t atom_type_cache = {.allocator = temp_alloc };
     md_hashmap_reserve(&atom_type_cache, 256);
 
     if (sys->component.count > 0) {
@@ -5530,7 +5544,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, size_t extent, const md_bitfield_t* viable_mask) {
@@ -5547,7 +5561,8 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     const size_t mask_size = md_bitfield_popcount(mask);
     if (!mask_size) return;
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     int* indices = md_alloc(temp_alloc, mask_size * sizeof(int));
     const size_t num_indices = md_bitfield_iter_extract_indices(indices, mask_size, md_bitfield_iter_create(mask));
@@ -5555,8 +5570,7 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
 
     fifo_t queue = fifo_create(64, temp_alloc);
 
-    uint8_t* depth = md_alloc(temp_alloc, sys->atom.count * sizeof(uint8_t));
-    MEMSET(depth, 0, sys->atom.count * sizeof(uint8_t));
+    uint8_t* depth = md_temp_push_zero(sys->atom.count * sizeof(uint8_t));
 
     {
         md_bitfield_iter_t it = md_bitfield_iter_create(mask);
@@ -5597,7 +5611,7 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
         }
     }
 
-    md_arena_allocator_destroy(temp_alloc);
+    md_temp_end(temp_scope);
 }
 
 // typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
@@ -5613,11 +5627,13 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
     ASSERT(sys);
     
     if (radius <= 0.0) return;
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* conflicts[] = { mask->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     size_t num_indices = md_bitfield_popcount(mask);
     if (num_indices > 0) {
-        int32_t* indices = md_vm_arena_push(arena, num_indices * sizeof(int32_t));
+        int32_t* indices = md_temp_push(num_indices * sizeof(int32_t));
         num_indices = md_bitfield_iter_extract_indices(indices, num_indices, md_bitfield_iter_create(mask));
 
         int32_t* viable_indices = 0;
@@ -5627,7 +5643,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
             md_bitfield_t temp_mask = md_bitfield_create(arena);
             md_bitfield_andnot(&temp_mask, viable_mask, mask);
             const size_t count = md_bitfield_popcount(&temp_mask);
-            viable_indices = md_vm_arena_push(arena, count * sizeof(int32_t));
+            viable_indices = md_temp_push(count * sizeof(int32_t));
             viable_count = md_bitfield_iter_extract_indices(viable_indices, count, md_bitfield_iter_create(&temp_mask));
         }
 
@@ -5642,7 +5658,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count) {
@@ -8926,10 +8942,10 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return false;
     }
 
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_alloc);
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     return result;
 }
 
@@ -8949,9 +8965,10 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, con
         return false;
     }
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     const bool result = unwrap_topology_vec4(xyzw, indices, count, bond, cell, temp_arena);
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return result;
 }
 
@@ -9300,7 +9317,9 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
 
     md_allocator_i* alloc = sys->alloc;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     bool cg = false;
     for (size_t i = 0; i < sys->atom.type.count; ++i) {
@@ -9526,7 +9545,7 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
 #endif
 
-	md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return true;
 }
 
@@ -9625,16 +9644,16 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
 void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
     if (!source || !z || !y || !z || count <= 0) return;
 
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_t temp_scope = md_temp_begin();
 
-    uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
+    uint32_t* keys = md_temp_push(sizeof(uint32_t) * count);
     computeOrder(keys, x, y, z, count, 0);
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};
     computeHistogram10(hist, keys, count);
 
-    uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
+    uint32_t* scratch = md_temp_push(sizeof(uint32_t) * count);
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
         scratch[i] = i;
     }
@@ -9644,16 +9663,15 @@ void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, cons
     radixPass10(scratch, source, keys, count, hist, 1);
     radixPass10(source, scratch, keys, count, hist, 2);
 
-    md_free(alloc, scratch, sizeof(uint32_t) * count);
-    md_free(alloc, keys,    sizeof(uint32_t) * count);
+    md_temp_end(temp_scope);
 }
 
 void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_in_bytes, size_t count) {
     if (!source || !xyz || count <= 0) return;
 
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_t temp_scope = md_temp_begin();
 
-    uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
+    uint32_t* keys = md_temp_push(sizeof(uint32_t) * count);
     const float* base = (const float*)xyz;
     const float* x = base + 0;
     const float* y = base + 1;
@@ -9664,7 +9682,7 @@ void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_
     uint32_t hist[1024][3] = {0};
     computeHistogram10(hist, keys, count);
 
-    uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
+    uint32_t* scratch = md_temp_push(sizeof(uint32_t) * count);
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
         scratch[i] = i;
     }
@@ -9674,17 +9692,16 @@ void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_
     radixPass10(scratch, source, keys, count, hist, 1);
     radixPass10(source, scratch, keys, count, hist, 2);
 
-    md_free(alloc, scratch, sizeof(uint32_t) * count);
-    md_free(alloc, keys,    sizeof(uint32_t) * count);
+    md_temp_end(temp_scope);
 }
 
 void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
     if (!data || count <= 0) return;
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    uint32_t* temp = md_vm_arena_push(arena, count * sizeof(uint32_t));
+    md_temp_t temp_scope = md_temp_begin();
+    uint32_t* temp = md_temp_push(count * sizeof(uint32_t));
     sort_radix_inplace_uint32(data, count, temp);
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, size_t count, uint32_t* tmp_indices) {
@@ -10116,7 +10133,7 @@ static size_t find_isomorphisms(md_index_data_t* mappings, const graph_t* needle
             // This should be a 1:1 mapping
             if (mappings) {
                 size_t length = haystack->vertex_count;
-                int* indices = md_vm_arena_push_array(temp_alloc, int, length);
+                int* indices = md_temp_push_array(int, length);
                 for (int i = 0; i < (int)length; ++i) {
                     indices[i] = i;
                 }
@@ -10361,13 +10378,15 @@ static size_t extract_structures(md_index_data_t* out_structures, const md_syste
 
 #define MAX_TYPES 256
 md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_match_mode_t mode, md_util_match_level_t level, vertex_type_mapping_mode_t vertex_mapping, const md_system_t* sys, md_allocator_i* alloc) {
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     graph_t ref_graph = {0};
     md_index_data_t result = {.alloc = alloc};
 
     size_t atom_count = md_system_atom_count(sys);
-    md_array(int) structure_idx = md_vm_arena_push_array(temp_arena, int, atom_count);
+    md_array(int) structure_idx = md_temp_push_array(int, atom_count);
 
     for (size_t i = 0; i < md_structure_count(&sys->structure); ++i) {
         md_structure_t structure = {0};
@@ -10430,7 +10449,7 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
 
 
     for (size_t i = 0; i < num_structures; ++i) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
+        md_temp_t temp = md_temp_begin_arena(temp_arena);
 
         const int*   s_idx = md_index_range_beg(&structures, i);
         const size_t s_len = md_index_range_size(&structures, i);
@@ -10493,11 +10512,11 @@ md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_matc
             }
         }
     next:
-        md_vm_arena_temp_end(temp);
+        md_temp_end(temp);
     }
 
 done:
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return result;
 }
 
@@ -10522,7 +10541,9 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
         return 0;
     }
 
-    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc, idx_data ? idx_data->alloc : NULL };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     graph_t ref_graph = smiles_to_graph(smiles, flags, temp_alloc, temp_alloc);
 
     // Histogram of types present in reference structure
@@ -10559,11 +10580,11 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
     }
 
     size_t atom_count = md_system_atom_count(sys);
-    uint8_t* atom_types = md_vm_arena_push(temp_alloc, atom_count);
+    uint8_t* atom_types = md_temp_push(atom_count);
     md_atom_extract_atomic_numbers(atom_types, 0, atom_count, &sys->atom);
 
     for (size_t i = 0; i < num_structures; ++i) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_alloc);
+        md_temp_t temp = md_temp_begin_arena(temp_alloc);
         const size_t s_size = md_index_range_size(&structures, i);
         const int*   s_idx  = md_index_range_beg(&structures, i);
 
@@ -10583,7 +10604,7 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
 
         if (flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT) {
             if (s_graph.vertex_count != ref_graph.vertex_count) {
-                continue;
+                goto next;
             }
         }
         
@@ -10605,11 +10626,11 @@ size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_mat
 
         match_count += count;
     next:
-        md_vm_arena_temp_end(temp);
+        md_temp_end(temp);
     }
 
 done:
-    md_vm_arena_destroy(temp_alloc);
+    md_temp_end(temp_scope);
 
     return match_count;
 }

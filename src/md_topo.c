@@ -610,7 +610,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 #if DEBUG
     {  
-        md_allocator_i* temp_alloc = md_get_heap_allocator();
+        md_temp_t temp_scope = md_temp_begin();
+        md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
         float*    vol_data  = (float*)md_alloc(temp_alloc, num_points * sizeof(float));
         uint32_t* asc_data  = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
         uint32_t* desc_data = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
@@ -626,9 +627,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
         MD_LOG_INFO("Volume              hash: 0x%016llX", (unsigned long long)vol_hash);
         MD_LOG_INFO("Ascending  manifold hash: 0x%016llX", (unsigned long long)asc_hash);
         MD_LOG_INFO("Descending manifold hash: 0x%016llX", (unsigned long long)desc_hash);
-        md_free(temp_alloc, vol_data,  num_points * sizeof(float));
-        md_free(temp_alloc, asc_data,  num_points * sizeof(uint32_t));
-        md_free(temp_alloc, desc_data, num_points * sizeof(uint32_t));
+        md_temp_end(temp_scope);
     }
 #endif
     
@@ -707,7 +706,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // Print out all of the critical point indices found (sorted)
     #if DEBUG
     {
-        md_allocator_i* temp_alloc = md_get_heap_allocator();
+        md_temp_t temp_scope = md_temp_begin();
+        md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
         if (num_vertices > 0) {
             uint32_t* data = (uint32_t*)md_alloc(temp_alloc, num_vertices * sizeof(uint32_t));
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, indices_buf);
@@ -718,8 +718,8 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
                 printf("  %u", data[i]);
             }
             printf("\n");
-            md_free(temp_alloc, data, num_vertices * sizeof(uint32_t));
         }
+        md_temp_end(temp_scope);
     }
     #endif
 #endif
@@ -843,7 +843,9 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
 
     if (!in_graph->vertices || in_graph->num_vertices == 0) return;
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     // Working copies (may grow during pruning)
     md_array(int)             vertex_type = md_array_create(int,            in_graph->num_vertices, temp_alloc);
@@ -948,8 +950,7 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
     }
 
     if (num_vertices == 0) {
-        md_arena_allocator_destroy(temp_alloc);
-        return;
+        goto done;
     }
 
     out_graph->num_vertices = num_vertices;
@@ -981,8 +982,8 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
             ec++;
         }
     }
-
-    md_arena_allocator_destroy(temp_alloc);
+done:
+    md_temp_end(temp_scope);
 }
 
 void md_topo_count_vertex_types(uint32_t out_counts[MD_TOPO_NUM_TYPES], const md_topo_extremum_graph_t* graph) {

@@ -440,12 +440,14 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     }
 
     const size_t cap = MEGABYTES(1);
-    char* buf = md_alloc(md_get_heap_allocator(), cap);
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    char* buf = md_temp_push(cap);
         
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     bool result = pdb_parse(data, &reader, alloc, false);
         
-    md_free(md_get_heap_allocator(), buf, cap);
+    md_temp_end(temp_scope);
     md_file_close(&file);
 
     return result;
@@ -474,7 +476,9 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
 
     md_system_reset(sys);
 
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     size_t beg_atom_index = 0;
     size_t end_atom_index = data->num_atom_coordinates;
@@ -661,18 +665,20 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     */
 
     result = true;
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return result;
 }
 
 bool md_pdb_system_init_from_str(md_system_t* sys, str_t str, md_pdb_options_t options) {
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_pdb_data_t data = {0};
     md_pdb_data_parse_str(&data, str, temp_arena);
     bool success = md_pdb_system_init_from_data(sys, &data, options);
     
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return success;
 }
 
@@ -683,9 +689,11 @@ bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_optio
         return false;
     }
 
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     const size_t cap = MEGABYTES(1);
-    char *buf = md_arena_allocator_push(temp_arena, cap);
+    char *buf = md_temp_push(cap);
     ASSERT(buf);
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     
@@ -704,7 +712,7 @@ bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_optio
         }
     }
 
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
 
     return success;
 }
@@ -915,40 +923,41 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
 
     const size_t filesize = file_info.size;
 
-	char cache_path_buf[4096];
-	snprintf(cache_path_buf, sizeof(cache_path_buf), STR_FMT ".cache", STR_ARG(filename));
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_allocator_i* temp_conflicts[] = { ext_alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(temp_conflicts, ARRAY_SIZE(temp_conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+
+    md_strb_t sb = md_strb_create(temp_alloc);
     md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
     str_t cache_file = md_strb_to_str(sb);
 
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
+    md_trajectory_i* traj = NULL;
+    bool success = false;
 
     pdb_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, file_info.modified_time, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-
-        bool result = false;
         md_pdb_data_t data = {0};
         if (!md_pdb_data_parse_file(&data, filename, temp_alloc)) {
-            goto cleanup;
+            goto done;
         }
 
         if (data.num_models <= 1) {
             MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
-            goto cleanup;
+            goto done;
         }
 
         // Validate the models
         const size_t num_atoms = (size_t)MAX(0, data.models[0].end_atom_index - data.models[0].beg_atom_index);
         if (!num_atoms) {
 			MD_LOG_ERROR("The PDB file models are empty and cannot be read as a trajectory");
-			goto cleanup;
+			goto done;
 		}
         for (size_t i = 1; i < data.num_models; ++i) {
             const size_t length = (size_t)MAX(0, data.models[i].end_atom_index - data.models[i].beg_atom_index);
             if (length && length != num_atoms) {
                 MD_LOG_ERROR("The PDB file models are empty or not of equal length and cannot be read as a trajectory");
-                goto cleanup;
+                goto done;
             }
         }
         
@@ -979,14 +988,6 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
                 MD_LOG_INFO("PDB: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
             }
         }
-
-        result = true;
-
-        cleanup:
-        md_arena_allocator_destroy(temp_alloc);
-        if (!result) {
-            return NULL;
-        }
     }
 
     md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
@@ -998,7 +999,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
     ASSERT(mem);
     MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
 
-    md_trajectory_i* traj = mem;
+    traj = mem;
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
@@ -1018,6 +1019,13 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
     traj->get_header = pdb_get_header;
     traj->init_reader = pdb_trajectory_reader_init;
 
+    success = true;
+
+done:
+    md_temp_end(temp_scope);
+    if (!success && alloc) {
+        md_arena_allocator_destroy(alloc);
+    }
     return traj;
 }
 

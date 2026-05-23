@@ -523,8 +523,9 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
     ASSERT(state);
     ASSERT(alloc);
 
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
-    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     bool success = false;
     
@@ -540,15 +541,15 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
 
     if (id_col == -1) {
         MD_LOG_ERROR("Missing entity field 'id'");
-        return false;
+        goto done;
     }
     if (type_col == -1) {
         MD_LOG_ERROR("Missing entity field 'type'");
-        return false;
+        goto done;
     }
     if (desc_col == -1) {
         MD_LOG_ERROR("Missing entity field 'pdbx_description'");
-        return false;
+        goto done;
     }
 
     for (size_t i = 0; i < sec.num_rows; ++i) {
@@ -563,7 +564,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
 
     success = true;
 done:
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     return success;
 }
 
@@ -575,8 +576,9 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
 
     bool success = false;
 
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
-    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     mmcif_section_t sec = {0};
     if (!mmcif_parse_section(&sec, state, temp_alloc)) {
@@ -589,11 +591,11 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
 
     if (id_col == -1) {
         MD_LOG_ERROR("Missing entity field 'entity_id'");
-        return false;
+        goto done;
     }
     if (type_col == -1) {
         MD_LOG_ERROR("Missing entity field 'type'");
-        return false;
+        goto done;
     }
 
     for (size_t i = 0; i < sec.num_rows; ++i) {
@@ -607,7 +609,7 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
 
     success = true;
 done:
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     return success;
 }
 
@@ -771,12 +773,15 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
 }
 
 static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+    bool result = false;
     bool atom_site_parsed = false;
     bool cell_parsed = false;
     bool entity_parsed = false;
     bool entity_poly_parsed = false;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_array(mmcif_atom_site_entry_t) atom_entries = 0;
     md_array(mmcif_entity_t) entities = 0;
@@ -794,7 +799,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         str_t tok;
         if (!mmcif_peek_token(&tok, &state)) {
             MD_LOG_ERROR("Unexpected EOF");
-            return false;
+            goto done;
         }
 
         if (str_eq(tok, STR_LIT("loop_"))) {
@@ -806,25 +811,25 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         if (str_eq_cstr_n(tok, "_atom_site.", 11)) {
             if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _atom_site section");
-                return false;
+                goto done;
             }
             atom_site_parsed = true;
         } else if (str_eq_cstr_n(tok, "_cell.", 6)) {
             if (!mmcif_parse_cell(&cell, &state)) {
                 MD_LOG_ERROR("Failed to parse _cell section");
-                return false;
+                goto done;
             }
             cell_parsed = true;
         } else if (str_eq_cstr_n(tok, "_entity.", 8)) {
             if (!mmcif_parse_entity(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity section");
-                return false;
+                goto done;
             }
             entity_parsed = true;
         } else if (str_eq_cstr_n(tok, "_entity_poly.", 13)) {
             if (!mmcif_parse_entity_poly(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity_poly section");
-                return false;
+                goto done;
             }
             entity_poly_parsed = true;
         } else {
@@ -989,7 +994,11 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
 		md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
     }
 
-    return sys->atom.count > 0;
+    result = sys->atom.count > 0;
+
+done:
+    md_temp_end(temp_scope);
+    return result;
 }
 
 bool md_mmcif_system_init_from_str(md_system_t* sys, str_t str) {
@@ -1027,14 +1036,15 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, str_t filename) {
 
     md_system_reset(sys);
 
-    const size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
     const size_t cap = MEGABYTES(1);
     char* buf = md_temp_push(cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     bool result = mmcif_parse(sys, &reader, sys->alloc);
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     md_file_close(&file);
 
     return result;

@@ -686,14 +686,15 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         MD_LOG_ERROR("Parse XYZ: Failed to open file '" STR_FMT "'", STR_ARG(filename));
         return false;
     }
-    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
     size_t buf_cap = MEGABYTES(1);
     char* buf = md_temp_push(buf_cap);
     
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
     bool result = xyz_parse(data, &reader, alloc, false);
     
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     md_file_close(&file);
 
     return result;
@@ -772,13 +773,15 @@ bool md_xyz_system_init_from_data(md_system_t* sys, const md_xyz_data_t* data, m
 bool md_xyz_system_init_from_str(md_system_t* sys, str_t str, md_xyz_options_t options) {
     ASSERT(sys);
     
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 
     md_xyz_data_t data = {0};
     bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, &data, options);
 
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return result;
 }
 
@@ -791,9 +794,11 @@ bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_optio
         return false;
     }
 
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     size_t buf_cap = MEGABYTES(1);
-    char* buf = md_arena_allocator_push(temp_arena, buf_cap);
+    char* buf = md_temp_push(buf_cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
     
@@ -812,7 +817,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_optio
         }
     }
 
-    md_arena_allocator_destroy(temp_arena);
+    md_temp_end(temp_scope);
     md_file_close(&file);
 
     return result;
@@ -1029,7 +1034,9 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
 
     xyz_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, file_info.modified_time, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        md_allocator_i* conflicts[] = { ext_alloc };
+        md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+        md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
         bool result = false;
         md_xyz_data_t data = {0};
@@ -1075,7 +1082,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
 
         result = true;
     cleanup:
-        md_arena_allocator_destroy(temp_alloc);
+        md_temp_end(temp_scope);
         if (!result) {
             return NULL;
         }

@@ -7,6 +7,7 @@
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
 #include <stdbool.h>
@@ -431,8 +432,6 @@ static void gto_build_sparse_pairs(
     if (num_cgtos == 0) {
         return;
     }
-
-    size_t num_batches = DIV_UP(num_cgtos, GTO_SPARSE_BATCH_SIZE);
 
     // Reset data
     //md_array_resize(list->cgto_order, num_cgtos, list->alloc);
@@ -860,7 +859,8 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     GLuint program = get_gto_program();
     if (!program) return;
 
-    size_t temp_pos  = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     size_t max_gtos  = md_gto_pgto_count(basis);
     md_gto_t* gtos   = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos);
     size_t num_gtos  = md_gto_expand_with_mo(gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs, cutoff);
@@ -871,7 +871,7 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
         gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, 1, mode, op, program);
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op) {
@@ -885,7 +885,8 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
     GLuint program = get_gto_program();
     if (!program) return;
 
-    size_t temp_pos  = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     size_t max_gtos  = md_gto_pgto_count(basis);
 
     // Flat GTO buffer for all MOs concatenated
@@ -910,7 +911,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
         gto_grid_evaluate_mo_GPU(vol_tex, grid, gtos, orb_offsets, orb_scaling, num_orbs, mode, op, program);
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
@@ -925,7 +926,8 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     uint32_t num_cgtos, num_pgtos;
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
 
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     float*    cgto_xyz     = (float*)   md_temp_push(sizeof(float)    * 3 * num_cgtos);
     float*    cgto_r       = (float*)   md_temp_push(sizeof(float)    * 1 * num_cgtos);
     uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_cgtos * 2);
@@ -944,7 +946,7 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
     md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, num_cgtos, cgto_xyzr, cgto_off_len, num_pgtos, pgto, upper_tri, tri_len, include_gradients, op);
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 #else
@@ -1111,8 +1113,9 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
     // Populate all basis regions immediately.
     const md_gto_basis_layout_t* L = &gb->layout;
     bool uma = (md_gpu_buffer_flags(gb->buffer) & MD_GPU_BUFFER_CPU_VISIBLE) != 0;
+    bool success = false;
 
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
 
     uint32_t* cgto_atom_idx = (uint32_t*)md_temp_push(sizeof(uint32_t) * L->num_cgtos);
     float*    cgto_r       = (float*)   md_temp_push(sizeof(float)    * 1 * L->num_cgtos);
@@ -1142,14 +1145,19 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
         MEMCPY(tmp + L->off_pgto,         pgto,         sz_pgto);
         if (!gto_local_staging_upload_at(gb->device, gb->buffer, 0, tmp, total)) {
             MD_LOG_ERROR("md_gto_gpu_basis_create: staging upload failed");
-            md_temp_set_pos_back(temp_pos);
-            md_gpu_buffer_destroy(buf);
-            free(gb);
-            return NULL;
+            goto done;
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    success = true;
+
+done:
+    md_temp_end(temp);
+    if (!success) {
+        md_gpu_buffer_destroy(buf);
+        free(gb);
+        return NULL;
+    }
 
     return gb;
 }
@@ -2032,7 +2040,7 @@ void md_gto_grid_evaluate(float* out_values, const md_grid_t* grid, const md_gto
         (grid->orientation.elem[2][0] + grid->orientation.elem[2][1] + grid->orientation.elem[2][2]) * grid->spacing.elem[2]
     };
 
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
     md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
     for (idx_off[2] = 0; idx_off[2] < grid->dim[2]; idx_off[2] += 8) {
@@ -2059,7 +2067,7 @@ void md_gto_grid_evaluate(float* out_values, const md_grid_t* grid, const md_gto
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 // Evaluate GTOs over a set of passed in packed XYZ coordinates with a bytestride

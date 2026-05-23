@@ -5,6 +5,7 @@
 #include <md_trajectory.h>
 #include <md_system.h>
 #include <core/md_common.h>
+#include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_log.h>
@@ -166,7 +167,8 @@ static inline uint64_t br_read(br_t* r, size_t num_bits) {
 static const int num_bits[] = {64, 48, 7, 1, 2, 64, 5, 32, 8, 55, 8, 55, 55, 48, 8, 4, 1, 1, 2, 3, 7, 64, 64, 64, 64, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 ,33, 35, 41, 44, 51, 55, 59, 63, 63, 63, 1, 2, 3,4};
 
 UTEST(xtc, bitread) {
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     int* buf = md_temp_push(sizeof(int) * (1024 + 3));
     buf[0] = buf[1] = buf[2] = 0;
     srand(0);
@@ -196,11 +198,12 @@ UTEST(xtc, bitread) {
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 UTEST(xtc, decode_bits) {
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     int* buf = md_temp_push(sizeof(int) * (1024 + 3));
     buf[0] = buf[1] = buf[2] = 0;
     srand(0);
@@ -251,7 +254,7 @@ UTEST(xtc, decode_bits) {
         }
     }
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
 }
 
 UTEST(xtc, trajectory_i) {
@@ -266,7 +269,9 @@ UTEST(xtc, trajectory_i) {
     EXPECT_EQ(num_frames, 501);
 
     const int64_t mem_size = num_atoms * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem_ptr = md_temp_push(mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
@@ -277,12 +282,13 @@ UTEST(xtc, trajectory_i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
-    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }
 
 UTEST(xtc, catalyst) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     md_file_t file = {0};
@@ -299,8 +305,8 @@ UTEST(xtc, catalyst) {
     const size_t num_frames = 501;
 
     const size_t coord_size = num_atoms * 3 * sizeof(float);
-    float *ref = (float*)md_vm_arena_push(arena, coord_size);
-    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+    float *ref = (float*)md_temp_push(coord_size);
+    float *xyz = (float*)md_temp_push(coord_size);
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
@@ -337,14 +343,15 @@ UTEST(xtc, catalyst) {
     }
     
 done:
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
     md_file_close(&file);
     xdrfile_close(xdr);
 }
 
 #if FULL_TEST
 UTEST(xtc, big) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     const str_t path = STR_LIT("E:/data/md/big/PROD_r2.part0001.xtc");
     md_file_t file = {0};
@@ -361,8 +368,8 @@ UTEST(xtc, big) {
     const size_t num_frames = 241;
 
     const size_t coord_size = num_atoms * 3 * sizeof(float);
-    float *ref = (float*)md_vm_arena_push(arena, coord_size);
-    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+    float *ref = (float*)md_temp_push(coord_size);
+    float *xyz = (float*)md_temp_push(coord_size);
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
@@ -399,13 +406,14 @@ UTEST(xtc, big) {
     }
     
 done:
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
     md_file_close(&file);
     xdrfile_close(xdr);
 }
 
 UTEST(xtc, amyloid) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     const str_t path = STR_LIT("E:/data/md/amyloid-6T/prod-centered.xtc");
     md_file_t file = {0};
@@ -422,8 +430,8 @@ UTEST(xtc, amyloid) {
     const size_t num_frames = 5701;
 
     const size_t coord_size = num_atoms * 3 * sizeof(float);
-    float *ref = (float*)md_vm_arena_push(arena, coord_size);
-    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+    float *ref = (float*)md_temp_push(coord_size);
+    float *xyz = (float*)md_temp_push(coord_size);
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
@@ -456,13 +464,14 @@ UTEST(xtc, amyloid) {
     }
 
 done:
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
     md_file_close(&file);
     xdrfile_close(xdr);
 }
 
 UTEST(xtc, H1N1) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     const str_t path = STR_LIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
     md_file_t file = {0};
@@ -479,8 +488,8 @@ UTEST(xtc, H1N1) {
     const size_t num_frames = 71;
 
     const size_t coord_size = num_atoms * 3 * sizeof(float);
-    float *ref = (float*)md_vm_arena_push(arena, coord_size);
-    float *xyz = (float*)md_vm_arena_push(arena, coord_size);
+    float *ref = (float*)md_temp_push(coord_size);
+    float *xyz = (float*)md_temp_push(coord_size);
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
@@ -513,7 +522,7 @@ UTEST(xtc, H1N1) {
     }
 
 done:
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
     md_file_close(&file);
     xdrfile_close(xdr);
 }

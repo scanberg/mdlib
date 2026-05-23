@@ -92,10 +92,12 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
     md_file_t file = {0};
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_get_heap_allocator(), cap);
+        md_allocator_i* conflicts[] = { alloc };
+        md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+        char* buf = md_temp_push(cap);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         bool result = parse(csv, &reader, alloc);
-        md_free(md_get_heap_allocator(), buf, cap);
+        md_temp_end(temp_scope);
         md_file_close(&file);
         return result;
     } else {
@@ -124,10 +126,13 @@ static void write(md_strb_t* sb, const float* const field_values[], const str_t 
 str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
     str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
-        md_strb_t sb = md_strb_create(md_get_heap_allocator());
+        md_allocator_i* conflicts[] = { alloc };
+        md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+        md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+        md_strb_t sb = md_strb_create(temp_alloc);
         write(&sb, field_values, field_names, num_fields, num_values);
         result = str_copy(md_strb_to_str(sb), alloc);
-        md_strb_free(&sb);
+        md_temp_end(temp_scope);
     }
     return result;
 }
@@ -136,11 +141,13 @@ bool md_csv_write_to_file(const float* const field_values[], const str_t field_n
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_t file = {0};
         if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-            md_strb_t sb = md_strb_create(md_get_heap_allocator());
+            md_temp_t temp_scope = md_temp_begin();
+            md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+            md_strb_t sb = md_strb_create(temp_alloc);
             write(&sb, field_values, field_names, num_fields, num_values);
             str_t str = md_strb_to_str(sb);
             const size_t written_bytes = md_file_write(file, str.ptr, str.len);
-            md_strb_free(&sb);
+            md_temp_end(temp_scope);
             md_file_close(&file);
             
             if (written_bytes == str.len) {

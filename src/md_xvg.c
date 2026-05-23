@@ -12,7 +12,10 @@
 str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	
-	md_strb_t sb = md_strb_create(md_get_heap_allocator());
+	md_allocator_i* conflicts[] = { str_alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+	md_strb_t sb = md_strb_create(temp_alloc);
 
 	time_t t;
 	struct tm* info;
@@ -44,7 +47,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 
 	str_t result = str_copy(md_strb_to_str(sb), str_alloc);
 
-	md_strb_free(&sb);
+	md_temp_end(temp_scope);
 	return result;
 }
 
@@ -54,21 +57,24 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 
 	if (num_fields == 0) {
         MD_LOG_ERROR("XVG: num_fields is zero");
-        goto done;
+		return str;
 	}
 
 	if (num_values == 0) {
         MD_LOG_ERROR("XVG: num_values is zero");
-        goto done;
+		return str;
     }
 
 	if (!field_values) {
         MD_LOG_ERROR("XVG: field_values is null even though num_fields > 0");
-        goto done;
+		return str;
     }
 
+	md_allocator_i* conflicts[] = { str_alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = {0};
-	md_strb_init(&sb, md_get_heap_allocator());
+	md_strb_init(&sb, temp_alloc);
 	md_strb_push_str(&sb, header);
 
 	for (size_t i = 0; i < num_values; ++i) {
@@ -80,16 +86,18 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 	}
 
 	str = str_copy(md_strb_to_str(sb), str_alloc);
-	md_strb_free(&sb);
-done:
+	md_temp_end(temp_scope);
 	return str;
 }
 
 str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
 	ASSERT(alloc);
-	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, md_get_heap_allocator());
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, temp_alloc);
 	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
-	str_free(header, md_get_heap_allocator());
+	md_temp_end(temp_scope);
 	return result;
 }
 
@@ -124,7 +132,10 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	str_t line;
 
 	bool result = false;
-	md_strb_t sb = md_strb_create(md_get_heap_allocator());
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+	md_strb_t sb = md_strb_create(temp_alloc);
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
@@ -171,7 +182,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	header_info->num_legends = md_array_size(header_info->legends);
 	result = true;
 done:
-	md_strb_free(&sb);
+	md_temp_end(temp_scope);
 	return result;
 }
 
@@ -249,10 +260,13 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	}
 
 	const size_t cap = MEGABYTES(1);
-	char* buf = md_alloc(md_get_heap_allocator(), cap);
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	char* buf = md_temp_push(cap);
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
 	bool result = parse(xvg, &reader, alloc);
+	md_temp_end(temp_scope);
 	md_file_close(&file);
 	return result;
 }

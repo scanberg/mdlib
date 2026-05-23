@@ -477,21 +477,25 @@ static bool dcd_read_frame_at(md_file_t file,
         // and scatter them into the correct positions in the output buffers.
         // The caller has already filled out_x/y/z with the first-frame values.
         if (coords_requested) {
-            md_allocator_i* heap = md_get_heap_allocator();
-            float* tmp = (float*)md_alloc(heap, (size_t)nfree * sizeof(float));
+            bool success = false;
+            md_temp_t temp_scope = md_temp_begin();
+            float* tmp = (float*)md_temp_push((size_t)nfree * sizeof(float));
 
             for (int dim = 0; dim < 3; ++dim) {
                 float* dst = (dim == 0) ? out_x : (dim == 1) ? out_y : out_z;
                 if (dcd_read_coord_record(file, offset, nfree, rev, tmp) < 0) {
                     MD_LOG_ERROR("DCD: Failed to read free-atom coordinate record (dim %d)", dim);
-                    md_free(heap, tmp, (size_t)nfree * sizeof(float));
-                    return false;
+                    goto done;
                 }
                 for (int i = 0; i < nfree; ++i)
                     dst[free_indices[i] - 1] = tmp[i];
             }
 
-            md_free(heap, tmp, (size_t)nfree * sizeof(float));
+            success = true;
+
+done:
+            md_temp_end(temp_scope);
+            if (!success) return false;
         } else {
             for (int dim = 0; dim < 3; ++dim) {
                 if (dcd_read_coord_record(file, offset, nfree, rev, NULL) < 0) {

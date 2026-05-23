@@ -1062,20 +1062,21 @@ static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_t
     bool result = false;
 	md_file_t file = { 0 };
     if (md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
+        md_temp_t temp_scope = md_temp_begin();
 
         const int64_t beg = xtc->frame_offsets[frame_idx];
         const int64_t end = xtc->frame_offsets[frame_idx + 1];
         if (end <= beg) {
             MD_LOG_ERROR("XTC: Invalid frame offset range");
-            return false;
+            goto done;
         }
         const size_t frame_size = end - beg;
 		const size_t alloc_size = ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES;
 
-		uint8_t* frame_data = calloc(alloc_size, 1);
+		uint8_t* frame_data = md_temp_push_zero(alloc_size);
         if (!frame_data) {
             MD_LOG_ERROR("XTC: Failed to allocate memory for frame data");
-            return false;
+			goto done;
 		}
 
         size_t read_size = md_file_read_at(file, beg, frame_data, frame_size);
@@ -1104,7 +1105,8 @@ static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_t
 			MD_LOG_ERROR("XTC: Failed to read frame data from file, expected %zu bytes, got %zu bytes", frame_size, read_size);
         }
 
-		free(frame_data);
+    done:
+        md_temp_end(temp_scope);
 		md_file_close(&file);
     }
 

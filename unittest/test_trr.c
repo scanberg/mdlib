@@ -16,7 +16,9 @@ UTEST(trr, trajectory_i) {
     EXPECT_EQ(md_trajectory_num_frames(traj), 101);
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem_ptr = md_temp_push(mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -27,7 +29,7 @@ UTEST(trr, trajectory_i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
-    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }
 
@@ -36,7 +38,9 @@ UTEST(trr, trajectory_reader_i) {
     ASSERT_TRUE(traj);
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem_ptr = md_temp_push(mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -51,7 +55,7 @@ UTEST(trr, trajectory_reader_i) {
     EXPECT_EQ(6495, header.num_atoms);
 
     md_trajectory_reader_free(&reader);
-    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }
 
@@ -65,7 +69,9 @@ UTEST(trr, frame_boundary_conditions) {
     ASSERT_TRUE(traj);
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem_ptr = md_temp_push(mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -82,6 +88,6 @@ UTEST(trr, frame_boundary_conditions) {
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
     EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
 
-    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }

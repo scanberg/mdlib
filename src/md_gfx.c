@@ -401,7 +401,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         return false;
     }
 
-    md_allocator_i* alloc = md_get_temp_allocator();
+    md_allocator_i* alloc = md_get_temp_arena();
 
     char* buf = 0;
     md_array_ensure(buf, KILOBYTES(4), alloc);
@@ -480,7 +480,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 }
 
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
-    str_t src = load_textfile(str_from_cstr(filename), md_get_temp_allocator());
+    str_t src = load_textfile(str_from_cstr(filename), md_get_temp_arena());
     if (!str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
@@ -697,16 +697,16 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (str_printf(md_get_temp_allocator(), "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (str_printf(md_get_temp_arena(), "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_get_temp_allocator());
+        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_get_temp_arena());
         if (str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_get_temp_allocator());
+        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_get_temp_arena());
         if (str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
@@ -1014,7 +1014,8 @@ uint32_t* create_cluster_ranges_from_groups(range_t* groups, uint32_t group_coun
 }
 
 void recompute_clusters2(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     // This is a bit fiddly to get the mapping right, especially if you have instances defined.
     // We make the assumption that if you have groups and instances defined, the instances are defined on the boarders of the defined groups.
@@ -1023,11 +1024,11 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     const uint32_t grp_count = (uint32_t)md_array_size(s->groups);
     const uint32_t inst_count = (uint32_t)md_array_size(s->instances);
 
-    uint32_t* grp_indices  = md_vm_arena_push(arena, sizeof(uint32_t) * count);
+    uint32_t* grp_indices  = md_temp_push(sizeof(uint32_t) * count);
 
-    aabb_t* grp_aabb = md_vm_arena_push(arena, sizeof(aabb_t) * grp_count);
-    vec3_t* grp_cent = md_vm_arena_push(arena, sizeof(vec3_t) * grp_count);
-    int32_t* grp_inst_idx = md_vm_arena_push(arena, sizeof(int32_t) * grp_count);
+    aabb_t* grp_aabb = md_temp_push(sizeof(aabb_t) * grp_count);
+    vec3_t* grp_cent = md_temp_push(sizeof(vec3_t) * grp_count);
+    int32_t* grp_inst_idx = md_temp_push(sizeof(int32_t) * grp_count);
 
     for (uint32_t g_idx = 0; g_idx < grp_count; ++g_idx) {
         vec3_t aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
@@ -1047,7 +1048,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         grp_cent[g_idx] = cent;
     }
 
-    range_t* inst_grp_ranges = md_vm_arena_push(arena, sizeof(range_t) * md_array_size(s->instances));
+    range_t* inst_grp_ranges = md_temp_push(sizeof(range_t) * md_array_size(s->instances));
 
     // Mark any atoms part of an instance, these are special cases
     for (uint32_t i_idx = 0; i_idx < md_array_size(s->instances); ++i_idx) {
@@ -1060,7 +1061,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         }
     }
 
-    uint32_t* grp_src_indices = md_vm_arena_push(arena, sizeof(uint32_t) * grp_count);
+    uint32_t* grp_src_indices = md_temp_push(sizeof(uint32_t) * grp_count);
     md_util_sort_spatial_xyz(grp_src_indices, (const float*)grp_cent, sizeof(vec3_t), grp_count);
 
     uint32_t* src_indices = NULL;
@@ -1106,7 +1107,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     gl_buffer_set_sub_data(ctx.cluster_data_atom_idx_buf, s->atom.offset * sizeof(uint32_t),     s->atom.count * sizeof(uint32_t),     src_indices);
     gl_buffer_set_sub_data(ctx.cluster_range_buf,         s->cluster.offset * sizeof(uint32_t),  s->cluster.count * sizeof(uint32_t),  cluster_ranges);
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 // Great resource and explanation of some of the techiques used when building BVH trees
@@ -1114,7 +1115,8 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
 
 
 void recompute_clusters(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
 
     // Compute clusters
     // This is a tricky problem to solve in real-time
@@ -1198,8 +1200,7 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
     gl_buffer_set_sub_data(ctx.cluster_data_atom_idx_buf, s->atom.offset * sizeof(uint32_t),     s->atom.count * sizeof(uint32_t),     src_indices);
     gl_buffer_set_sub_data(ctx.cluster_range_buf,         s->cluster.offset * sizeof(uint32_t),  s->cluster.count * sizeof(uint32_t),  cluster_ranges);
 
-    md_array_free(cluster_ranges, alloc);
-    md_free(alloc, src_indices, sizeof(uint32_t) * count);
+    md_temp_end(temp_scope);
 }
 
 void update_cluster_data(const structure_t* s) {
@@ -1571,7 +1572,8 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         return false;
     }
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     // Store old state
     uint32_t  old_draw_buffers[16];
@@ -2023,7 +2025,7 @@ GL_PUSH_GPU_SECTION("RESET STATE");
     }
 GL_POP_GPU_SECTION();
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 
     return true;
 }

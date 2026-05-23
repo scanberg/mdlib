@@ -215,6 +215,21 @@ static inline void vm_pop(vm_arena_t* arena, size_t size) {
     vm_set_pos(arena, (size_t)new_pos);
 }
 
+static inline bool vm_set_pos_forward(vm_arena_t* arena, size_t pos) {
+    if (pos > arena->size) {
+        return false;
+    }
+
+    if (pos > arena->commit_pos) {
+        size_t commit_size = ALIGN_TO(pos - arena->commit_pos, VM_COMMIT_SIZE);
+        md_vm_commit((char*)arena->base + arena->commit_pos, commit_size);
+        arena->commit_pos += commit_size;
+    }
+
+    arena->pos = pos;
+    return true;
+}
+
 static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)file;
     (void)line;
@@ -224,7 +239,9 @@ static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old
 
     if (new_size == 0) {
         if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
-            vm_pop(arena, old_size);
+            size_t ptr_pos = (size_t)((char*)ptr - (char*)arena->base);
+            ASSERT(ptr_pos >= MIN_VM_POS && ptr_pos <= arena->pos);
+            vm_set_pos(arena, ptr_pos);
         }
         return NULL;
     }
@@ -232,19 +249,16 @@ static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old
     if (old_size) {
         ASSERT(ptr);
         if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
-            const int64_t diff = (int64_t)new_size - (int64_t)old_size;
-            const int64_t new_pos = arena->pos + diff;
-            ASSERT(0 <= new_pos && new_pos < (int64_t)arena->size);
-            if (diff < 0) {
-                vm_set_pos(arena, new_pos);
-            }
-            else {
-                vm_push(arena, (size_t)diff, arena->align);
-            }
-            return ptr;
+            size_t ptr_pos = (size_t)((char*)ptr - (char*)arena->base);
+            size_t new_pos = ptr_pos + new_size;
+            ASSERT(ptr_pos >= MIN_VM_POS);
+            ASSERT(new_pos <= arena->size);
+            return vm_set_pos_forward(arena, new_pos) ? ptr : NULL;
         }
         void* new_ptr = vm_push(arena, new_size, arena->align);
-        MEMCPY(new_ptr, ptr, old_size);
+        if (new_ptr) {
+            MEMCPY(new_ptr, ptr, MIN(old_size, new_size));
+        }
         return new_ptr;
     }
 

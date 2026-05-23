@@ -663,7 +663,7 @@ done:
 }
 
 static bool edr_file_open(edr_fp_t* fp, str_t filename) {
-	str_t path = str_copy(filename, md_get_temp_allocator());
+	str_t path = str_copy(filename, md_get_temp_arena());
 	bool result = false;
 
 	fp->xdr = xdrfile_open(path.ptr, "r");
@@ -672,7 +672,8 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		return false;
 	}
 
-	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+	md_temp_t temp_scope = md_temp_begin();
+	md_allocator_i* arena = md_temp_allocator(temp_scope);
 	bool wrong_precision = false;
 	md_enxframe_t frame = {0};
 	int file_version;
@@ -705,10 +706,9 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	xdr_seek(fp->xdr, 0, SEEK_END);
 	fp->xdr_file_size = xdr_tell(fp->xdr);
 	xdr_seek(fp->xdr, 0, SEEK_SET);
-	md_arena_allocator_destroy(arena);
-
 	result = true;
 done:
+    md_temp_end(temp_scope);
 	return result;
 }
 
@@ -767,7 +767,9 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 		return false;
 	}
 
-	md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp = md_temp_allocator(temp_scope);
 	md_enxframe_t frame = {0};
 
 	int file_version = 0;
@@ -819,7 +821,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 	
 	result = true;
 done:
-	md_arena_allocator_destroy(temp);
+    md_temp_end(temp_scope);
 	edr_file_close(&fp);
 	return result;
 }

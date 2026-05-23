@@ -921,7 +921,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     {
-        md_strb_t sb = md_strb_create(md_get_temp_allocator());
+        md_strb_t sb = md_strb_create(md_get_temp_arena());
         md_strb_push_str(&sb, filename);
         md_strb_push_cstr(&sb, ".cache");
         str_t cache_file = md_strb_to_str(sb);

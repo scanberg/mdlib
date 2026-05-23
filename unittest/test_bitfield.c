@@ -309,7 +309,41 @@ UTEST(bitfield, deserialize_base64) {
     md_free(alloc, mem, cap);
 
     md_tracking_allocator_destroy(alloc);
-    
+}
+
+UTEST(bitfield, serialization_edge_masks) {
+    md_allocator_i* alloc = md_tracking_allocator_create(md_get_heap_allocator());
+
+    md_bitfield_t a = {0};
+    md_bitfield_t b = {0};
+    md_bitfield_init(&a, alloc);
+    md_bitfield_init(&b, alloc);
+
+    md_bitfield_not_inplace(&a, 100, 200);
+    EXPECT_EQ(100, md_bitfield_popcount(&a));
+
+    size_t cap = md_bitfield_serialize_size_in_bytes(&a);
+    EXPECT_GT(cap, 0);
+
+    void* mem = md_alloc(alloc, cap);
+    size_t len = md_bitfield_serialize(mem, &a);
+    EXPECT_GT(len, 0);
+    EXPECT_TRUE(md_bitfield_deserialize(&b, mem, len));
+
+    EXPECT_EQ(a.beg_bit, b.beg_bit);
+    EXPECT_EQ(a.end_bit, b.end_bit);
+    EXPECT_EQ(md_bitfield_popcount(&a), md_bitfield_popcount(&b));
+
+    for (uint64_t i = 0; i < 512; ++i) {
+        const bool expected = 100 <= i && i < 200;
+        EXPECT_EQ(expected, md_bitfield_test_bit(&b, i));
+    }
+
+    md_free(alloc, mem, cap);
+    md_bitfield_free(&a);
+    md_bitfield_free(&b);
+
+    md_tracking_allocator_destroy(alloc);
 }
 
 UTEST(bitfield, iterator) {

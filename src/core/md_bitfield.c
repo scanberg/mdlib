@@ -1,5 +1,6 @@
 ﻿#include <core/md_bitfield.h>
 
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
@@ -205,7 +206,9 @@ static inline md_bitblock_t get_block(const md_bitfield_t* bf, uint64_t idx) {
         MEMCPY(&blk, (uint8_t*)(bf->bits) + (idx - beg_blk) * sizeof(md_bitblock_t), sizeof(md_bitblock_t));
         return blk;
     }
-    return (md_bitblock_t){0};
+    md_bitblock_t blk;
+    MEMSET(&blk, 0, sizeof(blk));
+    return blk;
 }
 
 static inline void free_blocks(md_allocator_i* alloc, md_bitblock_t* ptr, size_t num_blocks) {
@@ -809,110 +812,257 @@ size_t md_bitfield_iter_extract_indices(int32_t* buf, size_t cap, md_bitfield_it
     return len;
 }
 
-#define BLOCK_IDX_FLAG_ALL_SET (0x8000)
+#define BLOCK_IDX_FLAG_ALL_SET 0x8000u
+#define BLOCK_IDX_MASK         0x7FFFu
+#define SERIAL_MIN_INPUT_SIZE  16u
+#define SERIAL_MAX_BLOCK_COUNT ((size_t)BLOCK_IDX_MASK + 1)
+#define SERIAL_MAX_RAW_SIZE    (sizeof(uint16_t) + SERIAL_MAX_BLOCK_COUNT * (sizeof(uint16_t) + sizeof(md_bitblock_t)))
 
-uint32_t* get_non_empty_block_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
-    uint32_t* indices = 0;
+typedef struct serialization_info_t {
+    size_t block_count;
+    size_t block_data_bytes;
+    size_t raw_size;
+    size_t input_size;
+} serialization_info_t;
 
-    uint64_t beg_blk_idx = block_idx(bf->beg_bit);
-    uint64_t end_blk_idx = block_idx(bf->end_bit);
-    for (uint64_t i = beg_blk_idx; i <= end_blk_idx; ++i) {
-        md_bitblock_t blk = get_block(bf, i);
-        if (i == beg_blk_idx) block_and(blk, block_mask_hi(bf->beg_bit & (BITS_PER_BLOCK-1)));
-        if (i == beg_blk_idx) block_and(blk, block_mask_lo(bf->end_bit & (BITS_PER_BLOCK-1)));
-
-        bool empty = true;
-        for (size_t j = 0; j < ARRAY_SIZE(blk.u64); ++j) {
-            if (blk.u64[j] != 0) empty = false;
-        }
-        if (empty) continue;
-        md_array_push(indices, (uint32_t)i, alloc);
+static inline bool block_is_empty(md_bitblock_t blk) {
+    for (size_t i = 0; i < ARRAY_SIZE(blk.u64); ++i) {
+        if (blk.u64[i] != 0) return false;
     }
-
-    return indices;
+    return true;
 }
 
-uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
-    uint16_t* indices = 0;
+static inline bool block_is_all_set(md_bitblock_t blk) {
+    for (size_t i = 0; i < ARRAY_SIZE(blk.u64); ++i) {
+        if (blk.u64[i] != UINT64_MAX) return false;
+    }
+    return true;
+}
 
-    uint64_t beg_blk_idx = block_idx(bf->beg_bit);
-    uint64_t end_blk_idx = block_idx(bf->end_bit);
-    for (uint64_t i = beg_blk_idx; i <= end_blk_idx; ++i) {
-        md_bitblock_t blk = get_block(bf, i);
-        if (i == beg_blk_idx) block_and(blk, block_mask_hi(bf->beg_bit & (BITS_PER_BLOCK-1)));
-        if (i == beg_blk_idx) block_and(blk, block_mask_lo(bf->end_bit & (BITS_PER_BLOCK-1)));
+static inline md_bitblock_t block_mask_range(uint32_t beg, uint32_t end) {
+    md_bitblock_t mask;
+    MEMSET(&mask, 0, sizeof(mask));
+    end = MIN(end, (uint32_t)BITS_PER_BLOCK);
+    for (uint32_t i = beg; i < end; ++i) {
+        block_set_bit(mask.u8, i);
+    }
+    return mask;
+}
 
-        bool empty = true;
-        bool all_set = true;
-        for (size_t j = 0; j < ARRAY_SIZE(blk.u64); ++j) {
-            if (blk.u64[j] != 0) empty = false;
-            if (blk.u64[j] != 0xFFFFFFFFFFFFFFFF) all_set = false;
+static inline bool serialization_block_range(const md_bitfield_t* bf, uint64_t* beg_blk, uint64_t* end_blk) {
+    ASSERT(bf);
+    ASSERT(beg_blk);
+    ASSERT(end_blk);
+
+    if (!bf->bits || bf->beg_bit >= bf->end_bit) {
+        return false;
+    }
+
+    *beg_blk = block_idx(bf->beg_bit);
+    *end_blk = block_idx((uint64_t)bf->end_bit - 1);
+    return true;
+}
+
+static inline md_bitblock_t serialization_block(const md_bitfield_t* bf, uint64_t blk_idx, uint64_t beg_blk, uint64_t end_blk) {
+    md_bitblock_t blk = get_block(bf, blk_idx);
+    uint32_t beg = blk_idx == beg_blk ? (bf->beg_bit & (BITS_PER_BLOCK - 1)) : 0;
+    uint32_t end = blk_idx == end_blk ? ((bf->end_bit - 1) & (BITS_PER_BLOCK - 1)) + 1 : (uint32_t)BITS_PER_BLOCK;
+
+    if (beg != 0 || end != BITS_PER_BLOCK) {
+        blk = block_and(blk, block_mask_range(beg, end));
+    }
+
+    return blk;
+}
+
+static inline size_t fastlz_bound(size_t input_size) {
+    return MAX(66, input_size + (input_size + 19) / 20 + 16);
+}
+
+static bool serialization_info_compute(serialization_info_t* info, const md_bitfield_t* bf) {
+    ASSERT(info);
+    ASSERT(md_bitfield_validate(bf));
+
+    MEMSET(info, 0, sizeof(*info));
+
+    uint64_t beg_blk = 0;
+    uint64_t end_blk = 0;
+    if (!serialization_block_range(bf, &beg_blk, &end_blk)) {
+        return true;
+    }
+
+    for (uint64_t blk_idx = beg_blk; blk_idx <= end_blk; ++blk_idx) {
+        if (blk_idx > BLOCK_IDX_MASK) {
+            MD_LOG_ERROR("Bitfield is too large to serialize with the current format");
+            return false;
         }
 
-        if (empty) continue;
+        md_bitblock_t blk = serialization_block(bf, blk_idx, beg_blk, end_blk);
+        if (block_is_empty(blk)) {
+            continue;
+        }
 
-        // Store non empty block indices with additional flag to see if it is empty or not
-        md_array_push(indices, (uint16_t)i | (all_set ? BLOCK_IDX_FLAG_ALL_SET : 0), alloc);
+        if (info->block_count == SERIAL_MAX_BLOCK_COUNT) {
+            MD_LOG_ERROR("Bitfield has too many non-empty blocks to serialize");
+            return false;
+        }
+
+        info->block_count += 1;
+        if (!block_is_all_set(blk)) {
+            info->block_data_bytes += sizeof(md_bitblock_t);
+        }
     }
-    return indices;
+
+    if (info->block_count == 0) {
+        return true;
+    }
+
+    info->raw_size = sizeof(uint16_t) + info->block_count * sizeof(uint16_t) + info->block_data_bytes;
+    info->input_size = MAX(info->raw_size, SERIAL_MIN_INPUT_SIZE);
+    return true;
 }
 
 // Returns the maximum serialization size in bytes of a bitfield
 size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
-    size_t temp_pos = md_temp_get_pos();
-    size_t size = sizeof(uint16_t);
-    uint16_t* indices = get_serialization_block_indices(bf, md_get_temp_allocator());
-    for (size_t i = 0; i < md_array_size(indices); ++i) {
-        if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
-        size += sizeof(indices[i]) + sizeof(md_bitblock_t);
+    serialization_info_t info;
+    if (!serialization_info_compute(&info, bf) || info.block_count == 0) {
+        return 0;
     }
-
-    md_temp_set_pos_back(temp_pos);
-    return MAX(66, size);
+    return fastlz_bound(info.input_size);
 }
-
-typedef union block_idx_t {
-    uint16_t u16;
-    struct {
-        uint8_t occupancy;
-        uint8_t offset_to_next;
-    };
-} block_idx_t;
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
 size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* alloc = md_get_temp_allocator();
+    ASSERT(dst);
+    ASSERT(md_bitfield_validate(bf));
 
-    uint16_t* indices = get_serialization_block_indices(bf, alloc);
-    uint16_t* data = 0;
+    serialization_info_t info;
+    if (!dst || !serialization_info_compute(&info, bf) || info.block_count == 0) {
+        return 0;
+    }
 
-    uint16_t block_count = (uint16_t)md_array_size(indices);
-    uint64_t beg_blk = block_idx(bf->beg_bit);
-    uint64_t end_blk = block_idx(bf->end_bit);
-    
-    md_array_push(data, block_count, alloc);
-    md_array_push_array(data, indices, block_count, alloc);
+    md_temp_t temp = md_temp_begin();
+    size_t result = 0;
+    uint8_t* raw = (uint8_t*)md_temp_push_zero(info.input_size);
+    if (!raw) {
+        goto done;
+    }
 
-    // Add actual block data from the blocks (if not all bits set within block)
-    for (uint64_t i = 0; i < block_count; ++i) {
-        uint64_t blk_idx = data[1 + i];
-        bool    all_set = data[1 + i] & BLOCK_IDX_FLAG_ALL_SET;
+    uint16_t* block_count = (uint16_t*)raw;
+    uint16_t* block_indices = block_count + 1;
+    uint8_t* block_data = (uint8_t*)(block_indices + info.block_count);
 
-        if (!all_set) {
-            md_bitblock_t blk = get_block(bf, blk_idx);
-            if (blk_idx == beg_blk) block_and(blk, block_mask_hi(bf->beg_bit & (BITS_PER_BLOCK-1)));
-            if (blk_idx == end_blk) block_and(blk, block_mask_lo(bf->end_bit & (BITS_PER_BLOCK-1)));
-            md_array_push_array(data, blk.u16, ARRAY_SIZE(blk.u16), alloc);
+    *block_count = (uint16_t)info.block_count;
+
+    uint64_t beg_blk = 0;
+    uint64_t end_blk = 0;
+    serialization_block_range(bf, &beg_blk, &end_blk);
+
+    size_t index_pos = 0;
+    size_t data_pos = 0;
+    for (uint64_t blk_idx = beg_blk; blk_idx <= end_blk; ++blk_idx) {
+        md_bitblock_t blk = serialization_block(bf, blk_idx, beg_blk, end_blk);
+        if (block_is_empty(blk)) {
+            continue;
+        }
+
+        uint16_t serialized_idx = (uint16_t)blk_idx;
+        if (block_is_all_set(blk)) {
+            serialized_idx |= BLOCK_IDX_FLAG_ALL_SET;
+        } else {
+            MEMCPY(block_data + data_pos, &blk, sizeof(blk));
+            data_pos += sizeof(blk);
+        }
+        block_indices[index_pos++] = serialized_idx;
+    }
+
+    ASSERT(index_pos == info.block_count);
+    ASSERT(data_pos == info.block_data_bytes);
+
+    int lz_bytes = fastlz_compress_level(2, raw, (int)info.input_size, dst);
+    result = lz_bytes > 0 ? (size_t)lz_bytes : 0;
+
+done:
+    md_temp_end(temp);
+    return result;
+}
+
+static bool deserialize_raw_bitfield(md_bitfield_t* bf, const uint8_t* data, size_t size) {
+    ASSERT(md_bitfield_validate(bf));
+    ASSERT(data);
+
+    if (size < sizeof(uint16_t)) {
+        return false;
+    }
+
+    const uint16_t block_count = *(const uint16_t*)data;
+    const size_t index_bytes = (size_t)block_count * sizeof(uint16_t);
+    const size_t header_bytes = sizeof(uint16_t) + index_bytes;
+
+    if (block_count == 0) {
+        md_bitfield_clear(bf);
+        return true;
+    }
+
+    if (size < header_bytes) {
+        return false;
+    }
+
+    const uint16_t* block_indices = (const uint16_t*)(data + sizeof(uint16_t));
+    const uint8_t* block_data = data + header_bytes;
+    size_t block_data_bytes = 0;
+    uint16_t prev_blk_idx = UINT16_MAX;
+
+    for (size_t i = 0; i < block_count; ++i) {
+        uint16_t blk_idx = block_indices[i] & BLOCK_IDX_MASK;
+        if (i > 0 && blk_idx <= prev_blk_idx) {
+            return false;
+        }
+        prev_blk_idx = blk_idx;
+
+        if ((block_indices[i] & BLOCK_IDX_FLAG_ALL_SET) == 0) {
+            block_data_bytes += sizeof(md_bitblock_t);
         }
     }
 
-    int lz_bytes = fastlz_compress_level(2, data, (int)md_array_bytes(data), dst);
+    if (size < header_bytes + block_data_bytes) {
+        return false;
+    }
 
-    md_temp_set_pos_back(temp_pos);
+    const uint16_t beg_blk_idx = block_indices[0] & BLOCK_IDX_MASK;
+    const uint16_t end_blk_idx = block_indices[block_count - 1] & BLOCK_IDX_MASK;
 
-    return (size_t)lz_bytes;
+    fit_to_range(bf, (uint64_t)beg_blk_idx * BITS_PER_BLOCK, ((uint64_t)end_blk_idx + 1) * BITS_PER_BLOCK);
+
+    size_t nblocks = num_blocks(bf->beg_bit, bf->end_bit);
+    MEMSET(bf->bits, 0, nblocks * sizeof(md_bitblock_t));
+
+    size_t block_data_pos = 0;
+    uint8_t* u8 = u8_base_mut(bf);
+    for (size_t i = 0; i < block_count; ++i) {
+        uint16_t serialized_idx = block_indices[i];
+        uint16_t blk_idx = serialized_idx & BLOCK_IDX_MASK;
+        uint8_t* blk_ptr = u8 + (size_t)blk_idx * sizeof(md_bitblock_t);
+
+        if (serialized_idx & BLOCK_IDX_FLAG_ALL_SET) {
+            MEMSET(blk_ptr, 0xFF, sizeof(md_bitblock_t));
+        } else {
+            MEMCPY(blk_ptr, block_data + block_data_pos, sizeof(md_bitblock_t));
+            block_data_pos += sizeof(md_bitblock_t);
+        }
+    }
+
+    uint64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
+    uint64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
+    if (!beg_bit || !end_bit) {
+        md_bitfield_clear(bf);
+        return false;
+    }
+
+    bf->beg_bit = (uint32_t)((uint64_t)beg_blk_idx * BITS_PER_BLOCK + beg_bit - 1);
+    bf->end_bit = (uint32_t)((uint64_t)end_blk_idx * BITS_PER_BLOCK + end_bit);
+    return true;
 }
 
 bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes) {
@@ -920,73 +1070,40 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
     ASSERT(md_bitfield_validate(bf));
     ASSERT(src);
 
-    // Temporary buffer to decompress into.
-    // The current compression is no where near 100:1 ratio.
-    const size_t mem_bytes = num_bytes * 100;
-    void* mem = md_alloc(md_get_heap_allocator(), mem_bytes);
-
-    if (!mem) {
-        MD_LOG_ERROR("Failed to allocate temporary data for deserialization");
+    if (!bf || !md_bitfield_validate(bf) || !src || num_bytes == 0 || num_bytes > INT32_MAX) {
         return false;
     }
 
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
+    size_t cap = MAX((size_t)SERIAL_MIN_INPUT_SIZE, num_bytes * 4);
+    cap = MIN(cap, (size_t)SERIAL_MAX_RAW_SIZE);
 
-    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
-    if (size == 0) {
-        MD_LOG_ERROR("Failed, to decompress bitfield.");
-        goto done;
-    }
-
-    const uint16_t* data = (const uint16_t*)mem;
-    size_t block_count = data[0];
-    const uint16_t* block_indices = data + 1;
-    const uint8_t*  block_data = (const uint8_t*)(block_indices + block_count);
-
-    if (block_count == 0) {
-        MD_LOG_ERROR("Block count was zero");
-        goto done;
-    }
-
-    size_t beg_blk_idx = block_indices[0];
-    size_t end_blk_idx = block_indices[block_count - 1];
-
-    // Allocate the blocks
-    
-    fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
-
-    size_t nblocks = num_blocks(bf->beg_bit, bf->end_bit);
-    MEMSET(bf->bits, 0, nblocks * sizeof(md_bitblock_t));
-
-    // Fetch block_data and store
-    size_t src_offset = 0;
-    uint8_t* u8 = u8_base_mut(bf);
-    for (size_t i = 0; i < block_count; ++i) {
-        uint16_t blk_idx = block_indices[i];
-        if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
-            blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            uint8_t* blk_ptr = u8 + blk_idx * sizeof(md_bitblock_t);
-            MEMSET(blk_ptr, 0xFFFFFFFF, sizeof(md_bitblock_t));
-        } else {
-            uint8_t* blk_ptr = u8 + blk_idx * sizeof(md_bitblock_t);
-            MEMCPY(blk_ptr, block_data + src_offset, sizeof(md_bitblock_t));
-            src_offset += sizeof(md_bitblock_t);
+    while (cap <= SERIAL_MAX_RAW_SIZE) {
+        md_vm_arena_set_pos_back(temp_alloc, temp.pos);
+        uint8_t* mem = (uint8_t*)md_temp_push(cap);
+        if (!mem) {
+            break;
         }
+
+        int size = fastlz_decompress(src, (int)num_bytes, mem, (int)cap);
+        if (size > 0) {
+            result = deserialize_raw_bitfield(bf, mem, (size_t)size);
+            break;
+        }
+
+        if (cap == SERIAL_MAX_RAW_SIZE) {
+            break;
+        }
+        cap = MIN(cap * 2, (size_t)SERIAL_MAX_RAW_SIZE);
     }
 
-    // Now we have the data, compute the true beg_bit and end_bit
-    uint64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
-    uint64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
+    md_temp_end(temp);
 
-    bf->beg_bit = (uint32_t)(beg_blk_idx * BITS_PER_BLOCK + (beg_bit ? beg_bit - 1 : 0));
-    bf->end_bit = (uint32_t)(end_blk_idx * BITS_PER_BLOCK + (end_bit ? end_bit : 0));
-
-    result = true;
-done:
-    if (mem) {
-        md_free(md_get_heap_allocator(), mem, mem_bytes);
+    if (!result) {
+        MD_LOG_ERROR("Failed to deserialize bitfield");
     }
-
     return result;
 }
 

@@ -9,7 +9,8 @@
 
 // Test element inference against all PDB files with explicit element symbols
 UTEST(element_guess_compat, all_pdb_validation) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     
     // List of PDB files to test
     const char* pdb_files[] = {
@@ -70,5 +71,5 @@ UTEST(element_guess_compat, all_pdb_validation) {
     EXPECT_GT(files_processed, 0);    
     EXPECT_EQ(total_correct_inferences, total_explicit_elements);
     
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }

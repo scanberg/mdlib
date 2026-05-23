@@ -4,6 +4,7 @@
 #include <core/md_platform.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -105,7 +106,7 @@ static void print_windows_error(void) {
 #endif
 
 static size_t fullpath(char* buf, size_t cap, str_t path) {
-    str_t zpath = str_copy(path, md_get_temp_allocator()); // Zero terminate
+    str_t zpath = str_copy(path, md_get_temp_arena()); // Zero terminate
     if (zpath.len == 0) return 0;
     
 #if MD_PLATFORM_WINDOWS
@@ -362,7 +363,7 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 
 bool md_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_get_temp_allocator());
+    path = str_copy(path, md_get_temp_arena());
     bool result = PathFileExists(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = (access(path.ptr, F_OK) == 0);
@@ -374,7 +375,7 @@ bool md_path_is_valid(str_t path) {
 
 bool md_path_is_directory(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_get_temp_allocator());
+    path = str_copy(path, md_get_temp_arena());
     bool result = PathIsDirectory(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = false;
@@ -561,7 +562,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
     return true;
 
 #elif MD_PLATFORM_UNIX
-    str_t path = str_copy(filename, md_get_temp_allocator());
+    str_t path = str_copy(filename, md_get_temp_arena());
     struct stat st = {0};
     if (stat(path.ptr, &st) != 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
@@ -684,7 +685,7 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     open_flags |= O_CLOEXEC;
 #endif
 
-    str_t path = str_copy(filename, md_get_temp_allocator());
+    str_t path = str_copy(filename, md_get_temp_arena());
     const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
     int fd = -1;
@@ -1163,25 +1164,29 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
     }
 
     const size_t buf_size = (size_t)count + 1;
-    md_allocator_i* alloc = md_get_heap_allocator();
-    char* heap_buf = (char*)md_alloc(alloc, buf_size);
+    md_temp_t temp = md_temp_begin();
+    bool args_active = true;
+    size_t result = 0;
+    char* heap_buf = (char*)md_temp_push(buf_size);
     if (!heap_buf) {
-        va_end(args);
         MD_LOG_ERROR("md_file_printf: failed to allocate formatting buffer");
-        return 0;
+        goto done;
     }
 
     const int written = vsnprintf(heap_buf, buf_size, format, args);
     va_end(args);
+    args_active = false;
 
     if (written < 0) {
-        md_free(alloc, heap_buf, buf_size);
         MD_LOG_ERROR("md_file_printf: formatting failed");
-        return 0;
+        goto done;
     }
 
-    const size_t result = md_file_write(file, heap_buf, (size_t)written);
-    md_free(alloc, heap_buf, buf_size);
+    result = md_file_write(file, heap_buf, (size_t)written);
+
+done:
+    if (args_active) va_end(args);
+    md_temp_end(temp);
     return result;
 }
 
@@ -1695,7 +1700,7 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
         GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
         info->num_physical_cores = info->num_virtual_cores;
     } else {
-        buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)md_alloc(md_get_temp_allocator(), len);
+        buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)md_alloc(md_get_temp_arena(), len);
 
         if (buffer && GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &len)) {
             DWORD offset = 0;

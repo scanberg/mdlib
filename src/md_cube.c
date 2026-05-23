@@ -82,8 +82,11 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		goto done;
 	}
 
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = {0};
-	md_strb_init(&sb, md_get_heap_allocator());
+	md_strb_init(&sb, temp_alloc);
 	
 	md_strb_push_str(&sb, tidy_comment(cube->title));   md_strb_push_char(&sb, '\n');
 	md_strb_push_str(&sb, tidy_comment(cube->comment)); md_strb_push_char(&sb, '\n');
@@ -119,7 +122,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 	}
 	
 	str = str_copy(md_strb_to_str(sb), alloc);
-	md_strb_free(&sb);
+	md_temp_end(temp_scope);
 done:
 	return str;
 }
@@ -240,11 +243,14 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	}
 
 	bool success = false;
-    str_t str = load_textfile(path, md_get_heap_allocator());
+	md_allocator_i* conflicts[] = { alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    str_t str = load_textfile(path, temp_alloc);
 	if (!str_empty(str)) {
         success = md_cube_deserialize(cube, str, alloc);
-		str_free(str, md_get_heap_allocator());
 	}
+	md_temp_end(temp_scope);
 	
 	return success;
 }
@@ -258,11 +264,13 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	md_file_t file = {0};
 	bool success = false;
 	if (open_file(&file, path)) {
-		str_t str = md_cube_serialize(cube, md_get_heap_allocator());
+		md_temp_t temp_scope = md_temp_begin();
+		md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+		str_t str = md_cube_serialize(cube, temp_alloc);
         if (!str_empty(str)) {
 			success = md_file_write(file, str_ptr(str), str_len(str)) == str_len(str);
-			str_free(str, md_get_heap_allocator());
         }
+		md_temp_end(temp_scope);
 		md_file_close(&file);
 	}
 	

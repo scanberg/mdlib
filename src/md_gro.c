@@ -150,12 +150,14 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
     md_file_t file = {0};
     if (md_file_open(&file, filename, MD_FILE_READ)) {
         const int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_get_heap_allocator(), cap);
+        md_allocator_i* conflicts[] = { alloc };
+        md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+        char* buf = md_temp_push(cap);
         
         md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
         result = md_gro_data_parse(data, &line_reader, alloc);
         
-        md_free(md_get_heap_allocator(), buf, cap);
+        md_temp_end(temp_scope);
         md_file_close(&file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -180,7 +182,9 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
 
     md_system_reset(sys);
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     md_array(str_t) atom_names = 0;
     md_array_ensure(atom_names, data->num_atoms, temp_arena);
 
@@ -242,27 +246,33 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
     md_util_system_infer_covalent_bonds(sys);
     md_util_system_infer_comp_flags(sys);
 
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
 
     return true;
 }
 
 bool md_gro_system_init_from_file(md_system_t* sys, str_t filename) {
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     
     md_gro_data_t data = {0};
     bool success = md_gro_data_parse_file(&data, filename, temp_alloc) && md_gro_system_init_from_data(sys, &data);
 
     md_gro_data_free(&data, temp_alloc);
+    md_temp_end(temp_scope);
     return success;
 }
 
 bool md_gro_system_init_from_str(md_system_t* sys, str_t str) {
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
+    md_allocator_i* conflicts[] = { sys->alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_gro_data_t data = {0};
     bool success = md_gro_data_parse_str(&data, str, temp_alloc) && md_gro_system_init_from_data(sys, &data);
 
     md_gro_data_free(&data, temp_alloc);
+    md_temp_end(temp_scope);
     return success;
 }

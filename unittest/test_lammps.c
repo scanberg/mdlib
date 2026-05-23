@@ -6,6 +6,7 @@
 #include <md_trajectory.h>
 #include <md_system.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 
 #define MAX_VALIDATION_SAMPLES 100
@@ -294,7 +295,9 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_EQ(10, num_frames);
     size_t stride = ALIGN_TO(num_atoms, 16);
     const size_t bytes = stride * 3 * sizeof(float);
-    void* mem = md_alloc(md_get_temp_allocator(), bytes);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem = md_temp_push(bytes);
     float* x = (float*)mem + stride * 0;
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
@@ -317,7 +320,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
     EXPECT_NEAR(header.unitcell.z, 39.121262, 0.0001);
 
-    md_free(md_get_temp_allocator(), mem, bytes);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }
 
@@ -334,7 +337,9 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_EQ(10, num_frames);
     size_t stride = ALIGN_TO(num_atoms, 16);
     const size_t bytes = stride * 3 * sizeof(float);
-    void* mem = md_alloc(md_get_temp_allocator(), bytes);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem = md_temp_push(bytes);
     float* x = (float*)mem + stride * 0;
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
@@ -357,7 +362,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
     EXPECT_NEAR(42.3503265, header.unitcell.z, 0.0001);
 
-    md_free(md_get_temp_allocator(), mem, bytes);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 
 }
@@ -371,7 +376,9 @@ UTEST(lammps, trajectory_reader_i) {
     size_t num_atoms = md_trajectory_num_atoms(traj);
     size_t stride = ALIGN_TO(num_atoms, 16);
     const size_t bytes = stride * 3 * sizeof(float);
-    void* mem = md_alloc(md_get_temp_allocator(), bytes);
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    void* mem = md_temp_push(bytes);
     float* x = (float*)mem + stride * 0;
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
@@ -386,7 +393,7 @@ UTEST(lammps, trajectory_reader_i) {
     EXPECT_EQ(7800, header.num_atoms);
 
     md_trajectory_reader_free(&reader);
-    md_free(md_get_temp_allocator(), mem, bytes);
+    md_temp_end(temp_scope);
     md_trajectory_free(traj);
 }
 

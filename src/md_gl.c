@@ -900,7 +900,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 
 md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     md_gl_mol_t handle = {0};
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+    md_temp_t temp_scope = md_temp_begin();
 
     if (sys) {
         if (sys->atom.count == 0) {
@@ -931,7 +931,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         }
         md_gl_mol_zero_velocity(handle);
 
-        float* radii = md_vm_arena_push(temp_arena, sizeof(float) * sys->atom.count);
+        float* radii = md_temp_push(sizeof(float) * sys->atom.count);
         md_atom_extract_radii(radii, 0, sys->atom.count, &sys->atom);
 
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
@@ -995,7 +995,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return handle;
+                goto done;
             }
 
             const uint32_t ss_sheet = pack_gl_secondary_structure((md_gl_secondary_structure_t){.sheet = 1.0f});
@@ -1018,7 +1018,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return handle;
+                goto done;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX].id);
@@ -1038,7 +1038,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             }
             else {
-                return handle;
+                goto done;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SMOOTH_NEIGHBOR].id);
@@ -1071,13 +1071,13 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
             glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SUBDIVISION_CP_INDEX].id);
             gl_subdivision_cp_idx_t* subdivision_cp_idx = (gl_subdivision_cp_idx_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (!subdivision_cp_idx) {
-                return handle;
+                goto done;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SUBDIVISION_PARAM].id);
             gl_subdivision_param_t* subdivision_param = (gl_subdivision_param_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (!subdivision_param) {
-                return handle;
+                goto done;
             }
 
             {
@@ -1143,7 +1143,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return handle;
+                goto done;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1164,7 +1164,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     }
 
 done:
-    md_vm_arena_destroy(temp_arena);
+    md_temp_end(temp_scope);
     return handle;
 }
 
@@ -1328,8 +1328,9 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
 
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* alloc = md_get_temp_allocator();
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    bool result = false;
 
     // Valid draw operations to issue
     md_array(md_gl_draw_op_t const*) draw_ops = 0;
@@ -1431,8 +1432,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         default:
             MD_LOG_ERROR("Representation had unexpected type");
-            return false;
-            break;
+            goto done;
         }
 
         if (model_matrix) {
@@ -1440,13 +1440,17 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(gl_view_transform_t), &ubo_data);
         }
     }
+
+    result = true;
+
+done:
     POP_GPU_SECTION()
 
     POP_GPU_SECTION()
 
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     
-    return true;
+    return result;
 }
 
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale) {

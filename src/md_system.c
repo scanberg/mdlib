@@ -217,7 +217,10 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
         uint16_t off[2];
     } offset_t;
 
-    offset_t* local_offset = calloc(bond_pair_count, sizeof(offset_t));
+    md_allocator_i* conflicts[] = { alloc };
+    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+
+    offset_t* local_offset = md_temp_push_zero_array(offset_t, bond_pair_count);
     ASSERT(local_offset);
 
     // Two packed 16-bit local offsets for each of the bond idx
@@ -261,7 +264,7 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
         conn->bond_idx[idx_b] = (md_bond_idx_t)i;
     }
 
-    free(local_offset);
+    md_temp_end(temp_scope);
 }
 
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {

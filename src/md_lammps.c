@@ -611,14 +611,14 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 		return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 	}
 
-    size_t temp_pos = md_temp_get_pos();
+    md_temp_t temp = md_temp_begin();
 	const size_t cap = MEGABYTES(1);
 	char* buf = md_temp_push(cap);
 
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 	md_lammps_atom_format_t format = detect_atom_format(&reader);
 
-	md_temp_set_pos_back(temp_pos);
+	md_temp_end(temp);
 	md_file_close(&file);
 
 	return format;
@@ -827,12 +827,14 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
 		const size_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_get_heap_allocator(), cap);
+		md_allocator_i* conflicts[] = { alloc };
+		md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+		char* buf = md_temp_push(cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = md_lammps_data_parse(data, &line_reader, format, alloc);
 
-		md_free(md_get_heap_allocator(), buf, cap);
+		md_temp_end(temp_scope);
 		md_file_close(&file);
 	}
 	else {
@@ -871,7 +873,8 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
 	md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
-	md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+	md_allocator_i* conflicts[] = { sys->alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
 
 	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
@@ -879,9 +882,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	sys->atom.type.count = 0;
 	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
 
-	float* type_masses			= md_vm_arena_push_array(temp_arena, float, data->num_atom_types);
-    md_atomic_number_t* type_z	= md_vm_arena_push_array(temp_arena, md_atomic_number_t, data->num_atom_types);
-    int* type_map				= md_vm_arena_push_array(temp_arena, int, data->num_atom_types);
+	float* type_masses			= md_temp_push_array(float, data->num_atom_types);
+    md_atomic_number_t* type_z	= md_temp_push_array(md_atomic_number_t, data->num_atom_types);
+    int* type_map				= md_temp_push_array(int, data->num_atom_types);
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		type_masses[i] = data->atom_types[i].mass;
     }
@@ -974,13 +977,11 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 		}
     }
 
-	md_vm_arena_destroy(temp_arena);
+	md_temp_end(temp_scope);
 	return true;
 }
 
 bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* atom_format) {
-	md_allocator_i* temp_alloc = md_get_heap_allocator();
-
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -990,16 +991,19 @@ bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* ato
         atom_format = atom_format_string[format];
     }
 
+    md_allocator_i* conflicts[] = { sys->alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+
 	md_lammps_data_t data = { 0 };
 	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
+    md_temp_end(temp_scope);
 	return success;
 }
 
 bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const char* atom_format) {
-	md_allocator_i* temp_alloc = md_get_heap_allocator();
-
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -1009,10 +1013,15 @@ bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const cha
         atom_format = atom_format_string[format];
     }
 
+    md_allocator_i* conflicts[] = { sys->alloc };
+	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+
 	md_lammps_data_t data = { 0 };
 	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
+    md_temp_end(temp_scope);
 	return success;
 }
 
@@ -1272,6 +1281,8 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 	ASSERT(data_ptr);
 	ASSERT(data_size);
 
+	bool result = false;
+
 	str_t tokens[32];
 	int64_t timestep = 0;
 	int64_t frame_idx = ((int64_t*)data_ptr)[0];
@@ -1328,19 +1339,21 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 	if (output_coords) {
 		if (!md_buffered_reader_extract_line(&line, &reader) || !str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
-			return false;
+			goto done;
 		}
 		size_t line_count = 0;
 		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
+		bool coords_result = false;
 
 		// We need to store the coordinates in a temporary buffer since we need to sort them by id
-		id_xyz_t* id_xyz = md_alloc(md_get_heap_allocator(), sizeof(id_xyz_t) * header.num_atoms);
+		md_temp_t temp_scope = md_temp_begin();
+		id_xyz_t* id_xyz = md_temp_push_array(id_xyz_t, header.num_atoms);
 
 		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 			if (num_tokens != expected_num_tokens) {
 				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected %zu", num_tokens, expected_num_tokens);
-				return false;
+				goto coords_done;
 			}
 
 			int32_t id = (int32_t)parse_int(tokens[traj_data->coord_mappings.id_idx]);
@@ -1377,6 +1390,11 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 			out_y[i] = id_xyz[i].y;
 			out_z[i] = id_xyz[i].z;
 		}
+		coords_result = true;
+
+	coords_done:
+		md_temp_end(temp_scope);
+		if (!coords_result) goto done;
 	}
 
 	if (output_header) {
@@ -1386,7 +1404,9 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 		out_frame_header->unitcell = cell;
 	}
 
-	return true;
+	result = true;
+done:
+	return result;
 }
 
 // Parse and validate the trajectory data and record offsets into the file for each frame
@@ -1469,12 +1489,14 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
 		const int64_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_get_heap_allocator(), cap);
+		md_allocator_i* conflicts[] = { alloc };
+		md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+		char* buf = md_temp_push(cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = lammps_trajectory_parse(cache, &line_reader, alloc);
 
-		md_free(md_get_heap_allocator(), buf, cap);
+		md_temp_end(temp_scope);
 		md_file_close(&file);
 	}
 	else {

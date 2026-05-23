@@ -1,5 +1,7 @@
 #include "md_gl_util.h"
 #include <core/md_gl_util.h>
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
 #include <core/md_log.h>
 
@@ -14,8 +16,9 @@ void md_gl_debug_pop(void) {
 }
 
 bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_injection_t injections[], size_t num_injections) {
-    size_t temp_pos = md_temp_get_pos();
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_strb_t sb = md_strb_create(temp_alloc);
 
     bool result = false;
 
@@ -73,7 +76,7 @@ bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_inj
 
     result = true;
 done:
-    md_temp_set_pos_back(temp_pos);
+    md_temp_end(temp);
     return result;
 }
 

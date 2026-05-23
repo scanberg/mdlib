@@ -125,7 +125,7 @@ static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_system_t* mol
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
-    if (eval_expression(&data, expr, mol, md_get_temp_allocator())) {
+    if (eval_expression(&data, expr, mol, md_get_temp_arena())) {
         if (data.type.base_type == TYPE_BITFIELD) {
             md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
@@ -164,8 +164,8 @@ static bool compare_selection(const char* exprA, const char* exprB) {
     bool result = false;
     md_bitfield_t a = {0};
     md_bitfield_t b = {0};
-    md_bitfield_init(&a, md_get_temp_allocator());
-    md_bitfield_init(&b, md_get_temp_allocator());
+    md_bitfield_init(&a, md_get_temp_arena());
+    md_bitfield_init(&b, md_get_temp_arena());
 
     if (!eval_selection(&a, str_from_cstr(exprA), &test_mol)) {
         printf("Failed evaluation of expression: '%s'\n", exprA);
@@ -234,7 +234,8 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_s
 }
 
 UTEST_F(script, common_subexpression_elimination) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
     str_t src = STR_LIT(
         "x = element('H') in resname('ALA');\n"
@@ -252,7 +253,7 @@ UTEST_F(script, common_subexpression_elimination) {
 
     EXPECT_NE(hx, hy);
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 UTEST(script, type_equal) {
@@ -278,7 +279,7 @@ UTEST(script, type_equal) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_STRING);
@@ -289,7 +290,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_get_temp_arena());
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
             EXPECT_EQ(as_int(data), 7);
@@ -298,7 +299,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -308,7 +309,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
@@ -320,7 +321,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("{2.5,1.5} + {1.0,8.0}"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("{2.5,1.5} + {1.0,8.0}"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -332,7 +333,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("7 - 4 + 2 - 3"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("7 - 4 + 2 - 3"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
@@ -344,7 +345,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 + 1.0"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 + 1.0"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -356,7 +357,8 @@ UTEST(script, basic_expressions) {
 }
 
 UTEST(script, type_compatability) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     {
@@ -371,14 +373,14 @@ UTEST(script, type_compatability) {
             EXPECT_EQ(TYPE_FLOAT, v->data->type.base_type);
         }
     }
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 #if 0
 UTEST(script, vector_operations) {
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("vec3(2.5, 1.5, 1.0) + vec3(1.0, 8.0, 2.0)"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("vec3(2.5, 1.5, 1.0) + vec3(1.0, 8.0, 2.0)"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -393,7 +395,7 @@ UTEST(script, vector_operations) {
 UTEST(script, array_type_compatability) {
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("coord(1) + coord(4)"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("coord(1) + coord(4)"), &test_mol, md_get_temp_arena());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -404,7 +406,8 @@ UTEST(script, array_type_compatability) {
 #endif
 
 UTEST(script, assignment) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     {
@@ -480,11 +483,12 @@ UTEST(script, assignment) {
         EXPECT_FALSE(node);
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 UTEST(script, array) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     {
@@ -675,11 +679,12 @@ UTEST(script, array) {
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 UTEST(script, array_subscript) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     {
@@ -876,11 +881,12 @@ UTEST(script, array_subscript) {
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 UTEST(script, dim_op) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     {
@@ -1003,14 +1009,14 @@ UTEST(script, dim_op) {
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 static bool test_selection(const char* expr, const char* ref_bit_str) {
     bool result = false;
     uint64_t ref = make_bits(ref_bit_str);
     md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, md_get_temp_allocator());
+    md_bitfield_init(&bf, md_get_temp_arena());
 
     if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
         printf("Failed evaluation of expression: '%s'\n", expr);
@@ -1280,7 +1286,8 @@ UTEST_F(script, property_compute) {
 }
 
 UTEST(script, stride_invalid_ranges) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_temp_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
 
     // Step zero should fail static check
@@ -1293,7 +1300,7 @@ UTEST(script, stride_invalid_ranges) {
     node = parse_and_type_check_expression(STR_LIT("x = residue(5:2:1)"), ir, &test_mol, arena);
     EXPECT_FALSE(node);
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp_scope);
 }
 
 #define NUM_THREADS 8
