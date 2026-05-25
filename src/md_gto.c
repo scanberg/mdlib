@@ -1078,7 +1078,7 @@ static bool gto_local_staging_upload_at(md_gpu_device_t device, md_gpu_buffer_t 
     md_gpu_bump_alloc_t bump = {0};
     bump.device = device;
     if (!md_gpu_bump_ensure(&bump, size)) return false;
-    md_gpu_alloc_t a = md_gpu_bump_push(&bump, size, 256);
+    md_gpu_alloc_t a = md_gpu_bump_push(&bump, size);
     MEMCPY(a.cpu, src, size);
     md_gpu_queue_t          queue = md_gpu_queue_acquire(device);
     md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);

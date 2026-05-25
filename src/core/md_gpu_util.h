@@ -22,10 +22,11 @@ Design notes:
 
 #include "md_gpu.h"
 
+#include <core/md_common.h>
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <string.h>   /* memcpy */
 
 #ifdef __cplusplus
 extern "C" {
@@ -98,7 +99,7 @@ static inline bool md_gpu_bump_ensure(md_gpu_bump_alloc_t* bump, size_t min_capa
 
     /* Preserve already-written staging data so in-progress uploads remain valid. */
     if (bump->cursor > 0 && bump->cpu_base) {
-        memcpy(new_cpu, bump->cpu_base, bump->cursor);
+        MEMCPY(new_cpu, bump->cpu_base, bump->cursor);
     }
 
     if (bump->buffer) md_gpu_buffer_destroy(bump->buffer);
@@ -134,8 +135,8 @@ static inline void md_gpu_bump_reset(md_gpu_bump_alloc_t* bump) {
 /* Convenience: grow if needed, then allocate.
    Combines md_gpu_bump_grow + md_gpu_bump_alloc.
    Returns a zeroed md_gpu_alloc_t on allocation failure. */
-static inline md_gpu_alloc_t md_gpu_bump_push(md_gpu_bump_alloc_t* bump, size_t size, size_t align) {
-    if (align == 0) align = 16;
+static inline md_gpu_alloc_t md_gpu_bump_push(md_gpu_bump_alloc_t* bump, size_t size) {
+    const size_t align = 256; /* for GPU copy optimality */
     size_t off = (bump->cursor + align - 1) & ~(align - 1);
     if (off + size > bump->capacity) {
         if (!md_gpu_bump_ensure(bump, off + size)) {
