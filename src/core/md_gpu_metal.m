@@ -785,14 +785,14 @@ md_gpu_device_t md_gpu_pass_device(md_gpu_pass_t pass) {
 }
 
 md_gpu_pass_id_t md_gpu_pass_end(md_gpu_pass_t pass) {
-    md_gpu_pass_id_t id = {0};
-    if (!pass) return id;
+    md_gpu_pass_id_t pass_id = {0};
+    if (!pass) return pass_id;
 
     struct md_gpu_queue* queue = pass->queue;
     struct md_gpu_device* dev = queue ? queue->dev : NULL;
     if (!queue || !dev || !pass->cmd) {
         free(pass);
-        return id;
+        return pass_id;
     }
 
     if (pass->pushed_debug_group) {
@@ -807,19 +807,19 @@ md_gpu_pass_id_t md_gpu_pass_end(md_gpu_pass_t pass) {
     record->id = 0;
     record->cmd = nil;
 
-    id.value = ++dev->next_pass_id;
-    if (id.value == 0) id.value = ++dev->next_pass_id;
+    pass_id.value = ++dev->next_pass_id;
+    if (pass_id.value == 0) pass_id.value = ++dev->next_pass_id;
 
     id<MTLCommandBuffer> submitted = md_mtl_queue_submit_pass(queue, pass->cmd);
     if (submitted) {
-        record->id = id.value;
+        record->id = pass_id.value;
         record->cmd = submitted;
     } else {
-        id.value = 0;
+        pass_id.value = 0;
     }
 
     free(pass);
-    return id;
+    return pass_id;
 }
 
 bool md_gpu_pass_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id) {
