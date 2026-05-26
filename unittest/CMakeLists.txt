@@ -46,7 +46,7 @@ if (${MD_ENABLE_VLX})
     set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c)
 endif()
 
-if (MD_ENABLE_GPU AND MD_GPU_BACKEND STREQUAL "VULKAN")
+if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
   set (SRC_FILES ${SRC_FILES} test_gpu_pass.c)
 endif()
 

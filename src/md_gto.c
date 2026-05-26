@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <float.h>
 #include <math.h>
+#include <stddef.h>
 
 typedef struct {
     float coeff;
@@ -981,7 +982,7 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
 static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
 static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
-#if defined(MD_GPU_BACKEND_VULKAN)
+#if defined(MD_GPU_BACKEND_VULKAN) || defined(MD_GPU_BACKEND_METAL)
 static md_gpu_compute_pipeline_t gto_pip_mo_root   = NULL;
 #endif
 
@@ -1015,7 +1016,7 @@ void md_gto_gpu_initialize(md_gpu_device_t device) {
         }
     }
 
-#if defined(MD_GPU_BACKEND_VULKAN)
+#if defined(MD_GPU_BACKEND_VULKAN) || defined(MD_GPU_BACKEND_METAL)
     if (!gto_pip_mo_root) {
         gto_pip_mo_root = ensure_compute_pipeline(device, &gto_pip_mo_root, gto_eval_gto_mo_root_start, gto_eval_gto_mo_root_size(), "GTO MO root", 8, 8, 8);
         if (!gto_pip_mo_root) {
@@ -1028,7 +1029,7 @@ void md_gto_gpu_initialize(md_gpu_device_t device) {
 void md_gto_gpu_shutdown(void) {
     if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
     if (gto_pip_mo)      { md_gpu_compute_pipeline_destroy(gto_pip_mo);      gto_pip_mo      = NULL; }
-#if defined(MD_GPU_BACKEND_VULKAN)
+#if defined(MD_GPU_BACKEND_VULKAN) || defined(MD_GPU_BACKEND_METAL)
     if (gto_pip_mo_root) { md_gpu_compute_pipeline_destroy(gto_pip_mo_root); gto_pip_mo_root = NULL; }
 #endif
 }
@@ -1494,7 +1495,7 @@ void md_gto_gpu_mo_root_pass_record(md_gpu_pass_t pass,
         return;
     }
 
-#if defined(MD_GPU_BACKEND_VULKAN)
+#if defined(MD_GPU_BACKEND_VULKAN) || defined(MD_GPU_BACKEND_METAL)
     const md_gto_basis_layout_t* L = &gb->layout;
     md_gpu_compute_pipeline_t pipeline = gto_pip_mo_root;
     if (!pipeline) {
@@ -1527,6 +1528,8 @@ void md_gto_gpu_mo_root_pass_record(md_gpu_pass_t pass,
         uint64_t coeffs;
     } root_args_t;
     STATIC_ASSERT(sizeof(root_args_t) <= MD_GPU_MAX_PUSH_CONSTANTS, "GTO root pass arguments exceed push constant budget");
+    STATIC_ASSERT(sizeof(root_args_t) == 224, "GTO root pass argument layout changed");
+    STATIC_ASSERT(offsetof(root_args_t, cgto_atom_idx) == 176, "GTO root pointer argument offset changed");
 
     root_args_t args = {0};
     world_to_model_matrix(args.world_to_model, grid);
@@ -1563,7 +1566,7 @@ void md_gto_gpu_mo_root_pass_record(md_gpu_pass_t pass,
     md_gpu_pass_dispatch(pass, wg_size[0], wg_size[1], wg_size[2]);
     md_gpu_pass_pop_debug_group(pass);
 #else
-    MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: root pointer shader is only compiled for the Vulkan backend");
+    MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: root pointer shader is only compiled for Vulkan and Metal backends");
     (void)pass; (void)gb; (void)atom_buf; (void)coeff_buf; (void)num_mos; (void)out_image; (void)grid; (void)eval_mode; (void)op;
 #endif
 }
