@@ -3859,10 +3859,10 @@ bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const md_vlx_t* vlx, md_alloc
 // Returns a direct pointer to the AO coefficient vector for MO mo_idx.
 // The matrix is stored [num_mo][num_ao] after permutation and transpose at load time,
 // so each MO's coefficients are contiguous and in shell order.
-const double* md_vlx_scf_mo_coefficients(const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type) {
+const double* md_vlx_scf_mo_coefficients(const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t spin) {
 	if (!vlx) return NULL;
-	const md_vlx_orbital_t* orb = (type == MD_VLX_SPIN_ALPHA) ? &vlx->scf.alpha :
-								  (type == MD_VLX_SPIN_BETA)  ? &vlx->scf.beta  : NULL;
+	const md_vlx_orbital_t* orb = (spin == MD_VLX_SPIN_ALPHA) ? &vlx->scf.alpha :
+								  (spin == MD_VLX_SPIN_BETA)  ? &vlx->scf.beta  : NULL;
 	if (!orb || !orb->coefficients.data) return NULL;
 	size_t num_mo = orb->coefficients.size[0];
 	size_t num_ao = orb->coefficients.size[1];
@@ -3871,8 +3871,8 @@ const double* md_vlx_scf_mo_coefficients(const md_vlx_t* vlx, size_t mo_idx, md_
 }
 
 // Deprecated extraction wrappers kept for backward compatibility.
-size_t md_vlx_scf_mo_coefficients_extract(double* out, const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type) {
-	const double* src = md_vlx_scf_mo_coefficients(vlx, mo_idx, type);
+size_t md_vlx_scf_mo_coefficients_extract(double* out, const md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t spin) {
+	const double* src = md_vlx_scf_mo_coefficients(vlx, mo_idx, spin);
 	if (!src) return 0;
 	size_t num_ao = number_of_ao_coefficients(&vlx->scf.alpha); 
 	if (out) MEMCPY(out, src, sizeof(double) * num_ao);

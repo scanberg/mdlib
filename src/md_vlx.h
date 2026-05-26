@@ -83,14 +83,14 @@ const int* md_vlx_local_to_global_atom_idx(const struct md_vlx_t* vlx);
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
-size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t type);
-size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t type);
+size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
+size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 size_t  md_vlx_scf_number_of_atomic_orbitals   (const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 
-const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_spin_t type);
-const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_spin_t type);
+const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
+const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 // ---------------------------------------------------------------------------
 // Basis-centric API  (primary interface — use these in new code)
@@ -107,7 +107,7 @@ bool md_vlx_gto_basis_extract(md_gto_basis_t* out, const struct md_vlx_t* vlx, s
 // The matrix is stored [num_mo][num_ao] internally; this returns a pointer to
 // row mo_idx, which is a contiguous array of num_ao doubles.
 // Returns NULL on failure (out-of-range mo_idx, missing data, etc.).
-const double* md_vlx_scf_mo_coefficients(const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type);
+const double* md_vlx_scf_mo_coefficients(const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t spin);
 
 // Extract NTO AO coefficient vectors for the first lambda_count lambdas of one state/type.
 // out_coefficients must hold lambda_count * md_vlx_scf_number_of_atomic_orbitals() doubles
@@ -121,7 +121,7 @@ const double* md_vlx_scf_overlap_matrix_data(const struct md_vlx_t* vlx);
 
 // The density matrix is a square, symmetric matrix [N][N], this returns the length N
 size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
-const double* md_vlx_scf_density_matrix_data(const struct md_vlx_t* vlx, md_vlx_spin_t type);
+const double* md_vlx_scf_density_matrix_data(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 // ---------------------------------------------------------------------------
 // Deprecated extraction API — prefer the direct pointer functions above
@@ -130,7 +130,7 @@ const double* md_vlx_scf_density_matrix_data(const struct md_vlx_t* vlx, md_vlx_
 // Copy one MO coefficient vector into caller-supplied storage.
 // out must hold at least md_vlx_scf_number_of_atomic_orbitals() doubles.
 // Returns the number of AOs on success, 0 on failure.
-size_t md_vlx_scf_mo_coefficients_extract(double* out, const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t type);
+size_t md_vlx_scf_mo_coefficients_extract(double* out, const struct md_vlx_t* vlx, size_t mo_idx, md_vlx_spin_t spin);
 
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
