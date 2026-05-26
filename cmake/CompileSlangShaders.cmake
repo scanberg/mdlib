@@ -12,8 +12,10 @@ function(compile_slang_shaders OUT_FILE)
 
     set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
     file(MAKE_DIRECTORY ${GEN_DIR})
+    set(SLANG_REFLECTION_TO_HEADER_SCRIPT "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangReflectionToHeader.cmake")
 
     set(COMPILED_SHADERS "")
+    set(REFLECTION_HEADERS "")
 
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "SLANG_EXECUTABLE not defined but required for shader compilation")
@@ -25,7 +27,12 @@ function(compile_slang_shaders OUT_FILE)
 
     foreach(SRC ${SHADER_SOURCES})
         get_filename_component(NAME ${SRC} NAME_WE)
+        get_filename_component(NAME_WITH_EXT ${SRC} NAME)
         get_filename_component(ABS_SRC ${SRC} ABSOLUTE)
+        string(REPLACE "." "_" SYMBOL_NAME ${NAME})
+        set(SYMBOL "${SHADER_NAMESPACE}_${SYMBOL_NAME}")
+        set(REFLECTION_JSON "${GEN_DIR}/${NAME}.reflection.json")
+        set(REFLECTION_HEADER "${GEN_DIR}/${SYMBOL}.reflection.inl")
 
         if (NOT EXISTS ${ABS_SRC})
             message(FATAL_ERROR "Shader source file not found: ${ABS_SRC}")
@@ -37,12 +44,14 @@ function(compile_slang_shaders OUT_FILE)
 
             add_custom_command(
                 OUTPUT ${SPV_FILE}
+                BYPRODUCTS ${REFLECTION_JSON}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     ${SLANG_FLAGS}
                     -target spirv
                     -emit-spirv-directly
                     -force-glsl-scalar-layout
+                    -reflection-json ${REFLECTION_JSON}
                     -o ${SPV_FILE}
                 DEPENDS ${ABS_SRC}
                 COMMENT "slangc: ${NAME}.slang -> ${NAME}.spv"
@@ -58,10 +67,12 @@ function(compile_slang_shaders OUT_FILE)
             # Step 1: slangc -> MSL source
             add_custom_command(
                 OUTPUT ${MSL_FILE}
+                BYPRODUCTS ${REFLECTION_JSON}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     ${SLANG_FLAGS}
                     -target metal
+                    -reflection-json ${REFLECTION_JSON}
                     -o ${MSL_FILE}
                 DEPENDS ${ABS_SRC}
                 COMMENT "slangc: ${NAME}.slang -> ${NAME}.metal"
@@ -90,10 +101,34 @@ function(compile_slang_shaders OUT_FILE)
         endif()
 
         list(APPEND COMPILED_SHADERS ${BIN_FILE})
+        add_custom_command(
+            OUTPUT ${REFLECTION_HEADER}
+            COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${REFLECTION_JSON}
+                -DOUTPUT=${REFLECTION_HEADER}
+                -DSYMBOL=${SYMBOL}
+                -DSOURCE=${NAME_WITH_EXT}
+                -P ${SLANG_REFLECTION_TO_HEADER_SCRIPT}
+            DEPENDS ${REFLECTION_JSON} ${SLANG_REFLECTION_TO_HEADER_SCRIPT}
+            COMMENT "slang-reflect: ${NAME}.reflection.json -> ${SYMBOL}.reflection.inl"
+            VERBATIM
+        )
+        list(APPEND REFLECTION_HEADERS ${REFLECTION_HEADER})
     endforeach()
 
     add_custom_target(${SHADER_NAMESPACE}_slang_shaders DEPENDS ${COMPILED_SHADERS})
     add_dependencies(${SHADER_TARGET} ${SHADER_NAMESPACE}_slang_shaders)
+
+    get_filename_component(REFLECTION_OUT_NAME ${OUT_FILE} NAME_WE)
+    set(REFLECTION_OUT_FILE "${GEN_DIR}/${REFLECTION_OUT_NAME}_reflection.inl")
+    file(WRITE ${REFLECTION_OUT_FILE} "#pragma once\n\n")
+    foreach(REFLECTION_HEADER ${REFLECTION_HEADERS})
+        get_filename_component(REFLECTION_HEADER_NAME ${REFLECTION_HEADER} NAME)
+        file(APPEND ${REFLECTION_OUT_FILE} "#include \"${REFLECTION_HEADER_NAME}\"\n")
+    endforeach()
+
+    add_custom_target(${SHADER_NAMESPACE}_slang_reflection DEPENDS ${REFLECTION_HEADERS})
+    add_dependencies(${SHADER_TARGET} ${SHADER_NAMESPACE}_slang_reflection)
 
     embed_binary_files(
         TARGET ${SHADER_TARGET}

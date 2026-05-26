@@ -148,15 +148,13 @@ enum {
 
 typedef struct md_gpu_pass_buffer_usage_t {
     md_gpu_buffer_t buffer;
-    size_t offset;
-    size_t size; /* 0 = full remaining buffer */
     md_gpu_pass_resource_usage_flags_t usage;
 } md_gpu_pass_buffer_usage_t;
 
 typedef struct md_gpu_pass_image_usage_t {
     md_gpu_image_t image;
-    md_gpu_image_region_t region; /* zero extent = full image */
     md_gpu_pass_resource_usage_flags_t usage;
+    md_gpu_image_region_t region; /* zero extent = full image */
 } md_gpu_pass_image_usage_t;
 
 typedef struct md_gpu_pass_desc_t {

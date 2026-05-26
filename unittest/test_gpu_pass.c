@@ -77,14 +77,13 @@ UTEST(gpu_pass, gto_mo_root) {
     ASSERT_TRUE(readback_buf != NULL);
 
     md_gpu_pass_buffer_usage_t buffers[4] = {
-        { .buffer = md_gto_gpu_basis_buffer(gpu_basis), .offset = 0, .size = md_gpu_buffer_size(md_gto_gpu_basis_buffer(gpu_basis)), .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = atom_buf, .offset = 0, .size = md_gpu_buffer_size(atom_buf), .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = coeff_buf, .offset = 0, .size = md_gpu_buffer_size(coeff_buf), .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = readback_buf, .offset = 0, .size = readback_size, .usage = MD_GPU_PASS_RESOURCE_TRANSFER_DST },
+        { .buffer = md_gto_gpu_basis_buffer(gpu_basis), .usage = MD_GPU_PASS_RESOURCE_READ },
+        { .buffer = atom_buf, .usage = MD_GPU_PASS_RESOURCE_READ },
+        { .buffer = coeff_buf, .usage = MD_GPU_PASS_RESOURCE_READ },
+        { .buffer = readback_buf, .usage = MD_GPU_PASS_RESOURCE_TRANSFER_DST },
     };
     md_gpu_pass_image_usage_t images[1] = {{
         .image = out_image,
-        .region = {0},
         .usage = MD_GPU_PASS_RESOURCE_WRITE | MD_GPU_PASS_RESOURCE_TRANSFER_SRC,
     }};
     md_gpu_pass_desc_t pass_desc = {
