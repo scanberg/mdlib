@@ -31,11 +31,16 @@ extern "C" {
 typedef struct md_gpu_device*           md_gpu_device_t;
 typedef struct md_gpu_queue*            md_gpu_queue_t;
 typedef struct md_gpu_command_buffer*   md_gpu_command_buffer_t;
+typedef struct md_gpu_pass*             md_gpu_pass_t;
 typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
 typedef struct md_gpu_image*            md_gpu_image_t;
 typedef struct md_gpu_sampler*          md_gpu_sampler_t;
 typedef struct md_gpu_fence*            md_gpu_fence_t;
+
+typedef struct md_gpu_pass_id_t {
+    uint64_t value;
+} md_gpu_pass_id_t;
 
 // =============================
 // Flags & enums
@@ -133,6 +138,37 @@ typedef struct md_gpu_compute_pipeline_desc_t {
     uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
 } md_gpu_compute_pipeline_desc_t;
 
+typedef uint32_t md_gpu_pass_resource_usage_flags_t;
+enum {
+    MD_GPU_PASS_RESOURCE_READ         = 1 << 0,
+    MD_GPU_PASS_RESOURCE_WRITE        = 1 << 1,
+    MD_GPU_PASS_RESOURCE_TRANSFER_SRC = 1 << 2,
+    MD_GPU_PASS_RESOURCE_TRANSFER_DST = 1 << 3,
+};
+
+typedef struct md_gpu_pass_buffer_usage_t {
+    md_gpu_buffer_t buffer;
+    size_t offset;
+    size_t size; /* 0 = full remaining buffer */
+    md_gpu_pass_resource_usage_flags_t usage;
+} md_gpu_pass_buffer_usage_t;
+
+typedef struct md_gpu_pass_image_usage_t {
+    md_gpu_image_t image;
+    md_gpu_image_region_t region; /* zero extent = full image */
+    md_gpu_pass_resource_usage_flags_t usage;
+} md_gpu_pass_image_usage_t;
+
+typedef struct md_gpu_pass_desc_t {
+    const char* label;
+
+    const md_gpu_pass_buffer_usage_t* buffers;
+    uint32_t buffer_count;
+
+    const md_gpu_pass_image_usage_t* images;
+    uint32_t image_count;
+} md_gpu_pass_desc_t;
+
 
 // =============================
 // Device info / hints
@@ -205,6 +241,82 @@ void md_gpu_sampler_destroy(md_gpu_sampler_t sampler);
 
 md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device, const md_gpu_compute_pipeline_desc_t* desc);
 void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
+
+// =============================
+// Passes
+// =============================
+// A pass is a transient recording scope. The caller records work between begin/end,
+// then receives a durable completion id from md_gpu_pass_end().
+// v0 backends implement passes on top of the existing transient command buffer path;
+// future backends may batch, reorder, or map pass ids to timeline/shared events.
+// Queue selection is backend-owned; the v0 implementation records on the primary queue.
+
+md_gpu_pass_t md_gpu_pass_begin(md_gpu_device_t device, const md_gpu_pass_desc_t* desc);
+md_gpu_device_t md_gpu_pass_device(md_gpu_pass_t pass);
+
+// Ends recording, submits the pass, and returns its completion id.
+// A zero id means submission failed.
+md_gpu_pass_id_t md_gpu_pass_end(md_gpu_pass_t pass);
+
+bool md_gpu_pass_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id);
+void md_gpu_pass_wait(md_gpu_device_t device, md_gpu_pass_id_t id);
+
+// Inserts a dependency on a previously ended pass. The initial compatibility
+// implementation may resolve this as a host wait; timeline/event backends can
+// lower it to a GPU-side stream/queue wait.
+void md_gpu_pass_wait_pass(md_gpu_pass_t pass, md_gpu_pass_id_t id);
+
+void md_gpu_pass_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline);
+void md_gpu_pass_bind_buffer(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer);
+void md_gpu_pass_bind_buffer_range(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size);
+void md_gpu_pass_bind_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image);
+void md_gpu_pass_bind_sampled_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image);
+void md_gpu_pass_bind_sampler(md_gpu_pass_t pass, uint32_t slot, md_gpu_sampler_t sampler);
+void md_gpu_pass_push_constants(md_gpu_pass_t pass, const void* data, size_t size);
+void md_gpu_pass_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
+
+void md_gpu_pass_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+void md_gpu_pass_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
+                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+void md_gpu_pass_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
+                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+
+void md_gpu_pass_push_debug_group(md_gpu_pass_t pass, const char* label);
+void md_gpu_pass_pop_debug_group(md_gpu_pass_t pass);
+
+void md_gpu_pass_copy_buffer(
+    md_gpu_pass_t pass,
+    md_gpu_buffer_t src,
+    md_gpu_buffer_t dst,
+    size_t size,
+    size_t src_offset,
+    size_t dst_offset);
+
+void md_gpu_pass_copy_image_region_to_buffer(
+    md_gpu_pass_t pass,
+    md_gpu_image_t src_image,
+    md_gpu_image_region_t src_region,
+    md_gpu_buffer_t dst_buffer,
+    size_t dst_offset);
+
+void md_gpu_pass_copy_buffer_to_image(
+    md_gpu_pass_t pass,
+    md_gpu_buffer_t src_buffer,
+    md_gpu_image_t dst_image);
+
+void md_gpu_pass_copy_buffer_to_image_region(
+    md_gpu_pass_t pass,
+    md_gpu_buffer_t src_buffer,
+    size_t src_offset,
+    md_gpu_image_t dst_image,
+    md_gpu_image_region_t dst_region);
+
+void md_gpu_pass_fill_buffer(
+    md_gpu_pass_t pass,
+    md_gpu_buffer_t buffer,
+    size_t offset,
+    size_t size,
+    uint8_t value);
 
 // =============================
 // Command buffers

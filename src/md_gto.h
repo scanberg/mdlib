@@ -218,6 +218,8 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // then call upload to record the copy from that staging buffer into coeff_buf.
 void md_gto_gpu_coeff_upload_density(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos);
 void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos);
+void md_gto_gpu_coeff_upload_density_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos);
+void md_gto_gpu_coeff_upload_mo_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos);
 
 // ---------------------------------------------------------------------------
 // GPU dispatch
@@ -239,6 +241,14 @@ void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
 // (use md_gto_gpu_coeff_upload_mo to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
 void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
+	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
+
+void md_gto_gpu_mo_pass_record(md_gpu_pass_t pass,
+	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
+
+void md_gto_gpu_mo_root_pass_record(md_gpu_pass_t pass,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
 

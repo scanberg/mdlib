@@ -20,6 +20,13 @@
 // One fresh descriptor set is allocated per dispatch, so the descriptor pool is
 // sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
 #define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
+#define MD_GPU_PASS_HISTORY_SIZE 256
+
+typedef struct md_gpu_pass_record {
+    uint64_t id;
+    struct md_gpu_queue* queue;
+    struct md_gpu_command_buffer* cmd;
+} md_gpu_pass_record;
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
@@ -42,10 +49,17 @@ typedef struct md_gpu_device {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
+    VkSemaphore pass_timeline;
 
     // Embedded compute queue (returned by md_gpu_queue_acquire)
     struct md_gpu_queue compute_queue;
+
+    uint64_t next_pass_id;
+    uint32_t pass_record_head;
+    md_gpu_pass_record pass_records[MD_GPU_PASS_HISTORY_SIZE];
 } md_gpu_device;
+
+static void md_vk_reclaim_completed_passes(md_gpu_device* dev);
 
 typedef struct md_gpu_buffer {
     md_gpu_device_t device;
@@ -108,6 +122,12 @@ typedef struct md_gpu_fence {
     VkFence                       vk_fence;
     struct md_gpu_command_buffer* cmd; /* set by md_gpu_queue_submit; freed by md_gpu_fence_destroy */
 } md_gpu_fence;
+
+typedef struct md_gpu_pass {
+    struct md_gpu_queue* queue;
+    struct md_gpu_command_buffer* cmd;
+    bool pushed_debug_group;
+} md_gpu_pass;
 
 static bool md_vk_check(VkResult res, const char* what) {
     if (res == VK_SUCCESS) return true;
@@ -343,6 +363,7 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     VkPhysicalDeviceVulkan12Features f12 = {0};
     f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     f12.bufferDeviceAddress = VK_TRUE;
+    f12.timelineSemaphore = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features f13 = {0};
     f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -465,6 +486,16 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     dp_ci.pPoolSizes = pool_sizes;
     if (!md_vk_check(vkCreateDescriptorPool(out_dev->device, &dp_ci, NULL, &out_dev->descriptor_pool), "vkCreateDescriptorPool")) return false;
 
+    VkSemaphoreTypeCreateInfo timeline_ci = {0};
+    timeline_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    timeline_ci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    timeline_ci.initialValue = 0;
+
+    VkSemaphoreCreateInfo sem_ci = {0};
+    sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    sem_ci.pNext = &timeline_ci;
+    if (!md_vk_check(vkCreateSemaphore(out_dev->device, &sem_ci, NULL, &out_dev->pass_timeline), "vkCreateSemaphore(pass timeline)")) return false;
+
     // Pre-allocate all descriptor sets for every command buffer slot so they can be
     // reused without per-submission alloc/free (vkUpdateDescriptorSets overwrites in-place).
     {
@@ -531,6 +562,12 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
+        for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
+            dev->pass_records[i].id = 0;
+            dev->pass_records[i].queue = NULL;
+            dev->pass_records[i].cmd = NULL;
+        }
+        if (dev->pass_timeline) vkDestroySemaphore(dev->device, dev->pass_timeline, NULL);
         if (dev->descriptor_pool) vkDestroyDescriptorPool(dev->device, dev->descriptor_pool, NULL);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         if (dev->descriptor_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layout, NULL);
@@ -935,9 +972,46 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline) {
     free(p);
 }
 
+static uint64_t md_vk_pass_timeline_value(md_gpu_device* dev) {
+    if (!dev || !dev->pass_timeline) return UINT64_MAX;
+    uint64_t value = 0;
+    if (!md_vk_check(vkGetSemaphoreCounterValue(dev->device, dev->pass_timeline, &value), "vkGetSemaphoreCounterValue(pass timeline)")) {
+        return 0;
+    }
+    return value;
+}
+
+static bool md_vk_wait_pass_timeline(md_gpu_device* dev, uint64_t value) {
+    if (!dev || !dev->pass_timeline || value == 0) return true;
+
+    VkSemaphoreWaitInfo wait_info = {0};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait_info.semaphoreCount = 1;
+    wait_info.pSemaphores = &dev->pass_timeline;
+    wait_info.pValues = &value;
+    return md_vk_check(vkWaitSemaphores(dev->device, &wait_info, UINT64_MAX), "vkWaitSemaphores(pass timeline)");
+}
+
+static void md_vk_reclaim_completed_passes(md_gpu_device* dev) {
+    if (!dev || !dev->pass_timeline) return;
+    uint64_t completed = md_vk_pass_timeline_value(dev);
+    for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
+        md_gpu_pass_record* record = &dev->pass_records[i];
+        if (record->id == 0 || record->id > completed || !record->queue || !record->cmd) continue;
+        md_vk_reset_cmd_state(record->cmd, record->queue);
+        ASSERT(record->queue->free_count < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE);
+        record->queue->free_list[record->queue->free_count++] = record->cmd->index;
+        record->id = 0;
+        record->queue = NULL;
+        record->cmd = NULL;
+    }
+}
+
 md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     if (!queue) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
+
+    md_vk_reclaim_completed_passes(q->dev);
 
     if (q->free_count == 0) {
         MD_LOG_ERROR("md_gpu_command_buffer_acquire: no free command buffers");
@@ -1527,4 +1601,233 @@ void md_gpu_fence_destroy(md_gpu_fence_t fence) {
 
     vkDestroyFence(dev->device, f->vk_fence, NULL);
     free(f);
+}
+
+static bool md_vk_queue_submit_pass(md_gpu_queue* q, md_gpu_command_buffer* c, uint64_t signal_value) {
+    if (!q || !c || signal_value == 0) return false;
+    md_gpu_device* dev = q->dev;
+    ASSERT(c->queue == q);
+    ASSERT(c->is_recording);
+
+    if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer(pass)")) {
+        return false;
+    }
+    c->is_recording = false;
+
+    VkCommandBufferSubmitInfo cmd_info = {0};
+    cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmd_info.commandBuffer = c->vk_cmd;
+
+    VkSemaphoreSubmitInfo signal_info = {0};
+    signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signal_info.semaphore = dev->pass_timeline;
+    signal_info.value = signal_value;
+    signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+    VkSubmitInfo2 submit = {0};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmd_info;
+    submit.signalSemaphoreInfoCount = 1;
+    submit.pSignalSemaphoreInfos = &signal_info;
+
+    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2(pass timeline)")) {
+        md_vk_reset_cmd_state(c, q);
+        ASSERT(q->free_count < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE);
+        q->free_list[q->free_count++] = c->index;
+        return false;
+    }
+
+    return true;
+}
+
+md_gpu_pass_t md_gpu_pass_begin(md_gpu_device_t device, const md_gpu_pass_desc_t* desc) {
+    if (!device) return NULL;
+    md_gpu_device* dev = (md_gpu_device*)device;
+    md_gpu_queue* queue = &dev->compute_queue;
+
+    md_gpu_pass* pass = (md_gpu_pass*)calloc(1, sizeof(md_gpu_pass));
+    if (!pass) return NULL;
+
+    pass->queue = queue;
+    pass->cmd = (md_gpu_command_buffer*)md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
+    if (!pass->cmd) {
+        free(pass);
+        return NULL;
+    }
+
+    (void)desc;
+    if (desc && desc->label) {
+        md_gpu_cmd_push_debug_group((md_gpu_command_buffer_t)pass->cmd, desc->label);
+        pass->pushed_debug_group = true;
+    }
+    return (md_gpu_pass_t)pass;
+}
+
+md_gpu_device_t md_gpu_pass_device(md_gpu_pass_t pass) {
+    if (!pass) return NULL;
+    return (md_gpu_device_t)((md_gpu_pass*)pass)->queue->dev;
+}
+
+md_gpu_pass_id_t md_gpu_pass_end(md_gpu_pass_t pass) {
+    md_gpu_pass_id_t id = {0};
+    if (!pass) return id;
+
+    md_gpu_pass* p = (md_gpu_pass*)pass;
+    md_gpu_queue* queue = p->queue;
+    md_gpu_device* dev = queue ? queue->dev : NULL;
+    if (!queue || !dev || !p->cmd) {
+        free(p);
+        return id;
+    }
+
+    if (p->pushed_debug_group) {
+        md_gpu_cmd_pop_debug_group((md_gpu_command_buffer_t)p->cmd);
+    }
+
+    md_vk_reclaim_completed_passes(dev);
+
+    md_gpu_pass_record* record = &dev->pass_records[dev->pass_record_head++ % MD_GPU_PASS_HISTORY_SIZE];
+    if (record->id != 0) {
+        md_vk_wait_pass_timeline(dev, record->id);
+        md_vk_reclaim_completed_passes(dev);
+    }
+    record->id = 0;
+    record->queue = NULL;
+    record->cmd = NULL;
+
+    id.value = ++dev->next_pass_id;
+    if (id.value == 0) id.value = ++dev->next_pass_id;
+
+    bool ok = md_vk_queue_submit_pass(queue, p->cmd, id.value);
+    if (ok) {
+        record->id = id.value;
+        record->queue = queue;
+        record->cmd = p->cmd;
+    } else {
+        id.value = 0;
+    }
+
+    free(p);
+    return id;
+}
+
+bool md_gpu_pass_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id) {
+    if (!device || id.value == 0) return true;
+    md_gpu_device* dev = (md_gpu_device*)device;
+    md_vk_reclaim_completed_passes(dev);
+    return md_vk_pass_timeline_value(dev) >= id.value;
+}
+
+void md_gpu_pass_wait(md_gpu_device_t device, md_gpu_pass_id_t id) {
+    if (!device || id.value == 0) return;
+    md_gpu_device* dev = (md_gpu_device*)device;
+    if (md_vk_wait_pass_timeline(dev, id.value)) {
+        md_vk_reclaim_completed_passes(dev);
+    }
+}
+
+void md_gpu_pass_wait_pass(md_gpu_pass_t pass, md_gpu_pass_id_t id) {
+    (void)pass;
+    (void)id;
+}
+
+void md_gpu_pass_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline) {
+    if (!pass) return;
+    md_gpu_cmd_bind_compute_pipeline((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, pipeline);
+}
+
+void md_gpu_pass_bind_buffer(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer) {
+    if (!pass) return;
+    md_gpu_cmd_bind_buffer((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, slot, buffer);
+}
+
+void md_gpu_pass_bind_buffer_range(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size) {
+    if (!pass) return;
+    md_gpu_cmd_bind_buffer_range((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, slot, buffer, offset, size);
+}
+
+void md_gpu_pass_bind_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image) {
+    if (!pass) return;
+    md_gpu_cmd_bind_image((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, slot, image);
+}
+
+void md_gpu_pass_bind_sampled_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image) {
+    if (!pass) return;
+    md_gpu_cmd_bind_sampled_image((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, slot, image);
+}
+
+void md_gpu_pass_bind_sampler(md_gpu_pass_t pass, uint32_t slot, md_gpu_sampler_t sampler) {
+    if (!pass) return;
+    md_gpu_cmd_bind_sampler((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, slot, sampler);
+}
+
+void md_gpu_pass_push_constants(md_gpu_pass_t pass, const void* data, size_t size) {
+    if (!pass) return;
+    md_gpu_cmd_push_constants((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, data, size);
+}
+
+void md_gpu_pass_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
+    if (!pass) return;
+    md_gpu_cmd_dispatch((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, group_count_x, group_count_y, group_count_z);
+}
+
+void md_gpu_pass_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!pass) return;
+    md_gpu_cmd_barrier((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, src_stage, dst_stage);
+}
+
+void md_gpu_pass_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
+                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!pass) return;
+    md_gpu_cmd_barrier_buffer((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, buffer, src_stage, dst_stage);
+}
+
+void md_gpu_pass_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
+                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!pass) return;
+    md_gpu_cmd_barrier_image((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, image, src_stage, dst_stage);
+}
+
+void md_gpu_pass_push_debug_group(md_gpu_pass_t pass, const char* label) {
+    if (!pass) return;
+    md_gpu_cmd_push_debug_group((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, label);
+}
+
+void md_gpu_pass_pop_debug_group(md_gpu_pass_t pass) {
+    if (!pass) return;
+    md_gpu_cmd_pop_debug_group((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd);
+}
+
+void md_gpu_pass_copy_buffer(md_gpu_pass_t pass, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
+    if (!pass) return;
+    md_gpu_cmd_copy_buffer((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, src, dst, size, src_offset, dst_offset);
+}
+
+void md_gpu_pass_copy_image_region_to_buffer(md_gpu_pass_t pass,
+                                             md_gpu_image_t src_image,
+                                             md_gpu_image_region_t src_region,
+                                             md_gpu_buffer_t dst_buffer,
+                                             size_t dst_offset) {
+    if (!pass) return;
+    md_gpu_cmd_copy_image_region_to_buffer((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, src_image, src_region, dst_buffer, dst_offset);
+}
+
+void md_gpu_pass_copy_buffer_to_image(md_gpu_pass_t pass, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
+    if (!pass) return;
+    md_gpu_cmd_copy_buffer_to_image((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, src_buffer, dst_image);
+}
+
+void md_gpu_pass_copy_buffer_to_image_region(md_gpu_pass_t pass,
+                                             md_gpu_buffer_t src_buffer,
+                                             size_t src_offset,
+                                             md_gpu_image_t dst_image,
+                                             md_gpu_image_region_t dst_region) {
+    if (!pass) return;
+    md_gpu_cmd_copy_buffer_to_image_region((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, src_buffer, src_offset, dst_image, dst_region);
+}
+
+void md_gpu_pass_fill_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
+    if (!pass) return;
+    md_gpu_cmd_fill_buffer((md_gpu_command_buffer_t)((md_gpu_pass*)pass)->cmd, buffer, offset, size, value);
 }

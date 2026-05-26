@@ -981,6 +981,9 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
 static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
 static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
+#if defined(MD_GPU_BACKEND_VULKAN)
+static md_gpu_compute_pipeline_t gto_pip_mo_root   = NULL;
+#endif
 
 static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
     if (*pipeline == NULL) {
@@ -1011,11 +1014,23 @@ void md_gto_gpu_initialize(md_gpu_device_t device) {
             MD_LOG_ERROR("Failed to create GTO MO compute pipeline");
         }
     }
+
+#if defined(MD_GPU_BACKEND_VULKAN)
+    if (!gto_pip_mo_root) {
+        gto_pip_mo_root = ensure_compute_pipeline(device, &gto_pip_mo_root, gto_eval_gto_mo_root_start, gto_eval_gto_mo_root_size(), "GTO MO root", 8, 8, 8);
+        if (!gto_pip_mo_root) {
+            MD_LOG_ERROR("Failed to create GTO MO root compute pipeline");
+        }
+    }
+#endif
 }
 
 void md_gto_gpu_shutdown(void) {
     if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
     if (gto_pip_mo)      { md_gpu_compute_pipeline_destroy(gto_pip_mo);      gto_pip_mo      = NULL; }
+#if defined(MD_GPU_BACKEND_VULKAN)
+    if (gto_pip_mo_root) { md_gpu_compute_pipeline_destroy(gto_pip_mo_root); gto_pip_mo_root = NULL; }
+#endif
 }
 
 // Internal layout descriptor for the basis GPU buffer.
@@ -1258,6 +1273,22 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coe
     md_gpu_cmd_barrier_buffer(cmd, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 }
 
+void md_gto_gpu_coeff_upload_density_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf,
+    md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos) {
+    if (!pass || !coeff_buf || !src_buf) return;
+    size_t sz = md_gto_gpu_coeff_size_density(num_cgtos);
+    md_gpu_pass_copy_buffer(pass, src_buf, coeff_buf, sz, src_offset, 0);
+    md_gpu_pass_barrier_buffer(pass, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+}
+
+void md_gto_gpu_coeff_upload_mo_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf,
+    md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos) {
+    if (!pass || !coeff_buf || !src_buf) return;
+    size_t sz = md_gto_gpu_coeff_size_mo(num_mos, num_cgtos);
+    md_gpu_pass_copy_buffer(pass, src_buf, coeff_buf, sz, src_offset, 0);
+    md_gpu_pass_barrier_buffer(pass, coeff_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+}
+
 // ---------------------------------------------------------------------------
 // GPU dispatch
 // ---------------------------------------------------------------------------
@@ -1387,6 +1418,154 @@ void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
     md_gpu_cmd_bind_buffer_range(cmd, 5, coeff_buf,  0,                   sz_coeffs);
     md_gpu_cmd_bind_image(cmd, 0, out_image);
     md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2]);
+}
+
+void md_gto_gpu_mo_pass_record(md_gpu_pass_t pass,
+    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op)
+{
+    if (!pass || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
+        MD_LOG_ERROR("md_gto_gpu_mo_pass_record: invalid input");
+        return;
+    }
+
+    const md_gto_basis_layout_t* L = &gb->layout;
+    md_gpu_compute_pipeline_t pipeline = gto_pip_mo;
+    if (!pipeline) {
+        MD_LOG_ERROR("md_gto_gpu_mo_pass_record: compute pipeline not initialized");
+        return;
+    }
+
+    typedef struct {
+        float    world_to_model[4][4];
+        float    index_to_world[4][4];
+        float    step[4];
+        uint32_t num_cgtos;
+        uint32_t num_rows;
+        uint32_t mode;
+        uint32_t op;
+    } ubo_t;
+
+    ubo_t ubo = {0};
+    world_to_model_matrix(ubo.world_to_model, grid);
+    index_to_world_matrix(ubo.index_to_world, grid);
+    ubo.step[0]   = grid->spacing.elem[0];
+    ubo.step[1]   = grid->spacing.elem[1];
+    ubo.step[2]   = grid->spacing.elem[2];
+    ubo.step[3]   = 0.0f;
+    ubo.num_cgtos = L->num_cgtos;
+    ubo.num_rows  = (uint32_t)num_mos;
+    ubo.mode      = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
+    ubo.op        = (uint32_t)op;
+
+    size_t sz_cgto_atom_idx = L->off_cgto_r         - L->off_cgto_atom_idx;
+    size_t sz_cgto_r        = L->off_cgto_off_len   - L->off_cgto_r;
+    size_t sz_cgto_off_len  = L->off_pgto           - L->off_cgto_off_len;
+    size_t sz_pgto          = (size_t)L->total_size - L->off_pgto;
+    size_t sz_atoms         = md_gto_gpu_atom_buffer_size(L->num_atoms);
+    size_t sz_coeffs        = sizeof(float) * L->num_cgtos * num_mos;
+
+    uint32_t wg_size[3] = {
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
+    };
+
+    md_gpu_pass_push_debug_group(pass, "GTO MO Pass");
+    md_gpu_pass_bind_compute_pipeline(pass, pipeline);
+    md_gpu_pass_push_constants(pass, &ubo, sizeof(ubo));
+    md_gpu_pass_bind_buffer_range(pass, 0, gb->buffer, L->off_cgto_atom_idx, sz_cgto_atom_idx);
+    md_gpu_pass_bind_buffer_range(pass, 1, gb->buffer, L->off_cgto_r,       sz_cgto_r);
+    md_gpu_pass_bind_buffer_range(pass, 2, gb->buffer, L->off_cgto_off_len, sz_cgto_off_len);
+    md_gpu_pass_bind_buffer_range(pass, 3, gb->buffer, L->off_pgto,         sz_pgto);
+    md_gpu_pass_bind_buffer_range(pass, 4, atom_buf,   0,                   sz_atoms);
+    md_gpu_pass_bind_buffer_range(pass, 5, coeff_buf,  0,                   sz_coeffs);
+    md_gpu_pass_bind_image(pass, 0, out_image);
+    md_gpu_pass_dispatch(pass, wg_size[0], wg_size[1], wg_size[2]);
+    md_gpu_pass_pop_debug_group(pass);
+}
+
+void md_gto_gpu_mo_root_pass_record(md_gpu_pass_t pass,
+    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
+    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op)
+{
+    if (!pass || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
+        MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: invalid input");
+        return;
+    }
+
+#if defined(MD_GPU_BACKEND_VULKAN)
+    const md_gto_basis_layout_t* L = &gb->layout;
+    md_gpu_compute_pipeline_t pipeline = gto_pip_mo_root;
+    if (!pipeline) {
+        MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: compute pipeline not initialized");
+        return;
+    }
+
+    uint64_t basis_addr = md_gpu_buffer_address(gb->buffer);
+    uint64_t atom_addr  = md_gpu_buffer_address(atom_buf);
+    uint64_t coeff_addr = md_gpu_buffer_address(coeff_buf);
+    if (!basis_addr || !atom_addr || !coeff_addr) {
+        MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: buffer device address unavailable");
+        return;
+    }
+
+    typedef struct {
+        float    world_to_model[4][4];
+        float    index_to_world[4][4];
+        float    step[4];
+        uint32_t grid_dim[4];
+        uint32_t num_cgtos;
+        uint32_t num_rows;
+        uint32_t mode;
+        uint32_t op;
+        uint64_t cgto_atom_idx;
+        uint64_t cgto_r;
+        uint64_t cgto_off_len;
+        uint64_t pgto;
+        uint64_t atom_xyz;
+        uint64_t coeffs;
+    } root_args_t;
+    STATIC_ASSERT(sizeof(root_args_t) <= MD_GPU_MAX_PUSH_CONSTANTS, "GTO root pass arguments exceed push constant budget");
+
+    root_args_t args = {0};
+    world_to_model_matrix(args.world_to_model, grid);
+    index_to_world_matrix(args.index_to_world, grid);
+    args.step[0]        = grid->spacing.elem[0];
+    args.step[1]        = grid->spacing.elem[1];
+    args.step[2]        = grid->spacing.elem[2];
+    args.step[3]        = 0.0f;
+    args.grid_dim[0]    = (uint32_t)grid->dim[0];
+    args.grid_dim[1]    = (uint32_t)grid->dim[1];
+    args.grid_dim[2]    = (uint32_t)grid->dim[2];
+    args.grid_dim[3]    = 0;
+    args.num_cgtos      = L->num_cgtos;
+    args.num_rows       = (uint32_t)num_mos;
+    args.mode           = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
+    args.op             = (uint32_t)op;
+    args.cgto_atom_idx  = basis_addr + L->off_cgto_atom_idx;
+    args.cgto_r         = basis_addr + L->off_cgto_r;
+    args.cgto_off_len   = basis_addr + L->off_cgto_off_len;
+    args.pgto           = basis_addr + L->off_pgto;
+    args.atom_xyz       = atom_addr;
+    args.coeffs         = coeff_addr;
+
+    uint32_t wg_size[3] = {
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
+    };
+
+    md_gpu_pass_push_debug_group(pass, "GTO MO Root Pass");
+    md_gpu_pass_bind_compute_pipeline(pass, pipeline);
+    md_gpu_pass_push_constants(pass, &args, sizeof(args));
+    md_gpu_pass_bind_image(pass, 0, out_image);
+    md_gpu_pass_dispatch(pass, wg_size[0], wg_size[1], wg_size[2]);
+    md_gpu_pass_pop_debug_group(pass);
+#else
+    MD_LOG_ERROR("md_gto_gpu_mo_root_pass_record: root pointer shader is only compiled for the Vulkan backend");
+    (void)pass; (void)gb; (void)atom_buf; (void)coeff_buf; (void)num_mos; (void)out_image; (void)grid; (void)eval_mode; (void)op;
+#endif
 }
 
 #endif // MD_ENABLE_GPU
