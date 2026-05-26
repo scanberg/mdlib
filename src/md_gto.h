@@ -212,12 +212,10 @@ void md_gto_gpu_coeff_pack_density(float* dst, const double* density_matrix, siz
 void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const double* mo_scales, size_t num_mos, size_t num_cgtos);
 
 // Upload helpers — record a buffer copy (src_buf[src_offset] -> coeff_buf) plus a
-// TRANSFER→COMPUTE barrier into cmd.
+// TRANSFER→COMPUTE barrier into pass.
 // On UMA, pack directly into md_gpu_buffer_cpu_ptr(coeff_buf) and skip these calls.
 // On discrete GPU, pack into a staging cpu_ptr (e.g. from md_gpu_staging_bump_alloc),
 // then call upload to record the copy from that staging buffer into coeff_buf.
-void md_gto_gpu_coeff_upload_density(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos);
-void md_gto_gpu_coeff_upload_mo(md_gpu_command_buffer_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos);
 void md_gto_gpu_coeff_upload_density_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos);
 void md_gto_gpu_coeff_upload_mo_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos);
 
@@ -225,25 +223,21 @@ void md_gto_gpu_coeff_upload_mo_pass(md_gpu_pass_t pass, md_gpu_buffer_t coeff_b
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
-// Record an electron density evaluation dispatch into the caller's command buffer.
+// Record an electron density evaluation dispatch into the caller's pass.
 // atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain packed upper-triangular float coefficients
-// (use md_gto_gpu_coeff_upload_density to fill it).
+// (use md_gto_gpu_coeff_upload_density_pass to fill it).
 // A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
-// earlier in the same command buffer are visible to the shader.
-void md_gto_gpu_density_cmd_record(md_gpu_command_buffer_t cmd,
+// earlier in the same pass are visible to the shader.
+void md_gto_gpu_density_pass_record(md_gpu_pass_t pass,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_op_t op);
 
-// Record an MO evaluation dispatch into the caller's command buffer.
+// Record an MO evaluation dispatch into the caller's pass.
 // atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain num_mos packed rows of num_cgtos floats
-// (use md_gto_gpu_coeff_upload_mo to fill it).
+// (use md_gto_gpu_coeff_upload_mo_pass to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
-void md_gto_gpu_mo_cmd_record(md_gpu_command_buffer_t cmd,
-	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
-    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
-
 void md_gto_gpu_mo_pass_record(md_gpu_pass_t pass,
 	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
