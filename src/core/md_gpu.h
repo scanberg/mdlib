@@ -7,7 +7,7 @@ Minimal, compute-focused GPU abstraction designed for:
 
 Design goals:
   - Explicit resource ownership
-    - Explicit synchronization (pass ids)
+    - Explicit synchronization (event ids)
   - Async compute across frames
   - Copy-based readback / upload paths
   - C-style, flags-based, opaque handles
@@ -29,15 +29,15 @@ extern "C" {
 // =============================
 
 typedef struct md_gpu_device*           md_gpu_device_t;
-typedef struct md_gpu_pass*             md_gpu_pass_t;
+typedef struct md_gpu_cmd*              md_gpu_cmd_t;
 typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
 typedef struct md_gpu_image*            md_gpu_image_t;
 typedef struct md_gpu_sampler*          md_gpu_sampler_t;
 
-typedef struct md_gpu_pass_id_t {
+typedef struct md_gpu_event_t {
     uint64_t value;
-} md_gpu_pass_id_t;
+} md_gpu_event_t;
 
 // =============================
 // Flags & enums
@@ -208,72 +208,67 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device,
 void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 
 // =============================
-// Passes
+// Command buffers
 // =============================
-// A pass is a transient recording scope. The caller records work between begin/end,
-// then receives a durable completion id from md_gpu_end().
-// v0 backends implement passes on top of the existing transient command buffer path;
-// future backends may batch, reorder, or map pass ids to timeline/shared events.
-// Queue selection is backend-owned; the v0 implementation records on the primary queue.
+// A command buffer is a transient recording scope. The caller records work,
+// submits it, then receives a durable completion event id.
 
-md_gpu_pass_t md_gpu_begin(md_gpu_device_t device, const char* label);
+md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label);
 
-// Ends recording, submits the pass, and returns its completion id.
+// Ends recording, submits the command buffer, and returns its completion event.
 // A zero id means submission failed.
-md_gpu_pass_id_t md_gpu_end(md_gpu_pass_t pass);
+md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd);
 
-bool md_gpu_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id);
-void md_gpu_wait(md_gpu_device_t device, md_gpu_pass_id_t id);
+bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event);
+void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event);
 
-// Inserts a dependency on a previously ended pass. The initial compatibility
-// implementation may resolve this as a host wait; timeline/event backends can
-// lower it to a GPU-side stream/queue wait.
-void md_gpu_wait_for(md_gpu_pass_t pass, md_gpu_pass_id_t id);
+// Inserts an ordering dependency on a previously submitted event.
+void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event);
 
 // Declare shader-visible resource usage within a recording scope.
-// These declarations are merged into the pass state and consumed by later
-// dispatches in the same pass. Copy/fill commands do not require md_gpu_use_*.
-void md_gpu_use_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, gpu_usage_flags_t usage);
-void md_gpu_use_image(md_gpu_pass_t pass, md_gpu_image_t image, gpu_usage_flags_t usage);
-void md_gpu_use_sampled_resource(md_gpu_pass_t pass, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage);
+// These declarations are merged into cmd state and consumed by later dispatches.
+// Copy/fill commands do not require md_gpu_cmd_use_*.
+void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage);
+void md_gpu_cmd_use_image(md_gpu_cmd_t cmd, md_gpu_image_t image, gpu_usage_flags_t usage);
+void md_gpu_cmd_use_sampled_resource(md_gpu_cmd_t cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage);
 
-void md_gpu_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline);
-void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size);
+void md_gpu_cmd_bind_compute_pipeline(md_gpu_cmd_t cmd, md_gpu_compute_pipeline_t pipeline);
+void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size);
 
-void md_gpu_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+void md_gpu_cmd_barrier(md_gpu_cmd_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
-void md_gpu_push_debug_group(md_gpu_pass_t pass, const char* label);
-void md_gpu_pop_debug_group(md_gpu_pass_t pass);
+void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd, const char* label);
+void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd);
 
-void md_gpu_copy_buffer(
-    md_gpu_pass_t pass,
+void md_gpu_cmd_copy_buffer(
+    md_gpu_cmd_t cmd,
     md_gpu_buffer_t src,
     md_gpu_buffer_t dst,
     size_t size,
     size_t src_offset,
     size_t dst_offset);
 
-void md_gpu_copy_image_region_to_buffer(
-    md_gpu_pass_t pass,
+void md_gpu_cmd_copy_image_region_to_buffer(
+    md_gpu_cmd_t cmd,
     md_gpu_image_t src_image,
     md_gpu_image_region_t src_region,
     md_gpu_buffer_t dst_buffer,
     size_t dst_offset);
 
-void md_gpu_copy_buffer_to_image(
-    md_gpu_pass_t pass,
+void md_gpu_cmd_copy_buffer_to_image(
+    md_gpu_cmd_t cmd,
     md_gpu_buffer_t src_buffer,
     md_gpu_image_t dst_image);
 
-void md_gpu_copy_buffer_to_image_region(
-    md_gpu_pass_t pass,
+void md_gpu_cmd_copy_buffer_to_image_region(
+    md_gpu_cmd_t cmd,
     md_gpu_buffer_t src_buffer,
     size_t src_offset,
     md_gpu_image_t dst_image,
     md_gpu_image_region_t dst_region);
 
-void md_gpu_fill_buffer(
-    md_gpu_pass_t pass,
+void md_gpu_cmd_fill_buffer(
+    md_gpu_cmd_t cmd,
     md_gpu_buffer_t buffer,
     size_t offset,
     size_t size,

@@ -8,7 +8,7 @@ Provides higher-level helpers that are too opinionated for the core
 abstraction but are broadly useful across different subsystems:
 
     - md_gpu_bump_t  : Persistent CPU-visible bump allocator for staging
-                                         uploads recorded into a pass.
+                                         uploads recorded into a cmd.
 ```
 
 Design notes:
@@ -38,15 +38,15 @@ extern "C" {
 
    A grow-never-shrink CPU-visible buffer that is sub-divided by a
     monotonically advancing cursor.  Intended usage pattern per frame /
-    per pass recording session:
+    per cmd recording session:
 
      1. md_gpu_bump_reset()          — cursor back to 0
-      2. md_gpu_begin()          — begin recording
-     3. md_gpu_bump_alloc() × N     — reserve staging regions
+      2. md_gpu_cmd_begin()          — begin recording
+     3. md_gpu_bump_alloc() × N      — reserve staging regions
         memcpy into alloc.cpu for each
-          md_gpu_copy_buffer() for each  — record uploads
-          md_gpu_barrier_buffer()        — one barrier per target buf
-      4. md_gpu_end()                   — submit pass
+          md_gpu_cmd_copy_buffer() for each  — record uploads
+          md_gpu_cmd_barrier_buffer()        — one barrier per target buf
+      4. md_gpu_cmd_submit()             — submit cmd
 
    Because each alloc occupies a distinct, non-overlapping region of the
    staging buffer the GPU can read all regions in the same submission
@@ -64,7 +64,7 @@ extern "C" {
 /* Result of a single sub-allocation.  cpu is a persistent CPU pointer
    valid until the staging buffer is destroyed or md_gpu_bump_grow()
    is called.  offset is the byte offset within the backing md_gpu_buffer_t
-    to pass to md_gpu_copy_buffer() as src_offset. */
+    to pass to md_gpu_cmd_copy_buffer() as src_offset. */
 typedef struct md_gpu_alloc_t {
     void*  cpu;     /* CPU-writable pointer into the staging buffer */
     size_t offset;  /* byte offset within the backing buffer        */
@@ -126,7 +126,7 @@ static inline void md_gpu_bump_free(md_gpu_bump_alloc_t* bump) {
     bump->capacity = 0;
 }
 
-/* Reset the cursor to 0.  Call once before starting a new pass recording
+/* Reset the cursor to 0.  Call once before starting a new cmd recording
     session.  Does not free or zero the backing memory. */
 static inline void md_gpu_bump_reset(md_gpu_bump_alloc_t* bump) {
     bump->cursor = 0;

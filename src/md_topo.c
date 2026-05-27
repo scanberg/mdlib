@@ -239,8 +239,8 @@ void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
     free(ctx);
 }
 
-void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
-    if (!pass || !context || !volume || !grid) {
+void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
+    if (!cmd || !context || !volume || !grid) {
         MD_LOG_ERROR("md_topo_gpu_record: invalid input");
         return;
     }
@@ -251,16 +251,16 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
         return;
     }
 
-    md_gpu_use_buffer(pass, ctx->ascending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->descending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->voxel_types_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->voxel_to_vert_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->meta_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->indices_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->vert_buf, GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->type_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_use_buffer(pass, ctx->edge_buf, GPU_USAGE_WRITE);
-    md_gpu_use_image(pass, volume, GPU_USAGE_READ);
+    md_gpu_cmd_use_buffer(cmd, ctx->ascending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->descending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->voxel_types_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->voxel_to_vert_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->meta_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->indices_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->vert_buf, GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->type_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, ctx->edge_buf, GPU_USAGE_WRITE);
+    md_gpu_cmd_use_image(cmd, volume, GPU_USAGE_READ);
 
     uint64_t ascending_addr      = md_gpu_buffer_address(ctx->ascending_buf);
     uint64_t descending_addr     = md_gpu_buffer_address(ctx->descending_buf);
@@ -290,24 +290,24 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
     const size_t   voxel_buf_size = ctx->num_points * sizeof(uint32_t);
 
     // Per-call resets (voxel_to_vert_idx = -1, count = 0, counter = 0, edge_count = 0, vertex_types = 0)
-    md_gpu_push_debug_group(pass, "Per-call resets");
-    md_gpu_fill_buffer(pass, ctx->voxel_to_vert_buf, 0, voxel_buf_size, 0xFF); // voxel_to_vert_idx = -1
-    md_gpu_fill_buffer(pass, ctx->meta_buf, 0, sizeof(topo_meta_t), 0);
-    md_gpu_fill_buffer(pass, ctx->type_buf, 0, ctx->vert_cap * sizeof(uint32_t), 0); // vertex_types = 0
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_push_debug_group(cmd, "Per-call resets");
+    md_gpu_cmd_fill_buffer(cmd, ctx->voxel_to_vert_buf, 0, voxel_buf_size, 0xFF); // voxel_to_vert_idx = -1
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, 0, sizeof(topo_meta_t), 0);
+    md_gpu_cmd_fill_buffer(cmd, ctx->type_buf, 0, ctx->vert_cap * sizeof(uint32_t), 0); // vertex_types = 0
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 1: Bidirectional manifold
-    md_gpu_push_debug_group(pass, "Bidirectional manifold");
+    md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
     TOPO_STATIC_ASSERT_ROOT_ARGS(topo_bidirectional_manifold, topo_bidirectional_manifold_args_t, "Topo bidirectional manifold");
     topo_bidirectional_manifold_args_t bidirectional_args = {0};
     TOPO_FILL_COMMON_ARGS(bidirectional_args);
     bidirectional_args.ascending  = ascending_addr;
     bidirectional_args.descending = descending_addr;
-    md_gpu_bind_compute_pipeline(pass, pip_bidirectional_manifold);
-    md_gpu_dispatch(pass, wg[0], wg[1], wg[2], &bidirectional_args, sizeof(bidirectional_args));
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_bidirectional_manifold);
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &bidirectional_args, sizeof(bidirectional_args));
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_pop_debug_group(cmd);
 
     // Step 2: Path compression (iterative, GPU-side early-exit via changed flag)
     // Each dispatch does one grandparent pointer-jump. A path of length L needs
@@ -319,11 +319,11 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
         num_iterations *= 2;
     }
 
-    md_gpu_push_debug_group(pass, "Path compression");
-    md_gpu_fill_buffer(pass, ctx->meta_buf, offsetof(topo_meta_t, changed_read), 4, 0xFF);
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_push_debug_group(cmd, "Path compression");
+    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_read), 4, 0xFF);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
-    md_gpu_bind_compute_pipeline(pass, pip_path_compression);
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_path_compression);
     TOPO_STATIC_ASSERT_ROOT_ARGS(topo_path_compression, topo_path_compression_args_t, "Topo path compression");
     topo_path_compression_args_t path_args = {0};
     TOPO_FILL_COMMON_ARGS(path_args);
@@ -331,17 +331,17 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
     path_args.descending = descending_addr;
     path_args.meta       = meta_addr;
     for (uint32_t i = 0; i < num_iterations; i++) {
-        md_gpu_dispatch(pass, wg[0], wg[1], wg[2], &path_args, sizeof(path_args));
-        md_gpu_copy_buffer(pass, ctx->meta_buf, ctx->meta_buf, 4, offsetof(topo_meta_t, changed_write), offsetof(topo_meta_t, changed_read));
-        md_gpu_fill_buffer(pass, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
-        md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+        md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &path_args, sizeof(path_args));
+        md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, offsetof(topo_meta_t, changed_write), offsetof(topo_meta_t, changed_read));
+        md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
+        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 3: Critical-point detection → meta_buf.count
-    md_gpu_push_debug_group(pass, "Critical-point detection");
+    md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
     TOPO_STATIC_ASSERT_ROOT_ARGS(topo_critical_points, topo_critical_points_args_t, "Topo critical points");
     topo_critical_points_args_t critical_args = {0};
     TOPO_FILL_COMMON_ARGS(critical_args);
@@ -349,14 +349,14 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
     critical_args.descending = descending_addr;
     critical_args.types      = voxel_types_addr;
     critical_args.meta       = meta_addr;
-    md_gpu_bind_compute_pipeline(pass, pip_critical_points);
-    md_gpu_dispatch(pass, wg[0], wg[1], wg[2], &critical_args, sizeof(critical_args));
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_points);
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &critical_args, sizeof(critical_args));
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 4: Critical-point compaction (single atomic counter)
-    md_gpu_push_debug_group(pass, "Critical-point compaction");
+    md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
     TOPO_STATIC_ASSERT_ROOT_ARGS(topo_critical_point_compaction, topo_critical_point_compaction_args_t, "Topo critical point compaction");
     topo_critical_point_compaction_args_t compaction_args = {0};
     TOPO_FILL_COMMON_ARGS(compaction_args);
@@ -365,15 +365,15 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
     compaction_args.meta                = meta_addr;
     compaction_args.voxel_to_vertex_idx = voxel_to_vert_addr;
     compaction_args.vertex_types        = type_addr;
-    md_gpu_bind_compute_pipeline(pass, pip_critical_point_compaction);
-    md_gpu_dispatch(pass, wg[0], wg[1], wg[2], &compaction_args, sizeof(compaction_args));
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_point_compaction);
+    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &compaction_args, sizeof(compaction_args));
+    md_gpu_cmd_pop_debug_group(cmd);
 
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 5: Vertex + edge extraction
     // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
-    md_gpu_push_debug_group(pass, "Vertex + edge extraction");
+    md_gpu_cmd_push_debug_group(cmd, "Vertex + edge extraction");
     TOPO_STATIC_ASSERT_ROOT_ARGS(topo_vertex_edge_extraction, topo_vertex_edge_extraction_args_t, "Topo vertex edge extraction");
     topo_vertex_edge_extraction_args_t extraction_args = {0};
     TOPO_FILL_COMMON_ARGS(extraction_args);
@@ -385,19 +385,19 @@ void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context, md_g
     extraction_args.descending          = descending_addr;
     extraction_args.voxel_to_vertex_idx = voxel_to_vert_addr;
     extraction_args.meta                = meta_addr;
-    md_gpu_bind_compute_pipeline(pass, pip_vertex_edge_extraction);
-    md_gpu_dispatch(pass, DIV_UP(ctx->vert_cap, 64), 1, 1, &extraction_args, sizeof(extraction_args));
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_bind_compute_pipeline(cmd, pip_vertex_edge_extraction);
+    md_gpu_cmd_dispatch(cmd, DIV_UP(ctx->vert_cap, 64), 1, 1, &extraction_args, sizeof(extraction_args));
+    md_gpu_cmd_pop_debug_group(cmd);
 
 #undef TOPO_FILL_COMMON_ARGS
 
     // Copy all results to CPU-visible staging in one batch, only if we have a staging buffers (discrete GPU).
     if (ctx->staging_buf) {
-        md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-        md_gpu_copy_buffer(pass, ctx->meta_buf, ctx->staging_buf, sizeof(topo_meta_t), 0, 0);
-        md_gpu_copy_buffer(pass, ctx->vert_buf, ctx->staging_verts, ctx->vert_cap * 4 * sizeof(float),       0, 0);
-        md_gpu_copy_buffer(pass, ctx->type_buf, ctx->staging_types, ctx->vert_cap * 1 * sizeof(uint32_t),    0, 0);
-        md_gpu_copy_buffer(pass, ctx->edge_buf, ctx->staging_edges, ctx->edge_cap * 2 * sizeof(uint32_t),    0, 0);
+        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+        md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf, sizeof(topo_meta_t), 0, 0);
+        md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf, ctx->staging_verts, ctx->vert_cap * 4 * sizeof(float),       0, 0);
+        md_gpu_cmd_copy_buffer(cmd, ctx->type_buf, ctx->staging_types, ctx->vert_cap * 1 * sizeof(uint32_t),    0, 0);
+        md_gpu_cmd_copy_buffer(cmd, ctx->edge_buf, ctx->staging_edges, ctx->edge_cap * 2 * sizeof(uint32_t),    0, 0);
     }
 }
 

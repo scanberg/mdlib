@@ -20,33 +20,32 @@
 // One fresh descriptor set is allocated per dispatch, so the descriptor pool is
 // sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
 #define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
-#define MD_GPU_PASS_HISTORY_SIZE 256
 
 typedef struct md_gpu_queue* md_gpu_queue_t;
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
-typedef struct md_gpu_pass_buffer_usage_t {
+typedef struct md_vk_resource_sync_state_t {
+    VkPipelineStageFlags2 stage;
+    VkAccessFlags2 access;
+    bool valid;
+} md_vk_resource_sync_state_t;
+
+typedef struct md_gpu_cmd_buffer_usage_t {
     md_gpu_buffer_t buffer;
     gpu_usage_flags_t usage;
-} md_gpu_pass_buffer_usage_t;
+} md_gpu_cmd_buffer_usage_t;
 
-typedef struct md_gpu_pass_image_usage_t {
+typedef struct md_gpu_cmd_image_usage_t {
     md_gpu_image_t image;
     gpu_usage_flags_t usage;
     md_gpu_image_region_t region;
-} md_gpu_pass_image_usage_t;
+} md_gpu_cmd_image_usage_t;
 
-typedef struct md_gpu_pass_sampled_resource_usage_t {
+typedef struct md_gpu_cmd_sampled_resource_usage_t {
     md_gpu_image_t image;
     md_gpu_sampler_t sampler;
     gpu_usage_flags_t usage;
-} md_gpu_pass_sampled_resource_usage_t;
-
-typedef struct md_gpu_pass_record {
-    uint64_t id;
-    struct md_gpu_queue* queue;
-    struct md_gpu_command_buffer* cmd;
-} md_gpu_pass_record;
+} md_gpu_cmd_sampled_resource_usage_t;
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
@@ -69,17 +68,15 @@ typedef struct md_gpu_device {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
-    VkSemaphore pass_timeline;
+    VkSemaphore event_timeline;
 
-    // Embedded primary compute queue used by pass submission.
+    // Embedded primary compute queue used by cmd submission.
     struct md_gpu_queue compute_queue;
 
-    uint64_t next_pass_id;
-    uint32_t pass_record_head;
-    md_gpu_pass_record pass_records[MD_GPU_PASS_HISTORY_SIZE];
+    uint64_t next_event_id;
 } md_gpu_device;
 
-static void md_vk_reclaim_completed_passes(md_gpu_device* dev);
+static void md_vk_reclaim_completed_cmds(md_gpu_device* dev);
 
 typedef struct md_gpu_buffer {
     md_gpu_device_t device;
@@ -88,6 +85,7 @@ typedef struct md_gpu_buffer {
     VkDeviceSize size;
     md_gpu_buffer_flags_t flags;
     void* cpu_ptr;  /* non-NULL for CPU_VISIBLE buffers; valid until destroy */
+    md_vk_resource_sync_state_t sync;
 } md_gpu_buffer;
 
 typedef struct md_gpu_image {
@@ -100,7 +98,8 @@ typedef struct md_gpu_image {
     uint32_t depth;
     VkFormat format;
     md_gpu_image_flags_t flags;
-    VkImageLayout layout; // current layout for implicit transitions
+    VkImageLayout layout;
+    md_vk_resource_sync_state_t sync;
 } md_gpu_image;
 
 typedef struct md_gpu_sampler {
@@ -122,6 +121,8 @@ typedef struct md_gpu_command_buffer {
     VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
     uint32_t dispatch_count;
     uint32_t index; /* position in queue->cmd_wrappers[], used to return slot to free list */
+    uint64_t retire_value;
+    bool in_flight;
     bool is_recording;
 
     // Live bound state consumed by dispatch
@@ -135,19 +136,19 @@ typedef struct md_gpu_command_buffer {
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t push_constant_size;
 
-    md_gpu_pass_buffer_usage_t* pass_buffers;
-    uint32_t pass_buffer_count;
-    md_gpu_pass_image_usage_t* pass_images;
-    uint32_t pass_image_count;
-    md_gpu_pass_sampled_resource_usage_t* pass_sampled_resources;
-    uint32_t pass_sampled_resource_count;
+    md_gpu_cmd_buffer_usage_t* cmd_buffers;
+    uint32_t cmd_buffer_count;
+    md_gpu_cmd_image_usage_t* cmd_images;
+    uint32_t cmd_image_count;
+    md_gpu_cmd_sampled_resource_usage_t* cmd_sampled_resources;
+    uint32_t cmd_sampled_resource_count;
 } md_gpu_command_buffer;
 
-typedef struct md_gpu_pass {
+typedef struct md_gpu_cmd {
     struct md_gpu_queue* queue;
     struct md_gpu_command_buffer* cmd;
     bool pushed_debug_group;
-} md_gpu_pass;
+} md_gpu_cmd;
 
 static bool md_vk_check(VkResult res, const char* what) {
     if (res == VK_SUCCESS) return true;
@@ -155,84 +156,167 @@ static bool md_vk_check(VkResult res, const char* what) {
     return false;
 }
 
-static bool md_vk_pass_merge_buffer_usage(md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
+static VkAccessFlags2 md_vk_access_from_gpu_usage(gpu_usage_flags_t usage) {
+    VkAccessFlags2 access = 0;
+    if (usage & GPU_USAGE_READ)  access |= VK_ACCESS_2_SHADER_READ_BIT;
+    if (usage & GPU_USAGE_WRITE) access |= VK_ACCESS_2_SHADER_WRITE_BIT;
+    return access;
+}
+
+static bool md_vk_access_has_write(VkAccessFlags2 access) {
+    return (access & (VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)) != 0;
+}
+
+static void md_vk_ensure_buffer_sync(md_gpu_command_buffer* cmd, md_gpu_buffer* buf, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (!cmd || !buf || dst_stage == 0 || dst_access == 0) return;
+
+    const bool need_barrier =
+        buf->sync.valid &&
+        (md_vk_access_has_write(buf->sync.access) || md_vk_access_has_write(dst_access));
+
+    if (need_barrier) {
+        VkBufferMemoryBarrier2 barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = buf->sync.stage;
+        barrier.srcAccessMask = buf->sync.access;
+        barrier.dstStageMask = dst_stage;
+        barrier.dstAccessMask = dst_access;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = buf->buffer;
+        barrier.offset = 0;
+        barrier.size = VK_WHOLE_SIZE;
+
+        VkDependencyInfo dep = {0};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.bufferMemoryBarrierCount = 1;
+        dep.pBufferMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cmd->vk_cmd, &dep);
+    }
+
+    buf->sync.stage = dst_stage;
+    buf->sync.access = dst_access;
+    buf->sync.valid = true;
+}
+
+static void md_vk_ensure_image_sync(md_gpu_command_buffer* cmd, md_gpu_image* img, VkImageLayout new_layout, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (!cmd || !img || dst_stage == 0 || dst_access == 0) return;
+
+    const bool layout_change = (img->layout != new_layout);
+    const bool hazard = img->sync.valid && (md_vk_access_has_write(img->sync.access) || md_vk_access_has_write(dst_access));
+    const bool need_barrier = layout_change || hazard;
+
+    if (need_barrier) {
+        VkImageMemoryBarrier2 barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = img->sync.valid ? img->sync.stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        barrier.srcAccessMask = img->sync.valid ? img->sync.access : 0;
+        barrier.dstStageMask = dst_stage;
+        barrier.dstAccessMask = dst_access;
+        barrier.oldLayout = img->layout;
+        barrier.newLayout = new_layout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = img->image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        VkDependencyInfo dep = {0};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cmd->vk_cmd, &dep);
+    }
+
+    img->layout = new_layout;
+    img->sync.stage = dst_stage;
+    img->sync.access = dst_access;
+    img->sync.valid = true;
+}
+
+static bool md_vk_cmd_merge_buffer_usage(md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
     if (!cmd || !buffer || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_buffer_count; ++i) {
-        if (cmd->pass_buffers[i].buffer == buffer) {
-            cmd->pass_buffers[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_buffer_count; ++i) {
+        if (cmd->cmd_buffers[i].buffer == buffer) {
+            cmd->cmd_buffers[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_buffer_count + 1;
-    md_gpu_pass_buffer_usage_t* items = (md_gpu_pass_buffer_usage_t*)realloc(cmd->pass_buffers, sizeof(md_gpu_pass_buffer_usage_t) * new_count);
+    const uint32_t new_count = cmd->cmd_buffer_count + 1;
+    md_gpu_cmd_buffer_usage_t* items = (md_gpu_cmd_buffer_usage_t*)realloc(cmd->cmd_buffers, sizeof(md_gpu_cmd_buffer_usage_t) * new_count);
     if (!items) return false;
 
-    cmd->pass_buffers = items;
-    cmd->pass_buffers[cmd->pass_buffer_count].buffer = buffer;
-    cmd->pass_buffers[cmd->pass_buffer_count].usage = usage;
-    cmd->pass_buffer_count = new_count;
+    cmd->cmd_buffers = items;
+    cmd->cmd_buffers[cmd->cmd_buffer_count].buffer = buffer;
+    cmd->cmd_buffers[cmd->cmd_buffer_count].usage = usage;
+    cmd->cmd_buffer_count = new_count;
     return true;
 }
 
-static bool md_vk_pass_merge_image_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
+static bool md_vk_cmd_merge_image_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
     if (!cmd || !image || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_image_count; ++i) {
-        if (cmd->pass_images[i].image == image) {
-            cmd->pass_images[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_image_count; ++i) {
+        if (cmd->cmd_images[i].image == image) {
+            cmd->cmd_images[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_image_count + 1;
-    md_gpu_pass_image_usage_t* items = (md_gpu_pass_image_usage_t*)realloc(cmd->pass_images, sizeof(md_gpu_pass_image_usage_t) * new_count);
+    const uint32_t new_count = cmd->cmd_image_count + 1;
+    md_gpu_cmd_image_usage_t* items = (md_gpu_cmd_image_usage_t*)realloc(cmd->cmd_images, sizeof(md_gpu_cmd_image_usage_t) * new_count);
     if (!items) return false;
 
-    cmd->pass_images = items;
-    cmd->pass_images[cmd->pass_image_count].image = image;
-    cmd->pass_images[cmd->pass_image_count].usage = usage;
-    memset(&cmd->pass_images[cmd->pass_image_count].region, 0, sizeof(cmd->pass_images[cmd->pass_image_count].region));
-    cmd->pass_image_count = new_count;
+    cmd->cmd_images = items;
+    cmd->cmd_images[cmd->cmd_image_count].image = image;
+    cmd->cmd_images[cmd->cmd_image_count].usage = usage;
+    memset(&cmd->cmd_images[cmd->cmd_image_count].region, 0, sizeof(cmd->cmd_images[cmd->cmd_image_count].region));
+    cmd->cmd_image_count = new_count;
     return true;
 }
 
-static bool md_vk_pass_merge_sampled_resource_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
+static bool md_vk_cmd_merge_sampled_resource_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
     if (!cmd || !image || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_sampled_resource_count; ++i) {
-        if (cmd->pass_sampled_resources[i].image == image && cmd->pass_sampled_resources[i].sampler == sampler) {
-            cmd->pass_sampled_resources[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_sampled_resource_count; ++i) {
+        if (cmd->cmd_sampled_resources[i].image == image && cmd->cmd_sampled_resources[i].sampler == sampler) {
+            cmd->cmd_sampled_resources[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_sampled_resource_count + 1;
-    md_gpu_pass_sampled_resource_usage_t* items = (md_gpu_pass_sampled_resource_usage_t*)realloc(cmd->pass_sampled_resources, sizeof(md_gpu_pass_sampled_resource_usage_t) * new_count);
+    const uint32_t new_count = cmd->cmd_sampled_resource_count + 1;
+    md_gpu_cmd_sampled_resource_usage_t* items = (md_gpu_cmd_sampled_resource_usage_t*)realloc(cmd->cmd_sampled_resources, sizeof(md_gpu_cmd_sampled_resource_usage_t) * new_count);
     if (!items) return false;
 
-    cmd->pass_sampled_resources = items;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].image = image;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].sampler = sampler;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].usage = usage;
-    cmd->pass_sampled_resource_count = new_count;
+    cmd->cmd_sampled_resources = items;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].image = image;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].sampler = sampler;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].usage = usage;
+    cmd->cmd_sampled_resource_count = new_count;
     return true;
 }
 
 static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queue) {
-    free(cmd->pass_buffers);
-    free(cmd->pass_images);
-    free(cmd->pass_sampled_resources);
-    cmd->pass_buffers = NULL;
-    cmd->pass_images = NULL;
-    cmd->pass_sampled_resources = NULL;
-    cmd->pass_buffer_count = 0;
-    cmd->pass_image_count = 0;
-    cmd->pass_sampled_resource_count = 0;
+    free(cmd->cmd_buffers);
+    free(cmd->cmd_images);
+    free(cmd->cmd_sampled_resources);
+    cmd->cmd_buffers = NULL;
+    cmd->cmd_images = NULL;
+    cmd->cmd_sampled_resources = NULL;
+    cmd->cmd_buffer_count = 0;
+    cmd->cmd_image_count = 0;
+    cmd->cmd_sampled_resource_count = 0;
 
     cmd->queue = queue;
     cmd->dispatch_count = 0;
+    cmd->retire_value = 0;
+    cmd->in_flight = false;
     cmd->is_recording = false;
     cmd->bound_pipeline = NULL;
     memset(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
@@ -589,7 +673,7 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     VkSemaphoreCreateInfo sem_ci = {0};
     sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     sem_ci.pNext = &timeline_ci;
-    if (!md_vk_check(vkCreateSemaphore(out_dev->device, &sem_ci, NULL, &out_dev->pass_timeline), "vkCreateSemaphore(pass timeline)")) return false;
+    if (!md_vk_check(vkCreateSemaphore(out_dev->device, &sem_ci, NULL, &out_dev->event_timeline), "vkCreateSemaphore(event timeline)")) return false;
 
     // Pre-allocate all descriptor sets for every command buffer slot so they can be
     // reused without per-submission alloc/free (vkUpdateDescriptorSets overwrites in-place).
@@ -657,12 +741,7 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
-        for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
-            dev->pass_records[i].id = 0;
-            dev->pass_records[i].queue = NULL;
-            dev->pass_records[i].cmd = NULL;
-        }
-        if (dev->pass_timeline) vkDestroySemaphore(dev->device, dev->pass_timeline, NULL);
+        if (dev->event_timeline) vkDestroySemaphore(dev->device, dev->event_timeline, NULL);
         if (dev->descriptor_pool) vkDestroyDescriptorPool(dev->device, dev->descriptor_pool, NULL);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         if (dev->descriptor_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layout, NULL);
@@ -1061,38 +1140,41 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline) {
     free(p);
 }
 
-static uint64_t md_vk_pass_timeline_value(md_gpu_device* dev) {
-    if (!dev || !dev->pass_timeline) return UINT64_MAX;
+static uint64_t md_vk_event_timeline_value(md_gpu_device* dev) {
+    if (!dev || !dev->event_timeline) return UINT64_MAX;
     uint64_t value = 0;
-    if (!md_vk_check(vkGetSemaphoreCounterValue(dev->device, dev->pass_timeline, &value), "vkGetSemaphoreCounterValue(pass timeline)")) {
+    if (!md_vk_check(vkGetSemaphoreCounterValue(dev->device, dev->event_timeline, &value), "vkGetSemaphoreCounterValue(event timeline)")) {
         return 0;
     }
     return value;
 }
 
-static bool md_vk_wait_pass_timeline(md_gpu_device* dev, uint64_t value) {
-    if (!dev || !dev->pass_timeline || value == 0) return true;
+static bool md_vk_wait_event_timeline(md_gpu_device* dev, uint64_t value) {
+    if (!dev || !dev->event_timeline || value == 0) return true;
 
     VkSemaphoreWaitInfo wait_info = {0};
     wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
     wait_info.semaphoreCount = 1;
-    wait_info.pSemaphores = &dev->pass_timeline;
+    wait_info.pSemaphores = &dev->event_timeline;
     wait_info.pValues = &value;
-    return md_vk_check(vkWaitSemaphores(dev->device, &wait_info, UINT64_MAX), "vkWaitSemaphores(pass timeline)");
+    return md_vk_check(vkWaitSemaphores(dev->device, &wait_info, UINT64_MAX), "vkWaitSemaphores(event timeline)");
 }
 
-static void md_vk_reclaim_completed_passes(md_gpu_device* dev) {
-    if (!dev || !dev->pass_timeline) return;
-    uint64_t completed = md_vk_pass_timeline_value(dev);
-    for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
-        md_gpu_pass_record* record = &dev->pass_records[i];
-        if (record->id == 0 || record->id > completed || !record->queue || !record->cmd) continue;
-        md_vk_reset_cmd_state(record->cmd, record->queue);
-        ASSERT(record->queue->free_count < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE);
-        record->queue->free_list[record->queue->free_count++] = record->cmd->index;
-        record->id = 0;
-        record->queue = NULL;
-        record->cmd = NULL;
+static void md_vk_reclaim_completed_cmds(md_gpu_device* dev) {
+    if (!dev || !dev->event_timeline) return;
+    md_gpu_queue* queue = &dev->compute_queue;
+    uint64_t completed = md_vk_event_timeline_value(dev);
+
+    for (uint32_t i = 0; i < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE; ++i) {
+        md_gpu_command_buffer* cmd = &queue->cmd_wrappers[i];
+        if (!cmd->in_flight || cmd->retire_value == 0 || cmd->retire_value > completed) continue;
+
+        cmd->in_flight = false;
+        cmd->retire_value = 0;
+        md_vk_reset_cmd_state(cmd, queue);
+
+        ASSERT(queue->free_count < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE);
+        queue->free_list[queue->free_count++] = cmd->index;
     }
 }
 
@@ -1100,7 +1182,7 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     if (!queue) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
 
-    md_vk_reclaim_completed_passes(q->dev);
+    md_vk_reclaim_completed_cmds(q->dev);
 
     if (q->free_count == 0) {
         MD_LOG_ERROR("md_gpu_command_buffer_acquire: no free command buffers");
@@ -1157,7 +1239,7 @@ static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, Vk
     img->layout = new_layout;
 }
 
-static void md_vk_apply_pass_declared_bindings(md_gpu_command_buffer* cmd) {
+static void md_vk_apply_cmd_declared_bindings(md_gpu_command_buffer* cmd) {
     memset(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
     memset(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
     memset(cmd->bound_buffer_sizes, 0, sizeof(cmd->bound_buffer_sizes));
@@ -1165,20 +1247,20 @@ static void md_vk_apply_pass_declared_bindings(md_gpu_command_buffer* cmd) {
     memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
     memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
 
-    const uint32_t buffer_count = cmd->pass_buffer_count < MD_GPU_MAX_BIND_SLOTS ? cmd->pass_buffer_count : MD_GPU_MAX_BIND_SLOTS;
+    const uint32_t buffer_count = cmd->cmd_buffer_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_buffer_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < buffer_count; ++i) {
-        cmd->bound_buffers[i] = cmd->pass_buffers[i].buffer;
+        cmd->bound_buffers[i] = cmd->cmd_buffers[i].buffer;
     }
 
-    const uint32_t image_count = cmd->pass_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->pass_image_count : MD_GPU_MAX_BIND_SLOTS;
+    const uint32_t image_count = cmd->cmd_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_image_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < image_count; ++i) {
-        cmd->bound_images[i] = cmd->pass_images[i].image;
+        cmd->bound_images[i] = cmd->cmd_images[i].image;
     }
 
-    const uint32_t sampled_resource_count = cmd->pass_sampled_resource_count < MD_GPU_MAX_BIND_SLOTS ? cmd->pass_sampled_resource_count : MD_GPU_MAX_BIND_SLOTS;
+    const uint32_t sampled_resource_count = cmd->cmd_sampled_resource_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_sampled_resource_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < sampled_resource_count; ++i) {
-        cmd->bound_sampled_images[i] = cmd->pass_sampled_resources[i].image;
-        cmd->bound_samplers[i] = cmd->pass_sampled_resources[i].sampler;
+        cmd->bound_sampled_images[i] = cmd->cmd_sampled_resources[i].image;
+        cmd->bound_samplers[i] = cmd->cmd_sampled_resources[i].sampler;
     }
 }
 
@@ -1216,14 +1298,9 @@ static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorS
         if (cmd->bound_images[i]) {
             md_gpu_image* img = (md_gpu_image*)cmd->bound_images[i];
 
-            // Transition to GENERAL for storage use
-            md_vk_transition_image(cmd->vk_cmd, img, VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-
             storage_image_infos[i].sampler = VK_NULL_HANDLE;
             storage_image_infos[i].imageView = img->view;
-            storage_image_infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            storage_image_infos[i].imageLayout = img->layout;
 
             writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[write_count].pNext = NULL;
@@ -1241,13 +1318,9 @@ static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorS
         if (cmd->bound_sampled_images[i]) {
             md_gpu_image* img = (md_gpu_image*)cmd->bound_sampled_images[i];
 
-            md_vk_transition_image(cmd->vk_cmd, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-
             sampled_image_infos[i].sampler = VK_NULL_HANDLE;
             sampled_image_infos[i].imageView = img->view;
-            sampled_image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sampled_image_infos[i].imageLayout = img->layout;
 
             writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[write_count].pNext = NULL;
@@ -1312,13 +1385,13 @@ static VkAccessFlags2 md_vk_access_flags_write(md_gpu_barrier_stage_t stages) {
     return flags;
 }
 
-static bool md_vk_queue_submit_pass(md_gpu_queue* q, md_gpu_command_buffer* c, uint64_t signal_value) {
+static bool md_vk_queue_submit_cmd(md_gpu_queue* q, md_gpu_command_buffer* c, uint64_t signal_value) {
     if (!q || !c || signal_value == 0) return false;
     md_gpu_device* dev = q->dev;
     ASSERT(c->queue == q);
     ASSERT(c->is_recording);
 
-    if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer(pass)")) {
+    if (!md_vk_check(vkEndCommandBuffer(c->vk_cmd), "vkEndCommandBuffer(cmd)")) {
         return false;
     }
     c->is_recording = false;
@@ -1329,7 +1402,7 @@ static bool md_vk_queue_submit_pass(md_gpu_queue* q, md_gpu_command_buffer* c, u
 
     VkSemaphoreSubmitInfo signal_info = {0};
     signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signal_info.semaphore = dev->pass_timeline;
+    signal_info.semaphore = dev->event_timeline;
     signal_info.value = signal_value;
     signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
@@ -1340,28 +1413,30 @@ static bool md_vk_queue_submit_pass(md_gpu_queue* q, md_gpu_command_buffer* c, u
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal_info;
 
-    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2(pass timeline)")) {
+    if (!md_vk_check(vkQueueSubmit2(q->vk_queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2(event timeline)")) {
         md_vk_reset_cmd_state(c, q);
         ASSERT(q->free_count < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE);
         q->free_list[q->free_count++] = c->index;
         return false;
     }
 
+    c->in_flight = true;
+    c->retire_value = signal_value;
     return true;
 }
 
-md_gpu_pass_t md_gpu_begin(md_gpu_device_t device, const char* label) {
+md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label) {
     if (!device) return NULL;
     md_gpu_device* dev = (md_gpu_device*)device;
     md_gpu_queue* queue = &dev->compute_queue;
 
-    md_gpu_pass* pass = (md_gpu_pass*)calloc(1, sizeof(md_gpu_pass));
-    if (!pass) return NULL;
+    md_gpu_cmd* cmd = (md_gpu_cmd*)calloc(1, sizeof(md_gpu_cmd));
+    if (!cmd) return NULL;
 
-    pass->queue = queue;
-    pass->cmd = (md_gpu_command_buffer*)md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
-    if (!pass->cmd) {
-        free(pass);
+    cmd->queue = queue;
+    cmd->cmd = (md_gpu_command_buffer*)md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
+    if (!cmd->cmd) {
+        free(cmd);
         return NULL;
     }
 
@@ -1369,100 +1444,93 @@ md_gpu_pass_t md_gpu_begin(md_gpu_device_t device, const char* label) {
         VkDebugUtilsLabelEXT info = {0};
         info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
         info.pLabelName = label;
-        if (vkCmdBeginDebugUtilsLabelEXT) vkCmdBeginDebugUtilsLabelEXT(pass->cmd->vk_cmd, &info);
-        pass->pushed_debug_group = true;
+        if (vkCmdBeginDebugUtilsLabelEXT) vkCmdBeginDebugUtilsLabelEXT(cmd->cmd->vk_cmd, &info);
+        cmd->pushed_debug_group = true;
     }
-    return (md_gpu_pass_t)pass;
+    return (md_gpu_cmd_t)cmd;
 }
 
-md_gpu_pass_id_t md_gpu_end(md_gpu_pass_t pass) {
-    md_gpu_pass_id_t id = {0};
-    if (!pass) return id;
+md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd) {
+    md_gpu_event_t event = {0};
+    if (!cmd) return event;
 
-    md_gpu_pass* p = (md_gpu_pass*)pass;
-    md_gpu_queue* queue = p->queue;
+    md_gpu_cmd* c = (md_gpu_cmd*)cmd;
+    md_gpu_queue* queue = c->queue;
     md_gpu_device* dev = queue ? queue->dev : NULL;
-    if (!queue || !dev || !p->cmd) {
-        free(p);
-        return id;
+    if (!queue || !dev || !c->cmd) {
+        free(c);
+        return event;
     }
 
-    if (p->pushed_debug_group && vkCmdEndDebugUtilsLabelEXT) {
-        vkCmdEndDebugUtilsLabelEXT(p->cmd->vk_cmd);
+    if (c->pushed_debug_group && vkCmdEndDebugUtilsLabelEXT) {
+        vkCmdEndDebugUtilsLabelEXT(c->cmd->vk_cmd);
     }
 
-    md_vk_reclaim_completed_passes(dev);
+    md_vk_reclaim_completed_cmds(dev);
 
-    md_gpu_pass_record* record = &dev->pass_records[dev->pass_record_head++ % MD_GPU_PASS_HISTORY_SIZE];
-    if (record->id != 0) {
-        md_vk_wait_pass_timeline(dev, record->id);
-        md_vk_reclaim_completed_passes(dev);
-    }
-    record->id = 0;
-    record->queue = NULL;
-    record->cmd = NULL;
+    event.value = ++dev->next_event_id;
+    if (event.value == 0) event.value = ++dev->next_event_id;
 
-    id.value = ++dev->next_pass_id;
-    if (id.value == 0) id.value = ++dev->next_pass_id;
-
-    bool ok = md_vk_queue_submit_pass(queue, p->cmd, id.value);
-    if (ok) {
-        record->id = id.value;
-        record->queue = queue;
-        record->cmd = p->cmd;
-    } else {
-        id.value = 0;
+    if (!md_vk_queue_submit_cmd(queue, c->cmd, event.value)) {
+        event.value = 0;
     }
 
-    free(p);
-    return id;
+    free(c);
+    return event;
 }
 
-bool md_gpu_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id) {
-    if (!device || id.value == 0) return true;
+bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event) {
+    if (!device || event.value == 0) return true;
     md_gpu_device* dev = (md_gpu_device*)device;
-    md_vk_reclaim_completed_passes(dev);
-    return md_vk_pass_timeline_value(dev) >= id.value;
+    md_vk_reclaim_completed_cmds(dev);
+    return md_vk_event_timeline_value(dev) >= event.value;
 }
 
-void md_gpu_wait(md_gpu_device_t device, md_gpu_pass_id_t id) {
-    if (!device || id.value == 0) return;
+void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
+    if (!device || event.value == 0) return;
     md_gpu_device* dev = (md_gpu_device*)device;
-    if (md_vk_wait_pass_timeline(dev, id.value)) {
-        md_vk_reclaim_completed_passes(dev);
+    if (md_vk_wait_event_timeline(dev, event.value)) {
+        md_vk_reclaim_completed_cmds(dev);
     }
 }
 
-void md_gpu_wait_for(md_gpu_pass_t pass, md_gpu_pass_id_t id) {
-    (void)pass;
-    (void)id;
+void md_gpu_cmd_wait_event(md_gpu_cmd_t cmd, md_gpu_event_t event) {
+    (void)cmd;
+    (void)event;
 }
 
-void md_gpu_use_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
-    if (!pass || !buffer || usage == 0) return;
-    md_vk_pass_merge_buffer_usage(((md_gpu_pass*)pass)->cmd, buffer, usage);
+void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !buffer || usage == 0) return;
+    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
+    md_vk_cmd_merge_buffer_usage(cmd, buffer, usage);
+    md_vk_ensure_buffer_sync(cmd, (md_gpu_buffer*)buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
 }
 
-void md_gpu_use_image(md_gpu_pass_t pass, md_gpu_image_t image, gpu_usage_flags_t usage) {
-    if (!pass || !image || usage == 0) return;
-    md_vk_pass_merge_image_usage(((md_gpu_pass*)pass)->cmd, image, usage);
+void md_gpu_cmd_use_image(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !image || usage == 0) return;
+    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
+    md_vk_cmd_merge_image_usage(cmd, image, usage);
+    md_vk_ensure_image_sync(cmd, (md_gpu_image*)image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
 }
 
-void md_gpu_use_sampled_resource(md_gpu_pass_t pass, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
-    if (!pass || !image) return;
-    md_vk_pass_merge_sampled_resource_usage(((md_gpu_pass*)pass)->cmd, image, sampler, usage ? usage : GPU_USAGE_READ);
+void md_gpu_cmd_use_sampled_resource(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !image) return;
+    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
+    const gpu_usage_flags_t resolved_usage = usage ? usage : GPU_USAGE_READ;
+    md_vk_cmd_merge_sampled_resource_usage(cmd, image, sampler, resolved_usage);
+    md_vk_ensure_image_sync(cmd, (md_gpu_image*)image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(resolved_usage));
 }
 
-void md_gpu_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline) {
-    if (!pass || !pipeline) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_bind_compute_pipeline(md_gpu_cmd_t cmd_handle, md_gpu_compute_pipeline_t pipeline) {
+    if (!cmd_handle || !pipeline) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     ASSERT(c->is_recording);
     c->bound_pipeline = pipeline;
 }
 
-void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size) {
-    if (!pass) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size) {
+    if (!cmd_handle) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_device* dev = c->dev;
     md_gpu_compute_pipeline* pipeline = (md_gpu_compute_pipeline*)c->bound_pipeline;
 
@@ -1476,7 +1544,7 @@ void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_
         c->push_constant_size = root_args_size;
     }
 
-    md_vk_apply_pass_declared_bindings(c);
+    md_vk_apply_cmd_declared_bindings(c);
 
     vkCmdBindPipeline(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
 
@@ -1492,9 +1560,9 @@ void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_
     c->dispatch_count++;
 }
 
-void md_gpu_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd_handle) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
 
     VkMemoryBarrier2 barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -1510,10 +1578,10 @@ void md_gpu_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu
     vkCmdPipelineBarrier2(c->vk_cmd, &dep);
 }
 
-void md_gpu_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
-                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass || !buffer) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_barrier_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer,
+                                    md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd_handle || !buffer) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
 
     VkBufferMemoryBarrier2 barrier = {0};
@@ -1535,10 +1603,10 @@ void md_gpu_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
     vkCmdPipelineBarrier2(c->vk_cmd, &dep);
 }
 
-void md_gpu_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
-                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass || !image) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_barrier_image(md_gpu_cmd_t cmd_handle, md_gpu_image_t image,
+                                   md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd_handle || !image) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_image* img = (md_gpu_image*)image;
 
     VkImageMemoryBarrier2 barrier = {0};
@@ -1565,26 +1633,29 @@ void md_gpu_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
     vkCmdPipelineBarrier2(c->vk_cmd, &dep);
 }
 
-void md_gpu_push_debug_group(md_gpu_pass_t pass, const char* label) {
-    if (!pass || !label) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
+    if (!cmd_handle || !label) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     VkDebugUtilsLabelEXT info = {0};
     info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
     info.pLabelName = label;
     if (vkCmdBeginDebugUtilsLabelEXT) vkCmdBeginDebugUtilsLabelEXT(c->vk_cmd, &info);
 }
 
-void md_gpu_pop_debug_group(md_gpu_pass_t pass) {
-    if (!pass) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd_handle) {
+    if (!cmd_handle) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     if (vkCmdEndDebugUtilsLabelEXT) vkCmdEndDebugUtilsLabelEXT(c->vk_cmd);
 }
 
-void md_gpu_copy_buffer(md_gpu_pass_t pass, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
-    if (!pass || !src || !dst) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_copy_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
+    if (!cmd_handle || !src || !dst) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_buffer* src_buf = (md_gpu_buffer*)src;
     md_gpu_buffer* dst_buf = (md_gpu_buffer*)dst;
+
+    md_vk_ensure_buffer_sync(c, src_buf, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    md_vk_ensure_buffer_sync(c, dst_buf, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VkBufferCopy region = {0};
     region.srcOffset = src_offset;
@@ -1593,19 +1664,18 @@ void md_gpu_copy_buffer(md_gpu_pass_t pass, md_gpu_buffer_t src, md_gpu_buffer_t
     vkCmdCopyBuffer(c->vk_cmd, src_buf->buffer, dst_buf->buffer, 1, &region);
 }
 
-void md_gpu_copy_image_region_to_buffer(md_gpu_pass_t pass,
-                                             md_gpu_image_t src_image,
-                                             md_gpu_image_region_t src_region,
-                                             md_gpu_buffer_t dst_buffer,
-                                             size_t dst_offset) {
-    if (!pass || !src_image || !dst_buffer) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_cmd_t cmd_handle,
+                                                 md_gpu_image_t src_image,
+                                                 md_gpu_image_region_t src_region,
+                                                 md_gpu_buffer_t dst_buffer,
+                                                 size_t dst_offset) {
+    if (!cmd_handle || !src_image || !dst_buffer) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_image* src = (md_gpu_image*)src_image;
     md_gpu_buffer* dst = (md_gpu_buffer*)dst_buffer;
 
-    md_vk_transition_image(c->vk_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    md_vk_ensure_image_sync(c, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    md_vk_ensure_buffer_sync(c, dst, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VkBufferImageCopy region = {0};
     region.bufferOffset = dst_offset;
@@ -1624,15 +1694,14 @@ void md_gpu_copy_image_region_to_buffer(md_gpu_pass_t pass,
     vkCmdCopyImageToBuffer(c->vk_cmd, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->buffer, 1, &region);
 }
 
-void md_gpu_copy_buffer_to_image(md_gpu_pass_t pass, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
-    if (!pass || !src_buffer || !dst_image) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_copy_buffer_to_image(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
+    if (!cmd_handle || !src_buffer || !dst_image) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_buffer* src = (md_gpu_buffer*)src_buffer;
     md_gpu_image* dst = (md_gpu_image*)dst_image;
 
-    md_vk_transition_image(c->vk_cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    md_vk_ensure_buffer_sync(c, src, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    md_vk_ensure_image_sync(c, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
@@ -1651,19 +1720,18 @@ void md_gpu_copy_buffer_to_image(md_gpu_pass_t pass, md_gpu_buffer_t src_buffer,
     vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
-void md_gpu_copy_buffer_to_image_region(md_gpu_pass_t pass,
-                                             md_gpu_buffer_t src_buffer,
-                                             size_t src_offset,
-                                             md_gpu_image_t dst_image,
-                                             md_gpu_image_region_t dst_region) {
-    if (!pass || !src_buffer || !dst_image) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_cmd_t cmd_handle,
+                                                 md_gpu_buffer_t src_buffer,
+                                                 size_t src_offset,
+                                                 md_gpu_image_t dst_image,
+                                                 md_gpu_image_region_t dst_region) {
+    if (!cmd_handle || !src_buffer || !dst_image) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_buffer* src = (md_gpu_buffer*)src_buffer;
     md_gpu_image* dst = (md_gpu_image*)dst_image;
 
-    md_vk_transition_image(c->vk_cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    md_vk_ensure_buffer_sync(c, src, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    md_vk_ensure_image_sync(c, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VkBufferImageCopy region = {0};
     region.bufferOffset = src_offset;
@@ -1682,13 +1750,15 @@ void md_gpu_copy_buffer_to_image_region(md_gpu_pass_t pass,
     vkCmdCopyBufferToImage(c->vk_cmd, src->buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
-void md_gpu_fill_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
-    if (!pass || !buffer) return;
-    md_gpu_command_buffer* c = ((md_gpu_pass*)pass)->cmd;
+void md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
+    if (!cmd_handle || !buffer) return;
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
     md_gpu_buffer* buf = (md_gpu_buffer*)buffer;
 
     ASSERT((offset % 4 == 0) && "vkCmdFillBuffer offset must be 4-byte aligned");
     ASSERT((size == VK_WHOLE_SIZE || size % 4 == 0) && "vkCmdFillBuffer size must be 4-byte aligned or VK_WHOLE_SIZE");
+
+    md_vk_ensure_buffer_sync(c, buf, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     uint32_t pattern = (value << 24) | (value << 16) | (value << 8) | value;
     vkCmdFillBuffer(c->vk_cmd, buf->buffer, offset, size, pattern);

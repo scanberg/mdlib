@@ -1080,16 +1080,16 @@ static bool gto_local_staging_upload_at(md_gpu_device_t device, md_gpu_buffer_t 
     md_gpu_alloc_t a = md_gpu_bump_push(&bump, size);
     MEMCPY(a.cpu, src, size);
 
-    md_gpu_pass_t pass = md_gpu_begin(device, "GTO staging upload");
-    if (!pass) {
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(device, "GTO staging upload");
+    if (!cmd) {
         md_gpu_bump_free(&bump);
         return false;
     }
-    md_gpu_copy_buffer(pass, bump.buffer, dst, size, a.offset, dst_offset);
-    md_gpu_pass_id_t pass_id = md_gpu_end(pass);
-    md_gpu_wait(device, pass_id);
+    md_gpu_cmd_copy_buffer(cmd, bump.buffer, dst, size, a.offset, dst_offset);
+    md_gpu_event_t event = md_gpu_cmd_submit(cmd);
+    md_gpu_event_wait(device, event);
     md_gpu_bump_free(&bump);
-    return pass_id.value != 0;
+    return event.value != 0;
 }
 
 md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_gpu_basis_desc_t* desc) {
@@ -1242,31 +1242,31 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
     }
 }
 
-void md_gto_gpu_coeff_upload_density(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf,
+void md_gto_gpu_coeff_upload_density(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf,
     md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos) {
-    if (!pass || !coeff_buf || !src_buf) return;
+    if (!cmd || !coeff_buf || !src_buf) return;
     size_t sz = md_gto_gpu_coeff_size_density(num_cgtos);
-    md_gpu_copy_buffer(pass, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 }
 
-void md_gto_gpu_coeff_upload_mo(md_gpu_pass_t pass, md_gpu_buffer_t coeff_buf,
+void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf,
     md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos) {
-    if (!pass || !coeff_buf || !src_buf) return;
+    if (!cmd || !coeff_buf || !src_buf) return;
     size_t sz = md_gto_gpu_coeff_size_mo(num_mos, num_cgtos);
-    md_gpu_copy_buffer(pass, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
+    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 }
 
 // ---------------------------------------------------------------------------
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
-void md_gto_gpu_density_record(md_gpu_pass_t pass,
+void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
     md_gpu_image_t image, const md_grid_t* grid, md_gto_op_t op)
 {
-    if (!pass || !gb || !atom_buf || !coeff_buf || !image || !grid) {
+    if (!cmd || !gb || !atom_buf || !coeff_buf || !image || !grid) {
         MD_LOG_ERROR("md_gto_gpu_density_record: invalid input");
         return;
     }
@@ -1281,10 +1281,10 @@ void md_gto_gpu_density_record(md_gpu_pass_t pass,
 
     gpu_usage_flags_t image_usage = op == MD_GTO_OP_SET ? GPU_USAGE_WRITE : GPU_USAGE_READ | GPU_USAGE_WRITE;
 
-    md_gpu_use_buffer(pass, gb->buffer, GPU_USAGE_READ);
-    md_gpu_use_buffer(pass, atom_buf, GPU_USAGE_READ);
-    md_gpu_use_buffer(pass, coeff_buf, GPU_USAGE_READ);
-    md_gpu_use_image(pass, image, image_usage);
+    md_gpu_cmd_use_buffer(cmd, gb->buffer, GPU_USAGE_READ);
+    md_gpu_cmd_use_buffer(cmd, atom_buf, GPU_USAGE_READ);
+    md_gpu_cmd_use_buffer(cmd, coeff_buf, GPU_USAGE_READ);
+    md_gpu_cmd_use_image(cmd, image, image_usage);
 
     uint64_t basis_addr = md_gpu_buffer_address(gb->buffer);
     uint64_t atom_addr  = md_gpu_buffer_address(atom_buf);
@@ -1328,17 +1328,17 @@ void md_gto_gpu_density_record(md_gpu_pass_t pass,
         DIV_UP(grid->dim[2], gto_eval_gto_density_thread_group_size_z),
     };
 
-    md_gpu_push_debug_group(pass, "GTO Density Pass");
-    md_gpu_bind_compute_pipeline(pass, pipeline);
-    md_gpu_dispatch(pass, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_push_debug_group(cmd, "GTO Density Pass");
+    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
+    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
+    md_gpu_cmd_pop_debug_group(cmd);
 }
 
-void md_gto_gpu_mo_record(md_gpu_pass_t pass,
+void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
     md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
     md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op)
 {
-    if (!pass || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
+    if (!cmd || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
         MD_LOG_ERROR("md_gto_gpu_mo_record: invalid input");
         return;
     }
@@ -1350,10 +1350,10 @@ void md_gto_gpu_mo_record(md_gpu_pass_t pass,
         return;
     }
 
-    md_gpu_use_buffer(pass, gb->buffer, GPU_USAGE_READ);
-    md_gpu_use_buffer(pass, atom_buf, GPU_USAGE_READ);
-    md_gpu_use_buffer(pass, coeff_buf, GPU_USAGE_READ);
-    md_gpu_use_image(pass, out_image, GPU_USAGE_READ | GPU_USAGE_WRITE);
+    md_gpu_cmd_use_buffer(cmd, gb->buffer, GPU_USAGE_READ);
+    md_gpu_cmd_use_buffer(cmd, atom_buf, GPU_USAGE_READ);
+    md_gpu_cmd_use_buffer(cmd, coeff_buf, GPU_USAGE_READ);
+    md_gpu_cmd_use_image(cmd, out_image, GPU_USAGE_READ | GPU_USAGE_WRITE);
 
     uint64_t basis_addr = md_gpu_buffer_address(gb->buffer);
     uint64_t atom_addr  = md_gpu_buffer_address(atom_buf);
@@ -1399,10 +1399,10 @@ void md_gto_gpu_mo_record(md_gpu_pass_t pass,
         DIV_UP(grid->dim[2], gto_eval_gto_mo_thread_group_size_z),
     };
 
-    md_gpu_push_debug_group(pass, "GTO MO Pass");
-    md_gpu_bind_compute_pipeline(pass, pipeline);
-    md_gpu_dispatch(pass, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
-    md_gpu_pop_debug_group(pass);
+    md_gpu_cmd_push_debug_group(cmd, "GTO MO Pass");
+    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
+    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
+    md_gpu_cmd_pop_debug_group(cmd);
 }
 
 #endif // MD_ENABLE_GPU
