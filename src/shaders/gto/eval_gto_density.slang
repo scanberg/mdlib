@@ -37,7 +37,7 @@ struct RootArgs {
 [[vk::push_constant]]
 ConstantBuffer<RootArgs> args;
 
-[[vk::binding(16)]] // image slot 0 (slot + MD_GPU_MAX_BIND_SLOTS)
+[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
 RWTexture3D<float> out_vol;
 
 uint4 unpack_ijkl(uint packed) {

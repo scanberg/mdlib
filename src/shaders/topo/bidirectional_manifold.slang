@@ -25,7 +25,7 @@ struct RootArgs {
 [[vk::push_constant]]
 ConstantBuffer<RootArgs> args;
 
-[[vk::binding(16)]] // image slot 0 (binding = slot + MD_GPU_MAX_BIND_SLOTS)
+[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
 RWTexture3D<float> volumeTex;
 
 // Shared memory for scalar values and voxel IDs in a 10x10x10 region

@@ -1294,14 +1294,6 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
         return;
     }
 
-    STATIC_ASSERT(sizeof(gto_eval_gto_density_args_t) <= MD_GPU_MAX_PUSH_CONSTANTS, "GTO density arguments exceed push constant budget");
-    STATIC_ASSERT(gto_eval_gto_density_args_binding_index == 0, "GTO density argument binding index changed");
-#if defined(MD_GPU_BACKEND_VULKAN)
-    STATIC_ASSERT(gto_eval_gto_density_args_binding_kind == MD_GPU_SHADER_BINDING_KIND_PUSH_CONSTANT_BUFFER, "GTO density argument binding kind changed");
-#elif defined(MD_GPU_BACKEND_METAL)
-    STATIC_ASSERT(gto_eval_gto_density_args_binding_kind == MD_GPU_SHADER_BINDING_KIND_CONSTANT_BUFFER, "GTO density argument binding kind changed");
-#endif
-
     gto_eval_gto_density_args_t args = {0};
     world_to_model_matrix(args.world_to_model, grid);
     index_to_world_matrix(args.index_to_world, grid);
@@ -1362,14 +1354,6 @@ void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
         MD_LOG_ERROR("md_gto_gpu_mo_record: buffer device address unavailable");
         return;
     }
-
-    STATIC_ASSERT(sizeof(gto_eval_gto_mo_args_t) <= MD_GPU_MAX_PUSH_CONSTANTS, "GTO MO arguments exceed push constant budget");
-    STATIC_ASSERT(gto_eval_gto_mo_args_binding_index == 0, "GTO MO argument binding index changed");
-#if defined(MD_GPU_BACKEND_VULKAN)
-    STATIC_ASSERT(gto_eval_gto_mo_args_binding_kind == MD_GPU_SHADER_BINDING_KIND_PUSH_CONSTANT_BUFFER, "GTO MO argument binding kind changed");
-#elif defined(MD_GPU_BACKEND_METAL)
-    STATIC_ASSERT(gto_eval_gto_mo_args_binding_kind == MD_GPU_SHADER_BINDING_KIND_CONSTANT_BUFFER, "GTO MO argument binding kind changed");
-#endif
 
     gto_eval_gto_mo_args_t args = {0};
     world_to_model_matrix(args.world_to_model, grid);

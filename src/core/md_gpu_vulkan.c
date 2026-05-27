@@ -20,6 +20,17 @@
 // One fresh descriptor set is allocated per dispatch, so the descriptor pool is
 // sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
 #define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
+#define MD_GPU_MAX_BIND_SLOTS 16
+
+// Descriptor set indices (one set per resource category)
+enum {
+    MD_GPU_DESC_SET_STORAGE_IMAGES,
+    MD_GPU_DESC_SET_SAMPLED_IMAGES,
+    MD_GPU_DESC_SET_SAMPLERS,
+    MD_GPU_DESC_SET_COUNT
+};
+
+#define MD_GPU_MAX_PUSH_CONSTANTS 256
 
 typedef struct md_gpu_queue* md_gpu_queue_t;
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
@@ -29,11 +40,6 @@ typedef struct md_vk_resource_sync_state_t {
     VkAccessFlags2 access;
     bool valid;
 } md_vk_resource_sync_state_t;
-
-typedef struct md_gpu_cmd_buffer_usage_t {
-    md_gpu_buffer_t buffer;
-    gpu_usage_flags_t usage;
-} md_gpu_cmd_buffer_usage_t;
 
 typedef struct md_gpu_cmd_image_usage_t {
     md_gpu_image_t image;
@@ -66,7 +72,7 @@ typedef struct md_gpu_device {
     uint32_t compute_queue_family;
 
     VkDescriptorPool descriptor_pool;
-    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorSetLayout descriptor_set_layouts[MD_GPU_DESC_SET_COUNT];
     VkPipelineLayout pipeline_layout;
     VkSemaphore event_timeline;
 
@@ -117,8 +123,8 @@ typedef struct md_gpu_command_buffer {
     struct md_gpu_device* dev;
     struct md_gpu_queue*  queue;
     VkCommandBuffer vk_cmd;
-    /* Per-dispatch descriptor sets, allocated at dispatch-record time and freed on recycle */
-    VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
+    /* Per-dispatch descriptor sets: [dispatch_index][set_index], pre-allocated and reused */
+    VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD][MD_GPU_DESC_SET_COUNT];
     uint32_t dispatch_count;
     uint32_t index; /* position in queue->cmd_wrappers[], used to return slot to free list */
     uint64_t retire_value;
@@ -127,20 +133,15 @@ typedef struct md_gpu_command_buffer {
 
     // Live bound state consumed by dispatch
     md_gpu_compute_pipeline_t bound_pipeline;
-    md_gpu_buffer_t bound_buffers[MD_GPU_MAX_BIND_SLOTS];
-    size_t bound_buffer_offsets[MD_GPU_MAX_BIND_SLOTS];
-    size_t bound_buffer_sizes[MD_GPU_MAX_BIND_SLOTS];
     md_gpu_image_t bound_images[MD_GPU_MAX_BIND_SLOTS];
     md_gpu_image_t bound_sampled_images[MD_GPU_MAX_BIND_SLOTS];
     md_gpu_sampler_t bound_samplers[MD_GPU_MAX_BIND_SLOTS];
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t push_constant_size;
 
-    md_gpu_cmd_buffer_usage_t* cmd_buffers;
-    uint32_t cmd_buffer_count;
-    md_gpu_cmd_image_usage_t* cmd_images;
+    md_gpu_cmd_image_usage_t cmd_images[MD_GPU_MAX_BIND_SLOTS];
     uint32_t cmd_image_count;
-    md_gpu_cmd_sampled_resource_usage_t* cmd_sampled_resources;
+    md_gpu_cmd_sampled_resource_usage_t cmd_sampled_resources[MD_GPU_MAX_BIND_SLOTS];
     uint32_t cmd_sampled_resource_count;
 } md_gpu_command_buffer;
 
@@ -237,27 +238,6 @@ static void md_vk_ensure_image_sync(md_gpu_command_buffer* cmd, md_gpu_image* im
     img->sync.valid = true;
 }
 
-static bool md_vk_cmd_merge_buffer_usage(md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
-    if (!cmd || !buffer || usage == 0) return true;
-
-    for (uint32_t i = 0; i < cmd->cmd_buffer_count; ++i) {
-        if (cmd->cmd_buffers[i].buffer == buffer) {
-            cmd->cmd_buffers[i].usage |= usage;
-            return true;
-        }
-    }
-
-    const uint32_t new_count = cmd->cmd_buffer_count + 1;
-    md_gpu_cmd_buffer_usage_t* items = (md_gpu_cmd_buffer_usage_t*)realloc(cmd->cmd_buffers, sizeof(md_gpu_cmd_buffer_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->cmd_buffers = items;
-    cmd->cmd_buffers[cmd->cmd_buffer_count].buffer = buffer;
-    cmd->cmd_buffers[cmd->cmd_buffer_count].usage = usage;
-    cmd->cmd_buffer_count = new_count;
-    return true;
-}
-
 static bool md_vk_cmd_merge_image_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
     if (!cmd || !image || usage == 0) return true;
 
@@ -268,15 +248,11 @@ static bool md_vk_cmd_merge_image_usage(md_gpu_command_buffer* cmd, md_gpu_image
         }
     }
 
-    const uint32_t new_count = cmd->cmd_image_count + 1;
-    md_gpu_cmd_image_usage_t* items = (md_gpu_cmd_image_usage_t*)realloc(cmd->cmd_images, sizeof(md_gpu_cmd_image_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->cmd_images = items;
+    if (cmd->cmd_image_count >= MD_GPU_MAX_BIND_SLOTS) return false;
     cmd->cmd_images[cmd->cmd_image_count].image = image;
     cmd->cmd_images[cmd->cmd_image_count].usage = usage;
     memset(&cmd->cmd_images[cmd->cmd_image_count].region, 0, sizeof(cmd->cmd_images[cmd->cmd_image_count].region));
-    cmd->cmd_image_count = new_count;
+    cmd->cmd_image_count++;
     return true;
 }
 
@@ -290,26 +266,15 @@ static bool md_vk_cmd_merge_sampled_resource_usage(md_gpu_command_buffer* cmd, m
         }
     }
 
-    const uint32_t new_count = cmd->cmd_sampled_resource_count + 1;
-    md_gpu_cmd_sampled_resource_usage_t* items = (md_gpu_cmd_sampled_resource_usage_t*)realloc(cmd->cmd_sampled_resources, sizeof(md_gpu_cmd_sampled_resource_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->cmd_sampled_resources = items;
+    if (cmd->cmd_sampled_resource_count >= MD_GPU_MAX_BIND_SLOTS) return false;
     cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].image = image;
     cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].sampler = sampler;
     cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].usage = usage;
-    cmd->cmd_sampled_resource_count = new_count;
+    cmd->cmd_sampled_resource_count++;
     return true;
 }
 
 static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queue) {
-    free(cmd->cmd_buffers);
-    free(cmd->cmd_images);
-    free(cmd->cmd_sampled_resources);
-    cmd->cmd_buffers = NULL;
-    cmd->cmd_images = NULL;
-    cmd->cmd_sampled_resources = NULL;
-    cmd->cmd_buffer_count = 0;
     cmd->cmd_image_count = 0;
     cmd->cmd_sampled_resource_count = 0;
 
@@ -319,9 +284,6 @@ static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queu
     cmd->in_flight = false;
     cmd->is_recording = false;
     cmd->bound_pipeline = NULL;
-    memset(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
-    memset(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
-    memset(cmd->bound_buffer_sizes, 0, sizeof(cmd->bound_buffer_sizes));
     memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
     memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
     memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
@@ -509,35 +471,12 @@ static bool md_vk_create_instance(md_gpu_device* out_dev) {
 }
 
 static bool md_vk_create_device(md_gpu_device* out_dev) {
-    // Require sync2 for sane barrier implementation.
-    // Use VK_KHR_synchronization2 extension if Vulkan < 1.3 (but we request 1.3 above).
-    uint32_t ext_count = 0;
-    if (!md_vk_check(vkEnumerateDeviceExtensionProperties(out_dev->physical_device, NULL, &ext_count, NULL), "vkEnumerateDeviceExtensionProperties(count)")) return false;
-    VkExtensionProperties* exts = NULL;
-    if (ext_count) {
-        exts = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * ext_count);
-        if (!exts) return false;
-        if (!md_vk_check(vkEnumerateDeviceExtensionProperties(out_dev->physical_device, NULL, &ext_count, exts), "vkEnumerateDeviceExtensionProperties(list)")) {
-            free(exts);
-            return false;
-        }
-    }
-
-    const bool has_sync2 = (exts && md_vk_has_extension(ext_count, exts, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME));
-    free(exts);
-
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {0};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     qci.queueFamilyIndex = out_dev->compute_queue_family;
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
-
-    const char* dev_exts[8];
-    uint32_t dev_ext_count = 0;
-    if (has_sync2) {
-        dev_exts[dev_ext_count++] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
-    }
 
     VkPhysicalDeviceVulkan12Features f12 = {0};
     f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -557,8 +496,6 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = dev_ext_count;
-    dci.ppEnabledExtensionNames = (dev_ext_count ? dev_exts : NULL);
     dci.pNext = &feats2;
 
     if (!md_vk_check(vkCreateDevice(out_dev->physical_device, &dci, NULL, &out_dev->device), "vkCreateDevice")) return false;
@@ -598,41 +535,32 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     }
     q->free_count = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
 
-    // Create descriptor set layout: buffers, storage images, sampled images, and samplers occupy separate Vulkan binding ranges.
-    VkDescriptorSetLayoutBinding bindings[4 * MD_GPU_MAX_BIND_SLOTS];
-    for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
-        bindings[i].binding = i;
-        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[i].pImmutableSamplers = NULL;
-
-        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].binding = MD_GPU_STORAGE_IMAGE_BINDING_BASE + i;
-        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].descriptorCount = 1;
-        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[MD_GPU_STORAGE_IMAGE_BINDING_BASE + i].pImmutableSamplers = NULL;
-
-        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].binding = MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i;
-        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].descriptorCount = 1;
-        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i].pImmutableSamplers = NULL;
-
-        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].binding = MD_GPU_SAMPLER_BINDING_BASE + i;
-        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].descriptorCount = 1;
-        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[MD_GPU_SAMPLER_BINDING_BASE + i].pImmutableSamplers = NULL;
+    // Create three descriptor set layouts, one per resource category:
+    //   set 0 = storage images, set 1 = sampled images, set 2 = samplers
+    {
+        static const VkDescriptorType set_types[MD_GPU_DESC_SET_COUNT] = {
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            VK_DESCRIPTOR_TYPE_SAMPLER,
+        };
+        VkDescriptorSetLayoutBinding slot_bindings[MD_GPU_MAX_BIND_SLOTS];
+        for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s) {
+            for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
+                slot_bindings[i].binding            = i;
+                slot_bindings[i].descriptorType     = set_types[s];
+                slot_bindings[i].descriptorCount    = 1;
+                slot_bindings[i].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
+                slot_bindings[i].pImmutableSamplers = NULL;
+            }
+            VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
+            dsl_ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            dsl_ci.bindingCount = MD_GPU_MAX_BIND_SLOTS;
+            dsl_ci.pBindings    = slot_bindings;
+            if (!md_vk_check(vkCreateDescriptorSetLayout(out_dev->device, &dsl_ci, NULL, &out_dev->descriptor_set_layouts[s]), "vkCreateDescriptorSetLayout")) return false;
+        }
     }
 
-    VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
-    dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dsl_ci.bindingCount = 4 * MD_GPU_MAX_BIND_SLOTS;
-    dsl_ci.pBindings = bindings;
-    if (!md_vk_check(vkCreateDescriptorSetLayout(out_dev->device, &dsl_ci, NULL, &out_dev->descriptor_set_layout), "vkCreateDescriptorSetLayout")) return false;
-
-    // Create pipeline layout with push constants
+    // Create pipeline layout with all three sets and push constants
     VkPushConstantRange push_range = {0};
     push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push_range.offset = 0;
@@ -640,28 +568,26 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     VkPipelineLayoutCreateInfo pl_ci = {0};
     pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pl_ci.setLayoutCount = 1;
-    pl_ci.pSetLayouts = &out_dev->descriptor_set_layout;
+    pl_ci.setLayoutCount = MD_GPU_DESC_SET_COUNT;
+    pl_ci.pSetLayouts = out_dev->descriptor_set_layouts;
     pl_ci.pushConstantRangeCount = 1;
     pl_ci.pPushConstantRanges = &push_range;
     if (!md_vk_check(vkCreatePipelineLayout(out_dev->device, &pl_ci, NULL, &out_dev->pipeline_layout), "vkCreatePipelineLayout")) return false;
 
-    // Create descriptor pool
-    VkDescriptorPoolSize pool_sizes[4];
-    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    // Create descriptor pool — 3 sets per dispatch slot (storage images, sampled images, samplers)
+    VkDescriptorPoolSize pool_sizes[3];
+    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     pool_sizes[0].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
-    pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    pool_sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     pool_sizes[1].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
-    pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
     pool_sizes[2].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
-    pool_sizes[3].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-    pool_sizes[3].descriptorCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_MAX_BIND_SLOTS;
 
     VkDescriptorPoolCreateInfo dp_ci = {0};
     dp_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dp_ci.flags = 0; /* no FREE_DESCRIPTOR_SET_BIT; sets are pre-allocated and reused */
-    dp_ci.maxSets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
-    dp_ci.poolSizeCount = 4;
+    dp_ci.maxSets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD * MD_GPU_DESC_SET_COUNT;
+    dp_ci.poolSizeCount = 3;
     dp_ci.pPoolSizes = pool_sizes;
     if (!md_vk_check(vkCreateDescriptorPool(out_dev->device, &dp_ci, NULL, &out_dev->descriptor_pool), "vkCreateDescriptorPool")) return false;
 
@@ -677,13 +603,17 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     // Pre-allocate all descriptor sets for every command buffer slot so they can be
     // reused without per-submission alloc/free (vkUpdateDescriptorSets overwrites in-place).
+    // Each dispatch slot gets MD_GPU_DESC_SET_COUNT sets (one per resource category).
     {
-        const uint32_t total_sets = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
+        const uint32_t dispatches_total = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD;
+        const uint32_t total_sets = dispatches_total * MD_GPU_DESC_SET_COUNT;
         VkDescriptorSetLayout* set_layouts = (VkDescriptorSetLayout*)malloc(total_sets * sizeof(VkDescriptorSetLayout));
         VkDescriptorSet*       all_sets    = (VkDescriptorSet*)      malloc(total_sets * sizeof(VkDescriptorSet));
         if (!set_layouts || !all_sets) { free(set_layouts); free(all_sets); return false; }
-        for (uint32_t i = 0; i < total_sets; ++i)
-            set_layouts[i] = out_dev->descriptor_set_layout;
+        for (uint32_t i = 0; i < dispatches_total; ++i) {
+            for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s)
+                set_layouts[i * MD_GPU_DESC_SET_COUNT + s] = out_dev->descriptor_set_layouts[s];
+        }
         VkDescriptorSetAllocateInfo all_ds_ai = {0};
         all_ds_ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         all_ds_ai.descriptorPool = out_dev->descriptor_pool;
@@ -692,8 +622,11 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
         bool ok = md_vk_check(vkAllocateDescriptorSets(out_dev->device, &all_ds_ai, all_sets), "vkAllocateDescriptorSets (pre-alloc)");
         if (ok) {
             for (uint32_t i = 0; i < MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE; ++i) {
-                for (uint32_t j = 0; j < MD_GPU_VK_MAX_DISPATCHES_PER_CMD; ++j)
-                    q->cmd_wrappers[i].dispatch_sets[j] = all_sets[i * MD_GPU_VK_MAX_DISPATCHES_PER_CMD + j];
+                for (uint32_t j = 0; j < MD_GPU_VK_MAX_DISPATCHES_PER_CMD; ++j) {
+                    const uint32_t base = (i * MD_GPU_VK_MAX_DISPATCHES_PER_CMD + j) * MD_GPU_DESC_SET_COUNT;
+                    for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s)
+                        q->cmd_wrappers[i].dispatch_sets[j][s] = all_sets[base + s];
+                }
             }
         }
         free(set_layouts);
@@ -744,7 +677,9 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
         if (dev->event_timeline) vkDestroySemaphore(dev->device, dev->event_timeline, NULL);
         if (dev->descriptor_pool) vkDestroyDescriptorPool(dev->device, dev->descriptor_pool, NULL);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
-        if (dev->descriptor_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layout, NULL);
+        for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s) {
+            if (dev->descriptor_set_layouts[s]) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layouts[s], NULL);
+        }
         if (dev->compute_queue.command_pool) vkDestroyCommandPool(dev->device, dev->compute_queue.command_pool, NULL);
         vkDestroyDevice(dev->device, NULL);
     }
@@ -1210,47 +1145,10 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     return (md_gpu_command_buffer_t)cmd;
 }
 
-static void md_vk_transition_image(VkCommandBuffer vk_cmd, md_gpu_image* img, VkImageLayout new_layout, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-    if (img->layout == new_layout) return;
-
-    VkImageMemoryBarrier2 barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = src_stage;
-    barrier.srcAccessMask = src_access;
-    barrier.dstStageMask = dst_stage;
-    barrier.dstAccessMask = dst_access;
-    barrier.oldLayout = img->layout;
-    barrier.newLayout = new_layout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = img->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(vk_cmd, &dep);
-    img->layout = new_layout;
-}
-
 static void md_vk_apply_cmd_declared_bindings(md_gpu_command_buffer* cmd) {
-    memset(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
-    memset(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
-    memset(cmd->bound_buffer_sizes, 0, sizeof(cmd->bound_buffer_sizes));
     memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
     memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
     memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
-
-    const uint32_t buffer_count = cmd->cmd_buffer_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_buffer_count : MD_GPU_MAX_BIND_SLOTS;
-    for (uint32_t i = 0; i < buffer_count; ++i) {
-        cmd->bound_buffers[i] = cmd->cmd_buffers[i].buffer;
-    }
 
     const uint32_t image_count = cmd->cmd_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_image_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < image_count; ++i) {
@@ -1264,95 +1162,72 @@ static void md_vk_apply_cmd_declared_bindings(md_gpu_command_buffer* cmd) {
     }
 }
 
-// Helper: flush current bound state into the given descriptor set
-static void md_vk_flush_descriptor_set(md_gpu_command_buffer* cmd, VkDescriptorSet ds) {
+// Helper: flush current bound state into the four per-category descriptor sets
+static void md_vk_flush_descriptor_sets(md_gpu_command_buffer* cmd, VkDescriptorSet sets[MD_GPU_DESC_SET_COUNT]) {
     md_gpu_device* dev = cmd->dev;
 
-    VkWriteDescriptorSet writes[4 * MD_GPU_MAX_BIND_SLOTS];
-    VkDescriptorBufferInfo buffer_infos[MD_GPU_MAX_BIND_SLOTS];
+    VkWriteDescriptorSet writes[3 * MD_GPU_MAX_BIND_SLOTS];
     VkDescriptorImageInfo storage_image_infos[MD_GPU_MAX_BIND_SLOTS];
     VkDescriptorImageInfo sampled_image_infos[MD_GPU_MAX_BIND_SLOTS];
     VkDescriptorImageInfo sampler_infos[MD_GPU_MAX_BIND_SLOTS];
     uint32_t write_count = 0;
 
     for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
-        if (cmd->bound_buffers[i]) {
-            md_gpu_buffer* buf = (md_gpu_buffer*)cmd->bound_buffers[i];
-            buffer_infos[i].buffer = buf->buffer;
-            buffer_infos[i].offset = cmd->bound_buffer_offsets[i];
-            buffer_infos[i].range = (cmd->bound_buffer_sizes[i] > 0) ? cmd->bound_buffer_sizes[i] : VK_WHOLE_SIZE;
-
-            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].pNext = NULL;
-            writes[write_count].dstSet = ds;
-            writes[write_count].dstBinding = i;
-            writes[write_count].dstArrayElement = 0;
-            writes[write_count].descriptorCount = 1;
-            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[write_count].pBufferInfo = &buffer_infos[i];
-            writes[write_count].pImageInfo = NULL;
-            writes[write_count].pTexelBufferView = NULL;
-            write_count++;
-        }
-
         if (cmd->bound_images[i]) {
             md_gpu_image* img = (md_gpu_image*)cmd->bound_images[i];
-
             storage_image_infos[i].sampler = VK_NULL_HANDLE;
             storage_image_infos[i].imageView = img->view;
             storage_image_infos[i].imageLayout = img->layout;
 
-            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].pNext = NULL;
-            writes[write_count].dstSet = ds;
-            writes[write_count].dstBinding = MD_GPU_STORAGE_IMAGE_BINDING_BASE + i;
-            writes[write_count].dstArrayElement = 0;
-            writes[write_count].descriptorCount = 1;
-            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            writes[write_count].pBufferInfo = NULL;
-            writes[write_count].pImageInfo = &storage_image_infos[i];
-            writes[write_count].pTexelBufferView = NULL;
-            write_count++;
+            VkWriteDescriptorSet* w = &writes[write_count++];
+            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w->pNext = NULL;
+            w->dstSet = sets[MD_GPU_DESC_SET_STORAGE_IMAGES];
+            w->dstBinding = i;
+            w->dstArrayElement = 0;
+            w->descriptorCount = 1;
+            w->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            w->pBufferInfo = NULL;
+            w->pImageInfo = &storage_image_infos[i];
+            w->pTexelBufferView = NULL;
         }
 
         if (cmd->bound_sampled_images[i]) {
             md_gpu_image* img = (md_gpu_image*)cmd->bound_sampled_images[i];
-
             sampled_image_infos[i].sampler = VK_NULL_HANDLE;
             sampled_image_infos[i].imageView = img->view;
             sampled_image_infos[i].imageLayout = img->layout;
 
-            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].pNext = NULL;
-            writes[write_count].dstSet = ds;
-            writes[write_count].dstBinding = MD_GPU_SAMPLED_IMAGE_BINDING_BASE + i;
-            writes[write_count].dstArrayElement = 0;
-            writes[write_count].descriptorCount = 1;
-            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            writes[write_count].pBufferInfo = NULL;
-            writes[write_count].pImageInfo = &sampled_image_infos[i];
-            writes[write_count].pTexelBufferView = NULL;
-            write_count++;
+            VkWriteDescriptorSet* w = &writes[write_count++];
+            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w->pNext = NULL;
+            w->dstSet = sets[MD_GPU_DESC_SET_SAMPLED_IMAGES];
+            w->dstBinding = i;
+            w->dstArrayElement = 0;
+            w->descriptorCount = 1;
+            w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            w->pBufferInfo = NULL;
+            w->pImageInfo = &sampled_image_infos[i];
+            w->pTexelBufferView = NULL;
         }
 
         if (cmd->bound_samplers[i]) {
             md_gpu_sampler* sampler = (md_gpu_sampler*)cmd->bound_samplers[i];
-
             sampler_infos[i].sampler = sampler->sampler;
             sampler_infos[i].imageView = VK_NULL_HANDLE;
             sampler_infos[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].pNext = NULL;
-            writes[write_count].dstSet = ds;
-            writes[write_count].dstBinding = MD_GPU_SAMPLER_BINDING_BASE + i;
-            writes[write_count].dstArrayElement = 0;
-            writes[write_count].descriptorCount = 1;
-            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-            writes[write_count].pBufferInfo = NULL;
-            writes[write_count].pImageInfo = &sampler_infos[i];
-            writes[write_count].pTexelBufferView = NULL;
-            write_count++;
+            VkWriteDescriptorSet* w = &writes[write_count++];
+            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w->pNext = NULL;
+            w->dstSet = sets[MD_GPU_DESC_SET_SAMPLERS];
+            w->dstBinding = i;
+            w->dstArrayElement = 0;
+            w->descriptorCount = 1;
+            w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            w->pBufferInfo = NULL;
+            w->pImageInfo = &sampler_infos[i];
+            w->pTexelBufferView = NULL;
         }
     }
 
@@ -1494,7 +1369,7 @@ void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
     }
 }
 
-void md_gpu_cmd_wait_event(md_gpu_cmd_t cmd, md_gpu_event_t event) {
+void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event) {
     (void)cmd;
     (void)event;
 }
@@ -1502,7 +1377,6 @@ void md_gpu_cmd_wait_event(md_gpu_cmd_t cmd, md_gpu_event_t event) {
 void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
     if (!cmd_handle || !buffer || usage == 0) return;
     md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
-    md_vk_cmd_merge_buffer_usage(cmd, buffer, usage);
     md_vk_ensure_buffer_sync(cmd, (md_gpu_buffer*)buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
 }
 
@@ -1552,10 +1426,14 @@ void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, uint32_t group_count_x, uint32
         vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)c->push_constant_size, c->push_constants);
     }
 
-    VkDescriptorSet ds = c->dispatch_sets[c->dispatch_count];
-    md_vk_flush_descriptor_set(c, ds);
-    vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &ds, 0, NULL);
+    md_vk_flush_descriptor_sets(c, c->dispatch_sets[c->dispatch_count]);
+    vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, MD_GPU_DESC_SET_COUNT, c->dispatch_sets[c->dispatch_count], 0, NULL);
     vkCmdDispatch(c->vk_cmd, group_count_x, group_count_y, group_count_z);
+
+    /* Reset per-dispatch resource declarations so the next md_gpu_cmd_use_* calls
+       start from slot 0. Resource sync state lives on the handle objects and is not affected. */
+    c->cmd_image_count = 0;
+    c->cmd_sampled_resource_count = 0;
 
     c->dispatch_count++;
 }

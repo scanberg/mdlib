@@ -41,7 +41,7 @@ struct RootArgs {
 [[vk::push_constant]]
 ConstantBuffer<RootArgs> args;
 
-[[vk::binding(16)]] // image slot 0
+[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
 RWTexture3D<float> volumeTex;
 
 bool is_valid_voxel(int3 ijk) {

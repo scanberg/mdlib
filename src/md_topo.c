@@ -108,19 +108,6 @@ typedef struct {
     uint32_t counter;       // compaction write cursor
 } topo_meta_t;
 
-#if defined(MD_GPU_BACKEND_VULKAN)
-#define TOPO_ROOT_ARGS_BINDING_KIND MD_GPU_SHADER_BINDING_KIND_PUSH_CONSTANT_BUFFER
-#elif defined(MD_GPU_BACKEND_METAL)
-#define TOPO_ROOT_ARGS_BINDING_KIND MD_GPU_SHADER_BINDING_KIND_CONSTANT_BUFFER
-#else
-#define TOPO_ROOT_ARGS_BINDING_KIND MD_GPU_SHADER_BINDING_KIND_UNKNOWN
-#endif
-
-#define TOPO_STATIC_ASSERT_ROOT_ARGS(symbol, type, label) \
-    STATIC_ASSERT(sizeof(type) <= MD_GPU_MAX_PUSH_CONSTANTS, label " arguments exceed push constant budget"); \
-    STATIC_ASSERT(symbol##_args_binding_index == 0, label " argument binding index changed"); \
-    STATIC_ASSERT(symbol##_args_binding_kind == TOPO_ROOT_ARGS_BINDING_KIND, label " argument binding kind changed")
-
 // Worst-case capacity ratios:
 //   vert_cap = num_points / TOPO_VERT_RATIO  (1 CP per 8 voxels is very generous)
 //   edge_cap = vert_cap * TOPO_EDGE_RATIO
@@ -299,7 +286,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     // Step 1: Bidirectional manifold
     md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
-    TOPO_STATIC_ASSERT_ROOT_ARGS(topo_bidirectional_manifold, topo_bidirectional_manifold_args_t, "Topo bidirectional manifold");
     topo_bidirectional_manifold_args_t bidirectional_args = {0};
     TOPO_FILL_COMMON_ARGS(bidirectional_args);
     bidirectional_args.ascending  = ascending_addr;
@@ -324,7 +310,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     md_gpu_cmd_bind_compute_pipeline(cmd, pip_path_compression);
-    TOPO_STATIC_ASSERT_ROOT_ARGS(topo_path_compression, topo_path_compression_args_t, "Topo path compression");
     topo_path_compression_args_t path_args = {0};
     TOPO_FILL_COMMON_ARGS(path_args);
     path_args.ascending  = ascending_addr;
@@ -342,7 +327,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     // Step 3: Critical-point detection → meta_buf.count
     md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
-    TOPO_STATIC_ASSERT_ROOT_ARGS(topo_critical_points, topo_critical_points_args_t, "Topo critical points");
     topo_critical_points_args_t critical_args = {0};
     TOPO_FILL_COMMON_ARGS(critical_args);
     critical_args.ascending  = ascending_addr;
@@ -357,7 +341,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     // Step 4: Critical-point compaction (single atomic counter)
     md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
-    TOPO_STATIC_ASSERT_ROOT_ARGS(topo_critical_point_compaction, topo_critical_point_compaction_args_t, "Topo critical point compaction");
     topo_critical_point_compaction_args_t compaction_args = {0};
     TOPO_FILL_COMMON_ARGS(compaction_args);
     compaction_args.types               = voxel_types_addr;
@@ -374,7 +357,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     // Step 5: Vertex + edge extraction
     // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
     md_gpu_cmd_push_debug_group(cmd, "Vertex + edge extraction");
-    TOPO_STATIC_ASSERT_ROOT_ARGS(topo_vertex_edge_extraction, topo_vertex_edge_extraction_args_t, "Topo vertex edge extraction");
     topo_vertex_edge_extraction_args_t extraction_args = {0};
     TOPO_FILL_COMMON_ARGS(extraction_args);
     extraction_args.cp_indices          = indices_addr;

@@ -11,31 +11,32 @@
 
 /* Limits are defined in md_gpu.h */
 
-#define MD_GPU_PASS_HISTORY_SIZE 256
+#define MD_GPU_EVENT_HISTORY_SIZE 256
+#define MD_GPU_MAX_BIND_SLOTS 16
 
 typedef struct md_gpu_queue* md_gpu_queue_t;
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
-typedef struct md_gpu_pass_buffer_usage_t {
+typedef struct md_gpu_cmd_buffer_usage_t {
     md_gpu_buffer_t buffer;
     gpu_usage_flags_t usage;
-} md_gpu_pass_buffer_usage_t;
+} md_gpu_cmd_buffer_usage_t;
 
-typedef struct md_gpu_pass_image_usage_t {
+typedef struct md_gpu_cmd_image_usage_t {
     md_gpu_image_t image;
     gpu_usage_flags_t usage;
     md_gpu_image_region_t region;
-} md_gpu_pass_image_usage_t;
+} md_gpu_cmd_image_usage_t;
 
-typedef struct md_gpu_pass_sampled_resource_usage_t {
+typedef struct md_gpu_cmd_sampled_resource_usage_t {
     md_gpu_image_t image;
     md_gpu_sampler_t sampler;
     gpu_usage_flags_t usage;
-} md_gpu_pass_sampled_resource_usage_t;
+} md_gpu_cmd_sampled_resource_usage_t;
 
-struct md_gpu_pass_record {
-    uint64_t id;
-    id<MTLCommandBuffer> cmd;
+struct md_gpu_event_record {
+    uint64_t value;
+    id<MTLCommandBuffer> mtl_cmd;
 };
 
 /* =============================
@@ -53,9 +54,9 @@ struct md_gpu_device {
 
     struct md_gpu_queue compute_queue;
 
-    uint64_t next_pass_id;
-    uint32_t pass_record_head;
-    struct md_gpu_pass_record pass_records[MD_GPU_PASS_HISTORY_SIZE];
+    uint64_t next_event_id;
+    uint32_t event_record_head;
+    struct md_gpu_event_record event_records[MD_GPU_EVENT_HISTORY_SIZE];
 };
 
 struct md_gpu_buffer {
@@ -97,17 +98,17 @@ struct md_gpu_command_buffer {
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t  push_constant_size;
 
-    md_gpu_pass_buffer_usage_t* pass_buffers;
-    uint32_t pass_buffer_count;
-    md_gpu_pass_image_usage_t* pass_images;
-    uint32_t pass_image_count;
-    md_gpu_pass_sampled_resource_usage_t* pass_sampled_resources;
-    uint32_t pass_sampled_resource_count;
+    md_gpu_cmd_buffer_usage_t cmd_buffers[MD_GPU_MAX_BIND_SLOTS];
+    uint32_t cmd_buffer_count;
+    md_gpu_cmd_image_usage_t cmd_images[MD_GPU_MAX_BIND_SLOTS];
+    uint32_t cmd_image_count;
+    md_gpu_cmd_sampled_resource_usage_t cmd_sampled_resources[MD_GPU_MAX_BIND_SLOTS];
+    uint32_t cmd_sampled_resource_count;
 
     struct md_gpu_command_buffer* next_free;
 };
 
-struct md_gpu_pass {
+struct md_gpu_cmd {
     struct md_gpu_queue* queue;
     struct md_gpu_command_buffer* cmd;
     bool pushed_debug_group;
@@ -160,68 +161,56 @@ static inline uint32_t md_gpu_format_bytes_per_pixel(md_gpu_image_format_t fmt) 
     }
 }
 
-static bool mtl_pass_merge_buffer_usage(struct md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
+static bool mtl_cmd_merge_buffer_usage(struct md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
     if (!cmd || !buffer || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_buffer_count; ++i) {
-        if (cmd->pass_buffers[i].buffer == buffer) {
-            cmd->pass_buffers[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_buffer_count; ++i) {
+        if (cmd->cmd_buffers[i].buffer == buffer) {
+            cmd->cmd_buffers[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_buffer_count + 1;
-    md_gpu_pass_buffer_usage_t* items = (md_gpu_pass_buffer_usage_t*)realloc(cmd->pass_buffers, sizeof(md_gpu_pass_buffer_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->pass_buffers = items;
-    cmd->pass_buffers[cmd->pass_buffer_count].buffer = buffer;
-    cmd->pass_buffers[cmd->pass_buffer_count].usage = usage;
-    cmd->pass_buffer_count = new_count;
+    if (cmd->cmd_buffer_count >= MD_GPU_MAX_BIND_SLOTS) return false;
+    cmd->cmd_buffers[cmd->cmd_buffer_count].buffer = buffer;
+    cmd->cmd_buffers[cmd->cmd_buffer_count].usage = usage;
+    cmd->cmd_buffer_count++;
     return true;
 }
 
-static bool mtl_pass_merge_image_usage(struct md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
+static bool mtl_cmd_merge_image_usage(struct md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
     if (!cmd || !image || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_image_count; ++i) {
-        if (cmd->pass_images[i].image == image) {
-            cmd->pass_images[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_image_count; ++i) {
+        if (cmd->cmd_images[i].image == image) {
+            cmd->cmd_images[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_image_count + 1;
-    md_gpu_pass_image_usage_t* items = (md_gpu_pass_image_usage_t*)realloc(cmd->pass_images, sizeof(md_gpu_pass_image_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->pass_images = items;
-    cmd->pass_images[cmd->pass_image_count].image = image;
-    cmd->pass_images[cmd->pass_image_count].usage = usage;
-    MEMSET(&cmd->pass_images[cmd->pass_image_count].region, 0, sizeof(cmd->pass_images[cmd->pass_image_count].region));
-    cmd->pass_image_count = new_count;
+    if (cmd->cmd_image_count >= MD_GPU_MAX_BIND_SLOTS) return false;
+    cmd->cmd_images[cmd->cmd_image_count].image = image;
+    cmd->cmd_images[cmd->cmd_image_count].usage = usage;
+    MEMSET(&cmd->cmd_images[cmd->cmd_image_count].region, 0, sizeof(cmd->cmd_images[cmd->cmd_image_count].region));
+    cmd->cmd_image_count++;
     return true;
 }
 
-static bool mtl_pass_merge_sampled_resource_usage(struct md_gpu_command_buffer* cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
+static bool mtl_cmd_merge_sampled_resource_usage(struct md_gpu_command_buffer* cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
     if (!cmd || !image || usage == 0) return true;
 
-    for (uint32_t i = 0; i < cmd->pass_sampled_resource_count; ++i) {
-        if (cmd->pass_sampled_resources[i].image == image && cmd->pass_sampled_resources[i].sampler == sampler) {
-            cmd->pass_sampled_resources[i].usage |= usage;
+    for (uint32_t i = 0; i < cmd->cmd_sampled_resource_count; ++i) {
+        if (cmd->cmd_sampled_resources[i].image == image && cmd->cmd_sampled_resources[i].sampler == sampler) {
+            cmd->cmd_sampled_resources[i].usage |= usage;
             return true;
         }
     }
 
-    const uint32_t new_count = cmd->pass_sampled_resource_count + 1;
-    md_gpu_pass_sampled_resource_usage_t* items = (md_gpu_pass_sampled_resource_usage_t*)realloc(cmd->pass_sampled_resources, sizeof(md_gpu_pass_sampled_resource_usage_t) * new_count);
-    if (!items) return false;
-
-    cmd->pass_sampled_resources = items;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].image = image;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].sampler = sampler;
-    cmd->pass_sampled_resources[cmd->pass_sampled_resource_count].usage = usage;
-    cmd->pass_sampled_resource_count = new_count;
+    if (cmd->cmd_sampled_resource_count >= MD_GPU_MAX_BIND_SLOTS) return false;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].image = image;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].sampler = sampler;
+    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].usage = usage;
+    cmd->cmd_sampled_resource_count++;
     return true;
 }
 
@@ -240,15 +229,9 @@ static inline void cmd_reset(struct md_gpu_command_buffer* cmd) {
         [cmd->mtl_cmd release];
         cmd->mtl_cmd = nil;
     }
-    free(cmd->pass_buffers);
-    free(cmd->pass_images);
-    free(cmd->pass_sampled_resources);
-    cmd->pass_buffers = NULL;
-    cmd->pass_images = NULL;
-    cmd->pass_sampled_resources = NULL;
-    cmd->pass_buffer_count = 0;
-    cmd->pass_image_count = 0;
-    cmd->pass_sampled_resource_count = 0;
+    cmd->cmd_buffer_count = 0;
+    cmd->cmd_image_count = 0;
+    cmd->cmd_sampled_resource_count = 0;
     cmd->bound_pipeline = NULL;
     MEMSET(cmd->bound_buffers, 0, sizeof(cmd->bound_buffers));
     MEMSET(cmd->bound_buffer_offsets, 0, sizeof(cmd->bound_buffer_offsets));
@@ -274,13 +257,13 @@ md_gpu_device_t md_gpu_device_create(void) {
 }
 
 void md_gpu_device_destroy(md_gpu_device_t device) {
-    for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
-        if (device->pass_records[i].cmd) {
-            [device->pass_records[i].cmd waitUntilCompleted];
-            [device->pass_records[i].cmd release];
-            device->pass_records[i].cmd = nil;
+    for (uint32_t i = 0; i < MD_GPU_EVENT_HISTORY_SIZE; ++i) {
+        if (device->event_records[i].mtl_cmd) {
+            [device->event_records[i].mtl_cmd waitUntilCompleted];
+            [device->event_records[i].mtl_cmd release];
+            device->event_records[i].mtl_cmd = nil;
         }
-        device->pass_records[i].id = 0;
+        device->event_records[i].value = 0;
     }
 
     struct md_gpu_command_buffer* it = device->compute_queue.cmd_free_list;
@@ -517,41 +500,41 @@ static inline MTLResourceUsage mtl_resource_usage(gpu_usage_flags_t usage) {
     return mtl_usage ? mtl_usage : MTLResourceUsageRead;
 }
 
-static inline void use_pass_resources(struct md_gpu_command_buffer* cmd, id<MTLComputeCommandEncoder> enc) {
-    for (uint32_t i = 0; i < cmd->pass_buffer_count; ++i) {
-        md_gpu_pass_buffer_usage_t usage = cmd->pass_buffers[i];
+static inline void use_cmd_resources(struct md_gpu_command_buffer* cmd, id<MTLComputeCommandEncoder> enc) {
+    for (uint32_t i = 0; i < cmd->cmd_buffer_count; ++i) {
+        md_gpu_cmd_buffer_usage_t usage = cmd->cmd_buffers[i];
         if (usage.buffer) {
             [enc useResource:usage.buffer->buffer usage:mtl_resource_usage(usage.usage)];
         }
     }
-    for (uint32_t i = 0; i < cmd->pass_image_count; ++i) {
-        md_gpu_pass_image_usage_t usage = cmd->pass_images[i];
+    for (uint32_t i = 0; i < cmd->cmd_image_count; ++i) {
+        md_gpu_cmd_image_usage_t usage = cmd->cmd_images[i];
         if (usage.image) {
             [enc useResource:usage.image->texture usage:mtl_resource_usage(usage.usage)];
         }
     }
-    for (uint32_t i = 0; i < cmd->pass_sampled_resource_count; ++i) {
-        md_gpu_pass_sampled_resource_usage_t usage = cmd->pass_sampled_resources[i];
+    for (uint32_t i = 0; i < cmd->cmd_sampled_resource_count; ++i) {
+        md_gpu_cmd_sampled_resource_usage_t usage = cmd->cmd_sampled_resources[i];
         if (usage.image) {
             [enc useResource:usage.image->texture usage:MTLResourceUsageRead];
         }
     }
 }
 
-static inline void apply_pass_declared_bindings(struct md_gpu_command_buffer* cmd) {
+static inline void apply_cmd_declared_bindings(struct md_gpu_command_buffer* cmd) {
     MEMSET(cmd->bound_images, 0, sizeof(cmd->bound_images));
     MEMSET(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
     MEMSET(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
 
-    const uint32_t image_count = cmd->pass_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->pass_image_count : MD_GPU_MAX_BIND_SLOTS;
+    const uint32_t image_count = cmd->cmd_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_image_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < image_count; ++i) {
-        cmd->bound_images[i] = cmd->pass_images[i].image;
+        cmd->bound_images[i] = cmd->cmd_images[i].image;
     }
 
-    const uint32_t sampled_resource_count = cmd->pass_sampled_resource_count < MD_GPU_MAX_BIND_SLOTS ? cmd->pass_sampled_resource_count : MD_GPU_MAX_BIND_SLOTS;
+    const uint32_t sampled_resource_count = cmd->cmd_sampled_resource_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_sampled_resource_count : MD_GPU_MAX_BIND_SLOTS;
     for (uint32_t i = 0; i < sampled_resource_count; ++i) {
-        cmd->bound_sampled_images[i] = cmd->pass_sampled_resources[i].image;
-        cmd->bound_samplers[i] = cmd->pass_sampled_resources[i].sampler;
+        cmd->bound_sampled_images[i] = cmd->cmd_sampled_resources[i].image;
+        cmd->bound_samplers[i] = cmd->cmd_sampled_resources[i].sampler;
     }
 }
 
@@ -600,19 +583,19 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     return cmd;
 }
 
-static void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
                                      md_gpu_compute_pipeline_t pipeline) {
     cmd->bound_pipeline = pipeline;
 }
 
-static void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_dispatch(md_gpu_command_buffer_t cmd,
                          uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     ASSERT(cmd->bound_pipeline);
     id<MTLComputeCommandEncoder> enc = ensure_compute_enc(cmd);
 
     [enc setComputePipelineState:cmd->bound_pipeline->pso];
-    apply_pass_declared_bindings(cmd);
-    use_pass_resources(cmd, enc);
+    apply_cmd_declared_bindings(cmd);
+    use_cmd_resources(cmd, enc);
 
     for (uint32_t s = 0; s < MD_GPU_MAX_BIND_SLOTS; ++s) {
         if (cmd->bound_buffers[s])
@@ -631,15 +614,21 @@ static void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
     MTLSize tg     = MTLSizeMake(cmd->bound_pipeline->tg_size[0], cmd->bound_pipeline->tg_size[1], cmd->bound_pipeline->tg_size[2]);
     MTLSize groups = MTLSizeMake(group_count_x, group_count_y, group_count_z);
     [enc dispatchThreadgroups:groups threadsPerThreadgroup:tg];
+
+    /* Reset per-dispatch resource declarations so the next md_gpu_cmd_use_* calls
+       start from slot 0. Resource hazard tracking for useResource: is re-issued per dispatch. */
+    cmd->cmd_buffer_count = 0;
+    cmd->cmd_image_count = 0;
+    cmd->cmd_sampled_resource_count = 0;
 }
 
-static void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+static void mtl_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
     (void)src_stage; (void)dst_stage;
     if (cmd->compute_enc)
         [cmd->compute_enc memoryBarrierWithScope:(MTLBarrierScopeBuffers | MTLBarrierScopeTextures)];
 }
 
-static void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
+static void mtl_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
     (void)src_stage; (void)dst_stage;
     ASSERT(buffer);
@@ -649,7 +638,7 @@ static void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer
     }
 }
 
-static void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
+static void mtl_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
     (void)src_stage; (void)dst_stage;
     ASSERT(image);
@@ -659,7 +648,7 @@ static void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t
     }
 }
 
-static void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t src,
                             md_gpu_buffer_t dst,
                             size_t size,
@@ -669,7 +658,7 @@ static void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
     [blit copyFromBuffer:src->buffer sourceOffset:src_offset toBuffer:dst->buffer destinationOffset:dst_offset size:size];
 }
 
-static void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
                                      md_gpu_buffer_t src_buffer,
                                      md_gpu_image_t dst_image) {
     id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
@@ -689,7 +678,7 @@ static void md_gpu_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
        destinationOrigin:MTLOriginMake(0,0,0)];
 }
 
-static void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
                                             md_gpu_image_t src_image,
                                             md_gpu_image_region_t src_region,
                                             md_gpu_buffer_t dst_buffer,
@@ -715,7 +704,7 @@ static void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
   destinationBytesPerImage:bytes_per_image];
 }
 
-static void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
                                             md_gpu_buffer_t src_buffer,
                                             size_t src_offset,
                                             md_gpu_image_t dst_image,
@@ -741,7 +730,7 @@ static void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
        destinationOrigin:origin];
 }
 
-static void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
+static void mtl_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t buffer,
                             size_t offset,
                             size_t size,
@@ -750,7 +739,7 @@ static void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
     [blit fillBuffer:buffer->buffer range:NSMakeRange(offset, size) value:value];
 }
 
-static void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
+static void mtl_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
     if (!cmd || !label) return;
     NSString* ns_label = [NSString stringWithUTF8String:label];
     if (cmd->compute_enc)
@@ -761,7 +750,7 @@ static void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char*
         [cmd->mtl_cmd pushDebugGroup:ns_label];
 }
 
-static void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
+static void mtl_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
     if (!cmd) return;
     if (cmd->compute_enc)
         [cmd->compute_enc popDebugGroup];
@@ -771,7 +760,7 @@ static void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
         [cmd->mtl_cmd popDebugGroup];
 }
 
-static id<MTLCommandBuffer> md_mtl_queue_submit_pass(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
+static id<MTLCommandBuffer> md_mtl_cmd_submit(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
     ASSERT(queue && cmd && cmd->mtl_cmd);
 
     end_compute_enc(cmd);
@@ -789,183 +778,187 @@ static id<MTLCommandBuffer> md_mtl_queue_submit_pass(struct md_gpu_queue* queue,
     return submitted;
 }
 
-static struct md_gpu_pass_record* md_mtl_pass_record_find(struct md_gpu_device* dev, md_gpu_pass_id_t id) {
-    if (!dev || id.value == 0) return NULL;
-    for (uint32_t i = 0; i < MD_GPU_PASS_HISTORY_SIZE; ++i) {
-        if (dev->pass_records[i].id == id.value) return &dev->pass_records[i];
+static struct md_gpu_event_record* md_mtl_event_record_find(struct md_gpu_device* dev, md_gpu_event_t event) {
+    if (!dev || event.value == 0) return NULL;
+    for (uint32_t i = 0; i < MD_GPU_EVENT_HISTORY_SIZE; ++i) {
+        if (dev->event_records[i].value == event.value) return &dev->event_records[i];
     }
     return NULL;
 }
 
-md_gpu_pass_t md_gpu_begin(md_gpu_device_t device, const char* label) {
+md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label) {
     if (!device) return NULL;
     struct md_gpu_device* dev = device;
     struct md_gpu_queue* queue = &dev->compute_queue;
 
-    struct md_gpu_pass* pass = (struct md_gpu_pass*)calloc(1, sizeof(struct md_gpu_pass));
-    if (!pass) return NULL;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)calloc(1, sizeof(struct md_gpu_cmd));
+    if (!c) return NULL;
 
-    pass->queue = queue;
-    pass->cmd = md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
-    if (!pass->cmd) {
-        free(pass);
+    c->queue = queue;
+    c->cmd = md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
+    if (!c->cmd) {
+        free(c);
         return NULL;
     }
 
     if (label) {
-        md_gpu_cmd_push_debug_group(pass->cmd, label);
-        pass->pushed_debug_group = true;
+        mtl_cmd_push_debug_group(c->cmd, label);
+        c->pushed_debug_group = true;
     }
-    return pass;
+    return (md_gpu_cmd_t)c;
 }
 
-md_gpu_pass_id_t md_gpu_end(md_gpu_pass_t pass) {
-    md_gpu_pass_id_t pass_id = {0};
-    if (!pass) return pass_id;
+md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd_handle) {
+    md_gpu_event_t event = {0};
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!c) return event;
 
-    struct md_gpu_queue* queue = pass->queue;
+    struct md_gpu_queue* queue = c->queue;
     struct md_gpu_device* dev = queue ? queue->dev : NULL;
-    if (!queue || !dev || !pass->cmd) {
-        free(pass);
-        return pass_id;
+    if (!queue || !dev || !c->cmd) {
+        free(c);
+        return event;
     }
 
-    if (pass->pushed_debug_group) {
-        md_gpu_cmd_pop_debug_group(pass->cmd);
+    if (c->pushed_debug_group) {
+        mtl_cmd_pop_debug_group(c->cmd);
     }
 
-    struct md_gpu_pass_record* record = &dev->pass_records[dev->pass_record_head++ % MD_GPU_PASS_HISTORY_SIZE];
-    if (record->cmd) {
-        [record->cmd waitUntilCompleted];
-        [record->cmd release];
+    struct md_gpu_event_record* record = &dev->event_records[dev->event_record_head++ % MD_GPU_EVENT_HISTORY_SIZE];
+    if (record->mtl_cmd) {
+        [record->mtl_cmd waitUntilCompleted];
+        [record->mtl_cmd release];
     }
-    record->id = 0;
-    record->cmd = nil;
+    record->value = 0;
+    record->mtl_cmd = nil;
 
-    pass_id.value = ++dev->next_pass_id;
-    if (pass_id.value == 0) pass_id.value = ++dev->next_pass_id;
+    event.value = ++dev->next_event_id;
+    if (event.value == 0) event.value = ++dev->next_event_id;
 
-    id<MTLCommandBuffer> submitted = md_mtl_queue_submit_pass(queue, pass->cmd);
+    id<MTLCommandBuffer> submitted = md_mtl_cmd_submit(queue, c->cmd);
     if (submitted) {
-        record->id = pass_id.value;
-        record->cmd = submitted;
+        record->value = event.value;
+        record->mtl_cmd = submitted;
     } else {
-        pass_id.value = 0;
+        event.value = 0;
     }
 
-    free(pass);
-    return pass_id;
+    free(c);
+    return event;
 }
 
-bool md_gpu_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id) {
-    if (!device || id.value == 0) return true;
-    struct md_gpu_pass_record* record = md_mtl_pass_record_find(device, id);
-    if (!record || !record->cmd) return true;
-    MTLCommandBufferStatus s = record->cmd.status;
+bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event) {
+    if (!device || event.value == 0) return true;
+    struct md_gpu_event_record* record = md_mtl_event_record_find(device, event);
+    if (!record || !record->mtl_cmd) return true;
+    MTLCommandBufferStatus s = record->mtl_cmd.status;
     return s == MTLCommandBufferStatusCompleted || s == MTLCommandBufferStatusError;
 }
 
-void md_gpu_wait(md_gpu_device_t device, md_gpu_pass_id_t id) {
-    if (!device || id.value == 0) return;
-    struct md_gpu_pass_record* record = md_mtl_pass_record_find(device, id);
-    if (!record || !record->cmd) return;
+void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
+    if (!device || event.value == 0) return;
+    struct md_gpu_event_record* record = md_mtl_event_record_find(device, event);
+    if (!record || !record->mtl_cmd) return;
 
-    [record->cmd waitUntilCompleted];
-    [record->cmd release];
-    record->cmd = nil;
+    [record->mtl_cmd waitUntilCompleted];
+    [record->mtl_cmd release];
+    record->mtl_cmd = nil;
+    record->value = 0;
 }
 
-void md_gpu_wait_for(md_gpu_pass_t pass, md_gpu_pass_id_t id) {
-    (void)pass;
-    (void)id;
+void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event) {
+    /* Metal: single queue, submission order is preserved — no explicit fence needed. */
+    (void)cmd;
+    (void)event;
 }
 
-void md_gpu_use_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
-    if (!pass || !buffer || usage == 0) return;
-    mtl_pass_merge_buffer_usage(pass->cmd, buffer, usage);
+void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !buffer || usage == 0) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_merge_buffer_usage(c->cmd, buffer, usage);
 }
 
-void md_gpu_use_image(md_gpu_pass_t pass, md_gpu_image_t image, gpu_usage_flags_t usage) {
-    if (!pass || !image || usage == 0) return;
-    mtl_pass_merge_image_usage(pass->cmd, image, usage);
+void md_gpu_cmd_use_image(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !image || usage == 0) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_merge_image_usage(c->cmd, image, usage);
 }
 
-void md_gpu_use_sampled_resource(md_gpu_pass_t pass, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
-    if (!pass || !image) return;
-    mtl_pass_merge_sampled_resource_usage(pass->cmd, image, sampler, usage ? usage : GPU_USAGE_READ);
+void md_gpu_cmd_use_sampled_resource(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
+    if (!cmd_handle || !image) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_merge_sampled_resource_usage(c->cmd, image, sampler, usage ? usage : GPU_USAGE_READ);
 }
 
-void md_gpu_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline) {
-    if (!pass || !pipeline) return;
-    pass->cmd->bound_pipeline = pipeline;
+void md_gpu_cmd_bind_compute_pipeline(md_gpu_cmd_t cmd_handle, md_gpu_compute_pipeline_t pipeline) {
+    if (!cmd_handle || !pipeline) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_bind_compute_pipeline(c->cmd, pipeline);
 }
 
-void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size) {
-    if (!pass) return;
+void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
     if (root_args && root_args_size) {
         ASSERT(root_args_size <= MD_GPU_MAX_PUSH_CONSTANTS);
-        MEMCPY(pass->cmd->push_constants, root_args, root_args_size);
-        pass->cmd->push_constant_size = root_args_size;
+        MEMCPY(c->cmd->push_constants, root_args, root_args_size);
+        c->cmd->push_constant_size = root_args_size;
     }
-    md_gpu_cmd_dispatch(pass->cmd, group_count_x, group_count_y, group_count_z);
+    mtl_cmd_dispatch(c->cmd, group_count_x, group_count_y, group_count_z);
 }
 
-void md_gpu_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass) return;
-    md_gpu_cmd_barrier(pass->cmd, src_stage, dst_stage);
+void md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_barrier(c->cmd, src_stage, dst_stage);
 }
 
-void md_gpu_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
-                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass) return;
-    md_gpu_cmd_barrier_buffer(pass->cmd, buffer, src_stage, dst_stage);
+void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_push_debug_group(c->cmd, label);
 }
 
-void md_gpu_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
-                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!pass) return;
-    md_gpu_cmd_barrier_image(pass->cmd, image, src_stage, dst_stage);
+void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd_handle) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_pop_debug_group(c->cmd);
 }
 
-void md_gpu_push_debug_group(md_gpu_pass_t pass, const char* label) {
-    if (!pass) return;
-    md_gpu_cmd_push_debug_group(pass->cmd, label);
+void md_gpu_cmd_copy_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_copy_buffer(c->cmd, src, dst, size, src_offset, dst_offset);
 }
 
-void md_gpu_pop_debug_group(md_gpu_pass_t pass) {
-    if (!pass) return;
-    md_gpu_cmd_pop_debug_group(pass->cmd);
+void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_cmd_t cmd_handle,
+                                            md_gpu_image_t src_image,
+                                            md_gpu_image_region_t src_region,
+                                            md_gpu_buffer_t dst_buffer,
+                                            size_t dst_offset) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_copy_image_region_to_buffer(c->cmd, src_image, src_region, dst_buffer, dst_offset);
 }
 
-void md_gpu_copy_buffer(md_gpu_pass_t pass, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
-    if (!pass) return;
-    md_gpu_cmd_copy_buffer(pass->cmd, src, dst, size, src_offset, dst_offset);
+void md_gpu_cmd_copy_buffer_to_image(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_copy_buffer_to_image(c->cmd, src_buffer, dst_image);
 }
 
-void md_gpu_copy_image_region_to_buffer(md_gpu_pass_t pass,
-                                             md_gpu_image_t src_image,
-                                             md_gpu_image_region_t src_region,
-                                             md_gpu_buffer_t dst_buffer,
-                                             size_t dst_offset) {
-    if (!pass) return;
-    md_gpu_cmd_copy_image_region_to_buffer(pass->cmd, src_image, src_region, dst_buffer, dst_offset);
+void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_cmd_t cmd_handle,
+                                            md_gpu_buffer_t src_buffer,
+                                            size_t src_offset,
+                                            md_gpu_image_t dst_image,
+                                            md_gpu_image_region_t dst_region) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_copy_buffer_to_image_region(c->cmd, src_buffer, src_offset, dst_image, dst_region);
 }
 
-void md_gpu_copy_buffer_to_image(md_gpu_pass_t pass, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
-    if (!pass) return;
-    md_gpu_cmd_copy_buffer_to_image(pass->cmd, src_buffer, dst_image);
-}
-
-void md_gpu_copy_buffer_to_image_region(md_gpu_pass_t pass,
-                                             md_gpu_buffer_t src_buffer,
-                                             size_t src_offset,
-                                             md_gpu_image_t dst_image,
-                                             md_gpu_image_region_t dst_region) {
-    if (!pass) return;
-    md_gpu_cmd_copy_buffer_to_image_region(pass->cmd, src_buffer, src_offset, dst_image, dst_region);
-}
-
-void md_gpu_fill_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
-    if (!pass) return;
-    md_gpu_cmd_fill_buffer(pass->cmd, buffer, offset, size, value);
+void md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
+    if (!cmd_handle) return;
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    mtl_cmd_fill_buffer(c->cmd, buffer, offset, size, value);
 }
