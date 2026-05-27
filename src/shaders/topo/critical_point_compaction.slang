@@ -10,12 +10,6 @@
 #define MINIMUM      3
 #define JOIN_SADDLE  4
 
-struct UBO {
-    float4x4 index_to_world;
-    uint4 dims;
-    float scalar_threshold;
-};
-
 struct MetaData {
     uint32_t vertex_count;
     uint32_t edge_count;
@@ -24,39 +18,36 @@ struct MetaData {
     uint32_t counter;
 };
 
+struct RootArgs {
+    float4x4 index_to_world;
+    uint4 dims;
+    float scalar_threshold;
+
+    int* types;
+    uint* cp_indices;
+    MetaData* meta;
+    int* voxel_to_vertex_idx;
+    uint* vertex_types;
+};
+
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
-
-[[vk::binding(0)]]
-RWStructuredBuffer<int> types;           // read-only after critical_points pass
-
-[[vk::binding(1)]]
-RWStructuredBuffer<uint> cp_indices;     // output: voxel_id at each vertex index
-
-[[vk::binding(2)]]
-RWStructuredBuffer<MetaData> meta;        // meta[0].counter: single atomic write cursor
-
-[[vk::binding(3)]]
-RWStructuredBuffer<int> voxel_to_vertex_idx; // output: vertex index for each CP voxel (-1 = not a CP)
-
-[[vk::binding(4)]]
-RWStructuredBuffer<uint> vertex_types;   // output: per-vertex critical point type
+ConstantBuffer<RootArgs> args;
 
 [shader("compute")]
 [numthreads(8, 8, 8)]
 void main(uint3 gid : SV_DispatchThreadID) {
-    uint num_points = ubo.dims.x * ubo.dims.y * ubo.dims.z;
-    uint voxel_id = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
+    uint num_points = args.dims.x * args.dims.y * args.dims.z;
+    uint voxel_id = gid.x + gid.y * args.dims.x + gid.z * args.dims.x * args.dims.y;
     if (voxel_id >= num_points) return;
 
-    int type = types[voxel_id];
+    int type = args.types[voxel_id];
     if (type == REGULAR) return;
 
     uint vtx_idx;
-    InterlockedAdd(meta[0].counter, 1u, vtx_idx);
+    InterlockedAdd(args.meta[0].counter, 1u, vtx_idx);
 
-    cp_indices[vtx_idx]           = voxel_id;
-    vertex_types[vtx_idx]         = uint(type);
-    voxel_to_vertex_idx[voxel_id] = int(vtx_idx);
+    args.cp_indices[vtx_idx]           = voxel_id;
+    args.vertex_types[vtx_idx]         = uint(type);
+    args.voxel_to_vertex_idx[voxel_id] = int(vtx_idx);
 }
 

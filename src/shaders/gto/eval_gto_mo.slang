@@ -28,25 +28,26 @@ struct PGTO {
     uint  ijkl;
 };
 
-struct UBO {
+struct RootArgs {
     float4x4 world_to_model;  // world -> model space
     float4x4 index_to_world;  // grid index -> world
     float4   step;            // xyz = voxel spacing in model-space units
+    uint4    grid_dim;
     uint     num_cgtos;
     uint     num_rows;
     uint     mode;            // 0 = PSI (raw wavefunction), 1 = PSI_SQUARED (density)
     uint     operation;       // low bits = set/add/sub/max/min, high bits = transforms
+
+    uint*   cgto_atom_idx;
+    float*  cgto_r;
+    uint2*  cgto_off_len;
+    PGTO*   pgto;
+    float4* atom_xyz;
+    float*  coeffs;
 };
 
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
-
-[[vk::binding(0)]] StructuredBuffer<uint>   cgto_atom_idx;
-[[vk::binding(1)]] StructuredBuffer<float>  cgto_r;
-[[vk::binding(2)]] StructuredBuffer<uint2>  cgto_off_len;
-[[vk::binding(3)]] StructuredBuffer<PGTO>   pgto;
-[[vk::binding(4)]] StructuredBuffer<float4> atom_xyz;
-[[vk::binding(5)]] StructuredBuffer<float>  coeffs;   // float[num_rows][num_cgtos], row-major
+ConstantBuffer<RootArgs> args;
 
 [[vk::binding(16)]]  // image slot 0  (slot + MD_GPU_MAX_BIND_SLOTS)
 RWTexture3D<float> out_vol;
@@ -102,10 +103,10 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
 
         if (slot < num_cgtos) {
             cgto_idx = screened_cgtos[slot];
-            uint2 off_len = cgto_off_len[cgto_idx];
+            uint2 off_len = args.cgto_off_len[cgto_idx];
             src_beg = off_len.x;
             src_len = off_len.y;
-            center  = atom_xyz[cgto_atom_idx[cgto_idx]];
+            center  = args.atom_xyz[args.cgto_atom_idx[cgto_idx]];
         }
 
         tile_cgto_idx[tid]     = cgto_idx;
@@ -143,7 +144,7 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
         for (uint s = 1u; s <= (uint)TILE_SIZE; ++s) {
             ci = (tile_dst_pgto_beg[s] <= k) ? s : ci;
         }
-        PGTO p = pgto[tile_src_pgto_beg[ci] + (k - tile_dst_pgto_beg[ci])];
+        PGTO p = args.pgto[tile_src_pgto_beg[ci] + (k - tile_dst_pgto_beg[ci])];
         pgto_coeff_tile[k] = p.coeff;
         pgto_alpha_tile[k] = p.alpha;
         pgto_ijkl_tile[k]  = p.ijkl;
@@ -158,19 +159,21 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
     }
     GroupMemoryBarrierWithGroupSync();
 
-    float3 model_aabb_min = float3(gid * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
-    float3 model_aabb_max = float3((gid + uint3(1, 1, 1)) * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
+    bool active = all(dtid < args.grid_dim.xyz);
+
+    float3 model_aabb_min = float3(gid * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
+    float3 model_aabb_max = float3((gid + uint3(1, 1, 1)) * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
 
     // Stage 1: Screening - Prune CGTOs relevant for this workgroup region.
     // Wave-coalesced allocation: one LDS atomic per wave instead of per thread.
-    for (uint i = tid; i < ubo.num_cgtos; i += WG_SIZE) {
+    for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
         bool passed = false;
-        if (i < ubo.num_cgtos) {
-            float r = cgto_r[i];
+        if (i < args.num_cgtos) {
+            float r = args.cgto_r[i];
             if (r != 0.0) {
-                uint atom_idx = cgto_atom_idx[i];
-                float3 center = atom_xyz[atom_idx].xyz;
-                float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0)).xyz;
+                uint atom_idx = args.cgto_atom_idx[i];
+                float3 center = args.atom_xyz[atom_idx].xyz;
+                float3 model_xyz = mul(args.world_to_model, float4(center, 1.0)).xyz;
                 float r2 = r * r;
                 float3 d = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
                 passed = (dot(d, d) < r2);
@@ -198,12 +201,12 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
 
     uint num_cgtos = min(num_screened_cgtos, (uint)MAX_SCREENED);
     if (num_cgtos > 0) {
-        float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0f)).xyz;
+        float3 coord = mul(args.index_to_world, float4(float3(dtid), 1.0f)).xyz;
         uint   num_tiles = (num_screened_cgtos + (uint)TILE_SIZE - 1u) / (uint)TILE_SIZE;
 
         // MO-blocked contraction: reuse phi over a block of MO rows.
-        for (uint mo_base = 0u; mo_base < ubo.num_rows; mo_base += (uint)MO_BLOCK) {
-            uint mo_count = min((uint)MO_BLOCK, ubo.num_rows - mo_base);
+        for (uint mo_base = 0u; mo_base < args.num_rows; mo_base += (uint)MO_BLOCK) {
+            uint mo_count = min((uint)MO_BLOCK, args.num_rows - mo_base);
             float psi_block[MO_BLOCK] = {0.0f, 0.0f, 0.0f, 0.0f};
 
             for (uint tile = 0u; tile < num_tiles; ++tile) {
@@ -217,7 +220,7 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
                     uint ci       = work % (uint)TILE_SIZE;
                     uint cgto_idx = tile_cgto_idx[ci];
                     float c = (cgto_idx != INVALID_IDX)
-                            ? coeffs[(mo_base + mb) * ubo.num_cgtos + cgto_idx]
+                            ? args.coeffs[(mo_base + mb) * args.num_cgtos + cgto_idx]
                             : 0.0f;
                     coeff_tile[mb][ci] = c;
                 }
@@ -261,24 +264,29 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
                 GroupMemoryBarrierWithGroupSync();
             }
 
-            for (uint mb = 0u; mb < mo_count; ++mb) {
-                float psi = psi_block[mb];
-                result += (ubo.mode != 0u) ? psi * psi : psi;
+            if (active) {
+                for (uint mb = 0u; mb < mo_count; ++mb) {
+                    float psi = psi_block[mb];
+                    result += (args.mode != 0u) ? psi * psi : psi;
+                }
             }
         }
     }
 
-    if ((ubo.operation & OP_ABS) != 0u) {
-        result = abs(result);
-    }
+    if (active) {
+        if ((args.operation & OP_ABS) != 0u) {
+            result = abs(result);
+        }
 
-    switch (ubo.operation & OP_ACCUM_MASK) {
-        case OP_SET: break; // result is already the new value
-        case OP_ADD: result += out_vol[dtid]; break;
-        case OP_SUB: result = out_vol[dtid] - result; break;
-        case OP_MAX: result = max(result, out_vol[dtid]); break;
-        case OP_MIN: result = min(result, out_vol[dtid]); break;
-        default: break;  // invalid operation code, treat as OP_SET
+        switch (args.operation & OP_ACCUM_MASK) {
+            case OP_SET: break; // result is already the new value
+            case OP_ADD: result += out_vol[dtid]; break;
+            case OP_SUB: result = out_vol[dtid] - result; break;
+            case OP_MAX: result = max(result, out_vol[dtid]); break;
+            case OP_MIN: result = min(result, out_vol[dtid]); break;
+            default: break;  // invalid operation code, treat as OP_SET
+        }
+
+        out_vol[dtid] = result;
     }
-    out_vol[dtid] = result;
 }

@@ -234,10 +234,8 @@ if (MD_ENABLE_GPU)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
   include(cmake/CompileSlangShaders.cmake)
   if (MD_GPU_BACKEND STREQUAL "VULKAN")
-    list(APPEND GTO_SLANG_FILES src/shaders/gto/eval_gto_mo_root.slang)
     list(APPEND MD_DEFINES MD_GPU_BACKEND_VULKAN=1)
   elseif (MD_GPU_BACKEND STREQUAL "METAL")
-    list(APPEND GTO_SLANG_FILES src/shaders/gto/eval_gto_mo_root.slang)
     list(APPEND MD_DEFINES MD_GPU_BACKEND_METAL=1)
   endif()
   list(APPEND GEN_FILES ${GEN_DIR}/topo_gpu_shaders.inl)
@@ -440,6 +438,7 @@ target_include_directories(mdlib
   ext/xxhash/
 
   PRIVATE
+  ${GEN_DIR}
   gen/
   ext/fastlz/
   ext/dcd/

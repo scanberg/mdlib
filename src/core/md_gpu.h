@@ -7,7 +7,7 @@ Minimal, compute-focused GPU abstraction designed for:
 
 Design goals:
   - Explicit resource ownership
-  - Explicit synchronization (fences)
+    - Explicit synchronization (pass ids)
   - Async compute across frames
   - Copy-based readback / upload paths
   - C-style, flags-based, opaque handles
@@ -29,14 +29,11 @@ extern "C" {
 // =============================
 
 typedef struct md_gpu_device*           md_gpu_device_t;
-typedef struct md_gpu_queue*            md_gpu_queue_t;
-typedef struct md_gpu_command_buffer*   md_gpu_command_buffer_t;
 typedef struct md_gpu_pass*             md_gpu_pass_t;
 typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
 typedef struct md_gpu_image*            md_gpu_image_t;
 typedef struct md_gpu_sampler*          md_gpu_sampler_t;
-typedef struct md_gpu_fence*            md_gpu_fence_t;
 
 typedef struct md_gpu_pass_id_t {
     uint64_t value;
@@ -52,7 +49,7 @@ enum {
     MD_GPU_BUFFER_CPU_VISIBLE = 1 << 0,
 };
 
-// Pipeline stages for barrier synchronization, used with md_gpu_cmd_barrier*.
+// Pipeline stages for barrier synchronization, used with md_gpu_barrier*.
 // Specifying explicit src/dst stages lets the backend avoid a full pipeline stall
 // when only a subset of stages are involved.
 // On Metal, stage hints are accepted but ignored (resource-scoped barriers are already maximally granular).
@@ -138,35 +135,11 @@ typedef struct md_gpu_compute_pipeline_desc_t {
     uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
 } md_gpu_compute_pipeline_desc_t;
 
-typedef uint32_t md_gpu_pass_resource_usage_flags_t;
+typedef uint32_t gpu_usage_flags_t;
 enum {
-    MD_GPU_PASS_RESOURCE_READ         = 1 << 0,
-    MD_GPU_PASS_RESOURCE_WRITE        = 1 << 1,
-    MD_GPU_PASS_RESOURCE_TRANSFER_SRC = 1 << 2,
-    MD_GPU_PASS_RESOURCE_TRANSFER_DST = 1 << 3,
+    GPU_USAGE_READ  = 1 << 0,
+    GPU_USAGE_WRITE = 1 << 1,
 };
-
-typedef struct md_gpu_pass_buffer_usage_t {
-    md_gpu_buffer_t buffer;
-    md_gpu_pass_resource_usage_flags_t usage;
-} md_gpu_pass_buffer_usage_t;
-
-typedef struct md_gpu_pass_image_usage_t {
-    md_gpu_image_t image;
-    md_gpu_pass_resource_usage_flags_t usage;
-    md_gpu_image_region_t region; /* zero extent = full image */
-} md_gpu_pass_image_usage_t;
-
-typedef struct md_gpu_pass_desc_t {
-    const char* label;
-
-    const md_gpu_pass_buffer_usage_t* buffers;
-    uint32_t buffer_count;
-
-    const md_gpu_pass_image_usage_t* images;
-    uint32_t image_count;
-} md_gpu_pass_desc_t;
-
 
 // =============================
 // Device info / hints
@@ -189,17 +162,11 @@ typedef struct md_gpu_device_info_t {
 bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info);
 
 // =============================
-// Device / queue
+// Device
 // =============================
 
 md_gpu_device_t md_gpu_device_create(void);
 void            md_gpu_device_destroy(md_gpu_device_t device);
-
-// Returns a compute queue for use by the calling thread.
-// The implementation may return a unique queue per thread if available, otherwise a shared one.
-// The handle is owned by the device — no destroy required; the caller may cache and reuse it.
-// Note: submission may be internally serialized if the underlying queue is shared.
-md_gpu_queue_t  md_gpu_queue_acquire(md_gpu_device_t device);
 
 // =============================
 // Buffers
@@ -244,45 +211,41 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 // Passes
 // =============================
 // A pass is a transient recording scope. The caller records work between begin/end,
-// then receives a durable completion id from md_gpu_pass_end().
+// then receives a durable completion id from md_gpu_end().
 // v0 backends implement passes on top of the existing transient command buffer path;
 // future backends may batch, reorder, or map pass ids to timeline/shared events.
 // Queue selection is backend-owned; the v0 implementation records on the primary queue.
 
-md_gpu_pass_t md_gpu_pass_begin(md_gpu_device_t device, const md_gpu_pass_desc_t* desc);
-md_gpu_device_t md_gpu_pass_device(md_gpu_pass_t pass);
+md_gpu_pass_t md_gpu_begin(md_gpu_device_t device, const char* label);
 
 // Ends recording, submits the pass, and returns its completion id.
 // A zero id means submission failed.
-md_gpu_pass_id_t md_gpu_pass_end(md_gpu_pass_t pass);
+md_gpu_pass_id_t md_gpu_end(md_gpu_pass_t pass);
 
-bool md_gpu_pass_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id);
-void md_gpu_pass_wait(md_gpu_device_t device, md_gpu_pass_id_t id);
+bool md_gpu_is_complete(md_gpu_device_t device, md_gpu_pass_id_t id);
+void md_gpu_wait(md_gpu_device_t device, md_gpu_pass_id_t id);
 
 // Inserts a dependency on a previously ended pass. The initial compatibility
 // implementation may resolve this as a host wait; timeline/event backends can
 // lower it to a GPU-side stream/queue wait.
-void md_gpu_pass_wait_pass(md_gpu_pass_t pass, md_gpu_pass_id_t id);
+void md_gpu_wait_for(md_gpu_pass_t pass, md_gpu_pass_id_t id);
 
-void md_gpu_pass_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline);
-void md_gpu_pass_bind_buffer(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer);
-void md_gpu_pass_bind_buffer_range(md_gpu_pass_t pass, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size);
-void md_gpu_pass_bind_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image);
-void md_gpu_pass_bind_sampled_image(md_gpu_pass_t pass, uint32_t slot, md_gpu_image_t image);
-void md_gpu_pass_bind_sampler(md_gpu_pass_t pass, uint32_t slot, md_gpu_sampler_t sampler);
-void md_gpu_pass_push_constants(md_gpu_pass_t pass, const void* data, size_t size);
-void md_gpu_pass_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
+// Declare shader-visible resource usage within a recording scope.
+// These declarations are merged into the pass state and consumed by later
+// dispatches in the same pass. Copy/fill commands do not require md_gpu_use_*.
+void md_gpu_use_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer, gpu_usage_flags_t usage);
+void md_gpu_use_image(md_gpu_pass_t pass, md_gpu_image_t image, gpu_usage_flags_t usage);
+void md_gpu_use_sampled_resource(md_gpu_pass_t pass, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage);
 
-void md_gpu_pass_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-void md_gpu_pass_barrier_buffer(md_gpu_pass_t pass, md_gpu_buffer_t buffer,
-                                md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-void md_gpu_pass_barrier_image(md_gpu_pass_t pass, md_gpu_image_t image,
-                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+void md_gpu_bind_compute_pipeline(md_gpu_pass_t pass, md_gpu_compute_pipeline_t pipeline);
+void md_gpu_dispatch(md_gpu_pass_t pass, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size);
 
-void md_gpu_pass_push_debug_group(md_gpu_pass_t pass, const char* label);
-void md_gpu_pass_pop_debug_group(md_gpu_pass_t pass);
+void md_gpu_barrier(md_gpu_pass_t pass, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
-void md_gpu_pass_copy_buffer(
+void md_gpu_push_debug_group(md_gpu_pass_t pass, const char* label);
+void md_gpu_pop_debug_group(md_gpu_pass_t pass);
+
+void md_gpu_copy_buffer(
     md_gpu_pass_t pass,
     md_gpu_buffer_t src,
     md_gpu_buffer_t dst,
@@ -290,149 +253,31 @@ void md_gpu_pass_copy_buffer(
     size_t src_offset,
     size_t dst_offset);
 
-void md_gpu_pass_copy_image_region_to_buffer(
+void md_gpu_copy_image_region_to_buffer(
     md_gpu_pass_t pass,
     md_gpu_image_t src_image,
     md_gpu_image_region_t src_region,
     md_gpu_buffer_t dst_buffer,
     size_t dst_offset);
 
-void md_gpu_pass_copy_buffer_to_image(
+void md_gpu_copy_buffer_to_image(
     md_gpu_pass_t pass,
     md_gpu_buffer_t src_buffer,
     md_gpu_image_t dst_image);
 
-void md_gpu_pass_copy_buffer_to_image_region(
+void md_gpu_copy_buffer_to_image_region(
     md_gpu_pass_t pass,
     md_gpu_buffer_t src_buffer,
     size_t src_offset,
     md_gpu_image_t dst_image,
     md_gpu_image_region_t dst_region);
 
-void md_gpu_pass_fill_buffer(
+void md_gpu_fill_buffer(
     md_gpu_pass_t pass,
     md_gpu_buffer_t buffer,
     size_t offset,
     size_t size,
     uint8_t value);
-
-// =============================
-// Command buffers
-// =============================
-// Binding model:
-//   Binding slots share a single 0..N-1 index namespace for buffers, storage images, sampled images, and samplers.
-//   Push constants occupy a reserved slot (MD_GPU_PUSH_CONSTANTS_SLOT) and must not be used for explicit binds.
-//   Vulkan convention:
-//     buffers        at descriptor set 0, binding = slot;
-//     storage images at binding = slot + MD_GPU_STORAGE_IMAGE_BINDING_BASE;
-//     sampled images at binding = slot + MD_GPU_SAMPLED_IMAGE_BINDING_BASE;
-//     samplers       at binding = slot + MD_GPU_SAMPLER_BINDING_BASE.
-//   This avoids descriptor-type collisions since Vulkan cannot share a binding number between buffers and images,
-//   while Metal has separate hardware index spaces for buffers, textures, and samplers.
-//   Preferred pattern: pass GPU buffer device addresses via push constants using md_gpu_buffer_address()
-//   and rely on the bindless address path; explicit slot binds remain available for images and legacy shaders.
-
-// Acquire a transient command buffer from the queue's pool and begin recording.
-// md_gpu_cmd_* calls encode directly into the backend command buffer.
-// The command buffer is automatically recycled by md_gpu_queue_submit() and must not be used after that call.
-md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue);
-
-// Returns the device that owns the queue this command buffer was acquired from.
-md_gpu_device_t md_gpu_command_buffer_device(md_gpu_command_buffer_t cmd);
-
-void md_gpu_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd, md_gpu_compute_pipeline_t pipeline);
-void md_gpu_cmd_bind_buffer(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer);
-void md_gpu_cmd_bind_buffer_range(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_buffer_t buffer, size_t offset, size_t size);
-void md_gpu_cmd_bind_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image);
-void md_gpu_cmd_bind_sampled_image(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_image_t image);
-void md_gpu_cmd_bind_sampler(md_gpu_command_buffer_t cmd, uint32_t slot, md_gpu_sampler_t sampler);
-void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd, const void* data, size_t size);
-// Dispatch compute work. group_count_* map directly to Vulkan workgroup counts / Metal threadgroup counts.
-void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
-
-// Barrier model:
-//   md_gpu_cmd_barrier(): conservative global memory barrier covering all resources in the command buffer.
-//   md_gpu_cmd_barrier_buffer/image(): resource-scoped barrier. Guarantees all prior GPU writes to that
-//   resource are visible to all subsequent GPU accesses of that resource within this command buffer.
-//   Stage hints (src_stage / dst_stage) allow backends to narrow the stall scope; on Metal they are ignored.
-
-void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-
-// These will be removed once a fully bindless model is adopted.
-void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
-                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-
-void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
-                              md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
-
-// Debug markers — no-op on release builds or backends without debug support.
-// Groups may be nested. On Metal they map to pushDebugGroup/popDebugGroup on the active encoder;
-// on Vulkan they use VK_EXT_debug_utils when available.
-void md_gpu_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label);
-void md_gpu_cmd_pop_debug_group(md_gpu_command_buffer_t cmd);
-
-// =============================
-// Copy / readback
-// =============================
-
-void md_gpu_cmd_copy_buffer(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_buffer_t src,
-    md_gpu_buffer_t dst,
-    size_t size,
-    size_t src_offset,
-    size_t dst_offset);
-
-// Copy a subregion of src_image into dst_buffer at dst_offset bytes.
-// Texels are written tightly packed (row-major, no padding).
-// Pass a zero-initialized region (all extents zero) to copy the full image.
-void md_gpu_cmd_copy_image_region_to_buffer(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_image_t src_image,
-    md_gpu_image_region_t src_region,
-    md_gpu_buffer_t dst_buffer,
-    size_t dst_offset);
-
-// Copy the full src_buffer into dst_image.
-void md_gpu_cmd_copy_buffer_to_image(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_buffer_t src_buffer,
-    md_gpu_image_t dst_image);
-
-// Copy src_buffer at src_offset bytes into a subregion of dst_image.
-// Source data must be tightly packed (row-major, no padding).
-// Pass a zero-initialized region (all extents zero) to copy into the full image.
-void md_gpu_cmd_copy_buffer_to_image_region(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_buffer_t src_buffer,
-    size_t src_offset,
-    md_gpu_image_t dst_image,
-    md_gpu_image_region_t dst_region);
-
-// Byte-fill: writes value repeatedly across the specified byte range.
-void md_gpu_cmd_fill_buffer(
-    md_gpu_command_buffer_t cmd,
-    md_gpu_buffer_t buffer,
-    size_t offset,
-    size_t size,
-    uint8_t value);
-
-// =============================
-// Submission & synchronization
-// =============================
-
-// Create a fence for async GPU tracking. The caller owns it and must call md_gpu_fence_destroy when done.
-md_gpu_fence_t md_gpu_fence_create(md_gpu_device_t device);
-
-// Finalize and submit a transient command buffer for GPU execution.
-// If fence is NULL, blocks until GPU completion.
-// If fence is non-NULL it must have been created with md_gpu_fence_create; the GPU signals it on completion.
-// The command buffer is recycled by this call and must not be used afterwards.
-bool md_gpu_queue_submit(md_gpu_queue_t queue, md_gpu_command_buffer_t cmd, md_gpu_fence_t fence);
-
-bool md_gpu_fence_is_signaled(md_gpu_fence_t fence);
-void md_gpu_fence_wait(md_gpu_fence_t fence);
-void md_gpu_fence_destroy(md_gpu_fence_t fence);
 
 #ifdef __cplusplus
 }

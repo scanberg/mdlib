@@ -16,36 +16,26 @@ struct PGTO {
     uint ijkl;
 };
 
-struct UBO {
+struct RootArgs {
     float4x4 world_to_model;
     float4x4 index_to_world;
     float4   step;
+    uint4    grid_dim;
     uint     num_cgtos;
     uint     operation;
     uint     _pad1;
     uint     _pad2;
+
+    uint*   cgto_atom_idx;
+    float*  cgto_r;
+    uint2*  cgto_off_len;
+    PGTO*   pgto;
+    float4* atom_xyz;
+    float*  D_matrix;
 };
 
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
-
-[[vk::binding(0)]]
-StructuredBuffer<uint> cgto_atom_idx;
-
-[[vk::binding(1)]]
-StructuredBuffer<float> cgto_r;
-
-[[vk::binding(2)]]
-StructuredBuffer<uint2> cgto_off_len;
-
-[[vk::binding(3)]]
-StructuredBuffer<PGTO> pgto;
-
-[[vk::binding(4)]]
-StructuredBuffer<float4> atom_xyz;
-
-[[vk::binding(5)]]
-StructuredBuffer<float> D_matrix;
+ConstantBuffer<RootArgs> args;
 
 [[vk::binding(16)]] // image slot 0 (slot + MD_GPU_MAX_BIND_SLOTS)
 RWTexture3D<float> out_vol;
@@ -110,7 +100,7 @@ void fill_D_tile(uint tile_i, uint tile_j, uint num_cgtos, uint tid) {
         if (slot_i < num_cgtos && slot_j < num_cgtos) {
             uint gi = screened_cgtos[slot_i];
             uint gj = screened_cgtos[slot_j];
-            value = D_matrix[get_index(gi, gj, ubo.num_cgtos)];
+            value = args.D_matrix[get_index(gi, gj, args.num_cgtos)];
         }
         D_tile[row][col] = value;
     }
@@ -148,10 +138,10 @@ void fill_cgtos_tile(uint tile_offset, uint num_cgtos, uint tid) {
 
         if (slot < num_cgtos) {
             uint gi = screened_cgtos[slot];
-            uint2 off_len = cgto_off_len[gi];
+            uint2 off_len = args.cgto_off_len[gi];
             src = off_len.x;
             len = off_len.y;
-            center = atom_xyz[cgto_atom_idx[gi]].xyz;
+            center = args.atom_xyz[args.cgto_atom_idx[gi]].xyz;
             InterlockedAdd(num_pgtos, len, dst);
         }
 
@@ -173,7 +163,7 @@ void fill_cgtos_tile(uint tile_offset, uint num_cgtos, uint tid) {
         if (r.x + j < r.y) {
             uint dst = r.x + j;
             uint src = pgtos_tile_offset[i] + j;
-            PGTO p = pgto[src];
+            PGTO p = args.pgto[src];
             pgtos_tile_coeff[dst] = p.coeff;
             pgtos_tile_alpha[dst] = p.alpha;
             pgtos_tile_ijkl [dst] = p.ijkl;
@@ -265,19 +255,21 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     }
     GroupMemoryBarrierWithGroupSync();
 
-    float3 model_aabb_min = float3( gid * uint3(WG_X, WG_Y, WG_Z))                 * ubo.step.xyz;
-    float3 model_aabb_max = float3((gid + uint3(1,1,1)) * uint3(WG_X, WG_Y, WG_Z)) * ubo.step.xyz;
+    bool active = all(dtid < args.grid_dim.xyz);
+
+    float3 model_aabb_min = float3( gid * uint3(WG_X, WG_Y, WG_Z))                 * args.step.xyz;
+    float3 model_aabb_max = float3((gid + uint3(1,1,1)) * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
 
     // Stage 1: Screening - Prune CGTOs relevant for this workgroup region.
     // Wave-coalesced allocation: one LDS atomic per wave instead of per thread.
-    for (uint i = tid; i < ubo.num_cgtos; i += WG_SIZE) {
+    for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
         bool passed = false;
-        if (i < ubo.num_cgtos) {
-            float r = cgto_r[i];
+        if (i < args.num_cgtos) {
+            float r = args.cgto_r[i];
             if (r != 0.0) {
-                uint   atom_idx  = cgto_atom_idx[i];
-                float3 center    = atom_xyz[atom_idx].xyz;
-                float3 model_xyz = mul(ubo.world_to_model, float4(center, 1.0)).xyz;
+                uint   atom_idx  = args.cgto_atom_idx[i];
+                float3 center    = args.atom_xyz[atom_idx].xyz;
+                float3 model_xyz = mul(args.world_to_model, float4(center, 1.0)).xyz;
                 float  r2        = r * r;
                 float3 d         = clamp(model_xyz, model_aabb_min, model_aabb_max) - model_xyz;
                 passed = (dot(d, d) < r2);
@@ -306,7 +298,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     if (num_cgtos > 0) {
         float phi_tile_mu[TILE_SIZE];
         float phi_tile_nu[TILE_SIZE];
-        float3 coord = mul(ubo.index_to_world, float4(float3(dtid), 1.0)).xyz;
+        float3 coord = mul(args.index_to_world, float4(float3(dtid), 1.0)).xyz;
 
         uint num_tiles = (num_cgtos + TILE_SIZE - 1) / TILE_SIZE;
 
@@ -324,8 +316,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
 
             // Inactive (out-of-bounds) voxels must still participate in the
             // collaborative fills + barriers above, but skip the per-voxel work.
-            eval_phis(phi_tile_mu, coord);
-            rho += symmetric_contraction(phi_tile_mu);
+            if (active) {
+                eval_phis(phi_tile_mu, coord);
+                rho += symmetric_contraction(phi_tile_mu);
+            }
 
             for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
                 // OFF DIAGONAL TILE
@@ -339,24 +333,28 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
 
                 GroupMemoryBarrierWithGroupSync();
 
-                eval_phis(phi_tile_nu, coord);
-                rho += contraction(phi_tile_mu, phi_tile_nu);
+                if (active) {
+                    eval_phis(phi_tile_nu, coord);
+                    rho += contraction(phi_tile_mu, phi_tile_nu);
+                }
             }
         }
     }
 
-    if ((ubo.operation & OP_ABS) != 0u) {
-        rho = abs(rho);
-    }
+    if (active) {
+        if ((args.operation & OP_ABS) != 0u) {
+            rho = abs(rho);
+        }
 
-    switch (ubo.operation & OP_ACCUM_MASK) {
-        case OP_SET: break; // rho is already the new value
-        case OP_ADD: rho += out_vol[dtid]; break;
-        case OP_SUB: rho = out_vol[dtid] - rho; break;
-        case OP_MAX: rho = max(rho, out_vol[dtid]); break;
-        case OP_MIN: rho = min(rho, out_vol[dtid]); break;
-        default: break; // invalid operation code, treat as OP_SET
+        switch (args.operation & OP_ACCUM_MASK) {
+            case OP_SET: break; // rho is already the new value
+            case OP_ADD: rho += out_vol[dtid]; break;
+            case OP_SUB: rho = out_vol[dtid] - rho; break;
+            case OP_MAX: rho = max(rho, out_vol[dtid]); break;
+            case OP_MIN: rho = min(rho, out_vol[dtid]); break;
+            default: break; // invalid operation code, treat as OP_SET
+        }
+
+        out_vol[dtid] = rho;
     }
-    
-    out_vol[dtid] = rho;
 }

@@ -84,11 +84,12 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
 // Release all GPU resources owned by the context.
 void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context);
 
-// Record the full topology pipeline into caller-supplied cmd:
+// Record the full topology pipeline into caller-supplied pass:
 //   bidirectional manifold → path compression → critical-point detection
 //   → compaction setup → compaction → vertex/edge extraction → staging copies.
-// Submit cmd with NULL fence (implicit sync), then call get_result.
-void md_topo_gpu_cmd_record(md_gpu_command_buffer_t cmd, md_topo_gpu_context_t* context,
+// Shader-visible resources are declared internally via md_gpu_use_* during recording.
+// End/wait the pass, then call md_topo_gpu_context_extract.
+void md_topo_gpu_record(md_gpu_pass_t pass, md_topo_gpu_context_t* context,
     md_gpu_image_t volume, const struct md_grid_t* grid, float scalar_threshold);
 
 // Call after cmd has been submitted and completed.

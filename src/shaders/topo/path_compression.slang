@@ -1,12 +1,6 @@
 // path_compression.slang
 // Pointer-jumping pass for ascending and descending manifolds.
 
-struct UBO {
-    float4x4 index_to_world;
-    uint4 dims;
-    float scalar_threshold;
-};
-
 struct MetaData {
     uint32_t vertex_count;
     uint32_t edge_count;
@@ -15,19 +9,18 @@ struct MetaData {
     uint32_t counter;       
 };
 
+struct RootArgs {
+    float4x4 index_to_world;
+    uint4 dims;
+    float scalar_threshold;
+
+    uint* ascending;
+    uint* descending;
+    MetaData* meta;
+};
+
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
-
-[[vk::binding(0)]]
-RWStructuredBuffer<uint> ascending;
-
-[[vk::binding(1)]]
-RWStructuredBuffer<uint> descending;
-
-// changed_read[0]: non-zero if the previous iteration made any changes.
-// If zero, all paths are already compressed — this dispatch is a no-op.
-[[vk::binding(2)]]
-RWStructuredBuffer<MetaData> meta;
+ConstantBuffer<RootArgs> args;
 
 groupshared uint local_changed;
 
@@ -35,17 +28,14 @@ groupshared uint local_changed;
 [numthreads(8, 8, 8)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
     // Early exit: previous iteration changed nothing → already converged.
-    if (meta[0].changed_read == 0u) {
+    if (args.meta[0].changed_read == 0u) {
         return;
     }
 
-    if (any(gid >= ubo.dims.xyz)) {
-        return;
-    }
-
-    uint i = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
-    uint parent_asc  = ascending[i];
-    uint parent_desc = descending[i];
+    bool active = all(gid < args.dims.xyz);
+    uint i = gid.x + gid.y * args.dims.x + gid.z * args.dims.x * args.dims.y;
+    uint parent_asc  = active ? args.ascending[i] : i;
+    uint parent_desc = active ? args.descending[i] : i;
 
     if (gtid == 0) {
         local_changed = 0u;
@@ -55,19 +45,19 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
     uint change = 0u;
 
     // Single-step pointer jump for ascending manifold
-    if (parent_asc != i) {
-        uint grandparent_asc = ascending[parent_asc];
+    if (active && parent_asc != i) {
+        uint grandparent_asc = args.ascending[parent_asc];
         if (parent_asc != grandparent_asc) {
-            ascending[i] = grandparent_asc;
+            args.ascending[i] = grandparent_asc;
             change = 1u;
         }
     }
 
     // Single-step pointer jump for descending manifold
-    if (parent_desc != i) {
-        uint grandparent_desc = descending[parent_desc];
+    if (active && parent_desc != i) {
+        uint grandparent_desc = args.descending[parent_desc];
         if (parent_desc != grandparent_desc) {
-            descending[i] = grandparent_desc;
+            args.descending[i] = grandparent_desc;
             change = 1u;
         }
     }
@@ -77,6 +67,6 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex) {
     GroupMemoryBarrierWithGroupSync();
 
     if (gtid == 0) {
-        InterlockedOr(meta[0].changed_write, local_changed);
+        InterlockedOr(args.meta[0].changed_write, local_changed);
     }
 }

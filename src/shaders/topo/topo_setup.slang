@@ -4,28 +4,33 @@
 //   counters[4]    – write-cursor base offsets for the compaction pass
 //   type_counts[5] – per-type counts + total vertex count for the extraction pass
 
-[[vk::binding(0)]] RWStructuredBuffer<uint> counts;       // [0]=maxima [1]=split_saddles [2]=minima [3]=join_saddles
-[[vk::binding(1)]] RWStructuredBuffer<uint> counters;     // [0..3] output: compaction write-cursor initial values
-[[vk::binding(2)]] RWStructuredBuffer<uint> type_counts;  // [0..4] output: per-type counts + total
+struct RootArgs {
+    uint* counts;       // [0]=maxima [1]=split_saddles [2]=minima [3]=join_saddles
+    uint* counters;     // [0..3] output: compaction write-cursor initial values
+    uint* type_counts;  // [0..4] output: per-type counts + total
+};
+
+[[vk::push_constant]]
+ConstantBuffer<RootArgs> args;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main() {
-    uint n0 = counts[0]; // maxima
-    uint n1 = counts[1]; // split saddles
-    uint n2 = counts[2]; // minima
-    uint n3 = counts[3]; // join saddles
+    uint n0 = args.counts[0]; // maxima
+    uint n1 = args.counts[1]; // split saddles
+    uint n2 = args.counts[2]; // minima
+    uint n3 = args.counts[3]; // join saddles
 
     // Prefix-sum → write-cursor base offsets (type-sorted layout)
-    counters[0] = 0;
-    counters[1] = n0;
-    counters[2] = n0 + n1;
-    counters[3] = n0 + n1 + n2;
+    args.counters[0] = 0;
+    args.counters[1] = n0;
+    args.counters[2] = n0 + n1;
+    args.counters[3] = n0 + n1 + n2;
 
     // Per-type counts and total for the extraction pass
-    type_counts[0] = n0;
-    type_counts[1] = n1;
-    type_counts[2] = n2;
-    type_counts[3] = n3;
-    type_counts[4] = n0 + n1 + n2 + n3;
+    args.type_counts[0] = n0;
+    args.type_counts[1] = n1;
+    args.type_counts[2] = n2;
+    args.type_counts[3] = n3;
+    args.type_counts[4] = n0 + n1 + n2 + n3;
 }

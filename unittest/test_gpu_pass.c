@@ -76,32 +76,14 @@ UTEST(gpu_pass, gto_mo_root) {
     ASSERT_TRUE(out_image != NULL);
     ASSERT_TRUE(readback_buf != NULL);
 
-    md_gpu_pass_buffer_usage_t buffers[4] = {
-        { .buffer = md_gto_gpu_basis_buffer(gpu_basis), .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = atom_buf, .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = coeff_buf, .usage = MD_GPU_PASS_RESOURCE_READ },
-        { .buffer = readback_buf, .usage = MD_GPU_PASS_RESOURCE_TRANSFER_DST },
-    };
-    md_gpu_pass_image_usage_t images[1] = {{
-        .image = out_image,
-        .usage = MD_GPU_PASS_RESOURCE_WRITE | MD_GPU_PASS_RESOURCE_TRANSFER_SRC,
-    }};
-    md_gpu_pass_desc_t pass_desc = {
-        .label = "gto mo root pass test",
-        .buffers = buffers,
-        .buffer_count = 4,
-        .images = images,
-        .image_count = 1,
-    };
-
-    md_gpu_pass_t pass = md_gpu_pass_begin(device, &pass_desc);
+    md_gpu_pass_t pass = md_gpu_begin(device, "gto mo root pass test");
     ASSERT_TRUE(pass != NULL);
-    md_gto_gpu_mo_root_pass_record(pass, gpu_basis, atom_buf, coeff_buf, 1, out_image, &grid, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET);
-    md_gpu_pass_barrier_image(pass, out_image, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-    md_gpu_pass_copy_image_region_to_buffer(pass, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
-    md_gpu_pass_id_t id = md_gpu_pass_end(pass);
+    md_gto_gpu_mo_record(pass, gpu_basis, atom_buf, coeff_buf, 1, out_image, &grid, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET);
+    md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+    md_gpu_copy_image_region_to_buffer(pass, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
+    md_gpu_pass_id_t id = md_gpu_end(pass);
     ASSERT_TRUE(id.value != 0);
-    md_gpu_pass_wait(device, id);
+    md_gpu_wait(device, id);
 
     const float* values = (const float*)md_gpu_buffer_cpu_ptr(readback_buf);
     float max_delta = 0.0f;

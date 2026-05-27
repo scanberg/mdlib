@@ -13,23 +13,20 @@
 
 #define NUM_NEIGHBORS 26
 
-struct UBO {
+struct RootArgs {
     float4x4 index_to_world;
     uint4 dims;
     float scalar_threshold;
+
+    uint* ascending;
+    uint* descending;
 };
 
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
+ConstantBuffer<RootArgs> args;
 
 [[vk::binding(16)]] // image slot 0 (binding = slot + MD_GPU_MAX_BIND_SLOTS)
 RWTexture3D<float> volumeTex;
-
-[[vk::binding(0)]]
-RWStructuredBuffer<uint> ascending;
-
-[[vk::binding(1)]]
-RWStructuredBuffer<uint> descending;
 
 // Shared memory for scalar values and voxel IDs in a 10x10x10 region
 groupshared float sharedScalars[SG_X][SG_Y][SG_Z];
@@ -56,7 +53,7 @@ static const int3 neighbor_offset[NUM_NEIGHBORS] = {
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) {
-    int3 dims_i = int3(ubo.dims.xyz);
+    int3 dims_i = int3(args.dims.xyz);
 
     // Cooperative linear fill of the shared region
     int tid = int(gtid);
@@ -76,11 +73,11 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
 
     GroupMemoryBarrierWithGroupSync();
 
-    if (any(gid >= ubo.dims.xyz)) {
+    if (any(gid >= args.dims.xyz)) {
         return;
     }
 
-    uint i = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
+    uint i = gid.x + gid.y * args.dims.x + gid.z * args.dims.x * args.dims.y;
     int3 local_idx = int3(local_id) + int3(1, 1, 1);
 
     float val = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
@@ -103,6 +100,6 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
         min_neighbor = is_min ? n : min_neighbor;
     }
 
-    ascending[i]  = max_neighbor;
-    descending[i] = min_neighbor;
+    args.ascending[i]  = max_neighbor;
+    args.descending[i] = min_neighbor;
 }

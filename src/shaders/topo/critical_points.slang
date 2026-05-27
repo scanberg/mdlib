@@ -19,12 +19,6 @@
 
 #define NUM_NEIGHBORS 26
 
-struct UBO {
-    float4x4 index_to_world;
-    uint4 dims;
-    float scalar_threshold;
-};
-
 struct MetaData {
     uint32_t vertex_count;
     uint32_t edge_count;
@@ -33,26 +27,25 @@ struct MetaData {
     uint32_t counter;
 };
 
+struct RootArgs {
+    float4x4 index_to_world;
+    uint4 dims;
+    float scalar_threshold;
+
+    uint* ascending;
+    uint* descending;
+    int* types;
+    MetaData* meta;
+};
+
 [[vk::push_constant]]
-ConstantBuffer<UBO> ubo;
+ConstantBuffer<RootArgs> args;
 
 [[vk::binding(16)]] // image slot 0
 RWTexture3D<float> volumeTex;
 
-[[vk::binding(0)]]
-RWStructuredBuffer<uint> ascending;
-
-[[vk::binding(1)]]
-RWStructuredBuffer<uint> descending;
-
-[[vk::binding(2)]]
-RWStructuredBuffer<int> types;
-
-[[vk::binding(3)]]
-RWStructuredBuffer<MetaData> meta; // meta[0].vertex_count = total critical point count
-
 bool is_valid_voxel(int3 ijk) {
-    return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(ubo.dims.xyz));
+    return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(args.dims.xyz));
 }
 
 float get_scalar(int3 ijk) {
@@ -62,7 +55,7 @@ float get_scalar(int3 ijk) {
 
 uint get_voxel_id(int3 ijk) {
     if (!is_valid_voxel(ijk)) return 0xFFFFFFFFu;
-    return uint(ijk.x + ijk.y * int(ubo.dims.x) + ijk.z * int(ubo.dims.x) * int(ubo.dims.y));
+    return uint(ijk.x + ijk.y * int(args.dims.x) + ijk.z * int(args.dims.x) * int(args.dims.y));
 }
 
 bool sos_is_greater(float value_a, uint id_a, float value_b, uint id_b) {
@@ -131,10 +124,8 @@ groupshared uint sharedIds[SG_X][SG_Y][SG_Z];
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 group_id : SV_GroupID, uint3 local_id_3 : SV_GroupThreadID) {
-    if (any(gid >= ubo.dims.xyz)) {
-        return;
-    }
-    uint voxel_id = gid.x + gid.y * ubo.dims.x + gid.z * ubo.dims.x * ubo.dims.y;
+    bool active = all(gid < args.dims.xyz);
+    uint voxel_id = gid.x + gid.y * args.dims.x + gid.z * args.dims.x * args.dims.y;
 
     if (gtid == 0) {
         numCriticalPoints = 0u;
@@ -142,7 +133,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
     GroupMemoryBarrierWithGroupSync();
 
     int3 local_idx = int3(local_id_3) + int3(1, 1, 1);
-    int3 dims_i = int3(ubo.dims.xyz);
+    int3 dims_i = int3(args.dims.xyz);
 
     // Cooperative linear fill of the shared region
     {
@@ -168,7 +159,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
     float fi = sharedScalars[local_idx.x][local_idx.y][local_idx.z];
     int type = REGULAR;
 
-    if (ubo.scalar_threshold < fi) {
+    if (active && args.scalar_threshold < fi) {
         uint  neighbor_ids[NUM_NEIGHBORS];
         float neighbor_scalars[NUM_NEIGHBORS];
         for (int ni = 0; ni < NUM_NEIGHBORS; ni++) {
@@ -190,7 +181,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
             bool in_upper_link = sos_is_greater(n_scalar, n_id, fi, voxel_id);
             if (in_upper_link) {
                 upper_link_mask |= (1u << ni);
-                uint max_id = ascending[n_id];
+                uint max_id = args.ascending[n_id];
                 bool found = false;
                 for (int j = 0; j < reachable_maxima_count; j++) {
                     if (reachable_maxima[j] == max_id) {
@@ -226,7 +217,7 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
                 bool in_lower_link = sos_is_greater(fi, voxel_id, n_scalar, n_id);
                 if (in_lower_link) {
                     lower_link_mask |= (1u << ni);
-                    uint min_id = descending[n_id];
+                    uint min_id = args.descending[n_id];
                     bool found = false;
                     for (int j = 0; j < reachable_minima_count; j++) {
                         if (reachable_minima[j] == min_id) {
@@ -255,10 +246,12 @@ void main(uint3 gid : SV_DispatchThreadID, uint gtid : SV_GroupIndex, uint3 grou
         }
     }
 
-    types[voxel_id] = type;
+    if (active) {
+        args.types[voxel_id] = type;
+    }
 
     GroupMemoryBarrierWithGroupSync();
     if (gtid == 0) {
-        InterlockedAdd(meta[0].vertex_count, numCriticalPoints);
+        InterlockedAdd(args.meta[0].vertex_count, numCriticalPoints);
     }
 }
