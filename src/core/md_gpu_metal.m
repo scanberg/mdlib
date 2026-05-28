@@ -13,6 +13,7 @@
 
 #define MD_GPU_EVENT_HISTORY_SIZE 256
 #define MD_GPU_MAX_BIND_SLOTS 16
+#define MD_GPU_MAX_PUSH_CONSTANTS 256
 
 typedef struct md_gpu_queue* md_gpu_queue_t;
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
