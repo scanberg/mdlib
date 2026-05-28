@@ -37,6 +37,7 @@ set (SRC_FILES
     test_base64.c
     test_xtc.c
     test_xyz.c
+    test_vector_graphics.c
     test_xvg.c
     rmsd.c
     test_lammps.c
