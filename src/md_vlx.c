@@ -420,6 +420,47 @@ static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, in
     return count;
 }
 
+static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	size_t count = 0;
+
+	basis_func_t basis_funcs[128];
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			// int	ncomp = spherical_momentum_num_factors(angl, isph);
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				int idelem = atomic_numbers[atomidx];
+				size_t num_ao = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+
+				for (size_t iao = 0; iao < num_ao; iao++) {
+					if (out_ao_to_atom) {
+						out_ao_to_atom[count] = atomidx;
+					}
+					count += 1;
+				}
+			}
+		}
+	}
+	return count;
+}
+
+static size_t compute_basis_num_atomic_orbitals(const md_vlx_t* vlx) {
+	ASSERT(vlx);
+	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers || vlx->number_of_atoms == 0) {
+		return 0;
+	}
+	return extract_ao_to_atom_idx(NULL, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+}
+
 // This is a ported reference implementation from VeloxChem found in VisualizationDriver.cpp
 static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 	const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t num_atoms,
@@ -618,37 +659,6 @@ static size_t vlx_pgto_count(const md_vlx_t* vlx) {
 		}
 	}
 
-	return count;
-}
-
-static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
-	int natoms = (int)number_of_atoms;
-	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
-
-	size_t count = 0;
-
-    basis_func_t basis_funcs[128];
-
-	// azimuthal quantum number: s,p,d,f,...
-	for (int angl = 0; angl <= max_angl; angl++) {
-		//CSphericalMomentum sphmom(angl);
-		int nsph = spherical_momentum_num_components(angl);
-		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
-		for (int isph = 0; isph < nsph; isph++) {
-			// int	ncomp = spherical_momentum_num_factors(angl, isph);
-
-			// go through atoms
-			for (int atomidx = 0; atomidx < natoms; atomidx++) {
-				int idelem = atomic_numbers[atomidx];
-				size_t num_ao = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
-
-				for (size_t iao = 0; iao < num_ao; iao++) {
-					out_ao_to_atom[count] = atomidx;
-					count += 1;
-				}
-			}
-		}
-	}
 	return count;
 }
 
@@ -1651,6 +1661,171 @@ done:
 	md_temp_end(temp_scope);
 }
 
+// Permute columns of a [num_mo x num_ao] matrix according to remap.
+static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int* remap) {
+	md_temp_t temp_scope = md_temp_begin();
+	double* tmp = (double*)md_temp_push(sizeof(double) * num_mo * num_ao);
+	if (!tmp) {
+		MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
+		goto done;
+	}
+	MEMCPY(tmp, mat, sizeof(double) * num_mo * num_ao);
+	for (size_t mo = 0; mo < num_mo; ++mo) {
+		for (size_t ao = 0; ao < num_ao; ++ao) {
+			mat[mo * num_ao + ao] = tmp[mo * num_ao + (size_t)remap[ao]];
+		}
+	}
+done:
+	md_temp_end(temp_scope);
+}
+
+static bool validate_square_matrix_dims(const md_vlx_2d_data_t* data, const char* label) {
+	ASSERT(data);
+	ASSERT(label);
+
+	if (data->size[0] == 0 || data->size[1] == 0) {
+		MD_LOG_ERROR("%s matrix has invalid dimensions [%zu x %zu]", label, data->size[0], data->size[1]);
+		return false;
+	}
+	if (data->size[0] != data->size[1]) {
+		MD_LOG_ERROR("%s matrix must be square, got [%zu x %zu]", label, data->size[0], data->size[1]);
+		return false;
+	}
+	return true;
+}
+
+static bool infer_num_mo_from_coeff_dims(size_t* num_mo, const size_t coeff_dim[2], size_t num_ao, const char* label) {
+	ASSERT(num_mo);
+	ASSERT(coeff_dim);
+	ASSERT(label);
+
+	if (coeff_dim[0] == 0 || coeff_dim[1] == 0) {
+		MD_LOG_ERROR("%s coefficient matrix has invalid dimensions [%zu x %zu]", label, coeff_dim[0], coeff_dim[1]);
+		return false;
+	}
+
+	if (coeff_dim[0] == num_ao) {
+		*num_mo = coeff_dim[1];
+		return true;
+	}
+	if (coeff_dim[1] == num_ao) {
+		*num_mo = coeff_dim[0];
+		return true;
+	}
+
+	MD_LOG_ERROR("%s coefficient matrix [%zu x %zu] does not contain AO dimension %zu", label, coeff_dim[0], coeff_dim[1], num_ao);
+	return false;
+}
+
+static bool validate_orbital_canonical_layout(const md_vlx_orbital_t* orb, size_t num_ao, const char* label) {
+	ASSERT(orb);
+	ASSERT(label);
+
+	if (orb->coefficients.data) {
+		const size_t num_mo = orb->coefficients.size[0];
+		if (num_mo == 0 || orb->coefficients.size[1] != num_ao) {
+			MD_LOG_ERROR("%s coefficient matrix is not in canonical [MO x AO] layout, got [%zu x %zu], expected [num_mo x %zu]", label, orb->coefficients.size[0], orb->coefficients.size[1], num_ao);
+			return false;
+		}
+		if (orb->energy.data && orb->energy.size != num_mo) {
+			MD_LOG_ERROR("%s energy vector length mismatch, expected %zu, got %zu", label, num_mo, orb->energy.size);
+			return false;
+		}
+		if (orb->occupancy.data && orb->occupancy.size != num_mo) {
+			MD_LOG_ERROR("%s occupancy vector length mismatch, expected %zu, got %zu", label, num_mo, orb->occupancy.size);
+			return false;
+		}
+	}
+
+	if (orb->density.data) {
+		if (!validate_square_matrix_dims(&orb->density, label)) {
+			return false;
+		}
+		if (orb->density.size[0] != num_ao) {
+			MD_LOG_ERROR("%s density matrix dimension mismatch, expected %zu, got %zu", label, num_ao, orb->density.size[0]);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool normalize_orbital_coefficients(md_vlx_orbital_t* orb, size_t num_ao, const int* remap, const char* label) {
+	ASSERT(orb);
+	ASSERT(label);
+
+	if (!orb->coefficients.data) {
+		return true;
+	}
+
+	const size_t rows = orb->coefficients.size[0];
+	const size_t cols = orb->coefficients.size[1];
+	if (rows == 0 || cols == 0) {
+		MD_LOG_ERROR("%s coefficient matrix has invalid dimensions [%zu x %zu]", label, rows, cols);
+		return false;
+	}
+
+	if (rows == num_ao) {
+		const size_t num_mo = cols;
+		if (remap) {
+			ao_permute(orb->coefficients.data, num_ao, num_mo, remap);
+		}
+		orb->coefficients.size[0] = num_mo;
+		orb->coefficients.size[1] = num_ao;
+		return true;
+	}
+
+	if (cols == num_ao) {
+		const size_t num_mo = rows;
+		if (remap) {
+			ao_permute_cols(orb->coefficients.data, num_mo, num_ao, remap);
+		}
+		return true;
+	}
+
+	MD_LOG_ERROR("%s coefficient matrix [%zu x %zu] does not contain AO dimension %zu", label, rows, cols, num_ao);
+	return false;
+}
+
+static bool validate_scf_canonical_layout(const md_vlx_t* vlx) {
+	ASSERT(vlx);
+
+	if (vlx->scf.S.data) {
+		if (!validate_square_matrix_dims(&vlx->scf.S, "SCF overlap")) {
+			return false;
+		}
+	}
+
+	if (vlx->scf.alpha.density.data) {
+		if (!validate_square_matrix_dims(&vlx->scf.alpha.density, "Alpha density")) {
+			return false;
+		}
+		if (!validate_orbital_canonical_layout(&vlx->scf.alpha, vlx->scf.alpha.density.size[0], "Alpha orbital")) {
+			return false;
+		}
+	}
+
+	if (vlx->scf.beta.density.data) {
+		if (!validate_square_matrix_dims(&vlx->scf.beta.density, "Beta density")) {
+			return false;
+		}
+		if (!validate_orbital_canonical_layout(&vlx->scf.beta, vlx->scf.beta.density.size[0], "Beta orbital")) {
+			return false;
+		}
+	}
+
+	if (vlx->scf.alpha.density.data && vlx->scf.S.data && vlx->scf.alpha.density.size[0] != vlx->scf.S.size[0]) {
+		MD_LOG_ERROR("SCF overlap/AO dimension mismatch, alpha density is %zu and overlap is %zu", vlx->scf.alpha.density.size[0], vlx->scf.S.size[0]);
+		return false;
+	}
+	if (vlx->scf.alpha.density.data && vlx->scf.beta.density.data && vlx->scf.alpha.density.size[0] != vlx->scf.beta.density.size[0]) {
+		MD_LOG_ERROR("SCF alpha/beta AO dimension mismatch, alpha density is %zu and beta density is %zu", vlx->scf.alpha.density.size[0], vlx->scf.beta.density.size[0]);
+		return false;
+	}
+
+	return true;
+}
+
 
 // Data extraction procedures
 static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
@@ -1681,15 +1856,24 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	// Density dimensions (May differ from dim is always square)
 	size_t den_dim[2];
     h5_read_dataset_dims(den_dim, 2, handle, "D_alpha");
+	if (!validate_square_matrix_dims(&(md_vlx_2d_data_t){ .size = {den_dim[0], den_dim[1]}, .data = NULL }, "Alpha density")) {
+		return false;
+	}
+
+	const size_t num_ao = den_dim[0];
+	size_t num_mo = 0;
+	if (!infer_num_mo_from_coeff_dims(&num_mo, dim, num_ao, "Alpha coefficient")) {
+		return false;
+	}
 
 	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
 	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
 
-	md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
-	vlx->scf.alpha.energy.size = dim[1];
+	md_array_resize(vlx->scf.alpha.energy.data, num_mo, vlx->arena);
+	vlx->scf.alpha.energy.size = num_mo;
 
-	md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
-	vlx->scf.alpha.occupancy.size = dim[1];
+	md_array_resize(vlx->scf.alpha.occupancy.data, num_mo, vlx->arena);
+	vlx->scf.alpha.occupancy.size = num_mo;
 
 	md_array_resize(vlx->scf.alpha.density.data, den_dim[0] * den_dim[1], vlx->arena);
     MEMCPY(vlx->scf.alpha.density.size, den_dim, sizeof(den_dim));
@@ -1709,17 +1893,34 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
     }
 
 	if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-		md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
-		MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+		size_t beta_dim[2];
+		h5_read_dataset_dims(beta_dim, 2, handle, "C_beta");
+		size_t beta_num_mo = 0;
+		if (!infer_num_mo_from_coeff_dims(&beta_num_mo, beta_dim, num_ao, "Beta coefficient")) {
+			return false;
+		}
 
-		md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
-		vlx->scf.beta.energy.size = dim[1];
+		size_t beta_den_dim[2];
+		h5_read_dataset_dims(beta_den_dim, 2, handle, "D_beta");
+		if (!validate_square_matrix_dims(&(md_vlx_2d_data_t){ .size = {beta_den_dim[0], beta_den_dim[1]}, .data = NULL }, "Beta density")) {
+			return false;
+		}
+		if (beta_den_dim[0] != num_ao) {
+			MD_LOG_ERROR("Alpha/Beta AO dimension mismatch, alpha density is %zu and beta density is %zu", num_ao, beta_den_dim[0]);
+			return false;
+		}
 
-		md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
-		vlx->scf.beta.occupancy.size = dim[1];
+		md_array_resize(vlx->scf.beta.coefficients.data, beta_dim[0] * beta_dim[1], vlx->arena);
+		MEMCPY(vlx->scf.beta.coefficients.size, beta_dim, sizeof(beta_dim));
 
-		md_array_resize(vlx->scf.beta.density.data, den_dim[0] * den_dim[0], vlx->arena);
-        MEMCPY(vlx->scf.beta.density.size, den_dim, sizeof(den_dim));
+		md_array_resize(vlx->scf.beta.energy.data, beta_num_mo, vlx->arena);
+		vlx->scf.beta.energy.size = beta_num_mo;
+
+		md_array_resize(vlx->scf.beta.occupancy.data, beta_num_mo, vlx->arena);
+		vlx->scf.beta.occupancy.size = beta_num_mo;
+
+		md_array_resize(vlx->scf.beta.density.data, beta_den_dim[0] * beta_den_dim[1], vlx->arena);
+			MEMCPY(vlx->scf.beta.density.size, beta_den_dim, sizeof(beta_den_dim));
 
 		// Extract beta data
 		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_beta")) {
@@ -2960,15 +3161,23 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 				if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
 					goto done;
 				}
+				size_t num_ao = dim[0];
+				if (vlx->scf.S.data) {
+					num_ao = vlx->scf.S.size[0];
+				}
+				size_t num_mo = 0;
+				if (!infer_num_mo_from_coeff_dims(&num_mo, dim, num_ao, "Alpha coefficient")) {
+					goto done;
+				}
 
 				md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
 				MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
 
-				md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
-				vlx->scf.alpha.energy.size = dim[1];
+				md_array_resize(vlx->scf.alpha.energy.data, num_mo, vlx->arena);
+				vlx->scf.alpha.energy.size = num_mo;
 
-				md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
-				vlx->scf.alpha.occupancy.size = dim[1];
+				md_array_resize(vlx->scf.alpha.occupancy.data, num_mo, vlx->arena);
+				vlx->scf.alpha.occupancy.size = num_mo;
 
 				if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, md_array_size(vlx->scf.alpha.coefficients.data), file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
 					goto done;
@@ -2981,14 +3190,23 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 				}
 
 				if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-					md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
-					MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+					size_t beta_dim[2];
+					if (!h5_read_dataset_dims(beta_dim, 2, file_id, "beta_orbitals")) {
+						goto done;
+					}
+					size_t beta_num_mo = 0;
+					if (!infer_num_mo_from_coeff_dims(&beta_num_mo, beta_dim, num_ao, "Beta coefficient")) {
+						goto done;
+					}
 
-					md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
-					vlx->scf.beta.energy.size = dim[1];
+					md_array_resize(vlx->scf.beta.coefficients.data, beta_dim[0] * beta_dim[1], vlx->arena);
+					MEMCPY(vlx->scf.beta.coefficients.size, beta_dim, sizeof(beta_dim));
 
-					md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
-					vlx->scf.beta.occupancy.size = dim[1];
+					md_array_resize(vlx->scf.beta.energy.data, beta_num_mo, vlx->arena);
+					vlx->scf.beta.energy.size = beta_num_mo;
+
+					md_array_resize(vlx->scf.beta.occupancy.data, beta_num_mo, vlx->arena);
+					vlx->scf.beta.occupancy.size = beta_num_mo;
 
 					// Extract beta data
 					if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), file_id, H5T_NATIVE_DOUBLE, "beta_orbitals")) {
@@ -3149,7 +3367,18 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	// This must happen after the basis set has been successfully resolved,
 	// since build_ao_remap() requires basis topology to be valid.
 	if ((flags & VLX_FLAG_SCF) && vlx->basis_set.atom_basis.count > 0) {
-		size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+		size_t num_ao = 0;
+		if (vlx->scf.alpha.density.data) {
+			num_ao = vlx->scf.alpha.density.size[0];
+		} else if (vlx->scf.S.data) {
+			num_ao = vlx->scf.S.size[0];
+		} else if (vlx->scf.alpha.coefficients.data) {
+			num_ao = compute_basis_num_atomic_orbitals(vlx);
+			if (num_ao == 0) {
+				MD_LOG_ERROR("Unable to infer AO dimension for SCF coefficient normalization");
+				goto done;
+			}
+		}
         md_array_resize(vlx->ao_remap, num_ao, vlx->arena);
 		if (!build_ao_remap(vlx->ao_remap, num_ao, vlx)) {
 			MD_LOG_ERROR("Failed to build AO remap table");
@@ -3157,31 +3386,33 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 
 		if (num_ao > 0 && vlx->ao_remap) {
-			// SCF: permute+transpose C [num_ao x num_mo] -> [num_mo x num_ao] in shell order
-			if (vlx->scf.alpha.coefficients.data && num_ao == vlx->scf.alpha.coefficients.size[0]) {
-				size_t num_mo_a = vlx->scf.alpha.coefficients.size[1];
-				ao_permute(vlx->scf.alpha.coefficients.data, num_ao, num_mo_a, vlx->ao_remap);
-				vlx->scf.alpha.coefficients.size[0] = num_mo_a;
-				vlx->scf.alpha.coefficients.size[1] = num_ao;
+			// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
+			if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, vlx->ao_remap, "Alpha orbital")) {
+				goto done;
 			}
 			if (vlx->scf.alpha.density.data && num_ao == vlx->scf.alpha.density.size[0]) {
 				ao_permute_square(vlx->scf.alpha.density.data, num_ao, vlx->ao_remap);
 			}
 			if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-				if (vlx->scf.beta.coefficients.data && num_ao == vlx->scf.beta.coefficients.size[0]) {
-					size_t num_mo_b = vlx->scf.beta.coefficients.size[1];
-					ao_permute(vlx->scf.beta.coefficients.data, num_ao, num_mo_b, vlx->ao_remap);
-					vlx->scf.beta.coefficients.size[0] = num_mo_b;
-					vlx->scf.beta.coefficients.size[1] = num_ao;
+				if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, vlx->ao_remap, "Beta orbital")) {
+					goto done;
 				}
 				if (vlx->scf.beta.density.data && num_ao == vlx->scf.beta.density.size[0]) {
 					ao_permute_square(vlx->scf.beta.density.data, num_ao, vlx->ao_remap);
 				}
 			}
+			else {
+				// memcpy again from alpha into beta as dims may have changed.
+				MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
+			}
 			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
 				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
 			}
 		}
+	}
+
+	if ((flags & VLX_FLAG_SCF) && !validate_scf_canonical_layout(vlx)) {
+		goto done;
 	}
 
 	// Identify homo and lumo
@@ -3243,12 +3474,12 @@ static inline void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t
 
 static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[1];
+	return orb->coefficients.size[0];
 }
 
 static inline size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[0];
+	return orb->coefficients.size[1];
 }
 
 static inline size_t number_of_ao_coefficients(const md_vlx_orbital_t* orb) {
@@ -3261,7 +3492,7 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(orb);
 	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
-	extract_row(out_coeff, &orb->coefficients, ao_idx);
+	extract_col(out_coeff, &orb->coefficients, ao_idx);
 }
 
 const double* md_vlx_scf_resp_charges(const md_vlx_t* vlx) {
