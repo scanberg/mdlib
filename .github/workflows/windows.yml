@@ -5,29 +5,31 @@ on: [push]
 env:
   BUILD_TYPE: RelWithDebInfo
   VCPKG_DEFAULT_TRIPLET: x64-windows-static
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_GIT_COMMIT_ID: 216bb6975d5cccd35c27a14fb39acec3ae0e8285
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg/binary-cache
+  VCPKG_BINARY_SOURCES: "clear;default,readwrite"
 
 jobs:
     ci:
         runs-on: windows-2022
         permissions:
           contents: read
-          actions: write
         steps:
           - uses: actions/checkout@v4
 
-          - name: Export GitHub Actions cache environment variables
-            uses: actions/github-script@v7
+          - name: Restore vcpkg binary cache
+            uses: actions/cache@v4
             with:
-              script: |
-                core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-                core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+              path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+              key: vcpkg-${{ github.workflow }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ env.VCPKG_GIT_COMMIT_ID }}-${{ hashFiles('vcpkg.json') }}
+              restore-keys: |
+                vcpkg-${{ github.workflow }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ env.VCPKG_GIT_COMMIT_ID }}-
 
 
           - name: Setup Vcpkg
             uses: lukka/run-vcpkg@v11
             with:
-              vcpkgGitCommitId: 344525f74edb4c1d47c559d8bbe06240271441d8
+              vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
 
           - name: Clone MDLIB
             run: git submodule update --init --recursive
