@@ -32,6 +32,7 @@ function(compile_slang_shaders OUT_FILE)
         string(REPLACE "." "_" SYMBOL_NAME ${NAME})
         set(SYMBOL "${SHADER_NAMESPACE}_${SYMBOL_NAME}")
         set(REFLECTION_JSON "${GEN_DIR}/${NAME}.reflection.json")
+        set(LOGICAL_REFLECTION_JSON "${GEN_DIR}/${NAME}.logical.reflection.json")
         set(REFLECTION_HEADER "${GEN_DIR}/${SYMBOL}.reflection.inl")
 
         if (NOT EXISTS ${ABS_SRC})
@@ -58,10 +59,12 @@ function(compile_slang_shaders OUT_FILE)
             )
 
             set(BIN_FILE "${SPV_FILE}")
+            set(LOGICAL_REFLECTION_JSON "${REFLECTION_JSON}")
 
         elseif (MD_GPU_BACKEND STREQUAL "METAL")
             set(MSL_FILE "${GEN_DIR}/${NAME}.metal")
             set(LIB_FILE "${GEN_DIR}/${NAME}.metallib")
+            set(LOGICAL_SPV_FILE "${GEN_DIR}/${NAME}.logical.spv")
             message(STATUS "Compiling Slang shader ${ABS_SRC} -> ${LIB_FILE}")
 
             # Step 1: slangc -> MSL source
@@ -95,6 +98,24 @@ function(compile_slang_shaders OUT_FILE)
                 COMMENT "metal: ${NAME}.metal -> ${NAME}.metallib"
             )
 
+            # Generate a logical SPIR-V reflection alongside the Metal-specific reflection.
+            # The SPIR-V reflection preserves descriptor set space information, which Metal's
+            # target-flattened reflection drops.
+            add_custom_command(
+                OUTPUT ${LOGICAL_REFLECTION_JSON}
+                BYPRODUCTS ${LOGICAL_SPV_FILE}
+                COMMAND ${SLANG_EXECUTABLE}
+                    ${ABS_SRC}
+                    ${SLANG_FLAGS}
+                    -target spirv
+                    -emit-spirv-directly
+                    -force-glsl-scalar-layout
+                    -reflection-json ${LOGICAL_REFLECTION_JSON}
+                    -o ${LOGICAL_SPV_FILE}
+                DEPENDS ${ABS_SRC}
+                COMMENT "slangc: ${NAME}.slang -> ${NAME}.logical.reflection.json"
+            )
+
             set(BIN_FILE "${LIB_FILE}")
         else()
             message(FATAL_ERROR "compile_slang_shaders: unsupported backend '${MD_GPU_BACKEND}' (Slang shaders require VULKAN or METAL)")
@@ -105,11 +126,12 @@ function(compile_slang_shaders OUT_FILE)
             OUTPUT ${REFLECTION_HEADER}
             COMMAND ${CMAKE_COMMAND}
                 -DINPUT=${REFLECTION_JSON}
+                -DLOGICAL_INPUT=${LOGICAL_REFLECTION_JSON}
                 -DOUTPUT=${REFLECTION_HEADER}
                 -DSYMBOL=${SYMBOL}
                 -DSOURCE=${NAME_WITH_EXT}
                 -P ${SLANG_REFLECTION_TO_HEADER_SCRIPT}
-            DEPENDS ${REFLECTION_JSON} ${SLANG_REFLECTION_TO_HEADER_SCRIPT}
+            DEPENDS ${REFLECTION_JSON} ${LOGICAL_REFLECTION_JSON} ${SLANG_REFLECTION_TO_HEADER_SCRIPT}
             COMMENT "slang-reflect: ${NAME}.reflection.json -> ${SYMBOL}.reflection.inl"
             VERBATIM
         )

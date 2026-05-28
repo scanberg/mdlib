@@ -978,15 +978,25 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 #include <gto_gpu_shaders.inl>
 #include <gto_gpu_shaders_reflection.inl>
 
+#define MD_GPU_DISPATCH_OR_RETURN(expr_) \
+    do { \
+        if (!(expr_)) { \
+            MD_LOG_ERROR("md_gto_gpu_record: failed to encode compute dispatch"); \
+            return; \
+        } \
+    } while (0)
+
 static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
 static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
 
-static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
+static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z, const md_gpu_resource_binding_t* resource_bindings, uint32_t resource_binding_count) {
     if (*pipeline == NULL) {
         md_gpu_compute_pipeline_desc_t desc = {
             .shader_bytes     = blob_start,
             .shader_byte_size = blob_size,
             .threadgroup_size = { wg_x, wg_y, wg_z },
+            .resource_bindings = resource_bindings,
+            .resource_binding_count = resource_binding_count,
         };
         *pipeline = md_gpu_compute_pipeline_create(device, &desc);
         if (*pipeline == NULL) {
@@ -998,14 +1008,14 @@ static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device,
 
 void md_gto_gpu_initialize(md_gpu_device_t device) {
     if (!gto_pip_density) {
-        gto_pip_density = ensure_compute_pipeline(device, &gto_pip_density, gto_eval_gto_density_start, gto_eval_gto_density_size(), "GTO density", 8, 8, 8);
+        gto_pip_density = ensure_compute_pipeline(device, &gto_pip_density, gto_eval_gto_density_start, gto_eval_gto_density_size(), "GTO density", gto_eval_gto_density_thread_group_size_x, gto_eval_gto_density_thread_group_size_y, gto_eval_gto_density_thread_group_size_z, gto_eval_gto_density_pipeline_resource_bindings, gto_eval_gto_density_pipeline_resource_binding_count);
         if (!gto_pip_density) {
             MD_LOG_ERROR("Failed to create GTO density compute pipeline");
         }
     }
 
     if (!gto_pip_mo) {
-        gto_pip_mo = ensure_compute_pipeline(device, &gto_pip_mo, gto_eval_gto_mo_start, gto_eval_gto_mo_size(), "GTO MO", 8, 8, 8);
+        gto_pip_mo = ensure_compute_pipeline(device, &gto_pip_mo, gto_eval_gto_mo_start, gto_eval_gto_mo_size(), "GTO MO", gto_eval_gto_mo_thread_group_size_x, gto_eval_gto_mo_thread_group_size_y, gto_eval_gto_mo_thread_group_size_z, gto_eval_gto_mo_pipeline_resource_bindings, gto_eval_gto_mo_pipeline_resource_binding_count);
         if (!gto_pip_mo) {
             MD_LOG_ERROR("Failed to create GTO MO compute pipeline");
         }
@@ -1281,48 +1291,33 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
 
     gpu_usage_flags_t image_usage = op == MD_GTO_OP_SET ? GPU_USAGE_WRITE : GPU_USAGE_READ | GPU_USAGE_WRITE;
 
-    md_gpu_cmd_use_buffer(cmd, gb->buffer, GPU_USAGE_READ);
-    md_gpu_cmd_use_buffer(cmd, atom_buf, GPU_USAGE_READ);
-    md_gpu_cmd_use_buffer(cmd, coeff_buf, GPU_USAGE_READ);
-    md_gpu_cmd_use_image(cmd, image, image_usage);
-
-    uint64_t basis_addr = md_gpu_buffer_address(gb->buffer);
-    uint64_t atom_addr  = md_gpu_buffer_address(atom_buf);
-    uint64_t coeff_addr = md_gpu_buffer_address(coeff_buf);
-    if (!basis_addr || !atom_addr || !coeff_addr) {
-        MD_LOG_ERROR("md_gto_gpu_density_record: buffer device address unavailable");
-        return;
-    }
-
-    gto_eval_gto_density_args_t args = {0};
-    world_to_model_matrix(args.world_to_model, grid);
-    index_to_world_matrix(args.index_to_world, grid);
-    args.step[0]        = grid->spacing.elem[0];
-    args.step[1]        = grid->spacing.elem[1];
-    args.step[2]        = grid->spacing.elem[2];
-    args.step[3]        = 0.0f;
-    args.grid_dim[0]    = (uint32_t)grid->dim[0];
-    args.grid_dim[1]    = (uint32_t)grid->dim[1];
-    args.grid_dim[2]    = (uint32_t)grid->dim[2];
-    args.grid_dim[3]    = 0;
-    args.num_cgtos      = L->num_cgtos;
-    args.operation      = (uint32_t)op;
-    args.cgto_atom_idx  = basis_addr + L->off_cgto_atom_idx;
-    args.cgto_r         = basis_addr + L->off_cgto_r;
-    args.cgto_off_len   = basis_addr + L->off_cgto_off_len;
-    args.pgto           = basis_addr + L->off_pgto;
-    args.atom_xyz       = atom_addr;
-    args.D_matrix       = coeff_addr;
-
-    uint32_t wg_size[3] = {
-        DIV_UP(grid->dim[0], gto_eval_gto_density_thread_group_size_x),
-        DIV_UP(grid->dim[1], gto_eval_gto_density_thread_group_size_y),
-        DIV_UP(grid->dim[2], gto_eval_gto_density_thread_group_size_z),
-    };
+    gto_eval_gto_density_dispatch_t dispatch = gto_eval_gto_density_dispatch_init();
+    world_to_model_matrix(dispatch.args.world_to_model, grid);
+    index_to_world_matrix(dispatch.args.index_to_world, grid);
+    dispatch.args.step[0]       = grid->spacing.elem[0];
+    dispatch.args.step[1]       = grid->spacing.elem[1];
+    dispatch.args.step[2]       = grid->spacing.elem[2];
+    dispatch.args.step[3]       = 0.0f;
+    dispatch.args.grid_dim[0]   = (uint32_t)grid->dim[0];
+    dispatch.args.grid_dim[1]   = (uint32_t)grid->dim[1];
+    dispatch.args.grid_dim[2]   = (uint32_t)grid->dim[2];
+    dispatch.args.grid_dim[3]   = 0;
+    dispatch.args.num_cgtos     = L->num_cgtos;
+    dispatch.args.operation     = (uint32_t)op;
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.out_vol.image = image;
+    dispatch.resources.out_vol.usage = image_usage;
+    dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_density_thread_group_size_x);
+    dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_density_thread_group_size_y);
+    dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_density_thread_group_size_z);
 
     md_gpu_cmd_push_debug_group(cmd, "GTO Density Pass");
-    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
-    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
+    MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch));
     md_gpu_cmd_pop_debug_group(cmd);
 }
 
@@ -1342,52 +1337,38 @@ void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
         return;
     }
 
-    md_gpu_cmd_use_buffer(cmd, gb->buffer, GPU_USAGE_READ);
-    md_gpu_cmd_use_buffer(cmd, atom_buf, GPU_USAGE_READ);
-    md_gpu_cmd_use_buffer(cmd, coeff_buf, GPU_USAGE_READ);
-    md_gpu_cmd_use_image(cmd, out_image, GPU_USAGE_READ | GPU_USAGE_WRITE);
-
-    uint64_t basis_addr = md_gpu_buffer_address(gb->buffer);
-    uint64_t atom_addr  = md_gpu_buffer_address(atom_buf);
-    uint64_t coeff_addr = md_gpu_buffer_address(coeff_buf);
-    if (!basis_addr || !atom_addr || !coeff_addr) {
-        MD_LOG_ERROR("md_gto_gpu_mo_record: buffer device address unavailable");
-        return;
-    }
-
-    gto_eval_gto_mo_args_t args = {0};
-    world_to_model_matrix(args.world_to_model, grid);
-    index_to_world_matrix(args.index_to_world, grid);
-    args.step[0]        = grid->spacing.elem[0];
-    args.step[1]        = grid->spacing.elem[1];
-    args.step[2]        = grid->spacing.elem[2];
-    args.step[3]        = 0.0f;
-    args.grid_dim[0]    = (uint32_t)grid->dim[0];
-    args.grid_dim[1]    = (uint32_t)grid->dim[1];
-    args.grid_dim[2]    = (uint32_t)grid->dim[2];
-    args.grid_dim[3]    = 0;
-    args.num_cgtos      = L->num_cgtos;
-    args.num_rows       = (uint32_t)num_mos;
-    args.mode           = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
-    args.operation      = (uint32_t)op;
-    args.cgto_atom_idx  = basis_addr + L->off_cgto_atom_idx;
-    args.cgto_r         = basis_addr + L->off_cgto_r;
-    args.cgto_off_len   = basis_addr + L->off_cgto_off_len;
-    args.pgto           = basis_addr + L->off_pgto;
-    args.atom_xyz       = atom_addr;
-    args.coeffs         = coeff_addr;
-
-    uint32_t wg_size[3] = {
-        DIV_UP(grid->dim[0], gto_eval_gto_mo_thread_group_size_x),
-        DIV_UP(grid->dim[1], gto_eval_gto_mo_thread_group_size_y),
-        DIV_UP(grid->dim[2], gto_eval_gto_mo_thread_group_size_z),
-    };
+    gto_eval_gto_mo_dispatch_t dispatch = gto_eval_gto_mo_dispatch_init();
+    world_to_model_matrix(dispatch.args.world_to_model, grid);
+    index_to_world_matrix(dispatch.args.index_to_world, grid);
+    dispatch.args.step[0]       = grid->spacing.elem[0];
+    dispatch.args.step[1]       = grid->spacing.elem[1];
+    dispatch.args.step[2]       = grid->spacing.elem[2];
+    dispatch.args.step[3]       = 0.0f;
+    dispatch.args.grid_dim[0]   = (uint32_t)grid->dim[0];
+    dispatch.args.grid_dim[1]   = (uint32_t)grid->dim[1];
+    dispatch.args.grid_dim[2]   = (uint32_t)grid->dim[2];
+    dispatch.args.grid_dim[3]   = 0;
+    dispatch.args.num_cgtos     = L->num_cgtos;
+    dispatch.args.num_rows      = (uint32_t)num_mos;
+    dispatch.args.mode          = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
+    dispatch.args.operation     = (uint32_t)op;
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.out_vol.image = out_image;
+    dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_mo_thread_group_size_x);
+    dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
+    dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
 
     md_gpu_cmd_push_debug_group(cmd, "GTO MO Pass");
-    md_gpu_cmd_bind_compute_pipeline(cmd, pipeline);
-    md_gpu_cmd_dispatch(cmd, wg_size[0], wg_size[1], wg_size[2], &args, sizeof(args));
+    MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch));
     md_gpu_cmd_pop_debug_group(cmd);
 }
+
+#undef MD_GPU_DISPATCH_OR_RETURN
 
 #endif // MD_ENABLE_GPU
 

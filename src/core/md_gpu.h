@@ -120,17 +120,61 @@ typedef struct md_gpu_image_region_t {
     uint32_t extent[3]; /* size   in texels (w, h, d) */
 } md_gpu_image_region_t;
 
-typedef struct md_gpu_compute_pipeline_desc_t {
-    const void* shader_bytes;
-    size_t      shader_byte_size;
-    uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
-} md_gpu_compute_pipeline_desc_t;
-
 typedef uint32_t gpu_usage_flags_t;
 enum {
     GPU_USAGE_READ  = 1 << 0,
     GPU_USAGE_WRITE = 1 << 1,
 };
+
+typedef enum md_gpu_resource_kind_t {
+    MD_GPU_RESOURCE_BUFFER,
+    MD_GPU_RESOURCE_STORAGE_IMAGE,
+    MD_GPU_RESOURCE_SAMPLED_IMAGE,
+    MD_GPU_RESOURCE_SAMPLER,
+} md_gpu_resource_kind_t;
+
+typedef struct md_gpu_resource_t {
+    md_gpu_resource_kind_t kind;
+    gpu_usage_flags_t usage;
+    uint32_t set;
+    uint32_t binding;
+    md_gpu_buffer_t buffer;
+    md_gpu_image_t image;
+    md_gpu_sampler_t sampler;
+} md_gpu_resource_t;
+
+typedef struct md_gpu_buffer_resource_t {
+    md_gpu_buffer_t buffer;
+    uint64_t offset;
+    gpu_usage_flags_t usage;
+} md_gpu_buffer_resource_t;
+
+typedef struct md_gpu_resource_binding_t {
+    md_gpu_resource_kind_t kind;
+    uint32_t set;
+    uint32_t binding;
+    uint32_t backend_binding;
+} md_gpu_resource_binding_t;
+
+typedef struct md_gpu_compute_pipeline_desc_t {
+    const void* shader_bytes;
+    size_t      shader_byte_size;
+    uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
+    const md_gpu_resource_binding_t* resource_bindings;
+    uint32_t resource_binding_count;
+} md_gpu_compute_pipeline_desc_t;
+
+// A single compute dispatch description.
+// Buffers participate in usage registration even when their device addresses are
+// passed via root_args. Non-buffer resources use logical descriptor set + binding.
+typedef struct md_gpu_compute_dispatch_t {
+    md_gpu_compute_pipeline_t pipeline;
+    const md_gpu_resource_t* resources;
+    uint32_t resource_count;
+    uint32_t group_count[3];
+    const void* root_args;
+    size_t root_args_size;
+} md_gpu_compute_dispatch_t;
 
 // =============================
 // Device info / hints
@@ -210,21 +254,17 @@ md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label);
 // A zero id means submission failed.
 md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd);
 
+// CPU poll and wait for event
 bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event);
 void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event);
 
 // Inserts an ordering dependency on a previously submitted event.
 void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event);
 
-// Declare shader-visible resource usage within a recording scope.
-// These declarations are merged into cmd state and consumed by later dispatches.
-// Copy/fill commands do not require md_gpu_cmd_use_*.
-void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage);
-void md_gpu_cmd_use_image(md_gpu_cmd_t cmd, md_gpu_image_t image, gpu_usage_flags_t usage);
-void md_gpu_cmd_use_sampled_resource(md_gpu_cmd_t cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage);
-
-void md_gpu_cmd_bind_compute_pipeline(md_gpu_cmd_t cmd, md_gpu_compute_pipeline_t pipeline);
-void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size);
+// Records one compute dispatch.
+// Resources are consumed by this dispatch only and cleared after it is encoded.
+// Copy/fill commands do not use md_gpu_compute_dispatch_t.
+bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd, const md_gpu_compute_dispatch_t* dispatch);
 
 void md_gpu_cmd_barrier(md_gpu_cmd_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 

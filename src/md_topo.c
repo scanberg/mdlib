@@ -60,12 +60,14 @@ static md_gpu_compute_pipeline_t pip_critical_points           = NULL;
 static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
 static md_gpu_compute_pipeline_t pip_vertex_edge_extraction    = NULL;
 
-static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z) {
+static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z, const md_gpu_resource_binding_t* resource_bindings, uint32_t resource_binding_count) {
     if (*pipeline == NULL) {
         md_gpu_compute_pipeline_desc_t desc = {
             .shader_bytes     = blob_start,
             .shader_byte_size = blob_size,
             .threadgroup_size = { wg_x, wg_y, wg_z },
+            .resource_bindings = resource_bindings,
+            .resource_binding_count = resource_binding_count,
         };
         *pipeline = md_gpu_compute_pipeline_create(device, &desc);
         if (*pipeline == NULL) {
@@ -76,11 +78,11 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
 }
 
 void md_topo_gpu_initialize(md_gpu_device_t device) {
-    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    8,  8,  8) ||
-        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          8,  8,  8) ||
-        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           8,  8,  8) ||
-        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", 8,  8,  8) ||
-        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    64, 1,  1))
+    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    topo_bidirectional_manifold_thread_group_size_x,    topo_bidirectional_manifold_thread_group_size_y,    topo_bidirectional_manifold_thread_group_size_z,    topo_bidirectional_manifold_pipeline_resource_bindings, topo_bidirectional_manifold_pipeline_resource_binding_count) ||
+        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          topo_path_compression_thread_group_size_x,          topo_path_compression_thread_group_size_y,          topo_path_compression_thread_group_size_z,          NULL, topo_path_compression_pipeline_resource_binding_count) ||
+        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           topo_critical_points_thread_group_size_x,           topo_critical_points_thread_group_size_y,           topo_critical_points_thread_group_size_z,           topo_critical_points_pipeline_resource_bindings, topo_critical_points_pipeline_resource_binding_count) ||
+        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", topo_critical_point_compaction_thread_group_size_x, topo_critical_point_compaction_thread_group_size_y, topo_critical_point_compaction_thread_group_size_z, NULL, topo_critical_point_compaction_pipeline_resource_binding_count) ||
+        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    topo_vertex_edge_extraction_thread_group_size_x,    topo_vertex_edge_extraction_thread_group_size_y,    topo_vertex_edge_extraction_thread_group_size_z,    topo_vertex_edge_extraction_pipeline_resource_bindings, topo_vertex_edge_extraction_pipeline_resource_binding_count))
     {
         MD_LOG_ERROR("md_topo_gpu_initialize: failed to create compute pipelines");
     }
@@ -238,31 +240,6 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
         return;
     }
 
-    md_gpu_cmd_use_buffer(cmd, ctx->ascending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->descending_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->voxel_types_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->voxel_to_vert_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->meta_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->indices_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->vert_buf, GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->type_buf, GPU_USAGE_READ | GPU_USAGE_WRITE);
-    md_gpu_cmd_use_buffer(cmd, ctx->edge_buf, GPU_USAGE_WRITE);
-    md_gpu_cmd_use_image(cmd, volume, GPU_USAGE_READ);
-
-    uint64_t ascending_addr      = md_gpu_buffer_address(ctx->ascending_buf);
-    uint64_t descending_addr     = md_gpu_buffer_address(ctx->descending_buf);
-    uint64_t voxel_types_addr    = md_gpu_buffer_address(ctx->voxel_types_buf);
-    uint64_t voxel_to_vert_addr  = md_gpu_buffer_address(ctx->voxel_to_vert_buf);
-    uint64_t meta_addr           = md_gpu_buffer_address(ctx->meta_buf);
-    uint64_t indices_addr        = md_gpu_buffer_address(ctx->indices_buf);
-    uint64_t vert_addr           = md_gpu_buffer_address(ctx->vert_buf);
-    uint64_t type_addr           = md_gpu_buffer_address(ctx->type_buf);
-    uint64_t edge_addr           = md_gpu_buffer_address(ctx->edge_buf);
-    if (!ascending_addr || !descending_addr || !voxel_types_addr || !voxel_to_vert_addr || !meta_addr || !indices_addr || !vert_addr || !type_addr || !edge_addr) {
-        MD_LOG_ERROR("md_topo_gpu_record: buffer device address unavailable");
-        return;
-    }
-
 #define TOPO_FILL_COMMON_ARGS(root_args) \
     do { \
         index_to_world_matrix((root_args).index_to_world, grid); \
@@ -286,12 +263,16 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     // Step 1: Bidirectional manifold
     md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
-    topo_bidirectional_manifold_args_t bidirectional_args = {0};
-    TOPO_FILL_COMMON_ARGS(bidirectional_args);
-    bidirectional_args.ascending  = ascending_addr;
-    bidirectional_args.descending = descending_addr;
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_bidirectional_manifold);
-    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &bidirectional_args, sizeof(bidirectional_args));
+    topo_bidirectional_manifold_dispatch_t bidirectional_dispatch = topo_bidirectional_manifold_dispatch_init();
+    TOPO_FILL_COMMON_ARGS(bidirectional_dispatch.args);
+    bidirectional_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    bidirectional_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    bidirectional_dispatch.resources.volumeTex.image = volume;
+    bidirectional_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    bidirectional_dispatch.group_count[0] = wg[0];
+    bidirectional_dispatch.group_count[1] = wg[1];
+    bidirectional_dispatch.group_count[2] = wg[2];
+    topo_bidirectional_manifold_cmd_dispatch(cmd, pip_bidirectional_manifold, &bidirectional_dispatch);
     md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
     md_gpu_cmd_pop_debug_group(cmd);
 
@@ -309,14 +290,16 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_read), 4, 0xFF);
     md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_path_compression);
-    topo_path_compression_args_t path_args = {0};
-    TOPO_FILL_COMMON_ARGS(path_args);
-    path_args.ascending  = ascending_addr;
-    path_args.descending = descending_addr;
-    path_args.meta       = meta_addr;
+    topo_path_compression_dispatch_t path_dispatch = topo_path_compression_dispatch_init();
+    TOPO_FILL_COMMON_ARGS(path_dispatch.args);
+    path_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    path_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    path_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    path_dispatch.group_count[0] = wg[0];
+    path_dispatch.group_count[1] = wg[1];
+    path_dispatch.group_count[2] = wg[2];
     for (uint32_t i = 0; i < num_iterations; i++) {
-        md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &path_args, sizeof(path_args));
+        topo_path_compression_cmd_dispatch(cmd, pip_path_compression, &path_dispatch);
         md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, offsetof(topo_meta_t, changed_write), offsetof(topo_meta_t, changed_read));
         md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
         md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
@@ -327,29 +310,35 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     // Step 3: Critical-point detection → meta_buf.count
     md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
-    topo_critical_points_args_t critical_args = {0};
-    TOPO_FILL_COMMON_ARGS(critical_args);
-    critical_args.ascending  = ascending_addr;
-    critical_args.descending = descending_addr;
-    critical_args.types      = voxel_types_addr;
-    critical_args.meta       = meta_addr;
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_points);
-    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &critical_args, sizeof(critical_args));
+    topo_critical_points_dispatch_t critical_dispatch = topo_critical_points_dispatch_init();
+    TOPO_FILL_COMMON_ARGS(critical_dispatch.args);
+    critical_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    critical_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    critical_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    critical_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    critical_dispatch.resources.volumeTex.image = volume;
+    critical_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    critical_dispatch.group_count[0] = wg[0];
+    critical_dispatch.group_count[1] = wg[1];
+    critical_dispatch.group_count[2] = wg[2];
+    topo_critical_points_cmd_dispatch(cmd, pip_critical_points, &critical_dispatch);
     md_gpu_cmd_pop_debug_group(cmd);
 
     md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
 
     // Step 4: Critical-point compaction (single atomic counter)
     md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
-    topo_critical_point_compaction_args_t compaction_args = {0};
-    TOPO_FILL_COMMON_ARGS(compaction_args);
-    compaction_args.types               = voxel_types_addr;
-    compaction_args.cp_indices          = indices_addr;
-    compaction_args.meta                = meta_addr;
-    compaction_args.voxel_to_vertex_idx = voxel_to_vert_addr;
-    compaction_args.vertex_types        = type_addr;
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_critical_point_compaction);
-    md_gpu_cmd_dispatch(cmd, wg[0], wg[1], wg[2], &compaction_args, sizeof(compaction_args));
+    topo_critical_point_compaction_dispatch_t compaction_dispatch = topo_critical_point_compaction_dispatch_init();
+    TOPO_FILL_COMMON_ARGS(compaction_dispatch.args);
+    compaction_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    compaction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    compaction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    compaction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    compaction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    compaction_dispatch.group_count[0] = wg[0];
+    compaction_dispatch.group_count[1] = wg[1];
+    compaction_dispatch.group_count[2] = wg[2];
+    topo_critical_point_compaction_cmd_dispatch(cmd, pip_critical_point_compaction, &compaction_dispatch);
     md_gpu_cmd_pop_debug_group(cmd);
 
     md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
@@ -357,18 +346,22 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     // Step 5: Vertex + edge extraction
     // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
     md_gpu_cmd_push_debug_group(cmd, "Vertex + edge extraction");
-    topo_vertex_edge_extraction_args_t extraction_args = {0};
-    TOPO_FILL_COMMON_ARGS(extraction_args);
-    extraction_args.cp_indices          = indices_addr;
-    extraction_args.vertex_types        = type_addr;
-    extraction_args.vertex_data         = vert_addr;
-    extraction_args.edges               = edge_addr;
-    extraction_args.ascending           = ascending_addr;
-    extraction_args.descending          = descending_addr;
-    extraction_args.voxel_to_vertex_idx = voxel_to_vert_addr;
-    extraction_args.meta                = meta_addr;
-    md_gpu_cmd_bind_compute_pipeline(cmd, pip_vertex_edge_extraction);
-    md_gpu_cmd_dispatch(cmd, DIV_UP(ctx->vert_cap, 64), 1, 1, &extraction_args, sizeof(extraction_args));
+    topo_vertex_edge_extraction_dispatch_t extraction_dispatch = topo_vertex_edge_extraction_dispatch_init();
+    TOPO_FILL_COMMON_ARGS(extraction_dispatch.args);
+    extraction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    extraction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    extraction_dispatch.resources.vertex_data = (md_gpu_buffer_resource_t){ .buffer = ctx->vert_buf, .offset = 0, .usage = GPU_USAGE_WRITE };
+    extraction_dispatch.resources.edges = (md_gpu_buffer_resource_t){ .buffer = ctx->edge_buf, .offset = 0, .usage = GPU_USAGE_WRITE };
+    extraction_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    extraction_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    extraction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    extraction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    extraction_dispatch.resources.volumeTex.image = volume;
+    extraction_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    extraction_dispatch.group_count[0] = DIV_UP(ctx->vert_cap, 64);
+    extraction_dispatch.group_count[1] = 1;
+    extraction_dispatch.group_count[2] = 1;
+    topo_vertex_edge_extraction_cmd_dispatch(cmd, pip_vertex_edge_extraction, &extraction_dispatch);
     md_gpu_cmd_pop_debug_group(cmd);
 
 #undef TOPO_FILL_COMMON_ARGS

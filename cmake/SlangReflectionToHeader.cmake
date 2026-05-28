@@ -9,8 +9,16 @@ if (NOT DEFINED SOURCE)
   set(SOURCE "${INPUT}")
 endif()
 
+if (NOT DEFINED LOGICAL_INPUT)
+  set(LOGICAL_INPUT "${INPUT}")
+endif()
+
 if (NOT EXISTS "${INPUT}")
   message(FATAL_ERROR "SlangReflectionToHeader.cmake: input file does not exist: ${INPUT}")
+endif()
+
+if (NOT EXISTS "${LOGICAL_INPUT}")
+  message(FATAL_ERROR "SlangReflectionToHeader.cmake: logical input file does not exist: ${LOGICAL_INPUT}")
 endif()
 
 function(slang_reflect_sanitize_identifier OUT IN)
@@ -30,7 +38,7 @@ function(slang_reflect_binding_kind OUT KIND)
     set(VALUE 3)
   elseif (KIND STREQUAL "descriptorTableSlot")
     set(VALUE 4)
-  elseif (KIND STREQUAL "sampler")
+  elseif (KIND STREQUAL "sampler" OR KIND STREQUAL "samplerState")
     set(VALUE 5)
   elseif (KIND STREQUAL "uniform")
     set(VALUE 6)
@@ -38,6 +46,40 @@ function(slang_reflect_binding_kind OUT KIND)
     set(VALUE 0)
   endif()
   set(${OUT} ${VALUE} PARENT_SCOPE)
+endfunction()
+
+function(slang_reflect_resource_kind OUT BINDING_KIND TYPE_KIND BASE_SHAPE ACCESS)
+  if (BINDING_KIND STREQUAL "sampler" OR BINDING_KIND STREQUAL "samplerState")
+    set(VALUE "MD_GPU_RESOURCE_SAMPLER")
+  elseif (TYPE_KIND STREQUAL "resource")
+    if (NOT BASE_SHAPE MATCHES "^texture")
+      message(FATAL_ERROR "SlangReflectionToHeader.cmake: unsupported descriptor resource shape '${BASE_SHAPE}'")
+    endif()
+
+    if (ACCESS STREQUAL "readWrite" OR ACCESS STREQUAL "writeOnly")
+      set(VALUE "MD_GPU_RESOURCE_STORAGE_IMAGE")
+    else()
+      set(VALUE "MD_GPU_RESOURCE_SAMPLED_IMAGE")
+    endif()
+  else()
+    message(FATAL_ERROR "SlangReflectionToHeader.cmake: unsupported reflected resource type kind '${TYPE_KIND}'")
+  endif()
+
+  set(${OUT} "${VALUE}" PARENT_SCOPE)
+endfunction()
+
+function(slang_reflect_resource_usage OUT RESOURCE_KIND ACCESS)
+  if (RESOURCE_KIND STREQUAL "MD_GPU_RESOURCE_SAMPLER")
+    set(VALUE "0u")
+  elseif (ACCESS STREQUAL "writeOnly")
+    set(VALUE "GPU_USAGE_WRITE")
+  elseif (ACCESS STREQUAL "readWrite")
+    set(VALUE "GPU_USAGE_READ | GPU_USAGE_WRITE")
+  else()
+    set(VALUE "GPU_USAGE_READ")
+  endif()
+
+  set(${OUT} "${VALUE}" PARENT_SCOPE)
 endfunction()
 
 function(slang_reflect_type_kind OUT KIND)
@@ -130,11 +172,33 @@ function(slang_reflect_field_decl OUT PARAM_INDEX FIELD_INDEX FIELD_SYMBOL FIELD
 endfunction()
 
 file(READ "${INPUT}" REFLECTION_JSON)
+file(READ "${LOGICAL_INPUT}" LOGICAL_REFLECTION_JSON)
+
+function(slang_reflect_find_param_index OUT JSON_VAR PARAM_NAME)
+  string(JSON PARAM_COUNT ERROR_VARIABLE PARAM_COUNT_ERROR LENGTH "${${JSON_VAR}}" parameters)
+  if (PARAM_COUNT_ERROR OR PARAM_COUNT EQUAL 0)
+    set(${OUT} -1 PARENT_SCOPE)
+    return()
+  endif()
+
+  math(EXPR PARAM_LAST "${PARAM_COUNT} - 1")
+  foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
+    string(JSON CANDIDATE_NAME ERROR_VARIABLE CANDIDATE_NAME_ERROR GET "${${JSON_VAR}}" parameters ${PARAM_INDEX} name)
+    if (NOT CANDIDATE_NAME_ERROR AND CANDIDATE_NAME STREQUAL PARAM_NAME)
+      set(${OUT} ${PARAM_INDEX} PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+
+  set(${OUT} -1 PARENT_SCOPE)
+endfunction()
 
 file(WRITE "${OUTPUT}"
 "#pragma once\n"
 "#include <stdint.h>\n"
 "#include <stddef.h>\n\n"
+"#include <stdbool.h>\n"
+"#include <core/md_gpu.h>\n\n"
 "// Generated from Slang reflection: ${SOURCE}\n\n"
 "#ifndef MD_GPU_SHADER_REFLECTION_CONSTANTS_DEFINED\n"
 "#define MD_GPU_SHADER_REFLECTION_CONSTANTS_DEFINED\n"
@@ -198,6 +262,17 @@ if (PARAM_COUNT_ERROR OR PARAM_COUNT EQUAL 0)
   return()
 endif()
 
+set(ROOT_STRUCT_NAME "")
+set(ROOT_STRUCT_DEFINED FALSE)
+set(DISPATCH_RESOURCE_COUNT 0)
+set(PIPELINE_RESOURCE_COUNT 0)
+set(RESOURCE_FIELD_DECLS "")
+set(RESOURCE_INIT_LINES "")
+set(RESOURCE_VALIDATE_LINES "")
+set(RESOURCE_ARRAY_LINES "")
+set(RESOURCE_ROOT_ARG_LINES "")
+set(PIPELINE_BINDING_LINES "")
+
 math(EXPR PARAM_LAST "${PARAM_COUNT} - 1")
 foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
   string(JSON PARAM_NAME GET "${REFLECTION_JSON}" parameters ${PARAM_INDEX} name)
@@ -212,6 +287,26 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
     set(BINDING_INDEX 0)
   endif()
   slang_reflect_binding_kind(BINDING_KIND_VALUE "${BINDING_KIND}")
+
+  set(LOGICAL_BINDING_KIND "unknown")
+  set(LOGICAL_BINDING_INDEX 0)
+  set(LOGICAL_BINDING_SPACE 0)
+  slang_reflect_find_param_index(LOGICAL_PARAM_INDEX LOGICAL_REFLECTION_JSON "${PARAM_NAME}")
+  if (NOT LOGICAL_PARAM_INDEX EQUAL -1)
+    string(JSON LOGICAL_BINDING_KIND ERROR_VARIABLE LOGICAL_BINDING_KIND_ERROR GET "${LOGICAL_REFLECTION_JSON}" parameters ${LOGICAL_PARAM_INDEX} binding kind)
+    string(JSON LOGICAL_BINDING_INDEX ERROR_VARIABLE LOGICAL_BINDING_INDEX_ERROR GET "${LOGICAL_REFLECTION_JSON}" parameters ${LOGICAL_PARAM_INDEX} binding index)
+    string(JSON LOGICAL_BINDING_SPACE ERROR_VARIABLE LOGICAL_BINDING_SPACE_ERROR GET "${LOGICAL_REFLECTION_JSON}" parameters ${LOGICAL_PARAM_INDEX} binding space)
+    if (LOGICAL_BINDING_KIND_ERROR)
+      set(LOGICAL_BINDING_KIND "unknown")
+    endif()
+    if (LOGICAL_BINDING_INDEX_ERROR)
+      set(LOGICAL_BINDING_INDEX 0)
+    endif()
+    if (LOGICAL_BINDING_SPACE_ERROR)
+      set(LOGICAL_BINDING_SPACE 0)
+    endif()
+  endif()
+  slang_reflect_binding_kind(LOGICAL_BINDING_KIND_VALUE "${LOGICAL_BINDING_KIND}")
 
   string(JSON TYPE_KIND ERROR_VARIABLE TYPE_KIND_ERROR GET "${REFLECTION_JSON}" parameters ${PARAM_INDEX} type kind)
   if (TYPE_KIND_ERROR)
@@ -231,6 +326,11 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
     endif()
 
     set(STRUCT_NAME "${SYMBOL}_${PARAM_SYMBOL}_t")
+    if (ROOT_STRUCT_DEFINED)
+      message(FATAL_ERROR "SlangReflectionToHeader.cmake: multiple root argument constant buffers are not supported for '${SYMBOL}'")
+    endif()
+    set(ROOT_STRUCT_NAME "${STRUCT_NAME}")
+    set(ROOT_STRUCT_DEFINED TRUE)
     file(APPEND "${OUTPUT}" "typedef struct ${STRUCT_NAME} {\n")
 
     set(CURRENT_OFFSET 0)
@@ -255,6 +355,24 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
         endif()
         slang_reflect_field_decl(FIELD_DECL ${PARAM_INDEX} ${FIELD_INDEX} "${FIELD_SYMBOL}" ${FIELD_SIZE})
         file(APPEND "${OUTPUT}" "    ${FIELD_DECL}\n")
+
+        string(JSON FIELD_TYPE_KIND ERROR_VARIABLE FIELD_TYPE_KIND_ERROR GET "${REFLECTION_JSON}" parameters ${PARAM_INDEX} type elementType fields ${FIELD_INDEX} type kind)
+        if (FIELD_TYPE_KIND_ERROR)
+          set(FIELD_TYPE_KIND "unknown")
+        endif()
+        if (FIELD_TYPE_KIND STREQUAL "pointer")
+          math(EXPR DISPATCH_RESOURCE_COUNT "${DISPATCH_RESOURCE_COUNT} + 1")
+          string(APPEND RESOURCE_FIELD_DECLS "    md_gpu_buffer_resource_t ${FIELD_SYMBOL};\n")
+          string(APPEND RESOURCE_VALIDATE_LINES
+"    if (dispatch->resources.${FIELD_SYMBOL}.usage == 0u) return false;\n"
+"    if (!dispatch->resources.${FIELD_SYMBOL}.buffer) return false;\n")
+          string(APPEND RESOURCE_ARRAY_LINES
+      "        { .kind = MD_GPU_RESOURCE_BUFFER, .usage = dispatch->resources.${FIELD_SYMBOL}.usage, .buffer = dispatch->resources.${FIELD_SYMBOL}.buffer },\n")
+          string(APPEND RESOURCE_ROOT_ARG_LINES
+      "    root_args.${FIELD_SYMBOL} = md_gpu_buffer_address(dispatch->resources.${FIELD_SYMBOL}.buffer) + dispatch->resources.${FIELD_SYMBOL}.offset;\n"
+"    if (!root_args.${FIELD_SYMBOL}) return false;\n")
+        endif()
+
         math(EXPR CURRENT_OFFSET "${FIELD_OFFSET} + ${FIELD_SIZE}")
       endforeach()
     endif()
@@ -280,10 +398,53 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
     file(APPEND "${OUTPUT}" "\n")
   endif()
 
+  if (TYPE_KIND STREQUAL "resource" OR BINDING_KIND STREQUAL "sampler" OR BINDING_KIND STREQUAL "samplerState")
+    set(RESOURCE_ACCESS "readOnly")
+    set(RESOURCE_BASE_SHAPE "")
+
+    string(JSON RESOURCE_ACCESS ERROR_VARIABLE RESOURCE_ACCESS_ERROR GET "${REFLECTION_JSON}" parameters ${PARAM_INDEX} type access)
+    if (RESOURCE_ACCESS_ERROR)
+      set(RESOURCE_ACCESS "readOnly")
+    endif()
+
+    string(JSON RESOURCE_BASE_SHAPE ERROR_VARIABLE RESOURCE_BASE_SHAPE_ERROR GET "${REFLECTION_JSON}" parameters ${PARAM_INDEX} type baseShape)
+    if (RESOURCE_BASE_SHAPE_ERROR)
+      set(RESOURCE_BASE_SHAPE "")
+    endif()
+
+    slang_reflect_resource_kind(RESOURCE_KIND "${BINDING_KIND}" "${TYPE_KIND}" "${RESOURCE_BASE_SHAPE}" "${RESOURCE_ACCESS}")
+    slang_reflect_resource_usage(RESOURCE_USAGE "${RESOURCE_KIND}" "${RESOURCE_ACCESS}")
+
+    math(EXPR DISPATCH_RESOURCE_COUNT "${DISPATCH_RESOURCE_COUNT} + 1")
+    math(EXPR PIPELINE_RESOURCE_COUNT "${PIPELINE_RESOURCE_COUNT} + 1")
+    string(APPEND RESOURCE_FIELD_DECLS "    md_gpu_resource_t ${PARAM_SYMBOL};\n")
+    string(APPEND RESOURCE_INIT_LINES
+"    dispatch.resources.${PARAM_SYMBOL} = (md_gpu_resource_t){ .kind = ${RESOURCE_KIND}, .usage = ${RESOURCE_USAGE}, .set = ${LOGICAL_BINDING_SPACE}u, .binding = ${LOGICAL_BINDING_INDEX}u };\n")
+    string(APPEND RESOURCE_VALIDATE_LINES
+"    if (dispatch->resources.${PARAM_SYMBOL}.kind != ${RESOURCE_KIND}) return false;\n"
+"    if (dispatch->resources.${PARAM_SYMBOL}.set != ${LOGICAL_BINDING_SPACE}u) return false;\n"
+"    if (dispatch->resources.${PARAM_SYMBOL}.binding != ${LOGICAL_BINDING_INDEX}u) return false;\n")
+
+    if (RESOURCE_KIND STREQUAL "MD_GPU_RESOURCE_SAMPLER")
+      string(APPEND RESOURCE_VALIDATE_LINES "    if (!dispatch->resources.${PARAM_SYMBOL}.sampler) return false;\n")
+    else()
+      string(APPEND RESOURCE_VALIDATE_LINES
+"    if (dispatch->resources.${PARAM_SYMBOL}.usage == 0u) return false;\n"
+"    if (!dispatch->resources.${PARAM_SYMBOL}.image) return false;\n")
+    endif()
+
+    string(APPEND RESOURCE_ARRAY_LINES "        dispatch->resources.${PARAM_SYMBOL},\n")
+    string(APPEND PIPELINE_BINDING_LINES
+"    { .kind = ${RESOURCE_KIND}, .set = ${LOGICAL_BINDING_SPACE}u, .binding = ${LOGICAL_BINDING_INDEX}u, .backend_binding = ${BINDING_INDEX}u },\n")
+  endif()
+
   file(APPEND "${OUTPUT}"
 "enum {\n"
 "    ${SYMBOL}_${PARAM_SYMBOL}_binding_kind = ${BINDING_KIND_VALUE}u,\n"
 "    ${SYMBOL}_${PARAM_SYMBOL}_binding_index = ${BINDING_INDEX}u,\n"
+"    ${SYMBOL}_${PARAM_SYMBOL}_logical_binding_kind = ${LOGICAL_BINDING_KIND_VALUE}u,\n"
+"    ${SYMBOL}_${PARAM_SYMBOL}_logical_binding_index = ${LOGICAL_BINDING_INDEX}u,\n"
+"    ${SYMBOL}_${PARAM_SYMBOL}_logical_binding_space = ${LOGICAL_BINDING_SPACE}u,\n"
 "    ${SYMBOL}_${PARAM_SYMBOL}_type_kind = ${TYPE_KIND_VALUE}u,\n")
 
   if (TYPE_KIND STREQUAL "constantBuffer")
@@ -326,3 +487,75 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
 
   file(APPEND "${OUTPUT}" "};\n\n")
 endforeach()
+
+if (NOT ROOT_STRUCT_DEFINED)
+  message(FATAL_ERROR "SlangReflectionToHeader.cmake: expected a reflected root argument constant buffer for '${SYMBOL}'")
+endif()
+
+if (DISPATCH_RESOURCE_COUNT GREATER 0)
+  file(APPEND "${OUTPUT}" "typedef struct ${SYMBOL}_resources_t {\n${RESOURCE_FIELD_DECLS}} ${SYMBOL}_resources_t;\n\n")
+else()
+  file(APPEND "${OUTPUT}" "typedef struct ${SYMBOL}_resources_t {\n    uint8_t _unused;\n} ${SYMBOL}_resources_t;\n\n")
+endif()
+
+file(APPEND "${OUTPUT}"
+"typedef struct ${SYMBOL}_dispatch_t {\n"
+"    ${ROOT_STRUCT_NAME} args;\n"
+"    ${SYMBOL}_resources_t resources;\n"
+"    uint32_t group_count[3];\n"
+"} ${SYMBOL}_dispatch_t;\n\n"
+"enum {\n"
+"    ${SYMBOL}_pipeline_resource_binding_count = ${PIPELINE_RESOURCE_COUNT}u,\n"
+"};\n\n")
+
+if (PIPELINE_RESOURCE_COUNT GREATER 0)
+  file(APPEND "${OUTPUT}" "static const md_gpu_resource_binding_t ${SYMBOL}_pipeline_resource_bindings[${PIPELINE_RESOURCE_COUNT}] = {\n${PIPELINE_BINDING_LINES}};\n\n")
+endif()
+
+file(APPEND "${OUTPUT}"
+"static inline ${SYMBOL}_dispatch_t ${SYMBOL}_dispatch_init(void) {\n"
+"    ${SYMBOL}_dispatch_t dispatch = {0};\n"
+"${RESOURCE_INIT_LINES}"
+"    return dispatch;\n"
+"}\n\n"
+"static inline bool ${SYMBOL}_dispatch_validate(const ${SYMBOL}_dispatch_t* dispatch) {\n"
+"    if (!dispatch) return false;\n"
+"    if (dispatch->group_count[0] == 0u || dispatch->group_count[1] == 0u || dispatch->group_count[2] == 0u) return false;\n"
+"${RESOURCE_VALIDATE_LINES}"
+"    return true;\n"
+"}\n\n")
+
+if (DISPATCH_RESOURCE_COUNT GREATER 0)
+  file(APPEND "${OUTPUT}"
+"static inline bool ${SYMBOL}_cmd_dispatch(md_gpu_cmd_t cmd, md_gpu_compute_pipeline_t pipeline, const ${SYMBOL}_dispatch_t* dispatch) {\n"
+"    if (!cmd || !pipeline || !${SYMBOL}_dispatch_validate(dispatch)) return false;\n"
+"    ${ROOT_STRUCT_NAME} root_args = dispatch->args;\n"
+"${RESOURCE_ROOT_ARG_LINES}"
+"    const md_gpu_resource_t resources[${DISPATCH_RESOURCE_COUNT}] = {\n"
+"${RESOURCE_ARRAY_LINES}"
+"    };\n"
+"    const md_gpu_compute_dispatch_t compute_dispatch = {\n"
+"        .pipeline = pipeline,\n"
+"        .resources = resources,\n"
+"        .resource_count = ${DISPATCH_RESOURCE_COUNT}u,\n"
+"        .group_count = { dispatch->group_count[0], dispatch->group_count[1], dispatch->group_count[2] },\n"
+"        .root_args = &root_args,\n"
+"        .root_args_size = sizeof(root_args),\n"
+"    };\n"
+"    return md_gpu_cmd_dispatch(cmd, &compute_dispatch);\n"
+"}\n\n")
+else()
+  file(APPEND "${OUTPUT}"
+"static inline bool ${SYMBOL}_cmd_dispatch(md_gpu_cmd_t cmd, md_gpu_compute_pipeline_t pipeline, const ${SYMBOL}_dispatch_t* dispatch) {\n"
+"    if (!cmd || !pipeline || !${SYMBOL}_dispatch_validate(dispatch)) return false;\n"
+"    const md_gpu_compute_dispatch_t compute_dispatch = {\n"
+"        .pipeline = pipeline,\n"
+"        .resources = NULL,\n"
+"        .resource_count = 0u,\n"
+"        .group_count = { dispatch->group_count[0], dispatch->group_count[1], dispatch->group_count[2] },\n"
+"        .root_args = &dispatch->args,\n"
+"        .root_args_size = sizeof(dispatch->args),\n"
+"    };\n"
+"    return md_gpu_cmd_dispatch(cmd, &compute_dispatch);\n"
+"}\n\n")
+endif()

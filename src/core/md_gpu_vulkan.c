@@ -16,11 +16,12 @@
 // Command buffer pool size (not to be confused with Metal's MD_GPU_MAX_COMMANDS,
 // which is the max number of recorded commands per command buffer)
 #define MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE 64
-// Maximum number of dispatch calls recorded per command buffer.
-// One fresh descriptor set is allocated per dispatch, so the descriptor pool is
-// sized as POOL_SIZE * MAX_DISPATCHES_PER_CMD.
+// Maximum number of unique descriptor states recorded per command buffer.
+// Descriptor sets are reused on cache hits, so a command buffer may record more
+// dispatches than this as long as they reuse previously populated set contents.
 #define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
 #define MD_GPU_MAX_BIND_SLOTS 16
+#define MD_GPU_MAX_RESOURCE_BINDINGS (MD_GPU_MAX_BIND_SLOTS * 3)
 
 // Descriptor set indices (one set per resource category)
 enum {
@@ -41,17 +42,22 @@ typedef struct md_vk_resource_sync_state_t {
     bool valid;
 } md_vk_resource_sync_state_t;
 
-typedef struct md_gpu_cmd_image_usage_t {
-    md_gpu_image_t image;
+typedef struct md_gpu_cmd_resource_binding_t {
+    md_gpu_resource_kind_t kind;
     gpu_usage_flags_t usage;
-    md_gpu_image_region_t region;
-} md_gpu_cmd_image_usage_t;
-
-typedef struct md_gpu_cmd_sampled_resource_usage_t {
+    uint32_t set;
+    uint32_t binding;
     md_gpu_image_t image;
     md_gpu_sampler_t sampler;
-    gpu_usage_flags_t usage;
-} md_gpu_cmd_sampled_resource_usage_t;
+} md_gpu_cmd_resource_binding_t;
+
+typedef struct md_vk_descriptor_cache_entry_t {
+    md_gpu_compute_pipeline_t pipeline;
+    md_gpu_cmd_resource_binding_t resources[MD_GPU_MAX_RESOURCE_BINDINGS];
+    uint32_t resource_count;
+    uint32_t dispatch_slot;
+    bool valid;
+} md_vk_descriptor_cache_entry_t;
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
@@ -117,32 +123,31 @@ typedef struct md_gpu_compute_pipeline {
     md_gpu_device_t device;
     VkPipeline pipeline;
     VkShaderModule shader_module;
+    md_gpu_resource_binding_t resource_bindings[MD_GPU_MAX_RESOURCE_BINDINGS];
+    uint32_t resource_binding_count;
 } md_gpu_compute_pipeline;
 
 typedef struct md_gpu_command_buffer {
     struct md_gpu_device* dev;
     struct md_gpu_queue*  queue;
     VkCommandBuffer vk_cmd;
-    /* Per-dispatch descriptor sets: [dispatch_index][set_index], pre-allocated and reused */
+    /* Cached descriptor set slots: [cache_slot][set_index], pre-allocated and reused */
     VkDescriptorSet dispatch_sets[MD_GPU_VK_MAX_DISPATCHES_PER_CMD][MD_GPU_DESC_SET_COUNT];
     uint32_t dispatch_count;
+    md_vk_descriptor_cache_entry_t descriptor_cache[MD_GPU_VK_MAX_DISPATCHES_PER_CMD];
+    VkDescriptorSet bound_descriptor_sets[MD_GPU_DESC_SET_COUNT];
     uint32_t index; /* position in queue->cmd_wrappers[], used to return slot to free list */
     uint64_t retire_value;
     bool in_flight;
     bool is_recording;
 
-    // Live bound state consumed by dispatch
+    // Live dispatch state consumed by dispatch
     md_gpu_compute_pipeline_t bound_pipeline;
-    md_gpu_image_t bound_images[MD_GPU_MAX_BIND_SLOTS];
-    md_gpu_image_t bound_sampled_images[MD_GPU_MAX_BIND_SLOTS];
-    md_gpu_sampler_t bound_samplers[MD_GPU_MAX_BIND_SLOTS];
     uint8_t push_constants[MD_GPU_MAX_PUSH_CONSTANTS];
     size_t push_constant_size;
 
-    md_gpu_cmd_image_usage_t cmd_images[MD_GPU_MAX_BIND_SLOTS];
-    uint32_t cmd_image_count;
-    md_gpu_cmd_sampled_resource_usage_t cmd_sampled_resources[MD_GPU_MAX_BIND_SLOTS];
-    uint32_t cmd_sampled_resource_count;
+    md_gpu_cmd_resource_binding_t cmd_resources[MD_GPU_MAX_RESOURCE_BINDINGS];
+    uint32_t cmd_resource_count;
 } md_gpu_command_buffer;
 
 typedef struct md_gpu_cmd {
@@ -238,55 +243,65 @@ static void md_vk_ensure_image_sync(md_gpu_command_buffer* cmd, md_gpu_image* im
     img->sync.valid = true;
 }
 
-static bool md_vk_cmd_merge_image_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, gpu_usage_flags_t usage) {
-    if (!cmd || !image || usage == 0) return true;
+static bool md_vk_cmd_merge_resource_binding(md_gpu_command_buffer* cmd, const md_gpu_resource_t* resource) {
+    if (!cmd || !resource) return false;
 
-    for (uint32_t i = 0; i < cmd->cmd_image_count; ++i) {
-        if (cmd->cmd_images[i].image == image) {
-            cmd->cmd_images[i].usage |= usage;
-            return true;
-        }
+    if (resource->kind == MD_GPU_RESOURCE_STORAGE_IMAGE ||
+        resource->kind == MD_GPU_RESOURCE_SAMPLED_IMAGE) {
+        if (!resource->image) return false;
+    } else if (resource->kind == MD_GPU_RESOURCE_SAMPLER) {
+        if (!resource->sampler) return false;
+    } else {
+        return false;
     }
 
-    if (cmd->cmd_image_count >= MD_GPU_MAX_BIND_SLOTS) return false;
-    cmd->cmd_images[cmd->cmd_image_count].image = image;
-    cmd->cmd_images[cmd->cmd_image_count].usage = usage;
-    memset(&cmd->cmd_images[cmd->cmd_image_count].region, 0, sizeof(cmd->cmd_images[cmd->cmd_image_count].region));
-    cmd->cmd_image_count++;
-    return true;
-}
-
-static bool md_vk_cmd_merge_sampled_resource_usage(md_gpu_command_buffer* cmd, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
-    if (!cmd || !image || usage == 0) return true;
-
-    for (uint32_t i = 0; i < cmd->cmd_sampled_resource_count; ++i) {
-        if (cmd->cmd_sampled_resources[i].image == image && cmd->cmd_sampled_resources[i].sampler == sampler) {
-            cmd->cmd_sampled_resources[i].usage |= usage;
-            return true;
-        }
+    gpu_usage_flags_t usage = resource->usage;
+    if (resource->kind != MD_GPU_RESOURCE_SAMPLER && usage == 0) {
+        usage = GPU_USAGE_READ;
     }
 
-    if (cmd->cmd_sampled_resource_count >= MD_GPU_MAX_BIND_SLOTS) return false;
-    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].image = image;
-    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].sampler = sampler;
-    cmd->cmd_sampled_resources[cmd->cmd_sampled_resource_count].usage = usage;
-    cmd->cmd_sampled_resource_count++;
+    for (uint32_t i = 0; i < cmd->cmd_resource_count; ++i) {
+        md_gpu_cmd_resource_binding_t* existing = &cmd->cmd_resources[i];
+        if (existing->kind != resource->kind || existing->set != resource->set || existing->binding != resource->binding) {
+            continue;
+        }
+
+        if ((resource->kind == MD_GPU_RESOURCE_STORAGE_IMAGE ||
+             resource->kind == MD_GPU_RESOURCE_SAMPLED_IMAGE) && existing->image != resource->image) {
+            return false;
+        }
+
+        if (resource->kind == MD_GPU_RESOURCE_SAMPLER && existing->sampler != resource->sampler) {
+            return false;
+        }
+
+        existing->usage |= usage;
+        return true;
+    }
+
+    if (cmd->cmd_resource_count >= MD_GPU_MAX_RESOURCE_BINDINGS) return false;
+
+    md_gpu_cmd_resource_binding_t* binding = &cmd->cmd_resources[cmd->cmd_resource_count++];
+    binding->kind = resource->kind;
+    binding->usage = usage;
+    binding->set = resource->set;
+    binding->binding = resource->binding;
+    binding->image = resource->image;
+    binding->sampler = resource->sampler;
     return true;
 }
 
 static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd, md_gpu_queue* queue) {
-    cmd->cmd_image_count = 0;
-    cmd->cmd_sampled_resource_count = 0;
+    cmd->cmd_resource_count = 0;
 
     cmd->queue = queue;
     cmd->dispatch_count = 0;
+    memset(cmd->descriptor_cache, 0, sizeof(cmd->descriptor_cache));
+    memset(cmd->bound_descriptor_sets, 0, sizeof(cmd->bound_descriptor_sets));
     cmd->retire_value = 0;
     cmd->in_flight = false;
     cmd->is_recording = false;
     cmd->bound_pipeline = NULL;
-    memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
-    memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
-    memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
     memset(cmd->push_constants, 0, sizeof(cmd->push_constants));
     cmd->push_constant_size = 0;
 }
@@ -1052,6 +1067,12 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device,
         return NULL;
     }
 
+    ASSERT(desc->resource_binding_count <= MD_GPU_MAX_RESOURCE_BINDINGS);
+    if (desc->resource_bindings && desc->resource_binding_count > 0) {
+        pipeline->resource_binding_count = desc->resource_binding_count;
+        memcpy(pipeline->resource_bindings, desc->resource_bindings, sizeof(md_gpu_resource_binding_t) * desc->resource_binding_count);
+    }
+
     return (md_gpu_compute_pipeline_t)pipeline;
 }
 
@@ -1145,95 +1166,121 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     return (md_gpu_command_buffer_t)cmd;
 }
 
-static void md_vk_apply_cmd_declared_bindings(md_gpu_command_buffer* cmd) {
-    memset(cmd->bound_images, 0, sizeof(cmd->bound_images));
-    memset(cmd->bound_sampled_images, 0, sizeof(cmd->bound_sampled_images));
-    memset(cmd->bound_samplers, 0, sizeof(cmd->bound_samplers));
+static const md_gpu_resource_binding_t* md_vk_pipeline_find_resource_binding(const md_gpu_compute_pipeline* pipeline, md_gpu_resource_kind_t kind, uint32_t set, uint32_t binding) {
+    if (!pipeline) return NULL;
 
-    const uint32_t image_count = cmd->cmd_image_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_image_count : MD_GPU_MAX_BIND_SLOTS;
-    for (uint32_t i = 0; i < image_count; ++i) {
-        cmd->bound_images[i] = cmd->cmd_images[i].image;
+    for (uint32_t i = 0; i < pipeline->resource_binding_count; ++i) {
+        const md_gpu_resource_binding_t* shader_binding = &pipeline->resource_bindings[i];
+        if (shader_binding->kind == kind && shader_binding->set == set && shader_binding->binding == binding) {
+            return shader_binding;
+        }
     }
 
-    const uint32_t sampled_resource_count = cmd->cmd_sampled_resource_count < MD_GPU_MAX_BIND_SLOTS ? cmd->cmd_sampled_resource_count : MD_GPU_MAX_BIND_SLOTS;
-    for (uint32_t i = 0; i < sampled_resource_count; ++i) {
-        cmd->bound_sampled_images[i] = cmd->cmd_sampled_resources[i].image;
-        cmd->bound_samplers[i] = cmd->cmd_sampled_resources[i].sampler;
+    return NULL;
+}
+
+static bool md_vk_descriptor_cache_entry_matches(const md_vk_descriptor_cache_entry_t* entry, md_gpu_compute_pipeline_t pipeline, const md_gpu_cmd_resource_binding_t* resources, uint32_t resource_count) {
+    if (!entry || !entry->valid || entry->pipeline != pipeline || entry->resource_count != resource_count) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < resource_count; ++i) {
+        const md_gpu_cmd_resource_binding_t* lhs = &entry->resources[i];
+        const md_gpu_cmd_resource_binding_t* rhs = &resources[i];
+        if (lhs->kind != rhs->kind || lhs->set != rhs->set || lhs->binding != rhs->binding || lhs->image != rhs->image || lhs->sampler != rhs->sampler) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static const VkDescriptorSet* md_vk_find_cached_descriptor_sets(const md_gpu_command_buffer* cmd, md_gpu_compute_pipeline_t pipeline, const md_gpu_cmd_resource_binding_t* resources, uint32_t resource_count) {
+    if (!cmd) return NULL;
+
+    for (uint32_t i = 0; i < cmd->dispatch_count; ++i) {
+        const md_vk_descriptor_cache_entry_t* entry = &cmd->descriptor_cache[i];
+        if (md_vk_descriptor_cache_entry_matches(entry, pipeline, resources, resource_count)) {
+            return cmd->dispatch_sets[entry->dispatch_slot];
+        }
+    }
+
+    return NULL;
+}
+
+static void md_vk_store_descriptor_cache_entry(md_gpu_command_buffer* cmd, uint32_t dispatch_slot) {
+    ASSERT(cmd);
+    ASSERT(dispatch_slot < MD_GPU_VK_MAX_DISPATCHES_PER_CMD);
+
+    md_vk_descriptor_cache_entry_t* entry = &cmd->descriptor_cache[dispatch_slot];
+    entry->pipeline = cmd->bound_pipeline;
+    entry->resource_count = cmd->cmd_resource_count;
+    entry->dispatch_slot = dispatch_slot;
+    entry->valid = true;
+
+    if (cmd->cmd_resource_count > 0) {
+        memcpy(entry->resources, cmd->cmd_resources, cmd->cmd_resource_count * sizeof(cmd->cmd_resources[0]));
     }
 }
 
-// Helper: flush current bound state into the four per-category descriptor sets
-static void md_vk_flush_descriptor_sets(md_gpu_command_buffer* cmd, VkDescriptorSet sets[MD_GPU_DESC_SET_COUNT]) {
+// Helper: flush current declared dispatch resources into the per-category descriptor sets.
+static bool md_vk_flush_descriptor_sets(md_gpu_command_buffer* cmd, VkDescriptorSet sets[MD_GPU_DESC_SET_COUNT]) {
+    const md_gpu_compute_pipeline* pipeline = (const md_gpu_compute_pipeline*)cmd->bound_pipeline;
     md_gpu_device* dev = cmd->dev;
 
-    VkWriteDescriptorSet writes[3 * MD_GPU_MAX_BIND_SLOTS];
-    VkDescriptorImageInfo storage_image_infos[MD_GPU_MAX_BIND_SLOTS];
-    VkDescriptorImageInfo sampled_image_infos[MD_GPU_MAX_BIND_SLOTS];
-    VkDescriptorImageInfo sampler_infos[MD_GPU_MAX_BIND_SLOTS];
+    VkWriteDescriptorSet writes[MD_GPU_MAX_RESOURCE_BINDINGS];
+    VkDescriptorImageInfo descriptor_infos[MD_GPU_MAX_RESOURCE_BINDINGS];
     uint32_t write_count = 0;
 
-    for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
-        if (cmd->bound_images[i]) {
-            md_gpu_image* img = (md_gpu_image*)cmd->bound_images[i];
-            storage_image_infos[i].sampler = VK_NULL_HANDLE;
-            storage_image_infos[i].imageView = img->view;
-            storage_image_infos[i].imageLayout = img->layout;
+    for (uint32_t i = 0; i < cmd->cmd_resource_count; ++i) {
+        md_gpu_cmd_resource_binding_t binding = cmd->cmd_resources[i];
+        const md_gpu_resource_binding_t* shader_binding = md_vk_pipeline_find_resource_binding(pipeline, binding.kind, binding.set, binding.binding);
+        if (!shader_binding || shader_binding->set >= MD_GPU_DESC_SET_COUNT) return false;
 
-            VkWriteDescriptorSet* w = &writes[write_count++];
-            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w->pNext = NULL;
-            w->dstSet = sets[MD_GPU_DESC_SET_STORAGE_IMAGES];
-            w->dstBinding = i;
-            w->dstArrayElement = 0;
-            w->descriptorCount = 1;
-            w->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            w->pBufferInfo = NULL;
-            w->pImageInfo = &storage_image_infos[i];
-            w->pTexelBufferView = NULL;
-        }
+        VkDescriptorImageInfo* info = &descriptor_infos[write_count];
+        VkWriteDescriptorSet* w = &writes[write_count++];
+        w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w->pNext = NULL;
+        w->dstSet = sets[shader_binding->set];
+        w->dstBinding = shader_binding->backend_binding;
+        w->dstArrayElement = 0;
+        w->descriptorCount = 1;
+        w->pBufferInfo = NULL;
+        w->pImageInfo = info;
+        w->pTexelBufferView = NULL;
 
-        if (cmd->bound_sampled_images[i]) {
-            md_gpu_image* img = (md_gpu_image*)cmd->bound_sampled_images[i];
-            sampled_image_infos[i].sampler = VK_NULL_HANDLE;
-            sampled_image_infos[i].imageView = img->view;
-            sampled_image_infos[i].imageLayout = img->layout;
-
-            VkWriteDescriptorSet* w = &writes[write_count++];
-            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w->pNext = NULL;
-            w->dstSet = sets[MD_GPU_DESC_SET_SAMPLED_IMAGES];
-            w->dstBinding = i;
-            w->dstArrayElement = 0;
-            w->descriptorCount = 1;
-            w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            w->pBufferInfo = NULL;
-            w->pImageInfo = &sampled_image_infos[i];
-            w->pTexelBufferView = NULL;
-        }
-
-        if (cmd->bound_samplers[i]) {
-            md_gpu_sampler* sampler = (md_gpu_sampler*)cmd->bound_samplers[i];
-            sampler_infos[i].sampler = sampler->sampler;
-            sampler_infos[i].imageView = VK_NULL_HANDLE;
-            sampler_infos[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-            VkWriteDescriptorSet* w = &writes[write_count++];
-            w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w->pNext = NULL;
-            w->dstSet = sets[MD_GPU_DESC_SET_SAMPLERS];
-            w->dstBinding = i;
-            w->dstArrayElement = 0;
-            w->descriptorCount = 1;
-            w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-            w->pBufferInfo = NULL;
-            w->pImageInfo = &sampler_infos[i];
-            w->pTexelBufferView = NULL;
+        switch (binding.kind) {
+            case MD_GPU_RESOURCE_STORAGE_IMAGE: {
+                md_gpu_image* img = (md_gpu_image*)binding.image;
+                info->sampler = VK_NULL_HANDLE;
+                info->imageView = img->view;
+                info->imageLayout = img->layout;
+                w->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            } break;
+            case MD_GPU_RESOURCE_SAMPLED_IMAGE: {
+                md_gpu_image* img = (md_gpu_image*)binding.image;
+                info->sampler = VK_NULL_HANDLE;
+                info->imageView = img->view;
+                info->imageLayout = img->layout;
+                w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            } break;
+            case MD_GPU_RESOURCE_SAMPLER: {
+                md_gpu_sampler* sampler = (md_gpu_sampler*)binding.sampler;
+                info->sampler = sampler->sampler;
+                info->imageView = VK_NULL_HANDLE;
+                info->imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                w->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            } break;
+            default:
+                return false;
         }
     }
 
     if (write_count > 0) {
         vkUpdateDescriptorSets(dev->device, write_count, writes, 0, NULL);
     }
+
+    return true;
 }
 
 static VkPipelineStageFlags2 md_vk_stage_flags(md_gpu_barrier_stage_t stages) {
@@ -1374,68 +1421,111 @@ void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event) {
     (void)event;
 }
 
-void md_gpu_cmd_use_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
-    if (!cmd_handle || !buffer || usage == 0) return;
-    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
-    md_vk_ensure_buffer_sync(cmd, (md_gpu_buffer*)buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
-}
+static bool md_vk_cmd_declare_resources(md_gpu_command_buffer* cmd, const md_gpu_resource_t* resources, uint32_t resource_count) {
+    if (!cmd) return false;
+    cmd->cmd_resource_count = 0;
 
-void md_gpu_cmd_use_image(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, gpu_usage_flags_t usage) {
-    if (!cmd_handle || !image || usage == 0) return;
-    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
-    md_vk_cmd_merge_image_usage(cmd, image, usage);
-    md_vk_ensure_image_sync(cmd, (md_gpu_image*)image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
-}
+    if (!resources || resource_count == 0) return true;
 
-void md_gpu_cmd_use_sampled_resource(md_gpu_cmd_t cmd_handle, md_gpu_image_t image, md_gpu_sampler_t sampler, gpu_usage_flags_t usage) {
-    if (!cmd_handle || !image) return;
-    md_gpu_command_buffer* cmd = ((md_gpu_cmd*)cmd_handle)->cmd;
-    const gpu_usage_flags_t resolved_usage = usage ? usage : GPU_USAGE_READ;
-    md_vk_cmd_merge_sampled_resource_usage(cmd, image, sampler, resolved_usage);
-    md_vk_ensure_image_sync(cmd, (md_gpu_image*)image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(resolved_usage));
-}
-
-void md_gpu_cmd_bind_compute_pipeline(md_gpu_cmd_t cmd_handle, md_gpu_compute_pipeline_t pipeline) {
-    if (!cmd_handle || !pipeline) return;
-    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
-    ASSERT(c->is_recording);
-    c->bound_pipeline = pipeline;
-}
-
-void md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z, const void* root_args, size_t root_args_size) {
-    if (!cmd_handle) return;
-    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
-    md_gpu_device* dev = c->dev;
-    md_gpu_compute_pipeline* pipeline = (md_gpu_compute_pipeline*)c->bound_pipeline;
-
-    ASSERT(c->is_recording);
-    ASSERT(c->bound_pipeline && "Pipeline must be bound before dispatch");
-    ASSERT(c->dispatch_count < MD_GPU_VK_MAX_DISPATCHES_PER_CMD && "Too many dispatches per command buffer");
-
-    if (root_args && root_args_size) {
-        ASSERT(root_args_size <= MD_GPU_MAX_PUSH_CONSTANTS);
-        memcpy(c->push_constants, root_args, root_args_size);
-        c->push_constant_size = root_args_size;
+    for (uint32_t i = 0; i < resource_count; ++i) {
+        const md_gpu_resource_t* resource = &resources[i];
+        switch (resource->kind) {
+            case MD_GPU_RESOURCE_BUFFER: {
+                if (!resource->buffer || resource->usage == 0) return false;
+                md_vk_ensure_buffer_sync(cmd, (md_gpu_buffer*)resource->buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(resource->usage));
+            } break;
+            case MD_GPU_RESOURCE_STORAGE_IMAGE: {
+                const gpu_usage_flags_t usage = resource->usage ? resource->usage : GPU_USAGE_READ;
+                if (!md_vk_cmd_merge_resource_binding(cmd, resource)) return false;
+                md_vk_ensure_image_sync(cmd, (md_gpu_image*)resource->image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
+            } break;
+            case MD_GPU_RESOURCE_SAMPLED_IMAGE: {
+                const gpu_usage_flags_t usage = resource->usage ? resource->usage : GPU_USAGE_READ;
+                if (!md_vk_cmd_merge_resource_binding(cmd, resource)) return false;
+                md_vk_ensure_image_sync(cmd, (md_gpu_image*)resource->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, md_vk_access_from_gpu_usage(usage));
+            } break;
+            case MD_GPU_RESOURCE_SAMPLER:
+                if (!md_vk_cmd_merge_resource_binding(cmd, resource)) return false;
+                break;
+            default:
+                return false;
+        }
     }
 
-    md_vk_apply_cmd_declared_bindings(c);
+    return true;
+}
 
-    vkCmdBindPipeline(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, const md_gpu_compute_dispatch_t* dispatch) {
+    if (!cmd_handle || !dispatch || !dispatch->pipeline) return false;
+    if (dispatch->resource_count > 0 && !dispatch->resources) return false;
+    if (dispatch->group_count[0] == 0 || dispatch->group_count[1] == 0 || dispatch->group_count[2] == 0) return false;
+    if (dispatch->root_args_size > 0 && !dispatch->root_args) return false;
+
+    md_gpu_command_buffer* c = ((md_gpu_cmd*)cmd_handle)->cmd;
+    md_gpu_device* dev = c->dev;
+    md_gpu_compute_pipeline* pipeline = (md_gpu_compute_pipeline*)dispatch->pipeline;
+
+    ASSERT(c->is_recording);
+    ASSERT(dispatch->pipeline && "Pipeline must be supplied for dispatch");
+
+    if (dispatch->root_args_size > MD_GPU_MAX_PUSH_CONSTANTS) {
+        ASSERT(false && "Root argument payload exceeds push constant limit");
+        return false;
+    }
+
+    const bool pipeline_changed = (c->bound_pipeline != dispatch->pipeline);
+    c->bound_pipeline = dispatch->pipeline;
+    if (!md_vk_cmd_declare_resources(c, dispatch->resources, dispatch->resource_count)) return false;
+
+    c->push_constant_size = 0;
+    if (dispatch->root_args && dispatch->root_args_size) {
+        memcpy(c->push_constants, dispatch->root_args, dispatch->root_args_size);
+        c->push_constant_size = dispatch->root_args_size;
+    }
+
+    if (pipeline_changed) {
+        vkCmdBindPipeline(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+    }
 
     if (c->push_constant_size > 0) {
         vkCmdPushConstants(c->vk_cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)c->push_constant_size, c->push_constants);
     }
 
-    md_vk_flush_descriptor_sets(c, c->dispatch_sets[c->dispatch_count]);
-    vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, MD_GPU_DESC_SET_COUNT, c->dispatch_sets[c->dispatch_count], 0, NULL);
-    vkCmdDispatch(c->vk_cmd, group_count_x, group_count_y, group_count_z);
+    const VkDescriptorSet* descriptor_sets = md_vk_find_cached_descriptor_sets(c, dispatch->pipeline, c->cmd_resources, c->cmd_resource_count);
+    if (!descriptor_sets) {
+        ASSERT(c->dispatch_count < MD_GPU_VK_MAX_DISPATCHES_PER_CMD && "Too many unique descriptor states per command buffer");
+        if (c->dispatch_count >= MD_GPU_VK_MAX_DISPATCHES_PER_CMD) {
+            return false;
+        }
 
-    /* Reset per-dispatch resource declarations so the next md_gpu_cmd_use_* calls
-       start from slot 0. Resource sync state lives on the handle objects and is not affected. */
-    c->cmd_image_count = 0;
-    c->cmd_sampled_resource_count = 0;
+        const uint32_t dispatch_slot = c->dispatch_count++;
+        descriptor_sets = c->dispatch_sets[dispatch_slot];
+        ASSERT(md_vk_flush_descriptor_sets(c, c->dispatch_sets[dispatch_slot]));
+        md_vk_store_descriptor_cache_entry(c, dispatch_slot);
+    }
 
-    c->dispatch_count++;
+    bool descriptor_sets_changed = false;
+    for (uint32_t i = 0; i < MD_GPU_DESC_SET_COUNT; ++i) {
+        if (c->bound_descriptor_sets[i] != descriptor_sets[i]) {
+            descriptor_sets_changed = true;
+            break;
+        }
+    }
+
+    if (descriptor_sets_changed) {
+        vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, MD_GPU_DESC_SET_COUNT, descriptor_sets, 0, NULL);
+        memcpy(c->bound_descriptor_sets, descriptor_sets, sizeof(c->bound_descriptor_sets));
+    }
+
+    vkCmdDispatch(c->vk_cmd, dispatch->group_count[0], dispatch->group_count[1], dispatch->group_count[2]);
+
+    /* Reset dispatch-local resource declarations so the next compute dispatch starts
+        from a clean slate. Resource sync state lives on the handle objects and is not
+        affected. */
+    c->cmd_resource_count = 0;
+    c->push_constant_size = 0;
+
+    return true;
 }
 
 void md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
