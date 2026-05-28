@@ -44,8 +44,7 @@ function(compile_slang_shaders OUT_FILE)
             message(STATUS "Compiling Slang shader ${ABS_SRC} -> ${SPV_FILE}")
 
             add_custom_command(
-                OUTPUT ${SPV_FILE}
-                BYPRODUCTS ${REFLECTION_JSON}
+                OUTPUT ${SPV_FILE} ${REFLECTION_JSON}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     ${SLANG_FLAGS}
@@ -69,8 +68,7 @@ function(compile_slang_shaders OUT_FILE)
 
             # Step 1: slangc -> MSL source
             add_custom_command(
-                OUTPUT ${MSL_FILE}
-                BYPRODUCTS ${REFLECTION_JSON}
+                OUTPUT ${MSL_FILE} ${REFLECTION_JSON}
                 COMMAND ${SLANG_EXECUTABLE}
                     ${ABS_SRC}
                     ${SLANG_FLAGS}
