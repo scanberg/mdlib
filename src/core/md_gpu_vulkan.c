@@ -500,6 +500,7 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     f12.bufferDeviceAddress = VK_TRUE;
     f12.timelineSemaphore = VK_TRUE;
+    f12.descriptorBindingPartiallyBound = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features f13 = {0};
     f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -556,6 +557,7 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
             VK_DESCRIPTOR_TYPE_SAMPLER,
         };
         VkDescriptorSetLayoutBinding slot_bindings[MD_GPU_MAX_BIND_SLOTS];
+        VkDescriptorBindingFlags binding_flags[MD_GPU_MAX_BIND_SLOTS];
         for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s) {
             for (uint32_t i = 0; i < MD_GPU_MAX_BIND_SLOTS; ++i) {
                 slot_bindings[i].binding            = i;
@@ -563,9 +565,15 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
                 slot_bindings[i].descriptorCount    = 1;
                 slot_bindings[i].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
                 slot_bindings[i].pImmutableSamplers = NULL;
+                binding_flags[i]                   = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
             }
+            VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci = {0};
+            flags_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+            flags_ci.bindingCount  = MD_GPU_MAX_BIND_SLOTS;
+            flags_ci.pBindingFlags = binding_flags;
             VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
             dsl_ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            dsl_ci.pNext        = &flags_ci;
             dsl_ci.bindingCount = MD_GPU_MAX_BIND_SLOTS;
             dsl_ci.pBindings    = slot_bindings;
             if (!md_vk_check(vkCreateDescriptorSetLayout(out_dev->device, &dsl_ci, NULL, &out_dev->descriptor_set_layouts[s]), "vkCreateDescriptorSetLayout")) return false;
