@@ -1430,7 +1430,7 @@ bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, const md_gpu_compute_dispatch_
     }
     const uint32_t dispatch_slot = c->dispatch_count++;
     VkDescriptorSet* descriptor_sets = c->dispatch_sets[dispatch_slot];
-    ASSERT(md_vk_flush_descriptor_sets(q->dev, pipeline, &res, descriptor_sets));
+    if (!md_vk_flush_descriptor_sets(q->dev, pipeline, &res, descriptor_sets)) return false;
 
     vkCmdBindDescriptorSets(c->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, q->dev->pipeline_layout, 0, MD_GPU_DESC_SET_COUNT, descriptor_sets, 0, NULL);
 
