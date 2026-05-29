@@ -8,6 +8,8 @@
 #include <math.h>
 #include <string.h>
 
+#define PI 3.14159265358979323846
+
 static md_vg_style_t safe_style(const md_vg_style_t* style) {
     return style ? *style : md_vg_style_default();
 }
@@ -280,7 +282,7 @@ static void emit_svg_scene(md_strb_t* sb, const md_vg_scene_t* scene) {
                 cmd->data.ellipse.radius.x, cmd->data.ellipse.radius.y);
             if (cmd->data.ellipse.rotation != 0.0f) {
                 md_strb_fmt(sb, " transform=\"rotate(%.9g %.9g %.9g)\"",
-                    cmd->data.ellipse.rotation * (180.0 / M_PI),
+                    cmd->data.ellipse.rotation * (180.0 / PI),
                     cmd->data.ellipse.center.x,
                     cmd->data.ellipse.center.y);
             }
