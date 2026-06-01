@@ -21,6 +21,13 @@ typedef struct md_vlx_atomic_property_t {
 	double*  data;
 } md_vlx_atomic_property_t;
 
+typedef struct md_vlx_density_property_t {
+	str_t    label;
+	uint64_t key;
+	// If data is present, it is a square matrix in AO space.
+	double*  data;
+} md_vlx_density_property_t;
+
 typedef enum {
 	MD_VLX_SPIN_ALPHA = 0,
 	MD_VLX_SPIN_BETA  = 1,
@@ -207,6 +214,11 @@ const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx)
 size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);
 const md_vlx_atomic_property_t* md_vlx_atomic_property_by_index(const md_vlx_t* vlx, size_t idx);
 const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vlx, uint64_t key);
+
+// Density properties (Various propperties that are defined using AO densities)
+size_t md_vlx_density_property_count(const struct md_vlx_t* vlx);
+const md_vlx_density_property_t* md_vlx_density_property_by_index(const md_vlx_t* vlx, size_t idx);
+const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* vlx, uint64_t key);
 
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);

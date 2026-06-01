@@ -178,6 +178,7 @@ typedef struct md_vlx_t {
 	dvec3_t* atom_coordinates;
 
 	md_vlx_atomic_property_t* atomic_properties; // Optional data, may be NULL, length is number of atomic properties
+	md_vlx_density_property_t* density_properties; // Optional data, may be NULL, length is number of density properties
 
 	// Data blocks
 	md_vlx_scf_t scf;
@@ -1602,6 +1603,120 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 		}
 
 		md_array_push(vlx->atomic_properties, property, vlx->arena);
+	done:
+		H5Tclose(attr_type);
+		H5Aclose(attr_id);
+		H5Dclose(dataset_id);
+	}
+	return true;
+}
+
+// Scan through an h5 group (no recursion) and check for datasets with the attribute 'density_property', if found, this will contain the label of the property.
+// If read, we will attempt to extract this as an array of doubles (if it has the length as a density matrix i.e. AO x AO).
+static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
+	H5G_info_t info = { 0 };
+	if (H5Gget_info(group_handle, &info) < 0) {
+		MD_LOG_ERROR("Failed to get group info when reading density properties");
+		return false;
+	}
+
+	char name_buf[256];
+	for (hsize_t i = 0; i < info.nlinks; ++i) {
+		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
+		if (size < 0) {
+			continue;
+		}
+		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
+		MD_LOG_DEBUG("obj_name: '%s', obj_type: %i", name_buf, type);
+
+		// Ensure that the type is a dataset, if not we skip
+		if (type != H5G_DATASET) {
+			continue;
+		}
+		hid_t dataset_id = H5Dopen(group_handle, name_buf, H5P_DEFAULT);
+		if (dataset_id == H5I_INVALID_HID) {
+			continue;
+		}
+
+		if (!H5Aexists(dataset_id, "density_property")) {
+			continue;
+		}
+
+		hid_t attr_id = H5Aopen(dataset_id, "density_property", H5P_DEFAULT);
+		if (attr_id == H5I_INVALID_HID) {
+			H5Dclose(dataset_id);
+			continue;
+		}
+		char property_label[256] = { 0 };
+		hid_t attr_type = H5Aget_type(attr_id);
+
+		if (H5Tis_variable_str(attr_type)) {
+			char* var_str;
+			H5Aread(attr_id, attr_type, &var_str);
+			strncpy(property_label, var_str, sizeof(property_label));
+			H5free_memory(var_str);
+		} else if (H5Tget_class(attr_type) == H5T_STRING) {
+			H5Aread(attr_id, attr_type, property_label);
+		} else {
+			MD_LOG_ERROR("Unexpected attribute type for 'density_property' attribute in dataset '%s'", name_buf);
+			goto done;
+		}
+
+		if (property_label[0] == '\0') {
+			strncpy(property_label, name_buf, sizeof(property_label));
+		}
+		property_label[sizeof(property_label) - 1] = '\0';
+
+		hid_t space_id = H5Dget_space(dataset_id);
+		if (space_id == H5I_INVALID_HID) {
+			MD_LOG_ERROR("Failed to get dataspace for dataset '%s'", name_buf);
+			goto done;
+		}
+
+		int num_dims = H5Sget_simple_extent_ndims(space_id);
+		if (num_dims < 0) {
+			MD_LOG_ERROR("Failed to get number of dimensions for dataset '%s'", name_buf);
+			H5Sclose(space_id);
+			goto done;
+		}
+
+		if (num_dims != 2) {
+			MD_LOG_ERROR("Too many dimensions for density property dataset '%s', expected 2, got %i", name_buf, num_dims);
+			H5Sclose(space_id);
+			goto done;
+		}
+
+		size_t dims[2] = { 0 };
+		H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
+
+		size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+		if (dims[0] != num_aos || dims[1] != num_aos) {
+			MD_LOG_ERROR("Unexpected dimensions for density property dataset '%s', expected [%zu x %zu], got [%zu x %zu]", name_buf, num_aos, num_aos, dims[0], dims[1]);
+			H5Sclose(space_id);
+			continue;
+		}
+
+		size_t num_points = H5Sget_simple_extent_npoints(space_id);
+		
+		H5Sclose(space_id);
+
+		// Construct a unique uint64_t key for this property.
+		uint64_t key = md_hash64(name_buf, sizeof(name_buf), 0);
+		
+		md_vlx_density_property_t property = {
+			 .label = str_copy_cstr(property_label, vlx->arena),
+			 .key = key,
+			 .data = NULL,
+		};
+
+		md_array_resize(property.data, num_points, vlx->arena);
+		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read data for density property dataset '%s'", name_buf);
+			goto done;
+		}
+
+		md_array_push(vlx->density_properties, property, vlx->arena);
 	done:
 		H5Tclose(attr_type);
 		H5Aclose(attr_id);
