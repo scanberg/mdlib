@@ -95,9 +95,8 @@ typedef struct md_vlx_orbital_t {
     md_vlx_2d_data_t density;
 	md_vlx_1d_data_t energy;
 	md_vlx_1d_data_t occupancy;
-	// In VeloxChem there are two additional fields present in the case of molecular orbitals which are D, and F
-	// D may correspond to density
-	// F likely corresponds to the Fock Matrix
+	size_t homo_idx;
+	size_t lumo_idx;
 } md_vlx_orbital_t;
 
 typedef struct md_vlx_scf_history_t {
@@ -112,8 +111,6 @@ typedef struct md_vlx_scf_history_t {
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	md_vlx_scf_type_t type;
-	size_t homo_idx[2];
-	size_t lumo_idx[2];
 
 	double energy;
 	dvec3_t ground_state_dipole_moment;
@@ -3403,7 +3400,8 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 			else {
 				// memcpy again from alpha into beta as dims may have changed.
-				MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
+				MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(md_vlx_2d_data_t));
+				MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(md_vlx_2d_data_t));
 			}
 			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
 				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
@@ -3419,8 +3417,8 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	if (vlx->scf.alpha.occupancy.data) {
 		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
 			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-				vlx->scf.homo_idx[0] = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.lumo_idx[0] = i;
+				vlx->scf.alpha.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
+				vlx->scf.alpha.lumo_idx = i;
 				break;
 			}
 		}
@@ -3429,8 +3427,8 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	if (vlx->scf.beta.occupancy.data) {
 		for (size_t i = 0; i < vlx->scf.beta.occupancy.size; ++i) {
 			if (vlx->scf.beta.occupancy.data[i] == 0.0) {
-				vlx->scf.homo_idx[1] = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.lumo_idx[1] = i;
+				vlx->scf.beta.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
+				vlx->scf.beta.lumo_idx = i;
 				break;
 			}
 		}
@@ -3989,9 +3987,9 @@ dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
 size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
 		if (type == MD_VLX_SPIN_ALPHA) {
-			return vlx->scf.homo_idx[0];
+			return vlx->scf.alpha.homo_idx;
 		} else if (type == MD_VLX_SPIN_BETA) {
-			return vlx->scf.homo_idx[1];
+			return vlx->scf.beta.homo_idx;
 		}
 	}
 	return 0;
@@ -4000,9 +3998,9 @@ size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_spin_t type) {
 size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_spin_t type) {
 	if (vlx) {
 		if (type == MD_VLX_SPIN_ALPHA) {
-			return vlx->scf.lumo_idx[0];
+			return vlx->scf.alpha.lumo_idx;
 		} else if (type == MD_VLX_SPIN_BETA) {
-			return vlx->scf.lumo_idx[1];
+			return vlx->scf.beta.lumo_idx;
 		}
 	}
 	return 0;

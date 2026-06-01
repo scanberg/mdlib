@@ -8,7 +8,9 @@
 #include <math.h>
 #include <string.h>
 
+#ifndef PI
 #define PI 3.14159265358979323846
+#endif
 
 static md_vg_style_t safe_style(const md_vg_style_t* style) {
     return style ? *style : md_vg_style_default();
