@@ -188,6 +188,19 @@ typedef struct md_gpu_compute_dispatch_t {
     size_t root_args_size;
 } md_gpu_compute_dispatch_t;
 
+typedef struct md_gpu_queue_wait_t {
+    md_gpu_event_t event;
+    md_gpu_barrier_stage_t dst_stage;
+} md_gpu_queue_wait_t;
+
+typedef struct md_gpu_queue_submit_desc_t {
+    const md_gpu_cmd_t* cmds;
+    size_t cmd_count;
+    const md_gpu_queue_wait_t* waits;
+    size_t wait_count;
+    const char* label;
+} md_gpu_queue_submit_desc_t;
+
 // =============================
 // Device info / hints
 // =============================
@@ -268,16 +281,25 @@ void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 // A command buffer is a transient recording scope created from a queue.
 // A handle returned from md_gpu_cmd_begin must be closed by either
 // md_gpu_queue_submit, md_gpu_queue_submit_one, or md_gpu_cmd_discard.
+// For now, md_gpu_queue_submit must be called from the main thread. Command
+// recording may happen on worker threads as long as each command is recorded by
+// only one thread and ownership is handed to the main thread before submission.
 
 md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_queue_t queue, const char* label);
 bool md_gpu_cmd_end(md_gpu_cmd_t cmd);
 void md_gpu_cmd_discard(md_gpu_cmd_t cmd);
 
-bool md_gpu_queue_wait(md_gpu_queue_t queue, md_gpu_event_t event, md_gpu_barrier_stage_t dst_stage);
-md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue, const md_gpu_cmd_t* cmds, size_t num_cmds);
+md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue, const md_gpu_queue_submit_desc_t* desc);
 
 static inline md_gpu_event_t md_gpu_queue_submit_one(md_gpu_queue_t queue, md_gpu_cmd_t cmd) {
-    return md_gpu_queue_submit(queue, &cmd, 1);
+    const md_gpu_queue_submit_desc_t desc = { .cmds = &cmd, .cmd_count = 1 };
+    return md_gpu_queue_submit(queue, &desc);
+}
+
+static inline md_gpu_event_t md_gpu_queue_submit_one_after(md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_gpu_event_t wait, md_gpu_barrier_stage_t dst_stage) {
+    const md_gpu_queue_wait_t waits[] = {{ .event = wait, .dst_stage = dst_stage }};
+    const md_gpu_queue_submit_desc_t desc = { .cmds = &cmd, .cmd_count = 1, .waits = waits, .wait_count = 1 };
+    return md_gpu_queue_submit(queue, &desc);
 }
 
 // CPU poll and wait for event

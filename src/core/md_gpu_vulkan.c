@@ -3,7 +3,7 @@
 #include <core/md_common.h>
 #include <core/md_intrinsics.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,13 +76,6 @@ typedef enum md_vk_cmd_state_t {
     MD_VK_CMD_STATE_SUBMITTED,
 } md_vk_cmd_state_t;
 
-typedef struct md_vk_queue_wait_t {
-    md_gpu_event_t event;
-    md_gpu_barrier_stage_t dst_stage;
-} md_vk_queue_wait_t;
-
-#define MD_GPU_VK_MAX_PENDING_QUEUE_WAITS 16
-
 typedef struct md_vk_recording_context md_vk_recording_context;
 
 typedef struct md_gpu_command_buffer {
@@ -105,13 +98,13 @@ typedef struct md_gpu_command_buffer {
 
 struct md_vk_recording_context {
     struct md_gpu_queue* queue;
-    md_thread_id_t thread_id;
     VkCommandPool vk_command_pool;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet dispatch_sets[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD][MD_GPU_DESC_SET_COUNT];
     md_gpu_command_buffer cmd_wrappers[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint64_t available_cmd_slots;
     md_vk_recording_context* next;
+    md_vk_recording_context* tls_next;
 };
 
 typedef struct md_gpu_queue {
@@ -120,12 +113,8 @@ typedef struct md_gpu_queue {
     uint32_t              family_index;
     VkSemaphore           event_timeline;
     uint64_t              next_event_id;
-    md_mutex_t            mutex;
 
-    md_vk_queue_wait_t    pending_waits[MD_GPU_VK_MAX_PENDING_QUEUE_WAITS];
-    uint32_t              pending_wait_count;
-
-    md_vk_recording_context* recording_contexts;
+    _Atomic(md_vk_recording_context*) recording_contexts;
 } md_gpu_queue;
 
 typedef struct md_gpu_device {
@@ -137,7 +126,6 @@ typedef struct md_gpu_device {
 
     VkDescriptorSetLayout descriptor_set_layouts[MD_GPU_DESC_SET_COUNT];
     VkPipelineLayout pipeline_layout;
-    md_mutex_t resource_mutex;
 
     // Embedded primary compute queue used by cmd submission.
     struct md_gpu_queue compute_queue;
@@ -216,10 +204,8 @@ static md_vk_cmd_buffer_state_t* md_vk_cmd_track_buffer(md_gpu_command_buffer* c
 
     md_vk_cmd_buffer_state_t* state = &cmd->tracked_buffers[cmd->tracked_buffer_count++];
     state->buffer = buf;
-    md_mutex_lock(&cmd->queue->dev->resource_mutex);
     state->initial_sync = buf->sync;
     state->current_sync = buf->sync;
-    md_mutex_unlock(&cmd->queue->dev->resource_mutex);
     return state;
 }
 
@@ -238,12 +224,10 @@ static md_vk_cmd_image_state_t* md_vk_cmd_track_image(md_gpu_command_buffer* cmd
 
     md_vk_cmd_image_state_t* state = &cmd->tracked_images[cmd->tracked_image_count++];
     state->image = img;
-    md_mutex_lock(&cmd->queue->dev->resource_mutex);
     state->initial_layout = img->layout;
     state->current_layout = img->layout;
     state->initial_sync = img->sync;
     state->current_sync = img->sync;
-    md_mutex_unlock(&cmd->queue->dev->resource_mutex);
     return state;
 }
 
@@ -256,11 +240,7 @@ static VkImageLayout md_vk_cmd_image_layout(const md_gpu_command_buffer* cmd, co
         }
     }
 
-    md_gpu_device* dev = img->device;
-    md_mutex_lock(&dev->resource_mutex);
-    const VkImageLayout layout = img->layout;
-    md_mutex_unlock(&dev->resource_mutex);
-    return layout;
+    return img->layout;
 }
 
 static const md_vk_resource_sync_state_t* md_vk_batch_find_prior_buffer_sync(const md_gpu_cmd_t* cmds, size_t count, md_gpu_buffer* buf) {
@@ -693,7 +673,16 @@ static void md_vk_destroy_recording_context(md_gpu_device* dev, md_vk_recording_
     free(ctx);
 }
 
-static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* queue, md_thread_id_t thread_id) {
+static THREAD_LOCAL md_vk_recording_context* md_vk_tls_recording_contexts;
+
+static void md_vk_queue_register_recording_context(md_gpu_queue* queue, md_vk_recording_context* ctx) {
+    md_vk_recording_context* head = atomic_load_explicit(&queue->recording_contexts, memory_order_acquire);
+    do {
+        ctx->next = head;
+    } while (!atomic_compare_exchange_weak_explicit(&queue->recording_contexts, &head, ctx, memory_order_release, memory_order_acquire));
+}
+
+static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* queue) {
     if (!queue || !queue->dev) return NULL;
     md_gpu_device* dev = queue->dev;
 
@@ -701,7 +690,6 @@ static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* que
     if (!ctx) return NULL;
 
     ctx->queue = queue;
-    ctx->thread_id = thread_id;
     ctx->available_cmd_slots = MD_GPU_VK_ALL_CMD_SLOTS;
 
     VkCommandPoolCreateInfo pool_ci = {0};
@@ -790,16 +778,16 @@ static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* que
 
 static md_vk_recording_context* md_vk_queue_context_for_current_thread(md_gpu_queue* queue) {
     if (!queue) return NULL;
-    const md_thread_id_t thread_id = md_thread_id();
 
-    for (md_vk_recording_context* ctx = queue->recording_contexts; ctx; ctx = ctx->next) {
-        if (ctx->thread_id == thread_id) return ctx;
+    for (md_vk_recording_context* ctx = md_vk_tls_recording_contexts; ctx; ctx = ctx->tls_next) {
+        if (ctx->queue == queue) return ctx;
     }
 
-    md_vk_recording_context* ctx = md_vk_create_recording_context(queue, thread_id);
+    md_vk_recording_context* ctx = md_vk_create_recording_context(queue);
     if (!ctx) return NULL;
-    ctx->next = queue->recording_contexts;
-    queue->recording_contexts = ctx;
+    ctx->tls_next = md_vk_tls_recording_contexts;
+    md_vk_tls_recording_contexts = ctx;
+    md_vk_queue_register_recording_context(queue, ctx);
     return ctx;
 }
 
@@ -839,8 +827,6 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     q->dev          = out_dev;
     q->family_index = out_dev->compute_queue_family;
     if (q->vk_queue == VK_NULL_HANDLE) return false;
-    if (!md_mutex_init(&q->mutex)) return false;
-    if (!md_mutex_init(&out_dev->resource_mutex)) return false;
 
     // Create three descriptor set layouts, one per resource category:
     //   set 0 = storage images, set 1 = sampled images, set 2 = samplers
@@ -938,7 +924,7 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
-        md_vk_recording_context* ctx = dev->compute_queue.recording_contexts;
+        md_vk_recording_context* ctx = atomic_load_explicit(&dev->compute_queue.recording_contexts, memory_order_acquire);
         while (ctx) {
             md_vk_recording_context* next = ctx->next;
             md_vk_destroy_recording_context(dev, ctx);
@@ -950,8 +936,6 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
             if (dev->descriptor_set_layouts[s]) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layouts[s], NULL);
         }
         vkDestroyDevice(dev->device, NULL);
-        md_mutex_destroy(&dev->compute_queue.mutex);
-        md_mutex_destroy(&dev->resource_mutex);
     }
     if (dev->instance) {
         vkDestroyInstance(dev->instance, NULL);
@@ -1398,20 +1382,26 @@ static bool md_vk_wait_queue_timeline(md_gpu_queue* queue, uint64_t value) {
     return md_vk_check(vkWaitSemaphores(queue->dev->device, &wait_info, UINT64_MAX), "vkWaitSemaphores(event timeline)");
 }
 
+static void md_vk_reclaim_context_completed_cmds(md_vk_recording_context* ctx, uint64_t completed) {
+    if (!ctx) return;
+    uint64_t busy_slots = MD_GPU_VK_ALL_CMD_SLOTS & ~ctx->available_cmd_slots;
+    while (busy_slots) {
+        const uint32_t i = (uint32_t)ctz64(busy_slots);
+        busy_slots &= busy_slots - 1;
+
+        md_gpu_command_buffer* cmd = &ctx->cmd_wrappers[i];
+        if (cmd->retire_value == 0 || cmd->retire_value > completed) continue;
+
+        md_vk_release_cmd_slot(cmd);
+    }
+}
+
 static void md_vk_reclaim_completed_cmds(md_gpu_queue* queue) {
     if (!queue || !queue->dev || !queue->event_timeline) return;
-    uint64_t completed = md_vk_queue_timeline_value(queue);
-    for (md_vk_recording_context* ctx = queue->recording_contexts; ctx; ctx = ctx->next) {
-        uint64_t busy_slots = MD_GPU_VK_ALL_CMD_SLOTS & ~ctx->available_cmd_slots;
-        while (busy_slots) {
-            const uint32_t i = (uint32_t)ctz64(busy_slots);
-            busy_slots &= busy_slots - 1;
-
-            md_gpu_command_buffer* cmd = &ctx->cmd_wrappers[i];
-            if (cmd->retire_value == 0 || cmd->retire_value > completed) continue;
-
-            md_vk_release_cmd_slot(cmd);
-        }
+    const uint64_t completed = md_vk_queue_timeline_value(queue);
+    md_vk_recording_context* head = atomic_load_explicit(&queue->recording_contexts, memory_order_acquire);
+    for (md_vk_recording_context* ctx = head; ctx; ctx = ctx->next) {
+        md_vk_reclaim_context_completed_cmds(ctx, completed);
     }
 }
 
@@ -1419,19 +1409,15 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     if (!queue) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
 
-    md_mutex_lock(&q->mutex);
-
-    md_vk_reclaim_completed_cmds(q);
-
     md_vk_recording_context* ctx = md_vk_queue_context_for_current_thread(q);
-    if (!ctx) {
-        md_mutex_unlock(&q->mutex);
-        return NULL;
+    if (!ctx) return NULL;
+
+    if (ctx->available_cmd_slots == 0 && q->event_timeline) {
+        md_vk_reclaim_context_completed_cmds(ctx, md_vk_queue_timeline_value(q));
     }
 
     if (ctx->available_cmd_slots == 0) {
         MD_LOG_ERROR("md_gpu_command_buffer_acquire: no free command buffers");
-        md_mutex_unlock(&q->mutex);
         return NULL;
     }
 
@@ -1442,8 +1428,6 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
     /* Reset transient recording state; queue, context, vk_cmd, and dispatch_sets pointer are permanent. */
     md_vk_reset_cmd_state(cmd);
     cmd->state = MD_VK_CMD_STATE_ACQUIRED;
-
-    md_mutex_unlock(&q->mutex);
 
     return (md_gpu_command_buffer_t)cmd;
 }
@@ -1606,51 +1590,27 @@ void md_gpu_cmd_discard(md_gpu_cmd_t cmd_handle) {
     if (!cmd->queue) return;
     if (cmd->state == MD_VK_CMD_STATE_AVAILABLE || cmd->state == MD_VK_CMD_STATE_SUBMITTED) return;
 
-    md_mutex_lock(&cmd->queue->mutex);
     md_vk_release_cmd_slot(cmd);
-    md_mutex_unlock(&cmd->queue->mutex);
 }
 
-bool md_gpu_queue_wait(md_gpu_queue_t queue_handle, md_gpu_event_t event, md_gpu_barrier_stage_t dst_stage) {
-    if (!queue_handle) return false;
-    if (event.value == 0) return true;
-    md_gpu_queue* queue = (md_gpu_queue*)queue_handle;
-    md_mutex_lock(&queue->mutex);
-    if (queue->pending_wait_count >= MD_GPU_VK_MAX_PENDING_QUEUE_WAITS) {
-        MD_LOG_ERROR("Vulkan: too many pending queue waits");
-        md_mutex_unlock(&queue->mutex);
-        return false;
-    }
-
-    md_vk_queue_wait_t* wait = &queue->pending_waits[queue->pending_wait_count++];
-    wait->event = event;
-    wait->dst_stage = dst_stage;
-    md_mutex_unlock(&queue->mutex);
-    return true;
-}
-
-md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd_t* cmds, size_t cmd_count) {
+md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_queue_submit_desc_t* desc) {
     md_gpu_event_t event = {0};
-    if (!queue_handle || !cmds || cmd_count == 0 || cmd_count > UINT32_MAX) return event;
+    if (!queue_handle || !desc || !desc->cmds || desc->cmd_count == 0 || desc->cmd_count > UINT32_MAX || desc->wait_count > UINT32_MAX) return event;
+    if (desc->wait_count > 0 && !desc->waits) return event;
 
     md_gpu_queue* queue = (md_gpu_queue*)queue_handle;
+    const md_gpu_cmd_t* cmds = desc->cmds;
+    const size_t cmd_count = desc->cmd_count;
     VkCommandBufferSubmitInfo* cmd_infos = (VkCommandBufferSubmitInfo*)malloc(sizeof(VkCommandBufferSubmitInfo) * cmd_count);
     if (!cmd_infos) return event;
-
-    md_mutex_lock(&queue->mutex);
-    md_mutex_lock(&queue->dev->resource_mutex);
 
     for (size_t i = 0; i < cmd_count; ++i) {
         md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)cmds[i];
         if (!cmd || cmd->queue != queue || cmd->state != MD_VK_CMD_STATE_ENDED) {
-            md_mutex_unlock(&queue->dev->resource_mutex);
-            md_mutex_unlock(&queue->mutex);
             free(cmd_infos);
             return event;
         }
         if (!md_vk_cmd_validate_initial_state(cmds, i, cmd)) {
-            md_mutex_unlock(&queue->dev->resource_mutex);
-            md_mutex_unlock(&queue->mutex);
             free(cmd_infos);
             return event;
         }
@@ -1664,10 +1624,18 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd
 
     md_vk_reclaim_completed_cmds(queue);
 
-    VkSemaphoreSubmitInfo wait_infos[MD_GPU_VK_MAX_PENDING_QUEUE_WAITS];
+    VkSemaphoreSubmitInfo* wait_infos = NULL;
+    if (desc->wait_count > 0) {
+        wait_infos = (VkSemaphoreSubmitInfo*)malloc(sizeof(VkSemaphoreSubmitInfo) * desc->wait_count);
+        if (!wait_infos) {
+            free(cmd_infos);
+            return event;
+        }
+    }
+
     uint32_t wait_count = 0;
-    for (uint32_t i = 0; i < queue->pending_wait_count; ++i) {
-        md_vk_queue_wait_t* pending = &queue->pending_waits[i];
+    for (size_t i = 0; i < desc->wait_count; ++i) {
+        const md_gpu_queue_wait_t* pending = &desc->waits[i];
         if (pending->event.value == 0) continue;
 
         md_gpu_queue* wait_queue = (md_gpu_queue*)pending->event.queue;
@@ -1703,15 +1671,12 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd
     submit.pSignalSemaphoreInfos = &signal_info;
 
     if (!md_vk_check(vkQueueSubmit2(queue->vk_queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2(event timeline)")) {
+        free(wait_infos);
         free(cmd_infos);
-        queue->pending_wait_count = 0;
         event.queue = NULL;
         event.value = 0;
-        md_mutex_unlock(&queue->dev->resource_mutex);
-        md_mutex_unlock(&queue->mutex);
         return event;
     }
-    queue->pending_wait_count = 0;
 
     for (size_t i = 0; i < cmd_count; ++i) {
         md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)cmds[i];
@@ -1720,8 +1685,7 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd
         cmd->state = MD_VK_CMD_STATE_SUBMITTED;
     }
 
-    md_mutex_unlock(&queue->dev->resource_mutex);
-    md_mutex_unlock(&queue->mutex);
+    free(wait_infos);
     free(cmd_infos);
     return event;
 }

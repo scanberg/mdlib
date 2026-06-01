@@ -20,13 +20,6 @@
 
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
-typedef struct md_mtl_queue_wait_t {
-    md_gpu_event_t event;
-    md_gpu_barrier_stage_t dst_stage;
-} md_mtl_queue_wait_t;
-
-#define MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS 16
-
 typedef struct md_gpu_cmd_buffer_usage_t {
     md_gpu_buffer_t buffer;
     md_gpu_usage_flags_t usage;
@@ -48,8 +41,6 @@ typedef struct md_gpu_cmd_resource_binding_t {
 struct md_gpu_queue {
     struct md_gpu_device* dev;
     struct md_gpu_command_buffer* cmd_free_list;
-    md_mtl_queue_wait_t pending_waits[MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS];
-    uint32_t pending_wait_count;
 };
 
 struct md_gpu_device {
@@ -887,21 +878,19 @@ static void mtl_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
         [cmd->mtl_cmd popDebugGroup];
 }
 
-static void md_mtl_queue_encode_pending_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
-    if (!queue || !cmd || !cmd->mtl_cmd) return;
+static void md_mtl_cmd_encode_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, const md_gpu_queue_wait_t* waits, size_t wait_count) {
+    if (!queue || !cmd || !cmd->mtl_cmd || !waits) return;
 
-    for (uint32_t i = 0; i < queue->pending_wait_count; ++i) {
-        md_mtl_queue_wait_t* pending = &queue->pending_waits[i];
-        if (pending->event.value == 0) continue;
+    for (size_t i = 0; i < wait_count; ++i) {
+        const md_gpu_queue_wait_t* wait = &waits[i];
+        if (wait->event.value == 0) continue;
 
-        struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)pending->event.queue;
+        struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)wait->event.queue;
         if (!wait_queue) wait_queue = queue;
         if (!wait_queue->dev || !wait_queue->dev->event_timeline) continue;
 
-        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:pending->event.value];
+        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:wait->event.value];
     }
-
-    queue->pending_wait_count = 0;
 }
 
 static bool md_mtl_cmd_commit(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, uint64_t signal_value) {
@@ -985,27 +974,19 @@ void md_gpu_cmd_discard(md_gpu_cmd_t cmd_handle) {
     free(c);
 }
 
-bool md_gpu_queue_wait(md_gpu_queue_t queue_handle, md_gpu_event_t event, md_gpu_barrier_stage_t dst_stage) {
-    if (!queue_handle) return false;
-    if (event.value == 0) return true;
-    struct md_gpu_queue* queue = (struct md_gpu_queue*)queue_handle;
-    if (queue->pending_wait_count >= MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS) return false;
-
-    md_mtl_queue_wait_t* wait = &queue->pending_waits[queue->pending_wait_count++];
-    wait->event = event;
-    wait->dst_stage = dst_stage;
-    return true;
-}
-
-md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd_t* cmds, size_t cmd_count) {
+md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_queue_submit_desc_t* desc) {
     md_gpu_event_t event = {0};
-    if (!queue_handle || !cmds || cmd_count == 0) return event;
+    if (!queue_handle || !desc || !desc->cmds || desc->cmd_count == 0) return event;
+    if (desc->wait_count > 0 && !desc->waits) return event;
 
     struct md_gpu_queue* queue = (struct md_gpu_queue*)queue_handle;
     struct md_gpu_device* dev = queue ? queue->dev : NULL;
     if (!queue || !dev) {
         return event;
     }
+
+    const md_gpu_cmd_t* cmds = desc->cmds;
+    const size_t cmd_count = desc->cmd_count;
 
     for (size_t i = 0; i < cmd_count; ++i) {
         struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmds[i];
@@ -1020,7 +1001,7 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd
 
     for (size_t i = 0; i < cmd_count; ++i) {
         struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmds[i];
-        if (i == 0) md_mtl_queue_encode_pending_waits(queue, c->cmd);
+        if (i == 0) md_mtl_cmd_encode_waits(queue, c->cmd, desc->waits, desc->wait_count);
         const uint64_t signal_value = (i + 1 == cmd_count) ? event.value : 0;
         if (!md_mtl_cmd_commit(queue, c->cmd, signal_value)) {
             event.queue = NULL;
