@@ -41,12 +41,14 @@ extern "C" {
     per cmd recording session:
 
      1. md_gpu_bump_reset()          — cursor back to 0
-      2. md_gpu_cmd_begin()          — begin recording
-     3. md_gpu_bump_alloc() × N      — reserve staging regions
+        2. md_gpu_queue_compute()      — access the logical compute queue
+        3. md_gpu_cmd_begin()          — begin recording from the queue
+      4. md_gpu_bump_alloc() × N      — reserve staging regions
         memcpy into alloc.cpu for each
           md_gpu_cmd_copy_buffer() for each  — record uploads
-          md_gpu_cmd_barrier_buffer()        — one barrier per target buf
-      4. md_gpu_cmd_submit()             — submit cmd
+          md_gpu_cmd_barrier()              — stage-level transfer -> compute barrier
+        5. md_gpu_cmd_end()            — finish recording
+        6. md_gpu_queue_submit_one()   — submit cmd to the queue
 
    Because each alloc occupies a distinct, non-overlapping region of the
    staging buffer the GPU can read all regions in the same submission

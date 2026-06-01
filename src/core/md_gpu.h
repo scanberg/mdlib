@@ -29,6 +29,7 @@ extern "C" {
 // =============================
 
 typedef struct md_gpu_device*           md_gpu_device_t;
+typedef struct md_gpu_queue*            md_gpu_queue_t;
 typedef struct md_gpu_cmd*              md_gpu_cmd_t;
 typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
@@ -36,6 +37,7 @@ typedef struct md_gpu_image*            md_gpu_image_t;
 typedef struct md_gpu_sampler*          md_gpu_sampler_t;
 
 typedef struct md_gpu_event_t {
+    md_gpu_queue_t queue;
     uint64_t value;
 } md_gpu_event_t;
 
@@ -120,14 +122,22 @@ typedef struct md_gpu_image_region_t {
     uint32_t extent[3]; /* size   in texels (w, h, d) */
 } md_gpu_image_region_t;
 
-typedef uint32_t gpu_usage_flags_t;
+typedef struct md_gpu_buffer_image_copy_t {
+    md_gpu_image_region_t image_region;
+    size_t buffer_offset;
+    size_t bytes_per_row;   /* 0 = tightly packed */
+    size_t bytes_per_image; /* 0 = tightly packed */
+} md_gpu_buffer_image_copy_t;
+
+typedef uint32_t md_gpu_usage_flags_t;
 enum {
-    GPU_USAGE_READ  = 1 << 0,
-    GPU_USAGE_WRITE = 1 << 1,
+    MD_GPU_USAGE_READ  = 1 << 0,
+    MD_GPU_USAGE_WRITE = 1 << 1,
 };
 
 typedef enum md_gpu_resource_kind_t {
-    MD_GPU_RESOURCE_BUFFER,
+    /* Buffer usage declaration for hazard tracking; binding is via root_args/device addresses. */
+    MD_GPU_RESOURCE_BUFFER_USAGE,
     MD_GPU_RESOURCE_STORAGE_IMAGE,
     MD_GPU_RESOURCE_SAMPLED_IMAGE,
     MD_GPU_RESOURCE_SAMPLER,
@@ -135,7 +145,7 @@ typedef enum md_gpu_resource_kind_t {
 
 typedef struct md_gpu_resource_t {
     md_gpu_resource_kind_t kind;
-    gpu_usage_flags_t usage;
+    md_gpu_usage_flags_t usage;
     uint32_t set;
     uint32_t binding;
     md_gpu_buffer_t buffer;
@@ -146,7 +156,7 @@ typedef struct md_gpu_resource_t {
 typedef struct md_gpu_buffer_resource_t {
     md_gpu_buffer_t buffer;
     uint64_t offset;
-    gpu_usage_flags_t usage;
+    md_gpu_usage_flags_t usage;
 } md_gpu_buffer_resource_t;
 
 typedef struct md_gpu_resource_binding_t {
@@ -159,6 +169,8 @@ typedef struct md_gpu_resource_binding_t {
 typedef struct md_gpu_compute_pipeline_desc_t {
     const void* shader_bytes;
     size_t      shader_byte_size;
+    const char* entry_point; /* NULL = "main" */
+    const char* label;       /* optional debug label */
     uint32_t threadgroup_size[3]; /* {0,0,0} = auto */
     const md_gpu_resource_binding_t* resource_bindings;
     uint32_t resource_binding_count;
@@ -203,6 +215,14 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info);
 md_gpu_device_t md_gpu_device_create(void);
 void            md_gpu_device_destroy(md_gpu_device_t device);
 
+// Device-owned logical queues. These handles always exist; backends may map
+// several logical queues to the same physical queue when dedicated hardware queues are unavailable.
+// The graphics queue is the primary queue for rendering and general-purpose compute.
+// The transfer queue is an async compute queue optimized for copy/fill operations, if supported by the device.
+md_gpu_queue_t md_gpu_queue_graphics(md_gpu_device_t device);
+md_gpu_queue_t md_gpu_queue_compute(md_gpu_device_t device);
+md_gpu_queue_t md_gpu_queue_transfer(md_gpu_device_t device);
+
 // =============================
 // Buffers
 // =============================
@@ -243,35 +263,38 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(md_gpu_device_t device,
 void md_gpu_compute_pipeline_destroy(md_gpu_compute_pipeline_t pipeline);
 
 // =============================
-// Command buffers
+// Command buffers and queue submission
 // =============================
-// A command buffer is a transient recording scope. The caller records work,
-// submits it, then receives a durable completion event id.
+// A command buffer is a transient recording scope created from a queue.
+// A handle returned from md_gpu_cmd_begin must be closed by either
+// md_gpu_queue_submit, md_gpu_queue_submit_one, or md_gpu_cmd_discard.
 
-md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label);
+md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_queue_t queue, const char* label);
+bool md_gpu_cmd_end(md_gpu_cmd_t cmd);
+void md_gpu_cmd_discard(md_gpu_cmd_t cmd);
 
-// Ends recording, submits the command buffer, and returns its completion event.
-// A zero id means submission failed.
-md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd);
+bool md_gpu_queue_wait(md_gpu_queue_t queue, md_gpu_event_t event, md_gpu_barrier_stage_t dst_stage);
+md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue, const md_gpu_cmd_t* cmds, size_t num_cmds);
+
+static inline md_gpu_event_t md_gpu_queue_submit_one(md_gpu_queue_t queue, md_gpu_cmd_t cmd) {
+    return md_gpu_queue_submit(queue, &cmd, 1);
+}
 
 // CPU poll and wait for event
-bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event);
-void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event);
-
-// Inserts an ordering dependency on a previously submitted event.
-void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd, md_gpu_event_t event);
+bool md_gpu_event_is_complete(md_gpu_event_t event);
+void md_gpu_event_wait(md_gpu_event_t event);
 
 // Records one compute dispatch.
 // Resources are consumed by this dispatch only and cleared after it is encoded.
 // Copy/fill commands do not use md_gpu_compute_dispatch_t.
 bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd, const md_gpu_compute_dispatch_t* dispatch);
 
-void md_gpu_cmd_barrier(md_gpu_cmd_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
+bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
 void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd, const char* label);
 void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd);
 
-void md_gpu_cmd_copy_buffer(
+bool md_gpu_cmd_copy_buffer(
     md_gpu_cmd_t cmd,
     md_gpu_buffer_t src,
     md_gpu_buffer_t dst,
@@ -279,26 +302,49 @@ void md_gpu_cmd_copy_buffer(
     size_t src_offset,
     size_t dst_offset);
 
-void md_gpu_cmd_copy_image_region_to_buffer(
+bool md_gpu_cmd_copy_image_to_buffer(
+    md_gpu_cmd_t cmd,
+    md_gpu_image_t src_image,
+    md_gpu_buffer_t dst_buffer,
+    const md_gpu_buffer_image_copy_t* copy);
+
+bool md_gpu_cmd_copy_buffer_to_image_layout(
+    md_gpu_cmd_t cmd,
+    md_gpu_buffer_t src_buffer,
+    md_gpu_image_t dst_image,
+    const md_gpu_buffer_image_copy_t* copy);
+
+static inline bool md_gpu_cmd_copy_image_region_to_buffer(
     md_gpu_cmd_t cmd,
     md_gpu_image_t src_image,
     md_gpu_image_region_t src_region,
     md_gpu_buffer_t dst_buffer,
-    size_t dst_offset);
+    size_t dst_offset)
+{
+    md_gpu_buffer_image_copy_t copy = { .image_region = src_region, .buffer_offset = dst_offset };
+    return md_gpu_cmd_copy_image_to_buffer(cmd, src_image, dst_buffer, &copy);
+}
 
-void md_gpu_cmd_copy_buffer_to_image(
+static inline bool md_gpu_cmd_copy_buffer_to_image(
     md_gpu_cmd_t cmd,
     md_gpu_buffer_t src_buffer,
-    md_gpu_image_t dst_image);
+    md_gpu_image_t dst_image)
+{
+    return md_gpu_cmd_copy_buffer_to_image_layout(cmd, src_buffer, dst_image, NULL);
+}
 
-void md_gpu_cmd_copy_buffer_to_image_region(
+static inline bool md_gpu_cmd_copy_buffer_to_image_region(
     md_gpu_cmd_t cmd,
     md_gpu_buffer_t src_buffer,
     size_t src_offset,
     md_gpu_image_t dst_image,
-    md_gpu_image_region_t dst_region);
+    md_gpu_image_region_t dst_region)
+{
+    md_gpu_buffer_image_copy_t copy = { .image_region = dst_region, .buffer_offset = src_offset };
+    return md_gpu_cmd_copy_buffer_to_image_layout(cmd, src_buffer, dst_image, &copy);
+}
 
-void md_gpu_cmd_fill_buffer(
+bool md_gpu_cmd_fill_buffer(
     md_gpu_cmd_t cmd,
     md_gpu_buffer_t buffer,
     size_t offset,

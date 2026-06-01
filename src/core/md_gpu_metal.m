@@ -10,6 +10,7 @@
 
 #include <core/md_common.h> // Assert
 #include <stdlib.h>         // malloc, free
+#include <string.h>         // strcmp
 
 /* Limits are defined in md_gpu.h */
 
@@ -17,17 +18,23 @@
 #define MD_GPU_MAX_PUSH_CONSTANTS 256
 #define MD_GPU_MAX_RESOURCE_BINDINGS (MD_GPU_MAX_BIND_SLOTS * 3)
 
-typedef struct md_gpu_queue* md_gpu_queue_t;
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
+
+typedef struct md_mtl_queue_wait_t {
+    md_gpu_event_t event;
+    md_gpu_barrier_stage_t dst_stage;
+} md_mtl_queue_wait_t;
+
+#define MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS 16
 
 typedef struct md_gpu_cmd_buffer_usage_t {
     md_gpu_buffer_t buffer;
-    gpu_usage_flags_t usage;
+    md_gpu_usage_flags_t usage;
 } md_gpu_cmd_buffer_usage_t;
 
 typedef struct md_gpu_cmd_resource_binding_t {
     md_gpu_resource_kind_t kind;
-    gpu_usage_flags_t usage;
+    md_gpu_usage_flags_t usage;
     uint32_t set;
     uint32_t binding;
     md_gpu_image_t image;
@@ -41,6 +48,8 @@ typedef struct md_gpu_cmd_resource_binding_t {
 struct md_gpu_queue {
     struct md_gpu_device* dev;
     struct md_gpu_command_buffer* cmd_free_list;
+    md_mtl_queue_wait_t pending_waits[MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS];
+    uint32_t pending_wait_count;
 };
 
 struct md_gpu_device {
@@ -103,6 +112,11 @@ struct md_gpu_command_buffer {
 struct md_gpu_cmd {
     struct md_gpu_queue* queue;
     struct md_gpu_command_buffer* cmd;
+    enum {
+        MD_MTL_CMD_STATE_ACQUIRED = 0,
+        MD_MTL_CMD_STATE_RECORDING,
+        MD_MTL_CMD_STATE_ENDED,
+    } state;
     bool pushed_debug_group;
 };
 
@@ -158,7 +172,7 @@ static inline void mtl_cmd_reset_active_resource_slots(struct md_gpu_command_buf
     MEMSET(cmd->active_samplers, 0, sizeof(cmd->active_samplers));
 }
 
-static bool mtl_cmd_merge_buffer_usage(struct md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, gpu_usage_flags_t usage) {
+static bool mtl_cmd_merge_buffer_usage(struct md_gpu_command_buffer* cmd, md_gpu_buffer_t buffer, md_gpu_usage_flags_t usage) {
     if (!cmd || !buffer || usage == 0) return true;
 
     for (uint32_t i = 0; i < cmd->cmd_buffer_count; ++i) {
@@ -187,9 +201,9 @@ static bool mtl_cmd_merge_resource_binding(struct md_gpu_command_buffer* cmd, co
         return false;
     }
 
-    gpu_usage_flags_t usage = resource->usage;
+    md_gpu_usage_flags_t usage = resource->usage;
     if (resource->kind != MD_GPU_RESOURCE_SAMPLER && usage == 0) {
-        usage = GPU_USAGE_READ;
+        usage = MD_GPU_USAGE_READ;
     }
 
     for (uint32_t i = 0; i < cmd->cmd_resource_count; ++i) {
@@ -283,8 +297,8 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     if (!device) return;
 
     if (device->next_event_id > 0 && [device->event_timeline signaledValue] < device->next_event_id) {
-        md_gpu_event_t event = { .value = device->next_event_id };
-        md_gpu_event_wait(device, event);
+        md_gpu_event_t event = { .queue = (md_gpu_queue_t)&device->compute_queue, .value = device->next_event_id };
+        md_gpu_event_wait(event);
     }
 
     struct md_gpu_command_buffer* it = device->compute_queue.cmd_free_list;
@@ -315,6 +329,21 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
     }
 
     return true;
+}
+
+md_gpu_queue_t md_gpu_queue_graphics(md_gpu_device_t device) {
+    if (!device) return NULL;
+    return (md_gpu_queue_t)&device->compute_queue;
+}
+
+md_gpu_queue_t md_gpu_queue_compute(md_gpu_device_t device) {
+    if (!device) return NULL;
+    return (md_gpu_queue_t)&device->compute_queue;
+}
+
+md_gpu_queue_t md_gpu_queue_transfer(md_gpu_device_t device) {
+    if (!device) return NULL;
+    return (md_gpu_queue_t)&device->compute_queue;
 }
 
 /* =============================
@@ -444,7 +473,10 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(
     md_gpu_device_t device,
     const md_gpu_compute_pipeline_desc_t* desc)
 {
+    if (!device || !desc || !desc->shader_bytes || desc->shader_byte_size == 0) return NULL;
+
     NSError* err = nil;
+    const char* entry_point = desc->entry_point ? desc->entry_point : "main";
 
     dispatch_data_t data = dispatch_data_create(
         desc->shader_bytes,
@@ -456,18 +488,39 @@ md_gpu_compute_pipeline_t md_gpu_compute_pipeline_create(
         [device->device newLibraryWithData:data error:&err];
     dispatch_release(data);
     ASSERT(lib && !err);
+    if (!lib || err) return NULL;
 
-    // Slang renames 'main' to 'main_0' for Metal (Metal reserves 'main').
-    // spirv-cross used 'main0'; try both for compatibility.
-    id<MTLFunction> fn = [lib newFunctionWithName:@"main_0"];
-    if (!fn) fn = [lib newFunctionWithName:@"main0"];
+    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:entry_point]];
+    if (!fn && strcmp(entry_point, "main") == 0) {
+        // Slang renames 'main' to 'main_0' for Metal (Metal reserves 'main').
+        // spirv-cross used 'main0'; try both for compatibility.
+        fn = [lib newFunctionWithName:@"main_0"];
+        if (!fn) fn = [lib newFunctionWithName:@"main0"];
+    }
     ASSERT(fn);
+    if (!fn) {
+        [lib release];
+        return NULL;
+    }
 
     struct md_gpu_compute_pipeline* p =
         (struct md_gpu_compute_pipeline*)calloc(1, sizeof(struct md_gpu_compute_pipeline));
 
-    p->pso = [device->device newComputePipelineStateWithFunction:fn error:&err];
+    MTLComputePipelineDescriptor* pipeline_desc = [[MTLComputePipelineDescriptor alloc] init];
+    pipeline_desc.computeFunction = fn;
+    if (desc->label) {
+        pipeline_desc.label = [NSString stringWithUTF8String:desc->label];
+    }
+
+    p->pso = [device->device newComputePipelineStateWithDescriptor:pipeline_desc options:0 reflection:nil error:&err];
+    [pipeline_desc release];
     ASSERT(p->pso && !err);
+    if (!p->pso || err) {
+        [fn release];
+        [lib release];
+        free(p);
+        return NULL;
+    }
 
     NSUInteger max_threads = [p->pso maxTotalThreadsPerThreadgroup];
     NSUInteger exec_width  = [p->pso threadExecutionWidth];
@@ -517,12 +570,12 @@ static inline id<MTLComputeCommandEncoder> ensure_compute_enc(struct md_gpu_comm
     return cmd->compute_enc;
 }
 
-static inline MTLResourceUsage mtl_resource_usage(gpu_usage_flags_t usage) {
+static inline MTLResourceUsage mtl_resource_usage(md_gpu_usage_flags_t usage) {
     MTLResourceUsage mtl_usage = 0;
-    if (usage & GPU_USAGE_READ) {
+    if (usage & MD_GPU_USAGE_READ) {
         mtl_usage |= MTLResourceUsageRead;
     }
-    if (usage & GPU_USAGE_WRITE) {
+    if (usage & MD_GPU_USAGE_WRITE) {
         mtl_usage |= MTLResourceUsageWrite;
     }
     return mtl_usage ? mtl_usage : MTLResourceUsageRead;
@@ -646,12 +699,24 @@ static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queu
         queue->cmd_free_list = cmd->next_free;
     } else {
         cmd = (struct md_gpu_command_buffer*)calloc(1, sizeof(struct md_gpu_command_buffer));
+        if (!cmd) return NULL;
         cmd->dev = queue->dev;
     }
 
     cmd_reset(cmd);
     cmd->mtl_cmd = [[queue->dev->queue commandBuffer] retain];
     return cmd;
+}
+
+static inline bool md_mtl_cmd_is_recording(const struct md_gpu_cmd* cmd) {
+    return cmd && cmd->cmd && cmd->state == MD_MTL_CMD_STATE_RECORDING;
+}
+
+static inline void md_mtl_cmd_discard(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
+    if (!queue || !cmd) return;
+    cmd_reset(cmd);
+    cmd->next_free = queue->cmd_free_list;
+    queue->cmd_free_list = cmd;
 }
 
 static void mtl_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
@@ -692,97 +757,66 @@ static void mtl_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t 
         [cmd->compute_enc memoryBarrierWithScope:(MTLBarrierScopeBuffers | MTLBarrierScopeTextures)];
 }
 
-static void mtl_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer,
-                               md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    (void)src_stage; (void)dst_stage;
-    ASSERT(buffer);
-    if (cmd->compute_enc) {
-        id<MTLResource> res = buffer->buffer;
-        [cmd->compute_enc memoryBarrierWithResources:&res count:1];
-    }
-}
-
-static void mtl_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image,
-                              md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    (void)src_stage; (void)dst_stage;
-    ASSERT(image);
-    if (cmd->compute_enc) {
-        id<MTLResource> res = image->texture;
-        [cmd->compute_enc memoryBarrierWithResources:&res count:1];
-    }
-}
-
-static void mtl_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
+static bool mtl_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t src,
                             md_gpu_buffer_t dst,
                             size_t size,
                             size_t src_offset,
                             size_t dst_offset) {
+    if (!cmd || !src || !dst || size == 0) return false;
     id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
     [blit copyFromBuffer:src->buffer sourceOffset:src_offset toBuffer:dst->buffer destinationOffset:dst_offset size:size];
+    return true;
 }
 
-static void mtl_cmd_copy_buffer_to_image(md_gpu_command_buffer_t cmd,
-                                     md_gpu_buffer_t src_buffer,
-                                     md_gpu_image_t dst_image) {
-    id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
-    MTLSize sz = MTLSizeMake(dst_image->desc.width, dst_image->desc.height, dst_image->desc.depth);
-    const uint32_t bpp = md_gpu_format_bytes_per_pixel(dst_image->desc.format);
-    ASSERT(bpp > 0);
-    const size_t bytes_per_row   = (size_t)sz.width * (size_t)bpp;
-    const size_t bytes_per_image = bytes_per_row * (size_t)sz.height;
-    [blit copyFromBuffer:src_buffer->buffer
-            sourceOffset:0
-       sourceBytesPerRow:bytes_per_row
-     sourceBytesPerImage:bytes_per_image
-              sourceSize:sz
-               toTexture:dst_image->texture
-        destinationSlice:0
-        destinationLevel:0
-       destinationOrigin:MTLOriginMake(0,0,0)];
+static bool mtl_image_copy_layout(MTLOrigin* origin, MTLSize* size, size_t* buffer_offset, size_t* bytes_per_row, size_t* bytes_per_image, const md_gpu_image_desc_t* desc, const md_gpu_buffer_image_copy_t* copy) {
+    if (!origin || !size || !buffer_offset || !bytes_per_row || !bytes_per_image || !desc) return false;
+
+    const uint32_t bpp = md_gpu_format_bytes_per_pixel(desc->format);
+    if (bpp == 0) return false;
+
+    const md_gpu_image_region_t image_region = copy ? copy->image_region : (md_gpu_image_region_t){0};
+    const uint32_t ox = image_region.offset[0];
+    const uint32_t oy = image_region.offset[1];
+    const uint32_t oz = image_region.offset[2];
+    if (ox >= desc->width || oy >= desc->height || oz >= desc->depth) return false;
+
+    const uint32_t ew = image_region.extent[0] ? image_region.extent[0] : desc->width  - ox;
+    const uint32_t eh = image_region.extent[1] ? image_region.extent[1] : desc->height - oy;
+    const uint32_t ed = image_region.extent[2] ? image_region.extent[2] : desc->depth  - oz;
+    if (ew == 0 || eh == 0 || ed == 0) return false;
+    if (ew > desc->width - ox || eh > desc->height - oy || ed > desc->depth - oz) return false;
+
+    const size_t tight_row = (size_t)ew * (size_t)bpp;
+    const size_t row_pitch = (copy && copy->bytes_per_row) ? copy->bytes_per_row : tight_row;
+    if (row_pitch < tight_row) return false;
+
+    const size_t tight_image = row_pitch * (size_t)eh;
+    const size_t image_pitch = (copy && copy->bytes_per_image) ? copy->bytes_per_image : tight_image;
+    if (image_pitch < tight_image) return false;
+
+    *origin = MTLOriginMake(ox, oy, oz);
+    *size = MTLSizeMake(ew, eh, ed);
+    *buffer_offset = copy ? copy->buffer_offset : 0;
+    *bytes_per_row = row_pitch;
+    *bytes_per_image = image_pitch;
+    return true;
 }
 
-static void mtl_cmd_copy_image_region_to_buffer(md_gpu_command_buffer_t cmd,
-                                            md_gpu_image_t src_image,
-                                            md_gpu_image_region_t src_region,
-                                            md_gpu_buffer_t dst_buffer,
-                                            size_t dst_offset) {
-    id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
-    MTLOrigin origin = MTLOriginMake(src_region.offset[0], src_region.offset[1], src_region.offset[2]);
-    uint32_t ew = src_region.extent[0] ? src_region.extent[0] : src_image->desc.width;
-    uint32_t eh = src_region.extent[1] ? src_region.extent[1] : src_image->desc.height;
-    uint32_t ed = src_region.extent[2] ? src_region.extent[2] : src_image->desc.depth;
-    MTLSize sz = MTLSizeMake(ew, eh, ed);
-    const uint32_t bpp = md_gpu_format_bytes_per_pixel(src_image->desc.format);
-    ASSERT(bpp > 0);
-    const size_t bytes_per_row   = (size_t)ew * (size_t)bpp;
-    const size_t bytes_per_image = bytes_per_row * (size_t)eh;
-    [blit copyFromTexture:src_image->texture
-               sourceSlice:0
-               sourceLevel:0
-              sourceOrigin:origin
-                sourceSize:sz
-                  toBuffer:dst_buffer->buffer
-         destinationOffset:dst_offset
-    destinationBytesPerRow:bytes_per_row
-  destinationBytesPerImage:bytes_per_image];
-}
-
-static void mtl_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
+static bool mtl_cmd_copy_buffer_to_image_layout(md_gpu_command_buffer_t cmd,
                                             md_gpu_buffer_t src_buffer,
-                                            size_t src_offset,
                                             md_gpu_image_t dst_image,
-                                            md_gpu_image_region_t dst_region) {
+                                            const md_gpu_buffer_image_copy_t* copy) {
+    if (!cmd || !src_buffer || !dst_image) return false;
+
+    MTLOrigin origin;
+    MTLSize sz;
+    size_t src_offset = 0;
+    size_t bytes_per_row = 0;
+    size_t bytes_per_image = 0;
+    if (!mtl_image_copy_layout(&origin, &sz, &src_offset, &bytes_per_row, &bytes_per_image, &dst_image->desc, copy)) return false;
+
     id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
-    uint32_t ew = dst_region.extent[0] ? dst_region.extent[0] : dst_image->desc.width;
-    uint32_t eh = dst_region.extent[1] ? dst_region.extent[1] : dst_image->desc.height;
-    uint32_t ed = dst_region.extent[2] ? dst_region.extent[2] : dst_image->desc.depth;
-    MTLOrigin origin = MTLOriginMake(dst_region.offset[0], dst_region.offset[1], dst_region.offset[2]);
-    MTLSize   sz     = MTLSizeMake(ew, eh, ed);
-    const uint32_t bpp = md_gpu_format_bytes_per_pixel(dst_image->desc.format);
-    ASSERT(bpp > 0);
-    const size_t bytes_per_row   = (size_t)ew * (size_t)bpp;
-    const size_t bytes_per_image = bytes_per_row * (size_t)eh;
     [blit copyFromBuffer:src_buffer->buffer
             sourceOffset:src_offset
        sourceBytesPerRow:bytes_per_row
@@ -792,15 +826,44 @@ static void mtl_cmd_copy_buffer_to_image_region(md_gpu_command_buffer_t cmd,
         destinationSlice:0
         destinationLevel:0
        destinationOrigin:origin];
+        return true;
 }
 
-static void mtl_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
+static bool mtl_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd,
+                                                                                        md_gpu_image_t src_image,
+                                                                                        md_gpu_buffer_t dst_buffer,
+                                                                                        const md_gpu_buffer_image_copy_t* copy) {
+        if (!cmd || !src_image || !dst_buffer) return false;
+
+        MTLOrigin origin;
+        MTLSize sz;
+        size_t dst_offset = 0;
+        size_t bytes_per_row = 0;
+        size_t bytes_per_image = 0;
+        if (!mtl_image_copy_layout(&origin, &sz, &dst_offset, &bytes_per_row, &bytes_per_image, &src_image->desc, copy)) return false;
+
+        id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
+        [blit copyFromTexture:src_image->texture
+                             sourceSlice:0
+                             sourceLevel:0
+                            sourceOrigin:origin
+                                sourceSize:sz
+                                    toBuffer:dst_buffer->buffer
+                 destinationOffset:dst_offset
+        destinationBytesPerRow:bytes_per_row
+    destinationBytesPerImage:bytes_per_image];
+        return true;
+}
+
+static bool mtl_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             md_gpu_buffer_t buffer,
                             size_t offset,
                             size_t size,
                             uint8_t value) {
+        if (!cmd || !buffer || size == 0) return false;
     id<MTLBlitCommandEncoder> blit = ensure_blit_enc(cmd);
     [blit fillBuffer:buffer->buffer range:NSMakeRange(offset, size) value:value];
+        return true;
 }
 
 static void mtl_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
@@ -824,14 +887,29 @@ static void mtl_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
         [cmd->mtl_cmd popDebugGroup];
 }
 
-static bool md_mtl_cmd_submit(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, uint64_t signal_value) {
+static void md_mtl_queue_encode_pending_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
+    if (!queue || !cmd || !cmd->mtl_cmd) return;
+
+    for (uint32_t i = 0; i < queue->pending_wait_count; ++i) {
+        md_mtl_queue_wait_t* pending = &queue->pending_waits[i];
+        if (pending->event.value == 0) continue;
+
+        struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)pending->event.queue;
+        if (!wait_queue) wait_queue = queue;
+        if (!wait_queue->dev || !wait_queue->dev->event_timeline) continue;
+
+        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:pending->event.value];
+    }
+
+    queue->pending_wait_count = 0;
+}
+
+static bool md_mtl_cmd_commit(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, uint64_t signal_value) {
     ASSERT(queue && cmd && cmd->mtl_cmd);
-    ASSERT(signal_value != 0);
 
-    end_compute_enc(cmd);
-    end_blit_enc(cmd);
-
-    [cmd->mtl_cmd encodeSignalEvent:queue->dev->event_timeline value:signal_value];
+    if (signal_value) {
+        [cmd->mtl_cmd encodeSignalEvent:queue->dev->event_timeline value:signal_value];
+    }
 
     [cmd->mtl_cmd commit];
 
@@ -844,63 +922,132 @@ static bool md_mtl_cmd_submit(struct md_gpu_queue* queue, struct md_gpu_command_
     return true;
 }
 
-md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_device_t device, const char* label) {
-    if (!device) return NULL;
-    struct md_gpu_device* dev = device;
-    struct md_gpu_queue* queue = &dev->compute_queue;
-
-    struct md_gpu_cmd* c = (struct md_gpu_cmd*)calloc(1, sizeof(struct md_gpu_cmd));
-    if (!c) return NULL;
-
-    c->queue = queue;
-    c->cmd = md_gpu_command_buffer_acquire((md_gpu_queue_t)queue);
-    if (!c->cmd) {
-        free(c);
-        return NULL;
-    }
+static bool md_mtl_cmd_begin_acquired(md_gpu_cmd_t cmd_handle, const char* label) {
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!c || !c->queue || !c->cmd || c->state != MD_MTL_CMD_STATE_ACQUIRED) return false;
 
     if (label) {
         mtl_cmd_push_debug_group(c->cmd, label);
         c->pushed_debug_group = true;
     }
+
+    c->state = MD_MTL_CMD_STATE_RECORDING;
+    return true;
+}
+
+md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_queue_t queue_handle, const char* label) {
+    if (!queue_handle) return NULL;
+
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)calloc(1, sizeof(struct md_gpu_cmd));
+    if (!c) return NULL;
+
+    c->queue = (struct md_gpu_queue*)queue_handle;
+    c->cmd = md_gpu_command_buffer_acquire(queue_handle);
+    if (!c->cmd) {
+        free(c);
+        return NULL;
+    }
+    c->state = MD_MTL_CMD_STATE_ACQUIRED;
+
+    if (!md_mtl_cmd_begin_acquired((md_gpu_cmd_t)c, label)) {
+        md_gpu_cmd_discard((md_gpu_cmd_t)c);
+        return NULL;
+    }
+
     return (md_gpu_cmd_t)c;
 }
 
-md_gpu_event_t md_gpu_cmd_submit(md_gpu_cmd_t cmd_handle) {
-    md_gpu_event_t event = {0};
+bool md_gpu_cmd_end(md_gpu_cmd_t cmd_handle) {
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    if (!c) return event;
+    if (!md_mtl_cmd_is_recording(c)) return false;
 
-    struct md_gpu_queue* queue = c->queue;
-    struct md_gpu_device* dev = queue ? queue->dev : NULL;
-    if (!queue || !dev || !c->cmd) {
-        free(c);
-        return event;
-    }
+    end_compute_enc(c->cmd);
+    end_blit_enc(c->cmd);
 
     if (c->pushed_debug_group) {
-        mtl_cmd_pop_debug_group(c->cmd);
+        [c->cmd->mtl_cmd popDebugGroup];
+        c->pushed_debug_group = false;
     }
 
-    event.value = ++dev->next_event_id;
-    if (event.value == 0) event.value = ++dev->next_event_id;
+    c->state = MD_MTL_CMD_STATE_ENDED;
+    return true;
+}
 
-    if (!md_mtl_cmd_submit(queue, c->cmd, event.value)) {
-        event.value = 0;
+void md_gpu_cmd_discard(md_gpu_cmd_t cmd_handle) {
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!c) return;
+
+    if (c->queue && c->cmd) {
+        md_mtl_cmd_discard(c->queue, c->cmd);
+        c->cmd = NULL;
     }
 
     free(c);
+}
+
+bool md_gpu_queue_wait(md_gpu_queue_t queue_handle, md_gpu_event_t event, md_gpu_barrier_stage_t dst_stage) {
+    if (!queue_handle) return false;
+    if (event.value == 0) return true;
+    struct md_gpu_queue* queue = (struct md_gpu_queue*)queue_handle;
+    if (queue->pending_wait_count >= MD_GPU_MTL_MAX_PENDING_QUEUE_WAITS) return false;
+
+    md_mtl_queue_wait_t* wait = &queue->pending_waits[queue->pending_wait_count++];
+    wait->event = event;
+    wait->dst_stage = dst_stage;
+    return true;
+}
+
+md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_cmd_t* cmds, size_t cmd_count) {
+    md_gpu_event_t event = {0};
+    if (!queue_handle || !cmds || cmd_count == 0) return event;
+
+    struct md_gpu_queue* queue = (struct md_gpu_queue*)queue_handle;
+    struct md_gpu_device* dev = queue ? queue->dev : NULL;
+    if (!queue || !dev) {
+        return event;
+    }
+
+    for (size_t i = 0; i < cmd_count; ++i) {
+        struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmds[i];
+        if (!c || c->queue != queue || !c->cmd || c->state != MD_MTL_CMD_STATE_ENDED) {
+            return event;
+        }
+    }
+
+    event.queue = (md_gpu_queue_t)queue;
+    event.value = ++dev->next_event_id;
+    if (event.value == 0) event.value = ++dev->next_event_id;
+
+    for (size_t i = 0; i < cmd_count; ++i) {
+        struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmds[i];
+        if (i == 0) md_mtl_queue_encode_pending_waits(queue, c->cmd);
+        const uint64_t signal_value = (i + 1 == cmd_count) ? event.value : 0;
+        if (!md_mtl_cmd_commit(queue, c->cmd, signal_value)) {
+            event.queue = NULL;
+            event.value = 0;
+            break;
+        }
+        c->cmd = NULL;
+        free(c);
+    }
+
     return event;
 }
 
-bool md_gpu_event_is_complete(md_gpu_device_t device, md_gpu_event_t event) {
-    if (!device || event.value == 0) return true;
-    return [device->event_timeline signaledValue] >= event.value;
+bool md_gpu_event_is_complete(md_gpu_event_t event) {
+    if (event.value == 0) return true;
+    struct md_gpu_queue* queue = (struct md_gpu_queue*)event.queue;
+    md_gpu_device_t event_device = queue ? queue->dev : NULL;
+    if (!event_device) return true;
+    return [event_device->event_timeline signaledValue] >= event.value;
 }
 
-void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
-    if (!device || event.value == 0) return;
-    if ([device->event_timeline signaledValue] >= event.value) return;
+void md_gpu_event_wait(md_gpu_event_t event) {
+    if (event.value == 0) return;
+    struct md_gpu_queue* queue = (struct md_gpu_queue*)event.queue;
+    md_gpu_device_t event_device = queue ? queue->dev : NULL;
+    if (!event_device) return;
+    if ([event_device->event_timeline signaledValue] >= event.value) return;
 
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     ASSERT(semaphore);
@@ -915,7 +1062,7 @@ void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
         return;
     }
 
-    [device->event_timeline notifyListener:listener atValue:event.value block:^(id<MTLSharedEvent> shared_event, uint64_t value) {
+    [event_device->event_timeline notifyListener:listener atValue:event.value block:^(id<MTLSharedEvent> shared_event, uint64_t value) {
         (void)shared_event;
         (void)value;
         dispatch_semaphore_signal(semaphore);
@@ -929,17 +1076,6 @@ void md_gpu_event_wait(md_gpu_device_t device, md_gpu_event_t event) {
 #endif
 }
 
-void md_gpu_cmd_event_wait(md_gpu_cmd_t cmd_handle, md_gpu_event_t event) {
-    if (!cmd_handle || event.value == 0) return;
-
-    struct md_gpu_cmd* cmd = (struct md_gpu_cmd*)cmd_handle;
-    if (!cmd->cmd || !cmd->cmd->mtl_cmd) return;
-
-    end_compute_enc(cmd->cmd);
-    end_blit_enc(cmd->cmd);
-    [cmd->cmd->mtl_cmd encodeWaitForEvent:cmd->cmd->dev->event_timeline value:event.value];
-}
-
 static bool mtl_cmd_declare_resources(struct md_gpu_command_buffer* cmd, const md_gpu_resource_t* resources, uint32_t resource_count) {
     if (!cmd) return false;
     cmd->cmd_buffer_count = 0;
@@ -950,7 +1086,7 @@ static bool mtl_cmd_declare_resources(struct md_gpu_command_buffer* cmd, const m
     for (uint32_t i = 0; i < resource_count; ++i) {
         const md_gpu_resource_t* resource = &resources[i];
         switch (resource->kind) {
-            case MD_GPU_RESOURCE_BUFFER:
+            case MD_GPU_RESOURCE_BUFFER_USAGE:
                 if (!mtl_cmd_merge_buffer_usage(cmd, resource->buffer, resource->usage)) return false;
                 break;
             case MD_GPU_RESOURCE_STORAGE_IMAGE:
@@ -977,6 +1113,7 @@ bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, const md_gpu_compute_dispatch_
     }
 
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!md_mtl_cmd_is_recording(c)) return false;
     if (!mtl_cmd_declare_resources(c->cmd, dispatch->resources, dispatch->resource_count)) return false;
 
     mtl_cmd_bind_compute_pipeline(c->cmd, dispatch->pipeline);
@@ -990,58 +1127,52 @@ bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, const md_gpu_compute_dispatch_
     return true;
 }
 
-void md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
-    if (!cmd_handle) return;
+bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
+    if (!cmd_handle) return false;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!md_mtl_cmd_is_recording(c)) return false;
     mtl_cmd_barrier(c->cmd, src_stage, dst_stage);
+    return true;
 }
 
 void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
     if (!cmd_handle) return;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!md_mtl_cmd_is_recording(c)) return;
     mtl_cmd_push_debug_group(c->cmd, label);
 }
 
 void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd_handle) {
     if (!cmd_handle) return;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!md_mtl_cmd_is_recording(c)) return;
     mtl_cmd_pop_debug_group(c->cmd);
 }
 
-void md_gpu_cmd_copy_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
-    if (!cmd_handle) return;
+bool md_gpu_cmd_copy_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
+    if (!cmd_handle) return false;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    mtl_cmd_copy_buffer(c->cmd, src, dst, size, src_offset, dst_offset);
+    if (!md_mtl_cmd_is_recording(c)) return false;
+    return mtl_cmd_copy_buffer(c->cmd, src, dst, size, src_offset, dst_offset);
 }
 
-void md_gpu_cmd_copy_image_region_to_buffer(md_gpu_cmd_t cmd_handle,
-                                            md_gpu_image_t src_image,
-                                            md_gpu_image_region_t src_region,
-                                            md_gpu_buffer_t dst_buffer,
-                                            size_t dst_offset) {
-    if (!cmd_handle) return;
+bool md_gpu_cmd_copy_image_to_buffer(md_gpu_cmd_t cmd_handle, md_gpu_image_t src_image, md_gpu_buffer_t dst_buffer, const md_gpu_buffer_image_copy_t* copy) {
+    if (!cmd_handle) return false;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    mtl_cmd_copy_image_region_to_buffer(c->cmd, src_image, src_region, dst_buffer, dst_offset);
+    if (!md_mtl_cmd_is_recording(c)) return false;
+    return mtl_cmd_copy_image_to_buffer(c->cmd, src_image, dst_buffer, copy);
 }
 
-void md_gpu_cmd_copy_buffer_to_image(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image) {
-    if (!cmd_handle) return;
+bool md_gpu_cmd_copy_buffer_to_image_layout(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src_buffer, md_gpu_image_t dst_image, const md_gpu_buffer_image_copy_t* copy) {
+    if (!cmd_handle) return false;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    mtl_cmd_copy_buffer_to_image(c->cmd, src_buffer, dst_image);
+    if (!md_mtl_cmd_is_recording(c)) return false;
+    return mtl_cmd_copy_buffer_to_image_layout(c->cmd, src_buffer, dst_image, copy);
 }
 
-void md_gpu_cmd_copy_buffer_to_image_region(md_gpu_cmd_t cmd_handle,
-                                            md_gpu_buffer_t src_buffer,
-                                            size_t src_offset,
-                                            md_gpu_image_t dst_image,
-                                            md_gpu_image_region_t dst_region) {
-    if (!cmd_handle) return;
+bool md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
+    if (!cmd_handle) return false;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    mtl_cmd_copy_buffer_to_image_region(c->cmd, src_buffer, src_offset, dst_image, dst_region);
-}
-
-void md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, size_t offset, size_t size, uint8_t value) {
-    if (!cmd_handle) return;
-    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
-    mtl_cmd_fill_buffer(c->cmd, buffer, offset, size, value);
+    if (!md_mtl_cmd_is_recording(c)) return false;
+    return mtl_cmd_fill_buffer(c->cmd, buffer, offset, size, value);
 }

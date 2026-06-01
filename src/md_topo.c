@@ -65,6 +65,8 @@ static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_
         md_gpu_compute_pipeline_desc_t desc = {
             .shader_bytes     = blob_start,
             .shader_byte_size = blob_size,
+            .entry_point      = "main",
+            .label            = name,
             .threadgroup_size = { wg_x, wg_y, wg_z },
             .resource_bindings = resource_bindings,
             .resource_binding_count = resource_binding_count,
@@ -265,10 +267,10 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
     topo_bidirectional_manifold_dispatch_t bidirectional_dispatch = topo_bidirectional_manifold_dispatch_init();
     TOPO_FILL_COMMON_ARGS(bidirectional_dispatch.args);
-    bidirectional_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    bidirectional_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    bidirectional_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    bidirectional_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     bidirectional_dispatch.resources.volumeTex.image = volume;
-    bidirectional_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    bidirectional_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
     bidirectional_dispatch.group_count[0] = wg[0];
     bidirectional_dispatch.group_count[1] = wg[1];
     bidirectional_dispatch.group_count[2] = wg[2];
@@ -292,9 +294,9 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
 
     topo_path_compression_dispatch_t path_dispatch = topo_path_compression_dispatch_init();
     TOPO_FILL_COMMON_ARGS(path_dispatch.args);
-    path_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    path_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    path_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    path_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    path_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    path_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     path_dispatch.group_count[0] = wg[0];
     path_dispatch.group_count[1] = wg[1];
     path_dispatch.group_count[2] = wg[2];
@@ -312,12 +314,12 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_push_debug_group(cmd, "Critical-point detection");
     topo_critical_points_dispatch_t critical_dispatch = topo_critical_points_dispatch_init();
     TOPO_FILL_COMMON_ARGS(critical_dispatch.args);
-    critical_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    critical_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    critical_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    critical_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    critical_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    critical_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    critical_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    critical_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     critical_dispatch.resources.volumeTex.image = volume;
-    critical_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    critical_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
     critical_dispatch.group_count[0] = wg[0];
     critical_dispatch.group_count[1] = wg[1];
     critical_dispatch.group_count[2] = wg[2];
@@ -330,11 +332,11 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_push_debug_group(cmd, "Critical-point compaction");
     topo_critical_point_compaction_dispatch_t compaction_dispatch = topo_critical_point_compaction_dispatch_init();
     TOPO_FILL_COMMON_ARGS(compaction_dispatch.args);
-    compaction_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    compaction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    compaction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    compaction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
-    compaction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    compaction_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    compaction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    compaction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    compaction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    compaction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     compaction_dispatch.group_count[0] = wg[0];
     compaction_dispatch.group_count[1] = wg[1];
     compaction_dispatch.group_count[2] = wg[2];
@@ -348,16 +350,16 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_push_debug_group(cmd, "Vertex + edge extraction");
     topo_vertex_edge_extraction_dispatch_t extraction_dispatch = topo_vertex_edge_extraction_dispatch_init();
     TOPO_FILL_COMMON_ARGS(extraction_dispatch.args);
-    extraction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    extraction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    extraction_dispatch.resources.vertex_data = (md_gpu_buffer_resource_t){ .buffer = ctx->vert_buf, .offset = 0, .usage = GPU_USAGE_WRITE };
-    extraction_dispatch.resources.edges = (md_gpu_buffer_resource_t){ .buffer = ctx->edge_buf, .offset = 0, .usage = GPU_USAGE_WRITE };
-    extraction_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    extraction_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    extraction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    extraction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = GPU_USAGE_READ | GPU_USAGE_WRITE };
+    extraction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    extraction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    extraction_dispatch.resources.vertex_data = (md_gpu_buffer_resource_t){ .buffer = ctx->vert_buf, .offset = 0, .usage = MD_GPU_USAGE_WRITE };
+    extraction_dispatch.resources.edges = (md_gpu_buffer_resource_t){ .buffer = ctx->edge_buf, .offset = 0, .usage = MD_GPU_USAGE_WRITE };
+    extraction_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    extraction_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    extraction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    extraction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     extraction_dispatch.resources.volumeTex.image = volume;
-    extraction_dispatch.resources.volumeTex.usage = GPU_USAGE_READ;
+    extraction_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
     extraction_dispatch.group_count[0] = DIV_UP(ctx->vert_cap, 64);
     extraction_dispatch.group_count[1] = 1;
     extraction_dispatch.group_count[2] = 1;

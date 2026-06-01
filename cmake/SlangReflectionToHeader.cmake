@@ -72,11 +72,11 @@ function(slang_reflect_resource_usage OUT RESOURCE_KIND ACCESS)
   if (RESOURCE_KIND STREQUAL "MD_GPU_RESOURCE_SAMPLER")
     set(VALUE "0u")
   elseif (ACCESS STREQUAL "writeOnly")
-    set(VALUE "GPU_USAGE_WRITE")
+    set(VALUE "MD_GPU_USAGE_WRITE")
   elseif (ACCESS STREQUAL "readWrite")
-    set(VALUE "GPU_USAGE_READ | GPU_USAGE_WRITE")
+    set(VALUE "MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE")
   else()
-    set(VALUE "GPU_USAGE_READ")
+    set(VALUE "MD_GPU_USAGE_READ")
   endif()
 
   set(${OUT} "${VALUE}" PARENT_SCOPE)
@@ -367,7 +367,7 @@ foreach(PARAM_INDEX RANGE 0 ${PARAM_LAST})
 "    if (dispatch->resources.${FIELD_SYMBOL}.usage == 0u) return false;\n"
 "    if (!dispatch->resources.${FIELD_SYMBOL}.buffer) return false;\n")
           string(APPEND RESOURCE_ARRAY_LINES
-      "        { .kind = MD_GPU_RESOURCE_BUFFER, .usage = dispatch->resources.${FIELD_SYMBOL}.usage, .buffer = dispatch->resources.${FIELD_SYMBOL}.buffer },\n")
+      "        { .kind = MD_GPU_RESOURCE_BUFFER_USAGE, .usage = dispatch->resources.${FIELD_SYMBOL}.usage, .buffer = dispatch->resources.${FIELD_SYMBOL}.buffer },\n")
           string(APPEND RESOURCE_ROOT_ARG_LINES
       "    root_args.${FIELD_SYMBOL} = md_gpu_buffer_address(dispatch->resources.${FIELD_SYMBOL}.buffer) + dispatch->resources.${FIELD_SYMBOL}.offset;\n"
 "    if (!root_args.${FIELD_SYMBOL}) return false;\n")

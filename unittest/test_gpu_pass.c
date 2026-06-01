@@ -76,14 +76,24 @@ UTEST(gpu_pass, gto_mo_root) {
     ASSERT_TRUE(out_image != NULL);
     ASSERT_TRUE(readback_buf != NULL);
 
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(device, "gto mo root pass test");
-    ASSERT_TRUE(cmd != NULL);
-    md_gto_gpu_mo_record(cmd, gpu_basis, atom_buf, coeff_buf, 1, out_image, &grid, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-    md_gpu_cmd_copy_image_region_to_buffer(cmd, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
-    md_gpu_event_t event = md_gpu_cmd_submit(cmd);
-    ASSERT_TRUE(event.value != 0);
-    md_gpu_event_wait(device, event);
+    md_gpu_queue_t queue = md_gpu_queue_compute(device);
+    ASSERT_TRUE(queue != NULL);
+
+    md_gpu_cmd_t eval_cmd = md_gpu_cmd_begin(queue, "gto mo root eval pass test");
+    ASSERT_TRUE(eval_cmd != NULL);
+    md_gto_gpu_mo_record(eval_cmd, gpu_basis, atom_buf, coeff_buf, 1, out_image, &grid, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET);
+    ASSERT_TRUE(md_gpu_cmd_end(eval_cmd));
+    md_gpu_event_t eval_event = md_gpu_queue_submit(queue, &eval_cmd, 1);
+    ASSERT_TRUE(eval_event.value != 0);
+
+    md_gpu_cmd_t copy_cmd = md_gpu_cmd_begin(queue, "gto mo root readback pass test");
+    ASSERT_TRUE(copy_cmd != NULL);
+    md_gpu_cmd_copy_image_region_to_buffer(copy_cmd, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
+    ASSERT_TRUE(md_gpu_cmd_end(copy_cmd));
+    md_gpu_queue_wait(queue, eval_event, MD_GPU_BARRIER_STAGE_TRANSFER);
+    md_gpu_event_t copy_event = md_gpu_queue_submit(queue, &copy_cmd, 1);
+    ASSERT_TRUE(copy_event.value != 0);
+    md_gpu_event_wait(copy_event);
 
     const float* values = (const float*)md_gpu_buffer_cpu_ptr(readback_buf);
     float max_delta = 0.0f;

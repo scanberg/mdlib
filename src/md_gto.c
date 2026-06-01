@@ -994,6 +994,8 @@ static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device,
         md_gpu_compute_pipeline_desc_t desc = {
             .shader_bytes     = blob_start,
             .shader_byte_size = blob_size,
+            .entry_point      = "main",
+            .label            = name,
             .threadgroup_size = { wg_x, wg_y, wg_z },
             .resource_bindings = resource_bindings,
             .resource_binding_count = resource_binding_count,
@@ -1090,14 +1092,24 @@ static bool gto_local_staging_upload_at(md_gpu_device_t device, md_gpu_buffer_t 
     md_gpu_alloc_t a = md_gpu_bump_push(&bump, size);
     MEMCPY(a.cpu, src, size);
 
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(device, "GTO staging upload");
+    md_gpu_queue_t queue = md_gpu_queue_compute(device);
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "GTO staging upload");
     if (!cmd) {
+        md_gpu_cmd_discard(cmd);
         md_gpu_bump_free(&bump);
         return false;
     }
     md_gpu_cmd_copy_buffer(cmd, bump.buffer, dst, size, a.offset, dst_offset);
-    md_gpu_event_t event = md_gpu_cmd_submit(cmd);
-    md_gpu_event_wait(device, event);
+    if (!md_gpu_cmd_end(cmd)) {
+        md_gpu_cmd_discard(cmd);
+        md_gpu_bump_free(&bump);
+        return false;
+    }
+    md_gpu_event_t event = md_gpu_queue_submit_one(queue, cmd);
+    if (!event.value) {
+        md_gpu_cmd_discard(cmd);
+    }
+    md_gpu_event_wait(event);
     md_gpu_bump_free(&bump);
     return event.value != 0;
 }
@@ -1289,7 +1301,7 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
         return;
     }
 
-    gpu_usage_flags_t image_usage = op == MD_GTO_OP_SET ? GPU_USAGE_WRITE : GPU_USAGE_READ | GPU_USAGE_WRITE;
+    md_gpu_usage_flags_t image_usage = op == MD_GTO_OP_SET ? MD_GPU_USAGE_WRITE : MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE;
 
     gto_eval_gto_density_dispatch_t dispatch = gto_eval_gto_density_dispatch_init();
     world_to_model_matrix(dispatch.args.world_to_model, grid);
@@ -1304,12 +1316,12 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
     dispatch.args.grid_dim[3]   = 0;
     dispatch.args.num_cgtos     = L->num_cgtos;
     dispatch.args.operation     = (uint32_t)op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
     dispatch.resources.out_vol.image = image;
     dispatch.resources.out_vol.usage = image_usage;
     dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_density_thread_group_size_x);
@@ -1352,12 +1364,12 @@ void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
     dispatch.args.num_rows      = (uint32_t)num_mos;
     dispatch.args.mode          = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
     dispatch.args.operation     = (uint32_t)op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = GPU_USAGE_READ };
-    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = GPU_USAGE_READ };
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
     dispatch.resources.out_vol.image = out_image;
     dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_mo_thread_group_size_x);
     dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
