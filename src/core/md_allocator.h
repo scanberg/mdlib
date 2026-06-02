@@ -44,6 +44,10 @@ struct md_allocator_i* md_get_temp_arena(void);
 // Get a thread local temporary allocator which does not alias any supplied allocator
 struct md_allocator_i* md_get_temp_arena_avoid(struct md_allocator_i* const* conflicts, size_t conflict_count);
 
+// Initialize and register necessary thread local data for temporary arena system.
+// Should be called once at the start of the program before any temp arenas are used.
+void md_temp_arena_system_init(void);
+
 md_temp_t md_temp_begin(void);
 md_temp_t md_temp_begin_avoid(md_allocator_i* const* conflicts, size_t conflict_count);
 md_temp_t md_temp_begin_arena(md_allocator_i* arena);

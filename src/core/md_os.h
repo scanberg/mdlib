@@ -23,6 +23,12 @@ typedef void (*md_thread_entry)(void *data);
 typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
 
+#if MD_PLATFORM_WINDOWS
+#define md_thread_key_t uint32_t
+#elif MD_PLATFORM_UNIX
+#define md_thread_key_t pthread_key_t
+#endif
+
 // ### MUTEX ###
 typedef struct md_mutex_t {
     union {
@@ -149,7 +155,9 @@ void			md_thread_detach(md_thread_t* thread);
 bool			md_thread_join(md_thread_t* thread);
 
 // Register callbacks.
-bool			md_thread_on_exit(md_thread_exit callback);
+bool			md_thread_key_create(md_thread_key_t* key, md_thread_exit callback);
+void            md_thread_key_delete(md_thread_key_t key);
+void            md_thread_key_set_value(md_thread_key_t key, void* value);
 
 // Get ID from supplied thread object.
 md_thread_id_t	md_thread_get_id(md_thread_t* thread);

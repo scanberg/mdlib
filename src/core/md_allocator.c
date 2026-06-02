@@ -26,29 +26,30 @@ size_t md_temp_arena_reservation_size(void) {
     return MD_TEMP_ARENA_RESERVATION_SIZE;
 }
 
-THREAD_LOCAL md_allocator_i* _temp_allocators[MD_TEMP_ALLOCATOR_COUNT];
-THREAD_LOCAL int _temp_exit_callback_registered;
-THREAD_LOCAL md_allocator_i* _active_temp_allocator;
-THREAD_LOCAL size_t _active_temp_depth;
+static md_thread_key_t g_arena_key;
 
-static void release_temp_allocators(void* data) {
+typedef struct thread_local_data_t{
+	md_allocator_i* allocator[MD_TEMP_ALLOCATOR_COUNT];
+	md_allocator_i* active_allocator;
+    size_t depth;
+} thread_local_data_t;
+
+static THREAD_LOCAL thread_local_data_t _thread_local_data = { 0 };
+
+static void release_thread_local_data(void* data) {
     (void)data;
-    for (size_t i = 0; i < ARRAY_SIZE(_temp_allocators); ++i) {
-        if (_temp_allocators[i]) {
-            md_vm_arena_destroy(_temp_allocators[i]);
-            _temp_allocators[i] = 0;
+    for (size_t i = 0; i < MD_TEMP_ALLOCATOR_COUNT; ++i) {
+        if (_thread_local_data.allocator[i]) {
+            md_vm_arena_destroy(_thread_local_data.allocator[i]);
+            _thread_local_data.allocator[i] = NULL;
         }
     }
-    _temp_exit_callback_registered = 0;
+    _thread_local_data.active_allocator = NULL;
 }
 
-static void ensure_temp_exit_callback(void) {
-    if (!_temp_exit_callback_registered) {
-        bool registered = md_thread_on_exit(release_temp_allocators);
-        ASSERT(registered);
-        (void)registered;
-        _temp_exit_callback_registered = 1;
-    }
+void md_temp_arena_system_init(void) {
+    md_thread_key_create(&g_arena_key, release_thread_local_data);
+	md_thread_key_set_value(g_arena_key, &_thread_local_data);
 }
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
@@ -75,27 +76,28 @@ static md_allocator_i* create_temp_allocator(void) {
 }
 
 static md_allocator_i* thread_temp_allocator_at(size_t index) {
-    ASSERT(index < ARRAY_SIZE(_temp_allocators));
-    ensure_temp_exit_callback();
-    if (!_temp_allocators[index]) {
-        _temp_allocators[index] = create_temp_allocator();
+    ASSERT(index < MD_TEMP_ALLOCATOR_COUNT);
+    if (!_thread_local_data.allocator[index]) {
+        _thread_local_data.allocator[index] = create_temp_allocator();
     }
-    return _temp_allocators[index];
+    return _thread_local_data.allocator[index];
 }
 
-static bool allocator_matches(md_allocator_i* allocator, md_allocator_i* conflict) {
+static inline bool allocator_matches(md_allocator_i* allocator, md_allocator_i* conflict) {
     return allocator && conflict && (allocator == conflict || allocator->inst == conflict->inst);
 }
 
-static bool allocator_is_conflicted(md_allocator_i* allocator, md_allocator_i* const* conflicts, size_t conflict_count) {
+static inline bool allocator_is_conflicted(md_allocator_i* allocator, md_allocator_i* const* conflicts, size_t conflict_count) {
     if (!conflicts) {
         return false;
     }
+
     for (size_t i = 0; i < conflict_count; ++i) {
         if (allocator_matches(allocator, conflicts[i])) {
             return true;
         }
     }
+
     return false;
 }
 
@@ -109,7 +111,11 @@ md_allocator_i* md_get_temp_arena(void) {
 }
 
 md_allocator_i* md_get_temp_arena_avoid(md_allocator_i* const* conflicts, size_t conflict_count) {
-    for (size_t i = 0; i < ARRAY_SIZE(_temp_allocators); ++i) {
+	if (!conflicts || conflict_count == 0) {
+		return md_get_temp_arena();
+	}
+
+    for (size_t i = 0; i < MD_TEMP_ALLOCATOR_COUNT; ++i) {
         md_allocator_i* allocator = thread_temp_allocator_at(i);
         if (!allocator_is_conflicted(allocator, conflicts, conflict_count)) {
             return allocator;
@@ -126,11 +132,11 @@ static md_temp_t temp_begin(md_allocator_i* arena) {
     md_temp_t temp = {
         .arena = arena,
         .pos = md_vm_arena_get_pos(arena),
-        .prev_arena = _active_temp_allocator,
-        .depth = _active_temp_depth + 1,
+        .prev_arena = _thread_local_data.active_allocator,
+        .depth = _thread_local_data.depth + 1,
     };
-    _active_temp_allocator = arena;
-    _active_temp_depth = temp.depth;
+    _thread_local_data.active_allocator = arena;
+    _thread_local_data.depth = temp.depth;
     return temp;
 }
 
@@ -148,15 +154,15 @@ md_temp_t md_temp_begin_arena(md_allocator_i* arena) {
 
 void md_temp_end(md_temp_t temp) {
     ASSERT(temp.arena);
-    if (_active_temp_allocator != temp.arena || _active_temp_depth != temp.depth) {
+    if (_thread_local_data.active_allocator != temp.arena || _thread_local_data.depth != temp.depth) {
         MD_LOG_ERROR("Temporary arena scopes must be ended in LIFO order");
         ASSERT(false);
         return;
     }
 
     md_vm_arena_set_pos_back(temp.arena, temp.pos);
-    _active_temp_allocator = temp.prev_arena;
-    _active_temp_depth = temp.depth - 1;
+    _thread_local_data.active_allocator = temp.prev_arena;
+    _thread_local_data.depth = temp.depth - 1;
 }
 
 md_allocator_i* md_temp_allocator(md_temp_t temp) {
@@ -165,12 +171,12 @@ md_allocator_i* md_temp_allocator(md_temp_t temp) {
 }
 
 static md_allocator_i* current_temp_allocator(void) {
-    if (!_active_temp_allocator) {
+    if (!_thread_local_data.active_allocator) {
         MD_LOG_ERROR("No active temporary arena scope");
         ASSERT(false);
         return NULL;
     }
-    return _active_temp_allocator;
+    return _thread_local_data.active_allocator;
 }
 
 void* md_temp_push(size_t size) {

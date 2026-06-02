@@ -1431,7 +1431,8 @@ md_thread_id_t md_thread_id(void) {
 #endif
 }
 
-bool md_thread_on_exit(md_thread_exit callback) {
+bool md_thread_key_create(md_thread_key_t* key, md_thread_exit callback) {
+    ASSERT(key);
     if (!callback) {
         MD_LOG_ERROR("OS: callback was NULL");
         return false;
@@ -1439,14 +1440,38 @@ bool md_thread_on_exit(md_thread_exit callback) {
 
 #if MD_PLATFORM_WINDOWS
     DWORD idx = FlsAlloc(callback);
-    return idx != FLS_OUT_OF_INDEXES;
+	if (idx == FLS_OUT_OF_INDEXES) {
+		MD_LOG_ERROR("OS: failed to create thread local storage key");
+		return false;
+	}
+	*key = (md_thread_key_t)(uintptr_t)idx;
+	return true;
 #elif MD_PLATFORM_UNIX
-    pthread_key_t key;
-    int ret = pthread_key_create(&key, callback);
+    int ret = pthread_key_create(key, callback);
     return ret == 0;
 #else
     ASSERT(false);
     return false;
+#endif
+}
+
+void md_thread_key_delete(md_thread_key_t key) {
+#if MD_PLATFORM_WINDOWS
+	FlsFree((DWORD)(uintptr_t)key);
+#elif MD_PLATFORM_UNIX
+	pthread_key_delete(key);
+#else
+	ASSERT(false);
+#endif
+}
+
+void md_thread_key_set_value(md_thread_key_t key, void* value) {
+#if MD_PLATFORM_WINDOWS
+	FlsSetValue((DWORD)(uintptr_t)key, value);
+    #elif MD_PLATFORM_UNIX
+    pthread_setspecific(key, value);
+#else
+    ASSERT(false);
 #endif
 }
 
