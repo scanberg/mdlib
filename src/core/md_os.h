@@ -3,6 +3,10 @@
 #include <core/md_platform.h>
 #include <core/md_str.h>
 
+#if MD_PLATFORM_UNIX
+#include <pthread.h>
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
