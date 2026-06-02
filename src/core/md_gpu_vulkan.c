@@ -3,6 +3,7 @@
 #include <core/md_common.h>
 #include <core/md_intrinsics.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,6 +76,13 @@ typedef enum md_vk_cmd_state_t {
     MD_VK_CMD_STATE_SUBMITTED,
 } md_vk_cmd_state_t;
 
+typedef enum md_vk_queue_slot_t {
+    MD_VK_QUEUE_SLOT_GRAPHICS = 0,
+    MD_VK_QUEUE_SLOT_COMPUTE,
+    MD_VK_QUEUE_SLOT_TRANSFER,
+    MD_VK_QUEUE_SLOT_COUNT,
+} md_vk_queue_slot_t;
+
 typedef struct md_vk_thread_context md_vk_thread_context;
 
 typedef struct md_gpu_command_buffer {
@@ -108,10 +116,9 @@ typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
     VkQueue               vk_queue;
     uint32_t              family_index;
+    md_vk_queue_slot_t    slot;
     VkSemaphore           event_timeline;
     uint64_t              next_event_id;
-
-    THREAD_LOCAL md_vk_thread_context* thread_context;
 } md_gpu_queue;
 
 typedef struct md_gpu_device {
@@ -124,8 +131,7 @@ typedef struct md_gpu_device {
     VkDescriptorSetLayout descriptor_set_layouts[MD_GPU_DESC_SET_COUNT];
     VkPipelineLayout pipeline_layout;
 
-    // Embedded primary compute queue used by cmd submission.
-    struct md_gpu_queue compute_queue;
+    struct md_gpu_queue queues[MD_VK_QUEUE_SLOT_COUNT];
 } md_gpu_device;
 
 typedef struct md_gpu_buffer {
@@ -164,6 +170,86 @@ typedef struct md_gpu_compute_pipeline {
     md_gpu_resource_binding_t resource_bindings[MD_GPU_MAX_RESOURCE_BINDINGS];
     uint32_t resource_binding_count;
 } md_gpu_compute_pipeline;
+
+static md_thread_key_t vk_thread_context_key;
+static THREAD_LOCAL md_vk_thread_context* vk_thread_contexts[MD_VK_QUEUE_SLOT_COUNT];
+
+static void md_vk_destroy_thread_context(md_gpu_device* dev, md_vk_thread_context* ctx);
+static uint64_t md_vk_queue_timeline_value(md_gpu_queue* queue);
+static bool md_vk_wait_queue_timeline(md_gpu_queue* queue, uint64_t value);
+static void md_vk_reclaim_context_completed_cmds(md_vk_thread_context* ctx, uint64_t completed);
+
+static uint64_t md_vk_thread_context_pending_value(const md_vk_thread_context* ctx) {
+    if (!ctx) return 0;
+
+    uint64_t max_retire_value = 0;
+    uint64_t busy_slots = MD_GPU_VK_ALL_CMD_SLOTS & ~ctx->available_cmd_slots;
+    while (busy_slots) {
+        const uint32_t i = (uint32_t)ctz64(busy_slots);
+        busy_slots &= busy_slots - 1;
+
+        const md_gpu_command_buffer* cmd = &ctx->cmd_wrappers[i];
+        if (cmd->retire_value > max_retire_value) {
+            max_retire_value = cmd->retire_value;
+        }
+    }
+
+    return max_retire_value;
+}
+
+static void md_vk_release_thread_context(md_vk_thread_context* ctx) {
+    if (!ctx) return;
+
+    md_gpu_queue* queue = ctx->queue;
+    md_gpu_device* dev = queue ? queue->dev : NULL;
+    if (!queue || !dev) {
+        free(ctx);
+        return;
+    }
+
+    const uint64_t retire_value = md_vk_thread_context_pending_value(ctx);
+    if (retire_value) {
+        if (!md_vk_wait_queue_timeline(queue, retire_value)) {
+            MD_LOG_ERROR("Vulkan: failed to drain queue timeline before destroying thread context");
+        }
+        md_vk_reclaim_context_completed_cmds(ctx, md_vk_queue_timeline_value(queue));
+    }
+
+    md_vk_destroy_thread_context(dev, ctx);
+}
+
+static void md_vk_thread_context_thread_exit(void* data) {
+    md_vk_thread_context** contexts = (md_vk_thread_context**)data;
+    if (!contexts) return;
+
+    for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
+        if (contexts[i]) {
+            md_vk_release_thread_context(contexts[i]);
+            contexts[i] = NULL;
+        }
+    }
+}
+
+static bool md_vk_thread_context_system_init(void) {
+    return md_thread_key_create(&vk_thread_context_key, md_vk_thread_context_thread_exit);
+}
+
+static void md_vk_thread_context_system_shutdown(void) {
+    md_thread_key_set_value(vk_thread_context_key, NULL);
+    md_thread_key_delete(vk_thread_context_key);
+}
+
+static void md_vk_release_current_thread_contexts_for_device(md_gpu_device* dev) {
+    if (!dev) return;
+
+    for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
+        md_vk_thread_context* ctx = vk_thread_contexts[i];
+        if (ctx && ctx->queue && ctx->queue->dev == dev) {
+            md_vk_destroy_thread_context(dev, ctx);
+            vk_thread_contexts[i] = NULL;
+        }
+    }
+}
 
 static bool md_vk_check(VkResult res, const char* what) {
     if (res == VK_SUCCESS) return true;
@@ -685,7 +771,7 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_ci.queueFamilyIndex = queue->family_index;
     if (!md_vk_check(vkCreateCommandPool(dev->device, &pool_ci, NULL, &ctx->vk_command_pool), "vkCreateCommandPool(recording context)")) {
-        md_vk_destroy_recording_context(dev, ctx);
+        md_vk_destroy_thread_context(dev, ctx);
         return NULL;
     }
 
@@ -696,7 +782,7 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cb_ai.commandBufferCount = MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE;
     if (!md_vk_check(vkAllocateCommandBuffers(dev->device, &cb_ai, vk_cmds), "vkAllocateCommandBuffers(recording context)")) {
-        md_vk_destroy_recording_context(dev, ctx);
+        md_vk_destroy_thread_context(dev, ctx);
         return NULL;
     }
 
@@ -714,7 +800,7 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     dp_ci.poolSizeCount = MD_GPU_DESC_SET_COUNT;
     dp_ci.pPoolSizes = pool_sizes;
     if (!md_vk_check(vkCreateDescriptorPool(dev->device, &dp_ci, NULL, &ctx->descriptor_pool), "vkCreateDescriptorPool(recording context)")) {
-        md_vk_destroy_recording_context(dev, ctx);
+        md_vk_destroy_thread_context(dev, ctx);
         return NULL;
     }
 
@@ -725,7 +811,7 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     if (!set_layouts || !all_sets) {
         free(set_layouts);
         free(all_sets);
-        md_vk_destroy_recording_context(dev, ctx);
+        md_vk_destroy_thread_context(dev, ctx);
         return NULL;
     }
     for (uint32_t i = 0; i < dispatches_total; ++i) {
@@ -750,7 +836,7 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     free(set_layouts);
     free(all_sets);
     if (!sets_ok) {
-        md_vk_destroy_recording_context(dev, ctx);
+        md_vk_destroy_thread_context(dev, ctx);
         return NULL;
     }
 
@@ -766,9 +852,22 @@ static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
 
 static inline md_vk_thread_context* md_vk_queue_context_for_current_thread(md_gpu_queue* queue) {
     ASSERT(queue);
-	if (queue->thread_context) return queue->thread_context;
-    queue->thread_context = md_vk_create_recording_context(queue);
-    return queue->thread_context;
+    ASSERT(queue->slot < MD_VK_QUEUE_SLOT_COUNT);
+
+    md_thread_key_set_value(vk_thread_context_key, vk_thread_contexts);
+
+    md_vk_thread_context* ctx = vk_thread_contexts[queue->slot];
+    if (ctx) {
+        ASSERT(ctx->queue == queue);
+        return ctx;
+    }
+
+    ctx = md_vk_create_thread_context(queue);
+    if (!ctx) return NULL;
+
+    vk_thread_contexts[queue->slot] = ctx;
+
+    return ctx;
 }
 
 static bool md_vk_create_device(md_gpu_device* out_dev) {
@@ -802,11 +901,17 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
     if (!md_vk_check(vkCreateDevice(out_dev->physical_device, &dci, NULL, &out_dev->device), "vkCreateDevice")) return false;
 
-    md_gpu_queue* q = &out_dev->compute_queue;
-    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &q->vk_queue);
-    q->dev          = out_dev;
-    q->family_index = out_dev->compute_queue_family;
-    if (q->vk_queue == VK_NULL_HANDLE) return false;
+    VkQueue vk_queue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(out_dev->device, out_dev->compute_queue_family, 0, &vk_queue);
+    if (vk_queue == VK_NULL_HANDLE) return false;
+
+    for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
+        md_gpu_queue* q = &out_dev->queues[i];
+        q->dev = out_dev;
+        q->vk_queue = vk_queue;
+        q->family_index = out_dev->compute_queue_family;
+        q->slot = (md_vk_queue_slot_t)i;
+    }
 
     // Create three descriptor set layouts, one per resource category:
     //   set 0 = storage images, set 1 = sampled images, set 2 = samplers
@@ -862,7 +967,10 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
     VkSemaphoreCreateInfo sem_ci = {0};
     sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     sem_ci.pNext = &timeline_ci;
-    if (!md_vk_check(vkCreateSemaphore(out_dev->device, &sem_ci, NULL, &q->event_timeline), "vkCreateSemaphore(event timeline)")) return false;
+    for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
+        md_gpu_queue* q = &out_dev->queues[i];
+        if (!md_vk_check(vkCreateSemaphore(out_dev->device, &sem_ci, NULL, &q->event_timeline), "vkCreateSemaphore(event timeline)")) return false;
+    }
 
     return true;
 }
@@ -875,7 +983,13 @@ md_gpu_device_t md_gpu_device_create(void) {
     md_gpu_device* dev = (md_gpu_device*)calloc(1, sizeof(md_gpu_device));
     if (!dev) return NULL;
 
+    if (!md_vk_thread_context_system_init()) {
+        free(dev);
+        return NULL;
+    }
+
     if (!md_vk_create_instance(dev)) {
+        md_vk_thread_context_system_shutdown();
         free(dev);
         return NULL;
     }
@@ -883,12 +997,14 @@ md_gpu_device_t md_gpu_device_create(void) {
     volkLoadInstance(dev->instance);
 
     if (!md_vk_pick_physical_device(dev)) {
+        md_vk_thread_context_system_shutdown();
         vkDestroyInstance(dev->instance, NULL);
         free(dev);
         return NULL;
     }
 
     if (!md_vk_create_device(dev)) {
+        md_vk_thread_context_system_shutdown();
         vkDestroyInstance(dev->instance, NULL);
         free(dev);
         return NULL;
@@ -904,7 +1020,12 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
-        if (dev->compute_queue.event_timeline) vkDestroySemaphore(dev->device, dev->compute_queue.event_timeline, NULL);
+        md_vk_release_current_thread_contexts_for_device(dev);
+        for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
+            if (dev->queues[i].event_timeline) {
+                vkDestroySemaphore(dev->device, dev->queues[i].event_timeline, NULL);
+            }
+        }
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s) {
             if (dev->descriptor_set_layouts[s]) vkDestroyDescriptorSetLayout(dev->device, dev->descriptor_set_layouts[s], NULL);
@@ -914,22 +1035,23 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     if (dev->instance) {
         vkDestroyInstance(dev->instance, NULL);
     }
+    md_vk_thread_context_system_shutdown();
     free(dev);
 }
 
 md_gpu_queue_t md_gpu_queue_graphics(md_gpu_device_t device) {
     if (!device) return NULL;
-    return (md_gpu_queue_t)&((md_gpu_device*)device)->compute_queue;
+    return (md_gpu_queue_t)&((md_gpu_device*)device)->queues[MD_VK_QUEUE_SLOT_GRAPHICS];
 }
 
 md_gpu_queue_t md_gpu_queue_compute(md_gpu_device_t device) {
     if (!device) return NULL;
-    return (md_gpu_queue_t)&((md_gpu_device*)device)->compute_queue;
+    return (md_gpu_queue_t)&((md_gpu_device*)device)->queues[MD_VK_QUEUE_SLOT_COMPUTE];
 }
 
 md_gpu_queue_t md_gpu_queue_transfer(md_gpu_device_t device) {
     if (!device) return NULL;
-    return (md_gpu_queue_t)&((md_gpu_device*)device)->compute_queue;
+    return (md_gpu_queue_t)&((md_gpu_device*)device)->queues[MD_VK_QUEUE_SLOT_TRANSFER];
 }
 
 bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info) {
