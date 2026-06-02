@@ -24,7 +24,7 @@ typedef struct md_vlx_atomic_property_t {
 typedef struct md_vlx_density_property_t {
 	str_t    label;
 	uint64_t key;
-	// If data is present, it is a square matrix in AO space.
+	size_t 	 dim[2];
 	double*  data;
 } md_vlx_density_property_t;
 

@@ -1508,7 +1508,6 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 			continue;
 		}
 		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
-		MD_LOG_DEBUG("obj_name: '%s', obj_type: %i", name_buf, type);
 
 		// Ensure that the type is a dataset, if not we skip
 		if (type != H5G_DATASET) {
@@ -1627,7 +1626,6 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 			continue;
 		}
 		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
-		MD_LOG_DEBUG("obj_name: '%s', obj_type: %i", name_buf, type);
 
 		// Ensure that the type is a dataset, if not we skip
 		if (type != H5G_DATASET) {
@@ -1706,6 +1704,8 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 		md_vlx_density_property_t property = {
 			 .label = str_copy_cstr(property_label, vlx->arena),
 			 .key = key,
+			 .dim[0] = dims[0],
+			 .dim[1] = dims[1],
 			 .data = NULL,
 		};
 
@@ -1717,6 +1717,7 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 		}
 
 		md_array_push(vlx->density_properties, property, vlx->arena);
+		MD_LOG_DEBUG("Read density property '%s' with dimensions [%zu x %zu]", property_label, dims[0], dims[1]);
 	done:
 		H5Tclose(attr_type);
 		H5Aclose(attr_id);
@@ -3131,6 +3132,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (scf_id != H5I_INVALID_HID) {
 				result = h5_read_scf_data(vlx, scf_id);
 				h5_read_atomic_properties(vlx, scf_id);
+				h5_read_density_properties(vlx, scf_id);
 				H5Gclose(scf_id);
 				if (!result) goto done;
 			}
@@ -3144,6 +3146,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
             if (vib_id != H5I_INVALID_HID) {
                 result = h5_read_vib_data(vlx, vib_id);
 				h5_read_atomic_properties(vlx, vib_id);
+				h5_read_density_properties(vlx, vib_id);
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
@@ -3157,6 +3160,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (opt_id != H5I_INVALID_HID) {
 				result = h5_read_opt_data(vlx, opt_id);
 				h5_read_atomic_properties(vlx, opt_id);
+				h5_read_density_properties(vlx, opt_id);
 				H5Gclose(opt_id);
 				if (!result) goto done;
 			}
@@ -3170,6 +3174,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (rsp_id != H5I_INVALID_HID) {
 				result = h5_read_rsp_data(vlx, rsp_id);
 				h5_read_atomic_properties(vlx, rsp_id);
+				h5_read_density_properties(vlx, rsp_id);
 				H5Gclose(rsp_id);
 				if (!result) goto done;
 			}
@@ -3884,6 +3889,33 @@ const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vl
 		for (size_t i = 0; i < md_array_size(vlx->atomic_properties); ++i) {
 			if (vlx->atomic_properties[i].key == key) {
 				return &vlx->atomic_properties[i];
+			}
+		}
+	}
+	return NULL;
+}
+
+size_t md_vlx_density_property_count(const md_vlx_t* vlx) {
+	if (vlx) {
+		return md_array_size(vlx->density_properties);
+	}
+	return 0;
+}
+
+const md_vlx_density_property_t* md_vlx_density_property_by_index(const md_vlx_t* vlx, size_t idx) {
+	if (vlx) {
+		if (idx < md_array_size(vlx->density_properties)) {
+			return &vlx->density_properties[idx];
+		}
+	}
+	return NULL;
+}
+
+const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* vlx, uint64_t key) {
+	if (vlx) {
+		for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
+			if (vlx->density_properties[i].key == key) {
+				return &vlx->density_properties[i];
 			}
 		}
 	}
