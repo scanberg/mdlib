@@ -3,7 +3,6 @@
 #include <core/md_common.h>
 #include <core/md_intrinsics.h>
 #include <core/md_log.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,9 +19,11 @@
 STATIC_ASSERT(MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE <= 64, "Vulkan command buffer pool must fit in a uint64_t bitmask");
 
 // Maximum number of descriptor set slots available per command buffer recording.
-#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
+#define MD_GPU_MAX_PUSH_CONSTANTS 256
 #define MD_GPU_MAX_BIND_SLOTS 16
 #define MD_GPU_MAX_RESOURCE_BINDINGS (MD_GPU_MAX_BIND_SLOTS * 3)
+
+#define MD_GPU_VK_MAX_DISPATCHES_PER_CMD 32
 #define MD_GPU_VK_MAX_TRACKED_BUFFERS 128
 #define MD_GPU_VK_MAX_TRACKED_IMAGES 128
 #define MD_GPU_VK_ALL_CMD_SLOTS UINT64_MAX
@@ -34,8 +35,6 @@ enum {
     MD_GPU_DESC_SET_SAMPLERS,
     MD_GPU_DESC_SET_COUNT
 };
-
-#define MD_GPU_MAX_PUSH_CONSTANTS 256
 
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
@@ -76,11 +75,11 @@ typedef enum md_vk_cmd_state_t {
     MD_VK_CMD_STATE_SUBMITTED,
 } md_vk_cmd_state_t;
 
-typedef struct md_vk_recording_context md_vk_recording_context;
+typedef struct md_vk_thread_context md_vk_thread_context;
 
 typedef struct md_gpu_command_buffer {
     struct md_gpu_queue*  queue;
-    md_vk_recording_context* context;
+    md_vk_thread_context* context;
 
     VkCommandBuffer vk_cmd;
     VkDescriptorSet (*dispatch_sets)[MD_GPU_DESC_SET_COUNT]; /* pointer into recorder-local descriptor sets */
@@ -96,16 +95,14 @@ typedef struct md_gpu_command_buffer {
     uint32_t tracked_image_count;
 } md_gpu_command_buffer;
 
-struct md_vk_recording_context {
+typedef struct md_vk_thread_context {
     struct md_gpu_queue* queue;
     VkCommandPool vk_command_pool;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet dispatch_sets[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE * MD_GPU_VK_MAX_DISPATCHES_PER_CMD][MD_GPU_DESC_SET_COUNT];
     md_gpu_command_buffer cmd_wrappers[MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE];
     uint64_t available_cmd_slots;
-    md_vk_recording_context* next;
-    md_vk_recording_context* tls_next;
-};
+} md_vk_thread_context;
 
 typedef struct md_gpu_queue {
     struct md_gpu_device* dev;
@@ -114,7 +111,7 @@ typedef struct md_gpu_queue {
     VkSemaphore           event_timeline;
     uint64_t              next_event_id;
 
-    _Atomic(md_vk_recording_context*) recording_contexts;
+    THREAD_LOCAL md_vk_thread_context* thread_context;
 } md_gpu_queue;
 
 typedef struct md_gpu_device {
@@ -448,7 +445,7 @@ static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd) {
     cmd->tracked_image_count = 0;
 }
 
-static uint32_t md_vk_cmd_slot_index(const md_vk_recording_context* ctx, const md_gpu_command_buffer* cmd) {
+static uint32_t md_vk_cmd_slot_index(const md_vk_thread_context* ctx, const md_gpu_command_buffer* cmd) {
     ASSERT(ctx);
     ASSERT(cmd);
     ASSERT(cmd >= ctx->cmd_wrappers);
@@ -465,7 +462,7 @@ static void md_vk_release_cmd_slot(md_gpu_command_buffer* cmd) {
     ASSERT(cmd);
     ASSERT(cmd->context);
 
-    md_vk_recording_context* ctx = cmd->context;
+    md_vk_thread_context* ctx = cmd->context;
     const uint32_t idx = md_vk_cmd_slot_index(ctx, cmd);
     const uint64_t slot_mask = md_vk_cmd_slot_mask(idx);
     ASSERT((ctx->available_cmd_slots & slot_mask) == 0);
@@ -666,27 +663,18 @@ static bool md_vk_create_instance(md_gpu_device* out_dev) {
     return md_vk_check(vkCreateInstance(&ci, NULL, &out_dev->instance), "vkCreateInstance");
 }
 
-static void md_vk_destroy_recording_context(md_gpu_device* dev, md_vk_recording_context* ctx) {
+static void md_vk_destroy_thread_context(md_gpu_device* dev, md_vk_thread_context* ctx) {
     if (!dev || !ctx) return;
     if (ctx->vk_command_pool) vkDestroyCommandPool(dev->device, ctx->vk_command_pool, NULL);
     if (ctx->descriptor_pool) vkDestroyDescriptorPool(dev->device, ctx->descriptor_pool, NULL);
     free(ctx);
 }
 
-static THREAD_LOCAL md_vk_recording_context* md_vk_tls_recording_contexts;
-
-static void md_vk_queue_register_recording_context(md_gpu_queue* queue, md_vk_recording_context* ctx) {
-    md_vk_recording_context* head = atomic_load_explicit(&queue->recording_contexts, memory_order_acquire);
-    do {
-        ctx->next = head;
-    } while (!atomic_compare_exchange_weak_explicit(&queue->recording_contexts, &head, ctx, memory_order_release, memory_order_acquire));
-}
-
-static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* queue) {
+static md_vk_thread_context* md_vk_create_thread_context(md_gpu_queue* queue) {
     if (!queue || !queue->dev) return NULL;
     md_gpu_device* dev = queue->dev;
 
-    md_vk_recording_context* ctx = (md_vk_recording_context*)calloc(1, sizeof(md_vk_recording_context));
+    md_vk_thread_context* ctx = (md_vk_thread_context*)calloc(1, sizeof(md_vk_thread_context));
     if (!ctx) return NULL;
 
     ctx->queue = queue;
@@ -776,19 +764,11 @@ static md_vk_recording_context* md_vk_create_recording_context(md_gpu_queue* que
     return ctx;
 }
 
-static md_vk_recording_context* md_vk_queue_context_for_current_thread(md_gpu_queue* queue) {
-    if (!queue) return NULL;
-
-    for (md_vk_recording_context* ctx = md_vk_tls_recording_contexts; ctx; ctx = ctx->tls_next) {
-        if (ctx->queue == queue) return ctx;
-    }
-
-    md_vk_recording_context* ctx = md_vk_create_recording_context(queue);
-    if (!ctx) return NULL;
-    ctx->tls_next = md_vk_tls_recording_contexts;
-    md_vk_tls_recording_contexts = ctx;
-    md_vk_queue_register_recording_context(queue, ctx);
-    return ctx;
+static inline md_vk_thread_context* md_vk_queue_context_for_current_thread(md_gpu_queue* queue) {
+    ASSERT(queue);
+	if (queue->thread_context) return queue->thread_context;
+    queue->thread_context = md_vk_create_recording_context(queue);
+    return queue->thread_context;
 }
 
 static bool md_vk_create_device(md_gpu_device* out_dev) {
@@ -924,12 +904,6 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
-        md_vk_recording_context* ctx = atomic_load_explicit(&dev->compute_queue.recording_contexts, memory_order_acquire);
-        while (ctx) {
-            md_vk_recording_context* next = ctx->next;
-            md_vk_destroy_recording_context(dev, ctx);
-            ctx = next;
-        }
         if (dev->compute_queue.event_timeline) vkDestroySemaphore(dev->device, dev->compute_queue.event_timeline, NULL);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         for (uint32_t s = 0; s < MD_GPU_DESC_SET_COUNT; ++s) {
@@ -1382,7 +1356,7 @@ static bool md_vk_wait_queue_timeline(md_gpu_queue* queue, uint64_t value) {
     return md_vk_check(vkWaitSemaphores(queue->dev->device, &wait_info, UINT64_MAX), "vkWaitSemaphores(event timeline)");
 }
 
-static void md_vk_reclaim_context_completed_cmds(md_vk_recording_context* ctx, uint64_t completed) {
+static void md_vk_reclaim_context_completed_cmds(md_vk_thread_context* ctx, uint64_t completed) {
     if (!ctx) return;
     uint64_t busy_slots = MD_GPU_VK_ALL_CMD_SLOTS & ~ctx->available_cmd_slots;
     while (busy_slots) {
@@ -1396,20 +1370,11 @@ static void md_vk_reclaim_context_completed_cmds(md_vk_recording_context* ctx, u
     }
 }
 
-static void md_vk_reclaim_completed_cmds(md_gpu_queue* queue) {
-    if (!queue || !queue->dev || !queue->event_timeline) return;
-    const uint64_t completed = md_vk_queue_timeline_value(queue);
-    md_vk_recording_context* head = atomic_load_explicit(&queue->recording_contexts, memory_order_acquire);
-    for (md_vk_recording_context* ctx = head; ctx; ctx = ctx->next) {
-        md_vk_reclaim_context_completed_cmds(ctx, completed);
-    }
-}
-
 static md_gpu_command_buffer_t md_gpu_command_buffer_acquire(md_gpu_queue_t queue) {
     if (!queue) return NULL;
     md_gpu_queue* q = (md_gpu_queue*)queue;
 
-    md_vk_recording_context* ctx = md_vk_queue_context_for_current_thread(q);
+    md_vk_thread_context* ctx = md_vk_queue_context_for_current_thread(q);
     if (!ctx) return NULL;
 
     if (ctx->available_cmd_slots == 0 && q->event_timeline) {
@@ -1621,8 +1586,6 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
         info->commandBuffer = cmd->vk_cmd;
         info->deviceMask = 0;
     }
-
-    md_vk_reclaim_completed_cmds(queue);
 
     VkSemaphoreSubmitInfo* wait_infos = NULL;
     if (desc->wait_count > 0) {
