@@ -48,7 +48,7 @@ if (${MD_ENABLE_VLX})
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
-  set (SRC_FILES ${SRC_FILES} test_gpu_pass.c)
+  set (SRC_FILES ${SRC_FILES} test_gpu.c)
 endif()
 
 target_sources(md_unittest PRIVATE ${SRC_FILES})

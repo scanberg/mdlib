@@ -1151,9 +1151,9 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
     gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
 
     size_t sz_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
-    size_t sz_r       = L->off_cgto_off_len - L->off_cgto_r;
-    size_t sz_off_len = L->off_pgto         - L->off_cgto_off_len;
-    size_t sz_pgto    = (size_t)L->total_size - L->off_pgto;
+    size_t sz_r        = L->off_cgto_off_len - L->off_cgto_r;
+    size_t sz_off_len  = L->off_pgto         - L->off_cgto_off_len;
+    size_t sz_pgto     = (size_t)L->total_size - L->off_pgto;
 
     if (uma) {
         uint8_t* dst = (uint8_t*)md_gpu_buffer_cpu_ptr(gb->buffer);

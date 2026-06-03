@@ -201,6 +201,13 @@ typedef struct md_gpu_queue_submit_desc_t {
     const char* label;
 } md_gpu_queue_submit_desc_t;
 
+typedef struct md_gpu_transient_t {
+    md_gpu_buffer_t buffer;
+    void*           cpu_ptr;
+    size_t          offset;
+    size_t          size;
+} md_gpu_transient_t;
+
 // =============================
 // Device info / hints
 // =============================
@@ -289,6 +296,10 @@ md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_queue_t queue, const char* label);
 bool md_gpu_cmd_end(md_gpu_cmd_t cmd);
 void md_gpu_cmd_discard(md_gpu_cmd_t cmd);
 
+md_gpu_transient_t md_gpu_cmd_alloc_upload(md_gpu_cmd_t cmd, size_t size, size_t alignment);
+md_gpu_transient_t md_gpu_cmd_alloc_readback(md_gpu_cmd_t cmd, size_t size, size_t alignment);
+md_gpu_transient_t md_gpu_cmd_alloc_scratch(md_gpu_cmd_t cmd, size_t size, size_t alignment);
+
 md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue, const md_gpu_queue_submit_desc_t* desc);
 
 static inline md_gpu_event_t md_gpu_queue_submit_one(md_gpu_queue_t queue, md_gpu_cmd_t cmd) {
@@ -372,6 +383,62 @@ bool md_gpu_cmd_fill_buffer(
     size_t offset,
     size_t size,
     uint8_t value);
+
+// =============================
+// Device-owned transfer helpers
+// =============================
+// These functions use an internal device-owned staging ring to hide staging
+// buffer management from the caller. Both functions return an event that must
+// be waited on (md_gpu_event_wait) before the destination memory is valid.
+//
+// md_gpu_upload_image_data:
+//   Copies `src` data (host memory, tightly packed, row-major) into `dst_image`.
+//   The upload uses the transfer queue. The image must support transfer-dst usage.
+//   Returns {0} on failure.
+//
+// md_gpu_download_image:
+//   Schedules an async GPU→CPU copy of `src_image` into a device-owned staging
+//   buffer. When the returned event completes, the `bytes_written` bytes are
+//   copied into `dst`. `dst` must remain valid until md_gpu_event_wait returns.
+//   Returns {0} on failure.
+
+md_gpu_event_t md_gpu_upload_image_data(
+    md_gpu_device_t device,
+    md_gpu_image_t  dst_image,
+    const void*     src,
+    size_t          src_size);
+
+md_gpu_event_t md_gpu_download_image(
+    md_gpu_device_t device,
+    md_gpu_image_t  src_image,
+    void*           dst,
+    size_t          dst_size);
+
+// md_gpu_upload_buffer_data:
+//   Copies `src` (host memory) into `dst_buffer` starting at `dst_offset`.
+//   Uses the device-owned transfer ring for small transfers; falls back to a
+//   lazily-retired one-off staging buffer for oversized transfers.
+//   The buffer must support transfer-dst usage.
+//   Returns {0} on failure.
+//
+// md_gpu_download_buffer:
+//   Schedules an async GPU->CPU copy of `src_size` bytes from `src_buffer`
+//   starting at `src_offset` into `dst`.  `dst` must remain valid until
+//   md_gpu_event_wait returns.  Returns {0} on failure.
+
+md_gpu_event_t md_gpu_upload_buffer_data(
+    md_gpu_device_t device,
+    md_gpu_buffer_t dst_buffer,
+    size_t          dst_offset,
+    const void*     src,
+    size_t          src_size);
+
+md_gpu_event_t md_gpu_download_buffer(
+    md_gpu_device_t device,
+    md_gpu_buffer_t src_buffer,
+    size_t          src_offset,
+    void*           dst,
+    size_t          dst_size);
 
 #ifdef __cplusplus
 }
