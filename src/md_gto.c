@@ -1080,40 +1080,6 @@ typedef struct md_gto_gpu_basis {
     md_gto_basis_layout_t layout;
 } md_gto_gpu_basis;
 
-// ---------------------------------------------------------------------------
-// Internal staging helpers (local bump, not exposed)
-// ---------------------------------------------------------------------------
-
-static bool gto_local_staging_upload_at(md_gpu_device_t device, md_gpu_buffer_t dst, size_t dst_offset,
-                                        const void* src, size_t size) {
-    md_gpu_bump_alloc_t bump = {0};
-    bump.device = device;
-    if (!md_gpu_bump_ensure(&bump, size)) return false;
-    md_gpu_alloc_t a = md_gpu_bump_push(&bump, size);
-    MEMCPY(a.cpu, src, size);
-
-    md_gpu_queue_t queue = md_gpu_queue_compute(device);
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "GTO staging upload");
-    if (!cmd) {
-        md_gpu_cmd_discard(cmd);
-        md_gpu_bump_free(&bump);
-        return false;
-    }
-    md_gpu_cmd_copy_buffer(cmd, bump.buffer, dst, size, a.offset, dst_offset);
-    if (!md_gpu_cmd_end(cmd)) {
-        md_gpu_cmd_discard(cmd);
-        md_gpu_bump_free(&bump);
-        return false;
-    }
-    md_gpu_event_t event = md_gpu_queue_submit_one(queue, cmd);
-    if (!event.value) {
-        md_gpu_cmd_discard(cmd);
-    }
-    md_gpu_event_wait(event);
-    md_gpu_bump_free(&bump);
-    return event.value != 0;
-}
-
 md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_gpu_basis_desc_t* desc) {
     ASSERT(device);
     ASSERT(desc && desc->basis);
@@ -1144,9 +1110,9 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
     md_temp_t temp = md_temp_begin();
 
     uint32_t* cgto_atom_idx = (uint32_t*)md_temp_push(sizeof(uint32_t) * L->num_cgtos);
-    float*    cgto_r       = (float*)   md_temp_push(sizeof(float)    * 1 * L->num_cgtos);
-    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * 2 * L->num_cgtos);
-    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)         * L->num_pgtos);
+    float*    cgto_r       = (float*)    md_temp_push(sizeof(float)    * 1 * L->num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*) md_temp_push(sizeof(uint32_t) * 2 * L->num_cgtos);
+    PGTO*     pgto         = (PGTO*)     md_temp_push(sizeof(PGTO)         * L->num_pgtos);
 
     gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
 
@@ -1157,26 +1123,36 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
 
     if (uma) {
         uint8_t* dst = (uint8_t*)md_gpu_buffer_cpu_ptr(gb->buffer);
-        MEMCPY(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-        MEMCPY(dst + L->off_cgto_r,       cgto_r,       sz_r);
-        MEMCPY(dst + L->off_cgto_off_len, cgto_off_len, sz_off_len);
-        MEMCPY(dst + L->off_pgto,         pgto,         sz_pgto);
+        if (dst) {
+            MEMCPY(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
+            MEMCPY(dst + L->off_cgto_r, cgto_r, sz_r);
+            MEMCPY(dst + L->off_cgto_off_len, cgto_off_len, sz_off_len);
+            MEMCPY(dst + L->off_pgto, pgto, sz_pgto);
+            success = true;
+        }
     } else {
-        // Pack into a single temp staging buffer and upload in one command.
-        size_t total = (size_t)L->total_size;
-        uint8_t* tmp = (uint8_t*)md_temp_push(total);
-        MEMCPY(tmp + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-        MEMCPY(tmp + L->off_cgto_r,       cgto_r,       sz_r);
-        MEMCPY(tmp + L->off_cgto_off_len, cgto_off_len, sz_off_len);
-        MEMCPY(tmp + L->off_pgto,         pgto,         sz_pgto);
-        if (!gto_local_staging_upload_at(gb->device, gb->buffer, 0, tmp, total)) {
-            MD_LOG_ERROR("md_gto_gpu_basis_create: staging upload failed");
-            goto done;
+        md_gpu_queue_t queue = md_gpu_queue_transfer(device);
+        md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "GTO staging upload");
+        if (cmd) {
+            md_gpu_transient_t gpu_temp = md_gpu_cmd_temp_alloc(cmd, (size_t)L->total_size);
+            uint8_t* tmp = (uint8_t*)gpu_temp.cpu_ptr;
+            MEMCPY(tmp + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
+            MEMCPY(tmp + L->off_cgto_r,        cgto_r,        sz_r);
+            MEMCPY(tmp + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
+            MEMCPY(tmp + L->off_pgto,          pgto,          sz_pgto);
+
+            md_gpu_cmd_copy_buffer(cmd, gpu_temp.buffer, buf, (size_t)L->total_size, gpu_temp.offset, 0);
+            if (md_gpu_cmd_end(cmd)) {
+				md_gpu_event_t event = md_gpu_queue_submit_one(queue, cmd);
+				if (!md_gpu_event_is_valid(event)) {
+					MD_LOG_ERROR("md_gto_gpu_basis_create: failed to submit staging upload command");
+				} else {
+					md_gpu_event_wait(event);
+					success = true;
+				}
+			}
         }
     }
-
-    success = true;
-
 done:
     md_temp_end(temp);
     if (!success) {

@@ -219,14 +219,14 @@ void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
     if (ctx->voxel_types_buf)   md_gpu_buffer_destroy(ctx->voxel_types_buf);
     if (ctx->voxel_to_vert_buf) md_gpu_buffer_destroy(ctx->voxel_to_vert_buf);
     if (ctx->meta_buf)          md_gpu_buffer_destroy(ctx->meta_buf);
-    if (ctx->staging_buf)   md_gpu_buffer_destroy(ctx->staging_buf);
-    if (ctx->indices_buf)   md_gpu_buffer_destroy(ctx->indices_buf);
-    if (ctx->vert_buf)      md_gpu_buffer_destroy(ctx->vert_buf);
-    if (ctx->type_buf)      md_gpu_buffer_destroy(ctx->type_buf);
-    if (ctx->edge_buf)      md_gpu_buffer_destroy(ctx->edge_buf);
-    if (ctx->staging_types) md_gpu_buffer_destroy(ctx->staging_types);
-    if (ctx->staging_verts) md_gpu_buffer_destroy(ctx->staging_verts);
-    if (ctx->staging_edges) md_gpu_buffer_destroy(ctx->staging_edges);
+    if (ctx->staging_buf)       md_gpu_buffer_destroy(ctx->staging_buf);
+    if (ctx->indices_buf)       md_gpu_buffer_destroy(ctx->indices_buf);
+    if (ctx->vert_buf)          md_gpu_buffer_destroy(ctx->vert_buf);
+    if (ctx->type_buf)          md_gpu_buffer_destroy(ctx->type_buf);
+    if (ctx->edge_buf)          md_gpu_buffer_destroy(ctx->edge_buf);
+    if (ctx->staging_types)     md_gpu_buffer_destroy(ctx->staging_types);
+    if (ctx->staging_verts)     md_gpu_buffer_destroy(ctx->staging_verts);
+    if (ctx->staging_edges)     md_gpu_buffer_destroy(ctx->staging_edges);
     free(ctx);
 }
 
@@ -267,7 +267,7 @@ void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu
     md_gpu_cmd_push_debug_group(cmd, "Bidirectional manifold");
     topo_bidirectional_manifold_dispatch_t bidirectional_dispatch = topo_bidirectional_manifold_dispatch_init();
     TOPO_FILL_COMMON_ARGS(bidirectional_dispatch.args);
-    bidirectional_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
+    bidirectional_dispatch.resources.ascending  = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf,  .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     bidirectional_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
     bidirectional_dispatch.resources.volumeTex.image = volume;
     bidirectional_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
