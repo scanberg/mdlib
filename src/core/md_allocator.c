@@ -26,6 +26,7 @@ size_t md_temp_arena_reservation_size(void) {
     return MD_TEMP_ARENA_RESERVATION_SIZE;
 }
 
+static bool g_arena_key_initialized = false;
 static md_thread_key_t g_arena_key;
 
 typedef struct thread_local_data_t{
@@ -48,8 +49,10 @@ static void release_thread_local_data(void* data) {
 }
 
 void md_temp_arena_system_init(void) {
-    md_thread_key_create(&g_arena_key, release_thread_local_data);
-	md_thread_key_set_value(g_arena_key, &_thread_local_data);
+    if (!g_arena_key_initialized) {
+        md_thread_key_create(&g_arena_key, release_thread_local_data);
+        g_arena_key_initialized = true;
+    }
 }
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
@@ -78,7 +81,12 @@ static md_allocator_i* create_temp_allocator(void) {
 static md_allocator_i* thread_temp_allocator_at(size_t index) {
     ASSERT(index < MD_TEMP_ALLOCATOR_COUNT);
     if (!_thread_local_data.allocator[index]) {
-        _thread_local_data.allocator[index] = create_temp_allocator();
+        md_allocator_i* alloc = create_temp_allocator();
+        ASSERT(alloc);
+        if (g_arena_key_initialized) {
+            md_thread_key_set_value(g_arena_key, alloc);
+        }
+        _thread_local_data.allocator[index] = alloc;
     }
     return _thread_local_data.allocator[index];
 }
