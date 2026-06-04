@@ -268,7 +268,7 @@ UTEST(gpu, transient_scratch_buffer_copy) {
     ASSERT_TRUE(rb.cpu_ptr != NULL);
     ASSERT_TRUE(md_gpu_cmd_copy_buffer(readback_cmd, gpu_buf, rb.buffer, rb.size, 0, rb.offset));
     ASSERT_TRUE(md_gpu_cmd_end(readback_cmd));
-    md_gpu_event_t readback_event = md_gpu_queue_submit_one_after(queue, readback_cmd, upload_event, MD_GPU_BARRIER_STAGE_TRANSFER);
+    md_gpu_event_t readback_event = md_gpu_queue_submit_one_after(queue, readback_cmd, upload_event);
     ASSERT_TRUE(readback_event.value != 0);
     md_gpu_event_wait(readback_event);
 
@@ -404,7 +404,7 @@ UTEST(gpu, gto_mo_root) {
     ASSERT_TRUE(copy_cmd != NULL);
     md_gpu_cmd_copy_image_region_to_buffer(copy_cmd, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
     ASSERT_TRUE(md_gpu_cmd_end(copy_cmd));
-    md_gpu_event_t copy_event = md_gpu_queue_submit_one_after(queue, copy_cmd, eval_event, MD_GPU_BARRIER_STAGE_TRANSFER);
+    md_gpu_event_t copy_event = md_gpu_queue_submit_one_after(queue, copy_cmd, eval_event);
     ASSERT_TRUE(copy_event.value != 0);
     md_gpu_event_wait(copy_event);
 

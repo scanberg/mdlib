@@ -189,15 +189,10 @@ typedef struct md_gpu_compute_dispatch_t {
     size_t root_args_size;
 } md_gpu_compute_dispatch_t;
 
-typedef struct md_gpu_queue_wait_t {
-    md_gpu_event_t event;
-    md_gpu_barrier_stage_t dst_stage;
-} md_gpu_queue_wait_t;
-
 typedef struct md_gpu_queue_submit_desc_t {
     const md_gpu_cmd_t* cmds;
     size_t cmd_count;
-    const md_gpu_queue_wait_t* waits;
+    const md_gpu_event_t* waits;
     size_t wait_count;
     const char* label;
 } md_gpu_queue_submit_desc_t;
@@ -311,9 +306,8 @@ static inline md_gpu_event_t md_gpu_queue_submit_one(md_gpu_queue_t queue, md_gp
     return md_gpu_queue_submit(queue, &desc);
 }
 
-static inline md_gpu_event_t md_gpu_queue_submit_one_after(md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_gpu_event_t wait, md_gpu_barrier_stage_t dst_stage) {
-    const md_gpu_queue_wait_t waits[] = {{ .event = wait, .dst_stage = dst_stage }};
-    const md_gpu_queue_submit_desc_t desc = { .cmds = &cmd, .cmd_count = 1, .waits = waits, .wait_count = 1 };
+static inline md_gpu_event_t md_gpu_queue_submit_one_after(md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_gpu_event_t wait) {
+    const md_gpu_queue_submit_desc_t desc = { .cmds = &cmd, .cmd_count = 1, .waits = (const md_gpu_event_t*)&wait, .wait_count = 1 };
     return md_gpu_queue_submit(queue, &desc);
 }
 

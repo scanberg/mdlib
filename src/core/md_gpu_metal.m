@@ -1149,18 +1149,18 @@ static void mtl_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
         [cmd->mtl_cmd popDebugGroup];
 }
 
-static void md_mtl_cmd_encode_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, const md_gpu_queue_wait_t* waits, size_t wait_count) {
+static void md_mtl_cmd_encode_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, const md_gpu_event_t* waits, size_t wait_count) {
     if (!queue || !cmd || !cmd->mtl_cmd || !waits) return;
 
     for (size_t i = 0; i < wait_count; ++i) {
-        const md_gpu_queue_wait_t* wait = &waits[i];
-        if (wait->event.value == 0) continue;
+        const md_gpu_event_t event = waits[i];
+        if (!md_gpu_event_is_valid(event)) continue;
 
-        struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)wait->event.queue;
+        struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)event.queue;
         if (!wait_queue) wait_queue = queue;
         if (!wait_queue->dev || !wait_queue->dev->event_timeline) continue;
 
-        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:wait->event.value];
+        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:event.value];
     }
 }
 

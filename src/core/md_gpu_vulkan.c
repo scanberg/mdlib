@@ -1915,6 +1915,15 @@ static bool md_vk_flush_descriptor_sets(md_gpu_command_buffer* cmd, md_gpu_devic
     return true;
 }
 
+static VkPipelineStageFlags2 md_vk_stage_flags_from_queue_slot(md_vk_queue_slot_t slot) {
+	switch (slot) {
+	case MD_VK_QUEUE_SLOT_GRAPHICS: return VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+	case MD_VK_QUEUE_SLOT_COMPUTE:  return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	case MD_VK_QUEUE_SLOT_TRANSFER: return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+	default: return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	}
+}
+
 static VkPipelineStageFlags2 md_vk_stage_flags(md_gpu_barrier_stage_t stages) {
     VkPipelineStageFlags2 flags = 0;
     if (stages & MD_GPU_BARRIER_STAGE_COMPUTE)  flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -2118,10 +2127,10 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
 
     uint32_t wait_count = 0;
     for (size_t i = 0; i < desc->wait_count; ++i) {
-        const md_gpu_queue_wait_t* pending = &desc->waits[i];
-        if (pending->event.value == 0) continue;
+        const md_gpu_event_t* pending = &desc->waits[i];
+        if (pending->value == 0) continue;
 
-        md_gpu_queue* wait_queue = (md_gpu_queue*)pending->event.queue;
+        md_gpu_queue* wait_queue = (md_gpu_queue*)pending->queue;
         if (!wait_queue) wait_queue = queue;
         if (!wait_queue->event_timeline) continue;
 
@@ -2129,8 +2138,8 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
         wait_info->sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         wait_info->pNext = NULL;
         wait_info->semaphore = wait_queue->event_timeline;
-        wait_info->value = pending->event.value;
-        wait_info->stageMask = md_vk_stage_flags(pending->dst_stage);
+        wait_info->value = pending->value;
+        wait_info->stageMask = md_vk_stage_flags_from_queue_slot(queue->slot);
         wait_info->deviceIndex = 0;
     }
 
@@ -2457,7 +2466,6 @@ md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_
     md_gpu_queue_t queue = md_gpu_queue_transfer((md_gpu_device_t)dev);
     md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "readback_buffer");
     if (!cmd) {
-        free(rb);
         md_vk_transient_page_release(dev, page);
         return NULL;
     }
@@ -2468,10 +2476,10 @@ md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_
 
     bool after_is_valid = md_gpu_event_is_valid(after);
 
-    md_gpu_submit_desc_t submit_desc = {
+    md_gpu_queue_submit_desc_t submit_desc = {
         .cmds = &cmd,
         .cmd_count = 1,
-        .waits = after_is_valid ? &after : NULL,
+        .waits = after_is_valid ? (const md_gpu_event_t*) &after : NULL,
         .wait_count = after_is_valid ? 1 : 0,
     };
 
@@ -2544,10 +2552,10 @@ md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_r
 
     bool after_is_valid = md_gpu_event_is_valid(after);
 
-    md_gpu_submit_desc_t submit_desc = {
+    md_gpu_queue_submit_desc_t submit_desc = {
         .cmds = &cmd,
         .cmd_count = 1,
-        .waits = after_is_valid ? &after : NULL,
+        .waits = after_is_valid ? (const md_gpu_event_t*) &after : NULL,
         .wait_count = after_is_valid ? 1 : 0,
     };
 
