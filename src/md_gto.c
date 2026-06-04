@@ -1304,9 +1304,9 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
     dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_density_thread_group_size_y);
     dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_density_thread_group_size_z);
 
-    md_gpu_cmd_push_debug_group(cmd, "GTO Density Pass");
+    md_gpu_cmd_debug_group_push(cmd, "GTO Density Pass");
     MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch));
-    md_gpu_cmd_pop_debug_group(cmd);
+    md_gpu_cmd_debug_group_pop(cmd);
 }
 
 void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
@@ -1351,9 +1351,9 @@ void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
     dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
     dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
 
-    md_gpu_cmd_push_debug_group(cmd, "GTO MO Pass");
+    md_gpu_cmd_debug_group_push(cmd, "GTO MO Pass");
     MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch));
-    md_gpu_cmd_pop_debug_group(cmd);
+    md_gpu_cmd_debug_group_pop(cmd);
 }
 
 #undef MD_GPU_DISPATCH_OR_RETURN

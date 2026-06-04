@@ -41,6 +41,27 @@ enum {
     MD_GPU_DESC_SET_COUNT
 };
 
+typedef enum md_vk_cmd_state_t {
+    MD_VK_CMD_STATE_AVAILABLE = 0,
+    MD_VK_CMD_STATE_ACQUIRED,
+    MD_VK_CMD_STATE_RECORDING,
+    MD_VK_CMD_STATE_ENDED,
+    MD_VK_CMD_STATE_SUBMITTED,
+} md_vk_cmd_state_t;
+
+typedef enum md_vk_queue_slot_t {
+    MD_VK_QUEUE_SLOT_GRAPHICS = 0,
+    MD_VK_QUEUE_SLOT_COMPUTE,
+    MD_VK_QUEUE_SLOT_TRANSFER,
+    MD_VK_QUEUE_SLOT_COUNT,
+} md_vk_queue_slot_t;
+
+typedef enum md_vk_transient_page_list_state_t {
+    MD_VK_TRANSIENT_PAGE_LIST_NONE = 0,
+    MD_VK_TRANSIENT_PAGE_LIST_AVAILABLE,
+    MD_VK_TRANSIENT_PAGE_LIST_RETIRED,
+} md_vk_transient_page_list_state_t;
+
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
 typedef struct md_vk_resource_sync_state_t {
@@ -72,29 +93,8 @@ typedef struct md_vk_cmd_image_state_t {
     md_vk_resource_sync_state_t current_sync;
 } md_vk_cmd_image_state_t;
 
-typedef enum md_vk_cmd_state_t {
-    MD_VK_CMD_STATE_AVAILABLE = 0,
-    MD_VK_CMD_STATE_ACQUIRED,
-    MD_VK_CMD_STATE_RECORDING,
-    MD_VK_CMD_STATE_ENDED,
-    MD_VK_CMD_STATE_SUBMITTED,
-} md_vk_cmd_state_t;
-
-typedef enum md_vk_queue_slot_t {
-    MD_VK_QUEUE_SLOT_GRAPHICS = 0,
-    MD_VK_QUEUE_SLOT_COMPUTE,
-    MD_VK_QUEUE_SLOT_TRANSFER,
-    MD_VK_QUEUE_SLOT_COUNT,
-} md_vk_queue_slot_t;
-
 typedef struct md_vk_thread_context md_vk_thread_context;
 typedef struct md_vk_transient_page_t md_vk_transient_page_t;
-
-typedef enum md_vk_transient_page_list_state_t {
-    MD_VK_TRANSIENT_PAGE_LIST_NONE = 0,
-    MD_VK_TRANSIENT_PAGE_LIST_AVAILABLE,
-    MD_VK_TRANSIENT_PAGE_LIST_RETIRED,
-} md_vk_transient_page_list_state_t;
 
 struct md_vk_transient_page_t {
     md_gpu_buffer_t            buffer;
@@ -2311,7 +2311,7 @@ bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stag
     return true;
 }
 
-void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
+void md_gpu_cmd_debug_group_push(md_gpu_cmd_t cmd_handle, const char* label) {
     if (!cmd_handle || !label) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd_handle;
     if (!md_vk_cmd_is_recording(c)) return;
@@ -2321,7 +2321,7 @@ void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
     if (vkCmdBeginDebugUtilsLabelEXT) vkCmdBeginDebugUtilsLabelEXT(c->vk_cmd, &info);
 }
 
-void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd_handle) {
+void md_gpu_cmd_debug_group_pop(md_gpu_cmd_t cmd_handle) {
     if (!cmd_handle) return;
     md_gpu_command_buffer* c = (md_gpu_command_buffer*)cmd_handle;
     if (!md_vk_cmd_is_recording(c)) return;

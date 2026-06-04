@@ -42,6 +42,8 @@ typedef struct md_gpu_event_t {
     uint64_t value;
 } md_gpu_event_t;
 
+#define MD_GPU_EVENT_NONE ((md_gpu_event_t){0})
+
 // =============================
 // Flags & enums
 // =============================
@@ -223,6 +225,15 @@ static inline bool md_gpu_event_is_valid(md_gpu_event_t event) {
     return event.value != 0 && event.queue != NULL;
 }
 
+static inline md_gpu_event_t md_gpu_event_none(void) {
+    md_gpu_event_t none = {.queue = NULL, .value = 0};
+    return none;
+}
+
+static inline bool md_gpu_event_is_none(md_gpu_event_t event) {
+    return !md_gpu_event_is_valid(event);
+}
+
 // Populate *info with hints for the given device.
 // Returns false if device is NULL, true otherwise.
 // Any field that cannot be determined is left at its zero value.
@@ -311,6 +322,10 @@ static inline md_gpu_event_t md_gpu_queue_submit_one_after(md_gpu_queue_t queue,
     return md_gpu_queue_submit(queue, &desc);
 }
 
+static inline md_gpu_event_t md_gpu_queue_submit_one_after_optional(md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_gpu_event_t wait) {
+    return md_gpu_event_is_valid(wait) ? md_gpu_queue_submit_one_after(queue, cmd, wait) : md_gpu_queue_submit_one(queue, cmd);
+}
+
 // CPU poll and wait for event
 bool md_gpu_event_is_complete(md_gpu_event_t event);
 void md_gpu_event_wait(md_gpu_event_t event);
@@ -322,8 +337,8 @@ bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd, const md_gpu_compute_dispatch_t* disp
 
 bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage);
 
-void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd, const char* label);
-void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd);
+void md_gpu_cmd_debug_group_push(md_gpu_cmd_t cmd, const char* label);
+void md_gpu_cmd_debug_group_pop(md_gpu_cmd_t cmd);
 
 bool md_gpu_cmd_copy_buffer(
     md_gpu_cmd_t cmd,

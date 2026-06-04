@@ -1128,7 +1128,7 @@ static bool mtl_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
         return true;
 }
 
-static void mtl_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* label) {
+static void mtl_cmd_debug_group_push(md_gpu_command_buffer_t cmd, const char* label) {
     if (!cmd || !label) return;
     NSString* ns_label = [NSString stringWithUTF8String:label];
     if (cmd->compute_enc)
@@ -1139,7 +1139,7 @@ static void mtl_cmd_push_debug_group(md_gpu_command_buffer_t cmd, const char* la
         [cmd->mtl_cmd pushDebugGroup:ns_label];
 }
 
-static void mtl_cmd_pop_debug_group(md_gpu_command_buffer_t cmd) {
+static void mtl_cmd_debug_group_pop(md_gpu_command_buffer_t cmd) {
     if (!cmd) return;
     if (cmd->compute_enc)
         [cmd->compute_enc popDebugGroup];
@@ -1189,7 +1189,7 @@ static bool md_mtl_cmd_begin_acquired(md_gpu_cmd_t cmd_handle, const char* label
     if (!c || !c->queue || !c->cmd || c->state != MD_MTL_CMD_STATE_ACQUIRED) return false;
 
     if (label) {
-        mtl_cmd_push_debug_group(c->cmd, label);
+        mtl_cmd_debug_group_push(c->cmd, label);
         c->pushed_debug_group = true;
     }
 
@@ -1410,18 +1410,18 @@ bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stag
     return true;
 }
 
-void md_gpu_cmd_push_debug_group(md_gpu_cmd_t cmd_handle, const char* label) {
+void md_gpu_cmd_debug_group_push(md_gpu_cmd_t cmd_handle, const char* label) {
     if (!cmd_handle) return;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
     if (!md_mtl_cmd_is_recording(c)) return;
-    mtl_cmd_push_debug_group(c->cmd, label);
+    mtl_cmd_debug_group_push(c->cmd, label);
 }
 
-void md_gpu_cmd_pop_debug_group(md_gpu_cmd_t cmd_handle) {
+void md_gpu_cmd_debug_group_pop(md_gpu_cmd_t cmd_handle) {
     if (!cmd_handle) return;
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
     if (!md_mtl_cmd_is_recording(c)) return;
-    mtl_cmd_pop_debug_group(c->cmd);
+    mtl_cmd_debug_group_pop(c->cmd);
 }
 
 bool md_gpu_cmd_copy_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t src, md_gpu_buffer_t dst, size_t size, size_t src_offset, size_t dst_offset) {
