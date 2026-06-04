@@ -232,6 +232,7 @@ static md_vk_transient_page_t* md_vk_transient_page_acquire(md_gpu_device* dev, 
 static void md_vk_transient_page_release(md_gpu_device* dev, md_vk_transient_page_t* page);
 static void md_vk_transient_allocator_release(md_gpu_device* dev, md_vk_transient_allocator_t* alloc);
 static void md_vk_transient_page_enqueue_retired(md_gpu_device* dev, md_vk_transient_page_t* page);
+static md_gpu_readback_t md_vk_readback_submit(md_gpu_device* dev, md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_vk_transient_page_t* page, size_t size, md_gpu_event_t after);
 
 static uint64_t md_vk_thread_context_pending_value(const md_vk_thread_context* ctx) {
     if (!ctx) return 0;
@@ -507,6 +508,39 @@ static void md_vk_cmd_release_transient_pages(md_gpu_command_buffer* cmd, bool s
         page = next;
     }
     cmd->transient_pages = NULL;
+}
+
+static md_gpu_readback_t md_vk_readback_submit(md_gpu_device* dev, md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_vk_transient_page_t* page, size_t size, md_gpu_event_t after) {
+    if (!dev || !queue || !cmd || !page || size == 0) return NULL;
+
+    md_gpu_readback* rb = (md_gpu_readback*)calloc(1, sizeof(*rb));
+    if (!rb) {
+        md_gpu_cmd_discard(cmd);
+        md_vk_transient_page_release(dev, page);
+        return NULL;
+    }
+
+    const bool after_is_valid = md_gpu_event_is_valid(after);
+    const md_gpu_queue_submit_desc_t submit_desc = {
+        .cmds = &cmd,
+        .cmd_count = 1,
+        .waits = after_is_valid ? &after : NULL,
+        .wait_count = after_is_valid ? 1 : 0,
+    };
+
+    md_gpu_event_t event = md_gpu_queue_submit(queue, &submit_desc);
+    if (!md_gpu_event_is_valid(event)) {
+        free(rb);
+        md_gpu_cmd_discard(cmd);
+        md_vk_transient_page_release(dev, page);
+        return NULL;
+    }
+
+    rb->dev = dev;
+    rb->page = page;
+    rb->event = event;
+    rb->size = size;
+    return (md_gpu_readback_t)rb;
 }
 
 static VkAccessFlags2 md_vk_access_from_gpu_usage(md_gpu_usage_flags_t usage) {
@@ -2474,27 +2508,7 @@ md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_
         goto fail;
     }
 
-    bool after_is_valid = md_gpu_event_is_valid(after);
-
-    md_gpu_queue_submit_desc_t submit_desc = {
-        .cmds = &cmd,
-        .cmd_count = 1,
-        .waits = after_is_valid ? (const md_gpu_event_t*) &after : NULL,
-        .wait_count = after_is_valid ? 1 : 0,
-    };
-
-    md_gpu_event_t event = md_gpu_queue_submit(queue, &submit_desc);
-    if (!md_gpu_event_is_valid(event))
-        goto fail;
-
-    md_gpu_readback* rb = (md_gpu_readback*)calloc(1, sizeof(*rb));
-    if (!rb) goto fail;
-
-    rb->dev = dev;
-    rb->page = page;
-    rb->event = event;
-    rb->size = size;
-    return (md_gpu_readback_t)rb;
+    return md_vk_readback_submit(dev, queue, cmd, page, size, after);
 
 fail:
     md_gpu_cmd_discard(cmd);
@@ -2550,27 +2564,7 @@ md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_r
         goto fail;
     }
 
-    bool after_is_valid = md_gpu_event_is_valid(after);
-
-    md_gpu_queue_submit_desc_t submit_desc = {
-        .cmds = &cmd,
-        .cmd_count = 1,
-        .waits = after_is_valid ? (const md_gpu_event_t*) &after : NULL,
-        .wait_count = after_is_valid ? 1 : 0,
-    };
-
-    md_gpu_event_t event = md_gpu_queue_submit(queue, &submit_desc);
-    if (!md_gpu_event_is_valid(event))
-        goto fail;
-
-    md_gpu_readback* rb = (md_gpu_readback*)calloc(1, sizeof(*rb));
-    if (!rb) goto fail;
-
-    rb->dev = dev;
-    rb->page = page;
-    rb->event = event;
-    rb->size = total_bytes;
-    return (md_gpu_readback_t)rb;
+    return md_vk_readback_submit(dev, queue, cmd, page, total_bytes, after);
 
 fail:
     md_gpu_cmd_discard(cmd);
