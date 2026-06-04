@@ -35,6 +35,7 @@ typedef struct md_gpu_compute_pipeline* md_gpu_compute_pipeline_t;
 typedef struct md_gpu_buffer*           md_gpu_buffer_t;
 typedef struct md_gpu_image*            md_gpu_image_t;
 typedef struct md_gpu_sampler*          md_gpu_sampler_t;
+typedef struct md_gpu_readback*         md_gpu_readback_t;
 
 typedef struct md_gpu_event_t {
     md_gpu_queue_t queue;
@@ -91,6 +92,20 @@ typedef enum md_gpu_address_mode_t {
     MD_GPU_ADDRESS_MODE_MIRRORED_REPEAT,
 } md_gpu_address_mode_t;
 
+typedef uint32_t md_gpu_usage_flags_t;
+enum {
+    MD_GPU_USAGE_READ  = 1 << 0,
+    MD_GPU_USAGE_WRITE = 1 << 1,
+};
+
+typedef enum md_gpu_resource_kind_t {
+    /* Buffer usage declaration for hazard tracking; binding is via root_args/device addresses. */
+    MD_GPU_RESOURCE_BUFFER_USAGE,
+    MD_GPU_RESOURCE_STORAGE_IMAGE,
+    MD_GPU_RESOURCE_SAMPLED_IMAGE,
+    MD_GPU_RESOURCE_SAMPLER,
+} md_gpu_resource_kind_t;
+
 // =============================
 // Descriptors
 // =============================
@@ -128,20 +143,6 @@ typedef struct md_gpu_buffer_image_copy_t {
     size_t bytes_per_row;   /* 0 = tightly packed */
     size_t bytes_per_image; /* 0 = tightly packed */
 } md_gpu_buffer_image_copy_t;
-
-typedef uint32_t md_gpu_usage_flags_t;
-enum {
-    MD_GPU_USAGE_READ  = 1 << 0,
-    MD_GPU_USAGE_WRITE = 1 << 1,
-};
-
-typedef enum md_gpu_resource_kind_t {
-    /* Buffer usage declaration for hazard tracking; binding is via root_args/device addresses. */
-    MD_GPU_RESOURCE_BUFFER_USAGE,
-    MD_GPU_RESOURCE_STORAGE_IMAGE,
-    MD_GPU_RESOURCE_SAMPLED_IMAGE,
-    MD_GPU_RESOURCE_SAMPLER,
-} md_gpu_resource_kind_t;
 
 typedef struct md_gpu_resource_t {
     md_gpu_resource_kind_t kind;
@@ -223,6 +224,10 @@ typedef struct md_gpu_device_info_t {
     char name[256];
 } md_gpu_device_info_t;
 
+static inline bool md_gpu_event_is_valid(md_gpu_event_t event) {
+    return event.value != 0 && event.queue != NULL;
+}
+
 // Populate *info with hints for the given device.
 // Returns false if device is NULL, true otherwise.
 // Any field that cannot be determined is left at its zero value.
@@ -296,9 +301,8 @@ md_gpu_cmd_t md_gpu_cmd_begin(md_gpu_queue_t queue, const char* label);
 bool md_gpu_cmd_end(md_gpu_cmd_t cmd);
 void md_gpu_cmd_discard(md_gpu_cmd_t cmd);
 
-md_gpu_transient_t md_gpu_cmd_alloc_upload(md_gpu_cmd_t cmd, size_t size, size_t alignment);
-md_gpu_transient_t md_gpu_cmd_alloc_readback(md_gpu_cmd_t cmd, size_t size, size_t alignment);
-md_gpu_transient_t md_gpu_cmd_alloc_scratch(md_gpu_cmd_t cmd, size_t size, size_t alignment);
+// Allocates transient memory for data uploads. The returned buffer and CPU pointer are valid until the command buffer is ended or discarded.
+md_gpu_transient_t md_gpu_cmd_temp_alloc(md_gpu_cmd_t cmd, size_t size);
 
 md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue, const md_gpu_queue_submit_desc_t* desc);
 
@@ -385,60 +389,19 @@ bool md_gpu_cmd_fill_buffer(
     uint8_t value);
 
 // =============================
-// Device-owned transfer helpers
+// Readback (GPU to CPU copy)
 // =============================
-// These functions use an internal device-owned staging ring to hide staging
-// buffer management from the caller. Both functions return an event that must
-// be waited on (md_gpu_event_wait) before the destination memory is valid.
-//
-// md_gpu_upload_image_data:
-//   Copies `src` data (host memory, tightly packed, row-major) into `dst_image`.
-//   The upload uses the transfer queue. The image must support transfer-dst usage.
-//   Returns {0} on failure.
-//
-// md_gpu_download_image:
-//   Schedules an async GPU→CPU copy of `src_image` into a device-owned staging
-//   buffer. When the returned event completes, the `bytes_written` bytes are
-//   copied into `dst`. `dst` must remain valid until md_gpu_event_wait returns.
-//   Returns {0} on failure.
+// Readback operations are issued as async transfer queue submissions that return an md_gpu_readback_t handle.
+// The buffer and CPU pointer in the returned handle are valid until the readback is complete and the handle is destroyed.
+// The caller must poll or wait for completion before reading from the CPU pointer.
+md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_offset, size_t size, md_gpu_event_t after);
+md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_region_t src_region, md_gpu_event_t after);
 
-md_gpu_event_t md_gpu_upload_image_data(
-    md_gpu_device_t device,
-    md_gpu_image_t  dst_image,
-    const void*     src,
-    size_t          src_size);
+bool md_gpu_readback_is_complete(md_gpu_readback_t readback);
+void md_gpu_readback_wait(md_gpu_readback_t readback);
 
-md_gpu_event_t md_gpu_download_image(
-    md_gpu_device_t device,
-    md_gpu_image_t  src_image,
-    void*           dst,
-    size_t          dst_size);
-
-// md_gpu_upload_buffer_data:
-//   Copies `src` (host memory) into `dst_buffer` starting at `dst_offset`.
-//   Uses the device-owned transfer ring for small transfers; falls back to a
-//   lazily-retired one-off staging buffer for oversized transfers.
-//   The buffer must support transfer-dst usage.
-//   Returns {0} on failure.
-//
-// md_gpu_download_buffer:
-//   Schedules an async GPU->CPU copy of `src_size` bytes from `src_buffer`
-//   starting at `src_offset` into `dst`.  `dst` must remain valid until
-//   md_gpu_event_wait returns.  Returns {0} on failure.
-
-md_gpu_event_t md_gpu_upload_buffer_data(
-    md_gpu_device_t device,
-    md_gpu_buffer_t dst_buffer,
-    size_t          dst_offset,
-    const void*     src,
-    size_t          src_size);
-
-md_gpu_event_t md_gpu_download_buffer(
-    md_gpu_device_t device,
-    md_gpu_buffer_t src_buffer,
-    size_t          src_offset,
-    void*           dst,
-    size_t          dst_size);
+void* md_gpu_readback_cpu_ptr(md_gpu_readback_t readback);
+void md_gpu_readback_destroy(md_gpu_readback_t readback);
 
 #ifdef __cplusplus
 }

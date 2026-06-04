@@ -9,6 +9,56 @@
 #include <string.h>
 #include <stdint.h>
 
+static md_gpu_event_t gpu_test_upload_buffer(md_gpu_device_t device, md_gpu_buffer_t dst_buffer, size_t dst_offset, const void* src_data, size_t size) {
+    md_gpu_event_t event = {0};
+    if (!device || !dst_buffer || !src_data || size == 0) return event;
+
+    md_gpu_queue_t queue = md_gpu_queue_transfer(device);
+    if (!queue) return event;
+
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "gpu test upload buffer");
+    if (!cmd) return event;
+
+    md_gpu_transient_t upload = md_gpu_cmd_temp_alloc(cmd, size);
+    if (!upload.buffer || !upload.cpu_ptr || upload.size < size) {
+        md_gpu_cmd_discard(cmd);
+        return event;
+    }
+
+    memcpy(upload.cpu_ptr, src_data, size);
+    if (!md_gpu_cmd_copy_buffer(cmd, upload.buffer, dst_buffer, size, upload.offset, dst_offset) || !md_gpu_cmd_end(cmd)) {
+        md_gpu_cmd_discard(cmd);
+        return event;
+    }
+
+    return md_gpu_queue_submit_one(queue, cmd);
+}
+
+static md_gpu_event_t gpu_test_upload_image(md_gpu_device_t device, md_gpu_image_t dst_image, const void* src_data, size_t size) {
+    md_gpu_event_t event = {0};
+    if (!device || !dst_image || !src_data || size == 0) return event;
+
+    md_gpu_queue_t queue = md_gpu_queue_transfer(device);
+    if (!queue) return event;
+
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "gpu test upload image");
+    if (!cmd) return event;
+
+    md_gpu_transient_t upload = md_gpu_cmd_temp_alloc(cmd, size);
+    if (!upload.buffer || !upload.cpu_ptr || upload.size < size) {
+        md_gpu_cmd_discard(cmd);
+        return event;
+    }
+
+    memcpy(upload.cpu_ptr, src_data, size);
+    if (!md_gpu_cmd_copy_buffer_to_image(cmd, upload.buffer, dst_image) || !md_gpu_cmd_end(cmd)) {
+        md_gpu_cmd_discard(cmd);
+        return event;
+    }
+
+    return md_gpu_queue_submit_one(queue, cmd);
+}
+
 /* =========================================================
  * gpu.device
  * Basic device lifecycle: create and destroy without crashing.
@@ -24,10 +74,9 @@ UTEST(gpu, device_create_destroy) {
 
 /* =========================================================
  * gpu.buffer_upload_download
- * Round-trip: upload a known pattern into a GPU-only buffer via
- * md_gpu_upload_buffer_data, then read it back with
- * md_gpu_download_buffer and verify every byte matches.
- * Transfer size fits inside the ring (< 64 MiB).
+ * Round-trip: upload a known pattern into a GPU-only buffer via an
+ * explicit transfer command, then read it back with md_gpu_readback_buffer
+ * and verify every byte matches.
  * ========================================================= */
 
 UTEST(gpu, buffer_upload_download) {
@@ -53,22 +102,22 @@ UTEST(gpu, buffer_upload_download) {
     ASSERT_TRUE(gpu_buf != NULL);
 
     /* Upload. */
-    md_gpu_event_t up_event = md_gpu_upload_buffer_data(device, gpu_buf, 0, src, buf_size);
+    md_gpu_event_t up_event = gpu_test_upload_buffer(device, gpu_buf, 0, src, buf_size);
     ASSERT_TRUE(up_event.value != 0);
-    md_gpu_event_wait(up_event);
 
-    /* Download back into a separate destination. */
-    uint32_t dst[1024];
-    memset(dst, 0, buf_size);
-    md_gpu_event_t dn_event = md_gpu_download_buffer(device, gpu_buf, 0, dst, buf_size);
-    ASSERT_TRUE(dn_event.value != 0);
-    md_gpu_event_wait(dn_event);
+    /* Read back through the new async readback handle API. */
+    md_gpu_readback_t readback = md_gpu_readback_buffer(gpu_buf, 0, buf_size, up_event);
+    ASSERT_TRUE(readback != NULL);
+    md_gpu_readback_wait(readback);
+    const uint32_t* dst = (const uint32_t*)md_gpu_readback_cpu_ptr(readback);
+    ASSERT_TRUE(dst != NULL);
 
     /* Verify. */
     for (size_t i = 0; i < N; ++i) {
         EXPECT_EQ(src[i], dst[i]);
     }
 
+    md_gpu_readback_destroy(readback);
     md_gpu_buffer_destroy(gpu_buf);
     md_gpu_device_destroy(device);
 }
@@ -103,29 +152,29 @@ UTEST(gpu, buffer_upload_download_with_offset) {
     });
     ASSERT_TRUE(gpu_buf != NULL);
 
-    md_gpu_event_t up_event = md_gpu_upload_buffer_data(device, gpu_buf, offset_bytes, src, payload_bytes);
+    md_gpu_event_t up_event = gpu_test_upload_buffer(device, gpu_buf, offset_bytes, src, payload_bytes);
     ASSERT_TRUE(up_event.value != 0);
-    md_gpu_event_wait(up_event);
 
-    uint32_t dst[64 - 16];
-    memset(dst, 0, payload_bytes);
-    md_gpu_event_t dn_event = md_gpu_download_buffer(device, gpu_buf, offset_bytes, dst, payload_bytes);
-    ASSERT_TRUE(dn_event.value != 0);
-    md_gpu_event_wait(dn_event);
+    md_gpu_readback_t readback = md_gpu_readback_buffer(gpu_buf, offset_bytes, payload_bytes, up_event);
+    ASSERT_TRUE(readback != NULL);
+    md_gpu_readback_wait(readback);
+    const uint32_t* dst = (const uint32_t*)md_gpu_readback_cpu_ptr(readback);
+    ASSERT_TRUE(dst != NULL);
 
     for (size_t i = 0; i < payload_elems; ++i) {
         EXPECT_EQ(src[i], dst[i]);
     }
 
+    md_gpu_readback_destroy(readback);
     md_gpu_buffer_destroy(gpu_buf);
     md_gpu_device_destroy(device);
 }
 
 /* =========================================================
  * gpu.image_upload_download
- * Upload a known float pattern into an R32_FLOAT storage image
- * via md_gpu_upload_image_data, then read it back via
- * md_gpu_download_image and verify all values match.
+ * Upload a known float pattern into an R32_FLOAT storage image via an
+ * explicit transfer command, then read it back via md_gpu_readback_image
+ * and verify all values match.
  * ========================================================= */
 
 UTEST(gpu, image_upload_download) {
@@ -153,16 +202,15 @@ UTEST(gpu, image_upload_download) {
     ASSERT_TRUE(img != NULL);
 
     /* Upload. */
-    md_gpu_event_t up_event = md_gpu_upload_image_data(device, img, src, img_size);
+    md_gpu_event_t up_event = gpu_test_upload_image(device, img, src, img_size);
     ASSERT_TRUE(up_event.value != 0);
-    md_gpu_event_wait(up_event);
 
     /* Download. */
-    float dst[8 * 8 * 8];
-    memset(dst, 0, img_size);
-    md_gpu_event_t dn_event = md_gpu_download_image(device, img, dst, img_size);
-    ASSERT_TRUE(dn_event.value != 0);
-    md_gpu_event_wait(dn_event);
+    md_gpu_readback_t readback = md_gpu_readback_image(img, (md_gpu_image_region_t){0}, up_event);
+    ASSERT_TRUE(readback != NULL);
+    md_gpu_readback_wait(readback);
+    const float* dst = (const float*)md_gpu_readback_cpu_ptr(readback);
+    ASSERT_TRUE(dst != NULL);
 
     /* Verify — floating-point exact equality is fine here as no GPU math is involved. */
     float max_delta = 0.0f;
@@ -172,6 +220,7 @@ UTEST(gpu, image_upload_download) {
     }
     EXPECT_TRUE(max_delta == 0.0f);
 
+    md_gpu_readback_destroy(readback);
     md_gpu_image_destroy(img);
     md_gpu_device_destroy(device);
 }
@@ -202,7 +251,7 @@ UTEST(gpu, transient_scratch_buffer_copy) {
 
     md_gpu_cmd_t upload_cmd = md_gpu_cmd_begin(queue, "transient scratch upload");
     ASSERT_TRUE(upload_cmd != NULL);
-    md_gpu_transient_t up = md_gpu_cmd_alloc_upload(upload_cmd, buf_size, 256);
+    md_gpu_transient_t up = md_gpu_cmd_temp_alloc(upload_cmd, buf_size);
     ASSERT_TRUE(up.buffer != NULL);
     ASSERT_TRUE(up.cpu_ptr != NULL);
     ASSERT_EQ(buf_size, up.size);
@@ -214,7 +263,7 @@ UTEST(gpu, transient_scratch_buffer_copy) {
 
     md_gpu_cmd_t readback_cmd = md_gpu_cmd_begin(queue, "transient scratch readback");
     ASSERT_TRUE(readback_cmd != NULL);
-    md_gpu_transient_t rb = md_gpu_cmd_alloc_readback(readback_cmd, buf_size, 256);
+    md_gpu_transient_t rb = md_gpu_cmd_temp_alloc(readback_cmd, buf_size);
     ASSERT_TRUE(rb.buffer != NULL);
     ASSERT_TRUE(rb.cpu_ptr != NULL);
     ASSERT_TRUE(md_gpu_cmd_copy_buffer(readback_cmd, gpu_buf, rb.buffer, rb.size, 0, rb.offset));
@@ -245,8 +294,8 @@ UTEST(gpu, transient_scratch_large_allocation) {
     md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "transient scratch large allocation");
     ASSERT_TRUE(cmd != NULL);
 
-    md_gpu_transient_t a = md_gpu_cmd_alloc_scratch(cmd, size, 256);
-    md_gpu_transient_t b = md_gpu_cmd_alloc_scratch(cmd, size, 256);
+    md_gpu_transient_t a = md_gpu_cmd_temp_alloc(cmd, size);
+    md_gpu_transient_t b = md_gpu_cmd_temp_alloc(cmd, size);
     ASSERT_TRUE(a.buffer != NULL);
     ASSERT_TRUE(b.buffer != NULL);
     ASSERT_TRUE(a.cpu_ptr != NULL);

@@ -15,16 +15,12 @@
 // Vulkan backend (C).
 // Compute-only for now; designed to be extended with graphics later.
 
+#define MD_GPU_VK_TEMP_ALLOC_ALIGNMENT 256
+
 // Command buffer pool size. Must be <= 64 to fit the availability bitmask.
 #define MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE 64
 
-// Default size of the device-owned transfer staging ring (64 MiB).
-// Covers Mid-resolution volumes (256^3 x 4 bytes = 64 MiB) directly.
-// Larger transfers use a one-off allocation.
-#define MD_GPU_VK_TRANSFER_RING_SIZE (64u * 1024u * 1024u)
-#define MD_GPU_VK_TRANSFER_RING_SLOTS 64
 #define MD_GPU_VK_TRANSIENT_PAGE_SIZE (4u * 1024u * 1024u)
-#define MD_GPU_VK_MAX_TRANSIENT_PAGES_PER_CMD 64
 STATIC_ASSERT(MD_GPU_VK_COMMAND_BUFFER_POOL_SIZE <= 64, "Vulkan command buffer pool must fit in a uint64_t bitmask");
 
 // Maximum number of descriptor set slots available per command buffer recording.
@@ -94,9 +90,11 @@ typedef enum md_vk_queue_slot_t {
 typedef struct md_vk_thread_context md_vk_thread_context;
 typedef struct md_vk_transient_page_t md_vk_transient_page_t;
 
-typedef struct md_vk_cmd_transient_page_ref_t {
-    md_vk_transient_page_t* page;
-} md_vk_cmd_transient_page_ref_t;
+typedef enum md_vk_transient_page_list_state_t {
+    MD_VK_TRANSIENT_PAGE_LIST_NONE = 0,
+    MD_VK_TRANSIENT_PAGE_LIST_AVAILABLE,
+    MD_VK_TRANSIENT_PAGE_LIST_RETIRED,
+} md_vk_transient_page_list_state_t;
 
 struct md_vk_transient_page_t {
     md_gpu_buffer_t            buffer;
@@ -104,11 +102,12 @@ struct md_vk_transient_page_t {
     size_t                     capacity;
     size_t                     offset;
     uint64_t                   retire_value;
+    md_vk_queue_slot_t         retire_queue_slot;
     bool                       dedicated;
-    bool                       in_pool;
-    bool                       in_retired_list;
+    md_vk_transient_page_list_state_t list_state;
     uint32_t                   active_context_refcount;
     md_vk_transient_page_t*    next;
+    md_vk_transient_page_t*    cmd_next;
 };
 
 typedef struct md_vk_transient_allocator_t {
@@ -135,10 +134,9 @@ typedef struct md_gpu_command_buffer {
     md_gpu_compute_pipeline_t bound_pipeline;
     md_vk_cmd_buffer_state_t tracked_buffers[MD_GPU_VK_MAX_TRACKED_BUFFERS];
     md_vk_cmd_image_state_t tracked_images[MD_GPU_VK_MAX_TRACKED_IMAGES];
-    md_vk_cmd_transient_page_ref_t transient_pages[MD_GPU_VK_MAX_TRANSIENT_PAGES_PER_CMD];
+    md_vk_transient_page_t* transient_pages;
     uint32_t tracked_buffer_count;
     uint32_t tracked_image_count;
-    uint32_t transient_page_count;
 } md_gpu_command_buffer;
 
 typedef struct md_vk_thread_context {
@@ -160,46 +158,6 @@ typedef struct md_gpu_queue {
     uint64_t              next_event_id;
 } md_gpu_queue;
 
-// A single in-flight slot inside the transfer ring.
-typedef struct md_vk_ring_slot_t {
-    uint64_t event_value;   /* queue timeline value when this range is retired */
-    size_t   offset;        /* byte offset in ring buffer */
-    size_t   size;          /* byte size of this slot */
-    void*    dst;           /* caller dst for download slots; NULL for upload */
-} md_vk_ring_slot_t;
-
-/*
- * One-off staging buffer node for transfers too large for the ring.
- * Nodes are singly-linked and retired lazily: on each retire call the list is
- * walked and any node whose event_value has been reached by the transfer queue
- * timeline semaphore is freed.  Download nodes carry a dst pointer; the GPU
- * result is memcpy'd into it before the staging buffer is destroyed.
- */
-typedef struct md_vk_large_buf_node_t md_vk_large_buf_node_t;
-struct md_vk_large_buf_node_t {
-    md_gpu_buffer_t          buffer;      /* CPU-visible one-off staging buffer */
-    void*                    cpu_ptr;     /* mapped address of buffer */
-    size_t                   size;        /* size in bytes */
-    uint64_t                 event_value; /* transfer-queue timeline value at submission */
-    void*                    dst;         /* caller destination for downloads; NULL for uploads */
-    md_vk_large_buf_node_t*  next;
-};
-
-// Device-owned, transfer-queue-backed ring staging buffer.
-typedef struct md_vk_transfer_ring_t {
-    md_gpu_buffer_t buffer;   /* CPU-visible ring buffer */
-    void*           cpu_ptr;  /* persistent mapped address */
-    size_t          capacity; /* total ring capacity in bytes */
-    size_t          head;     /* write cursor (bytes used from start) */
-    size_t          tail;     /* oldest live byte offset */
-    md_vk_ring_slot_t slots[MD_GPU_VK_TRANSFER_RING_SLOTS];
-    uint32_t        slot_head; /* next free slot index (wraps) */
-    uint32_t        slot_tail; /* oldest in-flight slot (wraps) */
-    uint32_t        slot_count;
-    /* Singly-linked list of oversized one-off staging buffers pending retirement. */
-    md_vk_large_buf_node_t* large_buf_head;
-} md_vk_transfer_ring_t;
-
 typedef struct md_gpu_device {
     VkInstance instance;
     VkPhysicalDevice physical_device;
@@ -213,9 +171,6 @@ typedef struct md_gpu_device {
     VkPipelineLayout pipeline_layout;
 
     struct md_gpu_queue queues[MD_VK_QUEUE_SLOT_COUNT];
-
-    /* Device-owned transfer staging ring (see md_gpu_upload_image_data / md_gpu_download_image). */
-    md_vk_transfer_ring_t xfer_ring;
     md_vk_transient_page_pool_t transient_page_pool;
 } md_gpu_device;
 
@@ -256,6 +211,13 @@ typedef struct md_gpu_compute_pipeline {
     uint32_t resource_binding_count;
 } md_gpu_compute_pipeline;
 
+typedef struct md_gpu_readback {
+    md_gpu_device* dev;
+    md_vk_transient_page_t* page;
+    md_gpu_event_t event;
+    size_t size;
+} md_gpu_readback;
+
 static md_thread_key_t vk_thread_context_key;
 static THREAD_LOCAL md_vk_thread_context* vk_thread_contexts[MD_VK_QUEUE_SLOT_COUNT];
 
@@ -263,15 +225,13 @@ static void md_vk_destroy_thread_context(md_gpu_device* dev, md_vk_thread_contex
 static uint64_t md_vk_queue_timeline_value(md_gpu_queue* queue);
 static bool md_vk_wait_queue_timeline(md_gpu_queue* queue, uint64_t value);
 static void md_vk_reclaim_context_completed_cmds(md_vk_thread_context* ctx, uint64_t completed);
-static bool md_vk_xfer_ring_init(md_gpu_device* dev);
-static void md_vk_xfer_ring_free(md_gpu_device* dev);
-static void md_vk_xfer_ring_retire(md_gpu_device* dev);
 static bool md_vk_transient_pool_init(md_gpu_device* dev);
 static void md_vk_transient_pool_free(md_gpu_device* dev);
-static void md_vk_transient_pool_retire(md_gpu_device* dev, uint64_t completed);
+static void md_vk_transient_pool_retire(md_gpu_device* dev);
 static md_vk_transient_page_t* md_vk_transient_page_acquire(md_gpu_device* dev, size_t min_capacity, bool dedicated);
 static void md_vk_transient_page_release(md_gpu_device* dev, md_vk_transient_page_t* page);
 static void md_vk_transient_allocator_release(md_gpu_device* dev, md_vk_transient_allocator_t* alloc);
+static void md_vk_transient_page_enqueue_retired(md_gpu_device* dev, md_vk_transient_page_t* page);
 
 static uint64_t md_vk_thread_context_pending_value(const md_vk_thread_context* ctx) {
     if (!ctx) return 0;
@@ -313,13 +273,11 @@ static void md_vk_release_thread_context(md_vk_thread_context* ctx) {
 }
 
 static void md_vk_thread_context_thread_exit(void* data) {
-    md_vk_thread_context** contexts = (md_vk_thread_context**)data;
-    if (!contexts) return;
-
+    (void)data;
     for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
-        if (contexts[i]) {
-            md_vk_release_thread_context(contexts[i]);
-            contexts[i] = NULL;
+        if (vk_thread_contexts[i]) {
+            md_vk_release_thread_context(vk_thread_contexts[i]);
+            vk_thread_contexts[i] = NULL;
         }
     }
 }
@@ -327,7 +285,7 @@ static void md_vk_thread_context_thread_exit(void* data) {
 static bool md_vk_thread_context_system_init(void) {
     bool result = md_thread_key_create(&vk_thread_context_key, md_vk_thread_context_thread_exit);
     if (result) {
-        md_thread_key_set_value(vk_thread_context_key, vk_thread_contexts);
+        md_thread_key_set_value(vk_thread_context_key, (void*)(uintptr_t)1);
     }
     return result;
 }
@@ -375,23 +333,42 @@ static void md_vk_transient_page_release(md_gpu_device* dev, md_vk_transient_pag
 
     page->offset = 0;
     page->retire_value = 0;
-    page->in_retired_list = false;
+    page->retire_queue_slot = MD_VK_QUEUE_SLOT_COUNT;
+    page->list_state = MD_VK_TRANSIENT_PAGE_LIST_NONE;
+    page->next = NULL;
+    page->cmd_next = NULL;
 
-    md_vk_transient_page_pool_t* pool = &dev->transient_page_pool;
-    md_mutex_lock(&pool->mutex);
     if (page->dedicated) {
-        md_mutex_unlock(&pool->mutex);
         md_vk_transient_page_destroy(page);
         return;
     }
-    page->in_pool = true;
+
+    md_vk_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+    page->list_state = MD_VK_TRANSIENT_PAGE_LIST_AVAILABLE;
     page->next = pool->available_pages;
     pool->available_pages = page;
     md_mutex_unlock(&pool->mutex);
 }
 
-static void md_vk_transient_pool_retire(md_gpu_device* dev, uint64_t completed) {
+static void md_vk_transient_page_enqueue_retired(md_gpu_device* dev, md_vk_transient_page_t* page) {
+    if (!dev || !page) return;
+
+    md_vk_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+    if (page->list_state != MD_VK_TRANSIENT_PAGE_LIST_RETIRED) {
+        page->next = pool->retired_pages;
+        pool->retired_pages = page;
+        page->list_state = MD_VK_TRANSIENT_PAGE_LIST_RETIRED;
+    }
+    md_mutex_unlock(&pool->mutex);
+}
+
+static void md_vk_transient_pool_retire(md_gpu_device* dev) {
     if (!dev) return;
+
+    uint64_t completed_values[MD_VK_QUEUE_SLOT_COUNT] = {0};
+    bool completed_valid[MD_VK_QUEUE_SLOT_COUNT] = {false};
 
     md_vk_transient_page_pool_t* pool = &dev->transient_page_pool;
     md_mutex_lock(&pool->mutex);
@@ -399,15 +376,26 @@ static void md_vk_transient_pool_retire(md_gpu_device* dev, uint64_t completed) 
     md_vk_transient_page_t** pp = &pool->retired_pages;
     while (*pp) {
         md_vk_transient_page_t* page = *pp;
-        if (page->retire_value == 0 || page->retire_value > completed || page->active_context_refcount != 0) {
+        const uint32_t slot = (uint32_t)page->retire_queue_slot;
+
+        if (page->retire_value == 0 || page->active_context_refcount != 0 || slot >= MD_VK_QUEUE_SLOT_COUNT) {
+            pp = &page->next;
+            continue;
+        }
+
+        if (!completed_valid[slot]) {
+            completed_values[slot] = md_vk_queue_timeline_value(&dev->queues[slot]);
+            completed_valid[slot] = true;
+        }
+
+        if (page->retire_value > completed_values[slot]) {
             pp = &page->next;
             continue;
         }
 
         *pp = page->next;
         page->next = NULL;
-        page->in_retired_list = false;
-        page->in_pool = false;
+        page->list_state = MD_VK_TRANSIENT_PAGE_LIST_NONE;
         md_mutex_unlock(&pool->mutex);
         md_vk_transient_page_release(dev, page);
         md_mutex_lock(&pool->mutex);
@@ -457,7 +445,8 @@ static md_vk_transient_page_t* md_vk_transient_page_acquire(md_gpu_device* dev, 
             if (page->capacity >= min_capacity) {
                 *pp = page->next;
                 page->next = NULL;
-                page->in_pool = false;
+                page->cmd_next = NULL;
+                page->list_state = MD_VK_TRANSIENT_PAGE_LIST_NONE;
                 md_mutex_unlock(&pool->mutex);
                 return page;
             }
@@ -481,7 +470,8 @@ static md_vk_transient_page_t* md_vk_transient_page_acquire(md_gpu_device* dev, 
     page->cpu_ptr = md_gpu_buffer_cpu_ptr(page->buffer);
     page->capacity = page_capacity;
     page->dedicated = dedicated;
-    page->in_pool = false;
+    page->retire_queue_slot = MD_VK_QUEUE_SLOT_COUNT;
+    page->list_state = MD_VK_TRANSIENT_PAGE_LIST_NONE;
     return page;
 }
 
@@ -500,22 +490,23 @@ static void md_vk_cmd_release_transient_pages(md_gpu_command_buffer* cmd, bool s
     md_gpu_device* dev = cmd->queue->dev;
     md_vk_thread_context* ctx = cmd->context;
 
-    for (uint32_t i = 0; i < cmd->transient_page_count; ++i) {
-        md_vk_transient_page_t* page = cmd->transient_pages[i].page;
-        if (!page) continue;
+    md_vk_transient_page_t* page = cmd->transient_pages;
+    while (page) {
+        md_vk_transient_page_t* next = page->cmd_next;
+        page->cmd_next = NULL;
 
         if (!submitted) {
             const bool is_current = ctx && ctx->transient_allocator.current_page == page;
             if (page->dedicated) {
                 md_vk_transient_page_release(dev, page);
-            } else if (!is_current && page->active_context_refcount == 0 && !page->in_pool && !page->in_retired_list) {
+            } else if (!is_current && page->active_context_refcount == 0 && page->list_state == MD_VK_TRANSIENT_PAGE_LIST_NONE) {
                 md_vk_transient_page_release(dev, page);
             }
         }
 
-        cmd->transient_pages[i].page = NULL;
+        page = next;
     }
-    cmd->transient_page_count = 0;
+    cmd->transient_pages = NULL;
 }
 
 static VkAccessFlags2 md_vk_access_from_gpu_usage(md_gpu_usage_flags_t usage) {
@@ -790,7 +781,7 @@ static void md_vk_reset_cmd_state(md_gpu_command_buffer* cmd) {
     cmd->bound_pipeline = NULL;
     cmd->tracked_buffer_count = 0;
     cmd->tracked_image_count = 0;
-    cmd->transient_page_count = 0;
+    cmd->transient_pages = NULL;
 }
 
 static uint32_t md_vk_cmd_slot_index(const md_vk_thread_context* ctx, const md_gpu_command_buffer* cmd) {
@@ -1164,6 +1155,7 @@ static inline md_vk_thread_context* md_vk_queue_context_for_current_thread(md_gp
     ctx = md_vk_create_thread_context(queue);
     if (!ctx) return NULL;
 
+    md_thread_key_set_value(vk_thread_context_key, (void*)ctx);
     vk_thread_contexts[queue->slot] = ctx;
 
     return ctx;
@@ -1336,11 +1328,7 @@ md_gpu_device_t md_gpu_device_create(void) {
 
     volkLoadDevice(dev->device);
 
-    /* Initialize the device-owned transfer staging ring (non-fatal if it fails). */
-    md_vk_xfer_ring_init(dev);
-
     if (!md_vk_transient_pool_init(dev)) {
-        md_vk_xfer_ring_free(dev);
         vkDestroyDevice(dev->device, NULL);
         vkDestroyInstance(dev->instance, NULL);
         md_vk_thread_context_system_shutdown();
@@ -1356,9 +1344,8 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
     md_gpu_device* dev = (md_gpu_device*)device;
     if (dev->device) {
         vkDeviceWaitIdle(dev->device);
-        md_vk_xfer_ring_free(dev);
         md_vk_release_current_thread_contexts_for_device(dev);
-        md_vk_transient_pool_retire(dev, UINT64_MAX);
+        md_vk_transient_pool_retire(dev);
         md_vk_transient_pool_free(dev);
         for (uint32_t i = 0; i < MD_VK_QUEUE_SLOT_COUNT; ++i) {
             if (dev->queues[i].event_timeline) {
@@ -1985,16 +1972,12 @@ static bool md_vk_cmd_begin_acquired(md_gpu_cmd_t cmd_handle, const char* label)
 static bool md_vk_cmd_attach_transient_page(md_gpu_command_buffer* cmd, md_vk_transient_page_t* page) {
     if (!cmd || !page) return false;
 
-    for (uint32_t i = 0; i < cmd->transient_page_count; ++i) {
-        if (cmd->transient_pages[i].page == page) return true;
+    for (md_vk_transient_page_t* it = cmd->transient_pages; it; it = it->cmd_next) {
+        if (it == page) return true;
     }
 
-    if (cmd->transient_page_count >= MD_GPU_VK_MAX_TRANSIENT_PAGES_PER_CMD) {
-        MD_LOG_ERROR("md_vk_cmd_attach_transient_page: too many transient pages attached to command buffer");
-        return false;
-    }
-
-    cmd->transient_pages[cmd->transient_page_count++].page = page;
+    page->cmd_next = cmd->transient_pages;
+    cmd->transient_pages = page;
     return true;
 }
 
@@ -2007,7 +1990,7 @@ static md_gpu_transient_t md_vk_cmd_alloc_transient(md_gpu_cmd_t cmd_handle, siz
 
     md_vk_thread_context* ctx = cmd->context;
     md_gpu_device* dev = cmd->queue->dev;
-    if (alignment == 0) alignment = 256;
+    if (alignment == 0) alignment = MD_GPU_VK_TEMP_ALLOC_ALIGNMENT;
 
     md_vk_transient_page_t* page = ctx->transient_allocator.current_page;
     const bool dedicated = (size > (MD_GPU_VK_TRANSIENT_PAGE_SIZE / 2));
@@ -2089,16 +2072,8 @@ void md_gpu_cmd_discard(md_gpu_cmd_t cmd_handle) {
     md_vk_release_cmd_slot(cmd);
 }
 
-md_gpu_transient_t md_gpu_cmd_alloc_upload(md_gpu_cmd_t cmd, size_t size, size_t alignment) {
-    return md_vk_cmd_alloc_transient(cmd, size, alignment);
-}
-
-md_gpu_transient_t md_gpu_cmd_alloc_readback(md_gpu_cmd_t cmd, size_t size, size_t alignment) {
-    return md_vk_cmd_alloc_transient(cmd, size, alignment);
-}
-
-md_gpu_transient_t md_gpu_cmd_alloc_scratch(md_gpu_cmd_t cmd, size_t size, size_t alignment) {
-    return md_vk_cmd_alloc_transient(cmd, size, alignment);
+md_gpu_transient_t md_gpu_cmd_temp_alloc(md_gpu_cmd_t cmd, size_t size) {
+    return md_vk_cmd_alloc_transient(cmd, size, MD_GPU_VK_TEMP_ALLOC_ALIGNMENT);
 }
 
 md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_queue_submit_desc_t* desc) {
@@ -2107,6 +2082,8 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
     if (desc->wait_count > 0 && !desc->waits) return event;
 
     md_gpu_queue* queue = (md_gpu_queue*)queue_handle;
+    md_vk_transient_pool_retire(queue->dev);
+
     const md_gpu_cmd_t* cmds = desc->cmds;
     const size_t cmd_count = desc->cmd_count;
     VkCommandBufferSubmitInfo* cmd_infos = (VkCommandBufferSubmitInfo*)malloc(sizeof(VkCommandBufferSubmitInfo) * cmd_count);
@@ -2187,21 +2164,16 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
     for (size_t i = 0; i < cmd_count; ++i) {
         md_gpu_command_buffer* cmd = (md_gpu_command_buffer*)cmds[i];
         md_vk_cmd_apply_final_state(cmd);
-        for (uint32_t j = 0; j < cmd->transient_page_count; ++j) {
-            md_vk_transient_page_t* page = cmd->transient_pages[j].page;
-            if (!page) continue;
+        md_vk_transient_page_t* page = cmd->transient_pages;
+        while (page) {
+            md_vk_transient_page_t* next = page->cmd_next;
+            page->cmd_next = NULL;
             page->retire_value = event.value;
-            if (!page->in_retired_list) {
-                md_vk_transient_page_pool_t* pool = &queue->dev->transient_page_pool;
-                md_mutex_lock(&pool->mutex);
-                if (!page->in_retired_list) {
-                    page->next = pool->retired_pages;
-                    pool->retired_pages = page;
-                    page->in_retired_list = true;
-                }
-                md_mutex_unlock(&pool->mutex);
-            }
+            page->retire_queue_slot = queue->slot;
+            md_vk_transient_page_enqueue_retired(queue->dev, page);
+            page = next;
         }
+        cmd->transient_pages = NULL;
         cmd->retire_value = event.value;
         cmd->state = MD_VK_CMD_STATE_SUBMITTED;
     }
@@ -2225,15 +2197,8 @@ void md_gpu_event_wait(md_gpu_event_t event) {
     if (!md_vk_wait_queue_timeline(queue, event.value)) {
         MD_LOG_ERROR("md_gpu_event_wait: failed to wait for event timeline");
     }
-    if (queue->dev) {
-        md_vk_transient_pool_retire(queue->dev, md_vk_queue_timeline_value(queue));
-    }
-    /* Flush any deferred staging-buffer copies (ring download slots and large-buf
-       download nodes) whose GPU work has now completed. This ensures that caller
-       destination buffers are populated before md_gpu_event_wait returns. */
-    if (queue->dev) {
-        md_vk_xfer_ring_retire(queue->dev);
-    }
+
+    md_vk_transient_pool_retire(queue->dev);
 }
 
 static bool md_vk_cmd_declare_resources(md_gpu_command_buffer* cmd, md_vk_dispatch_resources_t* res, const md_gpu_resource_t* resources, uint32_t resource_count) {
@@ -2478,465 +2443,161 @@ bool md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, siz
     return true;
 }
 
-// =============================
-// Device-owned transfer ring helpers
-// =============================
+md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_offset, size_t size, md_gpu_event_t after) {
+    if (!src_buffer || size == 0) return NULL;
 
-static bool md_vk_xfer_ring_init(md_gpu_device* dev) {
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-    memset(ring, 0, sizeof(*ring));
-
-    md_gpu_buffer_desc_t desc = {
-        .size  = MD_GPU_VK_TRANSFER_RING_SIZE,
-        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-    };
-    ring->buffer = md_gpu_buffer_create((md_gpu_device_t)dev, &desc);
-    if (!ring->buffer) {
-        MD_LOG_ERROR("md_vk_xfer_ring_init: failed to create staging ring buffer");
-        return false;
-    }
-    ring->cpu_ptr  = md_gpu_buffer_cpu_ptr(ring->buffer);
-    ring->capacity = MD_GPU_VK_TRANSFER_RING_SIZE;
-    return true;
-}
-
-/* Retire completed slots: reclaim head/tail space for slots whose GPU work is done. */
-static void md_vk_large_buf_list_retire(md_gpu_device* dev, uint64_t completed) {
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-    md_vk_large_buf_node_t** pp = &ring->large_buf_head;
-    while (*pp) {
-        md_vk_large_buf_node_t* node = *pp;
-        if (node->event_value > completed) {
-            pp = &node->next;
-            continue;
-        }
-        /* Node is done: copy to caller destination if this was a download. */
-        if (node->dst && node->cpu_ptr) {
-            memcpy(node->dst, node->cpu_ptr, node->size);
-        }
-        md_gpu_buffer_destroy(node->buffer);
-        /* Unlink and free the node itself. */
-        *pp = node->next;
-        free(node);
-    }
-}
-
-static void md_vk_xfer_ring_free(md_gpu_device* dev) {
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-
-    /* Drain the large-buffer list: wait for the transfer queue, then retire all. */
-    md_gpu_queue* xfer_queue = &dev->queues[MD_VK_QUEUE_SLOT_TRANSFER];
-    if (xfer_queue->event_timeline && ring->large_buf_head) {
-        md_vk_wait_queue_timeline(xfer_queue, xfer_queue->next_event_id - 1);
-        md_vk_large_buf_list_retire(dev, UINT64_MAX);
-    }
-
-    if (ring->buffer) {
-        md_gpu_buffer_destroy(ring->buffer);
-        ring->buffer = NULL;
-    }
-    memset(ring, 0, sizeof(*ring));
-}
-
-static void md_vk_xfer_ring_retire(md_gpu_device* dev) {
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-    md_gpu_queue* xfer_queue = &dev->queues[MD_VK_QUEUE_SLOT_TRANSFER];
-    if (!xfer_queue->event_timeline) return;
-
-    const uint64_t completed = md_vk_queue_timeline_value(xfer_queue);
-
-    /* Also retire any oversized one-off buffers whose work has completed. */
-    md_vk_large_buf_list_retire(dev, completed);
-
-    while (ring->slot_count > 0) {
-        uint32_t slot_idx = ring->slot_tail % MD_GPU_VK_TRANSFER_RING_SLOTS;
-        md_vk_ring_slot_t* slot = &ring->slots[slot_idx];
-        if (slot->event_value > completed) break;
-
-        /* If this slot was a download, copy GPU result → caller destination now. */
-        if (slot->dst) {
-            uint8_t* src_ptr = (uint8_t*)ring->cpu_ptr + slot->offset;
-            memcpy(slot->dst, src_ptr, slot->size);
-            slot->dst = NULL;
-        }
-
-        ring->tail = slot->offset + slot->size;
-        /* Handle wrap: if tail overshoots capacity, reset to beginning. */
-        if (ring->tail >= ring->capacity) ring->tail = 0;
-
-        ring->slot_tail++;
-        ring->slot_count--;
-    }
-}
-
-/*
- * Allocate `size` contiguous bytes from the ring.
- * Returns the byte offset inside the ring buffer, or SIZE_MAX on failure.
- * The ring is not circular in the malloc sense; it is a simple linear bump that
- * retires from the tail.  When the ring wraps, the head resets to 0 (the tail
- * must also be 0 at that point, i.e. the ring is empty).
- */
-static size_t md_vk_xfer_ring_alloc(md_gpu_device* dev, size_t size) {
-    if (size == 0 || size > MD_GPU_VK_TRANSFER_RING_SIZE) return SIZE_MAX;
-
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-
-    /* Retire completed work first to free space. */
-    md_vk_xfer_ring_retire(dev);
-
-    if (ring->slot_count >= MD_GPU_VK_TRANSFER_RING_SLOTS) return SIZE_MAX;
-
-    /* Align head to 256 bytes (satisfies Vulkan's minimum buffer alignment). */
-    const size_t align = 256;
-    size_t aligned_head = (ring->head + align - 1) & ~(align - 1);
-
-    /* Check if we have room from aligned_head to end. */
-    if (aligned_head + size <= ring->capacity) {
-        ring->head = aligned_head;
-    } else {
-        /* Wrap: only valid if tail is 0 (ring is empty) or we have room from 0. */
-        if (ring->slot_count == 0) {
-            ring->head = 0;
-            ring->tail = 0;
-            aligned_head = 0;
-        } else if (size <= ring->tail) {
-            /* Space at the beginning before the tail. */
-            ring->head = 0;
-            aligned_head = 0;
-        } else {
-            return SIZE_MAX;
-        }
-    }
-
-    size_t offset = ring->head;
-    ring->head = offset + size;
-    return offset;
-}
-
-/* Record a slot in the ring so retirement can reclaim it once the event completes. */
-static bool md_vk_xfer_ring_push_slot(md_gpu_device* dev, size_t offset, size_t size, uint64_t event_value, void* dst) {
-    md_vk_transfer_ring_t* ring = &dev->xfer_ring;
-    if (ring->slot_count >= MD_GPU_VK_TRANSFER_RING_SLOTS) return false;
-    uint32_t slot_idx = ring->slot_head % MD_GPU_VK_TRANSFER_RING_SLOTS;
-    ring->slots[slot_idx].offset      = offset;
-    ring->slots[slot_idx].size        = size;
-    ring->slots[slot_idx].event_value = event_value;
-    ring->slots[slot_idx].dst         = dst;
-    ring->slot_head++;
-    ring->slot_count++;
-    return true;
-}
-
-/*
- * Enqueue a one-off staging buffer into the large-buf retirement list.
- * The node is allocated with malloc and prepended to the list; it will be
- * freed (and dst memcpy'd for downloads) when the transfer queue timeline
- * reaches event_value.  Takes ownership of `staging`.
- */
-static bool md_vk_large_buf_enqueue(md_gpu_device* dev, md_gpu_buffer_t staging,
-                                     void* cpu_ptr, size_t size,
-                                     uint64_t event_value, void* dst) {
-    md_vk_large_buf_node_t* node = (md_vk_large_buf_node_t*)malloc(sizeof(*node));
-    if (!node) {
-        /* Allocation failure: fall back to synchronous destroy. */
-        if (dst && cpu_ptr) memcpy(dst, cpu_ptr, size);
-        md_gpu_buffer_destroy(staging);
-        return false;
-    }
-    node->buffer      = staging;
-    node->cpu_ptr     = cpu_ptr;
-    node->size        = size;
-    node->event_value = event_value;
-    node->dst         = dst;
-    /* Prepend – order does not matter for retirement correctness. */
-    node->next = dev->xfer_ring.large_buf_head;
-    dev->xfer_ring.large_buf_head = node;
-    return true;
-}
-
-// =============================
-// md_gpu_upload_image_data / md_gpu_download_image implementations
-// =============================
-
-md_gpu_event_t md_gpu_upload_image_data(md_gpu_device_t device, md_gpu_image_t dst_image, const void* src, size_t src_size) {
-    md_gpu_event_t null_event = {0};
-    if (!device || !dst_image || !src || src_size == 0) return null_event;
-
-    md_gpu_device* dev = (md_gpu_device*)device;
-    md_gpu_image*  img = (md_gpu_image*)dst_image;
-
-    /* Validate size matches image extents. */
-    const uint32_t bpp = md_vk_format_bytes_per_pixel(img->format);
-    if (bpp == 0) return null_event;
-    const size_t expected = (size_t)img->width * img->height * img->depth * bpp;
-    if (src_size < expected) {
-        MD_LOG_ERROR("md_gpu_upload_image_data: src_size (%zu) smaller than image (%zu bytes)", src_size, expected);
-        return null_event;
-    }
-    const size_t upload_size = expected;
-
-    /* Decide staging: ring if it fits, otherwise a one-off CPU-visible buffer. */
-    size_t ring_offset = md_vk_xfer_ring_alloc(dev, upload_size);
-    const bool use_ring = (ring_offset != SIZE_MAX);
-    md_gpu_buffer_t staging = NULL;
-    void*           staging_ptr = NULL;
-    size_t          staging_off = 0;
-
-    if (use_ring) {
-        staging     = dev->xfer_ring.buffer;
-        staging_ptr = (uint8_t*)dev->xfer_ring.cpu_ptr + ring_offset;
-        staging_off = ring_offset;
-    } else {
-        /* One-off large allocation. */
-        md_gpu_buffer_desc_t desc = { .size = upload_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-        staging = md_gpu_buffer_create(device, &desc);
-        if (!staging) return null_event;
-        staging_ptr = md_gpu_buffer_cpu_ptr(staging);
-        staging_off = 0;
-    }
-
-    /* Copy host data into the staging area. */
-    memcpy(staging_ptr, src, upload_size);
-
-    /* Record and submit the copy on the transfer queue. */
-    md_gpu_queue_t xfer_queue = md_gpu_queue_transfer(device);
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(xfer_queue, "md_gpu_upload_image_data");
-    if (!cmd) {
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    md_gpu_buffer_image_copy_t copy = { .buffer_offset = staging_off };
-    if (!md_gpu_cmd_copy_buffer_to_image_layout(cmd, staging, dst_image, &copy)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    if (!md_gpu_cmd_end(cmd)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    md_gpu_event_t event = md_gpu_queue_submit_one(xfer_queue, cmd);
-
-    if (!use_ring) {
-        /* Async retirement via large-buf list: the staging buffer is freed once
-           the transfer queue timeline reaches the submitted event value. */
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_large_buf_enqueue(dev, staging, staging_ptr, upload_size, q->next_event_id - 1, NULL);
-    } else {
-        /* Track the ring slot for async retirement. */
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_xfer_ring_push_slot(dev, ring_offset, upload_size, q->next_event_id - 1, NULL);
-    }
-
-    return event;
-}
-
-md_gpu_event_t md_gpu_download_image(md_gpu_device_t device, md_gpu_image_t src_image, void* dst, size_t dst_size) {
-    md_gpu_event_t null_event = {0};
-    if (!device || !src_image || !dst || dst_size == 0) return null_event;
-
-    md_gpu_device* dev = (md_gpu_device*)device;
-    md_gpu_image*  img = (md_gpu_image*)src_image;
-
-    const uint32_t bpp = md_vk_format_bytes_per_pixel(img->format);
-    if (bpp == 0) return null_event;
-    const size_t download_size = (size_t)img->width * img->height * img->depth * bpp;
-    if (dst_size < download_size) {
-        MD_LOG_ERROR("md_gpu_download_image: dst_size (%zu) smaller than image (%zu bytes)", dst_size, download_size);
-        return null_event;
-    }
-
-    /* Staging allocation: ring or one-off. */
-    size_t ring_offset = md_vk_xfer_ring_alloc(dev, download_size);
-    const bool use_ring = (ring_offset != SIZE_MAX);
-    md_gpu_buffer_t staging = NULL;
-    size_t          staging_off = 0;
-
-    if (use_ring) {
-        staging     = dev->xfer_ring.buffer;
-        staging_off = ring_offset;
-    } else {
-        md_gpu_buffer_desc_t desc = { .size = download_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-        staging = md_gpu_buffer_create(device, &desc);
-        if (!staging) return null_event;
-        staging_off = 0;
-    }
-
-    md_gpu_queue_t xfer_queue = md_gpu_queue_transfer(device);
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(xfer_queue, "md_gpu_download_image");
-    if (!cmd) {
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    md_gpu_buffer_image_copy_t copy = { .buffer_offset = staging_off };
-    if (!md_gpu_cmd_copy_image_to_buffer(cmd, src_image, staging, &copy)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    if (!md_gpu_cmd_end(cmd)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    md_gpu_event_t event = md_gpu_queue_submit_one(xfer_queue, cmd);
-
-    if (!use_ring) {
-        /* Async retirement via large-buf list: the node will memcpy into dst and
-           free the staging buffer once the transfer queue timeline passes event_value. */
-        void* staging_ptr = md_gpu_buffer_cpu_ptr(staging);
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_large_buf_enqueue(dev, staging, staging_ptr, download_size, q->next_event_id - 1, dst);
-    } else {
-        /* Async: the retirement handler will copy dst when the event completes. */
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_xfer_ring_push_slot(dev, ring_offset, download_size, q->next_event_id - 1, dst);
-    }
-
-    return event;
-}
-
-// =============================
-// md_gpu_upload_buffer_data / md_gpu_download_buffer implementations
-// =============================
-
-md_gpu_event_t md_gpu_upload_buffer_data(md_gpu_device_t device, md_gpu_buffer_t dst_buffer,
-                                          size_t dst_offset, const void* src, size_t src_size) {
-    md_gpu_event_t null_event = {0};
-    if (!device || !dst_buffer || !src || src_size == 0) return null_event;
-
-    md_gpu_device* dev = (md_gpu_device*)device;
-    md_gpu_buffer* dst = (md_gpu_buffer*)dst_buffer;
-
-    /* Validate offset + size fits in the destination buffer. */
-    if (dst_offset + src_size > (size_t)dst->size) {
-        MD_LOG_ERROR("md_gpu_upload_buffer_data: dst_offset (%zu) + src_size (%zu) exceeds buffer size (%zu)",
-                     dst_offset, src_size, (size_t)dst->size);
-        return null_event;
-    }
-
-    /* Decide staging: ring if it fits, otherwise a one-off CPU-visible buffer. */
-    size_t ring_offset = md_vk_xfer_ring_alloc(dev, src_size);
-    const bool use_ring = (ring_offset != SIZE_MAX);
-    md_gpu_buffer_t staging = NULL;
-    void*           staging_ptr = NULL;
-    size_t          staging_off = 0;
-
-    if (use_ring) {
-        staging     = dev->xfer_ring.buffer;
-        staging_ptr = (uint8_t*)dev->xfer_ring.cpu_ptr + ring_offset;
-        staging_off = ring_offset;
-    } else {
-        md_gpu_buffer_desc_t desc = { .size = src_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-        staging = md_gpu_buffer_create(device, &desc);
-        if (!staging) return null_event;
-        staging_ptr = md_gpu_buffer_cpu_ptr(staging);
-        staging_off = 0;
-    }
-
-    memcpy(staging_ptr, src, src_size);
-
-    md_gpu_queue_t xfer_queue = md_gpu_queue_transfer(device);
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(xfer_queue, "md_gpu_upload_buffer_data");
-    if (!cmd) {
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    if (!md_gpu_cmd_copy_buffer(cmd, staging, dst_buffer, src_size, staging_off, dst_offset)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    if (!md_gpu_cmd_end(cmd)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
-
-    md_gpu_event_t event = md_gpu_queue_submit_one(xfer_queue, cmd);
-
-    if (!use_ring) {
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_large_buf_enqueue(dev, staging, staging_ptr, src_size, q->next_event_id - 1, NULL);
-    } else {
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_xfer_ring_push_slot(dev, ring_offset, src_size, q->next_event_id - 1, NULL);
-    }
-
-    return event;
-}
-
-md_gpu_event_t md_gpu_download_buffer(md_gpu_device_t device, md_gpu_buffer_t src_buffer,
-                                       size_t src_offset, void* dst, size_t dst_size) {
-    md_gpu_event_t null_event = {0};
-    if (!device || !src_buffer || !dst || dst_size == 0) return null_event;
-
-    md_gpu_device* dev = (md_gpu_device*)device;
     md_gpu_buffer* src = (md_gpu_buffer*)src_buffer;
+    md_gpu_device* dev = (md_gpu_device*)src->device;
+    if (!dev) return NULL;
+    if (src_offset > (size_t)src->size || size > (size_t)src->size - src_offset) return NULL;
 
-    /* Validate offset + size fits in the source buffer. */
-    if (src_offset + dst_size > (size_t)src->size) {
-        MD_LOG_ERROR("md_gpu_download_buffer: src_offset (%zu) + dst_size (%zu) exceeds buffer size (%zu)",
-                     src_offset, dst_size, (size_t)src->size);
-        return null_event;
-    }
+    md_vk_transient_page_t* page = md_vk_transient_page_acquire(dev, size, true);
+    if (!page) return NULL;
 
-    /* Staging allocation: ring or one-off. */
-    size_t ring_offset = md_vk_xfer_ring_alloc(dev, dst_size);
-    const bool use_ring = (ring_offset != SIZE_MAX);
-    md_gpu_buffer_t staging = NULL;
-    size_t          staging_off = 0;
-    void*           staging_ptr = NULL;
-
-    if (use_ring) {
-        staging     = dev->xfer_ring.buffer;
-        staging_off = ring_offset;
-        staging_ptr = (uint8_t*)dev->xfer_ring.cpu_ptr + ring_offset;
-    } else {
-        md_gpu_buffer_desc_t desc = { .size = dst_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-        staging = md_gpu_buffer_create(device, &desc);
-        if (!staging) return null_event;
-        staging_ptr = md_gpu_buffer_cpu_ptr(staging);
-        staging_off = 0;
-    }
-
-    md_gpu_queue_t xfer_queue = md_gpu_queue_transfer(device);
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(xfer_queue, "md_gpu_download_buffer");
+    md_gpu_queue_t queue = md_gpu_queue_transfer((md_gpu_device_t)dev);
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "readback_buffer");
     if (!cmd) {
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
+        free(rb);
+        md_vk_transient_page_release(dev, page);
+        return NULL;
     }
 
-    if (!md_gpu_cmd_copy_buffer(cmd, src_buffer, staging, dst_size, src_offset, staging_off)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
+    if (!md_gpu_cmd_copy_buffer(cmd, src_buffer, page->buffer, size, src_offset, 0) || !md_gpu_cmd_end(cmd)) {
+        goto fail;
     }
 
-    if (!md_gpu_cmd_end(cmd)) {
-        md_gpu_cmd_discard(cmd);
-        if (!use_ring) md_gpu_buffer_destroy(staging);
-        return null_event;
-    }
+    bool after_is_valid = md_gpu_event_is_valid(after);
 
-    md_gpu_event_t event = md_gpu_queue_submit_one(xfer_queue, cmd);
+    md_gpu_submit_desc_t submit_desc = {
+        .cmds = &cmd,
+        .cmd_count = 1,
+        .waits = after_is_valid ? &after : NULL,
+        .wait_count = after_is_valid ? 1 : 0,
+    };
 
-    if (!use_ring) {
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_large_buf_enqueue(dev, staging, staging_ptr, dst_size, q->next_event_id - 1, dst);
-    } else {
-        md_gpu_queue* q = (md_gpu_queue*)xfer_queue;
-        md_vk_xfer_ring_push_slot(dev, ring_offset, dst_size, q->next_event_id - 1, dst);
-    }
+    md_gpu_event_t event = md_gpu_queue_submit(queue, &submit_desc);
+    if (!md_gpu_event_is_valid(event))
+        goto fail;
 
-    return event;
+    md_gpu_readback* rb = (md_gpu_readback*)calloc(1, sizeof(*rb));
+    if (!rb) goto fail;
+
+    rb->dev = dev;
+    rb->page = page;
+    rb->event = event;
+    rb->size = size;
+    return (md_gpu_readback_t)rb;
+
+fail:
+    md_gpu_cmd_discard(cmd);
+    md_vk_transient_page_release(dev, page);
+    return NULL;
 }
+
+md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_region_t src_region, md_gpu_event_t after) {
+    if (!src_image) return NULL;
+
+    md_gpu_image* src = (md_gpu_image*)src_image;
+    md_gpu_device* dev = (md_gpu_device*)src->device;
+    if (!dev) return NULL;
+
+    const uint32_t bpp = md_vk_format_bytes_per_pixel(src->format);
+    if (bpp == 0) return NULL;
+
+    const uint32_t ox = src_region.offset[0];
+    const uint32_t oy = src_region.offset[1];
+    const uint32_t oz = src_region.offset[2];
+    if (ox >= src->width || oy >= src->height || oz >= src->depth) return NULL;
+
+    const uint32_t ex = src_region.extent[0] ? src_region.extent[0] : (src->width - ox);
+    const uint32_t ey = src_region.extent[1] ? src_region.extent[1] : (src->height - oy);
+    const uint32_t ez = src_region.extent[2] ? src_region.extent[2] : (src->depth - oz);
+    if (ex == 0 || ey == 0 || ez == 0) return NULL;
+    if (ex > src->width - ox || ey > src->height - oy || ez > src->depth - oz) return NULL;
+
+    const size_t row_bytes = (size_t)ex * (size_t)bpp;
+    if (bpp != 0 && row_bytes / (size_t)bpp != (size_t)ex) return NULL;
+    if (ey != 0 && row_bytes > SIZE_MAX / (size_t)ey) return NULL;
+    const size_t image_bytes = row_bytes * (size_t)ey;
+    if (ez != 0 && image_bytes > SIZE_MAX / (size_t)ez) return NULL;
+    const size_t total_bytes = image_bytes * (size_t)ez;
+    if (total_bytes == 0) return NULL;
+
+    md_vk_transient_page_t* page = md_vk_transient_page_acquire(dev, total_bytes, true);
+    if (!page) return NULL;
+
+    md_gpu_buffer_image_copy_t copy = {
+        .image_region = src_region,
+        .buffer_offset = 0,
+        .bytes_per_row = 0,
+        .bytes_per_image = 0,
+    };
+
+    md_gpu_queue_t queue = md_gpu_queue_transfer((md_gpu_device_t)dev);
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "readback_image");
+    if (!cmd)
+        goto fail;
+
+    if (!md_gpu_cmd_copy_image_to_buffer(cmd, src_image, page->buffer, &copy) || !md_gpu_cmd_end(cmd)) {
+        goto fail;
+    }
+
+    bool after_is_valid = md_gpu_event_is_valid(after);
+
+    md_gpu_submit_desc_t submit_desc = {
+        .cmds = &cmd,
+        .cmd_count = 1,
+        .waits = after_is_valid ? &after : NULL,
+        .wait_count = after_is_valid ? 1 : 0,
+    };
+
+    md_gpu_event_t event = md_gpu_queue_submit(queue, &submit_desc);
+    if (!md_gpu_event_is_valid(event))
+        goto fail;
+
+    md_gpu_readback* rb = (md_gpu_readback*)calloc(1, sizeof(*rb));
+    if (!rb) goto fail;
+
+    rb->dev = dev;
+    rb->page = page;
+    rb->event = event;
+    rb->size = total_bytes;
+    return (md_gpu_readback_t)rb;
+
+fail:
+    md_gpu_cmd_discard(cmd);
+    md_vk_transient_page_release(dev, page);
+    return NULL;
+}
+
+bool md_gpu_readback_is_complete(md_gpu_readback_t readback) {
+    if (!readback) return true;
+    md_gpu_readback* rb = (md_gpu_readback*)readback;
+    return md_gpu_event_is_complete(rb->event);
+}
+
+void md_gpu_readback_wait(md_gpu_readback_t readback) {
+    if (!readback) return;
+    md_gpu_readback* rb = (md_gpu_readback*)readback;
+    md_gpu_event_wait(rb->event);
+}
+
+void* md_gpu_readback_cpu_ptr(md_gpu_readback_t readback) {
+    if (!readback) return NULL;
+    md_gpu_readback* rb = (md_gpu_readback*)readback;
+    return rb->page ? rb->page->cpu_ptr : NULL;
+}
+
+void md_gpu_readback_destroy(md_gpu_readback_t readback) {
+    if (!readback) return;
+    md_gpu_readback* rb = (md_gpu_readback*)readback;
+
+    md_gpu_readback_wait(readback);
+    if (rb->dev && rb->page) {
+        md_vk_transient_page_release(rb->dev, rb->page);
+        rb->page = NULL;
+    }
+
+    free(rb);
+}
+

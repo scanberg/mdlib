@@ -9,6 +9,7 @@
 #include <dispatch/dispatch.h>
 
 #include <core/md_common.h> // Assert
+#include <core/md_os.h>
 #include <stdlib.h>         // malloc, free
 #include <string.h>         // strcmp
 
@@ -17,7 +18,7 @@
 #define MD_GPU_MAX_BIND_SLOTS 16
 #define MD_GPU_MAX_PUSH_CONSTANTS 256
 #define MD_GPU_MAX_RESOURCE_BINDINGS (MD_GPU_MAX_BIND_SLOTS * 3)
-
+#define MD_GPU_MTL_TRANSIENT_PAGE_SIZE (4u * 1024u * 1024u)
 typedef struct md_gpu_command_buffer* md_gpu_command_buffer_t;
 
 typedef struct md_gpu_cmd_buffer_usage_t {
@@ -34,6 +35,32 @@ typedef struct md_gpu_cmd_resource_binding_t {
     md_gpu_sampler_t sampler;
 } md_gpu_cmd_resource_binding_t;
 
+typedef struct md_mtl_transient_page_t md_mtl_transient_page_t;
+
+typedef enum md_mtl_transient_page_list_state_t {
+    MD_MTL_TRANSIENT_PAGE_LIST_NONE = 0,
+    MD_MTL_TRANSIENT_PAGE_LIST_AVAILABLE,
+    MD_MTL_TRANSIENT_PAGE_LIST_RETIRED,
+} md_mtl_transient_page_list_state_t;
+
+typedef struct md_mtl_transient_page_pool_t {
+    md_mutex_t mutex;
+    md_mtl_transient_page_t* available_pages;
+    md_mtl_transient_page_t* retired_pages;
+} md_mtl_transient_page_pool_t;
+
+struct md_mtl_transient_page_t {
+    md_gpu_buffer_t buffer;
+    void* cpu_ptr;
+    size_t capacity;
+    size_t offset;
+    uint64_t retire_value;
+    bool dedicated;
+    md_mtl_transient_page_list_state_t list_state;
+    md_mtl_transient_page_t* next;
+    md_mtl_transient_page_t* cmd_next;
+};
+
 /* =============================
    Internal structs
    ============================= */
@@ -49,11 +76,13 @@ struct md_gpu_device {
     id<MTLSharedEvent> event_timeline;
 
     struct md_gpu_queue compute_queue;
+    md_mtl_transient_page_pool_t transient_page_pool;
 
     uint64_t next_event_id;
 };
 
 struct md_gpu_buffer {
+    struct md_gpu_device* device;
     id<MTLBuffer> buffer;
     void* cpu_ptr;  /* non-NULL for CPU_VISIBLE buffers; valid until destroy */
     size_t size;
@@ -61,6 +90,7 @@ struct md_gpu_buffer {
 };
 
 struct md_gpu_image {
+    struct md_gpu_device* device;
     id<MTLTexture> texture;
     md_gpu_image_desc_t desc;
 };
@@ -96,8 +126,17 @@ struct md_gpu_command_buffer {
     uint32_t cmd_buffer_count;
     md_gpu_cmd_resource_binding_t cmd_resources[MD_GPU_MAX_RESOURCE_BINDINGS];
     uint32_t cmd_resource_count;
+    md_mtl_transient_page_t* current_transient_page;
+    md_mtl_transient_page_t* transient_pages;
 
     struct md_gpu_command_buffer* next_free;
+};
+
+struct md_gpu_readback {
+    struct md_gpu_device* dev;
+    md_mtl_transient_page_t* page;
+    md_gpu_event_t event;
+    size_t size;
 };
 
 struct md_gpu_cmd {
@@ -156,6 +195,183 @@ static inline uint32_t md_gpu_format_bytes_per_pixel(md_gpu_image_format_t fmt) 
         case MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT:  return 16;
         default: return 0;
     }
+}
+
+static bool mtl_transient_pool_init(struct md_gpu_device* dev) {
+    if (!dev) return false;
+    MEMSET(&dev->transient_page_pool, 0, sizeof(dev->transient_page_pool));
+    return md_mutex_init(&dev->transient_page_pool.mutex);
+}
+
+static void mtl_transient_page_destroy(md_mtl_transient_page_t* page) {
+    if (!page) return;
+    if (page->buffer) {
+        md_gpu_buffer_destroy(page->buffer);
+        page->buffer = NULL;
+    }
+    free(page);
+}
+
+static void mtl_transient_page_release(struct md_gpu_device* dev, md_mtl_transient_page_t* page) {
+    if (!dev || !page) return;
+
+    page->offset = 0;
+    page->retire_value = 0;
+    page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_NONE;
+    page->next = NULL;
+    page->cmd_next = NULL;
+
+    if (page->dedicated) {
+        mtl_transient_page_destroy(page);
+        return;
+    }
+
+    md_mtl_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+    page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_AVAILABLE;
+    page->next = pool->available_pages;
+    pool->available_pages = page;
+    md_mutex_unlock(&pool->mutex);
+}
+
+static void mtl_transient_page_enqueue_retired(struct md_gpu_device* dev, md_mtl_transient_page_t* page) {
+    if (!dev || !page) return;
+
+    md_mtl_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+    if (page->list_state != MD_MTL_TRANSIENT_PAGE_LIST_RETIRED) {
+        page->next = pool->retired_pages;
+        pool->retired_pages = page;
+        page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_RETIRED;
+    }
+    md_mutex_unlock(&pool->mutex);
+}
+
+static void mtl_transient_pool_retire(struct md_gpu_device* dev) {
+    if (!dev || !dev->event_timeline) return;
+
+    const uint64_t completed = [dev->event_timeline signaledValue];
+    md_mtl_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+
+    md_mtl_transient_page_t** pp = &pool->retired_pages;
+    while (*pp) {
+        md_mtl_transient_page_t* page = *pp;
+        if (page->retire_value == 0 || page->retire_value > completed) {
+            pp = &page->next;
+            continue;
+        }
+
+        *pp = page->next;
+        page->next = NULL;
+        page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_NONE;
+        md_mutex_unlock(&pool->mutex);
+        mtl_transient_page_release(dev, page);
+        md_mutex_lock(&pool->mutex);
+        pp = &pool->retired_pages;
+    }
+
+    md_mutex_unlock(&pool->mutex);
+}
+
+static void mtl_transient_pool_free(struct md_gpu_device* dev) {
+    if (!dev) return;
+
+    md_mtl_transient_page_pool_t* pool = &dev->transient_page_pool;
+    md_mutex_lock(&pool->mutex);
+    md_mtl_transient_page_t* available = pool->available_pages;
+    md_mtl_transient_page_t* retired = pool->retired_pages;
+    pool->available_pages = NULL;
+    pool->retired_pages = NULL;
+    md_mutex_unlock(&pool->mutex);
+
+    while (available) {
+        md_mtl_transient_page_t* next = available->next;
+        mtl_transient_page_destroy(available);
+        available = next;
+    }
+    while (retired) {
+        md_mtl_transient_page_t* next = retired->next;
+        mtl_transient_page_destroy(retired);
+        retired = next;
+    }
+
+    md_mutex_destroy(&pool->mutex);
+    MEMSET(pool, 0, sizeof(*pool));
+}
+
+static md_mtl_transient_page_t* mtl_transient_page_acquire(struct md_gpu_device* dev, size_t min_capacity, bool dedicated) {
+    if (!dev || min_capacity == 0) return NULL;
+
+    const size_t page_capacity = dedicated ? min_capacity : MAX((size_t)MD_GPU_MTL_TRANSIENT_PAGE_SIZE, min_capacity);
+    md_mtl_transient_page_pool_t* pool = &dev->transient_page_pool;
+
+    if (!dedicated) {
+        md_mutex_lock(&pool->mutex);
+        md_mtl_transient_page_t** pp = &pool->available_pages;
+        while (*pp) {
+            md_mtl_transient_page_t* page = *pp;
+            if (page->capacity >= min_capacity) {
+                *pp = page->next;
+                page->next = NULL;
+                page->cmd_next = NULL;
+                page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_NONE;
+                md_mutex_unlock(&pool->mutex);
+                return page;
+            }
+            pp = &page->next;
+        }
+        md_mutex_unlock(&pool->mutex);
+    }
+
+    md_mtl_transient_page_t* page = (md_mtl_transient_page_t*)calloc(1, sizeof(*page));
+    if (!page) return NULL;
+
+    page->buffer = md_gpu_buffer_create((md_gpu_device_t)dev, &(md_gpu_buffer_desc_t){
+        .size = page_capacity,
+        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
+    });
+    if (!page->buffer) {
+        free(page);
+        return NULL;
+    }
+
+    page->cpu_ptr = md_gpu_buffer_cpu_ptr(page->buffer);
+    page->capacity = page_capacity;
+    page->dedicated = dedicated;
+    page->list_state = MD_MTL_TRANSIENT_PAGE_LIST_NONE;
+    return page;
+}
+
+static bool mtl_cmd_attach_transient_page(struct md_gpu_command_buffer* cmd, md_mtl_transient_page_t* page) {
+    if (!cmd || !page) return false;
+
+    for (md_mtl_transient_page_t* it = cmd->transient_pages; it; it = it->cmd_next) {
+        if (it == page) return true;
+    }
+
+    page->cmd_next = cmd->transient_pages;
+    cmd->transient_pages = page;
+    return true;
+}
+
+static void mtl_cmd_release_transient_pages(struct md_gpu_command_buffer* cmd, bool submitted) {
+    if (!cmd || !cmd->dev) return;
+
+    md_mtl_transient_page_t* page = cmd->transient_pages;
+    while (page) {
+        md_mtl_transient_page_t* next = page->cmd_next;
+        page->cmd_next = NULL;
+
+        if (!submitted) {
+            mtl_transient_page_release(cmd->dev, page);
+        }
+
+        page = next;
+    }
+
+    cmd->current_transient_page = NULL;
+    cmd->transient_pages = NULL;
 }
 
 static inline void mtl_cmd_reset_active_resource_slots(struct md_gpu_command_buffer* cmd) {
@@ -249,6 +465,8 @@ static inline void cmd_reset(struct md_gpu_command_buffer* cmd) {
     cmd->active_pipeline = NULL;
     mtl_cmd_reset_active_resource_slots(cmd);
     cmd->push_constant_size = 0;
+    cmd->current_transient_page = NULL;
+    cmd->transient_pages = NULL;
     cmd->next_free = NULL;
 }
 
@@ -280,6 +498,13 @@ md_gpu_device_t md_gpu_device_create(void) {
     }
 
     dev->compute_queue.dev = dev;
+    if (!mtl_transient_pool_init(dev)) {
+        [dev->event_timeline release];
+        [dev->queue release];
+        [dev->device release];
+        free(dev);
+        return NULL;
+    }
     /* cmd_free_list is zero-initialized by calloc */
     return dev;
 }
@@ -299,6 +524,9 @@ void md_gpu_device_destroy(md_gpu_device_t device) {
         it = next;
     }
     device->compute_queue.cmd_free_list = NULL;
+
+    mtl_transient_pool_retire(device);
+    mtl_transient_pool_free(device);
 
     [device->event_timeline release];
     [device->queue release];
@@ -344,6 +572,7 @@ md_gpu_queue_t md_gpu_queue_transfer(md_gpu_device_t device) {
 md_gpu_buffer_t md_gpu_buffer_create(md_gpu_device_t device,
                                      const md_gpu_buffer_desc_t* desc) {
     struct md_gpu_buffer* buf = (struct md_gpu_buffer*)calloc(1, sizeof(struct md_gpu_buffer));
+    buf->device = device;
     buf->size = desc->size;
     buf->flags = desc->flags;
 
@@ -389,6 +618,7 @@ size_t md_gpu_buffer_size(md_gpu_buffer_t buffer) {
 md_gpu_image_t md_gpu_image_create(md_gpu_device_t device,
                                    const md_gpu_image_desc_t* desc) {
     struct md_gpu_image* img = (struct md_gpu_image*)calloc(1, sizeof(struct md_gpu_image));
+    img->device = device;
     img->desc = *desc;
 
     MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
@@ -705,9 +935,50 @@ static inline bool md_mtl_cmd_is_recording(const struct md_gpu_cmd* cmd) {
 
 static inline void md_mtl_cmd_discard(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd) {
     if (!queue || !cmd) return;
+    mtl_cmd_release_transient_pages(cmd, false);
     cmd_reset(cmd);
     cmd->next_free = queue->cmd_free_list;
     queue->cmd_free_list = cmd;
+}
+
+static md_gpu_transient_t mtl_cmd_temp_alloc(struct md_gpu_command_buffer* cmd, size_t size, size_t alignment) {
+    md_gpu_transient_t result = {0};
+    if (!cmd || !cmd->dev || size == 0) return result;
+    if (alignment == 0) alignment = 256;
+
+    md_mtl_transient_page_t* page = cmd->current_transient_page;
+    const bool dedicated = (size > ((size_t)MD_GPU_MTL_TRANSIENT_PAGE_SIZE / 2));
+    size_t aligned_offset = SIZE_MAX;
+
+    if (!dedicated && page) {
+        aligned_offset = (page->offset + alignment - 1) & ~(alignment - 1);
+        if (aligned_offset + size > page->capacity) {
+            cmd->current_transient_page = NULL;
+            page = NULL;
+        }
+    }
+
+    if (!page) {
+        page = mtl_transient_page_acquire(cmd->dev, size, dedicated);
+        if (!page) return result;
+        if (!dedicated) {
+            cmd->current_transient_page = page;
+        }
+        aligned_offset = 0;
+    }
+
+    if (aligned_offset == SIZE_MAX) {
+        aligned_offset = (page->offset + alignment - 1) & ~(alignment - 1);
+    }
+    if (aligned_offset + size > page->capacity) return result;
+    if (!mtl_cmd_attach_transient_page(cmd, page)) return result;
+
+    page->offset = aligned_offset + size;
+    result.buffer = page->buffer;
+    result.cpu_ptr = page->cpu_ptr ? (uint8_t*)page->cpu_ptr + aligned_offset : NULL;
+    result.offset = aligned_offset;
+    result.size = size;
+    return result;
 }
 
 static void mtl_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
@@ -904,6 +1175,8 @@ static bool md_mtl_cmd_commit(struct md_gpu_queue* queue, struct md_gpu_command_
 
     [cmd->mtl_cmd release];
     cmd->mtl_cmd = nil;
+    cmd->current_transient_page = NULL;
+    cmd->transient_pages = NULL;
 
     cmd->next_free = queue->cmd_free_list;
     queue->cmd_free_list = cmd;
@@ -974,6 +1247,12 @@ void md_gpu_cmd_discard(md_gpu_cmd_t cmd_handle) {
     free(c);
 }
 
+md_gpu_transient_t md_gpu_cmd_temp_alloc(md_gpu_cmd_t cmd_handle, size_t size) {
+    struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
+    if (!md_mtl_cmd_is_recording(c)) return (md_gpu_transient_t){0};
+    return mtl_cmd_temp_alloc(c->cmd, size, 256);
+}
+
 md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_queue_submit_desc_t* desc) {
     md_gpu_event_t event = {0};
     if (!queue_handle || !desc || !desc->cmds || desc->cmd_count == 0) return event;
@@ -1001,6 +1280,16 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
 
     for (size_t i = 0; i < cmd_count; ++i) {
         struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmds[i];
+        md_mtl_transient_page_t* page = c->cmd->transient_pages;
+        while (page) {
+            md_mtl_transient_page_t* next = page->cmd_next;
+            page->cmd_next = NULL;
+            page->retire_value = event.value;
+            mtl_transient_page_enqueue_retired(dev, page);
+            page = next;
+        }
+        c->cmd->current_transient_page = NULL;
+        c->cmd->transient_pages = NULL;
         if (i == 0) md_mtl_cmd_encode_waits(queue, c->cmd, desc->waits, desc->wait_count);
         const uint64_t signal_value = (i + 1 == cmd_count) ? event.value : 0;
         if (!md_mtl_cmd_commit(queue, c->cmd, signal_value)) {
@@ -1020,6 +1309,7 @@ bool md_gpu_event_is_complete(md_gpu_event_t event) {
     struct md_gpu_queue* queue = (struct md_gpu_queue*)event.queue;
     md_gpu_device_t event_device = queue ? queue->dev : NULL;
     if (!event_device) return true;
+    mtl_transient_pool_retire(event_device);
     return [event_device->event_timeline signaledValue] >= event.value;
 }
 
@@ -1028,7 +1318,10 @@ void md_gpu_event_wait(md_gpu_event_t event) {
     struct md_gpu_queue* queue = (struct md_gpu_queue*)event.queue;
     md_gpu_device_t event_device = queue ? queue->dev : NULL;
     if (!event_device) return;
-    if ([event_device->event_timeline signaledValue] >= event.value) return;
+    if ([event_device->event_timeline signaledValue] >= event.value) {
+        mtl_transient_pool_retire(event_device);
+        return;
+    }
 
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     ASSERT(semaphore);
@@ -1051,6 +1344,7 @@ void md_gpu_event_wait(md_gpu_event_t event) {
 
     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
     [listener release];
+    mtl_transient_pool_retire(event_device);
 
 #if !OS_OBJECT_USE_OBJC
     dispatch_release(semaphore);
@@ -1156,4 +1450,140 @@ bool md_gpu_cmd_fill_buffer(md_gpu_cmd_t cmd_handle, md_gpu_buffer_t buffer, siz
     struct md_gpu_cmd* c = (struct md_gpu_cmd*)cmd_handle;
     if (!md_mtl_cmd_is_recording(c)) return false;
     return mtl_cmd_fill_buffer(c->cmd, buffer, offset, size, value);
+}
+
+md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_offset, size_t size, md_gpu_event_t after) {
+    if (!src_buffer || size == 0) return NULL;
+
+    struct md_gpu_buffer* src = (struct md_gpu_buffer*)src_buffer;
+    struct md_gpu_device* dev = src->device;
+    if (!dev) return NULL;
+    if (src_offset > src->size || size > src->size - src_offset) return NULL;
+
+    md_mtl_transient_page_t* page = mtl_transient_page_acquire(dev, size, true);
+    if (!page) return NULL;
+
+    struct md_gpu_readback* readback = (struct md_gpu_readback*)calloc(1, sizeof(*readback));
+    if (!readback) {
+        mtl_transient_page_release(dev, page);
+        return NULL;
+    }
+
+    md_gpu_queue_t queue = md_gpu_queue_transfer((md_gpu_device_t)dev);
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "readback_buffer");
+    if (!cmd) goto fail;
+    if (!md_gpu_cmd_copy_buffer(cmd, src_buffer, page->buffer, size, src_offset, 0)) goto fail;
+    if (!md_gpu_cmd_end(cmd)) goto fail;
+
+    md_gpu_event_t event = md_gpu_event_is_valid(after)
+        ? md_gpu_queue_submit_one_after(queue, cmd, after, MD_GPU_BARRIER_STAGE_TRANSFER)
+        : md_gpu_queue_submit_one(queue, cmd);
+    if (!md_gpu_event_is_valid(event)) goto fail;
+
+    readback->dev = dev;
+    readback->page = page;
+    readback->event = event;
+    readback->size = size;
+    return (md_gpu_readback_t)readback;
+
+fail:
+    if (cmd) md_gpu_cmd_discard(cmd);
+    free(readback);
+    mtl_transient_page_release(dev, page);
+    return NULL;
+}
+
+md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_region_t src_region, md_gpu_event_t after) {
+    if (!src_image) return NULL;
+
+    struct md_gpu_image* image = (struct md_gpu_image*)src_image;
+    struct md_gpu_device* dev = image->device;
+    if (!dev) return NULL;
+
+    const md_gpu_image_desc_t desc = image->desc;
+    const uint32_t bpp = md_gpu_format_bytes_per_pixel(desc.format);
+    if (bpp == 0) return NULL;
+
+    const uint32_t ox = src_region.offset[0];
+    const uint32_t oy = src_region.offset[1];
+    const uint32_t oz = src_region.offset[2];
+    if (ox >= desc.width || oy >= desc.height || oz >= desc.depth) return NULL;
+
+    const uint32_t ex = src_region.extent[0] ? src_region.extent[0] : (desc.width - ox);
+    const uint32_t ey = src_region.extent[1] ? src_region.extent[1] : (desc.height - oy);
+    const uint32_t ez = src_region.extent[2] ? src_region.extent[2] : (desc.depth - oz);
+    if (ex == 0 || ey == 0 || ez == 0) return NULL;
+    if (ex > desc.width - ox || ey > desc.height - oy || ez > desc.depth - oz) return NULL;
+
+    const size_t row_bytes = (size_t)ex * (size_t)bpp;
+    if (bpp != 0 && row_bytes / (size_t)bpp != (size_t)ex) return NULL;
+    if (ey != 0 && row_bytes > SIZE_MAX / (size_t)ey) return NULL;
+    const size_t image_bytes = row_bytes * (size_t)ey;
+    if (ez != 0 && image_bytes > SIZE_MAX / (size_t)ez) return NULL;
+    const size_t total_bytes = image_bytes * (size_t)ez;
+    if (total_bytes == 0) return NULL;
+
+    md_mtl_transient_page_t* page = mtl_transient_page_acquire(dev, total_bytes, true);
+    if (!page) return NULL;
+
+    struct md_gpu_readback* readback = (struct md_gpu_readback*)calloc(1, sizeof(*readback));
+    if (!readback) {
+        mtl_transient_page_release(dev, page);
+        return NULL;
+    }
+
+    md_gpu_buffer_image_copy_t copy = {
+        .image_region = src_region,
+        .buffer_offset = 0,
+        .bytes_per_row = 0,
+        .bytes_per_image = 0,
+    };
+
+    md_gpu_queue_t queue = md_gpu_queue_transfer((md_gpu_device_t)dev);
+    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "readback_image");
+    if (!cmd) goto fail;
+    if (!md_gpu_cmd_copy_image_to_buffer(cmd, src_image, page->buffer, &copy)) goto fail;
+    if (!md_gpu_cmd_end(cmd)) goto fail;
+
+    md_gpu_event_t event = md_gpu_event_is_valid(after)
+        ? md_gpu_queue_submit_one_after(queue, cmd, after, MD_GPU_BARRIER_STAGE_TRANSFER)
+        : md_gpu_queue_submit_one(queue, cmd);
+    if (!md_gpu_event_is_valid(event)) goto fail;
+
+    readback->dev = dev;
+    readback->page = page;
+    readback->event = event;
+    readback->size = total_bytes;
+    return (md_gpu_readback_t)readback;
+
+fail:
+    if (cmd) md_gpu_cmd_discard(cmd);
+    free(readback);
+    mtl_transient_page_release(dev, page);
+    return NULL;
+}
+
+bool md_gpu_readback_is_complete(md_gpu_readback_t readback) {
+    if (!readback) return true;
+    return md_gpu_event_is_complete(readback->event);
+}
+
+void md_gpu_readback_wait(md_gpu_readback_t readback) {
+    if (!readback) return;
+    md_gpu_event_wait(readback->event);
+}
+
+void* md_gpu_readback_cpu_ptr(md_gpu_readback_t readback) {
+    if (!readback || !readback->page) return NULL;
+    return readback->page->cpu_ptr;
+}
+
+void md_gpu_readback_destroy(md_gpu_readback_t readback) {
+    if (!readback) return;
+    md_gpu_readback_wait(readback);
+    if (readback->dev && readback->page) {
+        mtl_transient_page_release(readback->dev, readback->page);
+        readback->page = NULL;
+    }
+    free(readback);
 }
