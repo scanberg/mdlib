@@ -1476,7 +1476,7 @@ md_gpu_readback_t md_gpu_readback_buffer(md_gpu_buffer_t src_buffer, size_t src_
     if (!md_gpu_cmd_end(cmd)) goto fail;
 
     md_gpu_event_t event = md_gpu_event_is_valid(after)
-        ? md_gpu_queue_submit_one_after(queue, cmd, after, MD_GPU_BARRIER_STAGE_TRANSFER)
+        ? md_gpu_queue_submit_one_after(queue, cmd, after)
         : md_gpu_queue_submit_one(queue, cmd);
     if (!md_gpu_event_is_valid(event)) goto fail;
 
@@ -1546,7 +1546,7 @@ md_gpu_readback_t md_gpu_readback_image(md_gpu_image_t src_image, md_gpu_image_r
     if (!md_gpu_cmd_end(cmd)) goto fail;
 
     md_gpu_event_t event = md_gpu_event_is_valid(after)
-        ? md_gpu_queue_submit_one_after(queue, cmd, after, MD_GPU_BARRIER_STAGE_TRANSFER)
+        ? md_gpu_queue_submit_one_after(queue, cmd, after)
         : md_gpu_queue_submit_one(queue, cmd);
     if (!md_gpu_event_is_valid(event)) goto fail;
 
