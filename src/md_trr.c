@@ -921,7 +921,9 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
     }
 
     {
-        md_strb_t sb = md_strb_create(md_get_temp_arena());
+        md_temp_scope_t temp = md_temp_begin_avoid(ext_alloc);
+        md_allocator_i* temp_arena = md_temp_allocator(temp);
+        md_strb_t sb = md_strb_create(temp_arena);
         md_strb_push_str(&sb, filename);
         md_strb_push_cstr(&sb, ".cache");
         str_t cache_file = md_strb_to_str(sb);
@@ -976,7 +978,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
         traj->init_reader = trr_trajectory_reader_init;
 
         md_file_close(&file);
-
+        md_temp_end(temp);
         return traj;
     }
 

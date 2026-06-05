@@ -440,9 +440,8 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     }
 
     const size_t cap = MEGABYTES(1);
-    md_allocator_i* conflicts[] = { alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-    char* buf = md_temp_push(cap);
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+    char* buf = md_temp_alloc(temp_scope, cap);
         
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     bool result = pdb_parse(data, &reader, alloc, false);
@@ -476,8 +475,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
 
     md_system_reset(sys);
 
-    md_allocator_i* conflicts[] = { sys->alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     size_t beg_atom_index = 0;
@@ -670,8 +668,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
 }
 
 bool md_pdb_system_init_from_str(md_system_t* sys, str_t str, md_pdb_options_t options) {
-    md_allocator_i* conflicts[] = { sys->alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_pdb_data_t data = {0};
@@ -689,11 +686,10 @@ bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_optio
         return false;
     }
 
-    md_allocator_i* conflicts[] = { sys->alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     const size_t cap = MEGABYTES(1);
-    char *buf = md_temp_push(cap);
+    char *buf = md_temp_alloc(temp_scope, cap);
     ASSERT(buf);
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     
@@ -923,8 +919,7 @@ static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_alloc
 
     const size_t filesize = file_info.size;
 
-    md_allocator_i* temp_conflicts[] = { ext_alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(temp_conflicts, ARRAY_SIZE(temp_conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(ext_alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_strb_t sb = md_strb_create(temp_alloc);

@@ -83,14 +83,14 @@ UTEST(mmcif, 8g7u) {
 #include <md_mmcif.c>
 
 UTEST(mmcif, tokenizer) {
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     {
         str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_push(MEGABYTES(1));
+        char* buf = md_temp_alloc(temp, MEGABYTES(1));
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 
         mmcif_parse_state_t state = {
@@ -132,7 +132,7 @@ UTEST(mmcif, tokenizer) {
         str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_push(MEGABYTES(1));
+        char* buf = md_temp_alloc(temp, MEGABYTES(1));
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 
         mmcif_parse_state_t state = {
@@ -173,12 +173,12 @@ UTEST(mmcif, tokenizer) {
 
     // TODO Test parsing of the above section
 
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }
 
 UTEST(mmcif, parse_section) {
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     str_t section = STR_LIT(
         "_entity_poly.entity_id                      1 \n"
@@ -325,11 +325,13 @@ UTEST(mmcif, parse_section) {
         EXPECT_STREQ("2", str_ptr(mmcif_section_value(&sec, 4, 5)));
     }
 
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }
 
 UTEST(mmcif, parse_2or2_comprehensive) {
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t sys = { .alloc = alloc };
@@ -357,11 +359,12 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     }
     EXPECT_TRUE(has_nonzero_coord);
     
-    md_system_free(&sys);
+    md_temp_end(temp);
 }
 
 UTEST(mmcif, nonexistent_file) {
-    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t sys = { .alloc = alloc };
@@ -369,16 +372,17 @@ UTEST(mmcif, nonexistent_file) {
     
     // Should be safe to free even when init failed
     md_system_free(&sys);
+    md_temp_end(temp);
 }
 
 UTEST(mmcif, advance_to_next_control) {
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-    char* buf = md_temp_push(MEGABYTES(1));
+    char* buf = md_temp_alloc(temp, MEGABYTES(1));
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
 
     mmcif_parse_state_t state = {
@@ -408,5 +412,5 @@ UTEST(mmcif, advance_to_next_control) {
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
     EXPECT_TRUE(str_eq(tok, STR_LIT("_struct.entry_id")));
 
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }

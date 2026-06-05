@@ -10,7 +10,7 @@
 #include <stdarg.h>
 #include <time.h>
 
-#define MD_MAX_PATH 4096
+#define MD_MAX_PATH 2048
 
 #if MD_PLATFORM_WINDOWS
 
@@ -106,20 +106,19 @@ static void print_windows_error(void) {
 #endif
 
 static size_t fullpath(char* buf, size_t cap, str_t path) {
-    str_t zpath = str_copy(path, md_get_temp_arena()); // Zero terminate
-    if (zpath.len == 0) return 0;
+    char zbuf[MD_MAX_PATH];
+    size_t zlen = str_copy_to_char_buf(zbuf, sizeof(zbuf), path);
     
 #if MD_PLATFORM_WINDOWS
-    size_t len = GetFullPathName(zpath.ptr, (DWORD)cap, buf, NULL);
+    size_t len = GetFullPathName(zbuf, (DWORD)cap, buf, NULL);
     if (len == 0) {
         print_windows_error();
-        return 0;
     }
     return len;
 
 #elif MD_PLATFORM_UNIX
     size_t len = 0;
-    if (realpath(zpath.ptr, buf) != NULL) {
+    if (realpath(zbuf, buf) != NULL) {
         // realpath will not append a trailing '/' if the path is a directory. We want this to
         // be able to resolve relative paths more easily
         len = strnlen(buf, cap);
@@ -363,8 +362,10 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 
 bool md_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_get_temp_arena());
+    md_temp_scope_t temp_scope = md_temp_begin();
+    path = str_copy(path, md_temp_allocator(temp_scope));
     bool result = PathFileExists(path.ptr);
+    md_temp_end(temp_scope);
 #elif MD_PLATFORM_UNIX
     bool result = (access(path.ptr, F_OK) == 0);
 #else
@@ -375,8 +376,10 @@ bool md_path_is_valid(str_t path) {
 
 bool md_path_is_directory(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_get_temp_arena());
+    md_temp_scope_t temp_scope = md_temp_begin();
+    path = str_copy(path, md_temp_allocator(temp_scope));
     bool result = PathIsDirectory(path.ptr);
+    md_temp_end(temp_scope);
 #elif MD_PLATFORM_UNIX
     bool result = false;
     struct stat s;
@@ -562,14 +565,17 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
     return true;
 
 #elif MD_PLATFORM_UNIX
-    str_t path = str_copy(filename, md_get_temp_arena());
+    md_temp_scope_t temp_scope = md_temp_begin();
+    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
     struct stat st = {0};
     if (stat(path.ptr, &st) != 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
+        md_temp_end(temp_scope);
         return false;
     }
 
     fill_file_info_from_stat(out_info, &st);
+    md_temp_end(temp_scope);
     return true;
 
 #else
@@ -662,6 +668,7 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     return true;
 
 #elif MD_PLATFORM_UNIX
+    md_temp_scope_t temp_scope = md_temp_begin();
     int open_flags = 0;
     if (want_read && want_write) {
         open_flags |= O_RDWR;
@@ -685,7 +692,7 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     open_flags |= O_CLOEXEC;
 #endif
 
-    str_t path = str_copy(filename, md_get_temp_arena());
+    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
     const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
     int fd = -1;
@@ -694,10 +701,12 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     } while (fd == -1 && errno == EINTR);
 
     if (fd == -1) {
+        md_temp_end(temp_scope);
         return false;
     }
 
     *out_file = (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
+    md_temp_end(temp_scope);
     return true;
 
 #else
@@ -1164,10 +1173,10 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
     }
 
     const size_t buf_size = (size_t)count + 1;
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     bool args_active = true;
     size_t result = 0;
-    char* heap_buf = (char*)md_temp_push(buf_size);
+    char* heap_buf = (char*)md_temp_alloc(temp, buf_size);
     if (!heap_buf) {
         MD_LOG_ERROR("md_file_printf: failed to allocate formatting buffer");
         goto done;
@@ -1725,7 +1734,8 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
         GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
         info->num_physical_cores = info->num_virtual_cores;
     } else {
-        buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)md_alloc(md_get_temp_arena(), len);
+        md_temp_scope_t temp_scope = md_temp_begin();
+        buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)md_temp_alloc(temp_scope, len);
 
         if (buffer && GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &len)) {
             DWORD offset = 0;
@@ -1746,6 +1756,8 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
         } else {
             info->num_physical_cores = info->num_virtual_cores;
         }
+
+        md_temp_end(temp_scope);
     }
 
     info->physical_ram_bytes = md_os_physical_ram();

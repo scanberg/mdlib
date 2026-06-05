@@ -428,14 +428,7 @@ str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
     ASSERT(scene);
     ASSERT(alloc);
 
-    md_allocator_i* conflicts[2] = {0};
-    size_t conflict_count = 0;
-    conflicts[conflict_count++] = alloc;
-    if (scene->alloc && scene->alloc != alloc) {
-        conflicts[conflict_count++] = scene->alloc;
-    }
-
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, conflict_count);
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_strb_t sb = md_strb_create(temp_alloc);
     emit_svg_scene(&sb, scene);
@@ -447,8 +440,7 @@ str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path) {
     ASSERT(scene);
 
-    md_allocator_i* conflicts[1] = { scene->alloc ? scene->alloc : md_get_heap_allocator() };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(scene->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_strb_t sb = md_strb_create(temp_alloc);
     emit_svg_scene(&sb, scene);

@@ -9,7 +9,7 @@
 
 // Test element inference against all PDB files with explicit element symbols
 UTEST(element_guess_compat, all_pdb_validation) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
     
     // List of PDB files to test

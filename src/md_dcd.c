@@ -478,8 +478,8 @@ static bool dcd_read_frame_at(md_file_t file,
         // The caller has already filled out_x/y/z with the first-frame values.
         if (coords_requested) {
             bool success = false;
-            md_temp_t temp_scope = md_temp_begin();
-            float* tmp = (float*)md_temp_push((size_t)nfree * sizeof(float));
+            md_temp_scope_t temp_scope = md_temp_begin();
+            float* tmp = (float*)md_temp_alloc(temp_scope, (size_t)nfree * sizeof(float));
 
             for (int dim = 0; dim < 3; ++dim) {
                 float* dst = (dim == 0) ? out_x : (dim == 1) ? out_y : out_z;

@@ -611,9 +611,9 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 		return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 	}
 
-    md_temp_t temp = md_temp_begin();
+	md_temp_scope_t temp = md_temp_begin();
 	const size_t cap = MEGABYTES(1);
-	char* buf = md_temp_push(cap);
+	char* buf = md_temp_alloc(temp, cap);
 
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 	md_lammps_atom_format_t format = detect_atom_format(&reader);
@@ -827,9 +827,8 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
 		const size_t cap = MEGABYTES(1);
-		md_allocator_i* conflicts[] = { alloc };
-		md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-		char* buf = md_temp_push(cap);
+		md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+		char* buf = md_temp_alloc(temp_scope, cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = md_lammps_data_parse(data, &line_reader, format, alloc);
@@ -873,8 +872,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
 	md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
-	md_allocator_i* conflicts[] = { sys->alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
 
 	bool has_resid = (data->num_atoms > 0 && data->atoms[0].resid != -1);
 
@@ -882,9 +880,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	sys->atom.type.count = 0;
 	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
 
-	float* type_masses			= md_temp_push_array(float, data->num_atom_types);
-    md_atomic_number_t* type_z	= md_temp_push_array(md_atomic_number_t, data->num_atom_types);
-    int* type_map				= md_temp_push_array(int, data->num_atom_types);
+	float* type_masses			= md_temp_alloc_array(temp_scope, float, data->num_atom_types);
+	md_atomic_number_t* type_z	= md_temp_alloc_array(temp_scope, md_atomic_number_t, data->num_atom_types);
+	int* type_map				= md_temp_alloc_array(temp_scope, int, data->num_atom_types);
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		type_masses[i] = data->atom_types[i].mass;
     }
@@ -991,8 +989,7 @@ bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* ato
         atom_format = atom_format_string[format];
     }
 
-    md_allocator_i* conflicts[] = { sys->alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
@@ -1013,8 +1010,7 @@ bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const cha
         atom_format = atom_format_string[format];
     }
 
-    md_allocator_i* conflicts[] = { sys->alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
@@ -1346,8 +1342,8 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 		bool coords_result = false;
 
 		// We need to store the coordinates in a temporary buffer since we need to sort them by id
-		md_temp_t temp_scope = md_temp_begin();
-		id_xyz_t* id_xyz = md_temp_push_array(id_xyz_t, header.num_atoms);
+		md_temp_scope_t temp_scope = md_temp_begin();
+		id_xyz_t* id_xyz = md_temp_alloc_array(temp_scope, id_xyz_t, header.num_atoms);
 
 		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
@@ -1489,9 +1485,8 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
 		const int64_t cap = MEGABYTES(1);
-		md_allocator_i* conflicts[] = { alloc };
-		md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-		char* buf = md_temp_push(cap);
+		md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+		char* buf = md_temp_alloc(temp_scope, cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = lammps_trajectory_parse(cache, &line_reader, alloc);

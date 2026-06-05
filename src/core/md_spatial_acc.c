@@ -306,11 +306,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 #endif
 
     // Temporary arrays
-    md_allocator_i* conflicts[] = { acc->alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-    uint32_t* local_idx = (uint32_t*)md_temp_push(stream->count * sizeof(uint32_t));
-    uint32_t* cell_idx  = (uint32_t*)md_temp_push(stream->count * sizeof(uint32_t));
-    elem_t* scratch_s   = (elem_t*)  md_temp_push(stream->count * sizeof(elem_t));  // unsorted fractional coords
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(acc->alloc);
+    uint32_t* local_idx = (uint32_t*)md_temp_alloc(temp_scope, stream->count * sizeof(uint32_t));
+    uint32_t* cell_idx  = (uint32_t*)md_temp_alloc(temp_scope, stream->count * sizeof(uint32_t));
+    elem_t* scratch_s   = (elem_t*)  md_temp_alloc(temp_scope, stream->count * sizeof(elem_t));  // unsorted fractional coords
 
     // Resize / allocate persistent arrays
     size_t alloc_len = ALIGN_TO(stream->count, 16);

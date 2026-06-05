@@ -480,8 +480,8 @@ int str_edit_distance(str_t s1, str_t s2) {
     if (m == 0) return n;
     if (n == 0) return m;
 
-    md_temp_t temp = md_temp_begin();
-    int* costs = md_temp_push_array(int, n + 1);
+    md_temp_scope_t temp = md_temp_begin();
+    int* costs = md_temp_alloc_array(temp, int, n + 1);
 
     for (int k=0; k<=n; k++) {
         // Seller's variant (=0) for fuzzy matching

@@ -900,7 +900,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 
 md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
     md_gl_mol_t handle = {0};
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
 
     if (sys) {
         if (sys->atom.count == 0) {
@@ -931,7 +931,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         }
         md_gl_mol_zero_velocity(handle);
 
-        float* radii = md_temp_push(sizeof(float) * sys->atom.count);
+        float* radii = md_temp_alloc(temp_scope, sizeof(float) * sys->atom.count);
         md_atom_extract_radii(radii, 0, sys->atom.count, &sys->atom);
 
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
@@ -1328,7 +1328,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     bool result = false;
 

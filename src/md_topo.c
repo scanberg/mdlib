@@ -639,7 +639,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 #if DEBUG
     {  
-        md_temp_t temp_scope = md_temp_begin();
+        md_temp_scope_t temp_scope = md_temp_begin();
         md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
         float*    vol_data  = (float*)md_alloc(temp_alloc, num_points * sizeof(float));
         uint32_t* asc_data  = (uint32_t*)md_alloc(temp_alloc, num_points * sizeof(uint32_t));
@@ -735,7 +735,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     // Print out all of the critical point indices found (sorted)
     #if DEBUG
     {
-        md_temp_t temp_scope = md_temp_begin();
+        md_temp_scope_t temp_scope = md_temp_begin();
         md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
         if (num_vertices > 0) {
             uint32_t* data = (uint32_t*)md_alloc(temp_alloc, num_vertices * sizeof(uint32_t));
@@ -872,8 +872,7 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
 
     if (!in_graph->vertices || in_graph->num_vertices == 0) return;
 
-    md_allocator_i* conflicts[] = { alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     // Working copies (may grow during pruning)

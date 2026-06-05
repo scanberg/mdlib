@@ -581,9 +581,9 @@ static bool build_ao_remap(int* out_remap, size_t capacity, const md_vlx_t* vlx)
 	// Flat: vlx_base[angl * (max_angl+1) * natoms + isph * natoms + atomidx]
 	// But isph is up to 2*max_angl+1. Use a temp VLA-style allocation.
 	int max_nsph = 2 * max_angl + 1;
-	md_temp_t temp = md_temp_begin();
-	int* vlx_base = (int*)md_temp_push(sizeof(int) * (max_angl + 1) * max_nsph * natoms);
-	int* vlx_num  = (int*)md_temp_push(sizeof(int) * (max_angl + 1) * natoms);
+	md_temp_scope_t temp = md_temp_begin();
+	int* vlx_base = (int*)md_temp_alloc(temp, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
+	int* vlx_num  = (int*)md_temp_alloc(temp, sizeof(int) * (max_angl + 1) * natoms);
 	MEMSET(vlx_base, 0, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
 	MEMSET(vlx_num,  0, sizeof(int) * (max_angl + 1) * natoms);
 
@@ -858,7 +858,7 @@ static bool parse_vlx_geom(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloc
 		double x, y, z;
 	} field_t;
 
-	md_temp_t temp = md_temp_begin();
+	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
 	md_array(field_t) fields = 0;
 
@@ -1285,9 +1285,8 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 	} else {
 		bool fixed_result = false;
 		const size_t raw_len = H5Tget_size(datatype_id);
-		md_allocator_i* conflicts[] = { alloc };
-		md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-		char* tmp = md_temp_push(raw_len + 1);
+		md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+		char* tmp = md_temp_alloc(temp_scope, raw_len + 1);
 		if (!tmp) {
 			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
 			goto fixed_done;
@@ -1374,8 +1373,9 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
       // Fixed-length strings may not be null-terminated, so read into a temporary buffer first.
 		bool fixed_result = false;
 		size_t size = H5Tget_size(datatype_id);
-		md_temp_t temp_scope = md_temp_begin();
-		char* tmp = md_temp_push(size + 1);
+		md_temp_scope_t temp = md_temp_begin();
+
+		char* tmp = md_temp_alloc(temp, size + 1);
 		if (!tmp) {
 			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
 			goto fixed_done;
@@ -1395,7 +1395,7 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 		fixed_result = true;
 
 	fixed_done:
-		md_temp_end(temp_scope);
+		md_temp_end(temp);
 		if (!fixed_result) goto done;
 	}
 
@@ -1737,8 +1737,8 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 // On entry  mat is [num_ao][num_mo] in VeloxChem AO order.
 // On return mat is [num_mo][num_ao] in shell order — each MO is a contiguous row.
 static void ao_permute(double* mat, size_t num_ao, size_t num_mo, const int* remap) {
-	md_temp_t temp_scope = md_temp_begin();
-	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_mo);
+	md_temp_scope_t temp = md_temp_begin();
+	double* tmp = md_temp_alloc_array(temp, double, num_ao * num_mo);
     if (!tmp) {
         MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
 		goto done;
@@ -1750,14 +1750,14 @@ static void ao_permute(double* mat, size_t num_ao, size_t num_mo, const int* rem
 		}
 	}
 done:
-	md_temp_end(temp_scope);
+	md_temp_end(temp);
 }
 
 
 // Permute both rows and columns of a square AO×AO matrix (num_ao × num_ao, row-major).
 static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
-	md_temp_t temp_scope = md_temp_begin();
-	double* tmp = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+	md_temp_scope_t temp = md_temp_begin();
+	double* tmp = md_temp_alloc_array(temp, double, num_ao * num_ao);
     if (!tmp) {
         MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
 		goto done;
@@ -1771,13 +1771,13 @@ static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
 		}
 	}
 done:
-	md_temp_end(temp_scope);
+	md_temp_end(temp);
 }
 
 // Permute columns of a [num_mo x num_ao] matrix according to remap.
 static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int* remap) {
-	md_temp_t temp_scope = md_temp_begin();
-	double* tmp = (double*)md_temp_push(sizeof(double) * num_mo * num_ao);
+	md_temp_scope_t temp = md_temp_begin();
+	double* tmp = md_temp_alloc_array(temp, double, num_mo * num_ao);
 	if (!tmp) {
 		MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
 		goto done;
@@ -1789,7 +1789,7 @@ static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int
 		}
 	}
 done:
-	md_temp_end(temp_scope);
+	md_temp_end(temp);
 }
 
 static bool validate_square_matrix_dims(const md_vlx_2d_data_t* data, const char* label) {
@@ -2693,8 +2693,8 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 	ASSERT(mo_density);
 	ASSERT(coeff);
 
-	md_temp_t temp = md_temp_begin();
-	double* work = (double*)md_temp_push(sizeof(double) * mo_count * num_ao);
+	md_temp_scope_t temp = md_temp_begin();
+	double* work = md_temp_alloc_array(temp, double, mo_count * num_ao);
 
 	for (size_t i = 0; i < mo_count; ++i) {
 		for (size_t ao = 0; ao < num_ao; ++ao) {
@@ -2736,9 +2736,9 @@ static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const 
 	const double* coeff_data = coeff->data;
 	const md_vlx_1d_data_t* solution = &vlx->rsp.solution_vectors[state_idx];
 
-	md_temp_t temp = md_temp_begin();
-	double* detach_mo = (double*)md_temp_push(sizeof(double) * nocc * nocc);
-	double* attach_mo = (double*)md_temp_push(sizeof(double) * nvir * nvir);
+	md_temp_scope_t temp = md_temp_begin();
+	double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
+	double* attach_mo = md_temp_alloc_array(temp, double, nvir * nvir);
 	double* detach_ao = NULL;
 	MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
 	MEMSET(attach_mo, 0, sizeof(double) * nvir * nvir);
@@ -2778,7 +2778,7 @@ static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const 
 	} else {
 		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff_data, nocc, nvir, num_ao);
 		if (type == MD_VLX_TRANSITION_DENSITY_DIFFERENCE) {
-			detach_ao = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+			detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
 			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff_data, 0, nocc, num_ao);
 			for (size_t i = 0; i < num_ao * num_ao; ++i) {
 				out_matrix[i] -= detach_ao[i];
@@ -2829,10 +2829,10 @@ static bool vlx_symmetric_top_eigenpairs(double* out_values, double* out_vectors
 		return false;
 	}
 
-	md_temp_t temp = md_temp_begin();
-	double* work = (double*)md_temp_push(sizeof(double) * dim * dim);
-	double* vec = (double*)md_temp_push(sizeof(double) * dim);
-	double* next = (double*)md_temp_push(sizeof(double) * dim);
+	md_temp_scope_t temp = md_temp_begin();
+	double* work = md_temp_alloc_array(temp, double, dim * dim);
+	double* vec  = md_temp_alloc_array(temp, double, dim);
+	double* next = md_temp_alloc_array(temp, double, dim);
 	MEMCPY(work, matrix, sizeof(double) * dim * dim);
 	MEMSET(out_values, 0, sizeof(double) * pair_count);
 	MEMSET(out_vectors, 0, sizeof(double) * pair_count * dim);
@@ -2940,12 +2940,12 @@ static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double
 	const size_t large_dim = use_left_gram ? nvir : nocc;
 
 	size_t written_count = 0;
-	md_temp_t temp = md_temp_begin();
-	double* transition = (double*)md_temp_push(sizeof(double) * nocc * nvir);
-	double* gram = (double*)md_temp_push(sizeof(double) * small_dim * small_dim);
-	double* eigenvalues = (double*)md_temp_push(sizeof(double) * pair_count);
-	double* small_vectors = (double*)md_temp_push(sizeof(double) * pair_count * small_dim);
-	double* large_vectors = (double*)md_temp_push(sizeof(double) * pair_count * large_dim);
+	md_temp_scope_t temp = md_temp_begin();
+	double* transition = md_temp_alloc_array(temp, double, nocc * nvir);
+	double* gram = md_temp_alloc_array(temp, double, small_dim * small_dim);
+	double* eigenvalues = md_temp_alloc_array(temp, double, pair_count);
+	double* small_vectors = md_temp_alloc_array(temp, double, pair_count * small_dim);
+	double* large_vectors = md_temp_alloc_array(temp, double, pair_count * large_dim);
 	MEMSET(gram, 0, sizeof(double) * small_dim * small_dim);
 	MEMSET(large_vectors, 0, sizeof(double) * pair_count * large_dim);
 
@@ -3197,10 +3197,10 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 		return false;
 	}
 
-	md_temp_t temp = md_temp_begin();
+	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
 	size_t cap = KILOBYTES(16);
-	char* buf = md_temp_push(cap);
+	char* buf = md_temp_alloc_array(temp, char, cap);
 
 	bool result = false;
 
@@ -3400,7 +3400,7 @@ static inline str_t resolve_basis_set_ident(str_t input) {
 
 // Internal version to control what portions to load
 static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
-	md_temp_t temp = md_temp_begin();
+	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
 	bool result = false;
@@ -3424,7 +3424,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 
 	if (!str_empty(vlx->basis_set_ident)) {
 		size_t cap = KILOBYTES(16);
-		char*  buf = md_temp_push(cap);
+		char*  buf = md_temp_alloc_array(temp, char, cap);
 		md_strb_t sb = md_strb_create(temp_alloc);
 
 		str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
@@ -3977,8 +3977,7 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
 	ASSERT(sys);
 
-	md_allocator_i* conflicts[] = { sys->alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 	md_vlx_t* vlx = md_vlx_create(temp_arena);
 
@@ -4018,7 +4017,7 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) 
     if (h5_check_dataset_exists(file_id, "qm_atom_indices") &&
 		h5_check_dataset_exists(file_id, "nuclear_charges"))
 	{
-		md_temp_t temp_scope = md_temp_begin();
+		md_temp_scope_t temp_scope = md_temp_begin();
 		md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 		// Derive atomic numbers from nuclear charges and verify with qm_atom_indices that they are consistent with the loaded system.
         // This is a heuristic check, but it should be sufficient to determine if the file contains data that can supplement the existing system.

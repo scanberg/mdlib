@@ -523,8 +523,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
     ASSERT(state);
     ASSERT(alloc);
 
-    md_allocator_i* conflicts[] = { alloc };
-    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     bool success = false;
@@ -576,8 +575,7 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
 
     bool success = false;
 
-    md_allocator_i* conflicts[] = { alloc };
-    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     mmcif_section_t sec = {0};
@@ -779,8 +777,7 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
     bool entity_parsed = false;
     bool entity_poly_parsed = false;
 
-    md_allocator_i* conflicts[] = { alloc };
-    md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_array(mmcif_atom_site_entry_t) atom_entries = 0;
@@ -1036,10 +1033,9 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, str_t filename) {
 
     md_system_reset(sys);
 
-    md_allocator_i* conflicts[] = { sys->alloc };
-    md_temp_t temp = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     const size_t cap = MEGABYTES(1);
-    char* buf = md_temp_push(cap);
+    char* buf = md_temp_alloc(temp, cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     bool result = mmcif_parse(sys, &reader, sys->alloc);

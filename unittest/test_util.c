@@ -89,9 +89,8 @@ UTEST_F_TEARDOWN(util) {
 }
 
 UTEST(util, hbonds) {
-    md_allocator_i* default_temp = md_get_temp_arena();
-    md_temp_t temp_scope = md_temp_begin_avoid(&default_temp, 1);
-    md_allocator_i* arena = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp);
 
     md_system_t sys = { .alloc = arena };
     md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
@@ -106,7 +105,7 @@ UTEST(util, hbonds) {
     md_util_hydrogen_bond_infer(&hbond_data, sys.atom.x, sys.atom.y, sys.atom.z, &sys.unitcell, 3.0, 150.0);
     EXPECT_LT(0, hbond_data.num_bonds);
 
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 } 
 
 UTEST_F(util, bonds) {
@@ -344,7 +343,7 @@ UTEST_F(util, rings_common) {
 }
 
 UTEST(util, rings_c60) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 	md_system_t sys = { .alloc = alloc };
 	md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE);
@@ -363,7 +362,7 @@ UTEST(util, rings_c60) {
 }
 
 UTEST(util, rings_c720) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), MD_XYZ_OPTION_NONE);
@@ -382,7 +381,7 @@ UTEST(util, rings_c720) {
 }
 
 UTEST(util, rings_14kr) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
@@ -395,7 +394,7 @@ UTEST(util, rings_14kr) {
 }
 
 UTEST(util, rings_trytophan_pdb) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE);
@@ -411,7 +410,7 @@ UTEST(util, rings_trytophan_pdb) {
 }
 
 UTEST(util, rings_trytophan_xyz) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), MD_XYZ_OPTION_NONE);
@@ -427,7 +426,7 @@ UTEST(util, rings_trytophan_xyz) {
 }
 
 UTEST(util, rings_full) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), MD_XYZ_OPTION_NONE);
@@ -443,7 +442,7 @@ UTEST(util, rings_full) {
 }
 
 UTEST(util, rings_ciprofloxacin) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE);
@@ -772,7 +771,7 @@ UTEST_F(util, structure_matching_smiles) {
 
     md_timestamp_t t0 = md_time_now();
     for (const test_sys_t* test = test_mols; test != test_mols + ARRAY_SIZE(test_mols); ++test) {
-        md_temp_t temp = md_temp_begin_arena(alloc);
+        md_temp_scope_t temp = md_temp_begin_in(alloc);
         for (const res_t* res = residues; res != residues + ARRAY_SIZE(residues); ++res) {
             const md_system_t* sys = test->sys;
             md_array(md_component_idx_t) ref_list = 0;
@@ -918,9 +917,8 @@ UTEST(util, radix_sort) {
     size_t len = ARRAY_SIZE(arr);
 
     uint32_t idx[16];
-    uint32_t tmp[16];
 
-    md_util_sort_radix_uint32(idx, arr, len, tmp);
+    md_util_sort_radix_uint32(idx, arr, len);
     for (size_t i = 0; i < len - 1; ++i) {
         EXPECT_LE(arr[idx[i]], arr[idx[i+1]]);
     }
@@ -931,13 +929,11 @@ UTEST(util, radix_sort) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
 
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* arena = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
 
     size_t N = 10000000;
-    uint32_t* values  = md_temp_push(N * sizeof(uint32_t));
-    uint32_t* indices = md_temp_push(N * sizeof(uint32_t));
-    uint32_t* temp    = md_temp_push(N * sizeof(uint32_t));
+    uint32_t* values   = md_temp_alloc_array(temp, uint32_t, N);
+    uint32_t* indices  = md_temp_alloc_array(temp, uint32_t, N);
 
     for (size_t i = 0; i < N; ++i) {
         values[i] = (uint32_t)rand() * rand();
@@ -946,7 +942,7 @@ UTEST(util, radix_sort) {
     md_timestamp_t t0, t1;
 
     t0 = md_time_now();
-    md_util_sort_radix_uint32(indices, values, N, temp);
+    md_util_sort_radix_uint32(indices, values, N);
     t1 = md_time_now();
 
     printf("Time for radix index sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
@@ -956,7 +952,7 @@ UTEST(util, radix_sort) {
     t1 = md_time_now();
 
     printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }
 
 static inline bool init_system(md_system_t* sys, str_t path) {
@@ -979,7 +975,7 @@ static inline bool init_system(md_system_t* sys, str_t path) {
 }
 
 UTEST(util, entity_instance) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     ASSERT(alloc);
 

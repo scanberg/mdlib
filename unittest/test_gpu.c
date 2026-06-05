@@ -395,7 +395,21 @@ UTEST(gpu, gto_mo_root) {
 
     md_gpu_cmd_t eval_cmd = md_gpu_cmd_begin(queue, "gto mo root eval");
     ASSERT_TRUE(eval_cmd != NULL);
-    md_gto_gpu_mo_record(eval_cmd, gpu_basis, atom_buf, coeff_buf, 1, out_image, &grid, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET);
+
+    md_gto_gpu_orbital_desc_t desc = {
+        .basis = gpu_basis,
+        .atom_xyz = atom_buf,
+        .coeff = coeff_buf,
+        .out_image = out_image,
+
+        .grid = &grid,
+        .sample_offset = {0.0f, 0.0f, 0.0f},
+
+        .num_orbitals = 1,
+        .op = MD_GTO_OP_SET,
+    };
+
+    md_gto_gpu_orbital_record(eval_cmd, &desc);
     ASSERT_TRUE(md_gpu_cmd_end(eval_cmd));
     md_gpu_event_t eval_event = md_gpu_queue_submit_one(queue, eval_cmd);
     ASSERT_TRUE(eval_event.value != 0);
@@ -414,9 +428,9 @@ UTEST(gpu, gto_mo_root) {
         for (int y = 0; y < grid.dim[1]; ++y) {
             for (int x = 0; x < grid.dim[0]; ++x) {
                 size_t idx = (size_t)x + (size_t)grid.dim[0] * ((size_t)y + (size_t)grid.dim[1] * (size_t)z);
-                float px = grid.origin.x + ((float)x + 0.5f) * grid.spacing.x;
-                float py = grid.origin.y + ((float)y + 0.5f) * grid.spacing.y;
-                float pz = grid.origin.z + ((float)z + 0.5f) * grid.spacing.z;
+                float px = grid.origin.x + x * grid.spacing.x;
+                float py = grid.origin.y + y * grid.spacing.y;
+                float pz = grid.origin.z + z * grid.spacing.z;
                 float expected = expf(-(px * px + py * py + pz * pz));
                 float delta = fabsf(values[idx] - expected);
                 if (delta > max_delta) max_delta = delta;

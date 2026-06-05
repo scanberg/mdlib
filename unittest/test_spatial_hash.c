@@ -300,8 +300,8 @@ UTEST(spatial_hash, aabb_periodic_triclinic) {
 UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
     // Robust randomized test for periodic ortho AABB queries.
     // Compares `md_spatial_acc_for_each_point_in_aabb` against a brute-force MIC reference.
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     const double Lx = 50.0;
     const double Ly = 60.0;
@@ -309,9 +309,9 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
     md_unitcell_t cell = md_unitcell_from_extent(Lx, Ly, Lz);
 
     const size_t N = 4096;
-    float* x = (float*)md_temp_push(N * sizeof(float));
-    float* y = (float*)md_temp_push(N * sizeof(float));
-    float* z = (float*)md_temp_push(N * sizeof(float));
+    float* x = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* y = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* z = (float*)md_temp_alloc(temp, N * sizeof(float));
 
     srand(1337);
     for (size_t i = 0; i < N; ++i) {
@@ -325,7 +325,7 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = alloc };
-    uint8_t* seen = (uint8_t*)md_temp_push(N);
+    uint8_t* seen = (uint8_t*)md_temp_alloc(temp, N);
     ASSERT_TRUE(seen);
 
     const int iters = 250;
@@ -371,14 +371,14 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
 
     md_array_free(got.idx, got.alloc);
     md_spatial_acc_free(&acc);
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }
 
 UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
     // Robust randomized test for periodic triclinic AABB queries.
     // Reference uses brute-force over 27 periodic images (sufficient for chosen small radii).
-    md_temp_t temp_scope = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     const double A[3][3] = {
         {30.0,  0.0,  0.0},
@@ -392,9 +392,9 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
     const double c_vec[3] = {A[2][0], A[2][1], A[2][2]};
 
     const size_t N = 2048;
-    float* x = (float*)md_temp_push(N * sizeof(float));
-    float* y = (float*)md_temp_push(N * sizeof(float));
-    float* z = (float*)md_temp_push(N * sizeof(float));
+    float* x = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* y = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* z = (float*)md_temp_alloc(temp, N * sizeof(float));
 
     srand(7331);
     for (size_t i = 0; i < N; ++i) {
@@ -411,7 +411,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = alloc };
-    uint8_t* seen = (uint8_t*)md_temp_push(N);
+    uint8_t* seen = (uint8_t*)md_temp_alloc(temp, N);
     ASSERT_TRUE(seen);
 
     const int iters = 200;
@@ -471,7 +471,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
 
     md_array_free(got.idx, got.alloc);
     md_spatial_acc_free(&acc);
-    md_temp_end(temp_scope);
+    md_temp_end(temp);
 }
 
 static size_t do_brute_force_double(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const double G[3][3], const double I[3][3], md_array(dist_pair_t)* pairs, md_allocator_i* alloc) {
@@ -506,7 +506,8 @@ static inline double rnd_rng(double min, double max) {
 }
 
 UTEST(spatial_hash, n2) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
 
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
@@ -602,10 +603,8 @@ UTEST(spatial_hash, n2) {
             //EXPECT_EQ(bf_count, sa_count);
             if (bf_count != sa_count) {
                 printf("wierd expected: %zu, but got: %zu, cutoff: %f\n", bf_count, sa_count, rad);
-                md_temp_t temp = md_temp_begin();
-                md_allocator_i* temp_alloc = md_temp_allocator(temp);
-                md_hashmap32_t map_sa = { .allocator = temp_alloc };
-                md_hashmap32_t map_bf = { .allocator = temp_alloc };
+                md_hashmap32_t map_sa = { .allocator = alloc };
+                md_hashmap32_t map_bf = { .allocator = alloc };
 
                 // populate reference hashmap with brute force pairs
                 for (size_t i = 0; i < bf_count; ++i) {
@@ -639,8 +638,6 @@ UTEST(spatial_hash, n2) {
                         printf("BF only pair: %u %u %f\n", i, j, sqrt(bf_pairs[idx].d2));
                     }
                 }
-
-                md_temp_end(temp);
             }
         }
 #undef TEST_COUNT
@@ -698,7 +695,7 @@ UTEST(spatial_hash, n2) {
 #endif
 #endif
 
-    md_arena_allocator_destroy(alloc);
+    md_temp_end(temp);
 }
 
 struct spatial_hash {

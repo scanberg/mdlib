@@ -41,7 +41,7 @@ static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][3] = 1.0f;
 }
 
-static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* grid) {
+static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* grid, const float sample_offset[3]) {
     out_mat[0][0] = grid->orientation.elem[0][0] * grid->spacing.elem[0];
     out_mat[0][1] = grid->orientation.elem[0][1] * grid->spacing.elem[0];
     out_mat[0][2] = grid->orientation.elem[0][2] * grid->spacing.elem[0];
@@ -60,9 +60,9 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][3] = 1.0f;
 
     // Incorporate a half voxel offset to move to voxel centers
-    out_mat[3][0] += 0.5f * (out_mat[0][0] + out_mat[1][0] + out_mat[2][0]);
-    out_mat[3][1] += 0.5f * (out_mat[0][1] + out_mat[1][1] + out_mat[2][1]);
-    out_mat[3][2] += 0.5f * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
+    out_mat[3][0] += sample_offset[0] * (out_mat[0][0] + out_mat[1][0] + out_mat[2][0]);
+    out_mat[3][1] += sample_offset[1] * (out_mat[0][1] + out_mat[1][1] + out_mat[2][1]);
+    out_mat[3][2] += sample_offset[2] * (out_mat[0][2] + out_mat[1][2] + out_mat[2][2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,13 +485,13 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
     return np;
 }
 
-size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
-    const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff)
+size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
+    const float* atom_xyz, size_t atom_xyz_stride, const double* ao_coeffs, double cutoff)
 {
     ASSERT(out);
     ASSERT(basis);
     ASSERT(atom_xyz);
-    ASSERT(mo_coeffs);
+    ASSERT(ao_coeffs);
 
     const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
 
@@ -510,7 +510,7 @@ size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
         float az = ap[2];
 
         for (int isph = 0; isph < nsph; isph++) {
-            double mo_coeff = mo_coeffs[cgto_idx++];
+            double ao_coeff = ao_coeffs[cgto_idx++];
             int           ncomp  = gto_sph_num_factors(l, isph);
             const double* fcarts = gto_sph_factors(l, isph);
             const uint8_t* sidx  = gto_sph_indices(l, isph);
@@ -523,7 +523,7 @@ size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
                         .x      = ax,
                         .y      = ay,
                         .z      = az,
-                        .coeff  = (float)(coef1 * fcarts[ic] * mo_coeff),
+                        .coeff  = (float)(coef1 * fcarts[ic] * ao_coeff),
                         .alpha  = alpha,
                         .cutoff = FLT_MAX,
                         .i      = lmn[sidx[ic]][0],
@@ -679,9 +679,10 @@ static void gto_grid_evaluate_mo_GPU(uint32_t vol_tex, const md_grid_t* grid, md
 
     float world_to_model[4][4];
     float index_to_world[4][4];
+    const float sample_offset[3] = { 0.5f, 0.5f, 0.5f }; // Sample at voxel centers
 
     world_to_model_matrix(world_to_model, grid);
-    index_to_world_matrix(index_to_world, grid);
+    index_to_world_matrix(index_to_world, grid, sample_offset);
 
     glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
     glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
@@ -774,7 +775,8 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
 
     uniform_block_t ub_data = {0};
     world_to_model_matrix(ub_data.world_to_model.elem, grid);
-    index_to_world_matrix(ub_data.index_to_world.elem, grid);
+    const float sample_offset[3] = { 0.5f, 0.5f, 0.5f }; // Sample at voxel centers
+    index_to_world_matrix(ub_data.index_to_world.elem, grid, sample_offset);
     ub_data.step = vec4_from_vec3(grid->spacing, 0);
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
     ub_data.operation = (uint32_t)op;
@@ -860,10 +862,10 @@ void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid, const m
     GLuint program = get_gto_program();
     if (!program) return;
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     size_t max_gtos  = md_gto_pgto_count(basis);
-    md_gto_t* gtos   = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos);
-    size_t num_gtos  = md_gto_expand_with_mo(gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs, cutoff);
+    md_gto_t* gtos   = (md_gto_t*)md_temp_alloc(temp, sizeof(md_gto_t) * max_gtos);
+    size_t num_gtos  = md_gto_expand_with_ao_coeffs(gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs, cutoff);
 
     if (num_gtos > 0) {
         uint32_t orb_offsets[2] = { 0, (uint32_t)num_gtos };
@@ -885,13 +887,13 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
     GLuint program = get_gto_program();
     if (!program) return;
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     size_t max_gtos  = md_gto_pgto_count(basis);
 
     // Flat GTO buffer for all MOs concatenated
-    md_gto_t* gtos        = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * max_gtos * num_mos);
-    uint32_t* orb_offsets = (uint32_t*)md_temp_push(sizeof(uint32_t) * (num_mos + 1));
-    float*    orb_scaling = (float*)   md_temp_push(sizeof(float)    *  num_mos);
+    md_gto_t* gtos        = (md_gto_t*)md_temp_alloc(temp, sizeof(md_gto_t) * max_gtos * num_mos);
+    uint32_t* orb_offsets = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * (num_mos + 1));
+    float*    orb_scaling = (float*)   md_temp_alloc(temp, sizeof(float)    *  num_mos);
 
     size_t total_gtos = 0;
     size_t num_orbs   = 0;
@@ -899,7 +901,7 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid, c
 
     for (size_t i = 0; i < num_mos; i++) {
         if (!mo_coeffs[i]) continue;
-        size_t n = md_gto_expand_with_mo(gtos + total_gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs[i], cutoff);
+        size_t n = md_gto_expand_with_ao_coeffs(gtos + total_gtos, basis, atom_xyz, atom_xyz_stride, mo_coeffs[i], cutoff);
         if (n == 0) continue;
         total_gtos += n;
         orb_scaling[num_orbs] = (float)(mo_scl ? mo_scl[i] : 1.0);
@@ -925,19 +927,19 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     uint32_t num_cgtos, num_pgtos;
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
 
-    md_temp_t temp = md_temp_begin();
-    float*    cgto_xyz     = (float*)   md_temp_push(sizeof(float)    * 3 * num_cgtos);
-    float*    cgto_r       = (float*)   md_temp_push(sizeof(float)    * 1 * num_cgtos);
-    uint32_t* cgto_off_len = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_cgtos * 2);
-    PGTO*     pgto         = (PGTO*)    md_temp_push(sizeof(PGTO)     * num_pgtos);
+    md_temp_scope_t temp = md_temp_begin();
+    float*    cgto_xyz     = (float*)   md_temp_alloc(temp, sizeof(float)    * 3 * num_cgtos);
+    float*    cgto_r       = (float*)   md_temp_alloc(temp, sizeof(float)    * 1 * num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_cgtos * 2);
+    PGTO*     pgto         = (PGTO*)    md_temp_alloc(temp, sizeof(PGTO)     * num_pgtos);
     size_t    tri_len      = density_matrix_upper_tri_size(num_cgtos);
-    float*    upper_tri    = (float*)   md_temp_push(sizeof(float)    * tri_len);
+    float*    upper_tri    = (float*)   md_temp_alloc(temp, sizeof(float)    * tri_len);
 
     gto_expand_basis(cgto_xyz, cgto_r, cgto_off_len, pgto, basis, atom_xyz, atom_xyz_stride, 1.0e-6);
     density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
 
     // Recombine into float4 for the GL path, which keeps its own xyzr SSBO layout.
-    vec4_t* cgto_xyzr = (vec4_t*)md_temp_push(sizeof(vec4_t) * num_cgtos);
+    vec4_t* cgto_xyzr = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_cgtos);
     for (uint32_t i = 0; i < num_cgtos; ++i) {
         cgto_xyzr[i] = (vec4_t){cgto_xyz[i*3+0], cgto_xyz[i*3+1], cgto_xyz[i*3+2], cgto_r[i]};
     }
@@ -1107,12 +1109,12 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
     bool uma = (md_gpu_buffer_flags(gb->buffer) & MD_GPU_BUFFER_CPU_VISIBLE) != 0;
     bool success = false;
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
 
-    uint32_t* cgto_atom_idx = (uint32_t*)md_temp_push(sizeof(uint32_t) * L->num_cgtos);
-    float*    cgto_r       = (float*)    md_temp_push(sizeof(float)    * 1 * L->num_cgtos);
-    uint32_t* cgto_off_len = (uint32_t*) md_temp_push(sizeof(uint32_t) * 2 * L->num_cgtos);
-    PGTO*     pgto         = (PGTO*)     md_temp_push(sizeof(PGTO)         * L->num_pgtos);
+    uint32_t* cgto_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * L->num_cgtos);
+    float*    cgto_r       = (float*)    md_temp_alloc(temp, sizeof(float)    * 1 * L->num_cgtos);
+    uint32_t* cgto_off_len = (uint32_t*) md_temp_alloc(temp, sizeof(uint32_t) * 2 * L->num_cgtos);
+    PGTO*     pgto         = (PGTO*)     md_temp_alloc(temp, sizeof(PGTO)         * L->num_pgtos);
 
     gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
 
@@ -1175,17 +1177,17 @@ md_gpu_buffer_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t gb) {
     return gb->buffer;
 }
 
-uint32_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t gb) {
+size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t gb) {
     if (!gb) return 0;
     return gb->layout.num_cgtos;
 }
 
-uint32_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t gb) {
+size_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t gb) {
     if (!gb) return 0;
     return gb->layout.num_pgtos;
 }
 
-uint32_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
+size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
     if (!gb) return 0;
     return gb->layout.num_atoms;
 }
@@ -1260,16 +1262,14 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf,
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
-void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
-    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
-    md_gpu_image_t image, const md_grid_t* grid, md_gto_op_t op)
-{
-    if (!cmd || !gb || !atom_buf || !coeff_buf || !image || !grid) {
+void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t* desc) {
+
+    if (!cmd || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_image || !desc->grid) {
         MD_LOG_ERROR("md_gto_gpu_density_record: invalid input");
         return;
     }
 
-    const md_gto_basis_layout_t* L = &gb->layout;
+    const md_gto_basis_layout_t* L = &desc->basis->layout;
 
     md_gpu_compute_pipeline_t pipeline = gto_pip_density;
     if (!pipeline) {
@@ -1277,79 +1277,76 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
         return;
     }
 
-    md_gpu_usage_flags_t image_usage = op == MD_GTO_OP_SET ? MD_GPU_USAGE_WRITE : MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE;
+    md_gpu_usage_flags_t image_usage = desc->op == MD_GTO_OP_SET ? MD_GPU_USAGE_WRITE : MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE;
 
     gto_eval_gto_density_dispatch_t dispatch = gto_eval_gto_density_dispatch_init();
-    world_to_model_matrix(dispatch.args.world_to_model, grid);
-    index_to_world_matrix(dispatch.args.index_to_world, grid);
-    dispatch.args.step[0]       = grid->spacing.elem[0];
-    dispatch.args.step[1]       = grid->spacing.elem[1];
-    dispatch.args.step[2]       = grid->spacing.elem[2];
+    world_to_model_matrix(dispatch.args.world_to_model, desc->grid);
+    index_to_world_matrix(dispatch.args.index_to_world, desc->grid, desc->sample_offset);
+    dispatch.args.step[0]       = desc->grid->spacing.elem[0];
+    dispatch.args.step[1]       = desc->grid->spacing.elem[1];
+    dispatch.args.step[2]       = desc->grid->spacing.elem[2];
     dispatch.args.step[3]       = 0.0f;
-    dispatch.args.grid_dim[0]   = (uint32_t)grid->dim[0];
-    dispatch.args.grid_dim[1]   = (uint32_t)grid->dim[1];
-    dispatch.args.grid_dim[2]   = (uint32_t)grid->dim[2];
+    dispatch.args.grid_dim[0]   = (uint32_t)desc->grid->dim[0];
+    dispatch.args.grid_dim[1]   = (uint32_t)desc->grid->dim[1];
+    dispatch.args.grid_dim[2]   = (uint32_t)desc->grid->dim[2];
     dispatch.args.grid_dim[3]   = 0;
     dispatch.args.num_cgtos     = L->num_cgtos;
-    dispatch.args.operation     = (uint32_t)op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.out_vol.image = image;
+    dispatch.args.operation     = (uint32_t)desc->op;
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = desc->atom_xyz, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = desc->coeff, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.out_vol.image = desc->out_image;
     dispatch.resources.out_vol.usage = image_usage;
-    dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_density_thread_group_size_x);
-    dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_density_thread_group_size_y);
-    dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_density_thread_group_size_z);
+    dispatch.group_count[0] = DIV_UP(desc->grid->dim[0], gto_eval_gto_density_thread_group_size_x);
+    dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_density_thread_group_size_y);
+    dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_density_thread_group_size_z);
 
     md_gpu_cmd_debug_group_push(cmd, "GTO Density Pass");
     MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch));
     md_gpu_cmd_debug_group_pop(cmd);
 }
 
-void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
-    md_gto_gpu_basis_t gb, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
-    md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op)
-{
-    if (!cmd || !gb || !atom_buf || !coeff_buf || !out_image || !grid || num_mos == 0) {
-        MD_LOG_ERROR("md_gto_gpu_mo_record: invalid input");
+void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, md_gto_gpu_orbital_desc_t* desc) {
+    if (!cmd || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_image || !desc->grid || desc->num_orbitals == 0) {
+        MD_LOG_ERROR("md_gto_gpu_orbital_record: invalid input");
         return;
     }
 
-    const md_gto_basis_layout_t* L = &gb->layout;
+    const md_gto_basis_layout_t* L = &desc->basis->layout;
     md_gpu_compute_pipeline_t pipeline = gto_pip_mo;
     if (!pipeline) {
-        MD_LOG_ERROR("md_gto_gpu_mo_record: compute pipeline not initialized");
+        MD_LOG_ERROR("md_gto_gpu_orbital_record: compute pipeline not initialized");
         return;
     }
 
     gto_eval_gto_mo_dispatch_t dispatch = gto_eval_gto_mo_dispatch_init();
-    world_to_model_matrix(dispatch.args.world_to_model, grid);
-    index_to_world_matrix(dispatch.args.index_to_world, grid);
-    dispatch.args.step[0]       = grid->spacing.elem[0];
-    dispatch.args.step[1]       = grid->spacing.elem[1];
-    dispatch.args.step[2]       = grid->spacing.elem[2];
+    world_to_model_matrix(dispatch.args.world_to_model, desc->grid);
+    index_to_world_matrix(dispatch.args.index_to_world, desc->grid, desc->sample_offset);
+    dispatch.args.step[0]       = desc->grid->spacing.elem[0];
+    dispatch.args.step[1]       = desc->grid->spacing.elem[1];
+    dispatch.args.step[2]       = desc->grid->spacing.elem[2];
     dispatch.args.step[3]       = 0.0f;
-    dispatch.args.grid_dim[0]   = (uint32_t)grid->dim[0];
-    dispatch.args.grid_dim[1]   = (uint32_t)grid->dim[1];
-    dispatch.args.grid_dim[2]   = (uint32_t)grid->dim[2];
+    dispatch.args.grid_dim[0]   = (uint32_t)desc->grid->dim[0];
+    dispatch.args.grid_dim[1]   = (uint32_t)desc->grid->dim[1];
+    dispatch.args.grid_dim[2]   = (uint32_t)desc->grid->dim[2];
     dispatch.args.grid_dim[3]   = 0;
     dispatch.args.num_cgtos     = L->num_cgtos;
-    dispatch.args.num_rows      = (uint32_t)num_mos;
-    dispatch.args.mode          = (eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
-    dispatch.args.operation     = (uint32_t)op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = gb->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = atom_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = coeff_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.out_vol.image = out_image;
-    dispatch.group_count[0] = DIV_UP(grid->dim[0], gto_eval_gto_mo_thread_group_size_x);
-    dispatch.group_count[1] = DIV_UP(grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
-    dispatch.group_count[2] = DIV_UP(grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
+    dispatch.args.num_rows      = (uint32_t)desc->num_orbitals;
+    dispatch.args.mode          = (desc->eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
+    dispatch.args.operation     = (uint32_t)desc->op;
+    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = desc->atom_xyz, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = desc->coeff, .offset = 0, .usage = MD_GPU_USAGE_READ };
+    dispatch.resources.out_vol.image = desc->out_image;
+    dispatch.group_count[0] = DIV_UP(desc->grid->dim[0], gto_eval_gto_mo_thread_group_size_x);
+    dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
+    dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
 
     md_gpu_cmd_debug_group_push(cmd, "GTO MO Pass");
     MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch));
@@ -2009,8 +2006,8 @@ void md_gto_grid_evaluate(float* out_values, const md_grid_t* grid, const md_gto
         (grid->orientation.elem[2][0] + grid->orientation.elem[2][1] + grid->orientation.elem[2][2]) * grid->spacing.elem[2]
     };
 
-    md_temp_t temp = md_temp_begin();
-    md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
+    md_temp_scope_t temp = md_temp_begin();
+    md_gto_t* sub_gtos = (md_gto_t*)md_temp_alloc(temp, sizeof(md_gto_t) * num_gtos);
 
     for (idx_off[2] = 0; idx_off[2] < grid->dim[2]; idx_off[2] += 8) {
         idx_len[2] = MIN(8, grid->dim[2] - idx_off[2]);

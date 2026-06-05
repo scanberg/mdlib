@@ -22,12 +22,12 @@ typedef struct md_allocator_i {
     void *(*realloc)(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line);
 } md_allocator_i;
 
-typedef struct md_temp_t {
+typedef struct md_temp_scope_t {
     struct md_allocator_i* arena;
     size_t pos;
-    struct md_allocator_i* prev_arena;
-    size_t depth;
-} md_temp_t;
+} md_temp_scope_t;
+
+typedef md_temp_scope_t md_temp_scope_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,58 +35,35 @@ extern "C" {
 
 size_t md_temp_arena_reservation_size(void);
 
+// Legacy explicit initialization entry point. Temp arenas are also initialized lazily on first use.
+void md_temp_arena_system_init(void);
+
 // Get general allocator interface to heap (malloc)
 struct md_allocator_i* md_get_heap_allocator(void);
 
-// Get current thread local temporary allocator
-struct md_allocator_i* md_get_temp_arena(void);
+// Begin a temporary allocation scope using the default temp arena for this thread.
+md_temp_scope_t md_temp_begin(void);
 
-// Get a thread local temporary allocator which does not alias any supplied allocator
-struct md_allocator_i* md_get_temp_arena_avoid(struct md_allocator_i* const* conflicts, size_t conflict_count);
+// Begin a temporary allocation scope using a temp arena different from the supplied allocator.
+md_temp_scope_t md_temp_begin_avoid(const md_allocator_i* avoid);
 
-// Initialize and register necessary thread local data for temporary arena system.
-// Should be called once at the start of the program before any temp arenas are used.
-void md_temp_arena_system_init(void);
+// Begin a temporary allocation scope using an explicitly supplied arena.
+md_temp_scope_t md_temp_begin_in(struct md_allocator_i* arena);
 
-md_temp_t md_temp_begin(void);
-md_temp_t md_temp_begin_avoid(md_allocator_i* const* conflicts, size_t conflict_count);
-md_temp_t md_temp_begin_arena(md_allocator_i* arena);
-void md_temp_end(md_temp_t temp);
+// End a temporary allocation scope and rewind the arena.
+void md_temp_end(md_temp_scope_t temp);
 
-md_allocator_i* md_temp_allocator(md_temp_t temp);
+// Access the underlying allocator associated with the scope.
+struct md_allocator_i* md_temp_allocator(md_temp_scope_t temp);
 
-void* md_temp_push(size_t size);
-void* md_temp_push_zero(size_t size);
-void* md_temp_push_aligned(size_t size, size_t alignment);
+// Allocate from the scope's arena.
+void* md_temp_alloc(md_temp_scope_t temp, size_t size);
+void* md_temp_alloc_zero(md_temp_scope_t temp, size_t size);
+void* md_temp_alloc_aligned(md_temp_scope_t temp, size_t size, size_t alignment);
 
-#define md_temp_push_array(type, count) ((type*)md_temp_push(sizeof(type) * (count)))
-#define md_temp_push_zero_array(type, count) ((type*)md_temp_push_zero(sizeof(type) * (count)))
+#define md_temp_alloc_array(temp, type, count) ((type*)md_temp_alloc(temp, sizeof(type) * (count)))
+#define md_temp_alloc_zero_array(temp, type, count) ((type*)md_temp_alloc_zero(temp, sizeof(type) * (count)))
 
 #ifdef __cplusplus
 }
-
-struct ScopedTemp {
-    md_temp_t temp;
-
-    ScopedTemp() {
-        temp = md_temp_begin();
-    }
-
-    explicit ScopedTemp(md_allocator_i* conflict) {
-        temp = md_temp_begin_avoid(&conflict, 1);
-    }
-
-    ScopedTemp(md_allocator_i* const* conflicts, size_t conflict_count) {
-        temp = md_temp_begin_avoid(conflicts, conflict_count);
-    }
-
-    ~ScopedTemp() {
-        md_temp_end(temp);
-    }
-
-    md_allocator_i* allocator() const {
-        return md_temp_allocator(temp);
-    }
-};
-
 #endif

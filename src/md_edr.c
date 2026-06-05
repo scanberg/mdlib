@@ -663,7 +663,9 @@ done:
 }
 
 static bool edr_file_open(edr_fp_t* fp, str_t filename) {
-	str_t path = str_copy(filename, md_get_temp_arena());
+	md_temp_scope_t temp_scope = md_temp_begin();
+	md_allocator_i* arena = md_temp_allocator(temp_scope);
+	str_t path = str_copy(filename, arena);
 	bool result = false;
 
 	fp->xdr = xdrfile_open(path.ptr, "r");
@@ -672,8 +674,6 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		return false;
 	}
 
-	md_temp_t temp_scope = md_temp_begin();
-	md_allocator_i* arena = md_temp_allocator(temp_scope);
 	bool wrong_precision = false;
 	md_enxframe_t frame = {0};
 	int file_version;
@@ -767,8 +767,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 		return false;
 	}
 
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp = md_temp_allocator(temp_scope);
 	md_enxframe_t frame = {0};
 

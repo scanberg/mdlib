@@ -12,8 +12,7 @@
 str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	
-	md_allocator_i* conflicts[] = { str_alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = md_strb_create(temp_alloc);
 
@@ -70,8 +69,7 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 		return str;
     }
 
-	md_allocator_i* conflicts[] = { str_alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = {0};
 	md_strb_init(&sb, temp_alloc);
@@ -92,8 +90,7 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 
 str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
 	ASSERT(alloc);
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, temp_alloc);
 	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
@@ -132,8 +129,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	str_t line;
 
 	bool result = false;
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = md_strb_create(temp_alloc);
 
@@ -260,13 +256,12 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	}
 
 	const size_t cap = MEGABYTES(1);
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
-	char* buf = md_temp_push(cap);
+	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+	char* buf = md_temp_alloc_array(temp, char, cap);
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
 	bool result = parse(xvg, &reader, alloc);
-	md_temp_end(temp_scope);
+	md_temp_end(temp);
 	md_file_close(&file);
 	return result;
 }

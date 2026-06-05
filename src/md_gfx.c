@@ -393,15 +393,17 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         return false;
     }
 
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    bool result = false;
+
     str_t str = str_from_cstr(source);
 
     str_t version_str;
     if (!str_extract_line(&version_str, &str) || !str_eq_cstr_n(version_str, "#version", 8)) {
         MD_LOG_ERROR("Missing version as first line in shader!");
-        return false;
+        goto done;
     }
-
-    md_allocator_i* alloc = md_get_temp_arena();
 
     char* buf = 0;
     md_array_ensure(buf, KILOBYTES(4), alloc);
@@ -425,12 +427,12 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         if (str_eq_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 MD_LOG_ERROR("Failed to parse include in shader file: no include files have been supplied");
-                return false;
+                goto done;
             }
             str_t file = str_trim(str_substr(line, 8, SIZE_MAX));
             if (!file.len) {
                 MD_LOG_ERROR("Failed to parse include in shader file: file is missing");
-                return false;
+                goto done;
             }
             char beg_delim = file.ptr[0];
             char end_delim = file.ptr[file.len-1];
@@ -439,7 +441,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                  (beg_delim == '"' && end_delim != '"') ||
                  (beg_delim == '<' && end_delim != '>')) {
                 MD_LOG_ERROR("Failed to parse include in shader file: missing or mismatched delimiters");
-                return false;
+                goto done;
             }
             file = str_substr(file, 1, file.len-2);
             str_t src = {0};
@@ -451,7 +453,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
             }
             if (str_empty(src)) {
                 MD_LOG_ERROR("Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
-                return false;
+                goto done;
             }
             APPEND_STR(buf, src, alloc);
             APPEND_LINE(buf, line_count, alloc);
@@ -473,22 +475,29 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         char err_buf[1024];
         glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Shader compile error:\n%s\n", err_buf);
-        return false;
+        goto done;
     }
-    
-    return true;
+
+    result = true;
+done:
+    md_temp_end(temp_scope);
+    return result;
 }
 
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
-    str_t src = load_textfile(str_from_cstr(filename), md_get_temp_arena());
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+    str_t src = load_textfile(str_from_cstr(filename), temp_alloc);
     if (!str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
         md_logf(log_type,  "Compiling shader %-40s %s", filename, res_str);
+        md_temp_end(temp_scope);
         return success;
     } else {
         MD_LOG_ERROR("Could not open file file '%s'", filename);
+        md_temp_end(temp_scope);
         return false;
     }
 }
@@ -630,6 +639,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
             return false;
         }
 
+
         GLint major, minor;
         glGetIntegerv(GL_MAJOR_VERSION, &major);
         glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -638,6 +648,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
             MD_LOG_ERROR("OpenGL version %i.%i is not supported, this renderer requires version 4.6", major, minor);
             return false;
         }
+
 
         glCreateFramebuffers(1, &ctx.fbo_id);
         glCreateVertexArrays(1, &ctx.vao_id);
@@ -697,16 +708,19 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (str_printf(md_get_temp_arena(), "%s%s", STR_A, STR_B).ptr)
+        md_temp_scope_t temp = md_temp_begin();
+        md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+#define CONCAT_STR(STR_A, STR_B) (str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_get_temp_arena());
+        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);
         if (str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_get_temp_arena());
+        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), temp_arena);
         if (str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
@@ -787,6 +801,8 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
             const char* files[] = { CONCAT_STR(BASE, "/gfx/fs_quad.vert"), CONCAT_STR(BASE, "/gfx/compose.frag"), };
             ctx.compose_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
         }
+
+        md_temp_end(temp);
 
         if (!ctx.spacefill_prog.id ||
             !ctx.cluster_compute_data_prog.id ||
@@ -1014,7 +1030,7 @@ uint32_t* create_cluster_ranges_from_groups(range_t* groups, uint32_t group_coun
 }
 
 void recompute_clusters2(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     // This is a bit fiddly to get the mapping right, especially if you have instances defined.
@@ -1024,11 +1040,11 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     const uint32_t grp_count = (uint32_t)md_array_size(s->groups);
     const uint32_t inst_count = (uint32_t)md_array_size(s->instances);
 
-    uint32_t* grp_indices  = md_temp_push(sizeof(uint32_t) * count);
+    uint32_t* grp_indices  = md_temp_alloc(temp_scope, sizeof(uint32_t) * count);
 
-    aabb_t* grp_aabb = md_temp_push(sizeof(aabb_t) * grp_count);
-    vec3_t* grp_cent = md_temp_push(sizeof(vec3_t) * grp_count);
-    int32_t* grp_inst_idx = md_temp_push(sizeof(int32_t) * grp_count);
+    aabb_t* grp_aabb = md_temp_alloc(temp_scope, sizeof(aabb_t) * grp_count);
+    vec3_t* grp_cent = md_temp_alloc(temp_scope, sizeof(vec3_t) * grp_count);
+    int32_t* grp_inst_idx = md_temp_alloc(temp_scope, sizeof(int32_t) * grp_count);
 
     for (uint32_t g_idx = 0; g_idx < grp_count; ++g_idx) {
         vec3_t aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
@@ -1048,7 +1064,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         grp_cent[g_idx] = cent;
     }
 
-    range_t* inst_grp_ranges = md_temp_push(sizeof(range_t) * md_array_size(s->instances));
+    range_t* inst_grp_ranges = md_temp_alloc(temp_scope, sizeof(range_t) * md_array_size(s->instances));
 
     // Mark any atoms part of an instance, these are special cases
     for (uint32_t i_idx = 0; i_idx < md_array_size(s->instances); ++i_idx) {
@@ -1061,7 +1077,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         }
     }
 
-    uint32_t* grp_src_indices = md_temp_push(sizeof(uint32_t) * grp_count);
+    uint32_t* grp_src_indices = md_temp_alloc(temp_scope, sizeof(uint32_t) * grp_count);
     md_util_sort_spatial_xyz(grp_src_indices, (const float*)grp_cent, sizeof(vec3_t), grp_count);
 
     uint32_t* src_indices = NULL;
@@ -1115,7 +1131,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
 
 
 void recompute_clusters(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 
     // Compute clusters
@@ -1572,7 +1588,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         return false;
     }
 
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
     // Store old state

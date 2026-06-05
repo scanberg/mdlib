@@ -5,11 +5,13 @@
 #include <core/md_os.h>
 
 UTEST(os, path_canonical) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
     {
         char buf[1024];
         md_path_write_cwd(buf, sizeof(buf));
-        str_t path = str_printf(md_get_temp_arena(), "%s/../../", buf);
-        str_t result = md_path_make_canonical(path, md_get_temp_arena());
+        str_t path = str_printf(temp_arena, "%s/../../", buf);
+        str_t result = md_path_make_canonical(path, temp_arena);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
     {
@@ -17,55 +19,59 @@ UTEST(os, path_canonical) {
         // FAILS ON UNIX
         // Probably because the file does not exist
         str_t path = STR_LIT("cool/fool/../bool/../file.txt");
-        str_t result = md_path_make_canonical(path, md_get_temp_arena());
+        str_t result = md_path_make_canonical(path, temp_arena);
         str_t ref = STR_LIT("cool/file.txt");
         EXPECT_TRUE(str_equal(result, ref));
         */
     }
     {
         str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t result = md_path_make_canonical(path, md_get_temp_arena());
+        str_t result = md_path_make_canonical(path, temp_arena);
         printf("canonical: '%.*s'\n", (int)result.len, result.ptr);
     }
+    md_temp_end(temp);
 }
 
 UTEST(os, path_relative) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("../../40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./dir/subdir/", result.ptr);
     }
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/" );
         str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./file.txt", result.ptr);
     }
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
         str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./", result.ptr);
     }
     {
         str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
         str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.dat");
-        str_t result = md_path_make_relative(from, to, md_get_temp_arena());
+        str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./file.dat", result.ptr);
     }
+    md_temp_end(temp);
 }
 
 UTEST(os, sys_info) {

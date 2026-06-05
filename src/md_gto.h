@@ -104,7 +104,7 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis);
 // cutoff:    if > 0, applies md_gto_cutoff_compute_and_filter; pass 0 to skip
 // out:       caller-allocated array of length >= md_gto_pgto_count(basis)
 // Returns:   number of elements written (after pruning, or total if cutoff == 0)
-size_t md_gto_expand_with_mo(md_gto_t* out, const md_gto_basis_t* basis,
+size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
     const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff);
 
 // GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
@@ -177,9 +177,9 @@ void md_gto_gpu_basis_destroy(md_gto_gpu_basis_t basis_buf);
 md_gpu_buffer_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
 
 // Basis metadata queries.
-uint32_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
-uint32_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t basis_buf);
-uint32_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t basis_buf);
+size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
+size_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t basis_buf);
+size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t basis_buf);
 
 // Atom buffer helpers.
 // Atom buffer layout expected by the GPU shaders:
@@ -223,24 +223,50 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf, md_
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
+// Unified descriptor struct for density evaluation.
+typedef struct md_gto_gpu_density_desc_t {
+	md_gto_gpu_basis_t basis;
+    md_gpu_buffer_t atom_xyz;
+	md_gpu_buffer_t coeff;
+    md_gpu_image_t out_image;
+
+    const md_grid_t* grid;
+    // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
+	float sample_offset[3];
+
+    md_gto_op_t op;              // operation mode (add, set, etc.)
+} md_gto_gpu_density_desc_t;
+
 // Record an electron density evaluation dispatch into the caller's cmd.
 // atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain packed upper-triangular float coefficients
 // (use md_gto_gpu_coeff_upload_density to fill it).
 // A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
 // earlier in the same cmd are visible to the shader.
-void md_gto_gpu_density_record(md_gpu_cmd_t cmd,
-	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf,
-	md_gpu_image_t out_image, const md_grid_t* grid, md_gto_op_t op);
+void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t* desc);
 
-// Record an MO evaluation dispatch into the caller's cmd.
+typedef struct md_gto_gpu_orbital_desc_t {
+    md_gto_gpu_basis_t basis;
+    md_gpu_buffer_t atom_xyz;
+    md_gpu_buffer_t coeff;
+    md_gpu_image_t out_image;
+
+    const md_grid_t* grid;
+    // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
+	float sample_offset[3];
+
+    size_t num_orbitals;           // number of orbitals to evaluate (rows in coeff buffer, each containing num_cgtos floats)
+
+    md_gto_eval_mode_t eval_mode; // whether to accumulate psi or psi^2
+    md_gto_op_t op;              // operation mode (add, set, etc.)
+} md_gto_gpu_orbital_desc_t;
+
+// Record an orbital evaluation dispatch into the caller's cmd.
 // atom_buf must contain packed float4 atom positions (xyz in Bohr).
 // coeff_buf must contain num_mos packed rows of num_cgtos floats
 // (use md_gto_gpu_coeff_upload_mo to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
-void md_gto_gpu_mo_record(md_gpu_cmd_t cmd,
-	md_gto_gpu_basis_t basis_buf, md_gpu_buffer_t atom_buf, md_gpu_buffer_t coeff_buf, size_t num_mos,
-	md_gpu_image_t out_image, const md_grid_t* grid, md_gto_eval_mode_t eval_mode, md_gto_op_t op);
+void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, const md_gto_gpu_orbital_desc_t* desc);
 
 #endif
 

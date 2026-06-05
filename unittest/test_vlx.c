@@ -162,7 +162,7 @@ UTEST(vlx, minimal_example) {
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_ALPHA);
 
-    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
+    md_gto_expand_with_ao_coeffs(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);

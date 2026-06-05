@@ -65,7 +65,7 @@ UBENCH_EX(gto, evaluate_grid) {
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
 
-    md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
+    md_gto_expand_with_ao_coeffs(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 
     md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
 

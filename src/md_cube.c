@@ -82,8 +82,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		goto done;
 	}
 
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_strb_t sb = {0};
 	md_strb_init(&sb, temp_alloc);
@@ -243,8 +242,7 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	}
 
 	bool success = false;
-	md_allocator_i* conflicts[] = { alloc };
-	md_temp_t temp_scope = md_temp_begin_avoid(conflicts, ARRAY_SIZE(conflicts));
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     str_t str = load_textfile(path, temp_alloc);
 	if (!str_empty(str)) {
@@ -264,7 +262,7 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	md_file_t file = {0};
 	bool success = false;
 	if (open_file(&file, path)) {
-		md_temp_t temp_scope = md_temp_begin();
+		md_temp_scope_t temp_scope = md_temp_begin();
 		md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 		str_t str = md_cube_serialize(cube, temp_alloc);
         if (!str_empty(str)) {

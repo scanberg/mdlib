@@ -942,9 +942,9 @@ size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
         return 0;
     }
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     size_t result = 0;
-    uint8_t* raw = (uint8_t*)md_temp_push_zero(info.input_size);
+    uint8_t* raw = (uint8_t*)md_temp_alloc_zero(temp, info.input_size);
     if (!raw) {
         goto done;
     }
@@ -1074,7 +1074,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
         return false;
     }
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
     size_t cap = MAX((size_t)SERIAL_MIN_INPUT_SIZE, num_bytes * 4);
@@ -1082,7 +1082,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
 
     while (cap <= SERIAL_MAX_RAW_SIZE) {
         md_vm_arena_set_pos_back(temp_alloc, temp.pos);
-        uint8_t* mem = (uint8_t*)md_temp_push(cap);
+        uint8_t* mem = (uint8_t*)md_temp_alloc(temp, cap);
         if (!mem) {
             break;
         }

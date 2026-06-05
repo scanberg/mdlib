@@ -1062,7 +1062,7 @@ static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_t
     bool result = false;
 	md_file_t file = { 0 };
     if (md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
-        md_temp_t temp_scope = md_temp_begin();
+        md_temp_scope_t temp = md_temp_begin();
 
         const int64_t beg = xtc->frame_offsets[frame_idx];
         const int64_t end = xtc->frame_offsets[frame_idx + 1];
@@ -1073,7 +1073,7 @@ static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_t
         const size_t frame_size = end - beg;
 		const size_t alloc_size = ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES;
 
-		uint8_t* frame_data = md_temp_push_zero(alloc_size);
+		uint8_t* frame_data = md_temp_alloc(temp, alloc_size);
         if (!frame_data) {
             MD_LOG_ERROR("XTC: Failed to allocate memory for frame data");
 			goto done;
@@ -1106,7 +1106,7 @@ static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_t
         }
 
     done:
-        md_temp_end(temp_scope);
+        md_temp_end(temp);
 		md_file_close(&file);
     }
 

@@ -16,7 +16,7 @@ void md_gl_debug_pop(void) {
 }
 
 bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_injection_t injections[], size_t num_injections) {
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_strb_t sb = md_strb_create(temp_alloc);
 
