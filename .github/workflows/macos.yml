@@ -43,7 +43,7 @@ jobs:
           - name: Configure CMake
             shell: bash
             working-directory: ${{github.workspace}}/build
-            run: cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMD_ENABLE_VLX=ON -DMD_FORCE_ASSERTIONS=ON $GITHUB_WORKSPACE
+            run: cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMD_ENABLE_VLX=ON -DMD_ENABLE_GPU=ON -DMD_FORCE_ASSERTIONS=ON $GITHUB_WORKSPACE
 
           - name: Build
             working-directory: ${{github.workspace}}/build
