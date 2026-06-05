@@ -1309,7 +1309,7 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t
     md_gpu_cmd_debug_group_pop(cmd);
 }
 
-void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, md_gto_gpu_orbital_desc_t* desc) {
+void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, const md_gto_gpu_orbital_desc_t* desc) {
     if (!cmd || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_image || !desc->grid || desc->num_orbitals == 0) {
         MD_LOG_ERROR("md_gto_gpu_orbital_record: invalid input");
         return;
