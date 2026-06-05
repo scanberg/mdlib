@@ -78,6 +78,7 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old
         }
         else {
             // FREE
+            tracking->backing->realloc(tracking->backing->inst, ptr, old_size, 0, file, line);
             register_deallocation(tracking, alloc);
             result = NULL;
         }

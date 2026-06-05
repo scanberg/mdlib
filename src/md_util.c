@@ -2844,7 +2844,7 @@ static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_ca
     return out_len;
 }
 
-static size_t find_isomorphisms(md_index_data_t*, const graph_t* ,const graph_t* ,md_util_match_mode_t ,int , md_allocator_i*, md_allocator_i*);
+static size_t find_isomorphisms(md_index_data_t*, const graph_t* ,const graph_t* ,md_util_match_mode_t ,int , md_allocator_i*);
 static void find_isomorphisms_callback(const graph_t*, const graph_t*, int, state_t*);
 
 static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md_allocator_i* arena) {

@@ -85,7 +85,7 @@ UTEST(gto, evaluate_grid) {
     size_t num_gtos;
 
     int vol_dim = 64;
-    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"), temp_arena);
+    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
     size_t num_points = md_grid_num_points(&grid);
 
     md_grid_t ref_grid = grid;

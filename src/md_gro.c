@@ -182,7 +182,6 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
     md_system_reset(sys);
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
     str_t* atom_names = md_temp_alloc_array(temp, str_t, data->num_atoms);
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);

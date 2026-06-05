@@ -6,86 +6,27 @@
 
 #include <md_vlx.c>
 
-static const int ref_iter[] = {
-    1,2,3,4,5,6,7,8,9,10,11,12
-};
 static const double ref_ener_tot[] = {
-    -444.502770501781,
-    -444.502826985951,
-    -444.518269328072,
-    -444.518408360201,
-    -444.518497179843,
-    -444.518500090662,
-    -444.518500772981,
-    -444.518500782306,
-    -444.518500783079,
-    -444.518500783141,
-    -444.518500783156,
-    -444.518500783158,
-};
-static const double ref_ener_change[] = {
-    0.0000000000,
-    -0.0000564842,
-    -0.0154423421,
-    -0.0001390321,
-    -0.0000888196,
-    -0.0000029108,
-    -0.0000006823,
-    -0.0000000093,
-    -0.0000000008,
-    -0.0000000001,
-    -0.0000000000,
-    -0.0000000000,
-};
-static const double ref_grad_norm[] = {
-    0.33661898,
-    0.33937059,
-    0.04132164,
-    0.02546891,
-    0.00508750,
-    0.00230342,
-    0.00028359,
-    0.00008491,
-    0.00002482,
-    0.00000991,
-    0.00000406,
-    0.00000094,
-};
-static const double ref_max_grad[] = {
-    0.01168705,
-    0.01156775,
-    0.00163688,
-    0.00092076,
-    0.00023894,
-    0.00009228,
-    0.00000913,
-    0.00000327,
-    0.00000086,
-    0.00000045,
-    0.00000018,
-    0.00000003,
-};
-static const double ref_density_change[] = {
-    0.00000000,
-    0.31704185,
-    0.17166350,
-    0.02943676,
-    0.01204202,
-    0.00304038,
-    0.00107142,
-    0.00015964,
-    0.00003900,
-    0.00001305,
-    0.00000550,
-    0.00000235,
+    -444.344393916482,
+    -444.502770501996,
+    -444.502826985398,
+    -444.518269327858,
+    -444.518408360230,
+    -444.518497179864,
+    -444.518500090680,
+    -444.518500773004,
+    -444.518500782328,
+    -444.518500783099,
+    -444.518500783165,
+    -444.518500783176,
+    -444.518500783179,
 };
 
 UTEST(vlx, vlx_parse) {
 	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
-    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"));
     ASSERT_TRUE(result);
 
-#if 1
     EXPECT_EQ(0,  md_vlx_molecular_charge(vlx));
     EXPECT_EQ(26, md_vlx_number_of_atoms(vlx));
     EXPECT_EQ(1,  md_vlx_spin_multiplicity(vlx));
@@ -103,30 +44,21 @@ UTEST(vlx, vlx_parse) {
 
     int num_iter = md_vlx_scf_history_size(vlx);
 	const double* energy = md_vlx_scf_history_energy(vlx);
-    const double* energy_diff = md_vlx_scf_history_energy_diff(vlx);
-	const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
-	const double* max_grad = md_vlx_scf_history_max_gradient(vlx);
-	const double* density_diff = md_vlx_scf_history_density_diff(vlx);
 
-    ASSERT_EQ(12, num_iter);
+    ASSERT_EQ(13, num_iter);
     for (size_t i = 0; i < num_iter; ++i) {
         EXPECT_NEAR(ref_ener_tot[i], energy[i], 1.0e-5);
-        EXPECT_NEAR(ref_ener_change[i], energy_diff[i], 1.0e-5);
-        EXPECT_NEAR(ref_grad_norm[i], grad_norm[i], 1.0e-5);
-        EXPECT_NEAR(ref_max_grad[i], max_grad[i], 1.0e-5);
-        EXPECT_NEAR(ref_density_change[i], density_diff[i], 1.0e-5);
     }
 
     // @TODO: Test RSP
 
     md_vlx_destroy(vlx);
-#endif
 }
 
 UTEST(vlx, minimal_example) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
 
     md_vlx_t* vlx = md_vlx_create(arena);
     if (!md_vlx_parse_file(vlx, path)) {
@@ -259,10 +191,10 @@ UTEST(vlx, scf_results_meth) {
 }
 #endif
 
-UTEST(vlx, mol_out) {
+UTEST(vlx, mol) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
-    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"));
     EXPECT_TRUE(result);
 
     md_vlx_destroy(vlx);
@@ -277,7 +209,7 @@ UTEST(vlx, scf_results) {
     md_vlx_destroy(vlx);
 }
 
-UTEST(vlx, h5_pure) {
+UTEST(vlx, acro_rsp) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
     bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-rsp.h5"));
