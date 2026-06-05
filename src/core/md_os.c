@@ -10,7 +10,7 @@
 #include <stdarg.h>
 #include <time.h>
 
-#define MD_MAX_PATH 2048
+#define MD_MAX_PATH 4096
 
 #if MD_PLATFORM_WINDOWS
 
@@ -107,7 +107,9 @@ static void print_windows_error(void) {
 
 static size_t fullpath(char* buf, size_t cap, str_t path) {
     char zbuf[MD_MAX_PATH];
-    size_t zlen = str_copy_to_char_buf(zbuf, sizeof(zbuf), path);
+    if (str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
+        return 0;
+    }
     
 #if MD_PLATFORM_WINDOWS
     size_t len = GetFullPathName(zbuf, (DWORD)cap, buf, NULL);
