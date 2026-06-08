@@ -980,14 +980,6 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 #include <gto_gpu_shaders.inl>
 #include <gto_gpu_shaders_reflection.inl>
 
-#define MD_GPU_DISPATCH_OR_RETURN(expr_) \
-    do { \
-        if (!(expr_)) { \
-            MD_LOG_ERROR("md_gto_gpu_record: failed to encode compute dispatch"); \
-            return; \
-        } \
-    } while (0)
-
 static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
 static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
 
@@ -1111,16 +1103,16 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
 
     md_temp_scope_t temp = md_temp_begin();
 
-    uint32_t* cgto_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * L->num_cgtos);
-    float*    cgto_r       = (float*)    md_temp_alloc(temp, sizeof(float)    * 1 * L->num_cgtos);
-    uint32_t* cgto_off_len = (uint32_t*) md_temp_alloc(temp, sizeof(uint32_t) * 2 * L->num_cgtos);
-    PGTO*     pgto         = (PGTO*)     md_temp_alloc(temp, sizeof(PGTO)         * L->num_pgtos);
+    uint32_t* cgto_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 1 * L->num_cgtos);
+    float*    cgto_r        = (float*)   md_temp_alloc(temp, sizeof(float)    * 1 * L->num_cgtos);
+    uint32_t* cgto_off_len  = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 2 * L->num_cgtos);
+    PGTO*     pgto          = (PGTO*)    md_temp_alloc(temp, sizeof(PGTO)         * L->num_pgtos);
 
     gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
 
-    size_t sz_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
-    size_t sz_r        = L->off_cgto_off_len - L->off_cgto_r;
-    size_t sz_off_len  = L->off_pgto         - L->off_cgto_off_len;
+    size_t sz_atom_idx = L->off_cgto_r         - L->off_cgto_atom_idx;
+    size_t sz_r        = L->off_cgto_off_len   - L->off_cgto_r;
+    size_t sz_off_len  = L->off_pgto           - L->off_cgto_off_len;
     size_t sz_pgto     = (size_t)L->total_size - L->off_pgto;
 
     if (uma) {
@@ -1304,8 +1296,35 @@ void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t
     dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_density_thread_group_size_y);
     dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_density_thread_group_size_z);
 
+#if !defined(NDEBUG)
+    {
+        const uint64_t basis_addr = md_gpu_buffer_address(desc->basis->buffer);
+        const uint64_t atom_addr  = md_gpu_buffer_address(desc->atom_xyz);
+        const uint64_t coeff_addr = md_gpu_buffer_address(desc->coeff);
+        fprintf(stderr, "[gto][density] basis_addr=%llu atom_addr=%llu coeff_addr=%llu\n", (unsigned long long)basis_addr, (unsigned long long)atom_addr, (unsigned long long)coeff_addr);
+        fprintf(stderr, "[gto][density] basis_flags=0x%x atom_flags=0x%x coeff_flags=0x%x\n", md_gpu_buffer_flags(desc->basis->buffer), md_gpu_buffer_flags(desc->atom_xyz), md_gpu_buffer_flags(desc->coeff));
+
+        if (md_gpu_buffer_flags(desc->atom_xyz) & MD_GPU_BUFFER_CPU_VISIBLE) {
+            const float* atom = (const float*)md_gpu_buffer_cpu_ptr(desc->atom_xyz);
+            if (atom) {
+                fprintf(stderr, "[gto][density] atom_xyz[0]=(%g,%g,%g,%g)\n", atom[0], atom[1], atom[2], atom[3]);
+            }
+        }
+        if (md_gpu_buffer_flags(desc->coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
+            const float* coeff = (const float*)md_gpu_buffer_cpu_ptr(desc->coeff);
+            if (coeff) {
+                fprintf(stderr, "[gto][density] coeff[0]=%g\n", coeff[0]);
+            }
+        }
+    }
+#endif
+
     md_gpu_cmd_debug_group_push(cmd, "GTO Density Pass");
-    MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch));
+    if (!gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch)) {
+        MD_LOG_ERROR("md_gto_gpu_density_record: dispatch encoding failed");
+        md_gpu_cmd_debug_group_pop(cmd);
+        return;
+    }
     md_gpu_cmd_debug_group_pop(cmd);
 }
 
@@ -1348,12 +1367,37 @@ void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, const md_gto_gpu_orbital_desc_t
     dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
     dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
 
+#if !defined(NDEBUG)
+    {
+        const uint64_t basis_addr = md_gpu_buffer_address(desc->basis->buffer);
+        const uint64_t atom_addr  = md_gpu_buffer_address(desc->atom_xyz);
+        const uint64_t coeff_addr = md_gpu_buffer_address(desc->coeff);
+        fprintf(stderr, "[gto][mo] basis_addr=%llu atom_addr=%llu coeff_addr=%llu\n", (unsigned long long)basis_addr, (unsigned long long)atom_addr, (unsigned long long)coeff_addr);
+        fprintf(stderr, "[gto][mo] basis_flags=0x%x atom_flags=0x%x coeff_flags=0x%x num_rows=%u\n", md_gpu_buffer_flags(desc->basis->buffer), md_gpu_buffer_flags(desc->atom_xyz), md_gpu_buffer_flags(desc->coeff), (unsigned)desc->num_orbitals);
+
+        if (md_gpu_buffer_flags(desc->atom_xyz) & MD_GPU_BUFFER_CPU_VISIBLE) {
+            const float* atom = (const float*)md_gpu_buffer_cpu_ptr(desc->atom_xyz);
+            if (atom) {
+                fprintf(stderr, "[gto][mo] atom_xyz[0]=(%g,%g,%g,%g)\n", atom[0], atom[1], atom[2], atom[3]);
+            }
+        }
+        if (md_gpu_buffer_flags(desc->coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
+            const float* coeff = (const float*)md_gpu_buffer_cpu_ptr(desc->coeff);
+            if (coeff) {
+                fprintf(stderr, "[gto][mo] coeff[0]=%g\n", coeff[0]);
+            }
+        }
+    }
+#endif
+
     md_gpu_cmd_debug_group_push(cmd, "GTO MO Pass");
-    MD_GPU_DISPATCH_OR_RETURN(gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch));
+    if (!gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch)) {
+        MD_LOG_ERROR("md_gto_gpu_orbital_record: dispatch encoding failed");
+        md_gpu_cmd_debug_group_pop(cmd);
+        return;
+    }
     md_gpu_cmd_debug_group_pop(cmd);
 }
-
-#undef MD_GPU_DISPATCH_OR_RETURN
 
 #endif // MD_ENABLE_GPU
 

@@ -986,16 +986,20 @@ static void mtl_cmd_bind_compute_pipeline(md_gpu_command_buffer_t cmd,
     cmd->bound_pipeline = pipeline;
 }
 
-static void mtl_cmd_dispatch(md_gpu_command_buffer_t cmd,
+static bool mtl_cmd_dispatch(md_gpu_command_buffer_t cmd,
                          uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     ASSERT(cmd->bound_pipeline);
+    if (!cmd->bound_pipeline) return false;
     id<MTLComputeCommandEncoder> enc = ensure_compute_enc(cmd);
 
     if (cmd->active_pipeline != cmd->bound_pipeline) {
         [enc setComputePipelineState:cmd->bound_pipeline->pso];
         cmd->active_pipeline = cmd->bound_pipeline;
     }
-    ASSERT(bind_cmd_resources(cmd, enc));
+    if (!bind_cmd_resources(cmd, enc)) {
+        ASSERT(false && "Failed to bind dispatch resources to Metal pipeline");
+        return false;
+    }
     use_cmd_resources(cmd, enc);
 
     if (cmd->push_constant_size > 0)
@@ -1011,6 +1015,7 @@ static void mtl_cmd_dispatch(md_gpu_command_buffer_t cmd,
     cmd->cmd_buffer_count = 0;
      cmd->cmd_resource_count = 0;
      cmd->push_constant_size = 0;
+    return true;
 }
 
 static void mtl_cmd_barrier(md_gpu_command_buffer_t cmd, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
@@ -1149,8 +1154,8 @@ static void mtl_cmd_debug_group_pop(md_gpu_command_buffer_t cmd) {
         [cmd->mtl_cmd popDebugGroup];
 }
 
-static void md_mtl_cmd_encode_waits(struct md_gpu_queue* queue, struct md_gpu_command_buffer* cmd, const md_gpu_event_t* waits, size_t wait_count) {
-    if (!queue || !cmd || !cmd->mtl_cmd || !waits) return;
+static void md_mtl_wait_submit_dependencies(struct md_gpu_queue* queue, const md_gpu_event_t* waits, size_t wait_count) {
+    if (!queue || !waits) return;
 
     for (size_t i = 0; i < wait_count; ++i) {
         const md_gpu_event_t event = waits[i];
@@ -1158,9 +1163,15 @@ static void md_mtl_cmd_encode_waits(struct md_gpu_queue* queue, struct md_gpu_co
 
         struct md_gpu_queue* wait_queue = (struct md_gpu_queue*)event.queue;
         if (!wait_queue) wait_queue = queue;
-        if (!wait_queue->dev || !wait_queue->dev->event_timeline) continue;
+        if (!wait_queue->dev) continue;
 
-        [cmd->mtl_cmd encodeWaitForEvent:wait_queue->dev->event_timeline value:event.value];
+        // This backend currently maps all logical queues to one physical MTLCommandQueue,
+        // so same-device submissions are already serialized in-order.
+        // Metal event waits encoded at submit time would land after already-recorded work,
+        // which does not establish the intended dependency.
+        if (wait_queue->dev == queue->dev) continue;
+
+        md_gpu_event_wait(event);
     }
 }
 
@@ -1274,6 +1285,8 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
         }
     }
 
+    md_mtl_wait_submit_dependencies(queue, desc->waits, desc->wait_count);
+
     event.queue = (md_gpu_queue_t)queue;
     event.value = ++dev->next_event_id;
     if (event.value == 0) event.value = ++dev->next_event_id;
@@ -1290,7 +1303,6 @@ md_gpu_event_t md_gpu_queue_submit(md_gpu_queue_t queue_handle, const md_gpu_que
         }
         c->cmd->current_transient_page = NULL;
         c->cmd->transient_pages = NULL;
-        if (i == 0) md_mtl_cmd_encode_waits(queue, c->cmd, desc->waits, desc->wait_count);
         const uint64_t signal_value = (i + 1 == cmd_count) ? event.value : 0;
         if (!md_mtl_cmd_commit(queue, c->cmd, signal_value)) {
             event.queue = NULL;
@@ -1398,8 +1410,7 @@ bool md_gpu_cmd_dispatch(md_gpu_cmd_t cmd_handle, const md_gpu_compute_dispatch_
         c->cmd->push_constant_size = dispatch->root_args_size;
     }
 
-    mtl_cmd_dispatch(c->cmd, dispatch->group_count[0], dispatch->group_count[1], dispatch->group_count[2]);
-    return true;
+    return mtl_cmd_dispatch(c->cmd, dispatch->group_count[0], dispatch->group_count[1], dispatch->group_count[2]);
 }
 
 bool md_gpu_cmd_barrier(md_gpu_cmd_t cmd_handle, md_gpu_barrier_stage_t src_stage, md_gpu_barrier_stage_t dst_stage) {
