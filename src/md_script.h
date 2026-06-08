@@ -103,6 +103,7 @@ typedef struct md_script_property_t {
 typedef struct md_script_vis_vertex_t {
     vec3_t pos;
 	uint32_t color;
+    vec3_t normal;
     uint32_t picking_idx;
 } md_script_vis_vertex_t;
 
