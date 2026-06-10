@@ -65,8 +65,7 @@ void md_vlx_destroy(struct md_vlx_t* vlx);
 bool md_vlx_parse_file(struct md_vlx_t* vlx, str_t filename);
 
 size_t md_vlx_number_of_atoms(const struct md_vlx_t* vlx);
-size_t md_vlx_number_of_alpha_electrons(const struct md_vlx_t* vlx);
-size_t md_vlx_number_of_beta_electrons(const struct md_vlx_t* vlx);
+size_t md_vlx_number_of_electrons(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 double md_vlx_molecular_charge(const struct md_vlx_t* vlx);
 double md_vlx_nuclear_repulsion_energy(const struct md_vlx_t* vlx);
@@ -89,6 +88,7 @@ const int* md_vlx_local_to_global_atom_idx(const struct md_vlx_t* vlx);
 
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
+
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t spin);

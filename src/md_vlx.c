@@ -4060,13 +4060,14 @@ size_t md_vlx_number_of_atoms(const md_vlx_t* vlx) {
 	return 0;
 }
 
-size_t md_vlx_number_of_alpha_electrons(const md_vlx_t* vlx) {
-	if (vlx) return vlx->number_of_alpha_electrons;
-	return 0;
-}
-
-size_t md_vlx_number_of_beta_electrons(const md_vlx_t* vlx) {
-	if (vlx) return vlx->number_of_beta_electrons;
+size_t md_vlx_number_of_electrons(const md_vlx_t* vlx, md_vlx_spin_t spin) {
+	if (vlx) {
+		if (spin == MD_VLX_SPIN_ALPHA) {
+			return vlx->number_of_alpha_electrons;
+		} else if (spin == MD_VLX_SPIN_BETA) {
+			return vlx->number_of_beta_electrons;
+		}
+	}
 	return 0;
 }
 

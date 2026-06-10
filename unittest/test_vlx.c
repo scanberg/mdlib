@@ -30,8 +30,8 @@ UTEST(vlx, vlx_parse) {
     EXPECT_EQ(0,  md_vlx_molecular_charge(vlx));
     EXPECT_EQ(26, md_vlx_number_of_atoms(vlx));
     EXPECT_EQ(1,  md_vlx_spin_multiplicity(vlx));
-    EXPECT_EQ(41, md_vlx_number_of_alpha_electrons(vlx));
-    EXPECT_EQ(41, md_vlx_number_of_beta_electrons(vlx));
+    EXPECT_EQ(41, md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA));
+    EXPECT_EQ(41, md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA));
 
 	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
     ASSERT_TRUE(coords != NULL);
