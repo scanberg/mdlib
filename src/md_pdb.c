@@ -16,6 +16,8 @@
 #include <core/md_vec_math.h>
 #include <core/md_hash.h>
 
+#include <hybrid_36_c.h>
+
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -73,20 +75,12 @@ static inline char extract_char(str_t line, size_t idx) {
 // Parse atom serial or residue sequence number, which can be "*****" for missing values
 static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
 	size_t len = end - beg + 1;
-    str_t str = str_trim(str_substr(line, beg - 1, len));
-    if (str_eq_n(str, STR_LIT("*****"), len)) {
-        return INT_MAX;
+    int32_t result = 0;
+    const char* errmsg = hy36decode(len, line.ptr + beg - 1, len, &result);
+    if (errmsg) {
+        MD_LOG_DEBUG("Failed to decode id from string '%.*s', error: %s", (int)len, line.ptr + beg - 1, errmsg);
     }
-    bool all_digits = true;
-    for (size_t i = 0; i < str.len; ++i) {
-        if (!is_digit(str.ptr[i])) {
-            all_digits = false;
-        }
-    }
-    if (all_digits)
-	    return (int32_t)parse_int(str);
-    else
-		return (int32_t)parse_hex(str);
+    return result;
 }
 
 static inline md_pdb_coordinate_t extract_coord(str_t line) {
@@ -1022,6 +1016,94 @@ done:
         md_arena_allocator_destroy(alloc);
     }
     return traj;
+}
+
+bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
+    if (model_num > 0) {
+        md_file_printf(file, "MODEL     %4d\n", model_num);
+    }
+
+	md_instance_idx_t prev_inst_idx = INT_MIN;
+	md_sequence_id_t  prev_res_seq  = INT_MIN;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        int idx = atom_indices ? atom_indices[i] : (int)i;
+
+        char atom_id[6] = "";
+        {
+            const char* errmsg = hy36encode(5, idx + 1, atom_id);
+            if (errmsg) {
+                MD_LOG_DEBUG("Failed to encode atom index '%d', error: %s. This atom will be written with a default atom id of 1", idx + 1, errmsg);
+            }
+        }
+        
+        // Get element symbol
+		md_atomic_number_t atomic_nr = md_atom_atomic_number(&sys->atom, idx);
+
+		char element[3] = "";
+        str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
+        
+        // Get atom name (use element symbol if not available)
+		char name[5] = "";
+		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
+        
+        // Get residue name
+		md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, idx);
+		char resname[5] = "";
+		str_copy_to_char_buf(resname, sizeof(resname), md_component_name(&sys->component, res_idx));
+
+		md_sequence_id_t res_seq = md_component_seq_id(&sys->component, res_idx);
+        
+        // Get chain ID from instance
+        char chain_id[4] = " ";
+        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_instance_auth_id(&sys->instance, inst_idx));
+
+        char res_seq_str[5] = "";
+        {
+            const char* errmsg = hy36encode(4, res_seq, res_seq_str);
+            if (errmsg) {
+                MD_LOG_DEBUG("Failed to encode residue sequence id '%d' for atom index %d, error: %s.", res_seq, idx, errmsg);
+            }
+        }
+
+        // PDB format:
+        // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
+        md_file_printf(file,
+            "%-6s%5s %-4s%1c%3s %1c%4s%1c   "
+            "%8.3f%8.3f%8.3f"
+            "%6.2f%6.2f          "
+            "%2s%2s\n",
+            "ATOM",
+            atom_id,            // serial number
+            name,               // atom name
+            ' ',                // altLoc
+            resname,            // residue name
+            chain_id[0],        // chain ID
+            res_seq_str,        // residue sequence number
+            ' ',                // iCode
+            x[idx],             // x coordinate
+            y[idx],             // y coordinate
+            z[idx],             // z coordinate
+            1.0,                // occupancy
+            0.0,                // bfactor
+            element,            // element symbol
+            ""                 // charge
+        );
+
+		if (prev_inst_idx != INT_MIN && inst_idx != prev_inst_idx) {
+			md_file_printf(file, "TER\n");
+		}
+        prev_inst_idx = inst_idx;
+        prev_res_seq = res_seq;
+    }
+    
+    if (model_num > 0) {
+        md_file_printf(file, "ENDMDL\n");
+    } else {
+        md_file_printf(file, "END\n");
+    }
+
+    return true;
 }
 
 #ifdef __cplusplus

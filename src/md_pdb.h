@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
+#include <core/md_os.h>
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -176,6 +177,9 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 bool md_pdb_system_init_from_data(struct md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options);
 bool md_pdb_system_init_from_file(struct md_system_t* sys, str_t filename, md_pdb_options_t options);
 bool md_pdb_system_init_from_str (struct md_system_t* sys, str_t str,      md_pdb_options_t options);
+
+// EXPORT
+bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num);
 
 // TRAJECTORY
 //bool md_pdb_trajectory_attach_from_file(struct md_system_t* sys, str_t filename);

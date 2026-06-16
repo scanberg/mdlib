@@ -447,7 +447,8 @@ target_include_directories(mdlib
   ext/xtc/
   ext/svd3/
   ext/stb/
-  ext/libdivide
+  ext/libdivide/
+  ext/hy36/
 )
 
 if (MD_ENABLE_GPU)
