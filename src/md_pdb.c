@@ -1024,7 +1024,6 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
     }
 
 	md_instance_idx_t prev_inst_idx = INT_MIN;
-	md_sequence_id_t  prev_res_seq  = INT_MIN;
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
 
@@ -1094,7 +1093,6 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 			md_file_printf(file, "TER\n");
 		}
         prev_inst_idx = inst_idx;
-        prev_res_seq = res_seq;
     }
     
     if (model_num > 0) {
