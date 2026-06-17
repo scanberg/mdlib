@@ -2454,97 +2454,144 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
-	const char* coord_ident  = NULL;
-	const char* energy_ident = NULL;
-	H5I_type_t energy_obj_type = -1;
+// This procedure is an abstraction to help read illformed groups containing a collection of individual datasets containing one value each.
+// The expected names of the datasets are '0', '1', ... up to the expected count. The dataset prefix is used for error messages only, it does not have to be present in the actual dataset names.
+static bool h5_extract_group_as_array_double(md_array(double)* out_data, hid_t group_handle, md_allocator_i* arena) {
+	ASSERT(out_data);
+	ASSERT(arena);
+	bool success = false;
 
-	if (h5_get_object_type(handle, "opt_coordinates_au") == H5I_DATASET) {
-		coord_ident = "opt_coordinates_au";
-		energy_obj_type = h5_get_object_type(handle, "opt_energies");
-		if (energy_obj_type == H5I_DATASET || energy_obj_type == H5I_GROUP) {
-			energy_ident = "opt_energies";
+	hsize_t num_links = 0;
+	if (H5Gget_num_objs(group_handle, &num_links) < 0) {
+		MD_LOG_ERROR("Failed to get number of links in group");
+		return false;
+	}
+
+	size_t expected_count = (size_t)num_links;
+	md_array_ensure(*out_data, expected_count, arena);
+
+	for (size_t i = 0; i < expected_count; ++i) {
+		char dataset_name[64];
+		snprintf(dataset_name, sizeof(dataset_name), "%zu", i);
+		if (!h5_check_dataset_exists(group_handle, dataset_name)) {
+			MD_LOG_ERROR("Expected dataset '%s' in group not found", dataset_name);
+			return false;
 		}
-	} else if (h5_get_object_type(handle, "scan_coordinates_au") == H5I_DATASET) {
-		coord_ident = "scan_coordinates_au";
-		energy_obj_type = h5_get_object_type(handle, "scan_energies");
-		if (energy_obj_type == H5I_DATASET || energy_obj_type == H5I_GROUP) {
-			energy_ident = "scan_energies";
+
+		double value;
+		if (!h5_read_dataset_data(&value, 1, group_handle, H5T_NATIVE_DOUBLE, dataset_name)) {
+			MD_LOG_ERROR("Failed to read dataset '%s' in group", dataset_name);
+			return false;
+		}
+		md_array_push_no_grow(*out_data, value);
+	}
+	return true;
+}
+
+static bool h5_extract_as_array_double(md_array(double)* out_data, hid_t handle, const char* name, md_allocator_i* arena) {
+	ASSERT(out_data);
+	ASSERT(name);
+	ASSERT(arena);
+	
+	hid_t obj_handle = H5Oopen(handle, name, H5P_DEFAULT);
+	if (obj_handle < 0) {
+		MD_LOG_ERROR("Failed to open object '%s'", name);
+		return false;
+	}
+
+	bool result = false;
+	
+	H5I_type_t obj_type = H5Iget_type(obj_handle);
+	if (obj_type == H5I_GROUP) {
+		result = h5_extract_group_as_array_double(out_data, obj_handle, arena);
+	} else if (obj_type == H5I_DATASET) {
+		size_t dim;
+		int num_dim = h5_read_dataset_dims(&dim, 1, handle, name);
+		if (num_dim <= 0) {
+			MD_LOG_ERROR("Invalid dimensions in dataset '%s'", name);
+			goto done;
+		}
+		md_array_resize(*out_data, dim, arena);
+		result = h5_read_dataset_data(out_data, dim, obj_handle, H5T_NATIVE_DOUBLE, ".");
+	} else {
+		MD_LOG_ERROR("Unrecognized object type for '%s'", name);
+	}
+
+done:
+	H5Oclose(obj_handle);
+	return result;
+}
+
+static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
+	const char* valid_prefixes[] = { "opt", "scan", "irc" };
+	const char* energy_ident = NULL;
+	const char* coord_ident = NULL;
+	H5I_type_t  coord_type = H5I_BADID;
+
+	for (size_t i = 0; i < ARRAY_SIZE(valid_prefixes); ++i) {
+		H5I_type_t type = -1;
+		char energy_name[64];
+		char coord_name[64];
+
+		snprintf(energy_name, sizeof(energy_name), "%s_energies", valid_prefixes[i]);
+		snprintf(coord_name, sizeof(coord_name), "%s_coordinates_au", valid_prefixes[i]);
+
+		type = h5_get_object_type(handle, coord_name);
+		if (type == H5I_DATASET || type == H5I_GROUP) {
+			coord_ident = coord_name;
+			coord_type = type;
+		}
+
+		type = h5_get_object_type(handle, energy_name);
+		if (type == H5I_DATASET || type == H5I_GROUP) {
+			energy_ident = energy_name;
+			break;
 		}
 	}
 
-	if (coord_ident && energy_ident) {
-		size_t dim[3];
-		int num_dim = h5_read_dataset_dims(dim, 3, handle, coord_ident);
-		if (num_dim <= 0) {
-			MD_LOG_ERROR("Invalid dimensions in %s dataset", coord_ident);
+	if (energy_ident) {
+		// Extract energies
+		if (!h5_extract_as_array_double(&vlx->opt.energies, handle, energy_ident, vlx->arena)) {
 			return false;
 		}
 
-		if (dim[1] != vlx->number_of_atoms || dim[2] != 3) {
-			MD_LOG_ERROR("Unexpected %s dimensions", coord_ident);
-			return false;
-		}
+		size_t len = md_array_size(vlx->opt.energies);
+		vlx->opt.number_of_steps = len;
 
-		// Read coordinate data
-		md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
-		if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
-			return false;
-		}
-
-		if (vlx->opt.coordinates) {
-			for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
-				vlx->opt.coordinates[i] = dvec3_mul1(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
-			}
-		}
-
-		// This is the expected length we want to read for the corresponding energies
-		size_t len = dim[0];
-
-		if (energy_obj_type == H5I_GROUP) {
-			hid_t energy_group = H5Gopen(handle, energy_ident, H5P_DEFAULT);
-			if (energy_group < 0) {
-				MD_LOG_ERROR("Failed to open energy group '%s'", energy_ident);
+		if (coord_ident && coord_type == H5I_DATASET) {
+			// Extract coordinates
+			size_t dim[4];
+			int num_dim = h5_read_dataset_dims(dim, ARRAY_SIZE(dim), handle, coord_ident);
+			if (num_dim <= 0) {
+				MD_LOG_ERROR("Invalid dimensions in '%s'", coord_ident);
 				return false;
 			}
 
-			// Energies are given as group with each step as an individual dataset, check that number of datasets matches number of steps
-			hsize_t num_links = 0;
-			if (H5Gget_num_objs(energy_group, &num_links) < 0) {
-				MD_LOG_ERROR("Failed to get number of links in energy group");
-				H5Gclose(energy_group);
+			if (dim[1] != vlx->number_of_atoms || dim[2] != 3) {
+				MD_LOG_ERROR("Unexpected dimensions in '%s'", coord_ident);
 				return false;
 			}
-			if ((size_t)num_links != dim[0]) {
-				MD_LOG_ERROR("Number of datasets in energy group does not match number of steps in coordinates dataset");
-				H5Gclose(energy_group);
+		
+			if (dim[0] != len) {
+				MD_LOG_ERROR("Energy/coordinate step count mismatch between '%s' and '%s'", energy_ident, coord_ident);
 				return false;
 			}
-			// Extract energies
-			md_array_resize(vlx->opt.energies, len, vlx->arena);
-			for (size_t i = 0; i < len; ++i) {
-				char name_buf[64];
-				snprintf(name_buf, sizeof(name_buf), "%zu", i);
-				if (!h5_read_dataset_data(&vlx->opt.energies[i], 1, energy_group, H5T_NATIVE_DOUBLE, name_buf)) {
-					MD_LOG_ERROR("Failed to read energy dataset '%s' in energy group", name_buf);
-					H5Gclose(energy_group);
-					return false;
+
+			// Read coordinate data
+			md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
+			if (!h5_read_dataset_data(vlx->opt.coordinates, md_array_size(vlx->opt.coordinates) * 3, handle, H5T_NATIVE_DOUBLE, coord_ident)) {
+				return false;
+			}
+
+			if (vlx->opt.coordinates) {
+				for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
+					vlx->opt.coordinates[i] = dvec3_mul1(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
 				}
 			}
-			H5Gclose(energy_group);
-		} else {
-			// Read energies directly from dataset
-			md_array_resize(vlx->opt.energies, len, vlx->arena);
-			if (!h5_read_dataset_data(vlx->opt.energies, md_array_size(vlx->opt.energies), handle, H5T_NATIVE_DOUBLE, energy_ident)) {
-				return false;
-			}
 		}
-
-		vlx->opt.number_of_steps = len;
 		return true;
-	} else {
-		MD_LOG_ERROR("Missing optimization/scan data, expected datasets '%s' and '%s'", coord_ident ? coord_ident : "opt_coordinates_au / scan_coordinates_au", energy_ident ? energy_ident : "opt_energies / scan_energies");
 	}
+
 	return false;
 }
 
