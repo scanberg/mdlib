@@ -51,6 +51,12 @@ typedef enum {
 	MD_VLX_SCF_TYPE_UNRESTRICTED,
 } md_vlx_scf_type_t;
 
+typedef enum {
+	MD_VLX_RSP_TYPE_UNKNOWN = 0,
+	MD_VLX_RSP_TYPE_LINEAR,
+	MD_VLX_RSP_TYPE_CPP,
+} md_vlx_rsp_type_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -147,33 +153,29 @@ const double* md_vlx_scf_history_density_diff(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_gradient_norm(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
 
-// SCF (Optional data)
-// 
-// If present, has the length of num of atoms
-const double* md_vlx_scf_resp_charges(const struct md_vlx_t* vlx);
-
-// RSP (Standard Linear Response, TD-DFT)
+// RSP (Standard Linear Response, TDDFT)
 size_t md_vlx_rsp_number_of_excited_states(const struct md_vlx_t* vlx);
 
 // RSP arrays with length of num excited states
 const dvec3_t* md_vlx_rsp_electric_transition_dipole_moments(const struct md_vlx_t* vlx);
 const dvec3_t* md_vlx_rsp_magnetic_transition_dipole_moments(const struct md_vlx_t* vlx);
 const dvec3_t* md_vlx_rsp_velocity_transition_dipole_moments(const struct md_vlx_t* vlx);
+
 const double*  md_vlx_rsp_rotatory_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
-const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
 
-// RSP CPP (Complex Polarization Propagator)
-size_t md_vlx_rsp_cpp_number_of_frequencies(const struct md_vlx_t* vlx);
+// NEW UNIFIED RSP API
+md_vlx_rsp_type_t md_vlx_rsp_type(const struct md_vlx_t* vlx);
+size_t md_vlx_rsp_number_of_frequencies(const struct md_vlx_t* vlx);
 
-// unit = eV
-const double* md_vlx_rsp_cpp_frequencies(const struct md_vlx_t* vlx);
+// Frequencies are in eV, and length is given by md_vlx_rsp_number_of_frequencies()
+const double* md_vlx_rsp_frequencies(const struct md_vlx_t* vlx);
 
-// Encodes unpolarized? response, i.e. the average of left and right polarized light
-const double* md_vlx_rsp_cpp_sigma(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_sigma(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_optical_rotations(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_delta_epsilons(const struct md_vlx_t* vlx);
 
-// Encodes difference between left vs. right polarized light
-const double* md_vlx_rsp_cpp_delta_epsilon(const struct md_vlx_t* vlx);
+// RSP NTO api
 
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
 size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count);
