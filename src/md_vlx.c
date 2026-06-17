@@ -2492,18 +2492,18 @@ static bool h5_extract_as_array_double(md_array(double)* out_data, hid_t handle,
 	ASSERT(out_data);
 	ASSERT(name);
 	ASSERT(arena);
-	
-	hid_t obj_handle = H5Oopen(handle, name, H5P_DEFAULT);
-	if (obj_handle < 0) {
-		MD_LOG_ERROR("Failed to open object '%s'", name);
-		return false;
-	}
 
 	bool result = false;
 	
-	H5I_type_t obj_type = H5Iget_type(obj_handle);
+	H5I_type_t obj_type = h5_get_object_type(handle, name);
 	if (obj_type == H5I_GROUP) {
+		hid_t obj_handle = H5Oopen(handle, name, H5P_DEFAULT);
+		if (obj_handle < 0) {
+			MD_LOG_ERROR("Failed to open object '%s'", name);
+			return false;
+		}
 		result = h5_extract_group_as_array_double(out_data, obj_handle, arena);
+		H5Oclose(obj_handle);
 	} else if (obj_type == H5I_DATASET) {
 		size_t dim;
 		int num_dim = h5_read_dataset_dims(&dim, 1, handle, name);
@@ -2512,13 +2512,13 @@ static bool h5_extract_as_array_double(md_array(double)* out_data, hid_t handle,
 			goto done;
 		}
 		md_array_resize(*out_data, dim, arena);
-		result = h5_read_dataset_data(out_data, dim, obj_handle, H5T_NATIVE_DOUBLE, ".");
+		MEMSET(*out_data, 0, md_array_bytes(*out_data));
+		result = h5_read_dataset_data(*out_data, dim, handle, H5T_NATIVE_DOUBLE, name);
 	} else {
 		MD_LOG_ERROR("Unrecognized object type for '%s'", name);
 	}
 
 done:
-	H5Oclose(obj_handle);
 	return result;
 }
 
