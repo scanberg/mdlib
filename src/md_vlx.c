@@ -19,8 +19,6 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.5291772109029999
 
-#define HARTREE_TO_EV 27.2114079527
-
 #define VLX_NTO_POWER_ITERATIONS 256
 #define VLX_NTO_EIGENVALUE_EPSILON 1.0e-14
 #define VLX_NTO_CONVERGENCE_EPSILON 1.0e-10
@@ -1959,13 +1957,6 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, md_array_size(vlx->rsp.rotatory_strengths), handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
 			return false;
 		}
-
-		// Convert Atomic units (Hartree) to eV
-		if (vlx->rsp.frequencies) {
-			for (size_t i = 0; i < vlx->rsp.number_of_frequencies; ++i) {
-				vlx->rsp.frequencies[i] *= HARTREE_TO_EV;
-			}
-		}
 	}
 
 	if (vlx->rsp.type == MD_VLX_RSP_TYPE_UNKNOWN) {
@@ -3231,7 +3222,6 @@ size_t md_vlx_rsp_number_of_frequencies(const md_vlx_t* vlx) {
 
 const double* md_vlx_rsp_frequencies(const md_vlx_t* vlx) {
 	if (vlx) {
-
 		return vlx->rsp.frequencies;
 	}
 	return NULL;
@@ -3240,6 +3230,20 @@ const double* md_vlx_rsp_frequencies(const md_vlx_t* vlx) {
 const double* md_vlx_rsp_sigma(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.sigmas;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_delta_epsilons(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->rsp.delta_epsilons;
+    }
+    return NULL;
+}
+
+const double* md_vlx_rsp_optical_rotations(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.optical_rotations;
 	}
 	return NULL;
 }

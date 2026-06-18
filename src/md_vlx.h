@@ -168,12 +168,18 @@ const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
 md_vlx_rsp_type_t md_vlx_rsp_type(const struct md_vlx_t* vlx);
 size_t md_vlx_rsp_number_of_frequencies(const struct md_vlx_t* vlx);
 
-// Frequencies are in eV, and length is given by md_vlx_rsp_number_of_frequencies()
+// Frequencies are in a.u. (Hartree), and length is given by md_vlx_rsp_number_of_frequencies()
 const double* md_vlx_rsp_frequencies(const struct md_vlx_t* vlx);
 
+// CPP Absorption output in a.u.
 const double* md_vlx_rsp_sigma(const struct md_vlx_t* vlx);
-const double* md_vlx_rsp_optical_rotations(const struct md_vlx_t* vlx);
+
+// CPP ECD output in delta epsilon [L mol^-1 cm^-1]
 const double* md_vlx_rsp_delta_epsilons(const struct md_vlx_t* vlx);
+
+const double* md_vlx_rsp_optical_rotations(const struct md_vlx_t* vlx);
+
+
 
 // RSP NTO api
 
