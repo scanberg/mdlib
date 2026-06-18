@@ -1099,6 +1099,57 @@ static bool h5_check_dataset_exists(hid_t file_id, const char* field_name) {
 	return exists > 0;
 }
 
+typedef bool (*h5_group_visit_cb_t)(md_vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data);
+
+static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const char* group_path, h5_group_visit_cb_t callback, void* user_data) {
+	ASSERT(vlx);
+	ASSERT(group_path);
+	ASSERT(callback);
+
+	if (!callback(vlx, group_handle, group_path, user_data)) {
+		return false;
+	}
+
+	H5G_info_t info = { 0 };
+	if (H5Gget_info(group_handle, &info) < 0) {
+		MD_LOG_ERROR("Failed to get group info when traversing HDF5 groups");
+		return false;
+	}
+
+	char name_buf[256];
+	for (hsize_t i = 0; i < info.nlinks; ++i) {
+		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
+		if (size < 0) {
+			continue;
+		}
+
+		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
+		if (type != H5G_GROUP) {
+			continue;
+		}
+
+		hid_t child_group = H5Gopen(group_handle, name_buf, H5P_DEFAULT);
+		if (child_group == H5I_INVALID_HID) {
+			continue;
+		}
+
+		char child_path[512];
+		if (strcmp(group_path, "/") == 0) {
+			snprintf(child_path, sizeof(child_path), "/%s", name_buf);
+		} else {
+			snprintf(child_path, sizeof(child_path), "%s/%s", group_path, name_buf);
+		}
+
+		bool result = h5_visit_groups_recursive(vlx, child_group, child_path, callback, user_data);
+		H5Gclose(child_group);
+		if (!result) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static bool h5_read_dataset_data(void* out_data, size_t num_samples, hid_t file_id, hid_t mem_type_id, const char* field_name) {
 	ASSERT(out_data);
 
@@ -1142,9 +1193,10 @@ done:
     return result;
 }
 
-// Scan through an h5 group (no recursion) and check for datasets with the attribute 'atomic_property', if found, this will contain the label of the property.
-// If read, we will attempt to extract this as an array of doubles (if it has the length of number of atoms).
-static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
+static bool h5_read_atomic_properties_in_group(md_vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data) {
+	(void)group_path;
+	(void)user_data;
+
 	H5G_info_t info = { 0 };
 	if (H5Gget_info(group_handle, &info) < 0) {
 		MD_LOG_ERROR("Failed to get group info when reading atomic properties");
@@ -1169,6 +1221,7 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 		}
 
 		if (!H5Aexists(dataset_id, "atomic_property")) {
+			H5Dclose(dataset_id);
 			continue;
 		}
 
@@ -1260,9 +1313,10 @@ static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
 	return true;
 }
 
-// Scan through an h5 group (no recursion) and check for datasets with the attribute 'density_property', if found, this will contain the label of the property.
-// If read, we will attempt to extract this as an array of doubles (if it has the length as a density matrix i.e. AO x AO).
-static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
+static bool h5_read_density_properties_in_group(md_vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data) {
+	(void)group_path;
+	(void)user_data;
+
 	H5G_info_t info = { 0 };
 	if (H5Gget_info(group_handle, &info) < 0) {
 		MD_LOG_ERROR("Failed to get group info when reading density properties");
@@ -1287,6 +1341,7 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 		}
 
 		if (!H5Aexists(dataset_id, "density_property")) {
+			H5Dclose(dataset_id);
 			continue;
 		}
 
@@ -1374,6 +1429,14 @@ static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
 		H5Dclose(dataset_id);
 	}
 	return true;
+}
+
+static bool h5_read_atomic_properties(md_vlx_t* vlx, hid_t group_handle) {
+	return h5_visit_groups_recursive(vlx, group_handle, "/", h5_read_atomic_properties_in_group, NULL);
+}
+
+static bool h5_read_density_properties(md_vlx_t* vlx, hid_t group_handle) {
+	return h5_visit_groups_recursive(vlx, group_handle, "/", h5_read_density_properties_in_group, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -2835,7 +2898,6 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (!h5_read_core_data(vlx, file_id)) {
 			goto done;
 		}
-		h5_read_atomic_properties(vlx, file_id);
 	}
 
 	// SCF
@@ -2844,8 +2906,6 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
 			if (scf_id != H5I_INVALID_HID) {
 				result = h5_read_scf_data(vlx, scf_id);
-				h5_read_atomic_properties(vlx, scf_id);
-				h5_read_density_properties(vlx, scf_id);
 				H5Gclose(scf_id);
 				if (!result) goto done;
 			}
@@ -2858,8 +2918,6 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
             hid_t vib_id = H5Gopen(file_id, "vib", H5P_DEFAULT);
             if (vib_id != H5I_INVALID_HID) {
                 result = h5_read_vib_data(vlx, vib_id);
-				h5_read_atomic_properties(vlx, vib_id);
-				h5_read_density_properties(vlx, vib_id);
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
@@ -2872,8 +2930,6 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t opt_id = H5Gopen(file_id, "opt", H5P_DEFAULT);
 			if (opt_id != H5I_INVALID_HID) {
 				result = h5_read_opt_data(vlx, opt_id);
-				h5_read_atomic_properties(vlx, opt_id);
-				h5_read_density_properties(vlx, opt_id);
 				H5Gclose(opt_id);
 				if (!result) goto done;
 			}
@@ -2886,15 +2942,23 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
 			if (rsp_id != H5I_INVALID_HID) {
 				result = h5_read_rsp_data(vlx, rsp_id);
-				h5_read_atomic_properties(vlx, rsp_id);
-				h5_read_density_properties(vlx, rsp_id);
 				H5Gclose(rsp_id);
 				if (!result) goto done;
 			}
 		}
 	}
 
+	if (flags & VLX_FLAG_CORE) {
+		if (!h5_read_atomic_properties(vlx, file_id)) {
+			goto done;
+		}
+	}
 
+	if (flags & VLX_FLAG_SCF) {
+		if (!h5_read_density_properties(vlx, file_id)) {
+			goto done;
+		}
+	}
 
 	result = true;
 done:
