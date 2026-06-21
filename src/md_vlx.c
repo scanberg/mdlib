@@ -149,6 +149,11 @@ typedef struct md_vlx_vib_t {
 	double* frequencies;
 	double* reduced_masses;
 	dvec3_t** normal_modes;
+
+    size_t num_external_frequencies;
+    double* external_frequencies;
+    // Raman activities is multidimensional, with dimensions [number_of_external_frequencies][number_of_normal_modes]
+	double* raman_activities;
 } md_vlx_vib_t;
 
 typedef struct md_vlx_opt_t {
@@ -2181,6 +2186,25 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
+	size_t number_of_external_frequencies = 0;
+	if (h5_read_scalar(&number_of_external_frequencies, handle, H5T_NATIVE_HSIZE, "number_of_external_frequencies")) {
+        vlx->vib.num_external_frequencies = number_of_external_frequencies;
+
+        if (h5_check_dataset_exists(handle, "external_frequencies")) {
+            md_array_resize(vlx->vib.external_frequencies, number_of_external_frequencies, vlx->arena);
+            if (!h5_read_dataset_data(vlx->vib.external_frequencies, md_array_size(vlx->vib.external_frequencies), handle, H5T_NATIVE_DOUBLE, "external_frequencies")) {
+                return false;
+            }
+        }
+
+		if (h5_check_dataset_exists(handle, "raman_activities")) {
+            md_array_resize(vlx->vib.raman_activities, number_of_external_frequencies * number_of_modes, vlx->arena);
+            if (!h5_read_dataset_data(vlx->vib.raman_activities, md_array_size(vlx->vib.raman_activities), handle, H5T_NATIVE_DOUBLE, "raman_activities")) {
+                return false;
+            }
+		}
+	}
+
 	return true;
 }
 
@@ -3435,21 +3459,28 @@ const double* md_vlx_opt_energies(const struct md_vlx_t* vlx) {
 	return NULL;
 }
 
-/*
-size_t md_vlx_vib_num_raman_activity(const md_vlx_t* vlx) {
+size_t md_vlx_vib_number_of_external_frequencies(const md_vlx_t* vlx) {
     if (vlx) {
-        return vlx->vib.num_raman;
+        return vlx->vib.num_external_frequencies;
 	}
     return 0;
 }
 
-const double* md_vlx_vib_raman_activity(const md_vlx_t* vlx, size_t idx) {
-    if (vlx) {
-        return vlx->vib.raman_activity;
+const double* md_vlx_vib_external_frequencies(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->vib.external_frequencies;
 	}
+	return NULL;
+}
+
+const double* md_vlx_vib_raman_activities(const md_vlx_t* vlx, size_t idx) {
+    if (vlx) {
+        if (vlx->vib.raman_activities && idx < vlx->vib.num_external_frequencies) {
+            return vlx->vib.raman_activities + idx * vlx->vib.number_of_normal_modes;
+        }
+    }
     return NULL;
 }
-*/
 
 md_vlx_t* md_vlx_create(md_allocator_i* backing) {
 	ASSERT(backing);

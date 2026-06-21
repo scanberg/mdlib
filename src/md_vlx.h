@@ -213,10 +213,12 @@ const double*  md_vlx_opt_energies(const struct md_vlx_t* vlx);
 // Returns array of length N (Number of atoms)
 const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx);
 
-size_t md_vlx_vib_num_raman_activity(const struct md_vlx_t* vlx);
+size_t md_vlx_vib_number_of_external_frequencies(const struct md_vlx_t* vlx);
+
+const double* md_vlx_vib_external_frequencies(const struct md_vlx_t* vlx);	// Unit: a.u. (Hartree)
 
 // Returns array of length D (Number of normal modes)
-const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx);
+const double* md_vlx_vib_raman_activities(const struct md_vlx_t* vlx, size_t idx);
 
 // Atomic properties
 size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);
