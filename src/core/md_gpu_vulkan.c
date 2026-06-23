@@ -2034,10 +2034,14 @@ static md_gpu_transient_t md_vk_cmd_alloc_transient(md_gpu_cmd_t cmd_handle, siz
     md_vk_thread_context* ctx = cmd->context;
     md_gpu_device* dev = cmd->queue->dev;
     if (alignment == 0) alignment = MD_GPU_VK_TEMP_ALLOC_ALIGNMENT;
+    ASSERT((alignment & (alignment - 1)) == 0); // must be a power of two
 
-    md_vk_transient_page_t* page = ctx->transient_allocator.current_page;
     const bool dedicated = (size > (MD_GPU_VK_TRANSIENT_PAGE_SIZE / 2));
-    size_t aligned_offset = SIZE_MAX;
+
+    // Dedicated allocations always get their own page; never attempt to carve
+    // from the shared current page, as that would fragment small-allocation space.
+    md_vk_transient_page_t* page = dedicated ? NULL : ctx->transient_allocator.current_page;
+    size_t aligned_offset = 0;
 
     if (!dedicated && page) {
         aligned_offset = (page->offset + alignment - 1) & ~(alignment - 1);
@@ -2056,13 +2060,6 @@ static md_gpu_transient_t md_vk_cmd_alloc_transient(md_gpu_cmd_t cmd_handle, siz
             ctx->transient_allocator.current_page = page;
         }
         aligned_offset = 0;
-    }
-
-    if (aligned_offset == SIZE_MAX) {
-        aligned_offset = (page->offset + alignment - 1) & ~(alignment - 1);
-    }
-    if (aligned_offset + size > page->capacity) {
-        return result;
     }
 
     if (!md_vk_cmd_attach_transient_page(cmd, page)) {
