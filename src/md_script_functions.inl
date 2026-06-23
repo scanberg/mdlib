@@ -4286,11 +4286,13 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(ctx && ctx->mol && ctx->atom_mass);
+    ASSERT(ctx);
 
     bool result = 0;
 
     if (dst) {
+        ASSERT(ctx->mol);
+        ASSERT(ctx->atom_mass);
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         ASSERT(ctx->initial_configuration.x && ctx->initial_configuration.y && ctx->initial_configuration.z);
 
