@@ -157,6 +157,9 @@ typedef struct md_vlx_vib_t {
 } md_vlx_vib_t;
 
 typedef struct md_vlx_opt_t {
+    md_vlx_opt_type_t type;
+	size_t state_index;
+	size_t ts_index;
 	size_t number_of_steps;
 	double* energies;
 	dvec3_t* coordinates;
@@ -1666,13 +1669,13 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	}
 
 	if (str_eq_cstr(STR_LIT("restricted"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED;
+		vlx->scf.type = MD_VLX_SCF_RESTRICTED;
 	} else if (str_eq_cstr(STR_LIT("restricted_openshell"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
+		vlx->scf.type = MD_VLX_SCF_RESTRICTED_OPENSHELL;
 	} else if (str_eq_cstr(STR_LIT("unrestricted"), scf_type)) {
-		vlx->scf.type = MD_VLX_SCF_TYPE_UNRESTRICTED;
+		vlx->scf.type = MD_VLX_SCF_UNRESTRICTED;
 	} else {
-		vlx->scf.type = MD_VLX_SCF_TYPE_UNKNOWN;
+		vlx->scf.type = MD_VLX_SCF_UNKNOWN;
 		MD_LOG_ERROR("Unrecognized scf type present in h5 scf section: '%s'", scf_type);
 		return false;
 	}
@@ -1723,7 +1726,7 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
         return false;
     }
 
-	if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+	if (vlx->scf.type == MD_VLX_SCF_UNRESTRICTED) {
 		size_t beta_dim[2];
 		h5_read_dataset_dims(beta_dim, 2, handle, "C_beta");
 		size_t beta_num_mo = 0;
@@ -1769,7 +1772,7 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	} else {
 		// Shallow copy fields from Alpha
 		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
-		if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+		if (vlx->scf.type == MD_VLX_SCF_RESTRICTED_OPENSHELL) {
 			vlx->scf.beta.occupancy.data = 0;
 			md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
 			if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
@@ -1975,7 +1978,7 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	h5_read_scalar(&vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_HSIZE, "number_of_states");
 	if (vlx->rsp.number_of_frequencies > 0) {
 		// Standard Linear Response data, allocate and read
-		vlx->rsp.type = MD_VLX_RSP_TYPE_LINEAR;
+		vlx->rsp.type = MD_VLX_RSP_LINEAR;
 
 		// Allocate data
 		md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
@@ -2027,16 +2030,16 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		}
 	}
 
-	if (vlx->rsp.type == MD_VLX_RSP_TYPE_UNKNOWN) {
+	if (vlx->rsp.type == MD_VLX_RSP_UNKNOWN) {
 		// No standard response data, check for other types of response data by looking for type field
 		if (h5_check_dataset_exists(handle, "rsp_type")) {
 			char type_buf[64] = { 0 };
 			h5_read_cstr(type_buf, sizeof(type_buf), handle, "rsp_type");
 			if (strncmp(type_buf, "cpp", sizeof(type_buf)) == 0) {
-				vlx->rsp.type = MD_VLX_RSP_TYPE_CPP;
+				vlx->rsp.type = MD_VLX_RSP_CPP;
 			}
 		}
-		if (vlx->rsp.type == MD_VLX_RSP_TYPE_CPP) {
+		if (vlx->rsp.type == MD_VLX_RSP_CPP) {
 			size_t dim;
 			if (h5_read_dataset_dims(&dim, 1, handle, "frequencies")) {
 				vlx->rsp.number_of_frequencies = dim;
@@ -2276,15 +2279,17 @@ done:
 }
 
 static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
+	const md_vlx_opt_type_t opt_types[] = { MD_VLX_OPT_GEOMETRY, MD_VLX_OPT_CONSTRAINED, MD_VLX_OPT_IRC };
 	const char* valid_prefixes[] = { "opt", "scan", "irc" };
 	const char* energy_ident = NULL;
 	const char* coord_ident = NULL;
 	H5I_type_t  coord_type = H5I_BADID;
+    md_vlx_opt_type_t opt_type = MD_VLX_OPT_UNKNOWN;
 
 	for (size_t i = 0; i < ARRAY_SIZE(valid_prefixes); ++i) {
 		H5I_type_t type = -1;
-		char energy_name[64];
-		char coord_name[64];
+		char energy_name[32];
+		char coord_name[32];
 
 		snprintf(energy_name, sizeof(energy_name), "%s_energies", valid_prefixes[i]);
 		snprintf(coord_name, sizeof(coord_name), "%s_coordinates_au", valid_prefixes[i]);
@@ -2298,6 +2303,7 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 		type = h5_get_object_type(handle, energy_name);
 		if (type == H5I_DATASET || type == H5I_GROUP) {
 			energy_ident = energy_name;
+			opt_type = opt_types[i];
 			break;
 		}
 	}
@@ -2310,6 +2316,18 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 
 		size_t len = md_array_size(vlx->opt.energies);
 		vlx->opt.number_of_steps = len;
+
+		if (h5_check_dataset_exists(handle, "state_index")) {
+			if (!h5_read_scalar(&vlx->opt.state_index, handle, H5T_NATIVE_INT64, "state_index")) {
+                return false;
+            }
+		}
+
+        if (h5_check_dataset_exists(handle, "ts_index")) {
+            if (!h5_read_scalar(&vlx->opt.ts_index, handle, H5T_NATIVE_INT64, "ts_index")) {
+                return false;
+            }
+        }
 
 		if (coord_ident && coord_type == H5I_DATASET) {
 			// Extract coordinates
@@ -2342,6 +2360,9 @@ static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
 				}
 			}
 		}
+
+        vlx->opt.type = opt_type;
+
 		return true;
 	}
 
@@ -2519,7 +2540,7 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 	md_temp_end(temp);
 }
 
-static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type) {
+static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_type_t type) {
 	ASSERT(out_matrix);
 	ASSERT(vlx);
 
@@ -2573,11 +2594,11 @@ static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const 
 		}
 	}
 
-	if (type == MD_VLX_TRANSITION_DENSITY_DETACHMENT) {
+	if (type == MD_VLX_TRANSITION_DETACHMENT) {
 		vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff_data, 0, nocc, num_ao);
 	} else {
 		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff_data, nocc, nvir, num_ao);
-		if (type == MD_VLX_TRANSITION_DENSITY_DIFFERENCE) {
+		if (type == MD_VLX_TRANSITION_DIFFERENCE) {
 			detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
 			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff_data, 0, nocc, num_ao);
 			for (size_t i = 0; i < num_ao * num_ao; ++i) {
@@ -2826,7 +2847,7 @@ static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double
 			const double* v = use_left_gram ? large : small;
 			double* out_coeff = out_coefficients + pair_idx * num_ao;
 
-			if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+			if (type == MD_VLX_NTO_PARTICLE) {
 				for (size_t ao = 0; ao < num_ao; ++ao) {
 					double value = 0.0;
 					for (size_t a = 0; a < nvir; ++a) {
@@ -2834,7 +2855,7 @@ static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double
 					}
 					out_coeff[ao] = value;
 				}
-			} else if (type == MD_VLX_NTO_TYPE_HOLE) {
+			} else if (type == MD_VLX_NTO_HOLE) {
 				for (size_t ao = 0; ao < num_ao; ++ao) {
 					double value = 0.0;
 					for (size_t i = 0; i < nocc; ++i) {
@@ -3140,7 +3161,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (vlx->scf.alpha.density.data && num_ao == vlx->scf.alpha.density.size[0]) {
 				ao_permute_square(vlx->scf.alpha.density.data, num_ao, vlx->ao_remap);
 			}
-			if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+			if (vlx->scf.type == MD_VLX_SCF_UNRESTRICTED) {
 				if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, vlx->ao_remap, "Beta orbital")) {
 					goto done;
 				}
@@ -3184,7 +3205,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
-	if (vlx->number_of_atoms > 0 && vlx->scf.type != MD_VLX_SCF_TYPE_UNKNOWN) {
+	if (vlx->number_of_atoms > 0 && vlx->scf.type != MD_VLX_SCF_UNKNOWN) {
 		// Extract ao_to_atom_idx map
 		size_t N = md_vlx_scf_number_of_atomic_orbitals(vlx);
 		if (N > 0) {
@@ -3252,7 +3273,7 @@ const double* md_vlx_scf_resp_charges(const md_vlx_t* vlx) {
 
 size_t md_vlx_rsp_number_of_excited_states(const md_vlx_t* vlx) {
 	if (vlx) {
-		if (vlx->rsp.type == MD_VLX_RSP_TYPE_LINEAR) {
+		if (vlx->rsp.type == MD_VLX_RSP_LINEAR) {
 			return vlx->rsp.number_of_frequencies;
 		}
 	}
@@ -3298,7 +3319,7 @@ md_vlx_rsp_type_t md_vlx_rsp_type(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.type;
 	}
-	return MD_VLX_RSP_TYPE_UNKNOWN;
+	return MD_VLX_RSP_UNKNOWN;
 }
 
 size_t md_vlx_rsp_number_of_frequencies(const md_vlx_t* vlx) {
@@ -3349,7 +3370,7 @@ bool md_vlx_rsp_has_nto(const md_vlx_t* vlx) {
 }
 
 size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count) {
-	return vlx_rsp_extract_nto(NULL, out_lambdas, vlx, state_idx, MD_VLX_NTO_TYPE_PARTICLE, lambda_count);
+	return vlx_rsp_extract_nto(NULL, out_lambdas, vlx, state_idx, MD_VLX_NTO_PARTICLE, lambda_count);
 }
 
 size_t md_vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, md_vlx_nto_type_t type, size_t lambda_count) {
@@ -3372,7 +3393,7 @@ size_t md_vlx_rsp_transition_density_matrix_size(const md_vlx_t* vlx, size_t sta
 	return vlx->scf.alpha.coefficients.size[1];
 }
 
-size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type) {
+size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_type_t type) {
 	if (!out_matrix || !vlx || state_idx >= vlx->rsp.number_of_frequencies) {
 		return 0;
 	}
@@ -3434,6 +3455,19 @@ const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 }
 
 // OPT
+
+md_vlx_opt_type_t md_vlx_opt_type(const md_vlx_t* vlx) {
+	return vlx->opt.type;
+}
+
+size_t md_vlx_opt_state_index(const md_vlx_t* vlx) {
+	return vlx->opt.state_index;
+}
+
+size_t md_vlx_opt_irc_ts_index(const md_vlx_t* vlx) {
+	return vlx->opt.ts_index;
+}
+
 size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->opt.number_of_steps;
@@ -3769,7 +3803,7 @@ const int* md_vlx_local_to_global_atom_idx(const md_vlx_t* vlx) {
 
 md_vlx_scf_type_t md_vlx_scf_type(const md_vlx_t* vlx) {
 	if (vlx) return vlx->scf.type;
-	return MD_VLX_SCF_TYPE_UNKNOWN;
+	return MD_VLX_SCF_UNKNOWN;
 }
 
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {

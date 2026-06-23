@@ -34,28 +34,38 @@ typedef enum {
 } md_vlx_spin_t;
 
 typedef enum {
-	MD_VLX_NTO_TYPE_PARTICLE = 0,
-	MD_VLX_NTO_TYPE_HOLE = 1,
+	MD_VLX_NTO_PARTICLE = 0,
+	MD_VLX_NTO_HOLE = 1,
 } md_vlx_nto_type_t;
 
 typedef enum {
-	MD_VLX_TRANSITION_DENSITY_ATTACHMENT = 0,
-	MD_VLX_TRANSITION_DENSITY_DETACHMENT = 1,
-	MD_VLX_TRANSITION_DENSITY_DIFFERENCE = 2,
-} md_vlx_transition_density_type_t;
+	MD_VLX_TRANSITION_ATTACHMENT = 0,
+	MD_VLX_TRANSITION_DETACHMENT = 1,
+	MD_VLX_TRANSITION_DIFFERENCE = 2,
+} md_vlx_transition_type_t;
 
 typedef enum {
-	MD_VLX_SCF_TYPE_UNKNOWN = 0,
-	MD_VLX_SCF_TYPE_RESTRICTED,
-	MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL,
-	MD_VLX_SCF_TYPE_UNRESTRICTED,
+	MD_VLX_SCF_UNKNOWN = 0,
+	MD_VLX_SCF_RESTRICTED,
+	MD_VLX_SCF_RESTRICTED_OPENSHELL,
+	MD_VLX_SCF_UNRESTRICTED,
 } md_vlx_scf_type_t;
 
 typedef enum {
-	MD_VLX_RSP_TYPE_UNKNOWN = 0,
-	MD_VLX_RSP_TYPE_LINEAR,
-	MD_VLX_RSP_TYPE_CPP,
+	MD_VLX_RSP_UNKNOWN = 0,
+	MD_VLX_RSP_LINEAR,
+	MD_VLX_RSP_CPP,
 } md_vlx_rsp_type_t;
+
+// PES (Potential Energy Surface) operations (Geometry Optimizations)
+typedef enum {
+    MD_VLX_OPT_UNKNOWN = 0,
+    MD_VLX_OPT_GEOMETRY,			// Local minimum optimization (Ground state or excited state)
+    MD_VLX_OPT_CONSTRAINED,			// Optimization with geometric constraints
+    MD_VLX_OPT_TS,					// First-order saddle point optimization (Transition State)
+    MD_VLX_OPT_IRC,					// Reaction path optimization (Intrinsic Reaction Coordinate)
+	MD_VLX_OPT_COUNT,
+} md_vlx_opt_type_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -190,7 +200,7 @@ size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, 
 // out_matrix must hold md_vlx_rsp_transition_density_matrix_size(vlx, state_idx)^2 doubles.
 // Attachment = T^T T, Detachment = T T^T, Difference = Attachment - Detachment, where T = Z - Y.
 size_t md_vlx_rsp_transition_density_matrix_size(const struct md_vlx_t* vlx, size_t state_idx);
-size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const struct md_vlx_t* vlx, size_t state_idx, md_vlx_transition_density_type_t type);
+size_t md_vlx_rsp_transition_density_matrix_extract(double* out_matrix, const struct md_vlx_t* vlx, size_t state_idx, md_vlx_transition_type_t type);
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)
@@ -202,7 +212,22 @@ const double* md_vlx_vib_frequencies(const struct md_vlx_t* vlx);		// Unit: cm^-
 const double* md_vlx_vib_reduced_masses(const struct md_vlx_t* vlx);	// Unit: amu
 const double* md_vlx_vib_force_constants(const struct md_vlx_t* vlx);	// Unit: mdyne/Å (millidyne / Ångström)
 
-// OPT
+// OPT (Potential Energy Surface) Optimizations
+// @TODO: Add constraints (when they appear in h5)
+
+// Returns the type of optimization performed (if any) in the VLX file.
+md_vlx_opt_type_t md_vlx_opt_type(const struct md_vlx_t* vlx);
+
+// Returns the electronic state index of the optimization (if any) in the VLX file.
+// 0 == ground state, 1 == first excited state, etc.
+// This is only used if md_vlx_opt_type == MD_VLX_OPT_GEOMETRY to indicate which state was optimized.
+size_t md_vlx_opt_state_index(const struct md_vlx_t* vlx); 
+
+// Returns the index of the optimization that is used as the reference point to perform optimization forwards and backwards along the gradient.
+// This is only used if md_vlx_opt_type == MD_VLX_OPT_IRC.
+size_t md_vlx_opt_irc_ts_index(const struct md_vlx_t* vlx);
+
+// Returns the number of optimization steps (length of the arrays below)
 size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx);
 
 // Returns atom coordinates for a given optimization step
