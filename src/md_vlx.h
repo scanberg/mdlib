@@ -53,8 +53,11 @@ typedef enum {
 
 typedef enum {
 	MD_VLX_RSP_UNKNOWN = 0,
-	MD_VLX_RSP_LINEAR,
-	MD_VLX_RSP_CPP,
+    MD_VLX_RSP_LINEAR,			// Linear response (frequency-dependent polarizabilities)
+    MD_VLX_RSP_CPP,				// Complex Polarization Propagator
+    MD_VLX_RSP_C6,				// Homomolecular C_6 value (in a.u.)
+    MD_VLX_RSP_TPA,		        // Two-photon Absorption (TPA) cross-sections
+    MD_VLX_RSP_TPA_TRANSITION,  // Two-Photon Absorption transition properties
 } md_vlx_rsp_type_t;
 
 // PES (Potential Energy Surface) operations (Geometry Optimizations)
@@ -111,6 +114,9 @@ size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 size_t  md_vlx_scf_number_of_atomic_orbitals   (const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
+
+size_t md_vlx_scf_number_of_occupied(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
+size_t md_vlx_scf_number_of_virtual (const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 
 const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
 const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_spin_t spin);
@@ -176,6 +182,10 @@ const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
 
 // NEW UNIFIED RSP API
 md_vlx_rsp_type_t md_vlx_rsp_type(const struct md_vlx_t* vlx);
+
+// Homomolecular C_6 value (in a.u.), only valid for md_vlx_rsp_type() == MD_VLX_RSP_C6
+double md_vlx_c6_value(const struct md_vlx_t* vlx);
+
 size_t md_vlx_rsp_number_of_frequencies(const struct md_vlx_t* vlx);
 
 // Frequencies are in a.u. (Hartree), and length is given by md_vlx_rsp_number_of_frequencies()
@@ -189,7 +199,14 @@ const double* md_vlx_rsp_delta_epsilons(const struct md_vlx_t* vlx);
 
 const double* md_vlx_rsp_optical_rotations(const struct md_vlx_t* vlx);
 
+// RSP TPA Transition (Valid output for md_vlx_rsp_type() == MD_VLX_RSP_TPA_TRANSITION)
+const double* md_vlx_rsp_tpa_trans_linear(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_tpa_trans_circular(const struct md_vlx_t* vlx);
 
+// RSP TPA (Valid output only for md_vlx_rsp_type() == MD_VLX_RSP_TPA)
+const double* md_vlx_rsp_tpa_cross_sections(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_tpa_gamma_re(const struct md_vlx_t* vlx);
+const double* md_vlx_rsp_tpa_gamma_im(const struct md_vlx_t* vlx);
 
 // RSP NTO api
 
