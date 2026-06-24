@@ -2040,101 +2040,100 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 				}
 			}
 		}
+	}
 
-		if (vlx->rsp.number_of_frequencies > 0) {
-			// Dipoles
-			size_t num_dipole_points = vlx->rsp.number_of_frequencies * 3;
-			if (h5_check_dataset_exists(handle, "electric_transition_dipoles")) {
-				md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.electric_transition_dipoles, 0, md_array_bytes(vlx->rsp.electric_transition_dipoles));
-				if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
-					md_array_free(vlx->rsp.electric_transition_dipoles, vlx->arena);
-					vlx->rsp.electric_transition_dipoles = NULL;
-				}
+	if (vlx->rsp.number_of_frequencies > 0) {
+		// Dipoles
+		size_t num_dipole_points = vlx->rsp.number_of_frequencies * 3;
+		if (h5_check_dataset_exists(handle, "electric_transition_dipoles")) {
+			md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
+			MEMSET(vlx->rsp.electric_transition_dipoles, 0, md_array_bytes(vlx->rsp.electric_transition_dipoles));
+			if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
+				md_array_free(vlx->rsp.electric_transition_dipoles, vlx->arena);
+				vlx->rsp.electric_transition_dipoles = NULL;
 			}
+		}
 		
-			if (h5_check_dataset_exists(handle, "magnetic_transition_dipoles")) {
-				md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, md_array_bytes(vlx->rsp.magnetic_transition_dipoles));
-				if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
-					md_array_free(vlx->rsp.magnetic_transition_dipoles, vlx->arena);
-					vlx->rsp.magnetic_transition_dipoles = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "velocity_transition_dipoles")) {
-				md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.velocity_transition_dipoles, 0, md_array_bytes(vlx->rsp.velocity_transition_dipoles));
-				if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
-					md_array_free(vlx->rsp.velocity_transition_dipoles, vlx->arena);
-					vlx->rsp.velocity_transition_dipoles = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "tpa_strengths/circular")) {
-                md_array_resize(vlx->rsp.tpa_strengths_circular, vlx->rsp.number_of_frequencies, vlx->arena);
-                MEMSET(vlx->rsp.tpa_strengths_circular, 0, md_array_bytes(vlx->rsp.tpa_strengths_circular));
-                if (!h5_read_dataset_data(vlx->rsp.tpa_strengths_circular, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "tpa_strengths/circular")) {
-                    md_array_free(vlx->rsp.tpa_strengths_circular, vlx->arena);
-                    vlx->rsp.tpa_strengths_circular = NULL;
-                }
-			}
-
-            if (h5_check_dataset_exists(handle, "tpa_strengths/linear")) {
-                md_array_resize(vlx->rsp.tpa_strengths_linear, vlx->rsp.number_of_frequencies, vlx->arena);
-                MEMSET(vlx->rsp.tpa_strengths_linear, 0, md_array_bytes(vlx->rsp.tpa_strengths_linear));
-                if (!h5_read_dataset_data(vlx->rsp.tpa_strengths_linear, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "tpa_strengths/linear")) {
-                    md_array_free(vlx->rsp.tpa_strengths_linear, vlx->arena);
-                    vlx->rsp.tpa_strengths_linear = NULL;
-                }
-            }
-
-			if (h5_check_dataset_exists(handle, "sigma")) {
-				md_array_resize(vlx->rsp.sigmas, vlx->rsp.number_of_frequencies, vlx->arena);
-                MEMSET(vlx->rsp.sigmas, 0, md_array_bytes(vlx->rsp.sigmas));
-				if (!h5_read_dataset_data(vlx->rsp.sigmas, md_array_size(vlx->rsp.sigmas), handle, H5T_NATIVE_DOUBLE, "sigma")) {
-                    md_array_free(vlx->rsp.sigmas, vlx->arena);
-                    vlx->rsp.sigmas = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "optical-rotation")) {
-				md_array_resize(vlx->rsp.optical_rotations, vlx->rsp.number_of_frequencies, vlx->arena);
-                MEMSET(vlx->rsp.optical_rotations, 0, md_array_bytes(vlx->rsp.optical_rotations));
-				if (!h5_read_dataset_data(vlx->rsp.optical_rotations, md_array_size(vlx->rsp.optical_rotations), handle, H5T_NATIVE_DOUBLE, "optical-rotation")) {
-                    md_array_free(vlx->rsp.optical_rotations, vlx->arena);
-                    vlx->rsp.optical_rotations = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "delta-epsilon")) {
-				md_array_resize(vlx->rsp.delta_epsilons, vlx->rsp.number_of_frequencies, vlx->arena);
-                MEMSET(vlx->rsp.delta_epsilons, 0, md_array_bytes(vlx->rsp.delta_epsilons));
-				if (!h5_read_dataset_data(vlx->rsp.delta_epsilons, md_array_size(vlx->rsp.delta_epsilons), handle, H5T_NATIVE_DOUBLE, "delta-epsilon")) {
-                    md_array_free(vlx->rsp.delta_epsilons, vlx->arena);
-                    vlx->rsp.delta_epsilons = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "oscillator_strengths")) {
-				md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.oscillator_strengths, 0, md_array_bytes(vlx->rsp.oscillator_strengths));
-				if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, md_array_size(vlx->rsp.oscillator_strengths), handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
-                    md_array_free(vlx->rsp.oscillator_strengths, vlx->arena);
-                    vlx->rsp.oscillator_strengths = NULL;
-				}
-			}
-
-			if (h5_check_dataset_exists(handle, "rotatory_strengths")) {
-				md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.rotatory_strengths, 0, md_array_bytes(vlx->rsp.rotatory_strengths));
-				if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, md_array_size(vlx->rsp.rotatory_strengths), handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
-                    md_array_free(vlx->rsp.rotatory_strengths, vlx->arena);
-                    vlx->rsp.rotatory_strengths = NULL;
-				}
+		if (h5_check_dataset_exists(handle, "magnetic_transition_dipoles")) {
+			md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
+			MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, md_array_bytes(vlx->rsp.magnetic_transition_dipoles));
+			if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
+				md_array_free(vlx->rsp.magnetic_transition_dipoles, vlx->arena);
+				vlx->rsp.magnetic_transition_dipoles = NULL;
 			}
 		}
 
+		if (h5_check_dataset_exists(handle, "velocity_transition_dipoles")) {
+			md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_frequencies, vlx->arena);
+			MEMSET(vlx->rsp.velocity_transition_dipoles, 0, md_array_bytes(vlx->rsp.velocity_transition_dipoles));
+			if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
+				md_array_free(vlx->rsp.velocity_transition_dipoles, vlx->arena);
+				vlx->rsp.velocity_transition_dipoles = NULL;
+			}
+		}
+
+		if (h5_check_dataset_exists(handle, "tpa_strengths/circular")) {
+            md_array_resize(vlx->rsp.tpa_strengths_circular, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.tpa_strengths_circular, 0, md_array_bytes(vlx->rsp.tpa_strengths_circular));
+            if (!h5_read_dataset_data(vlx->rsp.tpa_strengths_circular, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "tpa_strengths/circular")) {
+                md_array_free(vlx->rsp.tpa_strengths_circular, vlx->arena);
+                vlx->rsp.tpa_strengths_circular = NULL;
+            }
+		}
+
+        if (h5_check_dataset_exists(handle, "tpa_strengths/linear")) {
+            md_array_resize(vlx->rsp.tpa_strengths_linear, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.tpa_strengths_linear, 0, md_array_bytes(vlx->rsp.tpa_strengths_linear));
+            if (!h5_read_dataset_data(vlx->rsp.tpa_strengths_linear, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "tpa_strengths/linear")) {
+                md_array_free(vlx->rsp.tpa_strengths_linear, vlx->arena);
+                vlx->rsp.tpa_strengths_linear = NULL;
+            }
+        }
+
+		if (h5_check_dataset_exists(handle, "sigma")) {
+			md_array_resize(vlx->rsp.sigmas, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.sigmas, 0, md_array_bytes(vlx->rsp.sigmas));
+			if (!h5_read_dataset_data(vlx->rsp.sigmas, md_array_size(vlx->rsp.sigmas), handle, H5T_NATIVE_DOUBLE, "sigma")) {
+                md_array_free(vlx->rsp.sigmas, vlx->arena);
+                vlx->rsp.sigmas = NULL;
+			}
+		}
+
+		if (h5_check_dataset_exists(handle, "optical-rotation")) {
+			md_array_resize(vlx->rsp.optical_rotations, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.optical_rotations, 0, md_array_bytes(vlx->rsp.optical_rotations));
+			if (!h5_read_dataset_data(vlx->rsp.optical_rotations, md_array_size(vlx->rsp.optical_rotations), handle, H5T_NATIVE_DOUBLE, "optical-rotation")) {
+                md_array_free(vlx->rsp.optical_rotations, vlx->arena);
+                vlx->rsp.optical_rotations = NULL;
+			}
+		}
+
+		if (h5_check_dataset_exists(handle, "delta-epsilon")) {
+			md_array_resize(vlx->rsp.delta_epsilons, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.delta_epsilons, 0, md_array_bytes(vlx->rsp.delta_epsilons));
+			if (!h5_read_dataset_data(vlx->rsp.delta_epsilons, md_array_size(vlx->rsp.delta_epsilons), handle, H5T_NATIVE_DOUBLE, "delta-epsilon")) {
+                md_array_free(vlx->rsp.delta_epsilons, vlx->arena);
+                vlx->rsp.delta_epsilons = NULL;
+			}
+		}
+
+		if (h5_check_dataset_exists(handle, "oscillator_strengths")) {
+			md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
+			MEMSET(vlx->rsp.oscillator_strengths, 0, md_array_bytes(vlx->rsp.oscillator_strengths));
+			if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, md_array_size(vlx->rsp.oscillator_strengths), handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
+                md_array_free(vlx->rsp.oscillator_strengths, vlx->arena);
+                vlx->rsp.oscillator_strengths = NULL;
+			}
+		}
+
+		if (h5_check_dataset_exists(handle, "rotatory_strengths")) {
+			md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
+			MEMSET(vlx->rsp.rotatory_strengths, 0, md_array_bytes(vlx->rsp.rotatory_strengths));
+			if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, md_array_size(vlx->rsp.rotatory_strengths), handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
+                md_array_free(vlx->rsp.rotatory_strengths, vlx->arena);
+                vlx->rsp.rotatory_strengths = NULL;
+			}
+		}
 	}
 
 	return true;
