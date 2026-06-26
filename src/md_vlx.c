@@ -128,6 +128,10 @@ typedef struct md_vlx_rsp_t {
 	double c6;
 
 	size_t   number_of_frequencies;
+	size_t   num_core;
+	size_t   num_valence;
+	size_t   num_virtual;
+
 	dvec3_t* electric_transition_dipoles;
 	dvec3_t* magnetic_transition_dipoles;
 	dvec3_t* velocity_transition_dipoles;
@@ -143,6 +147,25 @@ typedef struct md_vlx_rsp_t {
 	double* tpa_strengths_linear;	// TPA only
 	double* tpa_strengths_circular;	// TPA only
 	double* cross_sections;			// TPA only
+
+	// RIXS
+	struct {
+		// Number of incomming photons and their data
+		size_t num_incomming_photons;
+		double* cross_sections;
+		double* photon_energies;
+		double* elastic_cross_sections;
+		double* emission_energies;
+		double* energy_losses;
+		double* scattering_amplitude_re;
+		double* scattering_amplitude_im;
+
+		// These are regular arrays with length num_frequencies
+		double* core_eigenvalues;
+		double* core_osc_strengths;
+
+		double  gamma_fwhm_ev;
+	} rixs;
 
 	// Linear only, Should have dimensions [number_of_frequencies][num_occ * num_vir * 2]
 	md_vlx_2d_data_t solution_matrix;
@@ -1956,6 +1979,18 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 		// Standard Linear Response data, allocate and read
 		vlx->rsp.type = MD_VLX_RSP_LINEAR;
 
+		if (h5_check_dataset_exists(handle, "num_core")) {
+			h5_read_scalar(&vlx->rsp.num_core, handle, H5T_NATIVE_INT64, "num_core");
+		}
+
+		if (h5_check_dataset_exists(handle, "num_valence")) {
+			h5_read_scalar(&vlx->rsp.num_valence, handle, H5T_NATIVE_INT64, "num_valence");
+		}
+
+		if (h5_check_dataset_exists(handle, "num_virtual")) {
+			h5_read_scalar(&vlx->rsp.num_virtual, handle, H5T_NATIVE_INT64, "num_virtual");
+		}
+
         if (h5_check_dataset_exists(handle, "eigenvalues")) {
 			md_array_resize(vlx->rsp.frequencies,	vlx->rsp.number_of_frequencies, vlx->arena);
 			MEMSET(vlx->rsp.frequencies, 0, vlx->rsp.number_of_frequencies * sizeof(double));
@@ -2011,6 +2046,8 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 				vlx->rsp.type = MD_VLX_RSP_TPA_TRANSITION;
 			} else if (strncmp(type_buf, "tpa", sizeof(type_buf)) == 0) {
 				vlx->rsp.type = MD_VLX_RSP_TPA;
+			} else if (strncmp(type_buf, "rixs", sizeof(type_buf)) == 0) {
+                vlx->rsp.type = MD_VLX_RSP_RIXS;
 			}
 		}
 
@@ -2037,6 +2074,15 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 				vlx->rsp.number_of_frequencies = dim;
 				md_array_resize(vlx->rsp.frequencies, dim, vlx->arena);
 				if (!h5_read_dataset_data(vlx->rsp.frequencies, md_array_size(vlx->rsp.frequencies), handle, H5T_NATIVE_DOUBLE, "photon_energies")) {
+					return false;
+				}
+			}
+		} else if (vlx->rsp.type == MD_VLX_RSP_RIXS) {
+			size_t dim;
+			if (h5_read_dataset_dims(&dim, 1, handle, "core_eigenvalues")) {
+				vlx->rsp.number_of_frequencies = dim;
+				md_array_resize(vlx->rsp.frequencies, dim, vlx->arena);
+				if (!h5_read_dataset_data(vlx->rsp.frequencies, md_array_size(vlx->rsp.frequencies), handle, H5T_NATIVE_DOUBLE, "core_eigenvalues")) {
 					return false;
 				}
 			}
@@ -2092,13 +2138,23 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
         }
 
 		if (h5_check_dataset_exists(handle, "cross_sections")) {
-            md_array_resize(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, vlx->arena);
-            MEMSET(vlx->rsp.cross_sections, 0, md_array_bytes(vlx->rsp.cross_sections));
-            if (!h5_read_dataset_data(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
-                md_array_free(vlx->rsp.cross_sections, vlx->arena);
-                vlx->rsp.cross_sections = NULL;
+			if (vlx->rsp.type != MD_VLX_RSP_RIXS) {
+				md_array_resize(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, vlx->arena);
+				MEMSET(vlx->rsp.cross_sections, 0, md_array_bytes(vlx->rsp.cross_sections));
+				if (!h5_read_dataset_data(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
+					md_array_free(vlx->rsp.cross_sections, vlx->arena);
+					vlx->rsp.cross_sections = NULL;
+				}
             }
-        }
+            else {
+                md_array_resize(vlx->rsp.rixs.cross_sections, vlx->rsp.number_of_frequencies * vlx->rsp.rixs.num_incomming_photons, vlx->arena);
+                MEMSET(vlx->rsp.rixs.cross_sections, 0, md_array_bytes(vlx->rsp.rixs.cross_sections));
+                if (!h5_read_dataset_data(vlx->rsp.rixs.cross_sections, md_array_size(vlx->rsp.rixs.cross_sections), handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
+                    md_array_free(vlx->rsp.rixs.cross_sections, vlx->arena);
+                    vlx->rsp.rixs.cross_sections = NULL;
+                }
+			}
+		}
 
 		if (h5_check_dataset_exists(handle, "sigma")) {
 			md_array_resize(vlx->rsp.sigmas, vlx->rsp.number_of_frequencies, vlx->arena);
@@ -2135,6 +2191,15 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
                 vlx->rsp.oscillator_strengths = NULL;
 			}
 		}
+
+        if (h5_check_dataset_exists(handle, "core_oscillator_strengths")) {
+            md_array_resize(vlx->rsp.rixs.core_osc_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.rixs.core_osc_strengths, 0, md_array_bytes(vlx->rsp.rixs.core_osc_strengths));
+            if (!h5_read_dataset_data(vlx->rsp.rixs.core_osc_strengths, md_array_size(vlx->rsp.rixs.core_osc_strengths), handle, H5T_NATIVE_DOUBLE, "core_oscillator_strengths")) {
+                md_array_free(vlx->rsp.rixs.core_osc_strengths, vlx->arena);
+                vlx->rsp.rixs.core_osc_strengths = NULL;
+            }
+        }
 
 		if (h5_check_dataset_exists(handle, "rotatory_strengths")) {
 			md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
@@ -2521,19 +2586,13 @@ static const double* vlx_rsp_get_solution_vector(const md_vlx_t* vlx, size_t sta
 		return NULL;
 	}
 
-	const md_vlx_2d_data_t* coeff = &vlx->scf.alpha.coefficients;
-	if (!coeff->data || coeff->size[0] == 0 || coeff->size[1] == 0) {
+	const size_t nocc = vlx->rsp.num_core > 0 ? vlx->rsp.num_core : vlx->rsp.num_valence;
+	if (nocc == 0) {
 		return NULL;
 	}
 
-	const size_t num_mo = coeff->size[0];
-	const size_t nocc = vlx->number_of_alpha_electrons;
-	if (nocc == 0 || nocc >= num_mo) {
-		return NULL;
-	}
-
-	const size_t nvir = num_mo - nocc;
-	if (nvir != 0 && nocc > SIZE_MAX / nvir) {
+	const size_t nvir = vlx->rsp.num_virtual;
+	if (nvir == 0) {
 		return NULL;
 	}
 

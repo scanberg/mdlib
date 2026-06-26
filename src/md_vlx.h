@@ -58,6 +58,7 @@ typedef enum {
     MD_VLX_RSP_C6,				// Homomolecular C_6 value (in a.u.)
     MD_VLX_RSP_TPA,		        // Two-photon Absorption (TPA) cross-sections
     MD_VLX_RSP_TPA_TRANSITION,  // Two-Photon Absorption transition properties
+    MD_VLX_RSP_RIXS,			// Resonant Inelastic X-ray Scattering (RIXS) cross-sections
 } md_vlx_rsp_type_t;
 
 // PES (Potential Energy Surface) operations (Geometry Optimizations)
