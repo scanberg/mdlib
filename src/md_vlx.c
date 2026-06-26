@@ -142,6 +142,7 @@ typedef struct md_vlx_rsp_t {
 
 	double* tpa_strengths_linear;	// TPA only
 	double* tpa_strengths_circular;	// TPA only
+	double* cross_sections;			// TPA only
 
 	// Linear only, Should have dimensions [number_of_frequencies][num_occ * num_vir * 2]
 	md_vlx_2d_data_t solution_matrix;
@@ -2021,7 +2022,7 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
                     return false;
                 }
 			}
-		} else if (vlx->rsp.type == MD_VLX_RSP_CPP) {
+		} else if (vlx->rsp.type == MD_VLX_RSP_CPP || vlx->rsp.type == MD_VLX_RSP_TPA) {
 			size_t dim;
 			if (h5_read_dataset_dims(&dim, 1, handle, "frequencies")) {
 				vlx->rsp.number_of_frequencies = dim;
@@ -2030,7 +2031,7 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 					return false;
 				}
 			}
-		} else if (vlx->rsp.type == MD_VLX_RSP_TPA) {
+		} else if (vlx->rsp.type == MD_VLX_RSP_TPA_TRANSITION) {
 			size_t dim;
 			if (h5_read_dataset_dims(&dim, 1, handle, "photon_energies")) {
 				vlx->rsp.number_of_frequencies = dim;
@@ -2087,6 +2088,15 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
             if (!h5_read_dataset_data(vlx->rsp.tpa_strengths_linear, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "tpa_strengths/linear")) {
                 md_array_free(vlx->rsp.tpa_strengths_linear, vlx->arena);
                 vlx->rsp.tpa_strengths_linear = NULL;
+            }
+        }
+
+		if (h5_check_dataset_exists(handle, "cross_sections")) {
+            md_array_resize(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, vlx->arena);
+            MEMSET(vlx->rsp.cross_sections, 0, md_array_bytes(vlx->rsp.cross_sections));
+            if (!h5_read_dataset_data(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
+                md_array_free(vlx->rsp.cross_sections, vlx->arena);
+                vlx->rsp.cross_sections = NULL;
             }
         }
 
@@ -3422,6 +3432,35 @@ const double* md_vlx_rsp_optical_rotations(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.optical_rotations;
 	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_tpa_trans_linear(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.tpa_strengths_linear;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_tpa_trans_circular(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.tpa_strengths_circular;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_tpa_cross_sections(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.cross_sections;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_tpa_gamma_re(const md_vlx_t* vlx) {
+	return NULL;
+}
+
+const double* md_vlx_rsp_tpa_gamma_im(const md_vlx_t* vlx) {
 	return NULL;
 }
 
