@@ -2914,7 +2914,7 @@ typedef struct vlx_traj_t {
 	md_allocator_i* alloc;
 } vlx_traj_t;
 
-static bool vlx_traj_get_header(const struct md_trajectory_o* inst, md_trajectory_header_t* out_header) {
+static bool vlx_traj_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* out_header) {
 	ASSERT(inst);
     ASSERT(out_header);
     vlx_traj_t* traj = (vlx_traj_t*)inst;

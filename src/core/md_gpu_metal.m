@@ -380,7 +380,7 @@ void md_gpu_cmd_push_constants(md_gpu_command_buffer_t cmd,
 
 void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
                          uint32_t x, uint32_t y, uint32_t z) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_DISPATCH;
     rc->u.dispatch_size[0] = x;
@@ -389,13 +389,13 @@ void md_gpu_cmd_dispatch(md_gpu_command_buffer_t cmd,
 }
 
 void md_gpu_cmd_barrier(md_gpu_command_buffer_t cmd) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_BARRIER;
 }
 
 void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buffer) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     ASSERT(buffer);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_BARRIER_BUFFER;
@@ -403,7 +403,7 @@ void md_gpu_cmd_barrier_buffer(md_gpu_command_buffer_t cmd, md_gpu_buffer_t buff
 }
 
 void md_gpu_cmd_barrier_image(md_gpu_command_buffer_t cmd, md_gpu_image_t image) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     ASSERT(image);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_BARRIER_IMAGE;
@@ -416,7 +416,7 @@ void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
                             size_t size,
                             size_t src_offset,
                             size_t dst_offset) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_COPY_BUFFER;
     rc->u.copy_buf.src = src;
@@ -429,7 +429,7 @@ void md_gpu_cmd_copy_buffer(md_gpu_command_buffer_t cmd,
 void md_gpu_cmd_copy_image_to_buffer(md_gpu_command_buffer_t cmd,
                                      md_gpu_image_t src_image,
                                      md_gpu_buffer_t dst_buffer) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_COPY_IMAGE_TO_BUFFER;
     rc->u.copy_img_buf.image = src_image;
@@ -441,7 +441,7 @@ void md_gpu_cmd_fill_buffer(md_gpu_command_buffer_t cmd,
                             size_t offset,
                             size_t size,
                             uint32_t value) {
-    ASSERT(cmd->command_count < MD_GPU_MAX_COMMANDS);
+    ASSERT(cmd->command_count < MD_GPU_METAL_MAX_COMMANDS);
     struct md_gpu_recorded_cmd* rc = &cmd->commands[cmd->command_count++];
     rc->type = CMD_FILL_BUFFER;
     rc->u.fill_buf.buffer = buffer;
