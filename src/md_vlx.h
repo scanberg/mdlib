@@ -209,6 +209,43 @@ const double* md_vlx_rsp_tpa_cross_sections(const struct md_vlx_t* vlx);
 const double* md_vlx_rsp_tpa_gamma_re(const struct md_vlx_t* vlx);
 const double* md_vlx_rsp_tpa_gamma_im(const struct md_vlx_t* vlx);
 
+// RSP RIXS (Valid output only for md_vlx_rsp_type() == MD_VLX_RSP_RIXS)
+//
+// Three independent dimensions are involved:
+//   P = number of incoming photon energies      (md_vlx_rsp_rixs_number_of_photon_energies)
+//   F = number of final (valence) states        (md_vlx_rsp_rixs_number_of_final_states)
+//   C = number of core-excited (intermediate) states (md_vlx_rsp_rixs_number_of_core_states)
+//
+// The 2D quantities are stored ROW-MAJOR as [F][P], i.e. element (f,p) is at [f * P + p].
+// This matches the numpy layout produced by RixsDriver (shape (num_final_states, num_photon_energies)).
+size_t md_vlx_rsp_rixs_number_of_photon_energies(const struct md_vlx_t* vlx);
+size_t md_vlx_rsp_rixs_number_of_final_states(const struct md_vlx_t* vlx);
+size_t md_vlx_rsp_rixs_number_of_core_states(const struct md_vlx_t* vlx);
+
+// Length P, unit: a.u. (Hartree). Incoming photon energies (omega).
+const double* md_vlx_rsp_rixs_photon_energies(const struct md_vlx_t* vlx);
+
+// Length P, unit: a.u. Elastic (Rayleigh) scattering cross-section per photon energy.
+const double* md_vlx_rsp_rixs_elastic_cross_sections(const struct md_vlx_t* vlx);
+
+// Row-major [F][P], unit: a.u. Inelastic scattering cross-sections.
+const double* md_vlx_rsp_rixs_cross_sections(const struct md_vlx_t* vlx);
+
+// Row-major [F][P], unit: a.u. Energy loss (== valence eigenvalue, independent of photon energy).
+const double* md_vlx_rsp_rixs_energy_losses(const struct md_vlx_t* vlx);
+
+// Row-major [F][P], unit: a.u. Emission energy (omega - valence eigenvalue).
+const double* md_vlx_rsp_rixs_emission_energies(const struct md_vlx_t* vlx);
+
+// Length C, unit: a.u. (Hartree). Core-excitation energies, used for the XAS side panel.
+const double* md_vlx_rsp_rixs_core_eigenvalues(const struct md_vlx_t* vlx);
+
+// Length C, unitless. Oscillator strengths of the core excitations.
+const double* md_vlx_rsp_rixs_core_osc_strengths(const struct md_vlx_t* vlx);
+
+// Core-hole lifetime broadening, unit: eV (FWHM). Used to broaden the XAS panel.
+double md_vlx_rsp_rixs_gamma_fwhm_ev(const struct md_vlx_t* vlx);
+
 // RSP NTO api
 
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);

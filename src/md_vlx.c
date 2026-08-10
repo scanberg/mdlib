@@ -150,17 +150,23 @@ typedef struct md_vlx_rsp_t {
 
 	// RIXS
 	struct {
-		// Number of incomming photons and their data
+		// Number of incomming photons (P) == length of the 'photon_energies' dataset
 		size_t num_incomming_photons;
-		double* cross_sections;
-		double* photon_energies;
-		double* elastic_cross_sections;
-		double* emission_energies;
-		double* energy_losses;
+
+		// Number of final (valence) states (F) == first dimension of the 2D datasets below.
+		// NOTE: this is generally NOT equal to the number of core-excited states (C), which is
+		// what 'number_of_frequencies' holds for RIXS. The 2D arrays are [F][P] row-major.
+		size_t num_final_states;
+
+		double* cross_sections;			// [F][P] row-major, a.u.
+		double* photon_energies;		// [P], a.u.
+		double* elastic_cross_sections;	// [P], a.u.
+		double* emission_energies;		// [F][P] row-major, a.u.
+		double* energy_losses;			// [F][P] row-major, a.u.
 		double* scattering_amplitude_re;
 		double* scattering_amplitude_im;
 
-		// These are regular arrays with length num_frequencies
+		// These are regular arrays with length num_frequencies (C)
 		double* core_eigenvalues;
 		double* core_osc_strengths;
 
@@ -1238,6 +1244,122 @@ done:
     return result;
 }
 
+// HDF5 has no native complex type. h5py stores numpy complex arrays as a compound type with two
+// floating point members, named 'r' and 'i' by default (configurable via h5py's 'complex_names'),
+// laid out as interleaved (re, im) pairs on disk.
+//
+// This reads such a dataset and splits it into two separate, tightly packed arrays of doubles.
+// HDF5 does the de-interleaving for us: a memory datatype that declares only one of the two members
+// makes H5Dread gather just that component, so no interleaved temporary buffer is needed.
+//
+// out_real and out_imag must each hold num_samples doubles. Either may be NULL to skip that
+// component. Plain (non-compound) real datasets are also accepted, in which case out_imag is zeroed.
+static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, size_t num_samples, hid_t file_id, const char* field_name) {
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists <= 0) {
+		return false;
+	}
+
+	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
+	if (dataset_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
+		return false;
+	}
+
+	bool  result       = false;
+	hid_t space_id     = H5I_INVALID_HID;
+	hid_t file_type_id = H5I_INVALID_HID;
+	hid_t real_type_id = H5I_INVALID_HID;
+	hid_t imag_type_id = H5I_INVALID_HID;
+	char* member_name[2] = { NULL, NULL };
+
+	space_id = H5Dget_space(dataset_id);
+	if (space_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to open H5 space for dataset: '%s'", field_name);
+		goto done;
+	}
+
+	hsize_t num_points = H5Sget_simple_extent_npoints(space_id);
+	if (num_points != (hsize_t)num_samples) {
+		MD_LOG_ERROR("Unexpected number of points when reading dataset '%s', got %i, expected %i", field_name, (int)num_points, (int)num_samples);
+		goto done;
+	}
+
+	file_type_id = H5Dget_type(dataset_id);
+	if (file_type_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to get H5 datatype for dataset: '%s'", field_name);
+		goto done;
+	}
+
+	if (H5Tget_class(file_type_id) != H5T_COMPOUND) {
+		// Not stored as complex, treat the data as purely real.
+		if (out_real) {
+			if (H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) != 0) {
+				MD_LOG_ERROR("An error occured when reading H5 dataset: '%s'", field_name);
+				goto done;
+			}
+		}
+		if (out_imag) {
+			MEMSET(out_imag, 0, num_samples * sizeof(double));
+		}
+		result = true;
+		goto done;
+	}
+
+	if (H5Tget_nmembers(file_type_id) != 2) {
+		MD_LOG_ERROR("Expected 2 members in the compound H5 datatype of dataset '%s'", field_name);
+		goto done;
+	}
+
+	// The member names depend on how the file was written, so query them instead of assuming 'r'/'i'.
+	member_name[0] = H5Tget_member_name(file_type_id, 0);
+	member_name[1] = H5Tget_member_name(file_type_id, 1);
+	if (!member_name[0] || !member_name[1]) {
+		MD_LOG_ERROR("Failed to get the compound member names of H5 dataset: '%s'", field_name);
+		goto done;
+	}
+
+	// Members are conventionally ordered (real, imaginary), but do not rely on it.
+	int real_idx = (member_name[0][0] == 'i' || member_name[0][0] == 'I') ? 1 : 0;
+	int imag_idx = 1 - real_idx;
+
+	if (out_real) {
+		real_type_id = H5Tcreate(H5T_COMPOUND, sizeof(double));
+		if (real_type_id == H5I_INVALID_HID || H5Tinsert(real_type_id, member_name[real_idx], 0, H5T_NATIVE_DOUBLE) < 0) {
+			MD_LOG_ERROR("Failed to create a memory datatype for the real part of H5 dataset: '%s'", field_name);
+			goto done;
+		}
+		if (H5Dread(dataset_id, real_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) != 0) {
+			MD_LOG_ERROR("An error occured when reading the real part of H5 dataset: '%s'", field_name);
+			goto done;
+		}
+	}
+
+	if (out_imag) {
+		imag_type_id = H5Tcreate(H5T_COMPOUND, sizeof(double));
+		if (imag_type_id == H5I_INVALID_HID || H5Tinsert(imag_type_id, member_name[imag_idx], 0, H5T_NATIVE_DOUBLE) < 0) {
+			MD_LOG_ERROR("Failed to create a memory datatype for the imaginary part of H5 dataset: '%s'", field_name);
+			goto done;
+		}
+		if (H5Dread(dataset_id, imag_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_imag) != 0) {
+			MD_LOG_ERROR("An error occured when reading the imaginary part of H5 dataset: '%s'", field_name);
+			goto done;
+		}
+	}
+
+	result = true;
+done:
+	if (member_name[0]) H5free_memory(member_name[0]);
+	if (member_name[1]) H5free_memory(member_name[1]);
+	if (real_type_id != H5I_INVALID_HID) H5Tclose(real_type_id);
+	if (imag_type_id != H5I_INVALID_HID) H5Tclose(imag_type_id);
+	if (file_type_id != H5I_INVALID_HID) H5Tclose(file_type_id);
+	if (space_id     != H5I_INVALID_HID) H5Sclose(space_id);
+	H5Dclose(dataset_id);
+
+	return result;
+}
+
 static bool h5_read_atomic_properties_in_group(md_vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data) {
 	(void)group_path;
 	(void)user_data;
@@ -2086,6 +2208,14 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 					return false;
 				}
 			}
+
+			if (h5_read_dataset_dims(&dim, 1, handle, "photon_energies")) {
+				vlx->rsp.rixs.num_incomming_photons = dim;
+				md_array_resize(vlx->rsp.rixs.photon_energies, dim, vlx->arena);
+				if (!h5_read_dataset_data(vlx->rsp.rixs.photon_energies, md_array_size(vlx->rsp.rixs.photon_energies), handle, H5T_NATIVE_DOUBLE, "photon_energies")) {
+					return false;
+				}
+			}
 		}
 	}
 
@@ -2137,22 +2267,145 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
             }
         }
 
-		if (h5_check_dataset_exists(handle, "cross_sections")) {
-			if (vlx->rsp.type != MD_VLX_RSP_RIXS) {
-				md_array_resize(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, vlx->arena);
-				MEMSET(vlx->rsp.cross_sections, 0, md_array_bytes(vlx->rsp.cross_sections));
-				if (!h5_read_dataset_data(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
-					md_array_free(vlx->rsp.cross_sections, vlx->arena);
-					vlx->rsp.cross_sections = NULL;
+		if (vlx->rsp.type == MD_VLX_RSP_RIXS) {
+			// RIXS involves three independent dimensions:
+			//   C = number of core-excited (intermediate) states  -> rsp.number_of_frequencies
+			//   F = number of final (valence-excited) states       -> rixs.num_final_states
+			//   P = number of incoming photon energies            -> rixs.num_incomming_photons
+			// The core states are summed over coherently inside the scattering amplitude and never
+			// appear as an output dimension, so F is completely unrelated to C. The 2D datasets are
+			// stored row-major as [F][P]. Derive F from a representative dataset rather than assuming.
+			static const char* rixs_2d_fields[] = { "cross_sections", "energy_losses", "emission_energies" };
+			for (size_t i = 0; i < ARRAY_SIZE(rixs_2d_fields); ++i) {
+				size_t dim[2] = { 0 };
+				if (h5_read_dataset_dims(dim, (int)ARRAY_SIZE(dim), handle, rixs_2d_fields[i]) == 2 && dim[0] > 0 && dim[1] > 0) {
+					vlx->rsp.rixs.num_final_states = dim[0];
+
+					if (vlx->rsp.rixs.num_incomming_photons == 0) {
+						// 'photon_energies' was missing or unreadable, recover P from the column count.
+						vlx->rsp.rixs.num_incomming_photons = dim[1];
+					} else if (dim[1] != vlx->rsp.rixs.num_incomming_photons) {
+						MD_LOG_ERROR("RIXS: dataset '%s' has %i columns, expected %i incoming photon energies",
+							rixs_2d_fields[i], (int)dim[1], (int)vlx->rsp.rixs.num_incomming_photons);
+						vlx->rsp.rixs.num_final_states = 0;
+					}
+					break;
 				}
-            }
-            else {
-                md_array_resize(vlx->rsp.rixs.cross_sections, vlx->rsp.number_of_frequencies * vlx->rsp.rixs.num_incomming_photons, vlx->arena);
-                MEMSET(vlx->rsp.rixs.cross_sections, 0, md_array_bytes(vlx->rsp.rixs.cross_sections));
-                if (!h5_read_dataset_data(vlx->rsp.rixs.cross_sections, md_array_size(vlx->rsp.rixs.cross_sections), handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
-                    md_array_free(vlx->rsp.rixs.cross_sections, vlx->arena);
-                    vlx->rsp.rixs.cross_sections = NULL;
-                }
+			}
+
+			// Element count shared by all the [F][P] datasets below.
+			const size_t num_2d_elem = vlx->rsp.rixs.num_final_states * vlx->rsp.rixs.num_incomming_photons;
+
+			if (num_2d_elem > 0 && h5_check_dataset_exists(handle, "cross_sections")) {
+				md_array_resize(vlx->rsp.rixs.cross_sections, num_2d_elem, vlx->arena);
+				MEMSET(vlx->rsp.rixs.cross_sections, 0, md_array_bytes(vlx->rsp.rixs.cross_sections));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.cross_sections, md_array_size(vlx->rsp.rixs.cross_sections), handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
+					md_array_free(vlx->rsp.rixs.cross_sections, vlx->arena);
+					vlx->rsp.rixs.cross_sections = NULL;
+				}
+			}
+
+			if (h5_check_dataset_exists(handle, "core_osc_strengths")) {
+				md_array_resize(vlx->rsp.rixs.core_osc_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
+				MEMSET(vlx->rsp.rixs.core_osc_strengths, 0, md_array_bytes(vlx->rsp.rixs.core_osc_strengths));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.core_osc_strengths, md_array_size(vlx->rsp.rixs.core_osc_strengths), handle, H5T_NATIVE_DOUBLE, "core_osc_strengths")) {
+					md_array_free(vlx->rsp.rixs.core_osc_strengths, vlx->arena);
+					vlx->rsp.rixs.core_osc_strengths = NULL;
+				}
+			}
+
+			if (h5_check_dataset_exists(handle, "elastic_cross_sections")) {
+				md_array_resize(vlx->rsp.rixs.elastic_cross_sections, vlx->rsp.rixs.num_incomming_photons, vlx->arena);
+				MEMSET(vlx->rsp.rixs.elastic_cross_sections, 0, md_array_bytes(vlx->rsp.rixs.elastic_cross_sections));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.elastic_cross_sections, md_array_size(vlx->rsp.rixs.elastic_cross_sections), handle, H5T_NATIVE_DOUBLE, "elastic_cross_sections")) {
+					md_array_free(vlx->rsp.rixs.elastic_cross_sections, vlx->arena);
+					vlx->rsp.rixs.elastic_cross_sections = NULL;
+				}
+			}
+
+			if (num_2d_elem > 0 && h5_check_dataset_exists(handle, "emission_energies")) {
+				md_array_resize(vlx->rsp.rixs.emission_energies, num_2d_elem, vlx->arena);
+				MEMSET(vlx->rsp.rixs.emission_energies, 0, md_array_bytes(vlx->rsp.rixs.emission_energies));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.emission_energies, md_array_size(vlx->rsp.rixs.emission_energies), handle, H5T_NATIVE_DOUBLE, "emission_energies")) {
+					md_array_free(vlx->rsp.rixs.emission_energies, vlx->arena);
+					vlx->rsp.rixs.emission_energies = NULL;
+				}
+			}
+
+			if (num_2d_elem > 0 && h5_check_dataset_exists(handle, "energy_losses")) {
+				md_array_resize(vlx->rsp.rixs.energy_losses, num_2d_elem, vlx->arena);
+				MEMSET(vlx->rsp.rixs.energy_losses, 0, md_array_bytes(vlx->rsp.rixs.energy_losses));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.energy_losses, md_array_size(vlx->rsp.rixs.energy_losses), handle, H5T_NATIVE_DOUBLE, "energy_losses")) {
+					md_array_free(vlx->rsp.rixs.energy_losses, vlx->arena);
+					vlx->rsp.rixs.energy_losses = NULL;
+				}
+			}
+
+			if (h5_check_dataset_exists(handle, "photon_energies")) {
+				md_array_resize(vlx->rsp.rixs.photon_energies, vlx->rsp.rixs.num_incomming_photons, vlx->arena);
+				MEMSET(vlx->rsp.rixs.photon_energies, 0, md_array_bytes(vlx->rsp.rixs.photon_energies));
+				if (!h5_read_dataset_data(vlx->rsp.rixs.photon_energies, md_array_size(vlx->rsp.rixs.photon_energies), handle, H5T_NATIVE_DOUBLE, "photon_energies")) {
+					md_array_free(vlx->rsp.rixs.photon_energies, vlx->arena);
+					vlx->rsp.rixs.photon_energies = NULL;
+				}
+			}
+
+			if (h5_check_dataset_exists(handle, "gamma_fwhm_ev")) {
+				h5_read_scalar(&vlx->rsp.rixs.gamma_fwhm_ev, handle, H5T_NATIVE_DOUBLE, "gamma_fwhm_ev");
+			}
+
+			if (h5_check_dataset_exists(handle, "scattering_amplitudes")) {
+				// The scattering amplitudes are complex and have the shape [F][P][3][3], where F is
+				// the number of final states, P the number of incoming photon energies and the
+				// trailing 3x3 is the Cartesian scattering amplitude tensor.
+				// Derive the element count from the dataset itself rather than assuming a rank.
+				size_t dim[4] = {0};
+				int ndim = h5_read_dataset_dims(dim, (int)ARRAY_SIZE(dim), handle, "scattering_amplitudes");
+
+				// h5_read_dataset_dims reports the rank of the dataset, which may exceed the number of
+				// entries it actually wrote, so clamp before iterating.
+				if (ndim > (int)ARRAY_SIZE(dim)) {
+					MD_LOG_ERROR("Unexpected rank of H5 dataset 'scattering_amplitudes'");
+					ndim = 0;
+				}
+
+				size_t num_elem = (ndim > 0) ? 1 : 0;
+				for (int i = 0; i < ndim; ++i) {
+					num_elem *= dim[i];
+				}
+
+				// Sanity check against the dimensions derived above: [F][P][3][3] == F * P * 9.
+				if (num_elem > 0 && num_2d_elem > 0 && num_elem != num_2d_elem * 9) {
+					MD_LOG_ERROR("RIXS: 'scattering_amplitudes' holds %i elements, expected %i (%i final states x %i photon energies x 3 x 3)",
+						(int)num_elem, (int)(num_2d_elem * 9), (int)vlx->rsp.rixs.num_final_states, (int)vlx->rsp.rixs.num_incomming_photons);
+				}
+
+				if (num_elem > 0) {
+					md_array_resize(vlx->rsp.rixs.scattering_amplitude_re, num_elem, vlx->arena);
+					md_array_resize(vlx->rsp.rixs.scattering_amplitude_im, num_elem, vlx->arena);
+
+					MEMSET(vlx->rsp.rixs.scattering_amplitude_re, 0, md_array_bytes(vlx->rsp.rixs.scattering_amplitude_re));
+					MEMSET(vlx->rsp.rixs.scattering_amplitude_im, 0, md_array_bytes(vlx->rsp.rixs.scattering_amplitude_im));
+
+					// Splits the interleaved complex data on disk into two separate arrays.
+					if (!h5_read_complex_dataset_split(vlx->rsp.rixs.scattering_amplitude_re, vlx->rsp.rixs.scattering_amplitude_im, num_elem, handle, "scattering_amplitudes")) {
+						md_array_free(vlx->rsp.rixs.scattering_amplitude_re, vlx->arena);
+						md_array_free(vlx->rsp.rixs.scattering_amplitude_im, vlx->arena);
+						vlx->rsp.rixs.scattering_amplitude_re = NULL;
+						vlx->rsp.rixs.scattering_amplitude_im = NULL;
+					}
+				}
+			}
+		} else {
+			if (h5_check_dataset_exists(handle, "cross_sections")) {
+				if (vlx->rsp.type != MD_VLX_RSP_RIXS) {
+					md_array_resize(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, vlx->arena);
+					MEMSET(vlx->rsp.cross_sections, 0, md_array_bytes(vlx->rsp.cross_sections));
+					if (!h5_read_dataset_data(vlx->rsp.cross_sections, vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_DOUBLE, "cross_sections")) {
+						md_array_free(vlx->rsp.cross_sections, vlx->arena);
+						vlx->rsp.cross_sections = NULL;
+					}
+				}
 			}
 		}
 
@@ -2191,15 +2444,6 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
                 vlx->rsp.oscillator_strengths = NULL;
 			}
 		}
-
-        if (h5_check_dataset_exists(handle, "core_oscillator_strengths")) {
-            md_array_resize(vlx->rsp.rixs.core_osc_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
-            MEMSET(vlx->rsp.rixs.core_osc_strengths, 0, md_array_bytes(vlx->rsp.rixs.core_osc_strengths));
-            if (!h5_read_dataset_data(vlx->rsp.rixs.core_osc_strengths, md_array_size(vlx->rsp.rixs.core_osc_strengths), handle, H5T_NATIVE_DOUBLE, "core_oscillator_strengths")) {
-                md_array_free(vlx->rsp.rixs.core_osc_strengths, vlx->arena);
-                vlx->rsp.rixs.core_osc_strengths = NULL;
-            }
-        }
 
 		if (h5_check_dataset_exists(handle, "rotatory_strengths")) {
 			md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_frequencies, vlx->arena);
@@ -3521,6 +3765,64 @@ const double* md_vlx_rsp_tpa_gamma_re(const md_vlx_t* vlx) {
 
 const double* md_vlx_rsp_tpa_gamma_im(const md_vlx_t* vlx) {
 	return NULL;
+}
+
+// RIXS
+// @TODO: The RIXS datasets 'photon_energies', 'elastic_cross_sections', 'emission_energies',
+// 'energy_losses' and the 'gamma_fwhm_ev' attribute are not yet read in vlx_parse_rsp().
+// 'num_incomming_photons' and 'num_final_states' also need to be assigned from the dataset dims.
+// The accessors below are thin and will start returning valid data as soon as that is in place.
+
+static inline bool vlx_is_rixs(const md_vlx_t* vlx) {
+	return vlx && vlx->rsp.type == MD_VLX_RSP_RIXS;
+}
+
+size_t md_vlx_rsp_rixs_number_of_photon_energies(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.num_incomming_photons : 0;
+}
+
+size_t md_vlx_rsp_rixs_number_of_final_states(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.num_final_states : 0;
+}
+
+size_t md_vlx_rsp_rixs_number_of_core_states(const md_vlx_t* vlx) {
+	// Core eigenvalues are currently stored in rsp.frequencies for RIXS
+	return vlx_is_rixs(vlx) ? vlx->rsp.number_of_frequencies : 0;
+}
+
+const double* md_vlx_rsp_rixs_photon_energies(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.photon_energies : NULL;
+}
+
+const double* md_vlx_rsp_rixs_elastic_cross_sections(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.elastic_cross_sections : NULL;
+}
+
+const double* md_vlx_rsp_rixs_cross_sections(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.cross_sections : NULL;
+}
+
+const double* md_vlx_rsp_rixs_energy_losses(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.energy_losses : NULL;
+}
+
+const double* md_vlx_rsp_rixs_emission_energies(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.emission_energies : NULL;
+}
+
+const double* md_vlx_rsp_rixs_core_eigenvalues(const md_vlx_t* vlx) {
+	if (!vlx_is_rixs(vlx)) return NULL;
+	// Prefer the dedicated array if it has been populated, otherwise fall back to rsp.frequencies,
+	// which is where 'core_eigenvalues' is currently parsed into.
+	return vlx->rsp.rixs.core_eigenvalues ? vlx->rsp.rixs.core_eigenvalues : vlx->rsp.frequencies;
+}
+
+const double* md_vlx_rsp_rixs_core_osc_strengths(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.core_osc_strengths : NULL;
+}
+
+double md_vlx_rsp_rixs_gamma_fwhm_ev(const md_vlx_t* vlx) {
+	return vlx_is_rixs(vlx) ? vlx->rsp.rixs.gamma_fwhm_ev : 0.0;
 }
 
 bool md_vlx_rsp_has_nto(const md_vlx_t* vlx) {
