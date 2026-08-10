@@ -217,3 +217,64 @@ UTEST(vlx, acro_rsp) {
 
     md_vlx_destroy(vlx);
 }
+
+UTEST(vlx, acro_xps) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    // Acrolein (C C C O H H H H) with an '/xps' group alongside the existing '/rsp' group.
+    // The two carbons at index 0 and 1 share a delocalized core hole at the same energy.
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5"));
+    EXPECT_TRUE(result);
+
+    EXPECT_TRUE(md_vlx_has_xps(vlx));
+    EXPECT_EQ(4, md_vlx_xps_count(vlx));
+    EXPECT_EQ(2, md_vlx_xps_group_count(vlx));
+
+    // Entries in the file are unordered; the parser sorts by (element, ionization_energy).
+    const md_vlx_xps_entry_t* e = md_vlx_xps_entries(vlx);
+    ASSERT_TRUE(e != NULL);
+    for (size_t i = 1; i < md_vlx_xps_count(vlx); ++i) {
+        EXPECT_TRUE(e[i - 1].element < e[i].element ||
+                   (e[i - 1].element == e[i].element && e[i - 1].ionization_energy <= e[i].ionization_energy));
+    }
+
+    // Carbon: 3 entries, contiguous, lowest energy first, the delocalized pair leading.
+    const md_vlx_xps_group_t* c = md_vlx_xps_group_by_element(vlx, 6);
+    ASSERT_TRUE(c != NULL);
+    EXPECT_EQ(3, c->count);
+    EXPECT_EQ(e, c->entries);   // first group is a view onto the start of the flat array
+    EXPECT_TRUE(c->entries[0].is_delocalized);
+    EXPECT_TRUE(c->entries[1].is_delocalized);
+    EXPECT_FALSE(c->entries[2].is_delocalized);
+    EXPECT_NEAR(291.02, c->entries[0].ionization_energy, 1.0e-9);
+    EXPECT_NEAR(293.51, c->entries[2].ionization_energy, 1.0e-9);
+    EXPECT_NEAR(0.9644, c->entries[2].contribution, 1.0e-9);
+    EXPECT_EQ(2, c->entries[2].atom_index);
+    EXPECT_EQ(6, c->entries[2].mo_index);
+
+    // Oxygen: single entry, and its view must start where carbon's ends.
+    const md_vlx_xps_group_t* o = md_vlx_xps_group_by_element(vlx, 8);
+    ASSERT_TRUE(o != NULL);
+    EXPECT_EQ(1, o->count);
+    EXPECT_EQ(c->entries + c->count, o->entries);
+    EXPECT_EQ(3, o->entries[0].atom_index);
+    EXPECT_NEAR(538.74, o->entries[0].ionization_energy, 1.0e-9);
+
+    // Element not present in the calculation.
+    EXPECT_TRUE(md_vlx_xps_group_by_element(vlx, 1) == NULL);
+    EXPECT_TRUE(md_vlx_xps_group_by_index(vlx, 2) == NULL);
+
+    md_vlx_destroy(vlx);
+}
+
+UTEST(vlx, acro_rsp_has_no_xps) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    EXPECT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-rsp.h5")));
+    EXPECT_FALSE(md_vlx_has_xps(vlx));
+    EXPECT_EQ(0, md_vlx_xps_count(vlx));
+    EXPECT_EQ(0, md_vlx_xps_group_count(vlx));
+    EXPECT_TRUE(md_vlx_xps_entries(vlx) == NULL);
+
+    md_vlx_destroy(vlx);
+}

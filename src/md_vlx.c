@@ -10,11 +10,13 @@
 
 #include <md_system.h>
 #include <md_gto.h>
+#include <md_util.h>
 
 #include <hdf5.h>
 
 #include <float.h>
 #include <math.h>
+#include <stdlib.h>	// qsort
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.5291772109029999
@@ -29,6 +31,7 @@ typedef enum {
 	VLX_FLAG_RSP  = 4,
 	VLX_FLAG_VIB  = 8,
 	VLX_FLAG_OPT  = 16,
+	VLX_FLAG_XPS  = 32,
 	VLX_FLAG_ALL  = -1,
 } vlx_flags_t;
 
@@ -121,6 +124,20 @@ typedef struct md_vlx_scf_t {
 	md_vlx_2d_data_t S;
 	md_vlx_scf_history_t history;
 } md_vlx_scf_t;
+
+// Internal, parse time only. Offsets rather than pointers, because md_array_push reallocs the entry
+// array and would dangle any pointer stored into a group before the array is final.
+typedef struct vlx_xps_group_internal_t {
+	md_element_t element;
+	uint32_t     offset;	// Offset into md_vlx_xps_t::entries
+	uint32_t     count;
+} vlx_xps_group_internal_t;
+
+typedef struct md_vlx_xps_t {
+	md_vlx_xps_entry_t*       entries;			// Flat, sorted by (element, ionization_energy)
+	vlx_xps_group_internal_t* groups_internal;	// Built during parse
+	md_vlx_xps_group_t*       groups;			// Public view, materialized by vlx_xps_finalize()
+} md_vlx_xps_t;
 
 typedef struct md_vlx_rsp_t {
 	md_vlx_rsp_type_t type;
@@ -234,6 +251,7 @@ typedef struct md_vlx_t {
 	md_vlx_rsp_t rsp;
 	md_vlx_vib_t vib;
 	md_vlx_opt_t opt;
+	md_vlx_xps_t xps;
 
 	md_element_t* atomic_numbers;
 	int* ao_to_atom_idx;    // Maps atomic orbitals to atom indices (shell order)
@@ -3297,6 +3315,8 @@ done:
 }
 
 // This is the newest version of the file format where everything is contained within a single h5 file
+static bool h5_read_xps_data(md_vlx_t* vlx, hid_t handle);
+
 static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	ASSERT(vlx);
 
@@ -3367,6 +3387,19 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
+	// XPS. Optional top level group, independent of the response block: XPS is delta-SCF, so it may
+	// appear alongside any md_vlx_rsp_type_t or with no response data at all.
+	if (flags & VLX_FLAG_XPS) {
+		if (H5Lexists(file_id, "xps", H5P_DEFAULT) > 0) {
+			hid_t xps_id = H5Gopen(file_id, "xps", H5P_DEFAULT);
+			if (xps_id != H5I_INVALID_HID) {
+				result = h5_read_xps_data(vlx, xps_id);
+				H5Gclose(xps_id);
+				if (!result) goto done;
+			}
+		}
+	}
+
 	if (flags & VLX_FLAG_CORE) {
 		if (!h5_read_atomic_properties(vlx, file_id)) {
 			goto done;
@@ -3427,6 +3460,115 @@ static inline str_t resolve_basis_set_ident(str_t input) {
 
 #undef BAKE_STR
 
+// XPS
+//
+// Layout of the optional '/xps' group:
+//
+//   /xps/<element symbol>/<n>/atom_index            scalar, integer
+//                            /contribution          scalar, double
+//                            /ionization_energy_ev  scalar, double, unit eV
+//                            /is_delocalized        scalar, bool (h5py enum over int8)
+//                            /mo_index              scalar, integer
+//
+// <n> is a flat '0'..'N-1' enumeration with no meaning beyond ordering, so it is discarded --
+// entries are re-sorted by (element, ionization_energy) in vlx_xps_finalize().
+//
+// This pushes into vlx->xps.entries but does NOT finalize. vlx_parse_file() does that once, after
+// every push, because finalizing takes pointers into an array that md_array_push may still realloc.
+static bool h5_read_xps_data(md_vlx_t* vlx, hid_t handle) {
+	ASSERT(vlx);
+
+	H5G_info_t info = { 0 };
+	if (H5Gget_info(handle, &info) < 0) {
+		MD_LOG_ERROR("XPS: failed to get group info");
+		return false;
+	}
+
+	char name_buf[256];
+	for (hsize_t i = 0; i < info.nlinks; ++i) {
+		if (H5Gget_objname_by_idx(handle, i, name_buf, sizeof(name_buf)) < 0) {
+			continue;
+		}
+		if (H5Gget_objtype_by_idx(handle, i) != H5G_GROUP) {
+			continue;
+		}
+
+		const md_element_t element = md_util_element_lookup(str_from_cstr(name_buf), true);
+		if (element == 0) {
+			MD_LOG_INFO("XPS: skipping group '%s', not a recognized element symbol", name_buf);
+			continue;
+		}
+
+		hid_t elem_group = H5Gopen(handle, name_buf, H5P_DEFAULT);
+		if (elem_group == H5I_INVALID_HID) {
+			MD_LOG_ERROR("XPS: failed to open element group '%s'", name_buf);
+			continue;
+		}
+
+		hsize_t num_links = 0;
+		if (H5Gget_num_objs(elem_group, &num_links) < 0) {
+			MD_LOG_ERROR("XPS: failed to count entries in element group '%s'", name_buf);
+			H5Gclose(elem_group);
+			continue;
+		}
+
+		// Indexed by name rather than by link index, so entries are visited in numeric order
+		// regardless of how HDF5 chose to order the links.
+		for (hsize_t j = 0; j < num_links; ++j) {
+			char idx_buf[32];
+			snprintf(idx_buf, sizeof(idx_buf), "%i", (int)j);
+			if (H5Lexists(elem_group, idx_buf, H5P_DEFAULT) <= 0) {
+				continue;
+			}
+
+			hid_t entry_group = H5Gopen(elem_group, idx_buf, H5P_DEFAULT);
+			if (entry_group == H5I_INVALID_HID) {
+				continue;
+			}
+
+			md_vlx_xps_entry_t entry = {
+				.atom_index = -1,
+				.mo_index   = -1,
+				.element    = element,
+			};
+
+			// The only field without a sensible default: an entry with no energy has nothing to plot.
+			if (!h5_read_dataset_data(&entry.ionization_energy, 1, entry_group, H5T_NATIVE_DOUBLE, "ionization_energy_ev")) {
+				MD_LOG_ERROR("XPS: '%s/%s' has no 'ionization_energy_ev', skipping entry", name_buf, idx_buf);
+				H5Gclose(entry_group);
+				continue;
+			}
+
+			// Remaining fields are optional and keep their defaults if absent.
+			h5_read_dataset_data(&entry.contribution, 1, entry_group, H5T_NATIVE_DOUBLE, "contribution");
+			h5_read_dataset_data(&entry.atom_index,   1, entry_group, H5T_NATIVE_INT32,  "atom_index");
+			h5_read_dataset_data(&entry.mo_index,     1, entry_group, H5T_NATIVE_INT32,  "mo_index");
+
+			// h5py writes Python bools as an HDF5 enum with an int8 base; H5Dread converts
+			// enum -> integer for us, so reading it as int8 works for both that and a plain int.
+			int8_t is_delocalized = 0;
+			if (h5_read_dataset_data(&is_delocalized, 1, entry_group, H5T_NATIVE_INT8, "is_delocalized")) {
+				entry.is_delocalized = (is_delocalized != 0);
+			}
+
+			if (entry.atom_index >= 0 && (size_t)entry.atom_index >= vlx->number_of_atoms) {
+				MD_LOG_INFO("XPS: '%s/%s' has out of range atom_index %i (%zu atoms), clearing it",
+					name_buf, idx_buf, (int)entry.atom_index, vlx->number_of_atoms);
+				entry.atom_index = -1;
+			}
+
+			md_array_push(vlx->xps.entries, entry, vlx->arena);
+			H5Gclose(entry_group);
+		}
+
+		H5Gclose(elem_group);
+	}
+
+	return true;
+}
+
+static void vlx_xps_finalize(md_vlx_t* vlx);
+
 // Internal version to control what portions to load
 static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	md_temp_scope_t temp = md_temp_begin();
@@ -3446,6 +3588,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		MD_LOG_DEBUG("Unsupported file format");
 		goto done;
 	}
+
+	// Must run after the last md_array_push into vlx->xps.entries, since it converts group offsets
+	// into pointers into that array. No-op when the file had no '/xps' group.
+	vlx_xps_finalize(vlx);
 
 	if (!str_empty(vlx->basis_set_ident)) {
 		size_t cap = KILOBYTES(16);
@@ -4010,6 +4156,96 @@ void md_vlx_destroy(md_vlx_t* vlx) {
 	} else {
 		MD_LOG_DEBUG("Attempt to destroy NULL vlx object");
 	}
+}
+
+// XPS
+
+static int vlx_xps_compare_entry(const void* a, const void* b) {
+	const md_vlx_xps_entry_t* ea = (const md_vlx_xps_entry_t*)a;
+	const md_vlx_xps_entry_t* eb = (const md_vlx_xps_entry_t*)b;
+	if (ea->element != eb->element) {
+		return (ea->element < eb->element) ? -1 : 1;
+	}
+	if (ea->ionization_energy != eb->ionization_energy) {
+		return (ea->ionization_energy < eb->ionization_energy) ? -1 : 1;
+	}
+	return 0;
+}
+
+// Sorts entries into contiguous per element runs and materializes the public group views.
+// MUST be the last operation that touches vlx->xps.entries: md_array_push reallocs, so every pointer
+// written here is invalidated by any subsequent push.
+static void vlx_xps_finalize(md_vlx_t* vlx) {
+	const size_t num_entries = md_array_size(vlx->xps.entries);
+
+	md_array_shrink(vlx->xps.groups_internal, 0);
+	md_array_shrink(vlx->xps.groups, 0);
+
+	if (num_entries == 0) {
+		return;
+	}
+
+	qsort(vlx->xps.entries, num_entries, sizeof(md_vlx_xps_entry_t), vlx_xps_compare_entry);
+
+	// Phase 1: derive the group runs, offsets only.
+	for (size_t i = 0; i < num_entries; ++i) {
+		vlx_xps_group_internal_t* last = md_array_last(vlx->xps.groups_internal);
+		if (last && last->element == vlx->xps.entries[i].element) {
+			last->count += 1;
+		} else {
+			vlx_xps_group_internal_t grp = {
+				.element = vlx->xps.entries[i].element,
+				.offset  = (uint32_t)i,
+				.count   = 1,
+			};
+			md_array_push(vlx->xps.groups_internal, grp, vlx->arena);
+		}
+	}
+
+	// Phase 2: offsets -> pointers. Safe only because entries is no longer being grown.
+	const size_t num_groups = md_array_size(vlx->xps.groups_internal);
+	md_array_resize(vlx->xps.groups, num_groups, vlx->arena);
+	for (size_t i = 0; i < num_groups; ++i) {
+		const vlx_xps_group_internal_t* src = &vlx->xps.groups_internal[i];
+		vlx->xps.groups[i].element = src->element;
+		vlx->xps.groups[i].count   = src->count;
+		vlx->xps.groups[i].entries = vlx->xps.entries + src->offset;
+	}
+}
+
+bool md_vlx_has_xps(const md_vlx_t* vlx) {
+	return vlx && md_array_size(vlx->xps.entries) > 0;
+}
+
+size_t md_vlx_xps_count(const md_vlx_t* vlx) {
+	return vlx ? md_array_size(vlx->xps.entries) : 0;
+}
+
+const md_vlx_xps_entry_t* md_vlx_xps_entries(const md_vlx_t* vlx) {
+	return vlx ? vlx->xps.entries : NULL;
+}
+
+size_t md_vlx_xps_group_count(const md_vlx_t* vlx) {
+	return vlx ? md_array_size(vlx->xps.groups) : 0;
+}
+
+const md_vlx_xps_group_t* md_vlx_xps_group_by_index(const md_vlx_t* vlx, size_t idx) {
+	if (vlx && idx < md_array_size(vlx->xps.groups)) {
+		return &vlx->xps.groups[idx];
+	}
+	return NULL;
+}
+
+const md_vlx_xps_group_t* md_vlx_xps_group_by_element(const md_vlx_t* vlx, md_element_t element) {
+	if (vlx) {
+		// Group count is the number of distinct elements in the calculation, typically 1-5.
+		for (size_t i = 0; i < md_array_size(vlx->xps.groups); ++i) {
+			if (vlx->xps.groups[i].element == element) {
+				return &vlx->xps.groups[i];
+			}
+		}
+	}
+	return NULL;
 }
 
 size_t md_vlx_atomic_property_count(const md_vlx_t* vlx) {

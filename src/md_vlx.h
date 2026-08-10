@@ -28,6 +28,28 @@ typedef struct md_vlx_density_property_t {
 	double*  data;
 } md_vlx_density_property_t;
 
+// XPS: one entry per computed core-hole state.
+// VeloxChem performs the calculation per element, removing one core electron from each atom of that
+// element in turn and taking the total energy difference against the ground state (delta-SCF).
+// Field order is deliberate: 'ionization_energy' and 'contribution' are both double and adjacent so
+// they can be handed straight to ImPlot as x/y with stride = sizeof(md_vlx_xps_entry_t).
+typedef struct md_vlx_xps_entry_t {
+	double       ionization_energy;	// unit: eV
+	double       contribution;		// Fraction of the core MO localized on 'atom_index'
+	int32_t      atom_index;		// Index into the molecular structure
+	int32_t      mo_index;			// Index into the MO (orbital) arrays
+	md_element_t element;			// Atomic number, matches the owning group
+	bool         is_delocalized;	// Core hole is spread over several symmetry equivalent atoms
+} md_vlx_xps_entry_t;
+
+// A group is the set of entries belonging to a single element. 'entries' points into the flat array
+// returned by md_vlx_xps_entries() -- it is a view, not a separate allocation, and shares its lifetime.
+typedef struct md_vlx_xps_group_t {
+	md_element_t              element;
+	size_t                    count;
+	const md_vlx_xps_entry_t* entries;	// Contiguous run, sorted by ionization_energy
+} md_vlx_xps_group_t;
+
 typedef enum {
 	MD_VLX_SPIN_ALPHA = 0,
 	MD_VLX_SPIN_BETA  = 1,
@@ -299,6 +321,22 @@ const double* md_vlx_vib_external_frequencies(const struct md_vlx_t* vlx);	// Un
 
 // Returns array of length D (Number of normal modes)
 const double* md_vlx_vib_raman_activities(const struct md_vlx_t* vlx, size_t idx);
+
+// XPS
+// NOTE: XPS is a delta-SCF property, not a response property, so it is a top level data block and may
+// coexist with any md_vlx_rsp_type_t (or with none at all).
+
+bool md_vlx_has_xps(const struct md_vlx_t* vlx);
+
+// Flat view over every entry across all elements, sorted by (element, ionization_energy).
+// Use this for the summed spectrum and for atom_index hit tests.
+size_t                    md_vlx_xps_count(const struct md_vlx_t* vlx);
+const md_vlx_xps_entry_t* md_vlx_xps_entries(const struct md_vlx_t* vlx);
+
+// Per element views into the array above. Returns NULL if the index/element is not present.
+size_t                    md_vlx_xps_group_count(const struct md_vlx_t* vlx);
+const md_vlx_xps_group_t* md_vlx_xps_group_by_index(const struct md_vlx_t* vlx, size_t idx);
+const md_vlx_xps_group_t* md_vlx_xps_group_by_element(const struct md_vlx_t* vlx, md_element_t element);
 
 // Atomic properties
 size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);
