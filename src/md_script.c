@@ -1817,7 +1817,7 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
     else {
         PRINT("NULL");
     }
-    if (!md_unit_empty(data.unit[1])) {
+    if (!md_unit_is_none(data.unit[1])) {
         len += md_unit_print(buf + len, cap - MIN(len, cap), data.unit[1]);
     }
     return len;
@@ -4060,9 +4060,9 @@ static md_unit_t extract_unit_from_label(str_t label) {
     size_t beg_loc, end_loc;
     if (str_find_char(&beg_loc, label, '(') && str_find_char(&end_loc, label, ')')) {
         str_t unit_str = str_substr(label, beg_loc + 1, end_loc - beg_loc - 1);
-        md_unit_t xvg_unit = md_unit_from_string(unit_str);
-        if (!md_unit_empty(xvg_unit)) {
-            unit = xvg_unit;
+        md_unit_t label_unit;
+        if (md_unit_parse(&label_unit, unit_str)) {
+            unit = label_unit;
         }
     }
     return unit;
@@ -4077,7 +4077,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
     table_t* table = NULL;
     md_unit_t traj_time_unit = md_trajectory_time_unit(traj);
     const size_t num_frames = md_trajectory_num_frames(traj);
-    bool traj_has_time = !md_unit_empty(traj_time_unit);
+    bool traj_has_time = !md_unit_is_none(traj_time_unit);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(ir->arena);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
@@ -6059,9 +6059,11 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             str_t name = node->table->field_names[idx];
             md_strb_fmt(&sb, "[%i]: \""STR_FMT"\"", (int)(i + 1), STR_ARG(name));
             md_unit_t y_unit = node->table->field_units[idx];
-            if (!md_unit_empty(y_unit) && !md_unit_unitless(y_unit)) {
-                str_t unit_str = md_unit_to_string(y_unit, temp_arena);
-                if (!str_empty(unit_str)) {
+            if (!md_unit_is_none(y_unit)) {
+                char unit_buf[128];
+                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), y_unit);
+                if (unit_len > 0) {
+                    str_t unit_str = str_copy((str_t){unit_buf, unit_len}, temp_arena);
                     md_strb_fmt(&sb, " ("STR_FMT")", STR_ARG(unit_str));
                 }
             }

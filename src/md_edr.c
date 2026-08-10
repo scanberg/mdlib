@@ -722,42 +722,10 @@ static void edr_file_close(edr_fp_t* fp) {
 }
 
 static md_unit_t unit_from_str(str_t str) {
-	// TODO: Parse string to come up with a matching unit! not easy to do completely correct.
-	// For now we cheat and check against a set of full strings which we know are common
-
-	if (str_empty(str)) {
-		// Return unitless unit
-		return (md_unit_t) {0, 1};
-	}
-	if (str_eq_cstr(str, "kJ/mol")) {
-		md_unit_t kJ = md_unit_joule();
-		kJ.mult = 1e3;
-		return md_unit_div(kJ, md_unit_mole());
-	}
-	if (str_eq_cstr(str, "K")) {
-		return md_unit_kelvin();
-	}
-	if (str_eq_cstr(str, "bar")) {
-		return md_unit_bar();
-	}
-	if (str_eq_cstr(str, "bar nm")) {
-		return md_unit_mul(md_unit_bar(), md_unit_nanometer());
-	}
-	if (str_eq_cstr(str, "nm")) {
-		return md_unit_nanometer();
-	}
-	if (str_eq_cstr(str, "nm^3")) {
-		return md_unit_pow(md_unit_nanometer(), 3);
-	}
-	if (str_eq_cstr(str, "kg/m^3")) {
-		return md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
-	}
-	if (str_eq_cstr(str, "nm/ps")) {
-		return md_unit_div(md_unit_nanometer(), md_unit_picosecond());
-	}
-
-	md_logf(MD_LOG_TYPE_INFO, "Failed to match supplied unit '%.*s'", (int)str.len, str.ptr);
-	return (md_unit_t) {0, 1};
+	// Yields 'none' if the string is empty or could not be parsed
+	md_unit_t unit;
+	md_unit_parse(&unit, str);
+	return unit;
 }
 
 bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, struct md_allocator_i* alloc) {
