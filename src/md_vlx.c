@@ -912,8 +912,63 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	return true;
 }
 
+// HDF5 prints a full diagnostic stack to stderr for every failed call. This reader
+// probes for optional data constantly and reports its own failures through MD_LOG_*
+// with the offending field name, so the automatic handler is pure noise. Silence it
+// for the duration of a parse and restore whatever the host application had set --
+// mdlib must not leave global HDF5 state modified.
+typedef struct h5_error_scope_t {
+	H5E_auto2_t func;
+	void*       client_data;
+} h5_error_scope_t;
+
+static h5_error_scope_t h5_error_scope_begin(void) {
+	h5_error_scope_t scope = {0};
+	H5Eget_auto2(H5E_DEFAULT, &scope.func, &scope.client_data);
+	H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
+	return scope;
+}
+
+static void h5_error_scope_end(h5_error_scope_t scope) {
+	H5Eset_auto2(H5E_DEFAULT, scope.func, scope.client_data);
+}
+
+// H5Lexists() only tolerates a missing *final* path component. If an intermediate
+// group is absent it fails outright and, with the default error handler installed,
+// dumps a full diagnostic stack to stderr. Nearly every probe in this file is for
+// optional data (a file without TPA has no "tpa_strengths" group at all), so walk
+// the path one component at a time and stop at the first miss.
+//
+// Returns false both for "not present" and for a genuine error; callers here only
+// care whether the data is usable.
+static bool h5_link_exists(hid_t loc_id, const char* path) {
+	if (!path || !*path) return false;
+
+	const size_t len = strlen(path);
+
+	char buf[512];
+	if (len >= sizeof(buf)) {
+		MD_LOG_ERROR("HDF5 path exceeds %zu characters: '%s'", sizeof(buf) - 1, path);
+		return false;
+	}
+	MEMCPY(buf, path, len + 1);
+
+	for (size_t i = 0; i < len; ++i) {
+		if (buf[i] != '/') continue;
+		if (i == 0 || buf[i - 1] == '/') continue;  // leading or repeated separator
+
+		buf[i] = '\0';
+		const htri_t exists = H5Lexists(loc_id, buf, H5P_DEFAULT);
+		buf[i] = '/';
+
+		if (exists <= 0) return false;
+	}
+
+	return H5Lexists(loc_id, buf, H5P_DEFAULT) > 0;
+}
+
 static H5I_type_t h5_get_object_type(hid_t loc_id, const char* name) {
-    if (H5Lexists(loc_id, name, H5P_DEFAULT) <= 0) {
+    if (!h5_link_exists(loc_id, name)) {
         return H5I_UNINIT;
     }
 
@@ -927,9 +982,35 @@ static H5I_type_t h5_get_object_type(hid_t loc_id, const char* name) {
     return type;
 }
 
+// Number of elements in a dataset's dataspace. Returns false on failure.
+//
+// Every read below uses H5S_ALL for both the memory and file selection, which makes
+// H5Dread write *the whole dataset* into the caller's buffer. Any read into a fixed
+// size destination must therefore check this first, or a file with an unexpected
+// shape silently overruns the destination.
+static bool h5_dataset_num_elements(hsize_t* out_count, hid_t dataset_id, const char* field_name) {
+	hid_t space_id = H5Dget_space(dataset_id);
+	if (space_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to query H5 dataspace for dataset: '%s'", field_name);
+		return false;
+	}
+
+	const hssize_t npoints = H5Sget_simple_extent_npoints(space_id);
+	H5Sclose(space_id);
+
+	if (npoints < 0) {
+		MD_LOG_ERROR("Failed to query element count for H5 dataset: '%s'", field_name);
+		return false;
+	}
+
+	*out_count = (hsize_t)npoints;
+	return true;
+}
+
+// Reads a dataset expected to hold exactly one element. Returns false if it holds
+// anything else, rather than overrunning 'buf'.
 static bool h5_read_scalar(void* buf, hid_t file_id, hid_t mem_type_id, const char* field_name) {
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
+	if (!h5_link_exists(file_id, field_name)) {
 		return false;
 	}
 
@@ -942,9 +1023,18 @@ static bool h5_read_scalar(void* buf, hid_t file_id, hid_t mem_type_id, const ch
 
 	bool result = false;
 
+	hsize_t num_elem = 0;
+	if (!h5_dataset_num_elements(&num_elem, dataset_id, field_name)) {
+		goto done;
+	}
+	if (num_elem != 1) {
+		MD_LOG_ERROR("Expected a scalar H5 dataset for '%s', got %llu elements", field_name, (unsigned long long)num_elem);
+		goto done;
+	}
+
 	// Read the dataset into the 'value' variable
 	herr_t status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
-	if (status != 0) {
+	if (status < 0) {
 		MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
 		goto done;
 	}
@@ -959,8 +1049,7 @@ done:
 static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_allocator_i* alloc) {
 	bool result = false;
 
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
+	if (!h5_link_exists(file_id, field_name)) {
 		return false;
 	}
 
@@ -983,10 +1072,22 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 		goto done;
 	}
 
+	{
+		// Both branches below read with H5S_ALL into storage for a single string.
+		hsize_t num_elem = 0;
+		if (!h5_dataset_num_elements(&num_elem, dataset_id, field_name)) {
+			goto done;
+		}
+		if (num_elem != 1) {
+			MD_LOG_ERROR("Expected a single string in H5 dataset '%s', got %llu", field_name, (unsigned long long)num_elem);
+			goto done;
+		}
+	}
+
 	if (H5Tis_variable_str(datatype_id)) {
 		char* tmp = NULL;
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, &tmp);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read variable-length string for H5 dataset: '%s'", field_name);
 			goto done;
 		}
@@ -1013,7 +1114,7 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 		MEMSET(tmp, 0, raw_len + 1);
 
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read fixed-length string for H5 dataset: '%s'", field_name);
 			goto fixed_done;
 		}
@@ -1046,8 +1147,7 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 	ASSERT(str_cap > 0);
 	out_str[0] = '\0';
 
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
+	if (!h5_link_exists(file_id, field_name)) {
 		return 0;
 	}
 
@@ -1072,11 +1172,23 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 		goto done;
 	}
 
+	{
+		// Both branches below read with H5S_ALL into storage for a single string.
+		hsize_t num_elem = 0;
+		if (!h5_dataset_num_elements(&num_elem, dataset_id, field_name)) {
+			goto done;
+		}
+		if (num_elem != 1) {
+			MD_LOG_ERROR("Expected a single string in H5 dataset '%s', got %llu", field_name, (unsigned long long)num_elem);
+			goto done;
+		}
+	}
+
 	if (H5Tis_variable_str(datatype_id)) {
 		// Variable-length string
 		char* tmp = NULL;
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, &tmp);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read variable-length string for H5 dataset: '%s'", field_name);
 			goto done;
 		}
@@ -1102,7 +1214,7 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 		MEMSET(tmp, 0, size + 1);
 
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read fixed-length string for H5 dataset: '%s'", field_name);
 			goto fixed_done;
 		}
@@ -1126,23 +1238,38 @@ done:
 	return result;
 }
 
+#define H5_MAX_RANK 32
+
+// Writes the extent of each dimension into dims[0 .. rank-1] and returns the rank.
+//
+// Returns 0 for "not present" and for every failure. Never returns a negative value:
+// most call sites test this truthily, and a -1 would read as success.
 static int h5_read_dataset_dims(size_t* dims, int max_dims, hid_t file_id, const char* field_name) {
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
-		return false;
+	ASSERT(dims);
+
+	if (max_dims <= 0 || max_dims > H5_MAX_RANK) {
+		MD_LOG_ERROR("Invalid max_dims (%i) requested for H5 dataset: '%s'", max_dims, field_name);
+		return 0;
+	}
+
+	if (!h5_link_exists(file_id, field_name)) {
+		return 0;
 	}
 
 	// Open the dataset
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
-		return -1;
+		return 0;
 	}
 
-	// Get the datatype and space
-	hid_t space_id = H5Dget_space(dataset_id);    // Get dataspace
+	int   result   = 0;
+	hid_t space_id = H5Dget_space(dataset_id);
+	if (space_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to query H5 dataspace for dataset: '%s'", field_name);
+		goto done;
+	}
 
-	// Determine size of string (assume variable-length string)
 	int ndim = H5Sget_simple_extent_ndims(space_id);
 	if (ndim < 0) {
 		MD_LOG_ERROR("Failed to get number of dimensions for H5 dataset: '%s'", field_name);
@@ -1150,33 +1277,177 @@ static int h5_read_dataset_dims(size_t* dims, int max_dims, hid_t file_id, const
 	}
 
 	if (ndim > max_dims) {
-		MD_LOG_ERROR("Too many dimensions in data");
+		MD_LOG_ERROR("H5 dataset '%s' has rank %i, caller supplied room for %i", field_name, ndim, max_dims);
 		goto done;
 	}
 
-	ndim = H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
+	// hsize_t is always 64-bit while size_t is not, so read into a correctly typed
+	// buffer and widen/narrow explicitly rather than aliasing the caller's array.
+	hsize_t extent[H5_MAX_RANK] = {0};
+	ndim = H5Sget_simple_extent_dims(space_id, extent, NULL);
+	if (ndim < 0) {
+		MD_LOG_ERROR("Failed to get dimensions for H5 dataset: '%s'", field_name);
+		goto done;
+	}
+
+	for (int i = 0; i < ndim; ++i) {
+		if (extent[i] > (hsize_t)SIZE_MAX) {
+			MD_LOG_ERROR("H5 dataset '%s' dimension %i does not fit in size_t", field_name, i);
+			goto done;
+		}
+		dims[i] = (size_t)extent[i];
+	}
+
+	result = ndim;
 
 done:
-	H5Sclose(space_id);
+	if (space_id != H5I_INVALID_HID) H5Sclose(space_id);
 	H5Dclose(dataset_id);
 
-	return ndim;
+	return result;
 }
 
 static bool h5_check_dataset_exists(hid_t file_id, const char* field_name) {
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	return exists > 0;
+	return h5_link_exists(file_id, field_name);
+}
+
+// Reads a string attribute into a caller-supplied buffer, always null terminated
+// and always truncated to fit. Returns false if the attribute is absent, is not a
+// string, or cannot be read; every handle opened here is released on every path.
+//
+// The size check on the fixed-length branch matters: the stored size is whatever
+// the writer chose, so reading it straight into the destination overflows for any
+// attribute longer than the caller's buffer.
+static bool h5_read_string_attribute(char* out_buf, size_t out_cap, hid_t obj_id, const char* attr_name) {
+	ASSERT(out_buf);
+	ASSERT(out_cap > 0);
+	out_buf[0] = '\0';
+
+	// htri_t: negative on error, and negative is truthy.
+	if (H5Aexists(obj_id, attr_name) <= 0) {
+		return false;
+	}
+
+	hid_t attr_id = H5Aopen(obj_id, attr_name, H5P_DEFAULT);
+	if (attr_id == H5I_INVALID_HID) {
+		return false;
+	}
+
+	bool  result    = false;
+	hid_t attr_type = H5Aget_type(attr_id);
+	if (attr_type == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to query type of attribute '%s'", attr_name);
+		goto done;
+	}
+
+	if (H5Tget_class(attr_type) != H5T_STRING) {
+		MD_LOG_ERROR("Attribute '%s' is not a string", attr_name);
+		goto done;
+	}
+
+	if (H5Tis_variable_str(attr_type)) {
+		char* var_str = NULL;
+		if (H5Aread(attr_id, attr_type, &var_str) < 0) {
+			MD_LOG_ERROR("Failed to read variable-length string attribute '%s'", attr_name);
+			goto done;
+		}
+		// On success HDF5 may still hand back NULL for an empty string.
+		if (var_str) {
+			const size_t len = MIN(strlen(var_str), out_cap - 1);
+			MEMCPY(out_buf, var_str, len);
+			out_buf[len] = '\0';
+			H5free_memory(var_str);
+		}
+		result = true;
+	} else {
+		const size_t size = H5Tget_size(attr_type);
+		if (size == 0) {
+			MD_LOG_ERROR("Attribute '%s' has zero size", attr_name);
+			goto done;
+		}
+
+		// Fixed-length strings are not necessarily null terminated.
+		md_temp_scope_t temp = md_temp_begin();
+		char* tmp = md_temp_alloc(temp, size + 1);
+		if (tmp) {
+			MEMSET(tmp, 0, size + 1);
+			if (H5Aread(attr_id, attr_type, tmp) >= 0) {
+				const size_t len = MIN(strnlen(tmp, size), out_cap - 1);
+				MEMCPY(out_buf, tmp, len);
+				out_buf[len] = '\0';
+				result = true;
+			} else {
+				MD_LOG_ERROR("Failed to read fixed-length string attribute '%s'", attr_name);
+			}
+		}
+		md_temp_end(temp);
+	}
+
+done:
+	if (attr_type != H5I_INVALID_HID) H5Tclose(attr_type);
+	H5Aclose(attr_id);
+	return result;
+}
+
+// Checks a square AO-basis matrix for symmetry and forces it if it is close but not
+// exact. Returns true if it was already symmetric to tolerance.
+//
+// Consumers of AO density matrices in this codebase read only the upper triangle, so
+// an asymmetric matrix is not merely inaccurate -- half of it is discarded without a
+// trace. Anything beyond rounding is reported with the offending magnitude so it is
+// visible rather than absorbed.
+static bool vlx_report_and_enforce_symmetry(double* mat, size_t dim, const char* label) {
+	ASSERT(mat);
+
+	double max_asym = 0.0;
+	double max_abs  = 0.0;
+	for (size_t i = 0; i < dim; ++i) {
+		for (size_t j = i + 1; j < dim; ++j) {
+			const double a = mat[i * dim + j];
+			const double b = mat[j * dim + i];
+			max_asym = MAX(max_asym, fabs(a - b));
+			max_abs  = MAX(max_abs, MAX(fabs(a), fabs(b)));
+		}
+	}
+
+	// Scale-relative, so this does not fire on accumulated rounding in a large matrix.
+	const double tolerance = 1.0e-10 * (max_abs > 0.0 ? max_abs : 1.0);
+	if (max_asym <= tolerance) {
+		return true;
+	}
+
+	MD_LOG_INFO("Density property '%s' is not symmetric (max deviation %g, largest element %g). "
+				"Symmetrizing: the density evaluation path only reads the upper triangle.",
+				label, max_asym, max_abs);
+
+	for (size_t i = 0; i < dim; ++i) {
+		for (size_t j = i + 1; j < dim; ++j) {
+			const double value = 0.5 * (mat[i * dim + j] + mat[j * dim + i]);
+			mat[i * dim + j] = value;
+			mat[j * dim + i] = value;
+		}
+	}
+	return false;
 }
 
 typedef bool (*h5_group_visit_cb_t)(md_vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data);
 
-static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const char* group_path, h5_group_visit_cb_t callback, void* user_data) {
+// Guards against pathological or cyclic (soft/external link) hierarchies. VeloxChem
+// files nest a handful of levels; anything deeper is not something we should follow.
+#define H5_MAX_GROUP_DEPTH 32
+
+static bool h5_visit_groups_recursive_impl(md_vlx_t* vlx, hid_t group_handle, const char* group_path, h5_group_visit_cb_t callback, void* user_data, int depth) {
 	ASSERT(vlx);
 	ASSERT(group_path);
 	ASSERT(callback);
 
 	if (!callback(vlx, group_handle, group_path, user_data)) {
 		return false;
+	}
+
+	if (depth >= H5_MAX_GROUP_DEPTH) {
+		MD_LOG_ERROR("HDF5 group nesting exceeds %i levels at '%s', not descending further", H5_MAX_GROUP_DEPTH, group_path);
+		return true;
 	}
 
 	H5G_info_t info = { 0 };
@@ -1187,13 +1458,20 @@ static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const c
 
 	char name_buf[256];
 	for (hsize_t i = 0; i < info.nlinks; ++i) {
-		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
-		if (size < 0) {
+		// H5Gget_objname_by_idx / H5Gget_objtype_by_idx are the deprecated 1.6 API and
+		// are compiled out when HDF5 is built without the compatibility layer.
+		// H5Lget_name_by_idx returns the length excluding the terminator, or negative.
+		const ssize_t name_len = H5Lget_name_by_idx(group_handle, ".", H5_INDEX_NAME, H5_ITER_INC, i, name_buf, sizeof(name_buf), H5P_DEFAULT);
+		if (name_len < 0) {
+			continue;
+		}
+		if ((size_t)name_len >= sizeof(name_buf)) {
+			// Truncated: opening the shortened name would resolve to the wrong object.
+			MD_LOG_ERROR("Skipping HDF5 link under '%s' whose name exceeds %zu characters", group_path, sizeof(name_buf) - 1);
 			continue;
 		}
 
-		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
-		if (type != H5G_GROUP) {
+		if (h5_get_object_type(group_handle, name_buf) != H5I_GROUP) {
 			continue;
 		}
 
@@ -1209,7 +1487,7 @@ static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const c
 			snprintf(child_path, sizeof(child_path), "%s/%s", group_path, name_buf);
 		}
 
-		bool result = h5_visit_groups_recursive(vlx, child_group, child_path, callback, user_data);
+		bool result = h5_visit_groups_recursive_impl(vlx, child_group, child_path, callback, user_data, depth + 1);
 		H5Gclose(child_group);
 		if (!result) {
 			return false;
@@ -1219,11 +1497,14 @@ static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const c
 	return true;
 }
 
+static bool h5_visit_groups_recursive(md_vlx_t* vlx, hid_t group_handle, const char* group_path, h5_group_visit_cb_t callback, void* user_data) {
+	return h5_visit_groups_recursive_impl(vlx, group_handle, group_path, callback, user_data, 0);
+}
+
 static bool h5_read_dataset_data(void* out_data, size_t num_samples, hid_t file_id, hid_t mem_type_id, const char* field_name) {
 	ASSERT(out_data);
 
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
+	if (!h5_link_exists(file_id, field_name)) {
 		return false;
 	}
 
@@ -1240,17 +1521,22 @@ static bool h5_read_dataset_data(void* out_data, size_t num_samples, hid_t file_
 		goto done;
 	}
 
-	hsize_t num_points = H5Sget_simple_extent_npoints(space_id);
+	const hssize_t num_points = H5Sget_simple_extent_npoints(space_id);
+	if (num_points < 0) {
+		MD_LOG_ERROR("Failed to query element count for H5 dataset: '%s'", field_name);
+		goto done;
+	}
 
-	if (num_points != num_samples) {
-		MD_LOG_ERROR("Unexpected number of points when reading dataset, got %i, expected %i", num_points, num_samples);
+	if ((hsize_t)num_points != (hsize_t)num_samples) {
+		MD_LOG_ERROR("Unexpected number of points reading H5 dataset '%s', got %llu, expected %zu",
+			field_name, (unsigned long long)num_points, num_samples);
 		goto done;
 	}
 
 	herr_t status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_data);
 
-	if (status != 0) {
-		MD_LOG_ERROR("An error occured when reading H5 data");
+	if (status < 0) {
+		MD_LOG_ERROR("Failed to read H5 dataset: '%s'", field_name);
 		goto done;
 	}
 
@@ -1273,8 +1559,7 @@ done:
 // out_real and out_imag must each hold num_samples doubles. Either may be NULL to skip that
 // component. Plain (non-compound) real datasets are also accepted, in which case out_imag is zeroed.
 static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, size_t num_samples, hid_t file_id, const char* field_name) {
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists <= 0) {
+	if (!h5_link_exists(file_id, field_name)) {
 		return false;
 	}
 
@@ -1312,7 +1597,7 @@ static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, si
 	if (H5Tget_class(file_type_id) != H5T_COMPOUND) {
 		// Not stored as complex, treat the data as purely real.
 		if (out_real) {
-			if (H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) != 0) {
+			if (H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) < 0) {
 				MD_LOG_ERROR("An error occured when reading H5 dataset: '%s'", field_name);
 				goto done;
 			}
@@ -1347,7 +1632,7 @@ static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, si
 			MD_LOG_ERROR("Failed to create a memory datatype for the real part of H5 dataset: '%s'", field_name);
 			goto done;
 		}
-		if (H5Dread(dataset_id, real_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) != 0) {
+		if (H5Dread(dataset_id, real_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_real) < 0) {
 			MD_LOG_ERROR("An error occured when reading the real part of H5 dataset: '%s'", field_name);
 			goto done;
 		}
@@ -1359,7 +1644,7 @@ static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, si
 			MD_LOG_ERROR("Failed to create a memory datatype for the imaginary part of H5 dataset: '%s'", field_name);
 			goto done;
 		}
-		if (H5Dread(dataset_id, imag_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_imag) != 0) {
+		if (H5Dread(dataset_id, imag_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_imag) < 0) {
 			MD_LOG_ERROR("An error occured when reading the imaginary part of H5 dataset: '%s'", field_name);
 			goto done;
 		}
@@ -1405,38 +1690,19 @@ static bool h5_read_atomic_properties_in_group(md_vlx_t* vlx, hid_t group_handle
 			continue;
 		}
 
-		if (!H5Aexists(dataset_id, "atomic_property")) {
-			H5Dclose(dataset_id);
-			continue;
-		}
-
-		hid_t attr_id = H5Aopen(dataset_id, "atomic_property", H5P_DEFAULT);
-		if (attr_id == H5I_INVALID_HID) {
-			H5Dclose(dataset_id);
-			continue;
-		}
+		// The presence of this attribute is what marks a dataset as an atomic property.
+		// A dataset that lacks it, or whose attribute is unreadable, is simply skipped
+		// rather than aborting the whole traversal.
 		char property_label[256] = { 0 };
-		hid_t attr_type = H5Aget_type(attr_id);
-
-		// Check if attribute type is variable length string or fixed length string, and read accordingly
-		if (H5Tis_variable_str(attr_type)) {
-			char* var_str;
-			H5Aread(attr_id, attr_type, &var_str);
-			strncpy(property_label, var_str, sizeof(property_label));
-			H5free_memory(var_str);
-		} else if (H5Tget_class(attr_type) == H5T_STRING) {
-			H5Aread(attr_id, attr_type, property_label);
-		} else {
-			MD_LOG_ERROR("Unexpected attribute type for 'atomic_property' attribute in dataset '%s'", name_buf);
-			goto done;
+		if (!h5_read_string_attribute(property_label, sizeof(property_label), dataset_id, "atomic_property")) {
+			H5Dclose(dataset_id);
+			continue;
 		}
 
-		// If we end up here we did not fail, but we may not have read a property label either, so we check if we got something valid
 		if (property_label[0] == '\0') {
 			// Not an error, just use the field name as the property label
-			strncpy(property_label, name_buf, sizeof(property_label));
+			snprintf(property_label, sizeof(property_label), "%s", name_buf);
 		}
-		property_label[sizeof(property_label) - 1] = '\0';
 
 		// We have a property label, we attempt to read the dataset as an array of doubles with the length of number of atoms
 		hid_t space_id = H5Dget_space(dataset_id);
@@ -1484,15 +1750,14 @@ static bool h5_read_atomic_properties_in_group(md_vlx_t* vlx, hid_t group_handle
 
 		md_array_resize(property.data, num_points, vlx->arena);
 		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read data for atomic property dataset '%s'", name_buf);
 			goto done;
 		}
 
 		md_array_push(vlx->atomic_properties, property, vlx->arena);
 	done:
-		H5Tclose(attr_type);
-		H5Aclose(attr_id);
+		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
 	}
 	return true;
@@ -1525,35 +1790,16 @@ static bool h5_read_density_properties_in_group(md_vlx_t* vlx, hid_t group_handl
 			continue;
 		}
 
-		if (!H5Aexists(dataset_id, "density_property")) {
-			H5Dclose(dataset_id);
-			continue;
-		}
-
-		hid_t attr_id = H5Aopen(dataset_id, "density_property", H5P_DEFAULT);
-		if (attr_id == H5I_INVALID_HID) {
-			H5Dclose(dataset_id);
-			continue;
-		}
+		// As above: the attribute is the marker, so skip rather than abort.
 		char property_label[256] = { 0 };
-		hid_t attr_type = H5Aget_type(attr_id);
-
-		if (H5Tis_variable_str(attr_type)) {
-			char* var_str;
-			H5Aread(attr_id, attr_type, &var_str);
-			strncpy(property_label, var_str, sizeof(property_label));
-			H5free_memory(var_str);
-		} else if (H5Tget_class(attr_type) == H5T_STRING) {
-			H5Aread(attr_id, attr_type, property_label);
-		} else {
-			MD_LOG_ERROR("Unexpected attribute type for 'density_property' attribute in dataset '%s'", name_buf);
-			goto done;
+		if (!h5_read_string_attribute(property_label, sizeof(property_label), dataset_id, "density_property")) {
+			H5Dclose(dataset_id);
+			continue;
 		}
 
 		if (property_label[0] == '\0') {
-			strncpy(property_label, name_buf, sizeof(property_label));
+			snprintf(property_label, sizeof(property_label), "%s", name_buf);
 		}
-		property_label[sizeof(property_label) - 1] = '\0';
 
 		hid_t space_id = H5Dget_space(dataset_id);
 		if (space_id == H5I_INVALID_HID) {
@@ -1601,16 +1847,26 @@ static bool h5_read_density_properties_in_group(md_vlx_t* vlx, hid_t group_handl
 
 		md_array_resize(property.data, num_points, vlx->arena);
 		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
-		if (status != 0) {
+		if (status < 0) {
 			MD_LOG_ERROR("Failed to read data for density property dataset '%s'", name_buf);
 			goto done;
+		}
+
+		// Symmetry is a load-bearing assumption downstream: the GL/GPU density path
+		// packs only the upper triangle (density_matrix_upper_tri_extract_float in
+		// md_gto.c) and the lower half is never read. The SCF and transition densities
+		// are symmetric by construction -- the latter is explicitly symmetrized in
+		// vlx_rsp_extract_transition_density -- but density properties are a generic
+		// pass-through from the file, so nothing has checked them until here.
+		// Report and enforce rather than letting half the matrix be silently dropped.
+		if (dims[0] == dims[1] && dims[0] > 1) {
+			vlx_report_and_enforce_symmetry(property.data, dims[0], property_label);
 		}
 
 		md_array_push(vlx->density_properties, property, vlx->arena);
 		MD_LOG_DEBUG("Read density property '%s' with dimensions [%zu x %zu]", property_label, dims[0], dims[1]);
 	done:
-		H5Tclose(attr_type);
-		H5Aclose(attr_id);
+		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
 	}
 	return true;
@@ -1688,6 +1944,149 @@ static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int
 	}
 done:
 	md_temp_end(temp);
+}
+
+// ---------------------------------------------------------------------------
+// Pure/spherical -> Cartesian AO conversion
+// ---------------------------------------------------------------------------
+// VeloxChem stores AO data in the pure (2l+1) basis. md_gto_basis_t consumes the
+// Cartesian ((l+1)(l+2)/2) basis -- see the AO CONVENTION block in md_gto.h.
+// Everything AO-indexed is converted once, here, at the end of parsing.
+//
+// ORDER MATTERS. This must run *after* ao_permute*() has put the matrices in
+// shell order, and after every piece of format-internal math that touches the
+// AO basis. The Cartesian embedding is rank deficient (the s-type contaminant of
+// a d shell is unoccupied), so a converted overlap matrix is singular: anything
+// that inverts or Lowdin-orthogonalizes S must have run already.
+
+// [num_mo][n_sph] -> [num_mo][n_cart], reallocated from 'arena'.
+static bool vlx_cart_convert_coeff(md_vlx_2d_data_t* mat, const md_gto_basis_t* basis,
+	size_t n_sph, size_t n_cart, md_allocator_i* arena, const char* label)
+{
+	if (!mat->data) return true;
+
+	if (mat->size[1] != n_sph) {
+		MD_LOG_ERROR("%s: expected %zu spherical AO columns, got %zu", label, n_sph, mat->size[1]);
+		return false;
+	}
+
+	const size_t num_mo = mat->size[0];
+	double* dst = (double*)md_alloc(arena, sizeof(double) * num_mo * n_cart);
+	if (!dst) {
+		MD_LOG_ERROR("%s: failed to allocate Cartesian coefficient matrix", label);
+		return false;
+	}
+
+	for (size_t mo = 0; mo < num_mo; ++mo) {
+		if (md_gto_sph_to_cart_vector(dst + mo * n_cart, mat->data + mo * n_sph, basis) != n_cart) {
+			MD_LOG_ERROR("%s: spherical to Cartesian conversion failed for MO %zu", label, mo);
+			return false;
+		}
+	}
+
+	mat->data    = dst;
+	mat->size[1] = n_cart;
+	return true;
+}
+
+// [n_sph][n_sph] -> [n_cart][n_cart], reallocated from 'arena'.
+static bool vlx_cart_convert_square(md_vlx_2d_data_t* mat, const md_gto_basis_t* basis,
+	size_t n_sph, size_t n_cart, md_allocator_i* arena, const char* label)
+{
+	if (!mat->data) return true;
+
+	if (mat->size[0] != n_sph || mat->size[1] != n_sph) {
+		MD_LOG_ERROR("%s: expected [%zu x %zu] spherical AO matrix, got [%zu x %zu]",
+			label, n_sph, n_sph, mat->size[0], mat->size[1]);
+		return false;
+	}
+
+	double* dst = (double*)md_alloc(arena, sizeof(double) * n_cart * n_cart);
+	if (!dst) {
+		MD_LOG_ERROR("%s: failed to allocate Cartesian matrix", label);
+		return false;
+	}
+
+	if (md_gto_sph_to_cart_matrix(dst, mat->data, basis) != n_cart) {
+		MD_LOG_ERROR("%s: spherical to Cartesian matrix conversion failed", label);
+		return false;
+	}
+
+	mat->data    = dst;
+	mat->size[0] = n_cart;
+	mat->size[1] = n_cart;
+	return true;
+}
+
+static bool vlx_convert_ao_data_to_cartesian(md_vlx_t* vlx) {
+	md_temp_scope_t temp = md_temp_begin();
+	md_allocator_i* temp_alloc = md_temp_allocator(temp);
+	bool result = false;
+
+	md_gto_basis_t basis = {0};
+	if (!md_vlx_gto_basis_extract(&basis, vlx, temp_alloc)) {
+		MD_LOG_ERROR("Failed to extract GTO basis for Cartesian AO conversion");
+		goto done;
+	}
+
+	const size_t n_sph  = md_gto_basis_num_sph_ao(&basis);
+	const size_t n_cart = md_gto_basis_num_ao(&basis);
+	if (n_sph == 0 || n_cart == 0) {
+		MD_LOG_ERROR("Cartesian AO conversion: empty basis (n_sph=%zu n_cart=%zu)", n_sph, n_cart);
+		goto done;
+	}
+
+	// In the restricted case the beta orbital shares alpha's buffers (see the
+	// struct memcpy in the parse path). Detect that so we convert once and
+	// re-alias rather than converting the same memory twice.
+	const bool beta_aliases_alpha =
+		(vlx->scf.beta.coefficients.data != NULL &&
+		 vlx->scf.beta.coefficients.data == vlx->scf.alpha.coefficients.data);
+
+	if (!vlx_cart_convert_coeff(&vlx->scf.alpha.coefficients, &basis, n_sph, n_cart, vlx->arena, "Alpha orbital coefficients")) goto done;
+	if (!vlx_cart_convert_square(&vlx->scf.alpha.density,     &basis, n_sph, n_cart, vlx->arena, "Alpha density")) goto done;
+
+	if (beta_aliases_alpha) {
+		MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(md_vlx_2d_data_t));
+		MEMCPY(&vlx->scf.beta.density,      &vlx->scf.alpha.density,      sizeof(md_vlx_2d_data_t));
+	} else {
+		if (!vlx_cart_convert_coeff(&vlx->scf.beta.coefficients, &basis, n_sph, n_cart, vlx->arena, "Beta orbital coefficients")) goto done;
+		if (!vlx_cart_convert_square(&vlx->scf.beta.density,     &basis, n_sph, n_cart, vlx->arena, "Beta density")) goto done;
+	}
+
+	if (!vlx_cart_convert_square(&vlx->scf.S, &basis, n_sph, n_cart, vlx->arena, "SCF overlap")) goto done;
+
+	// Density properties are AO-basis [N][N] matrices read straight from the file.
+	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
+		md_vlx_density_property_t* prop = &vlx->density_properties[i];
+		if (!prop->data) continue;
+
+		md_vlx_2d_data_t view = { .size = { prop->dim[0], prop->dim[1] }, .data = prop->data };
+		if (!vlx_cart_convert_square(&view, &basis, n_sph, n_cart, vlx->arena, "Density property")) goto done;
+
+		prop->data   = view.data;
+		prop->dim[0] = view.size[0];
+		prop->dim[1] = view.size[1];
+	}
+
+	// Derive the AO -> atom map from the shell list, so it cannot drift out of
+	// step with the AO ordering the evaluator walks.
+	md_array_resize(vlx->ao_to_atom_idx, n_cart, vlx->arena);
+	{
+		uint32_t* tmp_map = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * n_cart);
+		if (!tmp_map || md_gto_basis_ao_to_atom(tmp_map, &basis) != n_cart) {
+			MD_LOG_ERROR("Failed to derive the AO to atom map");
+			goto done;
+		}
+		for (size_t i = 0; i < n_cart; ++i) {
+			vlx->ao_to_atom_idx[i] = (int)tmp_map[i];
+		}
+	}
+
+	result = true;
+done:
+	md_temp_end(temp);
+	return result;
 }
 
 static bool validate_square_matrix_dims(const md_vlx_2d_data_t* data, const char* label) {
@@ -1971,7 +2370,9 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		//return false;
 	}
 
-	if (H5Lexists(handle, "scf_history", H5P_DEFAULT)) {
+	// NOTE: H5Lexists returns htri_t -- negative on error, which is truthy. Test
+	// explicitly, or a failed lookup is taken as "present" and the read proceeds.
+	if (h5_link_exists(handle, "scf_history")) {
 		// Extract new history format. This contains individual groups for each iteration labeled '0' ... 'N'.
 		// Each group contains scalar datasets for the values of that iteration.
 		// The individual datasets are named:
@@ -2029,7 +2430,7 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 			}
 		}
 		vlx->scf.history.number_of_iterations = num_iter;
-	} else if (H5Lexists(handle, "scf_history_energy", H5P_DEFAULT)) {
+	} else if (h5_link_exists(handle, "scf_history_energy")) {
 		size_t scf_hist_len = 0;
 		if (!h5_read_dataset_dims(&scf_hist_len, 1, handle, "scf_history_energy")) {
 			return false;
@@ -3286,10 +3687,13 @@ static bool vlx_read_scf_results(md_vlx_t* vlx, str_t filename, vlx_flags_t flag
 	char buf[2048];
 	str_copy_to_char_buf(buf, sizeof(buf), filename);
 
+	h5_error_scope_t h5_err_scope = h5_error_scope_begin();
+
 	// Open an existing file
 	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
 	if (file_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(filename));
+		h5_error_scope_end(h5_err_scope);
 		return false;
 	}
 
@@ -3310,6 +3714,7 @@ static bool vlx_read_scf_results(md_vlx_t* vlx, str_t filename, vlx_flags_t flag
 	result = true;
 done:
 	H5Fclose(file_id);
+	h5_error_scope_end(h5_err_scope);
 
 	return result;
 }
@@ -3324,10 +3729,13 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	char buf[2048];
 	str_copy_to_char_buf(buf, sizeof(buf), filename);
 
+	h5_error_scope_t h5_err_scope = h5_error_scope_begin();
+
 	// Open an existing file
 	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
 	if (file_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(filename));
+		h5_error_scope_end(h5_err_scope);
 		return false;
 	}
 
@@ -3415,6 +3823,7 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	result = true;
 done:
 	H5Fclose(file_id);
+	h5_error_scope_end(h5_err_scope);
 
 	return result;
 }
@@ -3697,6 +4106,14 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
 				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
 			}
+
+			// Everything is now in shell order and no further AO-basis math is
+			// performed, so this is the point to leave VeloxChem's pure/spherical
+			// basis for the Cartesian one that md_gto_basis_t requires.
+			if (!vlx_convert_ao_data_to_cartesian(vlx)) {
+				MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
+				goto done;
+			}
 		}
 	}
 
@@ -3725,15 +4142,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
-	if (vlx->number_of_atoms > 0 && vlx->scf.type != MD_VLX_SCF_UNKNOWN) {
-		// Extract ao_to_atom_idx map
-		size_t N = md_vlx_scf_number_of_atomic_orbitals(vlx);
-		if (N > 0) {
-			md_array_resize(vlx->ao_to_atom_idx, N, vlx->arena);
-			extract_ao_to_atom_idx(vlx->ao_to_atom_idx, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
-		}
-
-	}
+	// NOTE: ao_to_atom_idx is built inside vlx_convert_ao_data_to_cartesian(), derived
+	// from the shell list so it matches the Cartesian AO ordering. The old
+	// extract_ao_to_atom_idx() path produced spherical indices and is no longer used
+	// here (it is still used to infer the pre-conversion AO count).
 
 	result = true;
 done:
@@ -4385,10 +4797,13 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) 
 	char buf[2048];
 	str_copy_to_char_buf(buf, sizeof(buf), filename);
 
+	h5_error_scope_t h5_err_scope = h5_error_scope_begin();
+
 	// Open an existing file
 	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
 	if (file_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(filename));
+		h5_error_scope_end(h5_err_scope);
 		return false;
 	}
 
@@ -4429,6 +4844,7 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) 
 	}
 
 	H5Fclose(file_id);
+	h5_error_scope_end(h5_err_scope);
 
 	return result;
 }

@@ -169,19 +169,225 @@ static inline const gto_lmn_t* gto_cart_lmn(int l) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cartesian AO helpers  (see the AO CONVENTION block in md_gto.h)
+// ---------------------------------------------------------------------------
+
+// (2n-1)!! with (-1)!! == 1.
+static inline double gto_double_factorial_odd(int n) {
+    double r = 1.0;
+    for (int k = 2 * n - 1; k > 1; k -= 2) r *= (double)k;
+    return r;
+}
+
+double md_gto_cart_norm_factor(int i, int j, int k) {
+    double d = gto_double_factorial_odd(i) * gto_double_factorial_odd(j) * gto_double_factorial_odd(k);
+    return 1.0 / sqrt(d);
+}
+
+bool md_gto_cart_ijk(int* out_i, int* out_j, int* out_k, uint32_t l, uint32_t cart_idx) {
+    if (l > MD_GTO_MAX_ANGULAR_MOMENTUM || cart_idx >= md_gto_num_cart_ao(l)) return false;
+    const gto_lmn_t* lmn = gto_cart_lmn((int)l);
+    if (out_i) *out_i = lmn[cart_idx][0];
+    if (out_j) *out_j = lmn[cart_idx][1];
+    if (out_k) *out_k = lmn[cart_idx][2];
+    return true;
+}
+
+// Per-(l, cart_idx) normalization factor, matching the lmn tables above.
+static inline double gto_cart_norm(int l, int ic) {
+    const gto_lmn_t* lmn = gto_cart_lmn(l);
+    return md_gto_cart_norm_factor(lmn[ic][0], lmn[ic][1], lmn[ic][2]);
+}
+
+size_t md_gto_basis_num_ao(const md_gto_basis_t* basis) {
+    if (!basis) return 0;
+    size_t n = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        n += md_gto_num_cart_ao(basis->shells[si].l);
+    }
+    return n;
+}
+
+size_t md_gto_basis_ao_to_atom(uint32_t* out_atom_idx, const md_gto_basis_t* basis) {
+    if (!out_atom_idx || !basis) return 0;
+    size_t k = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const uint32_t n = md_gto_num_cart_ao(basis->shells[si].l);
+        for (uint32_t q = 0; q < n; ++q) {
+            out_atom_idx[k++] = basis->shells[si].atom_idx;
+        }
+    }
+    return k;
+}
+
+size_t md_gto_basis_num_sph_ao(const md_gto_basis_t* basis) {
+    if (!basis) return 0;
+    size_t n = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        n += md_gto_num_sph_ao(basis->shells[si].l);
+    }
+    return n;
+}
+
+// Scatter one shell's spherical coefficients onto its Cartesian AOs.
+// c_cart[m] = ( sum_isph c_sph[isph] * coupling(isph -> m) ) / f(m)
+// The division by f undoes the normalization that the evaluator re-applies, so
+// the represented function is unchanged.
+static void gto_shell_sph_to_cart(double* out_cart, const double* in_sph, int l) {
+    const int ncart = (int)md_gto_num_cart_ao((uint32_t)l);
+    const int nsph  = (int)md_gto_num_sph_ao((uint32_t)l);
+
+    for (int m = 0; m < ncart; ++m) out_cart[m] = 0.0;
+
+    for (int isph = 0; isph < nsph; isph++) {
+        const double   c      = in_sph[isph];
+        const int      ncomp  = gto_sph_num_factors(l, isph);
+        const double*  fcarts = gto_sph_factors(l, isph);
+        const uint8_t* sidx   = gto_sph_indices(l, isph);
+        for (int ic = 0; ic < ncomp; ic++) {
+            out_cart[sidx[ic]] += c * fcarts[ic];
+        }
+    }
+
+    for (int m = 0; m < ncart; ++m) out_cart[m] /= gto_cart_norm(l, m);
+}
+
+size_t md_gto_sph_to_cart_vector(double* out_cart, const double* in_sph, const md_gto_basis_t* basis) {
+    if (!out_cart || !in_sph || !basis) return 0;
+    size_t si_off = 0, ci_off = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const int l = (int)basis->shells[si].l;
+        if (l > MD_GTO_MAX_ANGULAR_MOMENTUM) return 0;
+        gto_shell_sph_to_cart(out_cart + ci_off, in_sph + si_off, l);
+        si_off += md_gto_num_sph_ao((uint32_t)l);
+        ci_off += md_gto_num_cart_ao((uint32_t)l);
+    }
+    return ci_off;
+}
+
+#define GTO_MAX_SPH_PER_SHELL  (2 * MD_GTO_MAX_ANGULAR_MOMENTUM + 1)
+#define GTO_MAX_CART_PER_SHELL (((MD_GTO_MAX_ANGULAR_MOMENTUM + 1) * (MD_GTO_MAX_ANGULAR_MOMENTUM + 2)) / 2)
+#define GTO_MAX_FACTORS        8
+
+// The nonzero entries of one column of the per-shell transform, i.e. everything
+// spherical function 'isph' contributes to:
+//     c_cart[out_idx[t]] += out_w[t] * c_sph[isph]
+// Returns the number of entries. A d function touches at most 3 monomials out of 6,
+// so iterating these instead of a dense block skips most of the arithmetic.
+static int gto_sph_cart_entries(uint8_t* out_idx, double* out_w, int l, int isph) {
+    const int      ncomp  = gto_sph_num_factors(l, isph);
+    const double*  fcarts = gto_sph_factors(l, isph);
+    const uint8_t* sidx   = gto_sph_indices(l, isph);
+
+    for (int t = 0; t < ncomp; ++t) {
+        out_idx[t] = sidx[t];
+        out_w[t]   = fcarts[t] / gto_cart_norm(l, sidx[t]);
+    }
+    return ncomp;
+}
+
+// M_cart = T^T * M_sph * T.
+//
+// T is block diagonal (a shell's spherical functions only touch that same shell's
+// Cartesian AOs) and each block is sparse (8 nonzeros out of 5x6 for d, 16 of 7x10
+// for f). Both are exploited:
+//
+//   pass 1  A = M[rows of shell I] * T     -- sparse scatter, one shell-row block
+//   pass 2  out[rows of shell I] = T_I^T * A  -- AXPY over full rows
+//
+// Cost is ~3*N^2 rather than the ~30*N^2 of dense small-block multiplies, and both
+// inner loops are contiguous, which matters a lot in unoptimized builds. Scratch is
+// bounded by (2l+1) rows, a few hundred KB, independent of N.
+//
+// Symmetry is NOT assumed, so this stays correct for a non-symmetric input.
+size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const md_gto_basis_t* basis) {
+    if (!out_cart || !in_sph || !basis) return 0;
+
+    const size_t n_sph  = md_gto_basis_num_sph_ao(basis);
+    const size_t n_cart = md_gto_basis_num_ao(basis);
+    if (n_sph == 0 || n_cart == 0) return 0;
+
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        if (basis->shells[si].l > MD_GTO_MAX_ANGULAR_MOMENTUM) return 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+
+    size_t* sph_off  = (size_t*)md_temp_alloc(temp, sizeof(size_t) * basis->num_shells);
+    size_t* cart_off = (size_t*)md_temp_alloc(temp, sizeof(size_t) * basis->num_shells);
+    // At most (2l+1) rows of the intermediate are live at a time.
+    double* A        = (double*)md_temp_alloc(temp, sizeof(double) * GTO_MAX_SPH_PER_SHELL * n_cart);
+
+    if (!sph_off || !cart_off || !A) {
+        MD_LOG_ERROR("Failed to allocate scratch for spherical to Cartesian matrix conversion");
+        md_temp_end(temp);
+        return 0;
+    }
+
+    {
+        size_t so = 0, co = 0;
+        for (uint32_t si = 0; si < basis->num_shells; si++) {
+            sph_off[si]  = so;
+            cart_off[si] = co;
+            so += md_gto_num_sph_ao(basis->shells[si].l);
+            co += md_gto_num_cart_ao(basis->shells[si].l);
+        }
+    }
+
+    uint8_t ent_idx[GTO_MAX_FACTORS];
+    double  ent_w  [GTO_MAX_FACTORS];
+
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        const int li     = (int)basis->shells[si].l;
+        const int nsph_i = (int)md_gto_num_sph_ao((uint32_t)li);
+        const int ncrt_i = (int)md_gto_num_cart_ao((uint32_t)li);
+
+        // Pass 1: right-multiply this shell's rows of M by T.
+        // gto_shell_sph_to_cart() writes (and zeroes) exactly one shell block, so the
+        // shell loop below covers every column of A without a separate clear.
+        for (int p = 0; p < nsph_i; ++p) {
+            const double* m_row = in_sph + (sph_off[si] + (size_t)p) * n_sph;
+            double*       a_row = A + (size_t)p * n_cart;
+            for (uint32_t sj = 0; sj < basis->num_shells; sj++) {
+                gto_shell_sph_to_cart(a_row + cart_off[sj], m_row + sph_off[sj], (int)basis->shells[sj].l);
+            }
+        }
+
+        // Pass 2: left-multiply by T_I^T, accumulating into the output rows.
+        for (int a = 0; a < ncrt_i; ++a) {
+            MEMSET(out_cart + (cart_off[si] + (size_t)a) * n_cart, 0, sizeof(double) * n_cart);
+        }
+
+        for (int p = 0; p < nsph_i; ++p) {
+            const double* a_row = A + (size_t)p * n_cart;
+            const int     ncomp = gto_sph_cart_entries(ent_idx, ent_w, li, p);
+
+            for (int t = 0; t < ncomp; ++t) {
+                double*      o_row = out_cart + (cart_off[si] + (size_t)ent_idx[t]) * n_cart;
+                const double w     = ent_w[t];
+                for (size_t c = 0; c < n_cart; ++c) {
+                    o_row[c] += w * a_row[c];
+                }
+            }
+        }
+    }
+
+    md_temp_end(temp);
+    return n_cart;
+}
+
 // Count the number of CGTOs and PGTOs that will result from expanding a basis.
+// One CGTO per Cartesian AO, one PGTO per (Cartesian AO, primitive) pair.
 static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
     const md_gto_basis_t* basis)
 {
     uint32_t nc = 0, np = 0;
     for (uint32_t si = 0; si < basis->num_shells; si++) {
-        int l      = (int)basis->shells[si].l;
-        int nsph   = 2 * l + 1;
-        int nprims = (int)basis->shells[si].num_primitives;
-        nc += (uint32_t)nsph;
-        for (int isph = 0; isph < nsph; isph++) {
-            np += (uint32_t)(gto_sph_num_factors(l, isph) * nprims);
-        }
+        uint32_t ncart  = md_gto_num_cart_ao(basis->shells[si].l);
+        uint32_t nprims = basis->shells[si].num_primitives;
+        nc += ncart;
+        np += ncart * nprims;
     }
     *out_num_cgtos = nc;
     *out_num_pgtos = np;
@@ -208,40 +414,32 @@ static void gto_expand_basis_gpu_meta(
     for (uint32_t si = 0; si < basis->num_shells; si++) {
         const md_gto_shell_t* shell = &basis->shells[si];
         int l      = (int)shell->l;
-        int nsph   = 2 * l + 1;
+        int ncart  = (int)md_gto_num_cart_ao(shell->l);
         int nprims = (int)shell->num_primitives;
         uint32_t   prim_base = shell->primitive_offset;
         const gto_lmn_t* lmn = gto_cart_lmn(l);
 
-        for (int isph = 0; isph < nsph; isph++) {
-            int            ncomp  = gto_sph_num_factors(l, isph);
-            const double*  fcarts = gto_sph_factors(l, isph);
-            const uint8_t* sidx   = gto_sph_indices(l, isph);
-
-            int lx[8], ly[8], lz[8];
-            for (int ic = 0; ic < ncomp; ic++) {
-                lx[ic] = lmn[sidx[ic]][0];
-                ly[ic] = lmn[sidx[ic]][1];
-                lz[ic] = lmn[sidx[ic]][2];
-            }
+        for (int ic = 0; ic < ncart; ic++) {
+            const int    lx = lmn[ic][0];
+            const int    ly = lmn[ic][1];
+            const int    lz = lmn[ic][2];
+            const double nrm = gto_cart_norm(l, ic);
 
             uint32_t pi_beg = pi;
             double max_r = 0.0;
             for (int ip = 0; ip < nprims; ip++) {
                 float alpha = basis->alpha[prim_base + ip];
                 float coef1 = basis->coeff[prim_base + ip];
-                for (int ic = 0; ic < ncomp; ic++) {
-                    float coeff_val = (float)(coef1 * fcarts[ic]);
-                    double radius = md_gto_compute_radius_of_influence(lx[ic], ly[ic], lz[ic], (double)coeff_val, (double)alpha, cutoff);
-                    max_r = MAX(max_r, radius);
+                float coeff_val = (float)(coef1 * nrm);
+                double radius = md_gto_compute_radius_of_influence(lx, ly, lz, (double)coeff_val, (double)alpha, cutoff);
+                max_r = MAX(max_r, radius);
 
-                    PGTO pgto = {
-                        .coeff = coeff_val,
-                        .alpha = alpha,
-                        .ijkl = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l),
-                    };
-                    out_pgto[pi++] = pgto;
-                }
+                PGTO pgto = {
+                    .coeff = coeff_val,
+                    .alpha = alpha,
+                    .ijkl = md_gto_pack_ijkl(lx, ly, lz, l),
+                };
+                out_pgto[pi++] = pgto;
             }
 
             out_cgto_atom_idx[ci] = shell->atom_idx;
@@ -267,7 +465,7 @@ static void gto_expand_basis(
     for (uint32_t si = 0; si < basis->num_shells; si++) {
         const md_gto_shell_t* shell = &basis->shells[si];
         int l      = (int)shell->l;
-        int nsph   = 2 * l + 1;
+        int ncart  = (int)md_gto_num_cart_ao(shell->l);
         int nprims = (int)shell->num_primitives;
         uint32_t   prim_base = shell->primitive_offset;
         const gto_lmn_t* lmn = gto_cart_lmn(l);
@@ -276,36 +474,28 @@ static void gto_expand_basis(
         float ay = ap[1];
         float az = ap[2];
 
-        for (int isph = 0; isph < nsph; isph++) {
-            int           ncomp   = gto_sph_num_factors(l, isph);
-            const double* fcarts  = gto_sph_factors(l, isph);
-            const uint8_t* sidx   = gto_sph_indices(l, isph);
-
-            int lx[8], ly[8], lz[8];
-            for (int ic = 0; ic < ncomp; ic++) {
-                lx[ic] = lmn[sidx[ic]][0];
-                ly[ic] = lmn[sidx[ic]][1];
-                lz[ic] = lmn[sidx[ic]][2];
-            }
+        for (int ic = 0; ic < ncart; ic++) {
+            const int    lx  = lmn[ic][0];
+            const int    ly  = lmn[ic][1];
+            const int    lz  = lmn[ic][2];
+            const double nrm = gto_cart_norm(l, ic);
 
             uint32_t pi_beg = pi;
-            
+
             double max_r = 0.0;
             for (int ip = 0; ip < nprims; ip++) {
                 float alpha = basis->alpha[prim_base + ip];
                 float coef1 = basis->coeff[prim_base + ip];
-                for (int ic = 0; ic < ncomp; ic++) {
-                    float coeff_val = (float)(coef1 * fcarts[ic]);
-                    double radius = md_gto_compute_radius_of_influence(lx[ic], ly[ic], lz[ic], (double)coeff_val, (double)alpha, cutoff);
-                    max_r = MAX(max_r, radius);
+                float coeff_val = (float)(coef1 * nrm);
+                double radius = md_gto_compute_radius_of_influence(lx, ly, lz, (double)coeff_val, (double)alpha, cutoff);
+                max_r = MAX(max_r, radius);
 
-                    PGTO pgto = {
-                        .coeff = coeff_val,
-                        .alpha = alpha,
-                        .ijkl = md_gto_pack_ijkl(lx[ic], ly[ic], lz[ic], l),
-                    };
-                    out_pgto[pi++] = pgto;
-                }
+                PGTO pgto = {
+                    .coeff = coeff_val,
+                    .alpha = alpha,
+                    .ijkl = md_gto_pack_ijkl(lx, ly, lz, l),
+                };
+                out_pgto[pi++] = pgto;
             }
 
             out_cgto_xyz[ci * 3 + 0] = ax;
@@ -500,7 +690,7 @@ size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
     for (uint32_t si = 0; si < basis->num_shells; si++) {
         const md_gto_shell_t* shell = &basis->shells[si];
         int l      = (int)shell->l;
-        int nsph   = 2 * l + 1;
+        int ncart  = (int)md_gto_num_cart_ao(shell->l);
         int nprims = (int)shell->num_primitives;
         uint32_t prim_base = shell->primitive_offset;
         const gto_lmn_t* lmn = gto_cart_lmn(l);
@@ -509,29 +699,25 @@ size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
         float ay = ap[1];
         float az = ap[2];
 
-        for (int isph = 0; isph < nsph; isph++) {
-            double ao_coeff = ao_coeffs[cgto_idx++];
-            int           ncomp  = gto_sph_num_factors(l, isph);
-            const double* fcarts = gto_sph_factors(l, isph);
-            const uint8_t* sidx  = gto_sph_indices(l, isph);
+        for (int ic = 0; ic < ncart; ic++) {
+            const double ao_coeff = ao_coeffs[cgto_idx++];
+            const double nrm      = gto_cart_norm(l, ic);
 
             for (int ip = 0; ip < nprims; ip++) {
                 float alpha = basis->alpha[prim_base + ip];
                 float coef1 = basis->coeff[prim_base + ip];
-                for (int ic = 0; ic < ncomp; ic++) {
-                    out[num_gtos++] = (md_gto_t){
-                        .x      = ax,
-                        .y      = ay,
-                        .z      = az,
-                        .coeff  = (float)(coef1 * fcarts[ic] * ao_coeff),
-                        .alpha  = alpha,
-                        .cutoff = FLT_MAX,
-                        .i      = lmn[sidx[ic]][0],
-                        .j      = lmn[sidx[ic]][1],
-                        .k      = lmn[sidx[ic]][2],
-                        .l      = (uint8_t)l,
-                    };
-                }
+                out[num_gtos++] = (md_gto_t){
+                    .x      = ax,
+                    .y      = ay,
+                    .z      = az,
+                    .coeff  = (float)(coef1 * nrm * ao_coeff),
+                    .alpha  = alpha,
+                    .cutoff = FLT_MAX,
+                    .i      = (uint8_t)lmn[ic][0],
+                    .j      = (uint8_t)lmn[ic][1],
+                    .k      = (uint8_t)lmn[ic][2],
+                    .l      = (uint8_t)l,
+                };
             }
         }
     }

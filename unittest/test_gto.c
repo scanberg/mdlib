@@ -75,6 +75,164 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
     md_temp_end(temp);
 }
 
+// The basis is Cartesian (see the AO CONVENTION block in md_gto.h). These pin the
+// counting and the normalization convention so a reader that gets either wrong
+// fails here rather than silently producing plausible but wrong orbitals.
+UTEST(gto, cartesian_ao_counts) {
+    EXPECT_EQ(1u,  md_gto_num_cart_ao(0));
+    EXPECT_EQ(3u,  md_gto_num_cart_ao(1));
+    EXPECT_EQ(6u,  md_gto_num_cart_ao(2));
+    EXPECT_EQ(10u, md_gto_num_cart_ao(3));
+    EXPECT_EQ(15u, md_gto_num_cart_ao(4));
+
+    EXPECT_EQ(1u, md_gto_num_sph_ao(0));
+    EXPECT_EQ(3u, md_gto_num_sph_ao(1));
+    EXPECT_EQ(5u, md_gto_num_sph_ao(2));
+    EXPECT_EQ(7u, md_gto_num_sph_ao(3));
+    EXPECT_EQ(9u, md_gto_num_sph_ao(4));
+
+    // Documented order: for i = l..0, for j = (l-i)..0, k = l-i-j.
+    // l=2 must be xx, xy, xz, yy, yz, zz -- NOT Gaussian's xx, yy, zz, xy, xz, yz.
+    const int expect_d[6][3] = {{2,0,0},{1,1,0},{1,0,1},{0,2,0},{0,1,1},{0,0,2}};
+    for (uint32_t n = 0; n < 6; ++n) {
+        int i, j, k;
+        ASSERT_TRUE(md_gto_cart_ijk(&i, &j, &k, 2, n));
+        EXPECT_EQ(expect_d[n][0], i);
+        EXPECT_EQ(expect_d[n][1], j);
+        EXPECT_EQ(expect_d[n][2], k);
+    }
+    EXPECT_FALSE(md_gto_cart_ijk(NULL, NULL, NULL, 2, 6));
+
+    // f(i,j,k) = 1/sqrt((2i-1)!!(2j-1)!!(2k-1)!!)
+    EXPECT_NEAR(1.0,               md_gto_cart_norm_factor(0,0,0), 1.0e-12);  // s
+    EXPECT_NEAR(1.0,               md_gto_cart_norm_factor(1,0,0), 1.0e-12);  // p
+    EXPECT_NEAR(1.0 / sqrt(3.0),   md_gto_cart_norm_factor(2,0,0), 1.0e-12);  // d xx
+    EXPECT_NEAR(1.0,               md_gto_cart_norm_factor(1,1,0), 1.0e-12);  // d xy
+    EXPECT_NEAR(1.0 / sqrt(15.0),  md_gto_cart_norm_factor(3,0,0), 1.0e-12);  // f xxx
+    EXPECT_NEAR(1.0 / sqrt(105.0), md_gto_cart_norm_factor(4,0,0), 1.0e-12);  // g xxxx
+}
+
+// A spherical shell embedded in the Cartesian basis is rank deficient: the pure
+// d functions span only 5 of the 6 Cartesian directions. Converting the identity
+// spanning set must therefore leave the s-type contaminant direction untouched.
+// This catches a transposed or mis-scaled transform, which would otherwise show
+// up only as subtly wrong lobes.
+UTEST(gto, sph_to_cart_vector_dimensions) {
+    md_gto_shell_t shells[3] = {
+        { .atom_idx = 0, .primitive_offset = 0, .num_primitives = 1, .l = 0 },
+        { .atom_idx = 0, .primitive_offset = 1, .num_primitives = 1, .l = 1 },
+        { .atom_idx = 0, .primitive_offset = 2, .num_primitives = 1, .l = 2 },
+    };
+    float alpha[3] = {1.0f, 1.0f, 1.0f};
+    float coeff[3] = {1.0f, 1.0f, 1.0f};
+    md_gto_basis_t basis = {
+        .num_shells = 3, .num_primitives = 3,
+        .shells = shells, .alpha = alpha, .coeff = coeff,
+    };
+
+    EXPECT_EQ((size_t)(1 + 3 + 5),  md_gto_basis_num_sph_ao(&basis));
+    EXPECT_EQ((size_t)(1 + 3 + 6),  md_gto_basis_num_ao(&basis));
+
+    double in_sph[9]   = {0};
+    double out_cart[10] = {0};
+    in_sph[4] = 1.0;  // one of the d functions
+
+    EXPECT_EQ((size_t)10, md_gto_sph_to_cart_vector(out_cart, in_sph, &basis));
+
+    // s and p blocks are untouched by a pure-d input.
+    EXPECT_NEAR(0.0, out_cart[0], 1.0e-12);
+    for (int i = 1; i < 4; ++i) EXPECT_NEAR(0.0, out_cart[i], 1.0e-12);
+
+    double d_norm = 0.0;
+    for (int i = 4; i < 10; ++i) d_norm += out_cart[i] * out_cart[i];
+    EXPECT_GT(d_norm, 1.0e-6);
+}
+
+// md_gto_sph_to_cart_matrix() exploits the block-diagonal structure of the
+// transform. This checks it against the dense T^T M T formulation built from the
+// vector path, which is the thing the block version is an optimization of.
+UTEST(gto, sph_to_cart_matrix_matches_dense) {
+    md_temp_scope_t temp = md_temp_begin();
+
+    enum { NUM_ATOMS = 3, MAX_L = 4 };
+    md_gto_shell_t shells[(MAX_L + 1) * NUM_ATOMS];
+    float alpha[256], coeff[256];
+
+    uint32_t ns = 0, np = 0;
+    for (uint32_t l = 0; l <= MAX_L; ++l) {
+        for (uint32_t a = 0; a < NUM_ATOMS; ++a) {
+            const uint32_t nprim = 2 + (l % 2);
+            shells[ns] = (md_gto_shell_t){ .atom_idx = a, .primitive_offset = np, .num_primitives = nprim, .l = l };
+            for (uint32_t p = 0; p < nprim; ++p) {
+                alpha[np] = (float)(0.4 + 0.7 * p + 0.2 * l);
+                coeff[np] = (float)(0.5 + 0.1 * p);
+                np++;
+            }
+            ns++;
+        }
+    }
+    md_gto_basis_t basis = { .num_shells = ns, .num_primitives = np, .shells = shells, .alpha = alpha, .coeff = coeff };
+
+    const size_t n_sph  = md_gto_basis_num_sph_ao(&basis);
+    const size_t n_cart = md_gto_basis_num_ao(&basis);
+
+    double* M = md_temp_alloc_zero_array(temp, double, n_sph * n_sph);
+    uint32_t seed = 12345;
+    for (size_t i = 0; i < n_sph; ++i) {
+        for (size_t j = i; j < n_sph; ++j) {
+            seed = seed * 1664525u + 1013904223u;
+            const double v = (double)(seed >> 8) / (double)(1u << 24) - 0.5;
+            M[i * n_sph + j] = v;
+            M[j * n_sph + i] = v;
+        }
+    }
+
+    double* got = md_temp_alloc_zero_array(temp, double, n_cart * n_cart);
+    ASSERT_EQ(n_cart, md_gto_sph_to_cart_matrix(got, M, &basis));
+
+    // Dense reference.
+    double* T   = md_temp_alloc_zero_array(temp, double, n_sph * n_cart);
+    double* e   = md_temp_alloc_zero_array(temp, double, n_sph);
+    double* col = md_temp_alloc_zero_array(temp, double, n_cart);
+    for (size_t r = 0; r < n_sph; ++r) {
+        MEMSET(e, 0, sizeof(double) * n_sph);
+        e[r] = 1.0;
+        md_gto_sph_to_cart_vector(col, e, &basis);
+        for (size_t c = 0; c < n_cart; ++c) T[r * n_cart + c] = col[c];
+    }
+
+    double* tmp = md_temp_alloc_zero_array(temp, double, n_sph * n_cart);
+    for (size_t i = 0; i < n_sph; ++i) {
+        for (size_t c = 0; c < n_cart; ++c) {
+            double s = 0.0;
+            for (size_t k = 0; k < n_sph; ++k) s += M[i * n_sph + k] * T[k * n_cart + c];
+            tmp[i * n_cart + c] = s;
+        }
+    }
+
+    double max_diff = 0.0, peak = 0.0, max_asym = 0.0;
+    for (size_t r = 0; r < n_cart; ++r) {
+        for (size_t c = 0; c < n_cart; ++c) {
+            double s = 0.0;
+            for (size_t k = 0; k < n_sph; ++k) s += T[k * n_cart + r] * tmp[k * n_cart + c];
+            const double d = fabs(got[r * n_cart + c] - s);
+            if (d > max_diff)     max_diff = d;
+            if (fabs(s) > peak)   peak     = fabs(s);
+            const double a = fabs(got[r * n_cart + c] - got[c * n_cart + r]);
+            if (a > max_asym)     max_asym = a;
+        }
+    }
+
+    // Both comparisons are relative: the block/sparse implementation accumulates in a
+    // different order than the dense reference, so it agrees to rounding, not exactly.
+    const double scale = (peak > 0.0) ? peak : 1.0;
+    EXPECT_LT(max_diff / scale, 1.0e-13);
+    // A symmetric input must stay symmetric.
+    EXPECT_LT(max_asym / scale, 1.0e-13);
+
+    md_temp_end(temp);
+}
+
 UTEST(gto, evaluate_grid) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
