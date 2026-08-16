@@ -75,7 +75,6 @@ set(CORE_FILES
   src/core/md_gl_util.c
   src/core/md_gl_util.h
   src/core/md_gpu.h
-  src/core/md_gpu_util.h
   src/core/md_grid.c
   src/core/md_grid.h
   src/core/md_handle.c
@@ -234,15 +233,14 @@ if (MD_ENABLE_GPU)
   include(cmake/ResolveSlang.cmake)
   resolve_slang(VERSION 2026.8.1)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")
-  include(cmake/CompileSlangShaders.cmake)
   if (MD_GPU_BACKEND STREQUAL "VULKAN")
     list(APPEND MD_DEFINES MD_GPU_BACKEND_VULKAN=1)
   elseif (MD_GPU_BACKEND STREQUAL "METAL")
     list(APPEND MD_DEFINES MD_GPU_BACKEND_METAL=1)
   endif()
-  list(APPEND GEN_FILES ${GEN_DIR}/topo_gpu_shaders.inl)
-  list(APPEND GEN_FILES ${GEN_DIR}/gto_gpu_shaders.inl)
   list(APPEND MD_DEFINES MD_ENABLE_GPU=1)
+
+  include(cmake/CompileGpuShaders.cmake)
 endif()
 
 if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
@@ -452,15 +450,43 @@ target_include_directories(mdlib
 )
 
 if (MD_ENABLE_GPU)
-  compile_slang_shaders(topo_gpu_shaders.inl
-    TARGET mdlib
-    NAMESPACE topo
-    SOURCES ${TOPO_SLANG_FILES}
+  # md_gpu needs no reflection, so each topo kernel is just its compiled blob.
+  foreach(TOPO_SRC ${TOPO_SLANG_FILES})
+    get_filename_component(TOPO_STEM ${TOPO_SRC} NAME_WE)
+    compile_gpu_shaders(${TOPO_STEM}_shaders.inl
+      TARGET    mdlib
+      NAMESPACE md_shader
+      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_SRC}
+      ENTRIES   main
+    )
+  endforeach()
+  # md_topo.c includes one aggregate header rather than six.
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/topo_gpu_shaders.inl
+                 ${GEN_DIR}/topo_gpu_shaders.inl COPYONLY)
+  foreach(GTO_SRC ${GTO_SLANG_FILES})
+    get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
+    compile_gpu_shaders(${GTO_STEM}_shaders.inl
+      TARGET    mdlib
+      NAMESPACE md_shader
+      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${GTO_SRC}
+      ENTRIES   main
+    )
+  endforeach()
+  # md_gto.c includes one aggregate header rather than two.
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
+                 ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)
+  # md_gpu needs no reflection, so these produce raw shader binaries only.
+  compile_gpu_shaders(gpu_test_shaders.inl
+    TARGET   mdlib
+    NAMESPACE md_shader
+    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_test.slang
+    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump
   )
-  compile_slang_shaders(gto_gpu_shaders.inl
-    TARGET mdlib
-    NAMESPACE gto
-    SOURCES ${GTO_SLANG_FILES}
+  compile_gpu_shaders(gpu_volume_shaders.inl
+    TARGET   mdlib
+    NAMESPACE md_shader
+    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/examples/shaders/gpu_volume.slang
+    ENTRIES  eval_field compact_above gather
   )
 endif()
 

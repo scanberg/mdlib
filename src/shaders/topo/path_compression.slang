@@ -1,6 +1,9 @@
 // path_compression.slang
 // Pointer-jumping pass for ascending and descending manifolds.
 
+
+#include "../md_gpu.slang"
+
 struct MetaData {
     uint32_t vertex_count;
     uint32_t edge_count;
@@ -19,8 +22,13 @@ struct RootArgs {
     MetaData* meta;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
+
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
 
 groupshared uint local_changed;
 

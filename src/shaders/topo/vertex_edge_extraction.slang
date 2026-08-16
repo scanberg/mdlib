@@ -1,6 +1,9 @@
 // vertex_edge_extraction.slang
 // Extracts vertex data and edges from critical points and manifold connectivity.
 
+
+#include "../md_gpu.slang"
+
 #define NUM_NEIGHBORS 26
 #define MAX_LOCAL_EDGES 2048
 
@@ -25,13 +28,17 @@ struct RootArgs {
     uint* descending;
     int* voxel_to_vertex_idx;
     MetaData* meta;
+    DescriptorHandle<RWTexture3D<float>> vol_tex;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
 
-[[vk::binding(0, 0)]]  // storage image slot 0 (set 0)
-RWTexture3D<float> volumeTex;
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
+#define volumeTex (args.vol_tex)
 
 groupshared uint local_edge_count;
 groupshared uint global_edge_offset;

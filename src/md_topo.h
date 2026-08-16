@@ -87,10 +87,11 @@ void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context);
 // Record the full topology pipeline into caller-supplied cmd:
 //   bidirectional manifold → path compression → critical-point detection
 //   → compaction setup → compaction → vertex/edge extraction → staging copies.
-// Shader-visible resources are declared internally via md_gpu_cmd_use_* during recording.
-// Submit/wait the cmd, then call md_topo_gpu_context_extract.
-void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context,
-    md_gpu_image_t volume, const struct md_grid_t* grid, float scalar_threshold);
+// Issues the whole pipeline into `stream`. Everything is ordered by the stream,
+// so no barriers or resource declarations are needed. Synchronise the stream
+// (md_gpu_stream_sync) before calling md_topo_gpu_context_extract.
+void md_topo_gpu_record(md_gpu_stream_t stream, md_topo_gpu_context_t* context,
+    md_gpu_tex_t volume, const struct md_grid_t* grid, float scalar_threshold);
 
 // Call after cmd has been submitted and completed.
 // Reads CPU-visible staging into out_graph (vertices, types, edges).

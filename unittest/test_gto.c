@@ -393,10 +393,13 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     double max_delta = DBL_MAX;
 
     md_gto_gpu_basis_t gpu_basis = NULL;
-    md_gpu_buffer_t atom_buf = NULL;
-    md_gpu_buffer_t coeff_buf = NULL;
-    md_gpu_image_t out_image = NULL;
-    md_gpu_buffer_t readback_buf = NULL;
+    md_gpu_pool_t   dev_pool  = NULL;
+    md_gpu_pool_t   read_pool = NULL;
+    md_gpu_ptr_t    atom_buf  = NULL;
+    md_gpu_ptr_t    coeff_buf = NULL;
+    md_gpu_ptr_t    readback  = NULL;
+    md_gpu_tex_t    out_tex   = 0;
+    md_gpu_stream_t stream    = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
 
     mat3_t orientation = mat3_ident();
     vec3_t x_axis = vec3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
@@ -420,7 +423,14 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
 
     md_gto_gpu_initialize(device);
 
-    gpu_basis = md_gto_gpu_basis_create(device, &(md_gto_gpu_basis_desc_t){
+    {
+        md_gpu_pool_desc_t pd = {0};
+        pd.flags = MD_GPU_MEM_DEVICE;    pd.label = "test_gto device";   dev_pool  = md_gpu_pool_create(device, &pd);
+        pd.flags = MD_GPU_MEM_HOST_READ; pd.label = "test_gto readback"; read_pool = md_gpu_pool_create(device, &pd);
+    }
+    if (!dev_pool || !read_pool) goto done;
+
+    gpu_basis = md_gto_gpu_basis_create(dev_pool, stream, &(md_gto_gpu_basis_desc_t){
         .basis = gto_basis,
         .cutoff = 0.0,
     });
@@ -431,42 +441,38 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     const size_t voxel_count = (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
     const size_t readback_size = sizeof(float) * voxel_count;
 
-    atom_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
-        .size  = md_gto_gpu_atom_buffer_size(num_atoms),
-        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-    });
-    coeff_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
-        .size  = md_gto_gpu_coeff_size_mo(1, num_cgtos),
-        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-    });
-    out_image = md_gpu_image_create(device, &(md_gpu_image_desc_t){
+    atom_buf  = md_gpu_malloc(dev_pool, md_gto_gpu_atom_buffer_size(num_atoms), stream);
+    coeff_buf = md_gpu_malloc(dev_pool, md_gto_gpu_coeff_size_mo(1, num_cgtos), stream);
+    readback  = md_gpu_malloc(read_pool, readback_size, stream);
+    out_tex   = md_gpu_tex_create(device, &(md_gpu_tex_desc_t){
         .width  = (uint32_t)grid.dim[0],
         .height = (uint32_t)grid.dim[1],
         .depth  = (uint32_t)grid.dim[2],
-        .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-        .flags  = MD_GPU_IMAGE_STORAGE,
+        .format = MD_GPU_FORMAT_R32_FLOAT,
+        .flags  = MD_GPU_TEX_STORAGE,
     });
-    readback_buf = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){
-        .size  = readback_size,
-        .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-    });
-    if (!atom_buf || !coeff_buf || !out_image || !readback_buf) goto done;
+    if (!atom_buf || !coeff_buf || !out_tex || !readback) goto done;
 
-    md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(atom_buf), atom_xyz, sizeof(vec3_t), num_atoms);
+    /* Pack straight into the destination where that is safe, staging otherwise. */
+    {
+        float* p = (float*)md_gpu_upload_begin(stream, atom_buf, md_gto_gpu_atom_buffer_size(num_atoms));
+        if (!p) goto done;
+        md_gto_gpu_atom_pack(p, atom_xyz, sizeof(vec3_t), num_atoms);
+        md_gpu_upload_end(stream);
+    }
     const double* mo_coeffs[1] = {ao_coeffs};
-    md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(coeff_buf), mo_coeffs, NULL, 1, num_cgtos);
-
-    md_gpu_queue_t queue = md_gpu_queue_compute(device);
-    if (!queue) goto done;
-
-    md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "gto cube gpu eval");
-    if (!cmd) goto done;
+    {
+        float* p = (float*)md_gpu_upload_begin(stream, coeff_buf, md_gto_gpu_coeff_size_mo(1, num_cgtos));
+        if (!p) goto done;
+        md_gto_gpu_coeff_pack_mo(p, mo_coeffs, NULL, 1, num_cgtos);
+        md_gpu_upload_end(stream);
+    }
 
     md_gto_gpu_orbital_desc_t orb_desc = {
         .basis = gpu_basis,
         .atom_xyz = atom_buf,
         .coeff = coeff_buf,
-        .out_image = out_image,
+        .out_tex = out_tex,
         .grid = &grid,
         .sample_offset = {0.0f, 0.0f, 0.0f},
         .num_orbitals = 1,
@@ -474,15 +480,13 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
         .op = MD_GTO_OP_SET,
     };
 
-    md_gto_gpu_orbital_record(cmd, &orb_desc);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-    md_gpu_cmd_copy_image_region_to_buffer(cmd, out_image, (md_gpu_image_region_t){0}, readback_buf, 0);
-    md_gpu_cmd_end(cmd);
+    /* Program order within the stream is the whole dependency model: the copy
+       sees the kernel's writes without any explicit barrier. */
+    md_gto_gpu_orbital_launch(stream, &orb_desc);
+    md_gpu_memcpy_from_tex_async(readback, out_tex, NULL, readback_size, stream);
+    md_gpu_stream_sync(stream);
 
-    md_gpu_event_t event = md_gpu_queue_submit_one(queue, cmd);
-    md_gpu_event_wait(event);
-
-    const float* grid_data = (const float*)md_gpu_buffer_cpu_ptr(readback_buf);
+    const float* grid_data = (const float*)md_gpu_host_ptr(readback);
 
     double grid_sum = 0.0;
     double cube_sum = 0.0;
@@ -515,18 +519,20 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     printf("CUBE SUM: %.5f\n", cube_sum);
 
 done:
-    md_gpu_buffer_destroy(readback_buf);
-    md_gpu_image_destroy(out_image);
-    md_gpu_buffer_destroy(coeff_buf);
-    md_gpu_buffer_destroy(atom_buf);
+    md_gpu_tex_destroy(out_tex, stream);
     md_gto_gpu_basis_destroy(gpu_basis);
+    md_gpu_free(readback, stream);
+    md_gpu_free(coeff_buf, stream);
+    md_gpu_free(atom_buf, stream);
+    md_gpu_pool_destroy(read_pool);
+    md_gpu_pool_destroy(dev_pool);
     md_gto_gpu_shutdown();
 
     return max_delta;
 }
 
 UTEST(gto, h2o_lumo_gpu) {
-    md_gpu_device_t device = md_gpu_device_create();
+    md_gpu_device_t device = md_gpu_device_create(NULL);
     if (!device) {
         UTEST_SKIP("No GPU device available");
     }

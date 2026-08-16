@@ -1,6 +1,9 @@
 // bidirectional_manifold.slang
 // Computes steepest ascent/descent neighbors for each voxel.
 
+
+#include "../md_gpu.slang"
+
 #define WG_X 8
 #define WG_Y 8
 #define WG_Z 8
@@ -20,13 +23,17 @@ struct RootArgs {
 
     uint* ascending;
     uint* descending;
+    DescriptorHandle<RWTexture3D<float>> vol_tex;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
 
-[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
-RWTexture3D<float> volumeTex;
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
+#define volumeTex (args.vol_tex)
 
 // Shared memory for scalar values and voxel IDs in a 10x10x10 region
 groupshared float sharedScalars[SG_X][SG_Y][SG_Z];

@@ -4,14 +4,22 @@
 //   counters[4]    – write-cursor base offsets for the compaction pass
 //   type_counts[5] – per-type counts + total vertex count for the extraction pass
 
+
+#include "../md_gpu.slang"
+
 struct RootArgs {
     uint* counts;       // [0]=maxima [1]=split_saddles [2]=minima [3]=join_saddles
     uint* counters;     // [0..3] output: compaction write-cursor initial values
     uint* type_counts;  // [0..4] output: per-type counts + total
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
+
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

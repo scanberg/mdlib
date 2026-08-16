@@ -284,12 +284,15 @@ typedef struct md_gto_gpu_basis_desc_t {
 
 // Allocate a device-local basis buffer and fully populate it from desc.
 // Ready for dispatch immediately after creation; no separate upload step required.
-md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_gpu_basis_desc_t* desc);
+// The basis is drawn from `pool` (which must serve MD_GPU_MEM_DEVICE) and
+// uploaded on `stream`. Synchronise the stream before dispatching against it,
+// or issue the dispatch into the same stream and let program order do it.
+md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_pool_t pool, md_gpu_stream_t stream, const md_gto_gpu_basis_desc_t* desc);
 
 void md_gto_gpu_basis_destroy(md_gto_gpu_basis_t basis_buf);
 
 // Return the underlying GPU basis buffer (CGTO metadata + PGTO data).
-md_gpu_buffer_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
+md_gpu_ptr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
 
 // Basis metadata queries.
 size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
@@ -306,7 +309,7 @@ void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t at
 
 // ---------------------------------------------------------------------------
 // Coefficient buffer helpers
-// Coefficients live in a plain md_gpu_buffer_t owned by the caller.
+// Coefficients live in a device allocation owned by the caller.
 // Tightly packed floats, no padding.
 //   density : float[(num_cgtos*(num_cgtos+1))/2]   — packed upper-triangular
 //   MO      : float[num_mos * num_cgtos]           — packed row-major
@@ -326,13 +329,13 @@ size_t md_gto_gpu_coeff_size_mo(size_t num_mos, size_t num_cgtos);
 void md_gto_gpu_coeff_pack_density(float* dst, const double* density_matrix, size_t num_cgtos);
 void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const double* mo_scales, size_t num_mos, size_t num_cgtos);
 
-// Upload helpers — record a buffer copy (src_buf[src_offset] -> coeff_buf) plus a
-// TRANSFER→COMPUTE barrier into cmd.
-// On UMA, pack directly into md_gpu_buffer_cpu_ptr(coeff_buf) and skip these calls.
-// On discrete GPU, pack into a staging cpu_ptr (e.g. from md_gpu_staging_bump_alloc),
-// then call upload to record the copy from that staging buffer into coeff_buf.
-void md_gto_gpu_coeff_upload_density(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos);
-void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf, md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos);
+// Uploading coefficients no longer needs a helper: reserve the bytes, pack in
+// place, and let md_gpu decide whether that lands in the destination or in
+// staging.
+//
+//     float* p = md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_mo(n, c));
+//     md_gto_gpu_coeff_pack_mo(p, mo_coeffs, NULL, n, c);
+//     md_gpu_upload_end(stream);
 
 // ---------------------------------------------------------------------------
 // GPU dispatch
@@ -341,9 +344,9 @@ void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf, md_
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
 	md_gto_gpu_basis_t basis;
-    md_gpu_buffer_t atom_xyz;
-	md_gpu_buffer_t coeff;
-    md_gpu_image_t out_image;
+    md_gpu_ptr_t    atom_xyz;
+	md_gpu_ptr_t    coeff;
+    md_gpu_tex_t    out_tex;
 
     const md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -358,13 +361,13 @@ typedef struct md_gto_gpu_density_desc_t {
 // (use md_gto_gpu_coeff_upload_density to fill it).
 // A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
 // earlier in the same cmd are visible to the shader.
-void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t* desc);
+void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
 typedef struct md_gto_gpu_orbital_desc_t {
     md_gto_gpu_basis_t basis;
-    md_gpu_buffer_t atom_xyz;
-    md_gpu_buffer_t coeff;
-    md_gpu_image_t out_image;
+    md_gpu_ptr_t    atom_xyz;
+    md_gpu_ptr_t    coeff;
+    md_gpu_tex_t    out_tex;
 
     const md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -381,7 +384,7 @@ typedef struct md_gto_gpu_orbital_desc_t {
 // coeff_buf must contain num_mos packed rows of num_cgtos floats
 // (use md_gto_gpu_coeff_upload_mo to fill it).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
-void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, const md_gto_gpu_orbital_desc_t* desc);
+void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc);
 
 #endif
 

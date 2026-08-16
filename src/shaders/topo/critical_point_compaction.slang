@@ -4,6 +4,9 @@
 // its vertex index in voxel_to_vertex_idx. Vertex types are written to vertex_types[].
 // Non-critical voxels leave voxel_to_vertex_idx untouched (still -1).
 
+
+#include "../md_gpu.slang"
+
 #define REGULAR      0
 #define MAXIMUM      1
 #define SPLIT_SADDLE 2
@@ -30,8 +33,13 @@ struct RootArgs {
     uint* vertex_types;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
+
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
 
 [shader("compute")]
 [numthreads(8, 8, 8)]

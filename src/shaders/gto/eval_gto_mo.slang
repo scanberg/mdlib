@@ -14,6 +14,9 @@
 //      the prefix array — 100% utilisation regardless of per-CGTO primitive counts.
 //   4) MO rows are processed in blocks; coefficients are staged in groupshared.
 
+
+#include "../md_gpu.slang"
+
 #define OP_SET 0
 #define OP_ADD 1
 #define OP_SUB 2
@@ -44,13 +47,17 @@ struct RootArgs {
     PGTO*   pgto;
     float4* atom_xyz;
     float*  coeffs;
+    DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
 
-[[vk::binding(0, 0)]]  // storage image slot 0 (set 0)
-RWTexture3D<float> out_vol;
+// Macros so helper functions keep referring to these exactly as they did when
+// both were globals.
+#define args (*md_root.args_ptr)
+#define out_vol (args.out_tex)
 
 uint4 unpack_ijkl(uint packed) {
     return uint4(
@@ -152,6 +159,7 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
     }
 }
 
+[shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_GroupIndex, uint3 dtid: SV_DispatchThreadID) {
     if (tid == 0) {

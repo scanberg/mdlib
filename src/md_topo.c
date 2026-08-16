@@ -51,59 +51,61 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
 
 #include <core/md_gpu.h>
 #include <topo_gpu_shaders.inl>
-#include <topo_gpu_shaders_reflection.inl>
 
-// Pipeline cache
-static md_gpu_compute_pipeline_t pip_bidirectional_manifold    = NULL;
-static md_gpu_compute_pipeline_t pip_path_compression          = NULL;
-static md_gpu_compute_pipeline_t pip_critical_points           = NULL;
-static md_gpu_compute_pipeline_t pip_critical_point_compaction = NULL;
-static md_gpu_compute_pipeline_t pip_vertex_edge_extraction    = NULL;
+/* ---------------------------------------------------------------------------
+   Kernels. One per Slang file; md_gpu needs no reflection or binding tables,
+   so these are just the compiled blobs.
+   --------------------------------------------------------------------------- */
+static md_gpu_kernel_t k_bidirectional_manifold    = NULL;
+static md_gpu_kernel_t k_path_compression          = NULL;
+static md_gpu_kernel_t k_critical_points           = NULL;
+static md_gpu_kernel_t k_critical_point_compaction = NULL;
+static md_gpu_kernel_t k_vertex_edge_extraction    = NULL;
 
-static md_gpu_compute_pipeline_t ensure_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z, const md_gpu_resource_binding_t* resource_bindings, uint32_t resource_binding_count) {
-    if (*pipeline == NULL) {
-        md_gpu_compute_pipeline_desc_t desc = {
-            .shader_bytes     = blob_start,
-            .shader_byte_size = blob_size,
-            .entry_point      = "main",
-            .label            = name,
-            .threadgroup_size = { wg_x, wg_y, wg_z },
-            .resource_bindings = resource_bindings,
-            .resource_binding_count = resource_binding_count,
-        };
-        *pipeline = md_gpu_compute_pipeline_create(device, &desc);
-        if (*pipeline == NULL) {
-            MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
-        }
-    }
-    return *pipeline;
+static md_gpu_kernel_t ensure_kernel(md_gpu_device_t device, md_gpu_kernel_t* slot,
+                                     const void* code, size_t code_size, const char* name,
+                                     uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (*slot) return *slot;
+    md_gpu_kernel_desc_t desc = {0};
+    desc.code          = code;
+    desc.code_size     = code_size;
+    desc.label         = name;
+    desc.group_size[0] = gx;
+    desc.group_size[1] = gy;
+    desc.group_size[2] = gz;
+    *slot = md_gpu_kernel_create(device, &desc);
+    if (!*slot) MD_LOG_ERROR("md_topo: failed to create kernel '%s': %s", name, md_gpu_last_error());
+    return *slot;
 }
 
 void md_topo_gpu_initialize(md_gpu_device_t device) {
-    if (!ensure_pipeline(device, &pip_bidirectional_manifold,    topo_bidirectional_manifold_start,    topo_bidirectional_manifold_size(),    "bidirectional_manifold",    topo_bidirectional_manifold_thread_group_size_x,    topo_bidirectional_manifold_thread_group_size_y,    topo_bidirectional_manifold_thread_group_size_z,    topo_bidirectional_manifold_pipeline_resource_bindings, topo_bidirectional_manifold_pipeline_resource_binding_count) ||
-        !ensure_pipeline(device, &pip_path_compression,          topo_path_compression_start,          topo_path_compression_size(),          "path_compression",          topo_path_compression_thread_group_size_x,          topo_path_compression_thread_group_size_y,          topo_path_compression_thread_group_size_z,          NULL, topo_path_compression_pipeline_resource_binding_count) ||
-        !ensure_pipeline(device, &pip_critical_points,           topo_critical_points_start,           topo_critical_points_size(),           "critical_points",           topo_critical_points_thread_group_size_x,           topo_critical_points_thread_group_size_y,           topo_critical_points_thread_group_size_z,           topo_critical_points_pipeline_resource_bindings, topo_critical_points_pipeline_resource_binding_count) ||
-        !ensure_pipeline(device, &pip_critical_point_compaction, topo_critical_point_compaction_start, topo_critical_point_compaction_size(), "critical_point_compaction", topo_critical_point_compaction_thread_group_size_x, topo_critical_point_compaction_thread_group_size_y, topo_critical_point_compaction_thread_group_size_z, NULL, topo_critical_point_compaction_pipeline_resource_binding_count) ||
-        !ensure_pipeline(device, &pip_vertex_edge_extraction,    topo_vertex_edge_extraction_start,    topo_vertex_edge_extraction_size(),    "vertex_edge_extraction",    topo_vertex_edge_extraction_thread_group_size_x,    topo_vertex_edge_extraction_thread_group_size_y,    topo_vertex_edge_extraction_thread_group_size_z,    topo_vertex_edge_extraction_pipeline_resource_bindings, topo_vertex_edge_extraction_pipeline_resource_binding_count))
-    {
-        MD_LOG_ERROR("md_topo_gpu_initialize: failed to create compute pipelines");
-    }
+    if (!device) return;
+    ensure_kernel(device, &k_bidirectional_manifold,
+                  md_shader_bidirectional_manifold_main_start,
+                  md_shader_bidirectional_manifold_main_byte_size, "topo bidirectional_manifold", 8, 8, 8);
+    ensure_kernel(device, &k_path_compression,
+                  md_shader_path_compression_main_start,
+                  md_shader_path_compression_main_byte_size, "topo path_compression", 8, 8, 8);
+    ensure_kernel(device, &k_critical_points,
+                  md_shader_critical_points_main_start,
+                  md_shader_critical_points_main_byte_size, "topo critical_points", 8, 8, 8);
+    ensure_kernel(device, &k_critical_point_compaction,
+                  md_shader_critical_point_compaction_main_start,
+                  md_shader_critical_point_compaction_main_byte_size, "topo critical_point_compaction", 8, 8, 8);
+    ensure_kernel(device, &k_vertex_edge_extraction,
+                  md_shader_vertex_edge_extraction_main_start,
+                  md_shader_vertex_edge_extraction_main_byte_size, "topo vertex_edge_extraction", 64, 1, 1);
 }
 
 void md_topo_gpu_shutdown(void) {
-    if (pip_bidirectional_manifold)    md_gpu_compute_pipeline_destroy(pip_bidirectional_manifold);
-    if (pip_path_compression)          md_gpu_compute_pipeline_destroy(pip_path_compression);
-    if (pip_critical_points)           md_gpu_compute_pipeline_destroy(pip_critical_points);
-    if (pip_critical_point_compaction) md_gpu_compute_pipeline_destroy(pip_critical_point_compaction);
-    if (pip_vertex_edge_extraction)    md_gpu_compute_pipeline_destroy(pip_vertex_edge_extraction);
-    pip_bidirectional_manifold = NULL;
-    pip_path_compression = NULL;
-    pip_critical_points = NULL;
-    pip_critical_point_compaction = NULL;
-    pip_vertex_edge_extraction = NULL;
+    if (k_bidirectional_manifold)    { md_gpu_kernel_destroy(k_bidirectional_manifold);    k_bidirectional_manifold = NULL; }
+    if (k_path_compression)          { md_gpu_kernel_destroy(k_path_compression);          k_path_compression = NULL; }
+    if (k_critical_points)           { md_gpu_kernel_destroy(k_critical_points);           k_critical_points = NULL; }
+    if (k_critical_point_compaction) { md_gpu_kernel_destroy(k_critical_point_compaction); k_critical_point_compaction = NULL; }
+    if (k_vertex_edge_extraction)    { md_gpu_kernel_destroy(k_vertex_edge_extraction);    k_vertex_edge_extraction = NULL; }
 }
 
-// Meta buffer: bound as a single SSBO to all compute shaders.
+// Meta buffer: shared by every kernel in the chain.
 typedef struct {
     uint32_t vertex_count;  // total CP count (critical_points output)
     uint32_t edge_count;    // actual edge count (extraction output)
@@ -111,6 +113,65 @@ typedef struct {
     uint32_t changed_write; // path-compression convergence flag, written by shader
     uint32_t counter;       // compaction write cursor
 } topo_meta_t;
+
+/* Argument structs, mirroring src/shaders/topo/*.slang. The leading float4x4
+   is at offset 0, where SPIR-V and MSL agree; md_gpu_float4x4 keeps it that way
+   if anything is ever inserted before it.
+   tools/check_gpu_arg_layout.py verifies these against the compiled shaders. */
+typedef struct {
+    md_gpu_float4x4 index_to_world;
+    md_gpu_uint4    dims;
+    float           scalar_threshold;
+    uint64_t        ascending;
+    uint64_t        descending;
+    md_gpu_tex_t    vol_tex;
+} topo_manifold_args_t;
+
+typedef struct {
+    md_gpu_float4x4 index_to_world;
+    md_gpu_uint4    dims;
+    float           scalar_threshold;
+    uint64_t        ascending;
+    uint64_t        descending;
+    uint64_t        meta;
+} topo_path_args_t;
+
+typedef struct {
+    md_gpu_float4x4 index_to_world;
+    md_gpu_uint4    dims;
+    float           scalar_threshold;
+    uint64_t        ascending;
+    uint64_t        descending;
+    uint64_t        types;
+    uint64_t        meta;
+    md_gpu_tex_t    vol_tex;
+} topo_critical_args_t;
+
+typedef struct {
+    md_gpu_float4x4 index_to_world;
+    md_gpu_uint4    dims;
+    float           scalar_threshold;
+    uint64_t        types;
+    uint64_t        cp_indices;
+    uint64_t        meta;
+    uint64_t        voxel_to_vertex_idx;
+    uint64_t        vertex_types;
+} topo_compact_args_t;
+
+typedef struct {
+    md_gpu_float4x4 index_to_world;
+    md_gpu_uint4    dims;
+    float           scalar_threshold;
+    uint64_t        cp_indices;
+    uint64_t        vertex_types;
+    uint64_t        vertex_data;
+    uint64_t        edges;
+    uint64_t        ascending;
+    uint64_t        descending;
+    uint64_t        voxel_to_vertex_idx;
+    uint64_t        meta;
+    md_gpu_tex_t    vol_tex;
+} topo_extract_args_t;
 
 // Worst-case capacity ratios:
 //   vert_cap = num_points / TOPO_VERT_RATIO  (1 CP per 8 voxels is very generous)
@@ -121,261 +182,210 @@ typedef struct {
 
 struct md_topo_gpu_context {
     md_gpu_device_t device;
+    /* One pool per memory kind: a pool maps 1:1 onto a VkDeviceMemory chain
+       or an MTLHeap only if its kind is fixed. Both are owned by the context
+       and torn down with it. */
+    md_gpu_pool_t   dev_pool;      // device-local scratch and results
+    md_gpu_pool_t   read_pool;     // host-readable mirrors
+    md_gpu_stream_t stream;        // the stream the last record used
     uint32_t        num_points;
     uint32_t        dim[3];
-    uint32_t        vert_cap;      // pre-allocated worst-case vertex capacity
-    uint32_t        edge_cap;      // pre-allocated worst-case edge capacity
+    uint32_t        vert_cap;
+    uint32_t        edge_cap;
 
-    // Persistent GPU buffers — scratch (each u32[num_points], device-local)
-    md_gpu_buffer_t ascending_buf;     // steepest-ascent parent indices
-    md_gpu_buffer_t descending_buf;    // steepest-descent parent indices
-    md_gpu_buffer_t voxel_types_buf;   // per-voxel critical-point type scratch
-    md_gpu_buffer_t voxel_to_vert_buf; // voxel index → vertex index map
-    md_gpu_buffer_t meta_buf;          // sizeof(topo_meta_t) bytes, device-local
-    
-    // Persistent GPU buffers — results (pre-allocated to worst-case capacity)
-    md_gpu_buffer_t indices_buf;   // u32[vert_cap]
-    md_gpu_buffer_t vert_buf;      // float4[vert_cap]
-    md_gpu_buffer_t type_buf;      // u32[vert_cap]: per-vertex CP type
-    md_gpu_buffer_t edge_buf;      // md_topo_edge_t[edge_cap]
-    
-    // These are optional staging buffers
-    md_gpu_buffer_t staging_buf;   // sizeof(topo_meta_t) bytes, CPU-visible
-    md_gpu_buffer_t staging_verts; // float4[vert_cap], CPU-visible
-    md_gpu_buffer_t staging_types; // u32[vert_cap], CPU-visible
-    md_gpu_buffer_t staging_edges; // md_topo_edge_t[edge_cap], CPU-visible
+    // Scratch, device-local. These used to be cached for the lifetime of the
+    // context because allocating per call was too expensive; the pool makes
+    // that a non-issue, but keeping them avoids re-zeroing bookkeeping.
+    uint32_t*       ascending;
+    uint32_t*       descending;
+    uint32_t*       voxel_types;
+    int32_t*        voxel_to_vert;
+    topo_meta_t*    meta;
+    uint32_t*       grid_args;     // 3 x uint32, indirect dispatch dimensions
+
+    // Results, device-local, sized to worst case.
+    uint32_t*       indices;
+    float*          verts;         // float4 per vertex
+    uint32_t*       types;
+    uint32_t*       edges;         // uint2 per edge
+
+    // Host-readable mirrors, filled at the end of md_topo_gpu_record.
+    topo_meta_t*    host_meta;
+    float*          host_verts;
+    uint32_t*       host_types;
+    uint32_t*       host_edges;
 };
 
 md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z) {
-    if (!device || !dim_x || !dim_y || !dim_z) {
-        MD_LOG_ERROR("md_topo_gpu_context_create: invalid arguments");
-        return NULL;
-    }
+    if (!device) return NULL;
 
-    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)calloc(1, sizeof(*ctx));
+    struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)md_alloc(md_get_heap_allocator(), sizeof(struct md_topo_gpu_context));
     if (!ctx) return NULL;
-
-    md_gpu_device_info_t info = {0};
-    md_gpu_device_info(device, &info);
-
-    md_gpu_buffer_flags_t buf_flags = MD_GPU_BUFFER_NONE;
-    if (!info.is_discrete) {
-        // For integrated GPUs, we can skip staging buffers and write results directly to CPU-visible buffers
-        buf_flags |= MD_GPU_BUFFER_CPU_VISIBLE;
-    }
+    MEMSET(ctx, 0, sizeof(*ctx));
 
     ctx->device     = device;
     ctx->num_points = dim_x * dim_y * dim_z;
-    ctx->dim[0]     = dim_x;
-    ctx->dim[1]     = dim_y;
-    ctx->dim[2]     = dim_z;
+    ctx->dim[0] = dim_x; ctx->dim[1] = dim_y; ctx->dim[2] = dim_z;
 
-    uint32_t vert_cap = MAX(ctx->num_points / TOPO_VERT_RATIO, TOPO_VERT_CAP_MIN);
-    uint32_t edge_cap = vert_cap * TOPO_EDGE_RATIO;
+    uint32_t vert_cap = ctx->num_points / TOPO_VERT_RATIO;
+    if (vert_cap < TOPO_VERT_CAP_MIN) vert_cap = TOPO_VERT_CAP_MIN;
     ctx->vert_cap = vert_cap;
-    ctx->edge_cap = edge_cap;
+    ctx->edge_cap = vert_cap * TOPO_EDGE_RATIO;
 
-    const size_t voxel_buf_size = ctx->num_points * sizeof(uint32_t);
-    ctx->ascending_buf      = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->descending_buf     = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->voxel_types_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->voxel_to_vert_buf  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = voxel_buf_size,     .flags = buf_flags });
-    ctx->meta_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(topo_meta_t), .flags = buf_flags });
-    ctx->indices_buf        = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
-    
-    ctx->vert_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float),       .flags = buf_flags });
-    ctx->type_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = buf_flags });
-    ctx->edge_buf           = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * sizeof(md_topo_edge_t),  .flags = buf_flags });
-    
-    if (info.is_discrete) {
-        // For discrete GPUs, we need staging buffers for readback
-        ctx->staging_buf    = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = sizeof(topo_meta_t),                .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-        ctx->staging_verts  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * 4 * sizeof(float),       .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-        ctx->staging_types  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = vert_cap * sizeof(uint32_t),        .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-        ctx->staging_edges  = md_gpu_buffer_create(device, &(md_gpu_buffer_desc_t){ .size = edge_cap * 2 * sizeof(uint32_t),    .flags = MD_GPU_BUFFER_CPU_VISIBLE });
-    }
+    md_gpu_pool_desc_t pd = {0};
+    pd.flags = MD_GPU_MEM_DEVICE;
+    pd.label = "md_topo device";
+    ctx->dev_pool = md_gpu_pool_create(device, &pd);
 
-    bool success = ctx->ascending_buf && ctx->descending_buf && ctx->voxel_types_buf && ctx->voxel_to_vert_buf && ctx->meta_buf && ctx->indices_buf && ctx->vert_buf && ctx->type_buf && ctx->edge_buf;
-    if (info.is_discrete) {
-        success = success && ctx->staging_buf && ctx->staging_verts && ctx->staging_types && ctx->staging_edges;
-    }
+    pd.flags = MD_GPU_MEM_HOST_READ;
+    pd.label = "md_topo readback";
+    ctx->read_pool = md_gpu_pool_create(device, &pd);
 
-    if (!success) {
-        MD_LOG_ERROR("md_topo_gpu_context_create: failed to allocate GPU buffers");
+    if (!ctx->dev_pool || !ctx->read_pool) {
         md_topo_gpu_context_destroy((md_topo_gpu_context_t*)ctx);
         return NULL;
     }
 
-    MD_LOG_DEBUG("md_topo_gpu_context_create: %ux%ux%u (%u voxels), vert_cap=%u edge_cap=%u",
-                 dim_x, dim_y, dim_z, ctx->num_points, vert_cap, edge_cap);
+    md_gpu_stream_t s = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    const size_t voxel_bytes = (size_t)ctx->num_points * sizeof(uint32_t);
+
+    ctx->ascending     = (uint32_t*)md_gpu_malloc(ctx->dev_pool, voxel_bytes, s);
+    ctx->descending    = (uint32_t*)md_gpu_malloc(ctx->dev_pool, voxel_bytes, s);
+    ctx->voxel_types   = (uint32_t*)md_gpu_malloc(ctx->dev_pool, voxel_bytes, s);
+    ctx->voxel_to_vert = (int32_t*) md_gpu_malloc(ctx->dev_pool, voxel_bytes, s);
+    ctx->meta          = (topo_meta_t*)md_gpu_malloc(ctx->dev_pool, sizeof(topo_meta_t), s);
+    ctx->grid_args     = (uint32_t*)md_gpu_malloc(ctx->dev_pool, 3 * sizeof(uint32_t), s);
+
+    ctx->indices = (uint32_t*)md_gpu_malloc(ctx->dev_pool, vert_cap * sizeof(uint32_t), s);
+    ctx->verts   = (float*)   md_gpu_malloc(ctx->dev_pool, vert_cap * 4 * sizeof(float), s);
+    ctx->types   = (uint32_t*)md_gpu_malloc(ctx->dev_pool, vert_cap * sizeof(uint32_t), s);
+    ctx->edges   = (uint32_t*)md_gpu_malloc(ctx->dev_pool, ctx->edge_cap * 2 * sizeof(uint32_t), s);
+
+    ctx->host_meta  = (topo_meta_t*)md_gpu_malloc(ctx->read_pool, sizeof(topo_meta_t), s);
+    ctx->host_verts = (float*)   md_gpu_malloc(ctx->read_pool, vert_cap * 4 * sizeof(float), s);
+    ctx->host_types = (uint32_t*)md_gpu_malloc(ctx->read_pool, vert_cap * sizeof(uint32_t), s);
+    ctx->host_edges = (uint32_t*)md_gpu_malloc(ctx->read_pool, ctx->edge_cap * 2 * sizeof(uint32_t), s);
+
+    if (!ctx->ascending || !ctx->descending || !ctx->voxel_types || !ctx->voxel_to_vert ||
+        !ctx->meta || !ctx->grid_args || !ctx->indices || !ctx->verts || !ctx->types || !ctx->edges ||
+        !ctx->host_meta || !ctx->host_verts || !ctx->host_types || !ctx->host_edges) {
+        MD_LOG_ERROR("md_topo_gpu_context_create: allocation failed: %s", md_gpu_last_error());
+        md_topo_gpu_context_destroy((md_topo_gpu_context_t*)ctx);
+        return NULL;
+    }
     return (md_topo_gpu_context_t*)ctx;
 }
 
 void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
     if (!context) return;
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
-    if (ctx->ascending_buf)     md_gpu_buffer_destroy(ctx->ascending_buf);
-    if (ctx->descending_buf)    md_gpu_buffer_destroy(ctx->descending_buf);
-    if (ctx->voxel_types_buf)   md_gpu_buffer_destroy(ctx->voxel_types_buf);
-    if (ctx->voxel_to_vert_buf) md_gpu_buffer_destroy(ctx->voxel_to_vert_buf);
-    if (ctx->meta_buf)          md_gpu_buffer_destroy(ctx->meta_buf);
-    if (ctx->staging_buf)       md_gpu_buffer_destroy(ctx->staging_buf);
-    if (ctx->indices_buf)       md_gpu_buffer_destroy(ctx->indices_buf);
-    if (ctx->vert_buf)          md_gpu_buffer_destroy(ctx->vert_buf);
-    if (ctx->type_buf)          md_gpu_buffer_destroy(ctx->type_buf);
-    if (ctx->edge_buf)          md_gpu_buffer_destroy(ctx->edge_buf);
-    if (ctx->staging_types)     md_gpu_buffer_destroy(ctx->staging_types);
-    if (ctx->staging_verts)     md_gpu_buffer_destroy(ctx->staging_verts);
-    if (ctx->staging_edges)     md_gpu_buffer_destroy(ctx->staging_edges);
-    free(ctx);
+    if (ctx->dev_pool)  md_gpu_pool_destroy(ctx->dev_pool);   // waits for idle
+    if (ctx->read_pool) md_gpu_pool_destroy(ctx->read_pool);
+    md_free(md_get_heap_allocator(), ctx, sizeof(*ctx));
 }
 
-void md_topo_gpu_record(md_gpu_cmd_t cmd, md_topo_gpu_context_t* context, md_gpu_image_t volume, const md_grid_t* grid, float scalar_threshold) {
-    if (!cmd || !context || !volume || !grid) {
-        MD_LOG_ERROR("md_topo_gpu_record: invalid input");
-        return;
-    }
+void md_topo_gpu_record(md_gpu_stream_t stream, md_topo_gpu_context_t* context,
+                        md_gpu_tex_t volume, const md_grid_t* grid, float scalar_threshold) {
+    if (!stream || !context || !grid) return;
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
 
-    if (!pip_bidirectional_manifold || !pip_path_compression || !pip_critical_points || !pip_critical_point_compaction || !pip_vertex_edge_extraction) {
-        MD_LOG_ERROR("md_topo_gpu_record: compute pipelines not initialized");
+    if (!k_bidirectional_manifold || !k_path_compression || !k_critical_points ||
+        !k_critical_point_compaction || !k_vertex_edge_extraction) {
+        MD_LOG_ERROR("md_topo_gpu_record: kernels not initialized");
         return;
     }
+    ctx->stream = stream;
 
-#define TOPO_FILL_COMMON_ARGS(root_args) \
-    do { \
-        index_to_world_matrix((root_args).index_to_world, grid); \
-        (root_args).dims[0] = grid->dim[0]; \
-        (root_args).dims[1] = grid->dim[1]; \
-        (root_args).dims[2] = grid->dim[2]; \
-        (root_args).dims[3] = 0; \
-        (root_args).scalar_threshold = scalar_threshold; \
-    } while (0)
+    md_gpu_float4x4 i2w;
+    index_to_world_matrix((float(*)[4])i2w.m, grid);
+    const md_gpu_uint4 dims = { grid->dim[0], grid->dim[1], grid->dim[2], 0 };
 
-    const uint32_t wg[3]         = { DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8) };
-    const size_t   voxel_buf_size = ctx->num_points * sizeof(uint32_t);
+    const md_gpu_grid_t wg = md_gpu_grid(DIV_UP(grid->dim[0], 8), DIV_UP(grid->dim[1], 8), DIV_UP(grid->dim[2], 8));
+    const size_t voxel_bytes = (size_t)ctx->num_points * sizeof(uint32_t);
 
-    // Per-call resets (voxel_to_vert_idx = -1, count = 0, counter = 0, edge_count = 0, vertex_types = 0)
-    md_gpu_cmd_debug_group_push(cmd, "Per-call resets");
-    md_gpu_cmd_fill_buffer(cmd, ctx->voxel_to_vert_buf, 0, voxel_buf_size, 0xFF); // voxel_to_vert_idx = -1
-    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, 0, sizeof(topo_meta_t), 0);
-    md_gpu_cmd_fill_buffer(cmd, ctx->type_buf, 0, ctx->vert_cap * sizeof(uint32_t), 0); // vertex_types = 0
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_cmd_debug_group_pop(cmd);
+    /* No barriers anywhere below: everything issued into `stream` runs in
+       order and observes the previous step's writes. */
 
-    // Step 1: Bidirectional manifold
-    md_gpu_cmd_debug_group_push(cmd, "Bidirectional manifold");
-    topo_bidirectional_manifold_dispatch_t bidirectional_dispatch = topo_bidirectional_manifold_dispatch_init();
-    TOPO_FILL_COMMON_ARGS(bidirectional_dispatch.args);
-    bidirectional_dispatch.resources.ascending  = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf,  .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    bidirectional_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    bidirectional_dispatch.resources.volumeTex.image = volume;
-    bidirectional_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
-    bidirectional_dispatch.group_count[0] = wg[0];
-    bidirectional_dispatch.group_count[1] = wg[1];
-    bidirectional_dispatch.group_count[2] = wg[2];
-    topo_bidirectional_manifold_cmd_dispatch(cmd, pip_bidirectional_manifold, &bidirectional_dispatch);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-    md_gpu_cmd_debug_group_pop(cmd);
+    // Per-call resets.
+    md_gpu_memset_async(ctx->voxel_to_vert, 0xFF, voxel_bytes, stream);   // = -1
+    md_gpu_memset_async(ctx->meta, 0, sizeof(topo_meta_t), stream);
+    md_gpu_memset_async(ctx->types, 0, ctx->vert_cap * sizeof(uint32_t), stream);
 
-    // Step 2: Path compression (iterative, GPU-side early-exit via changed flag)
-    // Each dispatch does one grandparent pointer-jump. A path of length L needs
-    // ceil(log2(L)) iterations; 2 * ceil(log2(max_dim)) is a safe upper bound.
-    uint32_t num_iterations = 0;
+    // Step 1: bidirectional manifold.
+    topo_manifold_args_t ma = {0};
+    ma.index_to_world = i2w; ma.dims = dims; ma.scalar_threshold = scalar_threshold;
+    ma.ascending  = (uint64_t)(uintptr_t)ctx->ascending;
+    ma.descending = (uint64_t)(uintptr_t)ctx->descending;
+    ma.vol_tex    = volume;
+    md_gpu_launch(stream, k_bidirectional_manifold, wg, &ma, sizeof(ma));
+
+    // Step 2: path compression, iterated with a GPU-side early-exit flag.
+    uint32_t iterations = 0;
     {
         uint32_t max_dim = (uint32_t)MAX(grid->dim[0], MAX(grid->dim[1], grid->dim[2]));
-        while (max_dim > (1U << num_iterations)) num_iterations++;
-        num_iterations *= 2;
+        while (max_dim > (1U << iterations)) iterations++;
+        iterations *= 2;
+    }
+    md_gpu_memset_async((char*)ctx->meta + offsetof(topo_meta_t, changed_read), 0xFF, 4, stream);
+
+    topo_path_args_t pa = {0};
+    pa.index_to_world = i2w; pa.dims = dims; pa.scalar_threshold = scalar_threshold;
+    pa.ascending  = (uint64_t)(uintptr_t)ctx->ascending;
+    pa.descending = (uint64_t)(uintptr_t)ctx->descending;
+    pa.meta       = (uint64_t)(uintptr_t)ctx->meta;
+    for (uint32_t i = 0; i < iterations; ++i) {
+        md_gpu_launch(stream, k_path_compression, wg, &pa, sizeof(pa));
+        md_gpu_memcpy_async((char*)ctx->meta + offsetof(topo_meta_t, changed_read),
+                            (char*)ctx->meta + offsetof(topo_meta_t, changed_write), 4, stream);
+        md_gpu_memset_async((char*)ctx->meta + offsetof(topo_meta_t, changed_write), 0, 4, stream);
     }
 
-    md_gpu_cmd_debug_group_push(cmd, "Path compression");
-    md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_read), 4, 0xFF);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+    // Step 3: critical-point detection.
+    topo_critical_args_t ca = {0};
+    ca.index_to_world = i2w; ca.dims = dims; ca.scalar_threshold = scalar_threshold;
+    ca.ascending  = (uint64_t)(uintptr_t)ctx->ascending;
+    ca.descending = (uint64_t)(uintptr_t)ctx->descending;
+    ca.types      = (uint64_t)(uintptr_t)ctx->voxel_types;
+    ca.meta       = (uint64_t)(uintptr_t)ctx->meta;
+    ca.vol_tex    = volume;
+    md_gpu_launch(stream, k_critical_points, wg, &ca, sizeof(ca));
 
-    topo_path_compression_dispatch_t path_dispatch = topo_path_compression_dispatch_init();
-    TOPO_FILL_COMMON_ARGS(path_dispatch.args);
-    path_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    path_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    path_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    path_dispatch.group_count[0] = wg[0];
-    path_dispatch.group_count[1] = wg[1];
-    path_dispatch.group_count[2] = wg[2];
-    for (uint32_t i = 0; i < num_iterations; i++) {
-        topo_path_compression_cmd_dispatch(cmd, pip_path_compression, &path_dispatch);
-        md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->meta_buf, 4, offsetof(topo_meta_t, changed_write), offsetof(topo_meta_t, changed_read));
-        md_gpu_cmd_fill_buffer(cmd, ctx->meta_buf, offsetof(topo_meta_t, changed_write), 4, 0);
-        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-    }
-    md_gpu_cmd_debug_group_pop(cmd);
+    // Step 4: compaction.
+    topo_compact_args_t ka = {0};
+    ka.index_to_world = i2w; ka.dims = dims; ka.scalar_threshold = scalar_threshold;
+    ka.types               = (uint64_t)(uintptr_t)ctx->voxel_types;
+    ka.cp_indices          = (uint64_t)(uintptr_t)ctx->indices;
+    ka.meta                = (uint64_t)(uintptr_t)ctx->meta;
+    ka.voxel_to_vertex_idx = (uint64_t)(uintptr_t)ctx->voxel_to_vert;
+    ka.vertex_types        = (uint64_t)(uintptr_t)ctx->types;
+    md_gpu_launch(stream, k_critical_point_compaction, wg, &ka, sizeof(ka));
 
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+    /* Step 5: vertex + edge extraction. This used to be dispatched at
+       worst-case capacity with a per-thread early-out; the vertex count that
+       step 4 produced now drives an indirect launch, so only the compacted
+       vertices are covered and the count never reaches the CPU. */
+    topo_extract_args_t ea = {0};
+    ea.index_to_world = i2w; ea.dims = dims; ea.scalar_threshold = scalar_threshold;
+    ea.cp_indices          = (uint64_t)(uintptr_t)ctx->indices;
+    ea.vertex_types        = (uint64_t)(uintptr_t)ctx->types;
+    ea.vertex_data         = (uint64_t)(uintptr_t)ctx->verts;
+    ea.edges               = (uint64_t)(uintptr_t)ctx->edges;
+    ea.ascending           = (uint64_t)(uintptr_t)ctx->ascending;
+    ea.descending          = (uint64_t)(uintptr_t)ctx->descending;
+    ea.voxel_to_vertex_idx = (uint64_t)(uintptr_t)ctx->voxel_to_vert;
+    ea.meta                = (uint64_t)(uintptr_t)ctx->meta;
+    ea.vol_tex             = volume;
 
-    // Step 3: Critical-point detection → meta_buf.count
-    md_gpu_cmd_debug_group_push(cmd, "Critical-point detection");
-    topo_critical_points_dispatch_t critical_dispatch = topo_critical_points_dispatch_init();
-    TOPO_FILL_COMMON_ARGS(critical_dispatch.args);
-    critical_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    critical_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    critical_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    critical_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    critical_dispatch.resources.volumeTex.image = volume;
-    critical_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
-    critical_dispatch.group_count[0] = wg[0];
-    critical_dispatch.group_count[1] = wg[1];
-    critical_dispatch.group_count[2] = wg[2];
-    topo_critical_points_cmd_dispatch(cmd, pip_critical_points, &critical_dispatch);
-    md_gpu_cmd_debug_group_pop(cmd);
+    const uint32_t local[3] = {64, 1, 1};
+    md_gpu_make_grid(stream, ctx->grid_args,
+                     (char*)ctx->meta + offsetof(topo_meta_t, vertex_count), local);
+    md_gpu_launch_indirect(stream, k_vertex_edge_extraction, ctx->grid_args, &ea, sizeof(ea));
 
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-    // Step 4: Critical-point compaction (single atomic counter)
-    md_gpu_cmd_debug_group_push(cmd, "Critical-point compaction");
-    topo_critical_point_compaction_dispatch_t compaction_dispatch = topo_critical_point_compaction_dispatch_init();
-    TOPO_FILL_COMMON_ARGS(compaction_dispatch.args);
-    compaction_dispatch.resources.types = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_types_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    compaction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    compaction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    compaction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    compaction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    compaction_dispatch.group_count[0] = wg[0];
-    compaction_dispatch.group_count[1] = wg[1];
-    compaction_dispatch.group_count[2] = wg[2];
-    topo_critical_point_compaction_cmd_dispatch(cmd, pip_critical_point_compaction, &compaction_dispatch);
-    md_gpu_cmd_debug_group_pop(cmd);
-
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-    // Step 5: Vertex + edge extraction
-    // Dispatched at worst-case capacity; unused slots have vertex_types == 0 → shader returns early.
-    md_gpu_cmd_debug_group_push(cmd, "Vertex + edge extraction");
-    topo_vertex_edge_extraction_dispatch_t extraction_dispatch = topo_vertex_edge_extraction_dispatch_init();
-    TOPO_FILL_COMMON_ARGS(extraction_dispatch.args);
-    extraction_dispatch.resources.cp_indices = (md_gpu_buffer_resource_t){ .buffer = ctx->indices_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    extraction_dispatch.resources.vertex_types = (md_gpu_buffer_resource_t){ .buffer = ctx->type_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    extraction_dispatch.resources.vertex_data = (md_gpu_buffer_resource_t){ .buffer = ctx->vert_buf, .offset = 0, .usage = MD_GPU_USAGE_WRITE };
-    extraction_dispatch.resources.edges = (md_gpu_buffer_resource_t){ .buffer = ctx->edge_buf, .offset = 0, .usage = MD_GPU_USAGE_WRITE };
-    extraction_dispatch.resources.ascending = (md_gpu_buffer_resource_t){ .buffer = ctx->ascending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    extraction_dispatch.resources.descending = (md_gpu_buffer_resource_t){ .buffer = ctx->descending_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    extraction_dispatch.resources.voxel_to_vertex_idx = (md_gpu_buffer_resource_t){ .buffer = ctx->voxel_to_vert_buf, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    extraction_dispatch.resources.meta = (md_gpu_buffer_resource_t){ .buffer = ctx->meta_buf, .offset = 0, .usage = MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE };
-    extraction_dispatch.resources.volumeTex.image = volume;
-    extraction_dispatch.resources.volumeTex.usage = MD_GPU_USAGE_READ;
-    extraction_dispatch.group_count[0] = DIV_UP(ctx->vert_cap, 64);
-    extraction_dispatch.group_count[1] = 1;
-    extraction_dispatch.group_count[2] = 1;
-    topo_vertex_edge_extraction_cmd_dispatch(cmd, pip_vertex_edge_extraction, &extraction_dispatch);
-    md_gpu_cmd_debug_group_pop(cmd);
-
-#undef TOPO_FILL_COMMON_ARGS
-
-    // Copy all results to CPU-visible staging in one batch, only if we have a staging buffers (discrete GPU).
-    if (ctx->staging_buf) {
-        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-        md_gpu_cmd_copy_buffer(cmd, ctx->meta_buf, ctx->staging_buf, sizeof(topo_meta_t), 0, 0);
-        md_gpu_cmd_copy_buffer(cmd, ctx->vert_buf, ctx->staging_verts, ctx->vert_cap * 4 * sizeof(float),       0, 0);
-        md_gpu_cmd_copy_buffer(cmd, ctx->type_buf, ctx->staging_types, ctx->vert_cap * 1 * sizeof(uint32_t),    0, 0);
-        md_gpu_cmd_copy_buffer(cmd, ctx->edge_buf, ctx->staging_edges, ctx->edge_cap * 2 * sizeof(uint32_t),    0, 0);
-    }
+    // Mirror the results where the CPU can read them.
+    md_gpu_memcpy_async(ctx->host_meta,  ctx->meta,  sizeof(topo_meta_t), stream);
+    md_gpu_memcpy_async(ctx->host_verts, ctx->verts, ctx->vert_cap * 4 * sizeof(float), stream);
+    md_gpu_memcpy_async(ctx->host_types, ctx->types, ctx->vert_cap * sizeof(uint32_t), stream);
+    md_gpu_memcpy_async(ctx->host_edges, ctx->edges, ctx->edge_cap * 2 * sizeof(uint32_t), stream);
 }
 
 bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context) {
@@ -384,13 +394,14 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 
     ASSERT(out_graph->alloc);
 
-    const topo_meta_t* meta = (const topo_meta_t*)md_gpu_buffer_cpu_ptr(ctx->staging_buf ? ctx->staging_buf : ctx->meta_buf);
+    const topo_meta_t* meta = (const topo_meta_t*)md_gpu_host_ptr(ctx->host_meta);
+    if (!meta) return false;
 
     const uint32_t num_vertices = meta->vertex_count;
     const uint32_t num_edges    = meta->edge_count;
 
     if (meta->changed_read != 0) {
-        MD_LOG_ERROR("md_topo_gpu_context_extract: path compression did not fully converge — results may be approximate");
+        MD_LOG_ERROR("md_topo_gpu_context_extract: path compression did not fully converge - results may be approximate");
     }
 
     MD_LOG_DEBUG("Topology: %u vertices, %u edges", num_vertices, num_edges);
@@ -399,14 +410,14 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 
     md_allocator_i* alloc = out_graph->alloc;
     MEMSET(out_graph, 0, sizeof(*out_graph));
-    out_graph->alloc       = alloc;
+    out_graph->alloc        = alloc;
     out_graph->num_vertices = num_vertices;
     out_graph->num_edges    = num_edges;
 
     out_graph->vertices = (md_topo_vert_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_vert_t));
     out_graph->types    = (md_topo_critical_point_type_t*)md_alloc(alloc, num_vertices * sizeof(md_topo_critical_point_type_t));
 
-    const float* vp = (const float*)md_gpu_buffer_cpu_ptr(ctx->staging_verts ? ctx->staging_verts : ctx->vert_buf);
+    const float* vp = (const float*)md_gpu_host_ptr(ctx->host_verts);
     for (uint32_t i = 0; i < num_vertices; i++) {
         out_graph->vertices[i].x     = vp[i * 4 + 0];
         out_graph->vertices[i].y     = vp[i * 4 + 1];
@@ -414,15 +425,14 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
         out_graph->vertices[i].value = vp[i * 4 + 3];
     }
 
-    // Read vertex types directly from the staging buffer
-    const uint32_t* tp = (const uint32_t*)md_gpu_buffer_cpu_ptr(ctx->staging_types ? ctx->staging_types : ctx->type_buf);
+    const uint32_t* tp = (const uint32_t*)md_gpu_host_ptr(ctx->host_types);
     for (uint32_t i = 0; i < num_vertices; i++) {
         out_graph->types[i] = (md_topo_critical_point_type_t)tp[i];
     }
 
     if (num_edges > 0) {
         out_graph->edges = (md_topo_edge_t*)md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
-        MEMCPY(out_graph->edges, md_gpu_buffer_cpu_ptr(ctx->staging_edges ? ctx->staging_edges : ctx->edge_buf), num_edges * sizeof(md_topo_edge_t));
+        MEMCPY(out_graph->edges, md_gpu_host_ptr(ctx->host_edges), num_edges * sizeof(md_topo_edge_t));
     }
 
     return true;

@@ -2,6 +2,9 @@
 // Evaluates electron density from density matrix and contracted GTO basis on a 3D grid.
 // Ported from eval_gto_density.comp to Slang for md_gpu backend.
 
+
+#include "../md_gpu.slang"
+
 #define OP_SET 0
 #define OP_ADD 1
 #define OP_SUB 2
@@ -32,13 +35,17 @@ struct RootArgs {
     PGTO*   pgto;
     float4* atom_xyz;
     float*  D_matrix;
+    DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
 
-[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
-RWTexture3D<float> out_vol;
+// Macros so helper functions keep referring to these exactly as they did when
+// both were globals.
+#define args (*md_root.args_ptr)
+#define out_vol (args.out_tex)
 
 uint4 unpack_ijkl(uint packed) {
     return uint4(
@@ -248,6 +255,7 @@ float contraction(float phi_mu[TILE_SIZE], float phi_nu[TILE_SIZE]) {
     return result;
 }
 
+[shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex, uint3 dtid : SV_DispatchThreadID) {
     if (tid == 0) {

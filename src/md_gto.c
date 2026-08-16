@@ -2,7 +2,6 @@
 #include <md_util.h>
 
 #include <core/md_platform.h>
-#include <core/md_gpu_util.h>
 
 #include <core/md_log.h>
 #include <core/md_simd.h>
@@ -1164,59 +1163,79 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
 
 #include <core/md_gpu.h>
 #include <gto_gpu_shaders.inl>
-#include <gto_gpu_shaders_reflection.inl>
 
-static md_gpu_compute_pipeline_t gto_pip_density   = NULL;
-static md_gpu_compute_pipeline_t gto_pip_mo        = NULL;
 
-static md_gpu_compute_pipeline_t ensure_compute_pipeline(md_gpu_device_t device, md_gpu_compute_pipeline_t* pipeline, const void* blob_start, size_t blob_size, const char* name, uint32_t wg_x, uint32_t wg_y, uint32_t wg_z, const md_gpu_resource_binding_t* resource_bindings, uint32_t resource_binding_count) {
-    if (*pipeline == NULL) {
-        md_gpu_compute_pipeline_desc_t desc = {
-            .shader_bytes     = blob_start,
-            .shader_byte_size = blob_size,
-            .entry_point      = "main",
-            .label            = name,
-            .threadgroup_size = { wg_x, wg_y, wg_z },
-            .resource_bindings = resource_bindings,
-            .resource_binding_count = resource_binding_count,
-        };
-        *pipeline = md_gpu_compute_pipeline_create(device, &desc);
-        if (*pipeline == NULL) {
-            MD_LOG_ERROR("Failed to create compute pipeline: %s", name);
-        }
-    }
-    return *pipeline;
+static md_gpu_kernel_t gto_k_density = NULL;
+static md_gpu_kernel_t gto_k_mo      = NULL;
+
+static md_gpu_kernel_t ensure_kernel(md_gpu_device_t device, md_gpu_kernel_t* slot,
+                                     const void* code, size_t code_size, const char* name,
+                                     uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (*slot) return *slot;
+    md_gpu_kernel_desc_t desc = {0};
+    desc.code          = code;
+    desc.code_size     = code_size;
+    desc.label         = name;
+    desc.group_size[0] = gx;
+    desc.group_size[1] = gy;
+    desc.group_size[2] = gz;
+    *slot = md_gpu_kernel_create(device, &desc);
+    if (!*slot) MD_LOG_ERROR("md_gto: failed to create kernel '%s': %s", name, md_gpu_last_error());
+    return *slot;
 }
 
 void md_gto_gpu_initialize(md_gpu_device_t device) {
-    if (!gto_pip_density) {
-        gto_pip_density = ensure_compute_pipeline(device, &gto_pip_density, gto_eval_gto_density_start, gto_eval_gto_density_size(), "GTO density", gto_eval_gto_density_thread_group_size_x, gto_eval_gto_density_thread_group_size_y, gto_eval_gto_density_thread_group_size_z, gto_eval_gto_density_pipeline_resource_bindings, gto_eval_gto_density_pipeline_resource_binding_count);
-        if (!gto_pip_density) {
-            MD_LOG_ERROR("Failed to create GTO density compute pipeline");
-        }
-    }
-
-    if (!gto_pip_mo) {
-        gto_pip_mo = ensure_compute_pipeline(device, &gto_pip_mo, gto_eval_gto_mo_start, gto_eval_gto_mo_size(), "GTO MO", gto_eval_gto_mo_thread_group_size_x, gto_eval_gto_mo_thread_group_size_y, gto_eval_gto_mo_thread_group_size_z, gto_eval_gto_mo_pipeline_resource_bindings, gto_eval_gto_mo_pipeline_resource_binding_count);
-        if (!gto_pip_mo) {
-            MD_LOG_ERROR("Failed to create GTO MO compute pipeline");
-        }
-    }
+    if (!device) return;
+    ensure_kernel(device, &gto_k_density, md_shader_eval_gto_density_main_start,
+                  md_shader_eval_gto_density_main_byte_size, "gto eval_gto_density", 8, 8, 8);
+    ensure_kernel(device, &gto_k_mo, md_shader_eval_gto_mo_main_start,
+                  md_shader_eval_gto_mo_main_byte_size, "gto eval_gto_mo", 8, 8, 8);
 }
 
 void md_gto_gpu_shutdown(void) {
-    if (gto_pip_density) { md_gpu_compute_pipeline_destroy(gto_pip_density); gto_pip_density = NULL; }
-    if (gto_pip_mo)      { md_gpu_compute_pipeline_destroy(gto_pip_mo);      gto_pip_mo      = NULL; }
+    if (gto_k_density) { md_gpu_kernel_destroy(gto_k_density); gto_k_density = NULL; }
+    if (gto_k_mo)      { md_gpu_kernel_destroy(gto_k_mo);      gto_k_mo      = NULL; }
 }
 
-// Internal layout descriptor for the basis GPU buffer.
-// Coefficient and atom coordinate data live in separate caller-owned buffers.
-//
-// Regions:
-//   cgto_atom_idx: uint   × num_cgtos
-//   cgto_r:        float  × num_cgtos
-//   cgto_off_len:  uint2  × num_cgtos
-//   pgto:          PGTO   × num_pgtos
+/* Argument structs, mirroring src/shaders/gto/*.slang. Both lead with two
+   float4x4 at offset 0, where SPIR-V and MSL agree.
+   tools/check_gpu_arg_layout.py verifies these against the compiled shaders. */
+typedef struct {
+    md_gpu_float4x4 world_to_model;
+    md_gpu_float4x4 index_to_world;
+    md_gpu_float4   step;
+    md_gpu_uint4    grid_dim;
+    uint32_t        num_cgtos;
+    uint32_t        operation;
+    uint32_t        _pad1;
+    uint32_t        _pad2;
+    uint64_t        cgto_atom_idx;
+    uint64_t        cgto_r;
+    uint64_t        cgto_off_len;
+    uint64_t        pgto;
+    uint64_t        atom_xyz;
+    uint64_t        D_matrix;
+    md_gpu_tex_t    out_tex;
+} gto_density_args_t;
+
+typedef struct {
+    md_gpu_float4x4 world_to_model;
+    md_gpu_float4x4 index_to_world;
+    md_gpu_float4   step;
+    md_gpu_uint4    grid_dim;
+    uint32_t        num_cgtos;
+    uint32_t        num_rows;
+    uint32_t        mode;
+    uint32_t        operation;
+    uint64_t        cgto_atom_idx;
+    uint64_t        cgto_r;
+    uint64_t        cgto_off_len;
+    uint64_t        pgto;
+    uint64_t        atom_xyz;
+    uint64_t        coeffs;
+    md_gpu_tex_t    out_tex;
+} gto_mo_args_t;
+
 typedef struct {
     uint32_t num_cgtos;
     uint32_t num_pgtos;
@@ -1254,14 +1273,18 @@ static md_gto_basis_layout_t gto_basis_layout_compute(uint32_t num_cgtos, uint32
 // md_gto_gpu_basis_t  —  device-local basis buffer (atom_idx, r, off_len, pgto)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// md_gto_gpu_basis_t  -  device-local basis allocation
+// ---------------------------------------------------------------------------
+
 typedef struct md_gto_gpu_basis {
-    md_gpu_device_t       device;
-    md_gpu_buffer_t       buffer;
+    md_gpu_pool_t         pool;
+    md_gpu_ptr_t          buffer;
     md_gto_basis_layout_t layout;
 } md_gto_gpu_basis;
 
-md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_gpu_basis_desc_t* desc) {
-    ASSERT(device);
+md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_pool_t pool, md_gpu_stream_t stream, const md_gto_gpu_basis_desc_t* desc) {
+    ASSERT(pool && stream);
     ASSERT(desc && desc->basis);
     const md_gto_basis_t* basis = desc->basis;
 
@@ -1270,23 +1293,21 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
     uint32_t num_atoms = gto_basis_num_atoms(basis);
 
     md_gto_basis_layout_t layout = gto_basis_layout_compute(num_cgtos, num_pgtos, num_atoms);
-    md_gpu_buffer_desc_t buf_desc = { .size = layout.total_size, .flags = MD_GPU_BUFFER_NONE };
-    md_gpu_buffer_t buf = md_gpu_buffer_create(device, &buf_desc);
+
+    md_gpu_ptr_t buf = md_gpu_malloc(pool, (size_t)layout.total_size, stream);
     if (!buf) {
-        MD_LOG_ERROR("md_gto_gpu_basis_create: failed to allocate device-local buffer (%zu bytes)", (size_t)layout.total_size);
+        MD_LOG_ERROR("md_gto_gpu_basis_create: failed to allocate %zu bytes: %s",
+                     (size_t)layout.total_size, md_gpu_last_error());
         return NULL;
     }
+
     md_gto_gpu_basis* gb = (md_gto_gpu_basis*)calloc(1, sizeof(md_gto_gpu_basis));
-    if (!gb) { md_gpu_buffer_destroy(buf); return NULL; }
-    gb->device = device;
+    if (!gb) { md_gpu_free(buf, stream); return NULL; }
+    gb->pool   = pool;
     gb->buffer = buf;
     gb->layout = layout;
 
-    // Populate all basis regions immediately.
     const md_gto_basis_layout_t* L = &gb->layout;
-    bool uma = (md_gpu_buffer_flags(gb->buffer) & MD_GPU_BUFFER_CPU_VISIBLE) != 0;
-    bool success = false;
-
     md_temp_scope_t temp = md_temp_begin();
 
     uint32_t* cgto_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 1 * L->num_cgtos);
@@ -1296,63 +1317,45 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
 
     gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
 
-    size_t sz_atom_idx = L->off_cgto_r         - L->off_cgto_atom_idx;
-    size_t sz_r        = L->off_cgto_off_len   - L->off_cgto_r;
-    size_t sz_off_len  = L->off_pgto           - L->off_cgto_off_len;
-    size_t sz_pgto     = (size_t)L->total_size - L->off_pgto;
+    const size_t sz_atom_idx = L->off_cgto_r       - L->off_cgto_atom_idx;
+    const size_t sz_r        = L->off_cgto_off_len - L->off_cgto_r;
+    const size_t sz_off_len  = L->off_pgto         - L->off_cgto_off_len;
+    const size_t sz_pgto     = (size_t)L->total_size - L->off_pgto;
 
-    if (uma) {
-        uint8_t* dst = (uint8_t*)md_gpu_buffer_cpu_ptr(gb->buffer);
-        if (dst) {
-            MEMCPY(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-            MEMCPY(dst + L->off_cgto_r, cgto_r, sz_r);
-            MEMCPY(dst + L->off_cgto_off_len, cgto_off_len, sz_off_len);
-            MEMCPY(dst + L->off_pgto, pgto, sz_pgto);
-            success = true;
-        }
+    /* One path for both UMA and discrete: md_gpu hands back either the
+       destination itself or staging, whichever is safe. */
+    uint8_t* dst = (uint8_t*)md_gpu_upload_begin(stream, buf, (size_t)L->total_size);
+    bool success = false;
+    if (dst) {
+        MEMCPY(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
+        MEMCPY(dst + L->off_cgto_r,        cgto_r,        sz_r);
+        MEMCPY(dst + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
+        MEMCPY(dst + L->off_pgto,          pgto,          sz_pgto);
+        success = md_gpu_upload_end(stream);
     } else {
-        md_gpu_queue_t queue = md_gpu_queue_transfer(device);
-        md_gpu_cmd_t cmd = md_gpu_cmd_begin(queue, "GTO staging upload");
-        if (cmd) {
-            md_gpu_transient_t gpu_temp = md_gpu_cmd_temp_alloc(cmd, (size_t)L->total_size);
-            uint8_t* tmp = (uint8_t*)gpu_temp.cpu_ptr;
-            MEMCPY(tmp + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-            MEMCPY(tmp + L->off_cgto_r,        cgto_r,        sz_r);
-            MEMCPY(tmp + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
-            MEMCPY(tmp + L->off_pgto,          pgto,          sz_pgto);
-
-            md_gpu_cmd_copy_buffer(cmd, gpu_temp.buffer, buf, (size_t)L->total_size, gpu_temp.offset, 0);
-            if (md_gpu_cmd_end(cmd)) {
-				md_gpu_event_t event = md_gpu_queue_submit_one(queue, cmd);
-				if (!md_gpu_event_is_valid(event)) {
-					MD_LOG_ERROR("md_gto_gpu_basis_create: failed to submit staging upload command");
-				} else {
-					md_gpu_event_wait(event);
-					success = true;
-				}
-			}
-        }
+        MD_LOG_ERROR("md_gto_gpu_basis_create: upload failed: %s", md_gpu_last_error());
     }
-done:
+
     md_temp_end(temp);
     if (!success) {
-        md_gpu_buffer_destroy(buf);
+        md_gpu_free(buf, stream);
         free(gb);
         return NULL;
     }
-
     return gb;
 }
 
 void md_gto_gpu_basis_destroy(md_gto_gpu_basis_t gb) {
     if (!gb) return;
-    md_gpu_buffer_destroy(gb->buffer);
+    /* The pool owns the memory; freeing is stream-ordered, so this is safe
+       even with work still in flight. A NULL stream would be wrong here, so
+       the allocation is simply left to md_gpu_pool_destroy if the caller has
+       already torn the streams down. */
     free(gb);
 }
 
-md_gpu_buffer_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t gb) {
-    if (!gb) return NULL;
-    return gb->buffer;
+md_gpu_ptr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t gb) {
+    return gb ? gb->buffer : NULL;
 }
 
 size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t gb) {
@@ -1420,169 +1423,88 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
     }
 }
 
-void md_gto_gpu_coeff_upload_density(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf,
-    md_gpu_buffer_t src_buf, size_t src_offset, size_t num_cgtos) {
-    if (!cmd || !coeff_buf || !src_buf) return;
-    size_t sz = md_gto_gpu_coeff_size_density(num_cgtos);
-    md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+/* md_gto_gpu_coeff_upload_* are gone: md_gpu_upload_begin/end packs straight
+   into the destination when that is safe and into staging when it is not, so a
+   dedicated helper bought nothing. */
+
+static void gto_fill_common_args(md_gpu_float4x4* w2m, md_gpu_float4x4* i2w, md_gpu_float4* step,
+                                 md_gpu_uint4* grid_dim, const md_grid_t* grid, const float sample_offset[3]) {
+    world_to_model_matrix((float(*)[4])w2m->m, grid);
+    index_to_world_matrix((float(*)[4])i2w->m, grid, sample_offset);
+    step->x = grid->spacing.elem[0];
+    step->y = grid->spacing.elem[1];
+    step->z = grid->spacing.elem[2];
+    step->w = 0.0f;
+    grid_dim->x = (uint32_t)grid->dim[0];
+    grid_dim->y = (uint32_t)grid->dim[1];
+    grid_dim->z = (uint32_t)grid->dim[2];
+    grid_dim->w = 0;
 }
 
-void md_gto_gpu_coeff_upload_mo(md_gpu_cmd_t cmd, md_gpu_buffer_t coeff_buf,
-    md_gpu_buffer_t src_buf, size_t src_offset, size_t num_mos, size_t num_cgtos) {
-    if (!cmd || !coeff_buf || !src_buf) return;
-    size_t sz = md_gto_gpu_coeff_size_mo(num_mos, num_cgtos);
-    md_gpu_cmd_copy_buffer(cmd, src_buf, coeff_buf, sz, src_offset, 0);
-    md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-}
-
-// ---------------------------------------------------------------------------
-// GPU dispatch
-// ---------------------------------------------------------------------------
-
-void md_gto_gpu_density_record(md_gpu_cmd_t cmd, const md_gto_gpu_density_desc_t* desc) {
-
-    if (!cmd || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_image || !desc->grid) {
-        MD_LOG_ERROR("md_gto_gpu_density_record: invalid input");
+void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
+    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_tex || !desc->grid) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: invalid input");
         return;
     }
-
+    if (!gto_k_density) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: kernel not initialized");
+        return;
+    }
     const md_gto_basis_layout_t* L = &desc->basis->layout;
+    const uint8_t* base = (const uint8_t*)desc->basis->buffer;
 
-    md_gpu_compute_pipeline_t pipeline = gto_pip_density;
-    if (!pipeline) {
-        MD_LOG_ERROR("md_gto_gpu_density_record: compute pipeline not initialized");
-        return;
-    }
+    gto_density_args_t a = {0};
+    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
+    a.num_cgtos = L->num_cgtos;
+    a.operation = (uint32_t)desc->op;
 
-    md_gpu_usage_flags_t image_usage = desc->op == MD_GTO_OP_SET ? MD_GPU_USAGE_WRITE : MD_GPU_USAGE_READ | MD_GPU_USAGE_WRITE;
+    /* Device memory is a pointer, so the basis sub-ranges are plain
+       arithmetic rather than (buffer, offset, usage) triples. */
+    a.cgto_atom_idx = (uint64_t)(uintptr_t)(base + L->off_cgto_atom_idx);
+    a.cgto_r        = (uint64_t)(uintptr_t)(base + L->off_cgto_r);
+    a.cgto_off_len  = (uint64_t)(uintptr_t)(base + L->off_cgto_off_len);
+    a.pgto          = (uint64_t)(uintptr_t)(base + L->off_pgto);
+    a.atom_xyz      = (uint64_t)(uintptr_t)desc->atom_xyz;
+    a.D_matrix      = (uint64_t)(uintptr_t)desc->coeff;
+    a.out_tex       = desc->out_tex;
 
-    gto_eval_gto_density_dispatch_t dispatch = gto_eval_gto_density_dispatch_init();
-    world_to_model_matrix(dispatch.args.world_to_model, desc->grid);
-    index_to_world_matrix(dispatch.args.index_to_world, desc->grid, desc->sample_offset);
-    dispatch.args.step[0]       = desc->grid->spacing.elem[0];
-    dispatch.args.step[1]       = desc->grid->spacing.elem[1];
-    dispatch.args.step[2]       = desc->grid->spacing.elem[2];
-    dispatch.args.step[3]       = 0.0f;
-    dispatch.args.grid_dim[0]   = (uint32_t)desc->grid->dim[0];
-    dispatch.args.grid_dim[1]   = (uint32_t)desc->grid->dim[1];
-    dispatch.args.grid_dim[2]   = (uint32_t)desc->grid->dim[2];
-    dispatch.args.grid_dim[3]   = 0;
-    dispatch.args.num_cgtos     = L->num_cgtos;
-    dispatch.args.operation     = (uint32_t)desc->op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = desc->atom_xyz, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.D_matrix      = (md_gpu_buffer_resource_t){ .buffer = desc->coeff, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.out_vol.image = desc->out_image;
-    dispatch.resources.out_vol.usage = image_usage;
-    dispatch.group_count[0] = DIV_UP(desc->grid->dim[0], gto_eval_gto_density_thread_group_size_x);
-    dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_density_thread_group_size_y);
-    dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_density_thread_group_size_z);
-
-#if !defined(NDEBUG)
-    {
-        const uint64_t basis_addr = md_gpu_buffer_address(desc->basis->buffer);
-        const uint64_t atom_addr  = md_gpu_buffer_address(desc->atom_xyz);
-        const uint64_t coeff_addr = md_gpu_buffer_address(desc->coeff);
-        fprintf(stderr, "[gto][density] basis_addr=%llu atom_addr=%llu coeff_addr=%llu\n", (unsigned long long)basis_addr, (unsigned long long)atom_addr, (unsigned long long)coeff_addr);
-        fprintf(stderr, "[gto][density] basis_flags=0x%x atom_flags=0x%x coeff_flags=0x%x\n", md_gpu_buffer_flags(desc->basis->buffer), md_gpu_buffer_flags(desc->atom_xyz), md_gpu_buffer_flags(desc->coeff));
-
-        if (md_gpu_buffer_flags(desc->atom_xyz) & MD_GPU_BUFFER_CPU_VISIBLE) {
-            const float* atom = (const float*)md_gpu_buffer_cpu_ptr(desc->atom_xyz);
-            if (atom) {
-                fprintf(stderr, "[gto][density] atom_xyz[0]=(%g,%g,%g,%g)\n", atom[0], atom[1], atom[2], atom[3]);
-            }
-        }
-        if (md_gpu_buffer_flags(desc->coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
-            const float* coeff = (const float*)md_gpu_buffer_cpu_ptr(desc->coeff);
-            if (coeff) {
-                fprintf(stderr, "[gto][density] coeff[0]=%g\n", coeff[0]);
-            }
-        }
-    }
-#endif
-
-    md_gpu_cmd_debug_group_push(cmd, "GTO Density Pass");
-    if (!gto_eval_gto_density_cmd_dispatch(cmd, pipeline, &dispatch)) {
-        MD_LOG_ERROR("md_gto_gpu_density_record: dispatch encoding failed");
-        md_gpu_cmd_debug_group_pop(cmd);
-        return;
-    }
-    md_gpu_cmd_debug_group_pop(cmd);
+    const md_gpu_grid_t g = md_gpu_grid(DIV_UP(desc->grid->dim[0], 8),
+                                        DIV_UP(desc->grid->dim[1], 8),
+                                        DIV_UP(desc->grid->dim[2], 8));
+    md_gpu_launch(stream, gto_k_density, g, &a, sizeof(a));
 }
 
-void md_gto_gpu_orbital_record(md_gpu_cmd_t cmd, const md_gto_gpu_orbital_desc_t* desc) {
-    if (!cmd || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_image || !desc->grid || desc->num_orbitals == 0) {
-        MD_LOG_ERROR("md_gto_gpu_orbital_record: invalid input");
+void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc) {
+    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_tex || !desc->grid) {
+        MD_LOG_ERROR("md_gto_gpu_orbital_launch: invalid input");
         return;
     }
-
+    if (!gto_k_mo) {
+        MD_LOG_ERROR("md_gto_gpu_orbital_launch: kernel not initialized");
+        return;
+    }
     const md_gto_basis_layout_t* L = &desc->basis->layout;
-    md_gpu_compute_pipeline_t pipeline = gto_pip_mo;
-    if (!pipeline) {
-        MD_LOG_ERROR("md_gto_gpu_orbital_record: compute pipeline not initialized");
-        return;
-    }
+    const uint8_t* base = (const uint8_t*)desc->basis->buffer;
 
-    gto_eval_gto_mo_dispatch_t dispatch = gto_eval_gto_mo_dispatch_init();
-    world_to_model_matrix(dispatch.args.world_to_model, desc->grid);
-    index_to_world_matrix(dispatch.args.index_to_world, desc->grid, desc->sample_offset);
-    dispatch.args.step[0]       = desc->grid->spacing.elem[0];
-    dispatch.args.step[1]       = desc->grid->spacing.elem[1];
-    dispatch.args.step[2]       = desc->grid->spacing.elem[2];
-    dispatch.args.step[3]       = 0.0f;
-    dispatch.args.grid_dim[0]   = (uint32_t)desc->grid->dim[0];
-    dispatch.args.grid_dim[1]   = (uint32_t)desc->grid->dim[1];
-    dispatch.args.grid_dim[2]   = (uint32_t)desc->grid->dim[2];
-    dispatch.args.grid_dim[3]   = 0;
-    dispatch.args.num_cgtos     = L->num_cgtos;
-    dispatch.args.num_rows      = (uint32_t)desc->num_orbitals;
-    dispatch.args.mode          = (desc->eval_mode == MD_GTO_EVAL_MODE_PSI_SQUARED) ? 1u : 0u;
-    dispatch.args.operation     = (uint32_t)desc->op;
-    dispatch.resources.cgto_atom_idx = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_atom_idx, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_r        = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_r, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.cgto_off_len  = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_cgto_off_len, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.pgto          = (md_gpu_buffer_resource_t){ .buffer = desc->basis->buffer, .offset = L->off_pgto, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.atom_xyz      = (md_gpu_buffer_resource_t){ .buffer = desc->atom_xyz, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.coeffs        = (md_gpu_buffer_resource_t){ .buffer = desc->coeff, .offset = 0, .usage = MD_GPU_USAGE_READ };
-    dispatch.resources.out_vol.image = desc->out_image;
-    dispatch.group_count[0] = DIV_UP(desc->grid->dim[0], gto_eval_gto_mo_thread_group_size_x);
-    dispatch.group_count[1] = DIV_UP(desc->grid->dim[1], gto_eval_gto_mo_thread_group_size_y);
-    dispatch.group_count[2] = DIV_UP(desc->grid->dim[2], gto_eval_gto_mo_thread_group_size_z);
+    gto_mo_args_t a = {0};
+    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
+    a.num_cgtos = L->num_cgtos;
+    a.num_rows  = (uint32_t)desc->num_orbitals;
+    a.mode      = (uint32_t)desc->eval_mode;
+    a.operation = (uint32_t)desc->op;
 
-#if !defined(NDEBUG)
-    {
-        const uint64_t basis_addr = md_gpu_buffer_address(desc->basis->buffer);
-        const uint64_t atom_addr  = md_gpu_buffer_address(desc->atom_xyz);
-        const uint64_t coeff_addr = md_gpu_buffer_address(desc->coeff);
-        fprintf(stderr, "[gto][mo] basis_addr=%llu atom_addr=%llu coeff_addr=%llu\n", (unsigned long long)basis_addr, (unsigned long long)atom_addr, (unsigned long long)coeff_addr);
-        fprintf(stderr, "[gto][mo] basis_flags=0x%x atom_flags=0x%x coeff_flags=0x%x num_rows=%u\n", md_gpu_buffer_flags(desc->basis->buffer), md_gpu_buffer_flags(desc->atom_xyz), md_gpu_buffer_flags(desc->coeff), (unsigned)desc->num_orbitals);
+    a.cgto_atom_idx = (uint64_t)(uintptr_t)(base + L->off_cgto_atom_idx);
+    a.cgto_r        = (uint64_t)(uintptr_t)(base + L->off_cgto_r);
+    a.cgto_off_len  = (uint64_t)(uintptr_t)(base + L->off_cgto_off_len);
+    a.pgto          = (uint64_t)(uintptr_t)(base + L->off_pgto);
+    a.atom_xyz      = (uint64_t)(uintptr_t)desc->atom_xyz;
+    a.coeffs        = (uint64_t)(uintptr_t)desc->coeff;
+    a.out_tex       = desc->out_tex;
 
-        if (md_gpu_buffer_flags(desc->atom_xyz) & MD_GPU_BUFFER_CPU_VISIBLE) {
-            const float* atom = (const float*)md_gpu_buffer_cpu_ptr(desc->atom_xyz);
-            if (atom) {
-                fprintf(stderr, "[gto][mo] atom_xyz[0]=(%g,%g,%g,%g)\n", atom[0], atom[1], atom[2], atom[3]);
-            }
-        }
-        if (md_gpu_buffer_flags(desc->coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
-            const float* coeff = (const float*)md_gpu_buffer_cpu_ptr(desc->coeff);
-            if (coeff) {
-                fprintf(stderr, "[gto][mo] coeff[0]=%g\n", coeff[0]);
-            }
-        }
-    }
-#endif
-
-    md_gpu_cmd_debug_group_push(cmd, "GTO MO Pass");
-    if (!gto_eval_gto_mo_cmd_dispatch(cmd, pipeline, &dispatch)) {
-        MD_LOG_ERROR("md_gto_gpu_orbital_record: dispatch encoding failed");
-        md_gpu_cmd_debug_group_pop(cmd);
-        return;
-    }
-    md_gpu_cmd_debug_group_pop(cmd);
+    const md_gpu_grid_t g = md_gpu_grid(DIV_UP(desc->grid->dim[0], 8),
+                                        DIV_UP(desc->grid->dim[1], 8),
+                                        DIV_UP(desc->grid->dim[2], 8));
+    md_gpu_launch(stream, gto_k_mo, g, &a, sizeof(a));
 }
 
 #endif // MD_ENABLE_GPU

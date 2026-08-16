@@ -1,6 +1,9 @@
 // critical_points.slang
 // Classifies each voxel as a critical point type based on manifold analysis.
 
+
+#include "../md_gpu.slang"
+
 #define WG_X 8
 #define WG_Y 8
 #define WG_Z 8
@@ -36,13 +39,17 @@ struct RootArgs {
     uint* descending;
     int* types;
     MetaData* meta;
+    DescriptorHandle<RWTexture3D<float>> vol_tex;
 };
 
+struct MdGpuRoot { RootArgs* args_ptr; };
 [[vk::push_constant]]
-ConstantBuffer<RootArgs> args;
+ConstantBuffer<MdGpuRoot> md_root;
 
-[[vk::binding(0, 0)]] // storage image slot 0 (set 0)
-RWTexture3D<float> volumeTex;
+// `args` and `volumeTex` are macros so that helper functions can keep
+// referring to them exactly as they did when both were globals.
+#define args (*md_root.args_ptr)
+#define volumeTex (args.vol_tex)
 
 bool is_valid_voxel(int3 ijk) {
     return all(ijk >= int3(0, 0, 0)) && all(ijk < int3(args.dims.xyz));
