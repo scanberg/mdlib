@@ -213,8 +213,6 @@ typedef struct md_system_t {
 extern "C" {
 #endif
 
-
-
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
     ASSERT(atom_type);

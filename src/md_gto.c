@@ -393,12 +393,17 @@ static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
     *out_num_pgtos = np;
 }
 
-static uint32_t gto_basis_num_atoms(const md_gto_basis_t* basis) {
+size_t md_gto_basis_num_atoms(const md_gto_basis_t* basis) {
+    if (!basis) return 0;
     uint32_t max_atom_idx = 0;
     for (uint32_t i = 0; i < basis->num_shells; ++i) {
         max_atom_idx = MAX(max_atom_idx, basis->shells[i].atom_idx);
     }
-    return basis->num_shells ? (max_atom_idx + 1) : 0;
+    return basis->num_shells ? (size_t)(max_atom_idx + 1) : 0;
+}
+
+static uint32_t gto_basis_num_atoms(const md_gto_basis_t* basis) {
+    return (uint32_t)md_gto_basis_num_atoms(basis);
 }
 
 // Expand basis metadata into CGTO/PGTO arrays that do not depend on atom coordinates.

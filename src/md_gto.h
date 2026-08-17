@@ -165,6 +165,9 @@ size_t md_gto_basis_num_ao(const md_gto_basis_t* basis);
 // pure basis. Readers use this to size their input before conversion.
 size_t md_gto_basis_num_sph_ao(const md_gto_basis_t* basis);
 
+// Number of atoms the shell list indexes into, i.e. max(shell.atom_idx) + 1.
+size_t md_gto_basis_num_atoms(const md_gto_basis_t* basis);
+
 // Maps each AO index to the atom its parent shell is centred on.
 // out_atom_idx must hold md_gto_basis_num_ao(basis) entries. Returns the count.
 //
