@@ -130,6 +130,87 @@ void tex_read(uint3 tid : SV_DispatchThreadID) {
 }
 
 // ---------------------------------------------------------------------------
+// layout_probe: writes every argument field back to a buffer.
+//
+// md_gpu.h's md_gpu_uint3 / md_gpu_float4 / ... exist entirely to make one C
+// struct match both SPIR-V's scalar layout and MSL's vector layout, and nothing
+// in the suite exercised them. Reading the fields back turns a layout mismatch
+// into "field X came through as Y" rather than a wrong result three launches
+// later.
+//
+// The mix is deliberate: uint3 (12B/16B) is the case that cannot be fixed with
+// hand padding, uint2 and float4 are the cases that differ only in alignment,
+// and the trailing pointer proves the struct's total footprint agrees too.
+// ---------------------------------------------------------------------------
+struct LayoutProbeArgs {
+    uint3   dim;
+    float   scale;
+    uint2   pair;
+    float4  v4;
+    uint*   dst;
+};
+
+struct LayoutProbeRoot { LayoutProbeArgs* args; };
+[[vk::push_constant]] ConstantBuffer<LayoutProbeRoot> layout_probe_root;
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void layout_probe(uint3 tid : SV_DispatchThreadID) {
+    LayoutProbeArgs a = *layout_probe_root.args;
+    if (tid.x != 0) return;
+    a.dst[0] = a.dim.x;
+    a.dst[1] = a.dim.y;
+    a.dst[2] = a.dim.z;
+    a.dst[3] = asuint(a.scale);
+    a.dst[4] = a.pair.x;
+    a.dst[5] = a.pair.y;
+    a.dst[6] = asuint(a.v4.x);
+    a.dst[7] = asuint(a.v4.y);
+    a.dst[8] = asuint(a.v4.z);
+    a.dst[9] = asuint(a.v4.w);
+}
+
+// ---------------------------------------------------------------------------
+// tex_probe: separates "did the argument struct arrive intact" from "did the
+// texture handle reach the shader".
+//
+// A DescriptorHandle sits *inside* the struct, and the two backends reach it by
+// completely different routes -- a heap index on Vulkan, a resource id on
+// Metal. If a backend's toolchain lifts the handle out of the struct into its
+// own binding slot, every member after it shifts by 8 bytes and the C mirror is
+// silently wrong. `marker` sits after the handle for exactly that reason: it is
+// a plain uint, so a shifted read is a wrong value rather than a wild pointer
+// dereference, and the test reports instead of crashing.
+//
+// dst deliberately sits *before* the handle so it survives such a shift and the
+// shader can always report what it saw.
+// ---------------------------------------------------------------------------
+struct TexProbeArgs {
+    uint    n;
+    uint    _pad0;
+    uint    _pad1;
+    uint    _pad2;
+    uint*   dst;
+    DescriptorHandle<RWTexture3D<float>> tex;
+    uint    marker;
+    uint    _pad3;
+};
+
+struct TexProbeRoot { TexProbeArgs* args; };
+[[vk::push_constant]] ConstantBuffer<TexProbeRoot> tex_probe_root;
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void tex_probe(uint3 tid : SV_DispatchThreadID) {
+    TexProbeArgs a = *tex_probe_root.args;
+    if (tid.x != 0) return;
+    a.dst[0] = a.marker;      // struct layout survived the handle
+    a.dst[1] = a.n;
+    a.tex[uint3(0, 0, 0)] = 1.0f;   // the handle actually resolved
+    a.tex[uint3(1, 0, 0)] = 2.0f;
+}
+
+// ---------------------------------------------------------------------------
 // bump: dst[i] += delta. Launched indirectly, so the number of groups comes
 // from a device-side count written by an earlier launch.
 // ---------------------------------------------------------------------------

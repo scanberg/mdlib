@@ -480,7 +480,7 @@ if (MD_ENABLE_GPU)
     TARGET   mdlib
     NAMESPACE md_shader
     SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_test.slang
-    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump
+    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe
   )
   compile_gpu_shaders(gpu_volume_shaders.inl
     TARGET   mdlib

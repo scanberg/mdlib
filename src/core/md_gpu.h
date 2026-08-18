@@ -621,7 +621,12 @@ bool md_gpu_sync_on_complete(md_gpu_sync_t sync, md_gpu_host_fn fn, void* user);
 
 /* Program order is conservative by design. If profiling ever proves a
    specific barrier over-strict, disable automatic ordering for a region and
-   place barriers by hand. Expect never to use this. */
+   place barriers by hand. Expect never to use this.
+
+   Vulkan only. On Metal, program order is a property of the command encoder
+   rather than something the backend emits, so there is no per-region barrier to
+   relax: both calls are no-ops there and ordering is unaffected. Code using the
+   hatch stays correct on both, it simply does not speed up on Metal. */
 void md_gpu_stream_set_auto_order(md_gpu_stream_t stream, bool enabled);
 void md_gpu_stream_barrier(md_gpu_stream_t stream);
 

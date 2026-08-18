@@ -6,9 +6,19 @@ the difference is called out in a comment.
 
 Three structural differences from Vulkan:
 
-  1. Program order is a memoryBarrierWithScope: inside a compute encoder, and
-     an encoder boundary when switching between compute and blit work. Metal
-     orders encoders within a command buffer, so the boundary is free.
+  1. Program order inside a command buffer costs nothing to express. A serial
+     compute encoder orders its dispatches and an encoder boundary flushes
+     structurally, so this backend emits no barriers at all where Vulkan needs a
+     vkCmdPipelineBarrier.
+
+     Across command buffers it is not free, and for a reason worth stating up
+     front: see NOTE ON RESIDENCY below. Because nothing is ever declared to a
+     dispatch, Metal has no hazard tracking to drive its implicit cross-submission
+     ordering, so each new command buffer explicitly waits on the stream's own
+     previous signal value. See md_mtl_stream_ensure_cmd.
+
+     The corollary is that md_gpu_stream_set_auto_order / md_gpu_stream_barrier
+     are no-ops here; see the note where they are defined.
 
   2. There are no image layouts, so the whole layout question disappears
      rather than being answered with VK_IMAGE_LAYOUT_GENERAL.
@@ -16,15 +26,29 @@ Three structural differences from Vulkan:
   3. MTLCommandBuffer is single-use, so a graph cannot be a pre-recorded
      command buffer the way it is on Vulkan. A graph here is a recorded list
      of operations that is re-encoded on each launch. Encoding is cheap on
-     Metal by design, and the CPU work a graph actually eliminates -- building
-     argument blocks, hashing, allocating -- is eliminated either way, because
-     argument blocks live in graph-owned buffers and are never rebuilt.
+     Metal by design, so what a graph saves is the recording, not the encoding:
+     no re-capture, no pipeline lookup, no rebuilding the operation list.
+
+     Argument blocks *are* rebuilt on every replay, from a CPU-side shadow into
+     fresh transient memory. That is deliberate and it is not the slow part --
+     it is a memcpy of a small struct. Binding the shadow directly would mean
+     relying on a CPU write reaching a GPU that has already read that memory,
+     which this backend cannot get (see NOTE ON RESIDENCY). md_gpu_graph_args
+     still hands out the shadow and patching it still works.
 
 NOTE ON RESIDENCY: with no per-dispatch resource declarations there is nothing
 to derive residency from, so every live allocation goes into a device-wide
 MTLResidencySet attached to both queues (macOS 15 / iOS 18 and later). On
 older systems the backend falls back to calling useResources: once per encoder
 with the full live set, which is correct but O(live allocations) per encoder.
+
+The second, less obvious consequence: a residency set makes resources resident
+and does explicitly nothing for hazards. Combined with reaching every buffer by
+raw gpuAddress, it means Metal never learns which resources a dispatch touches
+and so cannot insert the implicit memory barriers it normally would. Anywhere
+ordering is not already structural -- i.e. between command buffers -- this
+backend has to state the dependency itself. That is the whole reason
+md_mtl_stream_ensure_cmd waits on the stream's own timeline.
 */
 
 #include "md_gpu.h"
@@ -58,7 +82,20 @@ with the full live set, which is correct but O(live allocations) per encoder.
 #define MD_MTL_MAX_PENDING_WAITS  16u
 #define MD_MTL_ERROR_BUF         512u
 
-/* Slang emits the push-constant block as buffer argument 0 on Metal. */
+/* The root buffer index is NOT fixed, and it is NOT always 0.
+
+   Slang assigns Metal buffer indices per *file*, in declaration order of the
+   push-constant globals -- not per entry point. A file with one kernel always
+   gets 0, which is why every production shader worked and why this went
+   unnoticed. unittest/shaders/gpu_test.slang declares eight roots, so its
+   entry points land on 0..7:
+
+       fill 0   scale_add 1   sum_reduce 2   tex_write 3
+       tex_read 4   layout_probe 5   tex_probe 6   bump 7
+
+   So the index is a property of the compiled kernel and is read out of the
+   pipeline's binding reflection at create time. This constant is only the
+   fallback for when reflection is unavailable. */
 #define MD_MTL_ARG_BUFFER_INDEX    0
 
 static __thread char md_mtl_error_buf[MD_MTL_ERROR_BUF];
@@ -187,6 +224,11 @@ typedef enum md_mtl_op_kind_t {
 typedef struct md_mtl_op_t {
     md_mtl_op_kind_t kind;
 
+    /* Index into md_gpu_graph::launches for a captured dispatch, or -1.
+       Replay rebuilds the argument block from that launch's shadow rather than
+       binding it in place; see md_gpu_graph_launch. */
+    int32_t launch_index;
+
     /* dispatch */
     md_gpu_kernel_t kernel;
     uint64_t         arg_addr;
@@ -230,6 +272,9 @@ typedef struct md_gpu_stream {
     __unsafe_unretained id<MTLCommandBuffer>       cmd;
     __unsafe_unretained id<MTLComputeCommandEncoder> compute_enc;
     __unsafe_unretained id<MTLBlitCommandEncoder>    blit_enc;
+    /* Orders work across an encoder boundary. See md_mtl_switch_encoder. */
+    __unsafe_unretained id<MTLFence>                 fence;
+    bool                                             fence_valid;
 
     uint64_t next_value;
     uint64_t submitted_value;
@@ -271,6 +316,7 @@ typedef struct md_gpu_kernel {
     __unsafe_unretained id<MTLComputePipelineState> pso;
     __unsafe_unretained id<MTLFunction>             fn;
     uint32_t group_size[3];
+    uint32_t arg_buffer_index;   /* from binding reflection; see the note above */
     char     label[64];
 } md_gpu_kernel;
 
@@ -426,6 +472,29 @@ static void md_mtl_destroy_raw_buffer(md_gpu_device_t dev, id<MTLBuffer> buf) {
     MD_MTL_RELEASE(buf);
 }
 
+/* Fallback-residency bookkeeping, for systems without MTLResidencySet. Callers
+   must not already hold device_mutex; nothing that creates or destroys a page
+   does. */
+static void md_mtl_live_bufs_add(md_gpu_device_t dev, id<MTLBuffer> buf) {
+    if (dev->has_residency_set) return;
+    md_mutex_lock(&dev->device_mutex);
+    id<MTLBuffer>* slot = (id<MTLBuffer>*)md_mtl_vec_push(&dev->live_bufs, dev->alloc);
+    if (slot) *slot = buf;
+    md_mutex_unlock(&dev->device_mutex);
+}
+
+/* Caller holds device_mutex. */
+static void md_mtl_live_bufs_remove_locked(md_gpu_device_t dev, id<MTLBuffer> buf) {
+    id<MTLBuffer>* arr = (id<MTLBuffer>*)dev->live_bufs.data;
+    for (size_t i = 0; i < dev->live_bufs.count; ++i) {
+        if (arr[i] == buf) {
+            memmove(&arr[i], &arr[i + 1], (dev->live_bufs.count - i - 1) * sizeof(*arr));
+            dev->live_bufs.count--;
+            return;
+        }
+    }
+}
+
 static md_mtl_page_t* md_mtl_page_create(md_gpu_device_t dev, uint64_t size) {
     md_mtl_page_t* p = (md_mtl_page_t*)md_alloc(dev->alloc, sizeof(md_mtl_page_t));
     if (!p) return NULL;
@@ -439,10 +508,19 @@ static md_mtl_page_t* md_mtl_page_create(md_gpu_device_t dev, uint64_t size) {
     p->buffer   = buf;
     p->host     = (uint8_t*)host;
     p->capacity = size;
+    /* Argument structs live in these pages and the shader reaches them by raw
+       device address, so a page has to be resident exactly like a pool block --
+       there is no setBuffer: to imply it any more. */
+    md_mtl_live_bufs_add(dev, buf);
     return p;
 }
 
 static void md_mtl_page_destroy(md_gpu_device_t dev, md_mtl_page_t* p) {
+    if (!dev->has_residency_set) {
+        md_mutex_lock(&dev->device_mutex);
+        md_mtl_live_bufs_remove_locked(dev, p->buffer);
+        md_mutex_unlock(&dev->device_mutex);
+    }
     md_mtl_destroy_raw_buffer(dev, p->buffer);
     md_free(dev->alloc, p, sizeof(md_mtl_page_t));
 }
@@ -514,13 +592,33 @@ static bool md_mtl_stream_ensure_cmd(md_gpu_stream_t s) {
     if (!cb) return md_mtl_fail("commandBuffer failed on stream '%s'", s->label);
     MD_MTL_RETAIN(cb);
     cb.label = [NSString stringWithUTF8String:s->label];
-    s->cmd      = cb;
-    s->has_work = false;
-    /* Unlike Vulkan, Metal executes command buffers on a queue in the order
-       they were committed, and each stream owns its queue, so work in a new
-       command buffer is already ordered after the previous one. No barrier is
-       needed at the boundary -- only within an encoder. */
+    s->cmd         = cb;
+    s->has_work    = false;
     s->needs_barrier = false;
+    /* An MTLFence is scoped to a command buffer: waiting on one that has not
+       been updated in this buffer is undefined, so re-arm the flag. */
+    s->fence_valid = false;
+
+    /* Chain onto this stream's own timeline.
+
+       Metal starts command buffers on a queue in commit order, but the memory
+       ordering between them is driven by hazard tracking -- and this backend
+       gives Metal nothing to track. Buffers are reached by raw gpuAddress and
+       declared only through a device-wide MTLResidencySet, which handles
+       residency and explicitly not hazards. So Metal cannot know that command
+       buffer N+1 reads what N wrote, and will not order the memory for it.
+
+       Inside a command buffer a serial compute encoder orders its dispatches,
+       but encoder *boundaries* need stating too -- see md_mtl_switch_encoder.
+
+       One event wait per command buffer, and only at a submission boundary.
+       This is md_gpu.h's central promise -- "work issued into a stream executes
+       in issue order, and every operation observes all writes made by the
+       operations before it in that stream" -- so paying for it is not optional.
+       Concurrency still comes from other streams, which are other queues. */
+    if (s->submitted_value > 0) {
+        [cb encodeWaitForEvent:s->timeline value:s->submitted_value];
+    }
 
     /* Pending cross-stream waits are encoded at the head of the buffer. */
     for (uint32_t i = 0; i < s->wait_count; ++i) {
@@ -530,20 +628,70 @@ static bool md_mtl_stream_ensure_cmd(md_gpu_stream_t s) {
     return true;
 }
 
-static void md_mtl_end_encoders(md_gpu_stream_t s) {
+/* Close whichever encoder is open, signalling the stream's fence on the way out
+   so the next encoder can wait on it.
+
+   Encoders inside one command buffer are NOT guaranteed to run one after
+   another. Metal is free to overlap them, and decides whether it may from
+   hazard tracking -- which this backend does not give it (see NOTE ON
+   RESIDENCY). A dispatch writing a texture through a bindless handle followed
+   by a blit reading that texture is, as far as Metal can tell, two independent
+   pieces of work: the blit is free to start early and copy voxels the dispatch
+   has not written yet. Whole threadgroups come out stale, which is what the GTO
+   volumes were showing.
+
+   MTLFence exists for exactly this -- ordering untracked resource access across
+   encoders -- and is cheaper than splitting into separate command buffers.
+   `signal_fence` is false only when the command buffer itself is ending, where
+   there is no following encoder to order against. */
+static void md_mtl_close_encoder(md_gpu_stream_t s, bool signal_fence) {
+    if (!s->compute_enc && !s->blit_enc) return;
+    if (signal_fence && s->fence) {
+        if (s->compute_enc) [s->compute_enc updateFence:s->fence];
+        else                [s->blit_enc    updateFence:s->fence];
+        s->fence_valid = true;
+    }
     if (s->compute_enc) { [s->compute_enc endEncoding]; MD_MTL_RELEASE(s->compute_enc); s->compute_enc = nil; }
     if (s->blit_enc)    { [s->blit_enc    endEncoding]; MD_MTL_RELEASE(s->blit_enc);    s->blit_enc    = nil; }
 }
 
-/* Bind the bindless texture table on every compute encoder we open. */
+/* At submit the command buffer ends, so there is no following encoder to order
+   against -- cross-submission ordering is the timeline wait in ensure_cmd. */
+static void md_mtl_end_encoders(md_gpu_stream_t s) {
+    md_mtl_close_encoder(s, false);
+}
+
 static id<MTLComputeCommandEncoder> md_mtl_compute_encoder(md_gpu_stream_t s) {
     if (!md_mtl_stream_ensure_cmd(s)) return nil;
     if (s->compute_enc) return s->compute_enc;
-    if (s->blit_enc) { [s->blit_enc endEncoding]; MD_MTL_RELEASE(s->blit_enc); s->blit_enc = nil; }
+    md_mtl_close_encoder(s, true);
 
+    /* MTLDispatchTypeSerial -- the default, and deliberately so.
+
+       A serial encoder is exactly md_gpu's documented semantics: "launches into
+       one stream are strictly ordered and never overlap, exactly as in CUDA --
+       there is no flag to opt out." Metal inserts whatever barriers that needs,
+       and gets them right by construction.
+
+       This backend used to open a serial encoder and then also call
+       memoryBarrierWithScope: between dispatches. That call is only defined on
+       MTLDispatchTypeConcurrent; on a serial encoder it is a programmer error,
+       and it does not fail loudly -- it corrupts execution order. A chain of 40
+       dependent dispatches landed 6 of them, and the first dispatch after a
+       blit vanished entirely.
+
+       Switching to a concurrent encoder to make the barrier legal is the wrong
+       half of the fix. It makes correctness depend on md_gpu placing a barrier
+       before every dependent dispatch, by hand, forever -- and the first attempt
+       at it dropped both dispatches of a two-launch test. Serial ordering is
+       free, is what the API promises, and cannot be got subtly wrong.
+
+       The cost is that md_gpu_stream_set_auto_order(false) cannot buy overlap
+       here; see the note on it below. */
     id<MTLComputeCommandEncoder> enc = [s->cmd computeCommandEncoder];
     if (!enc) { md_mtl_fail("computeCommandEncoder failed"); return nil; }
     MD_MTL_RETAIN(enc);
+    if (s->fence_valid) [enc waitForFence:s->fence];
     md_gpu_device_t dev = s->device;
     if (!dev->has_residency_set && dev->live_bufs.count > 0) {
         /* Fallback residency: declare everything once per encoder. */
@@ -558,35 +706,40 @@ static id<MTLComputeCommandEncoder> md_mtl_compute_encoder(md_gpu_stream_t s) {
 static id<MTLBlitCommandEncoder> md_mtl_blit_encoder(md_gpu_stream_t s) {
     if (!md_mtl_stream_ensure_cmd(s)) return nil;
     if (s->blit_enc) return s->blit_enc;
-    if (s->compute_enc) { [s->compute_enc endEncoding]; MD_MTL_RELEASE(s->compute_enc); s->compute_enc = nil; }
+    md_mtl_close_encoder(s, true);
 
     id<MTLBlitCommandEncoder> enc = [s->cmd blitCommandEncoder];
     if (!enc) { md_mtl_fail("blitCommandEncoder failed"); return nil; }
     MD_MTL_RETAIN(enc);
+    if (s->fence_valid) [enc waitForFence:s->fence];
     s->blit_enc = enc;
     return enc;
 }
 
-/* Program order. Within a compute encoder this is an explicit memory barrier;
-   across encoders Metal already orders the work, so nothing is needed. */
+/* Program order, on Metal, is structural rather than something md_gpu encodes.
+
+   Within a compute encoder, MTLDispatchTypeSerial orders the dispatches and
+   makes each one observe the previous one's writes. Across encoders, and across
+   command buffers on one queue, Metal orders the work too. Every ordering
+   md_gpu.h promises therefore already holds, and there is nothing to emit.
+
+   This is a no-op that keeps the call sites and the needs_barrier bookkeeping
+   symmetric with md_gpu_vulkan.c, where the barriers are real. */
 static void md_mtl_barrier_if_needed(md_gpu_stream_t s) {
-    if (!s->needs_barrier || !s->auto_order) return;
-    if (s->compute_enc) {
-        [s->compute_enc memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
-    }
     s->needs_barrier = false;
 }
 
-void md_gpu_stream_barrier(md_gpu_stream_t s) {
-    if (!s) return;
-    bool saved = s->auto_order;
-    s->auto_order    = true;
-    s->needs_barrier = true;
-    md_mtl_barrier_if_needed(s);
-    s->auto_order = saved;
-}
+/* The escape hatch from md_gpu.h. On Vulkan these do what they say. On Metal
+   ordering comes from the encoder's dispatch type, so turning auto-ordering off
+   cannot make dispatches overlap and an explicit barrier is not needed.
 
-void md_gpu_stream_set_auto_order(md_gpu_stream_t s, bool enabled) { if (s) s->auto_order = enabled; }
+   Both are therefore no-ops, in the safe direction: code written against the
+   escape hatch stays correct here, it just does not get faster. Making them
+   real would mean switching to MTLDispatchTypeConcurrent and hand-placing every
+   barrier, which is the arrangement that silently mis-ordered this backend for
+   as long as it existed. The header already says "Expect never to use this". */
+void md_gpu_stream_barrier(md_gpu_stream_t s) { (void)s; }
+void md_gpu_stream_set_auto_order(md_gpu_stream_t s, bool enabled) { (void)s; (void)enabled; }
 
 static void md_mtl_did_op(md_gpu_stream_t s) {
     s->needs_barrier = true;
@@ -626,9 +779,27 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     md_mtl_vec_init(&s->arena.pages, sizeof(md_mtl_page_t*));
 
     id<MTLSharedEvent> ev = [dev->device newSharedEvent];
-    if (!ev) { md_free(dev->alloc, s, sizeof(*s)); md_mtl_fail("newSharedEvent failed"); return NULL; }
+    if (!ev) {
+        MD_MTL_RELEASE(q);
+        md_free(dev->alloc, s, sizeof(*s));
+        md_mtl_fail("newSharedEvent failed");
+        return NULL;
+    }
     MD_MTL_RETAIN(ev);
     s->timeline = ev;
+
+    /* Orders compute against blit across an encoder boundary; see
+       md_mtl_close_encoder for why Metal will not do it for us. */
+    id<MTLFence> fence = [dev->device newFence];
+    if (!fence) {
+        MD_MTL_RELEASE(ev);
+        MD_MTL_RELEASE(q);
+        md_free(dev->alloc, s, sizeof(*s));
+        md_mtl_fail("newFence failed");
+        return NULL;
+    }
+    MD_MTL_RETAIN(fence);
+    s->fence = fence;
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_stream_t* slot = (md_gpu_stream_t*)md_mtl_vec_push(&dev->streams, dev->alloc);
@@ -742,6 +913,7 @@ static void md_mtl_stream_destroy_internal(md_gpu_stream_t s) {
     if (s->cmd) { MD_MTL_RELEASE(s->cmd); s->cmd = nil; }
     md_mtl_arena_free(dev, &s->arena);
     if (s->owns_queue) MD_MTL_RELEASE(s->queue);
+    MD_MTL_RELEASE(s->fence);
     MD_MTL_RELEASE(s->timeline);
     md_free(dev->alloc, s, sizeof(*s));
 }
@@ -829,15 +1001,7 @@ void md_gpu_pool_reset(md_gpu_pool_t p, md_gpu_stream_t stream) {
 static void md_mtl_block_destroy(md_gpu_pool_t p, md_mtl_block_t* b) {
     md_gpu_device_t dev = p->device;
     md_mtl_registry_remove(dev, b);
-    /* Drop it from the fallback residency list too. */
-    id<MTLBuffer>* arr = (id<MTLBuffer>*)dev->live_bufs.data;
-    for (size_t i = 0; i < dev->live_bufs.count; ++i) {
-        if (arr[i] == b->buffer) {
-            memmove(&arr[i], &arr[i + 1], (dev->live_bufs.count - i - 1) * sizeof(*arr));
-            dev->live_bufs.count--;
-            break;
-        }
-    }
+    md_mtl_live_bufs_remove_locked(dev, b->buffer);   /* caller holds device_mutex */
     md_mtl_destroy_raw_buffer(dev, b->buffer);
     p->reserved_bytes -= b->capacity;
     md_free(dev->alloc, b, sizeof(*b));
@@ -942,6 +1106,7 @@ md_gpu_ptr_t md_gpu_malloc(md_gpu_pool_t p, size_t size, md_gpu_stream_t stream)
     }
     *slot = b;
     if (!dev->has_residency_set) {
+        /* Inline rather than md_mtl_live_bufs_add: device_mutex is already held. */
         id<MTLBuffer>* lslot = (id<MTLBuffer>*)md_mtl_vec_push(&dev->live_bufs, dev->alloc);
         if (lslot) *lslot = buf;
     }
@@ -1448,6 +1613,25 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t tex, const md_gpu_tex_
    9. Kernels and launches
    ========================================================================= */
 
+/* A kernel takes exactly one buffer -- the root -- so the first (and only)
+   buffer binding reflection reports is the one we want. Slang numbers these per
+   file rather than per entry point, so a multi-entry file puts different kernels
+   on different indices and there is nothing to hardcode. */
+static uint32_t md_mtl_reflect_arg_buffer_index(MTLComputePipelineReflection* refl, const char* label) {
+    if (refl) {
+        if (@available(macOS 13.0, iOS 16.0, *)) {
+            for (id<MTLBinding> b in refl.bindings) {
+                if (b.type == MTLBindingTypeBuffer) return (uint32_t)b.index;
+            }
+            /* A kernel with no buffer binding takes no arguments; index is moot. */
+            return MD_MTL_ARG_BUFFER_INDEX;
+        }
+    }
+    MD_LOG_DEBUG("md_gpu: no binding reflection for kernel '%s', assuming buffer(%d)",
+                 label ? label : "kernel", MD_MTL_ARG_BUFFER_INDEX);
+    return MD_MTL_ARG_BUFFER_INDEX;
+}
+
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
         md_mtl_fail("md_gpu_kernel_create: missing code");
@@ -1476,7 +1660,11 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     }
     if (!fn) { md_mtl_fail("entry point '%s' not found in metallib", want); return NULL; }
 
-    id<MTLComputePipelineState> pso = [dev->device newComputePipelineStateWithFunction:fn error:&err];
+    MTLComputePipelineReflection* refl = nil;
+    id<MTLComputePipelineState> pso = [dev->device newComputePipelineStateWithFunction:fn
+                                                                              options:MTLPipelineOptionBindingInfo
+                                                                           reflection:&refl
+                                                                                error:&err];
     if (!pso) {
         md_mtl_fail("newComputePipelineStateWithFunction failed: %s", err ? [[err localizedDescription] UTF8String] : "?");
         return NULL;
@@ -1485,11 +1673,12 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     MD_MTL_RETAIN(pso);
 
     md_gpu_kernel_t k = (md_gpu_kernel_t)md_alloc(dev->alloc, sizeof(md_gpu_kernel));
-    if (!k) { md_mtl_fail("out of memory"); return NULL; }
+    if (!k) { MD_MTL_RELEASE(pso); MD_MTL_RELEASE(fn); md_mtl_fail("out of memory"); return NULL; }
     memset(k, 0, sizeof(*k));
     k->device = dev;
     k->fn     = fn;
     k->pso    = pso;
+    k->arg_buffer_index = md_mtl_reflect_arg_buffer_index(refl, desc->label);
     snprintf(k->label, sizeof(k->label), "%s", desc->label ? desc->label : "kernel");
 
     /* Metal cannot report the threadgroup size a kernel declares, so the
@@ -1518,34 +1707,72 @@ bool md_gpu_kernel_info(md_gpu_kernel_t k, md_gpu_kernel_info_t* info) {
     return true;
 }
 
+/* Bump allocation from a graph's own pages. A graph outlives the capturing
+   stream's transient arena, so everything it references has to come from here. */
+static bool md_mtl_graph_alloc(md_gpu_graph_t g, md_gpu_device_t dev, size_t size,
+                               uint64_t* out_addr, void** out_host,
+                               id<MTLBuffer>* out_buf, uint64_t* out_off, size_t* out_page) {
+    uint64_t need = md_mtl_align_up(size, MD_MTL_ARG_ALIGN);
+
+    md_mtl_page_t* page = NULL;
+    size_t page_index = 0;
+    for (size_t i = 0; i < g->arg_pages.count; ++i) {
+        md_mtl_page_t* p = ((md_mtl_page_t**)g->arg_pages.data)[i];
+        if (p->cursor + need <= p->capacity) { page = p; page_index = i; break; }
+    }
+    if (!page) {
+        uint64_t page_size = MD_MTL_GRAPH_ARG_PAGE;
+        while (page_size < need) page_size *= 2;
+        page = md_mtl_page_create(dev, page_size);
+        if (!page) return md_mtl_fail("failed to allocate graph argument page");
+        md_mtl_page_t** slot = (md_mtl_page_t**)md_mtl_vec_push(&g->arg_pages, dev->alloc);
+        if (!slot) { md_mtl_page_destroy(dev, page); return false; }
+        *slot = page;
+        page_index = g->arg_pages.count - 1;
+    }
+    uint64_t offset = page->cursor;
+    page->cursor += need;
+
+    if (out_addr) *out_addr = page->address + offset;
+    if (out_host) *out_host = page->host + offset;
+    if (out_buf)  *out_buf  = page->buffer;
+    if (out_off)  *out_off  = offset;
+    if (out_page) *out_page = page_index;
+    return true;
+}
+
+/* Place a launch's argument block *and* the root cell that points at it.
+
+   `out_addr` is the argument block's device address. `out_buf` / `out_off`
+   locate the 8-byte root cell -- that is what gets bound, because the shader
+   expects `Root { Args* }` at its buffer slot (see md_mtl_encode_dispatch).
+
+   The root cell is a real, separately addressed 8 bytes of arena rather than a
+   setBytes: payload. setBytes: hands Metal a pointer to caller memory and lets
+   it manage the backing store; called repeatedly at one index inside a single
+   encoder, the second call did not take effect and the second of two
+   back-to-back launches read the first one's arguments. An explicit cell per
+   launch has no shared mutable state to get wrong: distinct offset, distinct
+   bytes, lifetime tied to the page like everything else here. */
 static bool md_mtl_place_args(md_gpu_stream_t s, const void* args, size_t size,
                               uint64_t* out_addr, id<MTLBuffer>* out_buf, uint64_t* out_off) {
     if (size == 0) { *out_addr = 0; *out_buf = nil; *out_off = 0; return true; }
+    md_gpu_device_t dev = s->device;
+
+    uint64_t arg_addr  = 0;
+    void*    arg_host  = NULL;
+    void*    root_host = NULL;
 
     if (s->capture) {
+        /* Capture only records the bytes. The block a captured dispatch
+           actually reads is built fresh at each replay -- see the note in
+           md_gpu_graph_launch -- so there is no root cell to place here and
+           nothing GPU-visible to bind. */
         md_gpu_graph_t g = s->capture;
-        md_gpu_device_t dev = s->device;
-        uint64_t need = md_mtl_align_up(size, MD_MTL_ARG_ALIGN);
-
-        md_mtl_page_t* page = NULL;
         size_t page_index = 0;
-        for (size_t i = 0; i < g->arg_pages.count; ++i) {
-            md_mtl_page_t* p = ((md_mtl_page_t**)g->arg_pages.data)[i];
-            if (p->cursor + need <= p->capacity) { page = p; page_index = i; break; }
-        }
-        if (!page) {
-            uint64_t page_size = MD_MTL_GRAPH_ARG_PAGE;
-            while (page_size < need) page_size *= 2;
-            page = md_mtl_page_create(dev, page_size);
-            if (!page) return md_mtl_fail("failed to allocate graph argument page");
-            md_mtl_page_t** slot = (md_mtl_page_t**)md_mtl_vec_push(&g->arg_pages, dev->alloc);
-            if (!slot) { md_mtl_page_destroy(dev, page); return false; }
-            *slot = page;
-            page_index = g->arg_pages.count - 1;
-        }
-        uint64_t offset = page->cursor;
-        memcpy(page->host + offset, args, size);
-        page->cursor += need;
+        uint64_t offset   = 0;
+        if (!md_mtl_graph_alloc(g, dev, size, &arg_addr, &arg_host, NULL, &offset, &page_index)) return false;
+        memcpy(arg_host, args, size);
 
         md_mtl_graph_launch_t* l = (md_mtl_graph_launch_t*)md_mtl_vec_push(&g->launches, dev->alloc);
         if (!l) return false;
@@ -1553,22 +1780,56 @@ static bool md_mtl_place_args(md_gpu_stream_t s, const void* args, size_t size,
         l->offset     = offset;
         l->size       = size;
 
-        *out_addr = page->address + offset;
-        *out_buf  = page->buffer;
-        *out_off  = offset;
+        *out_addr = arg_addr;
+        *out_buf  = nil;
+        *out_off  = 0;
         return true;
     }
 
-    void* host;
-    return md_mtl_arena_alloc(s, size, out_addr, &host, out_buf, out_off)
-        && (memcpy(host, args, size), true);
+    if (!md_mtl_arena_alloc(s, size, &arg_addr, &arg_host, NULL, NULL)) return false;
+    memcpy(arg_host, args, size);
+
+    uint64_t root_addr = 0;
+    if (!md_mtl_arena_alloc(s, sizeof(uint64_t), &root_addr, &root_host, out_buf, out_off)) return false;
+    memcpy(root_host, &arg_addr, sizeof(arg_addr));
+    *out_addr = arg_addr;
+    return true;
 }
 
+/* What the root buffer holds.
+
+   Slang lowers
+
+       struct Root { Args* args; };
+       [[vk::push_constant]] ConstantBuffer<Root> root;
+
+   to, on Metal,
+
+       struct Root_0 { Args_0 device* args_0; };
+       [[kernel]] void fill(..., Root_0 constant* root_0 [[buffer(N)]])
+           Args_0 device* _S1 = root_0->args_0;
+
+   The indirection is *not* collapsed: the bound buffer holds an 8-byte device
+   address, and the argument struct itself lives wherever that address points.
+   Binding the struct there instead makes the shader read its first two fields
+   as a pointer, which is how `fill` came to write nothing.
+
+   So bind the address, not the block. md_mtl_place_args puts that address in an
+   8-byte arena cell of its own and hands back where it lives; binding it is an
+   ordinary setBuffer:. The address survives a graph replay because
+   md_gpu_graph_args patches the block in place rather than moving it.
+
+   Every dispatch rebinds its pipeline and its root cell unconditionally.
+   Caching either to skip a "redundant" call is not worth it: the bindings are
+   encoder state, the failure mode when the cache is wrong is a dispatch that
+   silently reads the previous launch's arguments, and Metal's own debug layer
+   flags the redundancy as a perf hint rather than an error. */
 static void md_mtl_encode_dispatch(md_gpu_stream_t s, id<MTLComputeCommandEncoder> enc,
                                    const md_mtl_op_t* op) {
+    (void)s;
     [enc setComputePipelineState:op->kernel->pso];
     if (op->arg_buffer) {
-        [enc setBuffer:op->arg_buffer offset:op->arg_offset atIndex:MD_MTL_ARG_BUFFER_INDEX];
+        [enc setBuffer:op->arg_buffer offset:op->arg_offset atIndex:op->kernel->arg_buffer_index];
     }
     MTLSize tg = MTLSizeMake(op->kernel->group_size[0], op->kernel->group_size[1], op->kernel->group_size[2]);
     if (op->kind == MD_MTL_OP_DISPATCH_INDIRECT) {
@@ -1579,7 +1840,6 @@ static void md_mtl_encode_dispatch(md_gpu_stream_t s, id<MTLComputeCommandEncode
         MTLSize grid = MTLSizeMake(op->grid.x, op->grid.y, op->grid.z);
         [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
     }
-    (void)s;
 }
 
 static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid,
@@ -1593,6 +1853,7 @@ static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_gr
 
     md_mtl_op_t op = {0};
     op.kind            = is_indirect ? MD_MTL_OP_DISPATCH_INDIRECT : MD_MTL_OP_DISPATCH;
+    op.launch_index    = -1;
     op.kernel          = k;
     op.arg_addr        = arg_addr;
     op.arg_buffer      = arg_buf;
@@ -1602,6 +1863,8 @@ static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_gr
     op.indirect_offset = indirect_off;
 
     if (s->capture) {
+        /* Remember which launch record holds this dispatch's argument bytes. */
+        if (args_size > 0) op.launch_index = (int32_t)s->capture->launches.count - 1;
         md_mtl_op_t* slot = (md_mtl_op_t*)md_mtl_vec_push(&s->capture->ops, s->device->alloc);
         if (!slot) return false;
         *slot = op;
@@ -1633,11 +1896,14 @@ bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_ptr_t g
     return md_mtl_launch_common(s, k, md_gpu_grid(1, 1, 1), args, args_size, b->buffer, off, true);
 }
 
+/* Mirrors MdMakeGridArgs in md_gpu_builtin_msl.inl. md_gpu_uint3 rather than
+   uint32_t[3] for the same reason the header tells callers to use it: MSL gives
+   a 3-vector 16/16, so a raw array would put the struct's tail in a different
+   place than the shader expects. */
 typedef struct md_mtl_make_grid_args_t {
-    uint64_t count;
-    uint64_t out_grid;
-    uint32_t local[3];
-    uint32_t _pad;
+    uint64_t     count;
+    uint64_t     out_grid;
+    md_gpu_uint3 local;
 } md_mtl_make_grid_args_t;
 
 bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_ptr_t out_grid, const md_gpu_ptr_t count, const uint32_t local[3]) {
@@ -1645,9 +1911,9 @@ bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_ptr_t out_grid, const md_gpu_ptr
     md_mtl_make_grid_args_t a = {0};
     a.count    = (uint64_t)(uintptr_t)count;
     a.out_grid = (uint64_t)(uintptr_t)out_grid;
-    a.local[0] = local && local[0] ? local[0] : 1;
-    a.local[1] = local && local[1] ? local[1] : 1;
-    a.local[2] = local && local[2] ? local[2] : 1;
+    a.local.x  = local && local[0] ? local[0] : 1;
+    a.local.y  = local && local[1] ? local[1] : 1;
+    a.local.z  = local && local[2] ? local[2] : 1;
     return md_gpu_launch(s, s->device->make_grid_kernel, md_gpu_grid(1, 1, 1), &a, sizeof(a));
 }
 
@@ -1716,7 +1982,34 @@ bool md_gpu_graph_launch(md_gpu_graph_t g, md_gpu_stream_t s) {
             id<MTLComputeCommandEncoder> enc = md_mtl_compute_encoder(s);
             if (!enc) return false;
             md_mtl_barrier_if_needed(s);
-            md_mtl_encode_dispatch(s, enc, op);
+
+            /* Rebuild the argument block from the graph's shadow copy into
+               fresh transient memory, rather than binding the shadow itself.
+
+               The obvious implementation -- keep the block in a graph-owned
+               buffer and let md_gpu_graph_args patch it in place -- does not
+               work here. It relies on a CPU write to memory the GPU already
+               read in an earlier command buffer becoming visible to the next
+               one, and Metal only guarantees that for resources it tracks.
+               This backend declares nothing per dispatch (see NOTE ON
+               RESIDENCY), so there is nothing to trigger the invalidate: the
+               first replay is correct and every replay after a patch silently
+               re-runs the original arguments.
+
+               Copying into arena memory the GPU has never seen sidesteps the
+               question entirely. It costs one memcpy of a small struct per
+               dispatch per replay, and none of what a graph actually saves --
+               no re-recording, no pipeline lookup, no encoder rebuild -- is
+               given up. */
+            md_mtl_op_t live = *op;
+            if (op->launch_index >= 0) {
+                const md_mtl_graph_launch_t* l =
+                    &((const md_mtl_graph_launch_t*)g->launches.data)[op->launch_index];
+                const md_mtl_page_t* p = ((md_mtl_page_t**)g->arg_pages.data)[l->page_index];
+                if (!md_mtl_place_args(s, p->host + l->offset, l->size,
+                                       &live.arg_addr, &live.arg_buffer, &live.arg_offset)) return false;
+            }
+            md_mtl_encode_dispatch(s, enc, &live);
             break;
         }
         case MD_MTL_OP_COPY_BUFFER: {
@@ -1883,7 +2176,11 @@ static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
                                  err ? [[err localizedDescription] UTF8String] : "?");
     id<MTLFunction> fn = [lib newFunctionWithName:@"md_gpu_make_grid"];
     if (!fn) return md_mtl_fail("built-in make_grid entry point missing");
-    id<MTLComputePipelineState> pso = [dev->device newComputePipelineStateWithFunction:fn error:&err];
+    MTLComputePipelineReflection* refl = nil;
+    id<MTLComputePipelineState> pso = [dev->device newComputePipelineStateWithFunction:fn
+                                                                              options:MTLPipelineOptionBindingInfo
+                                                                           reflection:&refl
+                                                                                error:&err];
     if (!pso) return md_mtl_fail("built-in make_grid pipeline failed: %s",
                                  err ? [[err localizedDescription] UTF8String] : "?");
     MD_MTL_RETAIN(fn);
@@ -1895,6 +2192,7 @@ static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
     k->device = dev;
     k->fn     = fn;
     k->pso    = pso;
+    k->arg_buffer_index = md_mtl_reflect_arg_buffer_index(refl, "make_grid");
     k->group_size[0] = k->group_size[1] = k->group_size[2] = 1;
     snprintf(k->label, sizeof(k->label), "md_gpu make_grid");
     dev->make_grid_kernel = k;
@@ -1904,6 +2202,22 @@ static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_mtl_has_error = false;
     struct md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
+
+    /* md_gpu_device_desc_t::enable_validation was accepted and then ignored,
+       which is how a serial encoder taking a memoryBarrierWithScope: went
+       undiagnosed -- Metal API validation reports that immediately.
+
+       It cannot be switched on from here: Metal reads METAL_DEVICE_WRAPPER_TYPE
+       once, before the first Metal call. So say so, loudly, rather than letting
+       the flag look like it did something. */
+    if (desc && desc->enable_validation) {
+        const char* wrapper = getenv("METAL_DEVICE_WRAPPER_TYPE");
+        if (!wrapper || wrapper[0] == '0') {
+            MD_LOG_INFO("md_gpu: validation requested but Metal API validation is a launch-time "
+                        "setting. Re-run with METAL_DEVICE_WRAPPER_TYPE=1 (and "
+                        "MTL_DEBUG_LAYER=1 for the shader validation layer).");
+        }
+    }
 
     id<MTLDevice> mtl = MTLCreateSystemDefaultDevice();
     if (!mtl) { md_mtl_fail("MTLCreateSystemDefaultDevice returned nil"); return NULL; }

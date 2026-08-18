@@ -2,6 +2,7 @@
 
 #include <core/md_gpu.h>
 #include <core/md_allocator.h>
+#include <core/md_os.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -51,14 +52,25 @@ typedef struct {
     md_gpu_kernel_t k_tex_write;
     md_gpu_kernel_t k_tex_read;
     md_gpu_kernel_t k_bump;
+    md_gpu_kernel_t k_layout;
+    md_gpu_kernel_t k_tex_probe;
 } gpu_fixture_t;
 
-#define GPU_KERNEL(fix, field, sym, name)                                       \
+/* group_size is NOT optional. Vulkan recovers it from the SPIR-V when left
+   zero, but Metal cannot read it out of a metallib, so md_gpu_kernel_create
+   falls back to {1,1,1} there -- which turns md_gpu_grid_1d(N, 64) into N/64
+   threads instead of N and makes every data-carrying test fail for a reason
+   that has nothing to do with what it is testing. Declare it always; it must
+   match [numthreads(...)] in gpu_test.slang. */
+#define GPU_KERNEL(fix, field, sym, name, gx, gy, gz)                             \
     do {                                                                          \
         md_gpu_kernel_desc_t kd = {0};                                            \
-        kd.code      = sym##_start;                                               \
-        kd.code_size = sym##_byte_size;                                           \
-        kd.label     = name;                                                      \
+        kd.code          = sym##_start;                                           \
+        kd.code_size     = sym##_byte_size;                                       \
+        kd.label         = name;                                                  \
+        kd.group_size[0] = (gx);                                                  \
+        kd.group_size[1] = (gy);                                                  \
+        kd.group_size[2] = (gz);                                                  \
         (fix)->field = md_gpu_kernel_create((fix)->dev, &kd);                     \
     } while (0)
 
@@ -77,13 +89,16 @@ static bool gpu_open(gpu_fixture_t* f) {
     pd.flags = MD_GPU_MEM_HOST_READ; pd.label = "test readback"; f->read_pool = md_gpu_pool_create(f->dev, &pd);
     if (!f->pool || !f->read_pool) return false;
 
-    GPU_KERNEL(f, k_fill,      md_shader_gpu_test_fill,       "fill");
-    GPU_KERNEL(f, k_scale,     md_shader_gpu_test_scale_add,  "scale_add");
-    GPU_KERNEL(f, k_sum,       md_shader_gpu_test_sum_reduce, "sum_reduce");
-    GPU_KERNEL(f, k_tex_write, md_shader_gpu_test_tex_write,  "tex_write");
-    GPU_KERNEL(f, k_tex_read,  md_shader_gpu_test_tex_read,   "tex_read");
-    GPU_KERNEL(f, k_bump,      md_shader_gpu_test_bump,       "bump");
-    return true;
+    GPU_KERNEL(f, k_fill,      md_shader_gpu_test_fill,         "fill",         64, 1, 1);
+    GPU_KERNEL(f, k_scale,     md_shader_gpu_test_scale_add,    "scale_add",    64, 1, 1);
+    GPU_KERNEL(f, k_sum,       md_shader_gpu_test_sum_reduce,   "sum_reduce",   64, 1, 1);
+    GPU_KERNEL(f, k_tex_write, md_shader_gpu_test_tex_write,    "tex_write",     4, 4, 4);
+    GPU_KERNEL(f, k_tex_read,  md_shader_gpu_test_tex_read,     "tex_read",      4, 4, 4);
+    GPU_KERNEL(f, k_bump,      md_shader_gpu_test_bump,         "bump",         64, 1, 1);
+    GPU_KERNEL(f, k_layout,    md_shader_gpu_test_layout_probe, "layout_probe",  1, 1, 1);
+    GPU_KERNEL(f, k_tex_probe, md_shader_gpu_test_tex_probe,    "tex_probe",     1, 1, 1);
+    return f->k_fill && f->k_scale && f->k_sum && f->k_tex_write &&
+           f->k_tex_read && f->k_bump && f->k_layout && f->k_tex_probe;
 }
 
 static void gpu_close(gpu_fixture_t* f) {
@@ -93,6 +108,8 @@ static void gpu_close(gpu_fixture_t* f) {
     if (f->k_tex_write) md_gpu_kernel_destroy(f->k_tex_write);
     if (f->k_tex_read)  md_gpu_kernel_destroy(f->k_tex_read);
     if (f->k_bump)      md_gpu_kernel_destroy(f->k_bump);
+    if (f->k_layout)    md_gpu_kernel_destroy(f->k_layout);
+    if (f->k_tex_probe) md_gpu_kernel_destroy(f->k_tex_probe);
     if (f->pool)        md_gpu_pool_destroy(f->pool);
     if (f->read_pool)   md_gpu_pool_destroy(f->read_pool);
     md_gpu_device_destroy(f->dev);
@@ -105,6 +122,24 @@ typedef struct { uint32_t n, pad0, pad1, pad2; uint64_t src, out_val; }        s
 typedef struct { uint32_t dim[3]; float scale; uint64_t tex; }                 tex_args_t;
 typedef struct { uint32_t dim[3], pad; uint64_t tex, dst; }                    tex_read_args_t;
 typedef struct { uint32_t n, delta, pad0, pad1; uint64_t dst; }                bump_args_t;
+
+/* The two probe structs are the point of the exercise, so they are mirrored
+   with md_gpu.h's vector types rather than raw arrays -- that is the machinery
+   under test. */
+typedef struct {
+    md_gpu_uint3    dim;
+    float           scale;
+    md_gpu_uint2    pair;
+    md_gpu_float4   v4;
+    uint64_t        dst;
+} layout_probe_args_t;
+
+typedef struct {
+    uint32_t     n, pad0, pad1, pad2;
+    uint64_t     dst;
+    md_gpu_tex_t tex;
+    uint32_t     marker, pad3;
+} tex_probe_args_t;
 
 #define DEV_ADDR(p) ((uint64_t)(uintptr_t)(p))
 
@@ -536,7 +571,7 @@ UTEST(gpu, program_order_across_submissions) {
     ASSERT_TRUE(md_gpu_memcpy_async(host, src, sizeof(host), f.compute));
     md_gpu_stream_sync(f.compute);
 
-    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)i << STEPS, host[i]);
+    for (int i = 0; i < N; ++i) EXPECT_EQ(((uint32_t)i << STEPS), host[i]);
 
     md_gpu_free(a, f.compute);
     md_gpu_free(b, f.compute);
@@ -1100,6 +1135,1156 @@ UTEST(gpu, two_streams_are_independent) {
     md_gpu_free(b, sb);
     md_gpu_stream_destroy(sa);
     md_gpu_stream_destroy(sb);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Argument-struct layout
+
+   md_gpu.h spends a whole section on md_gpu_uint3 and friends because SPIR-V
+   and MSL lay vectors out differently, and nothing exercised them. A mismatch
+   here does not announce itself -- it shows up as a wrong number several
+   launches downstream -- so read the fields straight back.
+   ========================================================================= */
+
+UTEST(gpu, arg_struct_layout_matches_shader) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 10 };
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_TRUE(md_gpu_memset_async(d, 0xEE, N * sizeof(uint32_t), f.compute));
+
+    layout_probe_args_t a = {0};
+    a.dim.x = 11; a.dim.y = 22; a.dim.z = 33;
+    a.scale = 1.5f;
+    a.pair.x = 44; a.pair.y = 55;
+    a.v4.x = 2.5f; a.v4.y = 3.5f; a.v4.z = 4.5f; a.v4.w = 5.5f;
+    a.dst = DEV_ADDR(d);
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_layout, md_gpu_grid(1, 1, 1), &a, sizeof(a)));
+
+    uint32_t host[N];
+    ASSERT_TRUE(md_gpu_memcpy_async(host, d, sizeof(host), f.compute));
+    md_gpu_stream_sync(f.compute);
+
+    float scale, v4[4];
+    memcpy(&scale, &host[3], sizeof(scale));
+    memcpy(v4, &host[6], sizeof(v4));
+
+    EXPECT_EQ(11u, host[0]);
+    EXPECT_EQ(22u, host[1]);
+    EXPECT_EQ(33u, host[2]);
+    EXPECT_EQ(1.5f, scale);          /* uint3: 12 bytes on SPIR-V, 16 on MSL */
+    EXPECT_EQ(44u, host[4]);
+    EXPECT_EQ(55u, host[5]);         /* uint2: same size, different alignment */
+    EXPECT_EQ(2.5f, v4[0]);
+    EXPECT_EQ(3.5f, v4[1]);
+    EXPECT_EQ(4.5f, v4[2]);
+    EXPECT_EQ(5.5f, v4[3]);
+
+    md_gpu_free(d, f.compute);
+    gpu_close(&f);
+}
+
+/* A texture handle lives inside the argument struct, and the two backends
+   resolve it by entirely different means. This separates the two things that
+   can go wrong: whether the struct survived the handle (dst[0]) and whether the
+   handle itself resolved to a real texture (the readback). */
+UTEST(gpu, texture_handle_reaches_shader) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 4, VOXELS = D * D * D, MARKER = 0xC0FFEEu };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    td.label  = "probe";
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, 2 * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_TRUE(md_gpu_memset_async(d, 0, 2 * sizeof(uint32_t), f.compute));
+
+    float zero[VOXELS] = {0};
+    ASSERT_TRUE(md_gpu_memcpy_to_tex_async(tex, NULL, zero, sizeof(zero), f.compute));
+
+    tex_probe_args_t a = {0};
+    a.n      = 7;
+    a.dst    = DEV_ADDR(d);
+    a.tex    = tex;
+    a.marker = MARKER;
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_probe, md_gpu_grid(1, 1, 1), &a, sizeof(a)));
+
+    uint32_t host[2] = {0};
+    float voxels[VOXELS];
+    memset(voxels, 0xFF, sizeof(voxels));
+    ASSERT_TRUE(md_gpu_memcpy_async(host, d, sizeof(host), f.compute));
+    ASSERT_TRUE(md_gpu_memcpy_from_tex_async(voxels, tex, NULL, sizeof(voxels), f.compute));
+    md_gpu_stream_sync(f.compute);
+
+    /* Members after the handle are still where the C mirror put them. */
+    EXPECT_EQ((uint32_t)MARKER, host[0]);
+    EXPECT_EQ(7u, host[1]);
+    /* And the handle resolved: the shader wrote through it. */
+    EXPECT_EQ(1.0f, voxels[0]);
+    EXPECT_EQ(2.0f, voxels[1]);
+
+    md_gpu_free(d, f.compute);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Staging and the transient arena
+   ========================================================================= */
+
+/* Bigger than the backends' transient page size, so upload_begin has to commit
+   a fresh page rather than carve one up. */
+UTEST(gpu, upload_larger_than_one_arena_page) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 512 * 1024 };          /* 2 MiB, well past a 256 KiB page */
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    uint32_t* p = (uint32_t*)md_gpu_upload_begin(f.compute, d, N * sizeof(uint32_t));
+    ASSERT_TRUE(p != NULL);
+    for (int i = 0; i < N; ++i) p[i] = (uint32_t)i * 2654435761u;
+    ASSERT_TRUE(md_gpu_upload_end(f.compute));
+
+    static uint32_t host[N];
+    ASSERT_TRUE(md_gpu_memcpy_async(host, d, sizeof(host), f.compute));
+    md_gpu_stream_sync(f.compute);
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)i * 2654435761u, host[i]);
+
+    md_gpu_free(d, f.compute);
+    gpu_close(&f);
+}
+
+/* A device-to-host copy of non-pinned memory lands in transient staging and is
+   delivered later by an internal callback. Issuing more work -- which draws
+   from that same arena -- before the delivery must not recycle the page out
+   from under it. The interleaving is what makes this bite, so alternate. */
+UTEST(gpu, readback_survives_subsequent_staged_work) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 256, ROUNDS = 24 };
+    uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    uint32_t* b = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(a && b);
+
+    static uint32_t upload[N];
+    static uint32_t host[N];
+
+    for (uint32_t r = 0; r < ROUNDS; ++r) {
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = 3000 + r; fa.dst = DEV_ADDR(a);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+
+        memset(host, 0, sizeof(host));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, a, sizeof(host), f.compute));
+
+        /* Host-to-device staging issued *after* the readback, before it has
+           been delivered. Same arena, same stream. */
+        for (int i = 0; i < N; ++i) upload[i] = 0xDEADBEEFu;
+        ASSERT_TRUE(md_gpu_memcpy_async(b, upload, sizeof(upload), f.compute));
+
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(3000 + r + i), host[i]);
+    }
+
+    md_gpu_free(a, f.compute);
+    md_gpu_free(b, f.compute);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Graphs beyond dispatches
+   ========================================================================= */
+
+/* A graph is replayed many times and long after capture. Anything it recorded
+   that points into per-stream transient storage will have been recycled by
+   then, so a captured upload has to own its bytes. */
+UTEST(gpu, graph_replays_captured_copies_and_fills) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 256, REPLAYS = 8 };
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    uint32_t* e = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d && e);
+
+    uint32_t src[N];
+    for (int i = 0; i < N; ++i) src[i] = (uint32_t)(i + 1);
+
+    ASSERT_TRUE(md_gpu_capture_begin(f.compute, "copies"));
+    ASSERT_TRUE(md_gpu_memset_async(d, 0, N * sizeof(uint32_t), f.compute));
+    ASSERT_TRUE(md_gpu_memcpy_async(d, src, sizeof(src), f.compute));   /* host -> device */
+    ASSERT_TRUE(md_gpu_memcpy_async(e, d, N * sizeof(uint32_t), f.compute));  /* device -> device */
+    md_gpu_graph_t g = md_gpu_capture_end(f.compute);
+    ASSERT_TRUE(g != NULL);
+
+    /* Churn the stream's transient arena before the first replay: if the graph
+       recorded a pointer into it, this is what corrupts it. */
+    memset(src, 0, sizeof(src));
+    for (int i = 0; i < 8; ++i) {
+        ASSERT_TRUE(md_gpu_memcpy_async(e, src, sizeof(src), f.compute));
+    }
+    md_gpu_stream_sync(f.compute);
+    for (int i = 0; i < N; ++i) src[i] = (uint32_t)(i + 1);   /* restore host copy only */
+
+    uint32_t host[N];
+    for (int r = 0; r < REPLAYS; ++r) {
+        ASSERT_TRUE(md_gpu_graph_launch(g, f.compute));
+        memset(host, 0, sizeof(host));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, e, sizeof(host), f.compute));
+        md_gpu_stream_sync(f.compute);
+        for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(i + 1), host[i]);
+    }
+
+    md_gpu_graph_destroy(g);
+    md_gpu_free(d, f.compute);
+    md_gpu_free(e, f.compute);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Texture regions and samplers
+   ========================================================================= */
+
+/* Every texture copy so far has covered the whole image, so the region path --
+   origin, extent, row and slice pitch -- is entirely unexercised. */
+UTEST(gpu, texture_region_subrange_roundtrip) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 8, SUB = 4, VOXELS = D * D * D, SUBVOX = SUB * SUB * SUB };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    float base[VOXELS];
+    for (int i = 0; i < VOXELS; ++i) base[i] = (float)i;
+    ASSERT_TRUE(md_gpu_memcpy_to_tex_async(tex, NULL, base, sizeof(base), f.compute));
+
+    /* Overwrite one corner octant. */
+    float patch[SUBVOX];
+    for (int i = 0; i < SUBVOX; ++i) patch[i] = -1.0f - (float)i;
+    md_gpu_tex_region_t region = {0};
+    region.offset[0] = SUB; region.offset[1] = SUB; region.offset[2] = SUB;
+    region.extent[0] = SUB; region.extent[1] = SUB; region.extent[2] = SUB;
+    ASSERT_TRUE(md_gpu_memcpy_to_tex_async(tex, &region, patch, sizeof(patch), f.compute));
+
+    /* Read the same octant back and confirm it is what we wrote. */
+    float back[SUBVOX];
+    memset(back, 0, sizeof(back));
+    ASSERT_TRUE(md_gpu_memcpy_from_tex_async(back, tex, &region, sizeof(back), f.compute));
+
+    /* And the rest of the volume is untouched: sample the opposite corner. */
+    md_gpu_tex_region_t other = {0};
+    other.extent[0] = SUB; other.extent[1] = SUB; other.extent[2] = SUB;
+    float corner[SUBVOX];
+    memset(corner, 0, sizeof(corner));
+    ASSERT_TRUE(md_gpu_memcpy_from_tex_async(corner, tex, &other, sizeof(corner), f.compute));
+    md_gpu_stream_sync(f.compute);
+
+    for (int i = 0; i < SUBVOX; ++i) EXPECT_EQ(-1.0f - (float)i, back[i]);
+    for (int z = 0; z < SUB; ++z) {
+        for (int y = 0; y < SUB; ++y) {
+            for (int x = 0; x < SUB; ++x) {
+                float expect = (float)(z * D * D + y * D + x);
+                EXPECT_EQ(expect, corner[z * SUB * SUB + y * SUB + x]);
+            }
+        }
+    }
+
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Execution hazards
+
+   md_gpu.h's central promise is that every operation observes all writes made
+   by the operations before it in the same stream. Neither backend gets that for
+   free, and both lose it in a way no small test notices.
+
+   Metal decides whether two encoders inside a command buffer may overlap from
+   hazard tracking, and this API declares nothing per dispatch -- buffers arrive
+   as raw device addresses, textures as resource ids inside the argument struct,
+   and MTLResidencySet supplies residency and explicitly not usage. So the
+   dependency graph is empty, adjacent encoders look independent, and a readback
+   blit is free to start copying before the dispatch that fills the volume has
+   finished. Vulkan has the same shape of problem answered differently: the
+   ordering is whatever vkCmdPipelineBarrier the backend emits, and a missing or
+   over-narrow stage/access mask fails exactly here.
+
+   The two rules these tests exist to enforce:
+
+     - SIZE. A producer must run long enough for an unordered consumer to get
+       ahead of it. The 8^3 volume in the texture tests above completes before a
+       blit could possibly overtake it, which is why this bug survived a passing
+       suite and turned up as artifacts in a real GTO volume instead.
+
+     - ROUNDS. Each round writes a different value, so a stale read reports the
+       *previous round's* value rather than zero or garbage. "Expected 3000, got
+       2000" says ordering; "expected 3000, got 0" says something else entirely.
+
+   The matrix below covers producer x consumer x separation. Every case is
+   backend-agnostic: nothing here mentions fences, barriers or encoders.
+   ========================================================================= */
+
+enum {
+    HAZ_D      = 128,                        /* 128^3 volume, 8 MiB          */
+    HAZ_VOX    = HAZ_D * HAZ_D * HAZ_D,
+    HAZ_N      = 1 << 20,                    /* 1 M element buffer, 4 MiB    */
+    HAZ_ROUNDS = 4,
+    HAZ_STRIDE = 389,                        /* coprime with everything here */
+};
+
+/* dispatch -> blit, buffer. The dispatch writes through a device address the
+   backend never declared; the blit reads the same range. */
+UTEST(gpu, hazard_dispatch_to_blit_buffer) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
+    ASSERT_TRUE(host != NULL);
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, HAZ_N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const uint32_t base = (uint32_t)(r + 1) * 1000000u;
+        fill_args_t fa = {0};
+        fa.n = HAZ_N; fa.base = base; fa.dst = DEV_ADDR(d);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(HAZ_N, 64), &fa, sizeof(fa)));
+
+        /* No flush: producer and consumer land in one command buffer, which is
+           where the encoders may overlap. */
+        memset(host, 0, HAZ_N * sizeof(uint32_t));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, d, HAZ_N * sizeof(uint32_t), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_N; i += HAZ_STRIDE) ASSERT_EQ(base + (uint32_t)i, host[i]);
+    }
+
+    md_gpu_free(d, f.compute);
+    free(host);
+    gpu_close(&f);
+}
+
+/* dispatch -> blit, texture. The GTO volume readback, reduced. */
+UTEST(gpu, hazard_dispatch_to_blit_texture) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = HAZ_D; td.height = HAZ_D; td.depth = HAZ_D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    td.label  = "hazard volume";
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    float* host = (float*)malloc(HAZ_VOX * sizeof(float));
+    ASSERT_TRUE(host != NULL);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const float scale = (float)(r + 1);
+        tex_args_t ta = {0};
+        ta.dim[0] = HAZ_D; ta.dim[1] = HAZ_D; ta.dim[2] = HAZ_D;
+        ta.tex = tex; ta.scale = scale;
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_write,
+                                  md_gpu_grid(HAZ_D/4, HAZ_D/4, HAZ_D/4), &ta, sizeof(ta)));
+
+        memset(host, 0, HAZ_VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_from_tex_async(host, tex, NULL, HAZ_VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_VOX; i += HAZ_STRIDE) ASSERT_EQ((float)i * scale, host[i]);
+    }
+
+    free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* blit -> dispatch, buffer. The upload must be complete before the kernel that
+   consumes it starts. */
+UTEST(gpu, hazard_blit_to_dispatch_buffer) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    uint32_t* src  = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
+    uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
+    ASSERT_TRUE(src && host);
+    uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, HAZ_N * sizeof(uint32_t), f.compute);
+    uint32_t* b = (uint32_t*)md_gpu_malloc(f.pool, HAZ_N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(a && b);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const uint32_t tag = (uint32_t)(r + 1) * 7u;
+        for (int i = 0; i < HAZ_N; ++i) src[i] = (uint32_t)i + tag;
+
+        ASSERT_TRUE(md_gpu_memcpy_async(a, src, HAZ_N * sizeof(uint32_t), f.compute));
+
+        scale_args_t sa = {0};
+        sa.n = HAZ_N; sa.mul = 1; sa.add = 0;
+        sa.src = DEV_ADDR(a); sa.dst = DEV_ADDR(b);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_scale, md_gpu_grid_1d(HAZ_N, 64), &sa, sizeof(sa)));
+
+        memset(host, 0, HAZ_N * sizeof(uint32_t));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, b, HAZ_N * sizeof(uint32_t), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_N; i += HAZ_STRIDE) ASSERT_EQ((uint32_t)i + tag, host[i]);
+    }
+
+    md_gpu_free(a, f.compute);
+    md_gpu_free(b, f.compute);
+    free(src); free(host);
+    gpu_close(&f);
+}
+
+/* blit -> dispatch, texture. */
+UTEST(gpu, hazard_blit_to_dispatch_texture) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 64, VOX = D * D * D };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    float* src  = (float*)malloc(VOX * sizeof(float));
+    float* host = (float*)malloc(VOX * sizeof(float));
+    ASSERT_TRUE(src && host);
+    float* d = (float*)md_gpu_malloc(f.pool, VOX * sizeof(float), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const float tag = (float)(r + 1) * 1000.0f;
+        for (int i = 0; i < VOX; ++i) src[i] = (float)i + tag;
+
+        ASSERT_TRUE(md_gpu_memcpy_to_tex_async(tex, NULL, src, VOX * sizeof(float), f.compute));
+
+        tex_read_args_t ra = {0};
+        ra.dim[0] = D; ra.dim[1] = D; ra.dim[2] = D;
+        ra.tex = tex; ra.dst = DEV_ADDR(d);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_read, md_gpu_grid(D/4, D/4, D/4), &ra, sizeof(ra)));
+
+        memset(host, 0, VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, d, VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < VOX; i += 61) ASSERT_EQ(src[i], host[i]);
+    }
+
+    md_gpu_free(d, f.compute);
+    free(src); free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* memset -> dispatch. A fill is a transfer operation like any other, and a
+   kernel that accumulates into the cleared range must not start early. */
+UTEST(gpu, hazard_memset_to_dispatch) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
+    ASSERT_TRUE(host != NULL);
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, HAZ_N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const uint8_t  byte  = (uint8_t)(r + 1);
+        const uint32_t word  = (uint32_t)byte * 0x01010101u;
+        const uint32_t delta = (uint32_t)(r + 1) * 13u;
+
+        ASSERT_TRUE(md_gpu_memset_async(d, byte, HAZ_N * sizeof(uint32_t), f.compute));
+
+        bump_args_t ba = {0};
+        ba.n = HAZ_N; ba.delta = delta; ba.dst = DEV_ADDR(d);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_bump, md_gpu_grid_1d(HAZ_N, 64), &ba, sizeof(ba)));
+
+        memset(host, 0, HAZ_N * sizeof(uint32_t));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, d, HAZ_N * sizeof(uint32_t), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_N; i += HAZ_STRIDE) ASSERT_EQ(word + delta, host[i]);
+    }
+
+    md_gpu_free(d, f.compute);
+    free(host);
+    gpu_close(&f);
+}
+
+/* dispatch -> dispatch through a texture. Both sides are compute, so on Metal
+   this is the serial-encoder path rather than the encoder boundary -- a
+   different mechanism reaching the same guarantee, and worth pinning
+   separately. */
+UTEST(gpu, hazard_dispatch_to_dispatch_via_texture) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 64, VOX = D * D * D };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    float* host = (float*)malloc(VOX * sizeof(float));
+    ASSERT_TRUE(host != NULL);
+    float* d = (float*)md_gpu_malloc(f.pool, VOX * sizeof(float), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const float scale = (float)(r + 1) * 0.5f;
+
+        tex_args_t ta = {0};
+        ta.dim[0] = D; ta.dim[1] = D; ta.dim[2] = D;
+        ta.tex = tex; ta.scale = scale;
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_write, md_gpu_grid(D/4, D/4, D/4), &ta, sizeof(ta)));
+
+        tex_read_args_t ra = {0};
+        ra.dim[0] = D; ra.dim[1] = D; ra.dim[2] = D;
+        ra.tex = tex; ra.dst = DEV_ADDR(d);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_read, md_gpu_grid(D/4, D/4, D/4), &ra, sizeof(ra)));
+
+        memset(host, 0, VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, d, VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < VOX; i += 61) ASSERT_EQ((float)i * scale, host[i]);
+    }
+
+    md_gpu_free(d, f.compute);
+    free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Many transitions in one command buffer: compute, transfer, compute,
+   transfer... Each step depends on the one before, so a single missed
+   transition anywhere in the chain shows up at the end. */
+UTEST(gpu, hazard_alternating_encoder_chain) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 1 << 18, STEPS = 12 };
+    uint32_t* host = (uint32_t*)malloc(N * sizeof(uint32_t));
+    ASSERT_TRUE(host != NULL);
+    uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    uint32_t* b = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(a && b);
+
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 0; fa.dst = DEV_ADDR(a);
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+
+    for (int step = 0; step < STEPS; ++step) {
+        /* transfer: a -> b */
+        ASSERT_TRUE(md_gpu_memcpy_async(b, a, N * sizeof(uint32_t), f.compute));
+        /* compute: b -> a, +1 */
+        scale_args_t sa = {0};
+        sa.n = N; sa.mul = 1; sa.add = 1;
+        sa.src = DEV_ADDR(b); sa.dst = DEV_ADDR(a);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_scale, md_gpu_grid_1d(N, 64), &sa, sizeof(sa)));
+    }
+
+    memset(host, 0, N * sizeof(uint32_t));
+    ASSERT_TRUE(md_gpu_memcpy_async(host, a, N * sizeof(uint32_t), f.compute));
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+
+    for (int i = 0; i < N; i += 97) ASSERT_EQ((uint32_t)(i + STEPS), host[i]);
+
+    md_gpu_free(a, f.compute);
+    md_gpu_free(b, f.compute);
+    free(host);
+    gpu_close(&f);
+}
+
+/* The same producer/consumer pair, forced into separate submissions. Different
+   mechanism again -- a timeline wait rather than an encoder-level one. */
+UTEST(gpu, hazard_across_submission_boundary) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    float* host = (float*)malloc(HAZ_VOX * sizeof(float));
+    ASSERT_TRUE(host != NULL);
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = HAZ_D; td.height = HAZ_D; td.depth = HAZ_D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const float scale = (float)(r + 1) * 3.0f;
+        tex_args_t ta = {0};
+        ta.dim[0] = HAZ_D; ta.dim[1] = HAZ_D; ta.dim[2] = HAZ_D;
+        ta.tex = tex; ta.scale = scale;
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_write,
+                                  md_gpu_grid(HAZ_D/4, HAZ_D/4, HAZ_D/4), &ta, sizeof(ta)));
+
+        md_gpu_stream_flush(f.compute);     /* producer and consumer now split */
+
+        memset(host, 0, HAZ_VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_from_tex_async(host, tex, NULL, HAZ_VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_VOX; i += HAZ_STRIDE) ASSERT_EQ((float)i * scale, host[i]);
+    }
+
+    free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Producer and consumer on different streams, joined by an explicit sync. This
+   is the one case where the ordering is the caller's to establish, so it checks
+   that record/wait actually carries a texture dependency. */
+UTEST(gpu, hazard_across_streams_via_sync) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_stream_t producer = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "producer");
+    ASSERT_TRUE(producer != NULL);
+
+    float* host = (float*)malloc(HAZ_VOX * sizeof(float));
+    ASSERT_TRUE(host != NULL);
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = HAZ_D; td.height = HAZ_D; td.depth = HAZ_D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    for (int r = 0; r < HAZ_ROUNDS; ++r) {
+        const float scale = (float)(r + 1) * 7.0f;
+        tex_args_t ta = {0};
+        ta.dim[0] = HAZ_D; ta.dim[1] = HAZ_D; ta.dim[2] = HAZ_D;
+        ta.tex = tex; ta.scale = scale;
+        ASSERT_TRUE(md_gpu_launch(producer, f.k_tex_write,
+                                  md_gpu_grid(HAZ_D/4, HAZ_D/4, HAZ_D/4), &ta, sizeof(ta)));
+
+        md_gpu_sync_t done = md_gpu_stream_record(producer);
+        ASSERT_TRUE(md_gpu_sync_is_valid(done));
+        md_gpu_stream_wait(f.compute, done);
+
+        memset(host, 0, HAZ_VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_from_tex_async(host, tex, NULL, HAZ_VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < HAZ_VOX; i += HAZ_STRIDE) ASSERT_EQ((float)i * scale, host[i]);
+    }
+
+    free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    md_gpu_stream_destroy(producer);
+    gpu_close(&f);
+}
+
+/* The same dependency captured into a graph. Replay re-encodes the operations,
+   so whatever ordering the backend inserts during normal recording has to be
+   inserted again here -- an easy thing to implement once and forget. */
+UTEST(gpu, hazard_inside_a_replayed_graph) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 64, VOX = D * D * D, REPLAYS = 4 };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    float* host = (float*)malloc(VOX * sizeof(float));
+    ASSERT_TRUE(host != NULL);
+    float* d = (float*)md_gpu_malloc(f.pool, VOX * sizeof(float), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    /* write the volume, then read it straight back into a device buffer */
+    ASSERT_TRUE(md_gpu_capture_begin(f.compute, "hazard graph"));
+    tex_args_t ta = {0};
+    ta.dim[0] = D; ta.dim[1] = D; ta.dim[2] = D;
+    ta.tex = tex; ta.scale = 2.0f;
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_tex_write, md_gpu_grid(D/4, D/4, D/4), &ta, sizeof(ta)));
+    ASSERT_TRUE(md_gpu_memcpy_from_tex_async(d, tex, NULL, VOX * sizeof(float), f.compute));
+    md_gpu_graph_t g = md_gpu_capture_end(f.compute);
+    ASSERT_TRUE(g != NULL);
+
+    for (int r = 0; r < REPLAYS; ++r) {
+        ASSERT_TRUE(md_gpu_memset_async(d, 0, VOX * sizeof(float), f.compute));
+        ASSERT_TRUE(md_gpu_graph_launch(g, f.compute));
+
+        memset(host, 0, VOX * sizeof(float));
+        ASSERT_TRUE(md_gpu_memcpy_async(host, d, VOX * sizeof(float), f.compute));
+        md_gpu_stream_sync(f.compute);
+        md_gpu_device_poll(f.dev);
+
+        for (int i = 0; i < VOX; i += 61) ASSERT_EQ((float)i * 2.0f, host[i]);
+    }
+
+    md_gpu_graph_destroy(g);
+    md_gpu_free(d, f.compute);
+    free(host);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Samplers are part of the public surface and never touched by a test. */
+UTEST(gpu, sampler_create_and_destroy) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_sampler_desc_t sd = {0};
+    sd.min_filter = MD_GPU_FILTER_LINEAR;
+    sd.mag_filter = MD_GPU_FILTER_LINEAR;
+    sd.address_u = sd.address_v = sd.address_w = MD_GPU_ADDRESS_CLAMP_TO_EDGE;
+    sd.label = "linear clamp";
+    md_gpu_sampler_t a = md_gpu_sampler_create(f.dev, &sd);
+    EXPECT_TRUE(a != 0);
+
+    md_gpu_sampler_t b = md_gpu_sampler_create(f.dev, NULL);   /* defaults */
+    EXPECT_TRUE(b != 0);
+
+    md_gpu_sampler_destroy(a);
+    md_gpu_sampler_destroy(b);
+    md_gpu_sampler_destroy(0);        /* must be a no-op, not a crash */
+    gpu_close(&f);
+}
+
+/* A texture asked for both usages hands out two handles on backends where
+   storage and sampled descriptors are separate arrays, and the same one where
+   they are not. Either way the create handle is what identifies it. */
+UTEST(gpu, texture_storage_and_sampled_handles) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = 8; td.height = 8; td.depth = 8;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    md_gpu_tex_t sampled = md_gpu_tex_sampled(tex);
+    EXPECT_TRUE(sampled != 0);
+
+    /* Only the create handle identifies the texture. */
+    md_gpu_tex_desc_t back = {0};
+    ASSERT_TRUE(md_gpu_tex_desc(tex, &back));
+    EXPECT_EQ(8u, back.width);
+    EXPECT_EQ((uint32_t)(MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED), back.flags);
+
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Synchronisation at scale
+   ========================================================================= */
+
+/* Both backends keep pending cross-stream waits in a small fixed array and
+   sample timelines into a fixed-size snapshot during poll. Fan more streams in
+   than those arrays hold and the joining stream must still see every producer's
+   writes. */
+UTEST(gpu, wide_cross_stream_fan_in) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { STREAMS = 20, N = 128 };
+    md_gpu_stream_t s[STREAMS] = {0};
+    uint32_t* buf[STREAMS] = {0};
+
+    for (int i = 0; i < STREAMS; ++i) {
+        s[i] = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "producer");
+        ASSERT_TRUE(s[i] != NULL);
+        buf[i] = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), s[i]);
+        ASSERT_TRUE(buf[i] != NULL);
+
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)(i * 1000); fa.dst = DEV_ADDR(buf[i]);
+        ASSERT_TRUE(md_gpu_launch(s[i], f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    }
+
+    /* One consumer waits on all of them, then reads every buffer. */
+    for (int i = 0; i < STREAMS; ++i) {
+        md_gpu_sync_t sync = md_gpu_stream_record(s[i]);
+        ASSERT_TRUE(md_gpu_sync_is_valid(sync));
+        md_gpu_stream_wait(f.compute, sync);
+    }
+
+    static uint32_t host[STREAMS][N];
+    memset(host, 0, sizeof(host));
+    for (int i = 0; i < STREAMS; ++i) {
+        ASSERT_TRUE(md_gpu_memcpy_async(host[i], buf[i], N * sizeof(uint32_t), f.compute));
+    }
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+
+    for (int i = 0; i < STREAMS; ++i) {
+        for (int j = 0; j < N; ++j) ASSERT_EQ((uint32_t)(i * 1000 + j), host[i][j]);
+    }
+
+    for (int i = 0; i < STREAMS; ++i) {
+        md_gpu_free(buf[i], s[i]);
+        md_gpu_stream_destroy(s[i]);
+    }
+    gpu_close(&f);
+}
+
+/* The header promises different streams may be driven concurrently from
+   different threads, and that malloc/free are thread-safe. Every thread owns
+   its stream and its memory, so any failure here is md_gpu's shared state --
+   the live-allocation registry above all -- not the test sharing something. */
+typedef struct {
+    gpu_fixture_t* f;
+    int            index;
+    bool           ok;
+} gpu_thread_ctx_t;
+
+static void gpu_thread_body(void* user) {
+    gpu_thread_ctx_t* c = (gpu_thread_ctx_t*)user;
+    enum { N = 512, ITERS = 24 };
+    md_gpu_stream_t s = md_gpu_stream_create(c->f->dev, MD_GPU_STREAM_COMPUTE, "worker");
+    if (!s) { c->ok = false; return; }
+
+    bool ok = true;
+    for (int it = 0; it < ITERS && ok; ++it) {
+        uint32_t* d = (uint32_t*)md_gpu_malloc(c->f->pool, N * sizeof(uint32_t), s);
+        if (!d) { ok = false; break; }
+
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)(c->index * 100000 + it); fa.dst = DEV_ADDR(d);
+        ok = ok && md_gpu_launch(s, c->f->k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa));
+
+        uint32_t host[N];
+        ok = ok && md_gpu_memcpy_async(host, d, sizeof(host), s);
+        md_gpu_stream_sync(s);
+
+        for (int i = 0; i < N && ok; ++i) {
+            if (host[i] != (uint32_t)(c->index * 100000 + it + i)) ok = false;
+        }
+        md_gpu_free(d, s);
+    }
+
+    md_gpu_stream_destroy(s);
+    c->ok = ok;
+}
+
+UTEST(gpu, concurrent_streams_from_threads) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { THREADS = 4 };
+    gpu_thread_ctx_t ctx[THREADS];
+    md_thread_t* th[THREADS];
+    for (int i = 0; i < THREADS; ++i) {
+        ctx[i].f = &f; ctx[i].index = i; ctx[i].ok = false;
+        th[i] = md_thread_create(gpu_thread_body, &ctx[i]);
+        ASSERT_TRUE(th[i] != NULL);
+    }
+    for (int i = 0; i < THREADS; ++i) {
+        md_thread_join(th[i]);
+        EXPECT_TRUE(ctx[i].ok);
+    }
+
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* =========================================================================
+   Lifetime
+   ========================================================================= */
+
+/* Destroying a pool releases its device memory. Doing it with work still in
+   flight is either legal -- in which case it must wait -- or it is not, and the
+   header should say so. Today it says nothing, so pin the behaviour down. */
+UTEST(gpu, pool_destroy_with_work_in_flight) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .label = "in-flight" });
+    ASSERT_TRUE(pool != NULL);
+
+    enum { N = 65536 };
+    uint32_t* d = (uint32_t*)md_gpu_malloc(pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    /* Enough launches that the queue is genuinely busy when the pool goes. */
+    for (int i = 0; i < 32; ++i) {
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)i; fa.dst = DEV_ADDR(d);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    }
+    md_gpu_stream_flush(f.compute);
+
+    md_gpu_pool_destroy(pool);        /* must not free memory the GPU is reading */
+
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* The header says device_destroy "destroys the device and everything created
+   from it". Leave a pool, a texture, a sampler, a graph and a stream behind and
+   let the leak checkers say whether that is true. */
+UTEST(gpu, device_destroy_reclaims_undestroyed_objects) {
+    gpu_alloc_stats_t stats = {0};
+    md_allocator_i alloc = { (md_allocator_o*)&stats, gpu_test_realloc };
+
+    md_gpu_device_desc_t dd = {0};
+    dd.alloc = &alloc;
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP("No GPU device available");
+
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+    md_gpu_stream_t extra = md_gpu_stream_create(dev, MD_GPU_STREAM_COMPUTE, "leaked");
+    ASSERT_TRUE(extra != NULL);
+
+    md_gpu_pool_t pool = md_gpu_pool_create(dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .label = "leaked" });
+    ASSERT_TRUE(pool != NULL);
+    ASSERT_TRUE(md_gpu_malloc(pool, 64 * 1024, s) != NULL);
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = 4; td.height = 4; td.depth = 4;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    ASSERT_TRUE(md_gpu_tex_create(dev, &td) != 0);
+    ASSERT_TRUE(md_gpu_sampler_create(dev, NULL) != 0);
+
+    /* Nothing above is destroyed by hand. */
+    md_gpu_device_destroy(dev);
+    EXPECT_EQ(0u, (unsigned)stats.live_bytes);
+}
+
+/* =========================================================================
+   Edge cases and error reporting
+   ========================================================================= */
+
+UTEST(gpu, null_and_zero_arguments_are_tolerated) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    /* Frees and destroys of nothing. */
+    md_gpu_free(NULL, f.compute);
+    md_gpu_tex_destroy(0, f.compute);
+    md_gpu_kernel_destroy(NULL);
+    md_gpu_graph_destroy(NULL);
+    md_gpu_pool_trim(NULL, 0);
+
+    /* Zero-sized transfers are no-ops, not failures. */
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, 256, f.compute);
+    ASSERT_TRUE(d != NULL);
+    uint32_t host = 0;
+    EXPECT_TRUE(md_gpu_memcpy_async(d, &host, 0, f.compute));
+    EXPECT_TRUE(md_gpu_memset_async(d, 0, 0, f.compute));
+
+    /* An empty grid launches nothing and succeeds. */
+    fill_args_t fa = {0};
+    fa.n = 1; fa.dst = DEV_ADDR(d);
+    EXPECT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid(0, 1, 1), &fa, sizeof(fa)));
+
+    /* Queries on a pointer that is not a live allocation. */
+    EXPECT_EQ(0u, (unsigned)md_gpu_ptr_size(NULL));
+    EXPECT_TRUE(md_gpu_ptr_base(NULL) == NULL);
+    EXPECT_TRUE(md_gpu_host_ptr(NULL) == NULL);
+
+    /* Device-local memory is not host-mappable. */
+    EXPECT_TRUE(md_gpu_host_ptr(d) == NULL);
+    EXPECT_EQ((uint32_t)MD_GPU_MEM_DEVICE, md_gpu_pool_flags(f.pool));
+
+    md_gpu_stream_sync(f.compute);
+    md_gpu_free(d, f.compute);
+    gpu_close(&f);
+}
+
+/* Host-visible memory is dereferenceable, and pointer arithmetic on the device
+   pointer must agree with arithmetic on the host view. */
+UTEST(gpu, host_pointer_tracks_device_pointer) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 256 };
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.read_pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(d != NULL);
+
+    uint32_t* h = (uint32_t*)md_gpu_host_ptr(d);
+    ASSERT_TRUE(h != NULL);
+    uint32_t* h_mid = (uint32_t*)md_gpu_host_ptr(d + N / 2);
+    ASSERT_TRUE(h_mid == h + N / 2);
+
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 9; fa.dst = DEV_ADDR(d);
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    md_gpu_stream_sync(f.compute);
+
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(9 + i), h[i]);
+
+    md_gpu_free(d, f.compute);
+    gpu_close(&f);
+}
+
+/* A failing call must leave a description behind; that is the only diagnostic
+   the API offers. */
+UTEST(gpu, last_error_describes_the_failure) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    uint32_t host = 0;
+    EXPECT_FALSE(md_gpu_memset_async(&host, 0, sizeof(host), f.compute));
+    EXPECT_TRUE(md_gpu_last_error() != NULL);
+
+    /* Two uploads open at once on one stream is documented as illegal. */
+    uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, 256, f.compute);
+    ASSERT_TRUE(d != NULL);
+    void* p = md_gpu_upload_begin(f.compute, d, 256);
+    ASSERT_TRUE(p != NULL);
+    EXPECT_TRUE(md_gpu_upload_begin(f.compute, d, 256) == NULL);
+    EXPECT_TRUE(md_gpu_upload_end(f.compute));
+
+    md_gpu_stream_sync(f.compute);
+    md_gpu_free(d, f.compute);
+    gpu_close(&f);
+}
+
+UTEST(gpu, device_info_is_sane) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(f.dev, &info));
+    EXPECT_GT(info.max_threads_per_group, 0u);
+    EXPECT_GT(info.preferred_group_multiple, 0u);
+    /* Every kernel in the fixture must fit inside the device limit. */
+    md_gpu_kernel_info_t ki;
+    ASSERT_TRUE(md_gpu_kernel_info(f.k_tex_write, &ki));
+    EXPECT_LE(ki.group_size[0] * ki.group_size[1] * ki.group_size[2], info.max_threads_per_group);
+    EXPECT_GT(info.timestamp_period_ns_den, 0u);   /* used as a divisor */
+
+    gpu_close(&f);
+}
+
+/* An indirect grid derived from a device-side count of zero must dispatch
+   nothing rather than fault -- the natural outcome of a compaction pass that
+   found no work. */
+UTEST(gpu, indirect_launch_with_zero_count) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { N = 64 };
+    uint32_t* data  = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
+    uint32_t* count = (uint32_t*)md_gpu_malloc(f.pool, sizeof(uint32_t), f.compute);
+    uint32_t* grid  = (uint32_t*)md_gpu_malloc(f.pool, 3 * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(data && count && grid);
+
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 0; fa.dst = DEV_ADDR(data);
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    ASSERT_TRUE(md_gpu_memset_async(count, 0, sizeof(uint32_t), f.compute));
+
+    const uint32_t local[3] = {64, 1, 1};
+    ASSERT_TRUE(md_gpu_make_grid(f.compute, grid, count, local));
+
+    bump_args_t ba = {0};
+    ba.n = N; ba.delta = 777; ba.dst = DEV_ADDR(data);
+    ASSERT_TRUE(md_gpu_launch_indirect(f.compute, f.k_bump, grid, &ba, sizeof(ba)));
+
+    uint32_t host_grid[3] = {1, 1, 1}, host[N];
+    ASSERT_TRUE(md_gpu_memcpy_async(host_grid, grid, sizeof(host_grid), f.compute));
+    ASSERT_TRUE(md_gpu_memcpy_async(host, data, sizeof(host), f.compute));
+    md_gpu_stream_sync(f.compute);
+
+    EXPECT_EQ(0u, host_grid[0]);
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)i, host[i]);   /* bump did not run */
+
+    md_gpu_free(data,  f.compute);
+    md_gpu_free(count, f.compute);
+    md_gpu_free(grid,  f.compute);
+    gpu_close(&f);
+}
+
+/* Blocks freed on one stream must not be handed to another until the first
+   stream has actually passed the free point. */
+UTEST(gpu, pool_reuse_across_streams_waits_for_completion) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "cross-stream" });
+    ASSERT_TRUE(pool != NULL);
+    md_gpu_stream_t other = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "other");
+    ASSERT_TRUE(other != NULL);
+
+    enum { N = 65536 };
+    uint32_t* a = (uint32_t*)md_gpu_malloc(pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(a != NULL);
+
+    for (int i = 0; i < 16; ++i) {
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = 4242; fa.dst = DEV_ADDR(a);
+        ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    }
+    md_gpu_stream_flush(f.compute);
+    md_gpu_free(a, f.compute);
+
+    /* `other` has no ordering with f.compute, so the pool may only hand this
+       block over once f.compute has actually passed the free -- otherwise the
+       write below races the launches above and the readback sees 4242. */
+    uint32_t* b = (uint32_t*)md_gpu_malloc(pool, N * sizeof(uint32_t), other);
+    ASSERT_TRUE(b != NULL);
+
+    fill_args_t fb = {0};
+    fb.n = N; fb.base = 1; fb.dst = DEV_ADDR(b);
+    ASSERT_TRUE(md_gpu_launch(other, f.k_fill, md_gpu_grid_1d(N, 64), &fb, sizeof(fb)));
+
+    static uint32_t host[N];
+    ASSERT_TRUE(md_gpu_memcpy_async(host, b, sizeof(host), other));
+    md_gpu_stream_sync(other);
+    md_gpu_stream_sync(f.compute);
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(1 + i), host[i]);
+
+    md_gpu_free(b, other);
+    md_gpu_stream_destroy(other);
+    md_gpu_pool_destroy(pool);
     gpu_close(&f);
 }
 
