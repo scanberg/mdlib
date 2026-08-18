@@ -852,7 +852,7 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
-bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* data) {
+bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* data) {
 	ASSERT(sys);
 	ASSERT(data);
 
@@ -866,9 +866,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	/* Record system allocator early so subsequent allocations use system-owned allocator. */
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_ensure(sys->atom.x,		capacity, sys->alloc);
-	md_array_ensure(sys->atom.y,		capacity, sys->alloc);
-	md_array_ensure(sys->atom.z,		capacity, sys->alloc);
+	md_array_ensure(state->x,		capacity, state->alloc);
+	md_array_ensure(state->y,		capacity, state->alloc);
+	md_array_ensure(state->z,		capacity, state->alloc);
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
 	md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
@@ -928,9 +928,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 		}
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
-		md_array_push_no_grow(sys->atom.x, data->atoms[i].x - data->cell.xlo);
-		md_array_push_no_grow(sys->atom.y, data->atoms[i].y - data->cell.ylo);
-		md_array_push_no_grow(sys->atom.z, data->atoms[i].z - data->cell.zlo);
+		md_array_push_no_grow(state->x, data->atoms[i].x - data->cell.xlo);
+		md_array_push_no_grow(state->y, data->atoms[i].y - data->cell.ylo);
+		md_array_push_no_grow(state->z, data->atoms[i].z - data->cell.zlo);
 		md_array_push_no_grow(sys->atom.flags, 0);
 		sys->atom.count +=1;
 
@@ -949,8 +949,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	double xy = data->cell.xy;
 	double xz = data->cell.xz;
 	double yz = data->cell.yz;
-    sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-	sys->initial_unitcell = sys->unitcell;
+    state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 
 	// Create bonds
 	if (data->num_bonds > 0) {
@@ -976,10 +975,12 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
     }
 
 	md_temp_end(temp_scope);
+    state->num_atoms = sys->atom.count;
+
 	return true;
 }
 
-bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* atom_format) {
+bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -993,14 +994,14 @@ bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* ato
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
-	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, state, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
     md_temp_end(temp_scope);
 	return success;
 }
 
-bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const char* atom_format) {
+bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -1014,7 +1015,7 @@ bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const cha
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
-	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, state, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
     md_temp_end(temp_scope);
@@ -1511,7 +1512,7 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 	return false;
 }
 
-static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool lammps_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
 	ASSERT(inst);
 
 	lammps_reader_t* reader = (lammps_reader_t*)inst;
@@ -1554,6 +1555,26 @@ static void lammps_trajectory_reader_free(struct md_trajectory_reader_i* reader)
 	}
 
 	MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
+// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
+static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
+    md_trajectory_frame_header_t local_header = {0};
+    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!lammps_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = hdr->unitcell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = hdr->num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool lammps_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {

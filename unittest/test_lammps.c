@@ -127,11 +127,12 @@ UTEST(lammps, water_ethane_cubic) {
     }
 
     md_system_t sys = { .alloc = alloc };
-    md_lammps_system_init_from_data(&sys, &data);
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_lammps_system_init_from_data(&sys, &sys_state, &data);
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys.atom.x[i], data.atoms[i].x);
-        EXPECT_EQ(sys.atom.y[i], data.atoms[i].y);
-        EXPECT_EQ(sys.atom.z[i], data.atoms[i].z);
+        EXPECT_EQ(sys_state.x[i], data.atoms[i].x);
+        EXPECT_EQ(sys_state.y[i], data.atoms[i].y);
+        EXPECT_EQ(sys_state.z[i], data.atoms[i].z);
     }
 
     // Skip first atom type == Unknown
@@ -269,11 +270,12 @@ UTEST(lammps, water_ethane_triclinic) {
     }
 
     md_system_t sys = {.alloc = alloc};
-    ASSERT_TRUE(md_lammps_system_init_from_data(&sys, &data));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_lammps_system_init_from_data(&sys, &sys_state, &data));
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys.atom.x[i], data.atoms[i].x);
-        EXPECT_EQ(sys.atom.y[i], data.atoms[i].y);
-        EXPECT_EQ(sys.atom.z[i], data.atoms[i].z);
+        EXPECT_EQ(sys_state.x[i], data.atoms[i].x);
+        EXPECT_EQ(sys_state.y[i], data.atoms[i].y);
+        EXPECT_EQ(sys_state.z[i], data.atoms[i].z);
         EXPECT_NE(sys.atom.type_idx[i], 0);
     }
 
@@ -303,10 +305,10 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
 
     md_trajectory_frame_header_t header;
     for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
         EXPECT_EQ(7800, header.num_atoms);
     }
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_NE(x[0], 0);
     
 
@@ -345,11 +347,11 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     md_trajectory_frame_header_t header;
 
     for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
         EXPECT_EQ(7722, header.num_atoms);
     }
 
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
 
     EXPECT_NEAR(12.2316074, x[0], 0.0001); //Should be about 0.35 of cell
     EXPECT_NEAR(39.1199989, header.unitcell.x, 0.0001);
@@ -385,9 +387,9 @@ UTEST(lammps, trajectory_reader_i) {
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
     md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(7800, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(7800, header.num_atoms);
 
     md_trajectory_reader_free(&reader);
@@ -410,18 +412,19 @@ UTEST(lammps, comprehensive_data_validation) {
     
     for (int p = 0; p < 2; ++p) {
         md_system_t sys = { .alloc = alloc };
-        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, paths[p], atom_format));
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, paths[p], atom_format));
         
         EXPECT_GT(sys.atom.count, 0);
         
         // Validate coordinates are finite for a sample of atoms
         for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, sys.atom.count); ++i) {
-            EXPECT_FALSE(isnan(sys.atom.x[i]));
-            EXPECT_FALSE(isnan(sys.atom.y[i]));
-            EXPECT_FALSE(isnan(sys.atom.z[i]));
-            EXPECT_FALSE(isinf(sys.atom.x[i]));
-            EXPECT_FALSE(isinf(sys.atom.y[i]));
-            EXPECT_FALSE(isinf(sys.atom.z[i]));
+            EXPECT_FALSE(isnan(sys_state.x[i]));
+            EXPECT_FALSE(isnan(sys_state.y[i]));
+            EXPECT_FALSE(isnan(sys_state.z[i]));
+            EXPECT_FALSE(isinf(sys_state.x[i]));
+            EXPECT_FALSE(isinf(sys_state.y[i]));
+            EXPECT_FALSE(isinf(sys_state.z[i]));
         }
         
         md_system_free(&sys);

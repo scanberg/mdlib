@@ -4714,7 +4714,7 @@ const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* 
 	return NULL;
 }
 
-bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
+bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx) {
 	ASSERT(sys);
 	ASSERT(vlx);
 	
@@ -4732,24 +4732,24 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	md_array_resize(sys->atom.x,		capacity, sys->alloc);
-	md_array_resize(sys->atom.y,		capacity, sys->alloc);
-	md_array_resize(sys->atom.z,		capacity, sys->alloc);
+	md_array_resize(state->x,		capacity, state->alloc);
+	md_array_resize(state->y,		capacity, state->alloc);
+	md_array_resize(state->z,		capacity, state->alloc);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
 
-	MEMSET(sys->atom.x,			0, md_array_bytes(sys->atom.x));
-	MEMSET(sys->atom.y,			0, md_array_bytes(sys->atom.y));
-	MEMSET(sys->atom.z,			0, md_array_bytes(sys->atom.z));
+	MEMSET(state->x,			0, md_array_bytes(state->x));
+	MEMSET(state->y,			0, md_array_bytes(state->y));
+	MEMSET(state->z,			0, md_array_bytes(state->z));
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
-		sys->atom.y[i] = (float)vlx->atom_coordinates[i].y;
-		sys->atom.z[i] = (float)vlx->atom_coordinates[i].z;
+		state->x[i] = (float)vlx->atom_coordinates[i].x;
+		state->y[i] = (float)vlx->atom_coordinates[i].y;
+		state->z[i] = (float)vlx->atom_coordinates[i].z;
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		str_t sym  = md_atomic_number_symbol(z);
@@ -4762,18 +4762,19 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	}
 
 	sys->atom.count = vlx->number_of_atoms;
+    state->num_atoms = sys->atom.count;
 
 	return true;
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
+bool md_vlx_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 	md_vlx_t* vlx = md_vlx_create(temp_arena);
 
-	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, vlx);
+	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, state, vlx);
 
 	md_temp_end(temp_scope);
 	return success;

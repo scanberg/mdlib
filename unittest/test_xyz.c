@@ -408,14 +408,15 @@ UTEST(xyz, create_molecule) {
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
 
     md_system_t sys = { .alloc = alloc };
-    EXPECT_TRUE(md_xyz_system_init_from_data(&sys, &data, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
+    md_system_state_t sys_state = { .alloc = alloc };
+    EXPECT_TRUE(md_xyz_system_init_from_data(&sys, &sys_state, &data, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
     ASSERT_GT(data.num_models, 0);
     ASSERT_EQ(sys.atom.count, data.models[0].end_coord_index - data.models[0].beg_coord_index);
 
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys.atom.x[i], data.coordinates[i].x);
-        EXPECT_EQ(sys.atom.y[i], data.coordinates[i].y);
-        EXPECT_EQ(sys.atom.z[i], data.coordinates[i].z);
+        EXPECT_EQ(sys_state.x[i], data.coordinates[i].x);
+        EXPECT_EQ(sys_state.y[i], data.coordinates[i].y);
+        EXPECT_EQ(sys_state.z[i], data.coordinates[i].z);
     }
 
     md_system_free(&sys);
@@ -428,7 +429,8 @@ UTEST(xyz, trajectory_i) {
 
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_system_t sys = { .alloc = temp_arena };
-    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
+    md_system_state_t sys_state = { .alloc = temp_arena };
+    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
     md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
 
@@ -444,7 +446,7 @@ UTEST(xyz, trajectory_i) {
     md_trajectory_frame_header_t header;
 
     for (size_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
         EXPECT_EQ(2280, header.num_atoms);
     }
 
@@ -457,7 +459,8 @@ UTEST(xyz, trajectory_reader_i) {
 
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_system_t sys = { .alloc = temp_arena };
-    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
+    md_system_state_t sys_state = { .alloc = temp_arena };
+    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
     md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
 
@@ -471,9 +474,9 @@ UTEST(xyz, trajectory_reader_i) {
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
     md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(2280, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(2280, header.num_atoms);
 
     md_system_free(&sys);
@@ -486,7 +489,8 @@ UTEST(xyz, comprehensive_c720) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
     
     md_system_t sys = { .alloc = alloc };
-    bool result = md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_NONE);
+    md_system_state_t sys_state = { .alloc = alloc };
+    bool result = md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_NONE);
     ASSERT_TRUE(result);
     
     // C720 should have exactly 720 carbon atoms
@@ -499,11 +503,11 @@ UTEST(xyz, comprehensive_c720) {
     
     // Check that coordinates are not all the same (should be a 3D structure)
     bool has_variation_x = false, has_variation_y = false, has_variation_z = false;
-    float first_x = sys.atom.x[0], first_y = sys.atom.y[0], first_z = sys.atom.z[0];
+    float first_x = sys_state.x[0], first_y = sys_state.y[0], first_z = sys_state.z[0];
     for (int64_t i = 1; i < sys.atom.count; ++i) {
-        if (fabsf(sys.atom.x[i] - first_x) > 0.01f) has_variation_x = true;
-        if (fabsf(sys.atom.y[i] - first_y) > 0.01f) has_variation_y = true;
-        if (fabsf(sys.atom.z[i] - first_z) > 0.01f) has_variation_z = true;
+        if (fabsf(sys_state.x[i] - first_x) > 0.01f) has_variation_x = true;
+        if (fabsf(sys_state.y[i] - first_y) > 0.01f) has_variation_y = true;
+        if (fabsf(sys_state.z[i] - first_z) > 0.01f) has_variation_z = true;
     }
     EXPECT_TRUE(has_variation_x);
     EXPECT_TRUE(has_variation_y);
@@ -518,14 +522,15 @@ UTEST(xyz, error_handling) {
     // Test nonexistent file
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
     md_system_t sys = {.alloc = alloc};
-    bool result = md_xyz_system_init_from_file(&sys, path, MD_XYZ_OPTION_NONE);
+    md_system_state_t sys_state = { .alloc = alloc };
+    bool result = md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_NONE);
     EXPECT_FALSE(result);
 
     md_system_reset(&sys);
     
     // Test empty path
     str_t empty_path = {0};
-    result = md_xyz_system_init_from_file(&sys, empty_path, MD_XYZ_OPTION_NONE);
+    result = md_xyz_system_init_from_file(&sys, &sys_state, empty_path, MD_XYZ_OPTION_NONE);
     EXPECT_FALSE(result);
     md_system_free(&sys);
 }

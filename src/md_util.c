@@ -1329,7 +1329,7 @@ bool md_util_resname_nucleotide(str_t str) {
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys) {
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state) {
     ASSERT(out_xyzw);
     ASSERT(mask);
     ASSERT(sys);
@@ -1338,7 +1338,7 @@ void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t
     size_t count = 0;
     while (md_bitfield_iter_next(&it)) {
         size_t i = md_bitfield_iter_idx(&it);
-        vec3_t xyz = md_atom_coord(&sys->atom, i);
+        vec3_t xyz = md_state_coord(state, i);
         float mass = md_atom_mass(&sys->atom, i);
         out_xyzw[count] = vec4_from_vec3(xyz, mass);
         count++;
@@ -2117,7 +2117,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &stream, 9.0, cell, 0);
 
@@ -3746,8 +3746,9 @@ static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const floa
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
+    ASSERT(state);
     ASSERT(sys);
     ASSERT(alloc);
 
@@ -3773,7 +3774,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     md_bond_data_clear(bond);
     
-    if (!x || !y || !z) {
+    if (!state->x || !state->y || !state->z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
         goto done;
     }
@@ -3788,7 +3789,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         }
 	}
 
-    size_t num_atoms = sys->atom.count;
+    size_t num_atoms = state->num_atoms;
     md_array(bond_pair_t) candidates = 0;
     md_array_ensure(candidates, num_atoms, temp_arena);
 
@@ -3824,12 +3825,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
                 // Test internal components
                 for (size_t i = atom_range.beg; i + 1 < atom_range.end; ++i) {
                     for (size_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
-                        test_bb_pair((int)i, (int)j, 4.0f, x, y, z, cell, &candidates, temp_arena);
+                        test_bb_pair((int)i, (int)j, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
                     }
 				}
             }
             if (bb_prev >= 0 && bb_i >= 0) {
-				test_bb_pair(bb_prev, bb_i, 4.0f, x, y, z, cell, &candidates, temp_arena);
+				test_bb_pair(bb_prev, bb_i, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
 			}
 			bb_prev = bb_i;
         }
@@ -3915,9 +3916,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
-            md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, num_atoms);
+            md_coord_stream_t coords = md_coord_stream_from_soa(state->x, state->y, state->z, NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &stream, cell_ext, cell, 0);
+            md_spatial_acc_init(&acc, &coords, cell_ext, &state->unitcell, 0);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
             //MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
         }
@@ -4056,9 +4057,11 @@ done:
     md_temp_end(temp_scope);
 }
 
-void md_util_system_infer_covalent_bonds(md_system_t* sys) {
-    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, sys->alloc);
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
+    // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate.
+    md_bond_data_clear(&sys->bond);
+    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
+    md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
 }
 
 #define MIN_RES_LEN 4
@@ -4545,11 +4548,11 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
 
     const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
     
-    md_coord_stream_t acc_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
+    md_coord_stream_t acc_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
     md_spatial_acc_t acc = { .alloc = temp_arena };
     md_spatial_acc_init(&acc, &acc_stream, cell_ext, unitcell, 0);
 
-    md_coord_stream_t don_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, don_idx, num_don);
+    md_coord_stream_t don_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, don_idx, num_don);
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
 
     typedef struct {
@@ -5147,20 +5150,16 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     for (int i = 0; i < (int)atom_count; ++i) {
         if (bitfield_test_bit(visited, i)) continue;
 
-        const uint32_t base_offset = (uint32_t)md_array_size(sys->structure.atom_idx);
-
         fifo_clear(&atom_queue);
         fifo_clear(&parent_queue);
 
         bitfield_set_bit(visited, i);
         fifo_push(&atom_queue, i);
-        fifo_push(&parent_queue, -1);
+        fifo_push(&parent_queue, i);   // the seed is its own parent
 
         while (!fifo_empty(&atom_queue)) {
             const int cur        = fifo_pop(&atom_queue);
             const int parent_idx = fifo_pop(&parent_queue);
-
-            const int local_idx = (int)(md_array_size(sys->structure.atom_idx) - base_offset);
 
             md_array_push(sys->structure.atom_idx, cur, alloc);
             md_array_push(sys->structure.parent_idx, parent_idx, alloc);
@@ -5174,7 +5173,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
 
                 bitfield_set_bit(visited, next);
                 fifo_push(&atom_queue, next);
-                fifo_push(&parent_queue, local_idx);
+                fifo_push(&parent_queue, cur);
             }
         }
 
@@ -5609,7 +5608,7 @@ static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, con
     md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
 }
 
-void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, double radius, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state, double radius, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
     ASSERT(sys);
     
@@ -5636,10 +5635,10 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = temp_arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
-            md_coord_stream_t stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count);
-            md_spatial_acc_init(&acc, &stream, cutoff, &sys->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_coord_stream_t stream = md_coord_stream_from_soa(state->x, state->y, state->z, viable_indices, viable_count);
+            md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
-            md_coord_stream_t ext_stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices);
+            md_coord_stream_t ext_stream = md_coord_stream_from_soa(state->x, state->y, state->z, indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
@@ -8627,15 +8626,15 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
     return false;
 }
 
-bool md_util_system_pbc(md_system_t* sys) {
-    ASSERT(sys);
+bool md_util_system_pbc(md_system_state_t* state) {
+    ASSERT(state);
 
-    if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
+    if (md_unitcell_is_orthorhombic(&state->unitcell)) {
         vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, &sys->unitcell);
-        pbc_ortho(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, ext);
-    } else if (md_unitcell_is_triclinic(&sys->unitcell)) {
-		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unitcell);
+        md_unitcell_diag_extract_float(ext.elem, &state->unitcell);
+        pbc_ortho(state->x, state->y, state->z, 0, state->num_atoms, ext);
+    } else if (md_unitcell_is_triclinic(&state->unitcell)) {
+		pbc_triclinic(state->x, state->y, state->z, 0, state->num_atoms, &state->unitcell);
     }
 
     return true;
@@ -8649,13 +8648,14 @@ static inline void unwrap_atom_triclinic_vec4(vec4_t* pos, const vec4_t* ref, co
     deperiodize_triclinic(pos->elem, ref->elem, A->elem);
 }
 
-static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
+static bool unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
     ASSERT(bond);
     ASSERT(cell);
-    ASSERT(alloc);
+
+    md_temp_scope_t temp = md_temp_begin();
 
     if (count == 0) return true;
 
@@ -8663,23 +8663,13 @@ static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices
         MD_LOG_ERROR("Missing bond connectivity");
         return false;
     }
+
     const bool is_ortho = md_unitcell_is_orthorhombic(cell);
     const bool is_triclinic = md_unitcell_is_triclinic(cell);
 
     if (!is_ortho && !is_triclinic) {
         // Nothing to unwrap against
         return true;
-    }
-
-    const size_t atom_count = bond->conn.offset_count - 1;
-    uint64_t* visited = make_bitfield(atom_count, alloc);
-    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
-    fifo_t queue = fifo_create(256, alloc);
-
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            bitfield_set_bit(membership, indices[i]);
-        }
     }
 
     vec4_t ext = {0};
@@ -8692,46 +8682,16 @@ static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices
     }
 
     for (size_t i = 0; i < count; ++i) {
-        const int seed = indices ? indices[i] : (int)i;
-        if (bitfield_test_bit(visited, seed)) continue;
-
-        bitfield_set_bit(visited, seed);
-        fifo_clear(&queue);
-        fifo_push(&queue, seed);
-
-        while (!fifo_empty(&queue)) {
-            const int cur = fifo_pop(&queue);
-            const vec4_t ref = { x[cur], y[cur], z[cur], 0 };
-            md_bond_iter_t it = md_bond_iter(bond, cur);
-            while (md_bond_iter_has_next(&it)) {
-                const int next = md_bond_iter_atom_index(&it);
-                md_bond_iter_next(&it);
-
-                if (indices) {
-                    if (!bitfield_test_bit(membership, next)) continue;
-                } else if ((size_t)next >= count) {
-                    continue;
-                }
-
-                if (bitfield_test_bit(visited, next)) continue;
-
-                vec4_t pos = { x[next], y[next], z[next], 0 };
-                if (is_ortho) {
-                    unwrap_atom_ortho_vec4(&pos, &ref, ext);
-                } else {
-                    unwrap_atom_triclinic_vec4(&pos, &ref, &A);
-                }
-                x[next] = pos.x;
-                y[next] = pos.y;
-                z[next] = pos.z;
-
-                bitfield_set_bit(visited, next);
-                fifo_push(&queue, next);
-            }
+        const int idx = indices ? indices[i] : (int)i;
+        
+        if (is_ortho) {
+            unwrap_atom_ortho_vec4(&pos, &ref, ext);
+        } else {
+            unwrap_atom_triclinic_vec4(&pos, &ref, &A);
         }
     }
 
-    fifo_free(&queue);
+	md_temp_end(temp);
     return true;
 }
 
@@ -8816,92 +8776,6 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
     return true;
 }
 
-bool md_util_unwrap_structure(float* x, float* y, float* z, const md_structure_t* structure, const md_unitcell_t* cell) {
-    if (!x) {
-        MD_LOG_ERROR("Missing required input: in_out_x");
-        return false;
-    }
-
-    if (!y) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!z) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!structure) {
-        MD_LOG_ERROR("Missing structure");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
-
-    if (!is_ortho && !is_triclinic) {
-        return true;
-    }
-
-
-    // atom_idx[0] is the root, parent_idx[0] is expected to be -1
-
-    if (is_ortho) {
-        vec4_t ext = {0};
-        md_unitcell_diag_extract_float(ext.elem, cell);
-
-        for (size_t i = 1; i < structure->count; ++i) {
-            const int32_t cur_atom = structure->atom_idx[i];
-            const int32_t par_local = structure->parent_idx[i];
-
-            ASSERT(par_local >= 0);
-            ASSERT((size_t)par_local < i);
-
-            const int32_t ref_atom = structure->atom_idx[par_local];
-
-            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
-            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
-
-            unwrap_atom_ortho_vec4(&pos, &ref, ext);
-
-            x[cur_atom] = pos.x;
-            y[cur_atom] = pos.y;
-            z[cur_atom] = pos.z;
-        }
-    } else {
-        mat3_t A = {0};
-        md_unitcell_A_extract_float(A.elem, cell);
-
-        for (size_t i = 1; i < structure->count; ++i) {
-            const int32_t cur_atom = structure->atom_idx[i];
-            const int32_t par_local = structure->parent_idx[i];
-
-            ASSERT(par_local >= 0);
-            ASSERT((size_t)par_local < i);
-
-            const int32_t ref_atom = structure->atom_idx[par_local];
-
-            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
-            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
-
-            unwrap_atom_triclinic_vec4(&pos, &ref, &A);
-
-            x[cur_atom] = pos.x;
-            y[cur_atom] = pos.y;
-            z[cur_atom] = pos.z;
-        }
-    }
-
-    return true;
-}
-
 bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
     if (!x) {
         MD_LOG_ERROR("Missing required input: in_out_x");
@@ -8958,13 +8832,71 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, con
     return result;
 }
 
-void md_util_system_unwrap_structures(md_system_t* sys) {
+bool md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure) {
+    ASSERT(state);
+    ASSERT(structure);
+
+    if (structure->count == 0) {
+        return true;
+    }
+
+    const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
+    const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
+    if (!is_ortho && !is_triclinic) {
+        // Nothing to unwrap against
+        return true;
+    }
+
+    float ext[3] = { 0 };
+	float half_ext[3] = { 0 };
+    float box[3][3] = { 0 };
+	float half_diag[3] = { 0 };
+
+    if (is_ortho) {
+        md_unitcell_diag_extract_float(ext, &state->unitcell);
+		half_ext[0] = ext[0] * 0.5f;
+		half_ext[1] = ext[1] * 0.5f;
+		half_ext[2] = ext[2] * 0.5f;
+    } else {
+        md_unitcell_A_extract_float(&box[0][0], &state->unitcell);
+		half_diag[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
+    }
+
+    // md_structure_data_t stores each structure in BFS order, so a single forward pass places every
+    // atom after the one it was reached from. No queue, no visited set and no bond lookups: the
+    // traversal was already computed by md_util_system_infer_structures.
+    // The seed is its own parent, so it deperiodizes against itself and stays put - no branch.
+    for (size_t i = 0; i < structure->count; ++i) {
+        const int32_t a = structure->atom_idx[i];
+        const int32_t p = structure->parent_idx[i];
+
+        float x[3] = { state->x[a], state->y[a], state->z[a] };
+        const float r[3] = { state->x[p], state->y[p], state->z[p] };
+		float dx[3] = { x[0] - r[0], x[1] - r[1], x[2] - r[2] };
+
+        if (is_ortho) {
+            min_image_ortho(dx, ext, half_ext);
+        } else {
+            minimum_image_triclinic(dx, box);
+        }
+
+        state->x[a] = x[0];
+        state->y[a] = x[1];
+        state->z[a] = x[2];
+    }
+
+    return true;
+}
+
+void md_util_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
+    ASSERT(state);
     ASSERT(sys);
 
     for (size_t i = 0; i < sys->structure.count; ++i) {
         md_structure_t structure = {0};
-        md_structure_extract(&structure, &sys->structure, i);
-        md_util_unwrap_structure(sys->atom.x, sys->atom.y, sys->atom.z, &structure, &sys->unitcell);
+        if (md_structure_extract(&structure, &sys->structure, i)) {
+            md_util_unwrap_structure(state, &structure, &state->unitcell);
+        }
     }
 }
 
@@ -9292,7 +9224,7 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) {
+bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags) {
     ASSERT(sys);
 
     if (sys->atom.count == 0) return false;
@@ -9315,11 +9247,11 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
 
     if (cg) {
-        flags &= ~MD_UTIL_POSTPROCESS_BOND_BIT;
-        flags &= ~MD_UTIL_POSTPROCESS_HBOND_BIT;
+        flags &= ~MD_UTIL_INFER_BOND_BIT;
+        flags &= ~MD_UTIL_INFER_HBOND_BIT;
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_COLOR_BIT) {
+    if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
             for (size_t i = 1; i < sys->atom.type.count; ++i) {
                 uint32_t color = sys->atom.type.color[i];
@@ -9350,13 +9282,13 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
         MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
    
-    if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
-        if (sys->bond.count == 0) {
-            md_util_system_infer_covalent_bonds(sys);
-        }
+    if (flags & MD_UTIL_INFER_BOND_BIT) {
+        // Setting the bit means "derive this", unconditionally. A format which supplies its own
+        // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
+        md_util_system_infer_covalent_bonds(sys, state);
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
+    if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
         if (sys->bond.count) {
             md_util_system_infer_structures(sys);
             md_util_system_infer_rings(sys);
@@ -9364,27 +9296,34 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
     
 #if 0
-    if (flags & MD_UTIL_POSTPROCESS_ORDER_BIT) {
+    if (flags & MD_UTIL_INFER_ORDER_BIT) {
         compute_covalent_bond_order(&sys->bond, &sys->atom, &sys->ring);
     }
 #endif
 
-    if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
+    if (flags & MD_UTIL_INFER_INSTANCE_BIT) {
+        // NOT unconditional, unlike the other bits. A loader that had auth_asym_ids in scope
+        // derived better entities than this call can: md_util_system_infer_entity_and_instance(sys,
+        // NULL) has no labels to work from and would replace real chain identity with a guess.
+        // Overwriting here destroys information that cannot be recovered from the system alone.
         if (sys->instance.count == 0 || sys->entity.count == 0) {
             md_util_system_infer_entity_and_instance(sys, NULL);
         }
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
+    if (flags & MD_UTIL_INFER_HBOND_BIT) {
 #if 0
         if (sys->atom.count > 0 && sys->bond.count > 0) {
             md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
-            md_util_hydrogen_bond_infer(&sys->hydrogen_bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, 3.0, 150.0);
+            // Candidates above are derived from bonds and elements; the pairs below need geometry.
+            if (md_system_state_has_coords(state)) {
+                md_util_hydrogen_bond_infer(&sys->hydrogen_bond, state->x, state->y, state->z, &state->unitcell, 3.0, 150.0);
+            }
         }
 #endif
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
+    if (flags & MD_UTIL_INFER_BACKBONE_BIT) {
         if (sys->instance.count && sys->atom.type_idx) {
             // Compute backbone data
             // 
@@ -9454,8 +9393,12 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
                 md_array_resize(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, alloc);
 
                 if (sys->protein_backbone.segment.count > 0) {
-                    md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
-                    md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
+                    // Backbone identification above is topological; angles and secondary structure
+                    // are geometric and are only valid for the state they were computed from.
+                    if (md_system_state_has_coords(state)) {
+                        md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
+                        md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
+                    }
                     md_util_backbone_ramachandran_classify(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, sys);
                 }
             }
@@ -9523,12 +9466,19 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
 
 #if 0
-    if ((flags & MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT) && 
-        (sys->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
+    if ((flags & MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT) && 
+        (state->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
     {
         md_util_system_unwrap(sys);
     }
 #endif
+
+    // Record the state the topology above was inferred from. Written here, as part of performing
+    // the inference, so it cannot disagree with what it produced.
+    if (state != &sys->reference) {
+        sys->reference.alloc = sys->alloc;
+        md_system_state_copy(&sys->reference, state);
+    }
 
     md_temp_end(temp_scope);
     return true;

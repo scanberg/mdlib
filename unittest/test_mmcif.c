@@ -12,7 +12,8 @@ UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, path);
+    md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
     EXPECT_TRUE(result);
 
     if (result) {
@@ -24,9 +25,9 @@ UTEST(mmcif, 1fez) {
         //EXPECT_EQ(1, mol.atom.resid[0]);
         //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
-        EXPECT_NEAR(52.489, sys.atom.x[0], 0.001);
-        EXPECT_NEAR(21.292, sys.atom.y[0], 0.001);
-        EXPECT_NEAR(84.339, sys.atom.z[0], 0.001);
+        EXPECT_NEAR(52.489, sys_state.x[0], 0.001);
+        EXPECT_NEAR(21.292, sys_state.y[0], 0.001);
+        EXPECT_NEAR(84.339, sys_state.z[0], 0.001);
     }
 
     md_system_free(&sys);
@@ -36,9 +37,10 @@ UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, path);
+    md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
     EXPECT_TRUE(result);
-    //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
+    //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_INFER_ALL);
 
     if (result) {
         EXPECT_EQ(5382, sys.atom.count);
@@ -48,9 +50,9 @@ UTEST(mmcif, 2or2) {
         //EXPECT_STREQ("ALA", sys.atom.resname[0].buf);
         //EXPECT_EQ(1, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
-        EXPECT_NEAR(58.157, sys.atom.x[0], 0.001);
-        EXPECT_NEAR(49.822, sys.atom.y[0], 0.001);
-        EXPECT_NEAR(80.569, sys.atom.z[0], 0.001);
+        EXPECT_NEAR(58.157, sys_state.x[0], 0.001);
+        EXPECT_NEAR(49.822, sys_state.y[0], 0.001);
+        EXPECT_NEAR(80.569, sys_state.z[0], 0.001);
     }
 
     md_system_free(&sys);
@@ -60,9 +62,10 @@ UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, path);
+    md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
     EXPECT_TRUE(result);
-    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_ALL);
+    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
     if (result) {
         EXPECT_EQ(14229, sys.atom.count);
@@ -72,9 +75,9 @@ UTEST(mmcif, 8g7u) {
         //EXPECT_STREQ("PHE", sys.atom.resname[0].buf);
         //EXPECT_EQ(241, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
-        EXPECT_NEAR(77.862,  sys.atom.x[0], 0.001);
-        EXPECT_NEAR(105.453, sys.atom.y[0], 0.001);
-        EXPECT_NEAR(80.951,  sys.atom.z[0], 0.001);
+        EXPECT_NEAR(77.862,  sys_state.x[0], 0.001);
+        EXPECT_NEAR(105.453, sys_state.y[0], 0.001);
+        EXPECT_NEAR(80.951,  sys_state.z[0], 0.001);
     }
 
     md_system_free(&sys);
@@ -335,7 +338,8 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t sys = { .alloc = alloc };
-    bool result = md_mmcif_system_init_from_file(&sys, path);
+    md_system_state_t sys_state = { .alloc = alloc };
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
@@ -346,14 +350,14 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;
     for (int64_t i = 0; i < sys.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
-        EXPECT_FALSE(isnan(sys.atom.x[i]));
-        EXPECT_FALSE(isnan(sys.atom.y[i]));
-        EXPECT_FALSE(isnan(sys.atom.z[i]));
-        EXPECT_FALSE(isinf(sys.atom.x[i]));
-        EXPECT_FALSE(isinf(sys.atom.y[i]));
-        EXPECT_FALSE(isinf(sys.atom.z[i]));
+        EXPECT_FALSE(isnan(sys_state.x[i]));
+        EXPECT_FALSE(isnan(sys_state.y[i]));
+        EXPECT_FALSE(isnan(sys_state.z[i]));
+        EXPECT_FALSE(isinf(sys_state.x[i]));
+        EXPECT_FALSE(isinf(sys_state.y[i]));
+        EXPECT_FALSE(isinf(sys_state.z[i]));
         
-        if (sys.atom.x[i] != 0.0f || sys.atom.y[i] != 0.0f || sys.atom.z[i] != 0.0f) {
+        if (sys_state.x[i] != 0.0f || sys_state.y[i] != 0.0f || sys_state.z[i] != 0.0f) {
             has_nonzero_coord = true;
         }
     }
@@ -368,7 +372,8 @@ UTEST(mmcif, nonexistent_file) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t sys = { .alloc = alloc };
-    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, path));
+    md_system_state_t sys_state = { .alloc = alloc };
+    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, &sys_state, path));
     
     // Should be safe to free even when init failed
     md_system_free(&sys);

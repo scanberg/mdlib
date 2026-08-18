@@ -10,6 +10,9 @@
 
 struct md_allocator_i;
 struct md_system_t;
+// Coordinates are handed back through a state; only passed by pointer here.
+typedef struct md_system_state_t md_system_state_t;
+
 struct md_system_loader_i;
 
 typedef struct md_vlx_t md_vlx_t;
@@ -349,8 +352,8 @@ const md_vlx_density_property_t* md_vlx_density_property_by_index(const md_vlx_t
 const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* vlx, uint64_t key);
 
 // SYSTEM
-bool md_vlx_system_init_from_data(struct md_system_t* sys, const md_vlx_t* vlx);
-bool md_vlx_system_init_from_file(struct md_system_t* sys, str_t filename);
+bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx);
+bool md_vlx_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename);
 bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, str_t filename);
 
 #ifdef __cplusplus

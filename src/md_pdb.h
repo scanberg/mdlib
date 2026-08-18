@@ -11,6 +11,9 @@ extern "C" {
 #endif
 
 struct md_system_t;
+// Coordinates are handed back through a state; only passed by pointer here.
+typedef struct md_system_state_t md_system_state_t;
+
 struct md_allocator_i;
 struct md_system_loader_i;
 
@@ -174,12 +177,12 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
-bool md_pdb_system_init_from_data(struct md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options);
-bool md_pdb_system_init_from_file(struct md_system_t* sys, str_t filename, md_pdb_options_t options);
-bool md_pdb_system_init_from_str (struct md_system_t* sys, str_t str,      md_pdb_options_t options);
+bool md_pdb_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options);
+bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options);
+bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,      md_pdb_options_t options);
 
 // EXPORT
-bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num);
+bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);
 
 // TRAJECTORY
 //bool md_pdb_trajectory_attach_from_file(struct md_system_t* sys, str_t filename);

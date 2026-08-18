@@ -279,7 +279,7 @@ UTEST(xtc, trajectory_i) {
     md_trajectory_frame_header_t header;
 
     for (int64_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
     }
 
     md_temp_end(temp);

@@ -701,7 +701,7 @@ static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, 
     return result;
 }
 
-static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool trr_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
     trr_reader_t* reader = (trr_reader_t*)inst;
@@ -745,6 +745,26 @@ static void trr_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     }
 
     MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
+// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
+static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
+    md_trajectory_frame_header_t local_header = {0};
+    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!trr_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = hdr->unitcell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = hdr->num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool trr_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {

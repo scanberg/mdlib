@@ -8,6 +8,9 @@
 struct md_allocator_i;
 struct md_trajectory_i;
 struct md_system_t;
+// Coordinates are handed back through a state; only passed by pointer here.
+typedef struct md_system_state_t md_system_state_t;
+
 
 //All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
 
@@ -134,9 +137,9 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
-bool md_lammps_system_init_from_data(struct md_system_t* sys, const md_lammps_data_t* lammps_data);
-bool md_lammps_system_init_from_file(struct md_system_t* sys, str_t filename, const char* atom_format);
-bool md_lammps_system_init_from_str (struct md_system_t* sys, str_t str,	  const char* atom_format);
+bool md_lammps_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* lammps_data);
+bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format);
+bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,	  const char* atom_format);
 
 // TRAJECTORY
 bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);

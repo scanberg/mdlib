@@ -458,7 +458,7 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, md_pdb_options_t options) {
+bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
     ASSERT(data);
 
@@ -491,9 +491,9 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
-    md_array_ensure(sys->atom.x,        capacity, sys->alloc);
-    md_array_ensure(sys->atom.y,        capacity, sys->alloc);
-    md_array_ensure(sys->atom.z,        capacity, sys->alloc);
+    md_array_ensure(state->x,           capacity, state->alloc);
+    md_array_ensure(state->y,           capacity, state->alloc);
+    md_array_ensure(state->z,           capacity, state->alloc);
     md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
     md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
@@ -559,9 +559,9 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
 
         sys->atom.count += 1;
         md_array_push_no_grow(atom_name, atom_id);
-        md_array_push_no_grow(sys->atom.x, x);
-        md_array_push_no_grow(sys->atom.y, y);
-        md_array_push_no_grow(sys->atom.z, z);
+        md_array_push_no_grow(state->x, x);
+        md_array_push_no_grow(state->y, y);
+        md_array_push_no_grow(state->z, z);
         md_array_push_no_grow(sys->atom.flags, flags);
         md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
 
@@ -578,16 +578,16 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
             // This is a special case:
             // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
         } else {
-            sys->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+            state->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
         }
     };
     
-    sys->initial_unitcell = sys->unitcell;
-
     if (num_unassigned_atom_types > 0) {
         md_util_system_infer_atom_types(sys, atom_name);
     }
-	md_util_system_infer_covalent_bonds(sys);
+    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving comp_flags with it.
+    md_util_system_infer_covalent_bonds(sys, state);
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
 
@@ -657,23 +657,24 @@ bool md_pdb_system_init_from_data(md_system_t* sys, const md_pdb_data_t* data, m
     */
 
     result = true;
+    state->num_atoms = sys->atom.count;
     md_temp_end(temp_scope);
     return result;
 }
 
-bool md_pdb_system_init_from_str(md_system_t* sys, str_t str, md_pdb_options_t options) {
+bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_pdb_options_t options) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_pdb_data_t data = {0};
     md_pdb_data_parse_str(&data, str, temp_arena);
-    bool success = md_pdb_system_init_from_data(sys, &data, options);
+    bool success = md_pdb_system_init_from_data(sys, state, &data, options);
     
     md_temp_end(temp_scope);
     return success;
 }
 
-bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_options_t options) {
+bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
         MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
@@ -688,7 +689,7 @@ bool md_pdb_system_init_from_file(md_system_t* sys, str_t filename, md_pdb_optio
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
     
     md_pdb_data_t data = {0};
-    bool success = pdb_parse(&data, &reader, temp_arena, false) && md_pdb_system_init_from_data(sys, &data, options);
+    bool success = pdb_parse(&data, &reader, temp_arena, false) && md_pdb_system_init_from_data(sys, state, &data, options);
 
     // If the file contained multiple models, interpret as a trajectory and attach one.
     if (success && data.num_models > 1) {
@@ -717,7 +718,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return false;
 }
 
-static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool pdb_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
     pdb_reader_t* reader = (pdb_reader_t*)inst;
@@ -760,6 +761,26 @@ static void pdb_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     }
 
     MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
+// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
+static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
+    md_trajectory_frame_header_t local_header = {0};
+    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!pdb_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = hdr->unitcell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = hdr->num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool pdb_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
@@ -1018,7 +1039,7 @@ done:
     return traj;
 }
 
-bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
+bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num) {
     if (model_num > 0) {
         md_file_printf(file, "MODEL     %4d\n", model_num);
     }
@@ -1080,13 +1101,13 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
             chain_id[0],        // chain ID
             res_seq_str,        // residue sequence number
             ' ',                // iCode
-            x[idx],             // x coordinate
-            y[idx],             // y coordinate
-            z[idx],             // z coordinate
+            state->x[idx],      // x coordinate
+            state->y[idx],      // y coordinate
+            state->z[idx],      // z coordinate
             1.0,                // occupancy
             0.0,                // bfactor
             element,            // element symbol
-            ""                 // charge
+            ""                  // charge
         );
 
 		if (prev_inst_idx != INT_MIN && inst_idx != prev_inst_idx) {

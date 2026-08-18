@@ -533,7 +533,7 @@ static bool dcd_get_header(struct md_trajectory_o* inst, md_trajectory_header_t*
     return true;
 }
 
-static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_hdr, float* x, float* y, float* z) {
+static bool dcd_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_hdr, float* x, float* y, float* z) {
     ASSERT(inst);
     dcd_reader_t* reader = (dcd_reader_t*)inst;
     ASSERT(reader->magic == MD_DCD_TRAJ_READER_MAGIC);
@@ -611,6 +611,26 @@ static void dcd_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     }
 
     MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
+// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
+static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
+    md_trajectory_frame_header_t local_header = {0};
+    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!dcd_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = hdr->unitcell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = hdr->num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool dcd_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
@@ -796,7 +816,7 @@ bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t f
     if (!traj) return false;
 	dcd_t* dcd = (dcd_t*)traj->inst;
 	if (dcd && dcd->magic == MD_DCD_TRAJ_MAGIC) {
-        dcd->initial_unitcell = sys->initial_unitcell;
+        dcd->initial_unitcell = sys->reference.unitcell;
     }
     md_system_attach_trajectory(sys, traj);
     return true;

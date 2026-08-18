@@ -17,6 +17,10 @@ ENUM_FLAGS(md_trajectory_flags_t)
 struct md_trajectory_o;
 struct md_trajectory_reader_o;
 
+// Coordinates are handed over as a state so that the cell always travels with the positions it
+// belongs to. Only passed through here, so a forward declaration is enough.
+typedef struct md_system_state_t md_system_state_t;
+
 typedef struct md_trajectory_header_t {
 	size_t   num_frames;
 	size_t   num_atoms;
@@ -50,7 +54,7 @@ typedef struct md_trajectory_reader_i {
 	struct md_trajectory_reader_o* inst; // Opaque reader state
 	void (*free)(struct md_trajectory_reader_i* self);
 
-	bool (*load_frame)(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+	bool (*load_frame)(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* header, md_system_state_t* state);
 } md_trajectory_reader_i;
 
 typedef struct md_trajectory_i {
@@ -132,19 +136,23 @@ static inline void md_trajectory_reader_free(md_trajectory_reader_i* reader) {
 	}
 }
 
-static inline bool md_trajectory_reader_load_frame(md_trajectory_reader_i reader, int64_t idx, md_trajectory_frame_header_t* frame_header, float* x, float* y, float* z) {
+// Loads a frame into the supplied state. Both frame_header and state are optional: pass NULL for
+// state to read only the metadata, or NULL for frame_header if the timestamp and index are not
+// needed. The state receives the cell belonging to the coordinates it receives, so the two cannot
+// come from different frames.
+static inline bool md_trajectory_reader_load_frame(md_trajectory_reader_i reader, int64_t idx, md_trajectory_frame_header_t* frame_header, md_system_state_t* state) {
 	if (reader.inst && reader.load_frame) {
-		return reader.load_frame(reader.inst, idx, frame_header, x, y, z);
+		return reader.load_frame(reader.inst, idx, frame_header, state);
 	}
 	return false;
 }
 
-static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t idx, md_trajectory_frame_header_t* frame_header, float* x, float* y, float* z) {
+static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t idx, md_trajectory_frame_header_t* frame_header, md_system_state_t* state) {
 	bool result = false;
 	if (traj && traj->inst && traj->init_reader) {
 		md_trajectory_reader_i reader = {0};
 		if (traj->init_reader(&reader, traj->inst)) {
-			result = md_trajectory_reader_load_frame(reader, idx, frame_header, x, y, z);
+			result = md_trajectory_reader_load_frame(reader, idx, frame_header, state);
 			md_trajectory_reader_free(&reader);
 		}
 	}

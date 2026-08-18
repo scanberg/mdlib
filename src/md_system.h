@@ -22,11 +22,8 @@ typedef struct md_atom_type_data_t {
 typedef struct md_atom_data_t {
     size_t count;
 
-    // Coordinates
-    float* x;
-    float* y;
-    float* z;
-
+    // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
+    // are is not.
     md_atom_type_idx_t* type_idx;
     md_flags_t* flags;
 
@@ -141,6 +138,17 @@ typedef struct md_structure_t {
 
 // This is the contiguous storage of all structures, the offsets field is used to index into the atom_idx and parent_idx arrays for each structure
 // From this individual structures (md_structure_t) can be extracted
+//
+// Both arrays are indexed the same way and both hold GLOBAL atom indices:
+//   atom_idx[i]   - the atom
+//   parent_idx[i] - the atom it was reached from during the traversal
+// The seed of each structure is its own parent, so a root is parent_idx[i] == atom_idx[i] and
+// consumers need no sentinel branch.
+//
+// INVARIANT - load bearing, md_util_unwrap_structure depends on it:
+//   Within a structure, atoms are stored in BFS order from the seed, so every atom appears after
+//   the one it was reached from. A single forward pass therefore always sees a placed parent.
+//   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx to match.
 typedef struct md_structure_data_t {
     size_t count;
     uint32_t* offset; // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
@@ -174,11 +182,34 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_pair_t* bonds;
 } md_hydrogen_bond_data_t;
 
+// A snapshot of the geometric state of a system: where the atoms are and what box they are in.
+//
+// This holds exactly the fields which share one interpolation contract - same type in and out,
+// periodic boundary aware, handled as a unit by md_util_interpolate_*. Quantities which vary over
+// time but do not obey that contract (per atom charge, backbone angles, secondary structure) do
+// not belong here; they interpolate differently and belong with whoever produces them.
+//
+// Two presence bits, both self describing:
+//   num_atoms == 0        -> no coordinates
+//   unitcell.flags == 0   -> no cell
+// num_atoms is used rather than testing x != NULL because md_array_ensure allocates capacity
+// without setting size, so a non NULL x does not imply the coordinates were populated.
+// Ownership: alloc non-NULL means this state owns x/y/z and must be freed with
+// md_system_state_free. alloc NULL means the state is a non owning view over coordinates somebody
+// else owns - a scratch arena during script evaluation, a GPU mapped buffer during interpolation.
+// Both forms are load bearing, and this is the only thing that distinguishes them.
+//
+// Set alloc before handing the state to a producer, exactly as md_system_t requires sys->alloc to
+// be set before loading. The two then read symmetrically at the call site, and the state's lifetime
+// is free to differ from the system's - a temp allocator for the state, a persistent one for the
+// system, is a legitimate and useful combination.
 typedef struct md_system_state_t {
-    float* atom_x;
-    float* atom_y;
-    float* atom_z;
+    size_t num_atoms;
+    float* x;
+    float* y;
+    float* z;
     md_unitcell_t unitcell;
+    md_allocator_i* alloc;
 } md_system_state_t;
 
 // This represents the persistent portion (topology) of a system which does not change over time, such as the atom types, bonds, components, etc.
@@ -187,8 +218,14 @@ typedef struct md_system_t {
     md_allocator_i*             alloc;
     md_trajectory_i*            trajectory;
 
-    md_unitcell_t               initial_unitcell;
-    md_unitcell_t               unitcell; // compatibility alias for consumers still using sys->unitcell
+    // The state from which the derived topology below (bonds, rings, structures, backbones) was
+    // inferred. Written by md_util_system_infer as part of performing the inference, so it is by
+    // construction the input which produced that topology and cannot go stale.
+    //
+    // RULE: only inference and load time completion read this. Every other operation takes the
+    // state it works on as an explicit parameter. Reaching for sys->reference to avoid threading
+    // a state through is how the previous coupling arose.
+    md_system_state_t           reference;
 
     md_atom_data_t              atom;
     md_component_data_t         component;
@@ -328,10 +365,10 @@ static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
     return atom_data->count;
 }
 
-static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    if (atom_idx < atom_data->count) {
-        return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
+static inline vec3_t md_state_coord(const md_system_state_t* state, size_t atom_idx) {
+    ASSERT(state);
+    if (atom_idx < state->num_atoms) {
+        return vec3_set(state->x[atom_idx], state->y[atom_idx], state->z[atom_idx]);
     }
     return vec3_zero();
 }
@@ -1029,6 +1066,31 @@ bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);
 
 // Attach helpers: set or create-and-attach trajectories to a system.
 void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj);
+
+// STATE
+// A state owns its coordinate arrays and must be freed with the same allocator it was created with.
+
+// True if the state carries coordinates. A state may legitimately carry a cell but no coordinates
+// (a topology only format such as PSF), or coordinates but no cell (xyz without a cell).
+static inline bool md_system_state_has_coords(const md_system_state_t* state) {
+    return state && state->num_atoms > 0 && state->x && state->y && state->z;
+}
+
+static inline bool md_system_state_has_unitcell(const md_system_state_t* state) {
+    return state && state->unitcell.flags != 0;
+}
+
+// Allocate coordinate storage for num_atoms using state->alloc, which must be set.
+// Existing storage is freed first. Returns false if the state has no allocator.
+bool md_system_state_init(md_system_state_t* state, size_t num_atoms);
+
+// Free the coordinate storage and zero the state, preserving the allocator so the state can be
+// reused. A view (alloc == NULL) is simply zeroed. Takes no allocator argument by design: the state
+// records the one it was allocated with, so it cannot be freed with the wrong one.
+void md_system_state_free(md_system_state_t* state);
+
+// Copy src into dst, reallocating dst as needed. dst->alloc must be set.
+bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src);
 
 #ifdef __cplusplus
 }

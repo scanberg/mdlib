@@ -25,7 +25,7 @@ UTEST(trr, trajectory_i) {
     md_trajectory_frame_header_t header;
 
     for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
     }
 
     md_temp_end(temp);
@@ -47,9 +47,9 @@ UTEST(trr, trajectory_reader_i) {
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
     md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(6495, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
     EXPECT_EQ(6495, header.num_atoms);
 
     md_trajectory_reader_free(&reader);
@@ -76,14 +76,14 @@ UTEST(trr, frame_boundary_conditions) {
     md_trajectory_frame_header_t header;
 
     // Test negative frame index
-    EXPECT_FALSE(md_trajectory_load_frame(traj, -1, &header, x, y, z));
+    EXPECT_FALSE(md_trajectory_load_frame(traj, -1, &header, &(md_system_state_t){0, x, y, z, {0}}));
 
     // Test frame index out of bounds
-    EXPECT_FALSE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj), &header, x, y, z));
+    EXPECT_FALSE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj), &header, &(md_system_state_t){0, x, y, z, {0}}));
 
     // Test valid boundary frames
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
-    EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
 
     md_temp_end(temp);
     md_trajectory_free(traj);

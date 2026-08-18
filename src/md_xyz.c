@@ -713,12 +713,17 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
-bool md_xyz_system_init_from_data(md_system_t* sys, const md_xyz_data_t* data, md_xyz_options_t options) {
+bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data, md_xyz_options_t options) {
     ASSERT(sys);
     ASSERT(data);
 
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+
+    if (!state || !state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
         return false;
     }
 
@@ -737,9 +742,9 @@ bool md_xyz_system_init_from_data(md_system_t* sys, const md_xyz_data_t* data, m
     const size_t num_atoms = end_coord_index - beg_coord_index;
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-    md_array_ensure(sys->atom.x, reserve_size, sys->alloc);
-    md_array_ensure(sys->atom.y, reserve_size, sys->alloc);
-    md_array_ensure(sys->atom.z, reserve_size, sys->alloc);
+    md_array_ensure(state->x, reserve_size, state->alloc);
+    md_array_ensure(state->y, reserve_size, state->alloc);
+    md_array_ensure(state->z, reserve_size, state->alloc);
     md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
 
     // Setup atom types including unknown type
@@ -757,19 +762,20 @@ bool md_xyz_system_init_from_data(md_system_t* sys, const md_xyz_data_t* data, m
         md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, sys->alloc);
 
         sys->atom.count += 1;
-        md_array_push(sys->atom.x, x, sys->alloc);
-        md_array_push(sys->atom.y, y, sys->alloc);
-        md_array_push(sys->atom.z, z, sys->alloc);
+        md_array_push(state->x, x, sys->alloc);
+        md_array_push(state->y, y, sys->alloc);
+        md_array_push(state->z, z, sys->alloc);
         md_array_push(sys->atom.flags, 0, sys->alloc);
         md_array_push(sys->atom.type_idx, atom_type_idx, sys->alloc);
     }
 
-    sys->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
+    state->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
+    state->num_atoms = sys->atom.count;
 
     return true;
 }
 
-bool md_xyz_system_init_from_str(md_system_t* sys, str_t str, md_xyz_options_t options) {
+bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_xyz_options_t options) {
     ASSERT(sys);
     
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
@@ -777,13 +783,13 @@ bool md_xyz_system_init_from_str(md_system_t* sys, str_t str, md_xyz_options_t o
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 
     md_xyz_data_t data = {0};
-    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, &data, options);
+    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, state, &data, options);
 
     md_temp_end(temp_scope);
     return result;
 }
 
-bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_options_t options) {
+bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_xyz_options_t options) {
     ASSERT(sys);
     
     md_file_t file = {0};
@@ -800,7 +806,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, str_t filename, md_xyz_optio
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
     
     md_xyz_data_t data = {0};
-    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, &data, options);
+    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, state, &data, options);
 
     // If the file contained multiple models, interpret as a trajectory and attach one.
     if (result && data.num_models > 1) {
@@ -830,7 +836,7 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return false;
 }
 
-static bool xyz_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool xyz_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
 
     xyz_reader_t* reader = (xyz_reader_t*)inst;
@@ -873,6 +879,26 @@ static void xyz_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     }
 
     MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
+// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
+static bool xyz_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
+    md_trajectory_frame_header_t local_header = {0};
+    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!xyz_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = hdr->unitcell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = hdr->num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool xyz_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {

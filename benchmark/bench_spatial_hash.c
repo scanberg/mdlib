@@ -22,15 +22,16 @@ UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     md_system_t sys = { .alloc = arena };
-    if (!md_gro_system_init_from_file(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"))) {
+    md_system_state_t sys_state = { .alloc = arena };
+    if (!md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"))) {
         fprintf(stderr, "Failed to load system for spatial acc benchmark\n");
         md_vm_arena_destroy(arena);
         return;
     }
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = arena };
-    md_spatial_acc_init(&acc, &stream, RADIUS, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, RADIUS, &sys_state.unitcell, 0);
 
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {

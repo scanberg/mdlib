@@ -66,11 +66,16 @@ static uint32_t         i_off[] = {0, 3, 8, 12, 16};
 static md_entity_idx_t i_eidx[] = {0, 1, 2, 2};
 
 md_system_t test_mol = {
-    .atom = {
-        .count = ATOM_COUNT,
+    // A hand built system still needs a reference state: it is what evaluation reads coordinates
+    // from when there is no trajectory frame.
+    .reference = {
+        .num_atoms = ATOM_COUNT,
         .x = mol_x,
         .y = mol_y,
         .z = mol_z,
+    },
+    .atom = {
+        .count = ATOM_COUNT,
         .type_idx = mol_ti,
         .type = {
             .count = ATOM_TYPE_COUNT,
@@ -109,12 +114,14 @@ UTEST_F_SETUP(script) {
     utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
     utest_fixture->amy.alloc = utest_fixture->arena;
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
-    md_util_system_postprocess(&utest_fixture->amy, MD_UTIL_POSTPROCESS_ALL);
+    md_system_state_t amy_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    md_util_system_postprocess(&utest_fixture->ala, MD_UTIL_POSTPROCESS_ALL);
+    md_system_state_t ala_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -205,6 +212,8 @@ done:
 	eval_context_t ctx = { \
 		.ir = ir, \
 		.mol = mol, \
+		.state = &(mol)->reference, \
+		.reference = &(mol)->reference, \
 		.temp_arena = &temp_arena, \
 		.temp_alloc = &temp_alloc, \
 		.alloc = &temp_alloc, \
@@ -224,6 +233,8 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_s
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
+            .state = &mol->reference,
+            .reference = &mol->reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -628,6 +639,8 @@ UTEST(script, array) {
             eval_context_t ctx = {
                 .ir = ir,
                 .mol = &test_mol,
+            .state = &test_mol.reference,
+            .reference = &test_mol.reference,
                 .temp_alloc = arena,
                 .alloc = arena,
             };
@@ -752,6 +765,8 @@ UTEST(script, array_subscript) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
+            .state = &test_mol.reference,
+            .reference = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -872,6 +887,8 @@ UTEST(script, array_subscript) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
+            .state = &test_mol.reference,
+            .reference = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -916,6 +933,8 @@ UTEST(script, dim_op) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
+            .state = &test_mol.reference,
+            .reference = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };

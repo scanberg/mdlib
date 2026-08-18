@@ -317,12 +317,14 @@ typedef struct eval_context_t {
 
     md_trajectory_frame_header_t* frame_header;
 
-    struct {
-        md_trajectory_frame_header_t* header;
-        const float* x;
-        const float* y;
-        const float* z;
-    } initial_configuration;
+    // The state being evaluated. Every coordinate and cell read goes through this, so the two can
+    // never come from different frames.
+    const md_system_state_t* state;
+
+    // The configuration the system's topology was inferred from. Replaces the old
+    // initial_configuration, which meant three different things depending on entry point:
+    // trajectory frame 0, the system's own coordinates, or whatever the caller passed.
+    const md_system_state_t* reference;
 
     // A common spatial acceleration structure which is built lazily.
     // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
@@ -5419,6 +5421,9 @@ static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const 
         .alloc = ir->arena,
         .mol = mol,
         .traj = traj,
+        // Static checking has no frame; the reference configuration is the only state available.
+        .state = &mol->reference,
+        .reference = &mol->reference,
     };
 
     ir->stage = "Static Type Checking";
@@ -5542,6 +5547,8 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
         .ir = ir,
         .mol = mol,
         .temp_alloc = temp_alloc,
+        .state = &mol->reference,
+        .reference = &mol->reference,
     };
 
     ir->stage = "Static Evaluation";
@@ -5746,7 +5753,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     // coordinate data for reading trajectory frames into
     const size_t stride = ALIGN_TO(mol->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
     const size_t coord_bytes = stride * 3 * sizeof(float);
-    float* init_coords = md_temp_alloc_array(temp, float, coord_bytes);
     float* curr_coords = md_temp_alloc_array(temp, float, coord_bytes);
     float* atom_mass   = md_temp_alloc_array(temp, float, stride);
     float* atom_radius = md_temp_alloc_array(temp, float, stride);
@@ -5770,42 +5776,31 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
     //uint64_t max_arena_pos = 0;
 
-    md_trajectory_frame_header_t init_header = { 0 };
     md_trajectory_frame_header_t curr_header = { 0 };
 
-    float* init_x = init_coords + 0 * stride;
-    float* init_y = init_coords + 1 * stride;
-    float* init_z = init_coords + 2 * stride;
 
     float* curr_x = curr_coords + 0 * stride;
     float* curr_y = curr_coords + 1 * stride;
     float* curr_z = curr_coords + 2 * stride;
 
-    // We want a mutable molecule which we can modify the atom coordinate section of
-    md_system_t mutable_mol = *mol;
-    mutable_mol.atom.x = curr_x;
-    mutable_mol.atom.y = curr_y;
-    mutable_mol.atom.z = curr_z;
+    // Per worker states. Each evaluation range owns its coordinates, which is why the whole system
+    // had to be copied before: it was the only way to get a private coordinate buffer.
+    md_system_state_t curr_state = { mol->atom.count, curr_x, curr_y, curr_z, {0} };
+
 
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
-        .mol = &mutable_mol,
+        .mol = mol,
         .traj = traj,
         .atom_mass = atom_mass,
         .atom_radius = atom_radius,
         .temp_alloc = temp_alloc,
         .alloc = temp_alloc,
         .frame_header = &curr_header,
-        .initial_configuration = {
-            .header = &init_header,
-            .x = init_x,
-            .y = init_y,
-            .z = init_z,
-        },
+        .state = &curr_state,
+        .reference = &mol->reference,
     };
 
-    // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
-    md_trajectory_reader_load_frame(traj_reader, 0, &init_header, init_x, init_y, init_z);
 
     // We evaluate each frame, one at a time
     for (uint32_t f_idx = frame_beg; f_idx < frame_end; ++f_idx) {
@@ -5813,14 +5808,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
             goto done;
         }
         
-        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &curr_header, curr_x, curr_y, curr_z);
+        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &curr_header, &curr_state);
 
         if (!result) {
             MD_LOG_ERROR("Failed to load frame during evaluation");
             goto done;
         }
 
-        MEMCPY(&mutable_mol.unitcell, &curr_header.unitcell, sizeof(md_unitcell_t));
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
@@ -6683,6 +6677,8 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_alloca
             .mol = mol,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
+            .state = &mol->reference,
+            .reference = &mol->reference,
         };
 
         if (static_check_node(node, &ctx)) {
@@ -6728,11 +6724,8 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
             .mol = mol,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .initial_configuration = {
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-            },
+            .state = &mol->reference,
+            .reference = &mol->reference,
             .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -6745,7 +6738,7 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
 }
 #endif
 
-bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* sys, const float* x, const float* y, const float* z, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
+bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* sys, const md_system_state_t* state, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
     ASSERT(sys);
     ASSERT(alloc);
@@ -6782,11 +6775,8 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
             .mol = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .initial_configuration = {
-                .x = x,
-                .y = y,
-                .z = z,
-            },
+            .state = state,
+            .reference = &sys->reference,
             .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -6837,7 +6827,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     return success;
 }
 
-bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const float* x, const float* y, const float* z, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
+bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const md_system_state_t* state, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
     ASSERT(sys);
 
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {
@@ -6894,11 +6884,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
             .mol = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .initial_configuration = {
-                .x = x,
-                .y = y,
-                .z = z,
-            },
+            .state = state,
+            .reference = &sys->reference,
             .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -7091,13 +7078,15 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     float* init_z = md_temp_alloc_array(temp, float, num_atoms);
 
     md_trajectory_frame_header_t header = { 0 };
+    md_system_state_t init_state = { num_atoms, init_x, init_y, init_z, {0} };
     if (vis_ctx->traj) {
-        md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
+        md_trajectory_load_frame(vis_ctx->traj, 0, &header, &init_state);
     } else {
-        init_x = vis_ctx->mol->atom.x;
-        init_y = vis_ctx->mol->atom.y;
-        init_z = vis_ctx->mol->atom.z;
+        init_state = vis_ctx->mol->reference;
     }
+    init_x = init_state.x;
+    init_y = init_state.y;
+    init_z = init_state.z;
 
     md_array(irange_t) ranges = 0;
     if (subidx > -1) {
@@ -7114,12 +7103,8 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
         .vis_flags = flags,
         .vis_structure = &vis->atom_mask,
         .frame_header = &header,
-        .initial_configuration = {
-            .header = &header,
-            .x = init_x,
-            .y = init_y,
-            .z = init_z
-        },
+        .state = &init_state,
+        .reference = &vis_ctx->mol->reference,
         .subscript_ranges = ranges,
     };
 
@@ -7176,13 +7161,15 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
                 float* init_z = md_temp_alloc_array(temp, float, num_atoms);
 
                 md_trajectory_frame_header_t header = { 0 };
+                md_system_state_t init_state = { num_atoms, init_x, init_y, init_z, {0} };
                 if (vis_ctx->traj) {
-                    md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
+                    md_trajectory_load_frame(vis_ctx->traj, 0, &header, &init_state);
                 } else {
-                    init_x = vis_ctx->mol->atom.x;
-                    init_y = vis_ctx->mol->atom.y;
-                    init_z = vis_ctx->mol->atom.z;
+                    init_state = vis_ctx->mol->reference;
                 }
+                init_x = init_state.x;
+                init_y = init_state.y;
+                init_z = init_state.z;
 
                 eval_context_t ctx = {
                     .ir = ir,
@@ -7194,12 +7181,8 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
                     .vis_flags = flags,
                     .vis_structure = &vis->atom_mask,
                     .frame_header = &header,
-                    .initial_configuration = {
-                        .header = &header,
-                        .x = init_x,
-                        .y = init_y,
-                        .z = init_z
-                    },
+                    .state = &init_state,
+                    .reference = &vis_ctx->mol->reference,
                     .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL
                 };
 

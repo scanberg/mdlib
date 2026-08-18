@@ -36,7 +36,7 @@ typedef struct md_coord_stream_t {
     };
 } md_coord_stream_t;
 
-static inline md_coord_stream_t md_coord_stream_create_soa(const float* x, const float* y, const float* z, const int32_t* idx, size_t count) {
+static inline md_coord_stream_t md_coord_stream_from_soa(const float* x, const float* y, const float* z, const int32_t* idx, size_t count) {
     md_coord_stream_t stream = {0};
     stream.layout = MD_COORD_STREAM_LAYOUT_SOA;
     stream.count = count;
@@ -47,7 +47,7 @@ static inline md_coord_stream_t md_coord_stream_create_soa(const float* x, const
     return stream;
 }
 
-static inline md_coord_stream_t md_coord_stream_create_aos(const float* base_xyz, size_t stride_xyz, const int32_t* idx, size_t count) {
+static inline md_coord_stream_t md_coord_stream_from_aos(const float* base_xyz, size_t stride_xyz, const int32_t* idx, size_t count) {
     md_coord_stream_t stream = {0};
     stream.layout = MD_COORD_STREAM_LAYOUT_AOS;
     stream.count = count;
