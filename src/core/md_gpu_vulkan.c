@@ -328,8 +328,12 @@ typedef struct md_vk_retire_t {
     VkBuffer       buffer;
     uint32_t       storage_slot;   /* UINT32_MAX for none */
     uint32_t       sampled_slot;   /* UINT32_MAX for none */
-    md_gpu_sync_t  waits[8];
+    /* One entry per stream that had work when the texture was destroyed.
+       Sized to the stream count rather than a fixed cap: truncating this
+       silently frees the image while a stream is still reading it. */
+    md_gpu_sync_t* waits;
     uint32_t       wait_count;
+    uint32_t       wait_capacity;   /* what md_free must be told */
 } md_vk_retire_t;
 
 /* Everything the backend asks of a device, in one place, so that a device we
@@ -428,7 +432,7 @@ static void  md_vk_stream_barrier_if_needed(md_gpu_stream_t s);
 static bool  md_vk_stream_submit(md_gpu_stream_t s);
 static uint64_t md_vk_stream_completed(md_gpu_stream_t s);
 static md_vk_block_t* md_vk_registry_find(md_gpu_device_t dev, uint64_t address);
-static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user);
+static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user, md_gpu_stream_t only);
 static bool  md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr, void** out_host);
 typedef struct md_vk_tex_t md_vk_tex_t;
 static md_gpu_device_t md_vk_tex_device(md_gpu_tex_t tex, md_vk_tex_t** out);
@@ -602,6 +606,39 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
     md_gpu_device_t dev = s->device;
     md_vk_arena_t*  a   = &s->arena;
     uint64_t need = md_vk_align_up(size, MD_VK_ARG_ALIGN);
+
+    /* While capturing, staging bytes have to belong to the graph. The stream
+       arena is recycled as soon as the work that read it completes, but a
+       graph is replayed arbitrarily later, so a captured copy that sourced
+       from the arena would read whatever was written there since. Graph pages
+       live as long as the graph and are never reused, so the recorded copy
+       stays valid.
+
+       Every caller that later resolves an address back to its page already
+       looks in s->capture->arg_pages when capturing, so this is also what
+       makes those lookups find it. */
+    if (s->capture) {
+        md_gpu_graph_t g = s->capture;
+        md_vk_page_t* page = NULL;
+        for (size_t i = 0; i < g->arg_pages.count; ++i) {
+            md_vk_page_t* p = ((md_vk_page_t**)g->arg_pages.data)[i];
+            if (p->cursor + need <= p->capacity) { page = p; break; }
+        }
+        if (!page) {
+            uint64_t page_size = MD_VK_GRAPH_ARG_PAGE;
+            while (page_size < need) page_size *= 2;
+            page = md_vk_page_create(dev, page_size);
+            if (!page) return md_vk_fail("failed to allocate a %llu byte graph staging page",
+                                         (unsigned long long)page_size);
+            md_vk_page_t** slot = (md_vk_page_t**)md_vk_vec_push(&g->arg_pages, dev->alloc);
+            if (!slot) { md_vk_page_destroy(dev, page); return false; }
+            *slot = page;
+        }
+        *out_addr = page->address + page->cursor;
+        *out_host = page->host + page->cursor;
+        page->cursor += need;
+        return true;
+    }
 
     /* Try the current page. */
     if (a->pages.count > 0) {
@@ -1496,7 +1533,10 @@ void md_gpu_stream_sync(md_gpu_stream_t s) {
         vkWaitSemaphores(s->device->device, &wi, UINT64_MAX);
     }
     /* Complete any internal work (device-to-host copies) that is now ready. */
-    md_vk_poll_internal(s->device, false);
+    /* Only this stream's completions. Another thread sitting in its own sync
+       must not be able to pop our entry and run the copy while we return and
+       read the destination -- and equally, we must not pop theirs. */
+    md_vk_poll_internal(s->device, false, s);
 }
 
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync) {
@@ -1531,9 +1571,62 @@ static void md_vk_stream_destroy_internal(md_gpu_stream_t s) {
     md_free(dev->alloc, s, sizeof(*s));
 }
 
+/* Drop every reference the device still holds to `s`, which is about to be
+   freed. The caller has already synchronised it, so anything that was waiting
+   on `s` is by definition satisfied -- the point is only to stop a freed
+   pointer being dereferenced later.
+
+   Three structures outlive a stream and hold one:
+
+     - md_vk_block_t::free_stream, consulted by md_gpu_malloc and pool trim to
+       decide whether a block may be reused;
+     - md_vk_hostfn_t::sync.stream, read on every poll;
+     - md_vk_retire_t::waits[].stream, likewise.
+
+   Caller holds device_mutex. */
+static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
+    /* Blocks freed on this stream become reusable outright. Note that leaving
+       them alone would not merely dangle: free_value is the value the *next*
+       submit would have signalled, which now never arrives, so the block would
+       also never be reused again. */
+    for (size_t i = 0; i < dev->pools.count; ++i) {
+        md_gpu_pool_t pool = ((md_gpu_pool_t*)dev->pools.data)[i];
+        for (size_t j = 0; j < pool->blocks.count; ++j) {
+            md_vk_block_t* b = ((md_vk_block_t**)pool->blocks.data)[j];
+            if (b->free_stream == s) { b->free_stream = NULL; b->free_value = 0; }
+        }
+    }
+
+    /* Clearing the sync makes the entry unconditionally ready, so a pending
+       user callback still fires on the next md_gpu_device_poll -- on the
+       thread that owns polling, as documented -- rather than being dropped
+       here or run on whichever thread happened to destroy the stream. */
+    md_vk_hostfn_t* h = (md_vk_hostfn_t*)dev->hostfns.data;
+    for (size_t i = 0; i < dev->hostfns.count; ++i) {
+        if (h[i].sync.stream == s) h[i].sync = (md_gpu_sync_t){0};
+    }
+
+    md_vk_retire_t* r = (md_vk_retire_t*)dev->retires.data;
+    for (size_t i = 0; i < dev->retires.count; ++i) {
+        for (uint32_t w = 0; w < r[i].wait_count; ) {
+            if (r[i].waits[w].stream == s) {
+                r[i].waits[w] = r[i].waits[r[i].wait_count - 1];
+                r[i].wait_count--;
+            } else {
+                ++w;
+            }
+        }
+    }
+}
+
 void md_gpu_stream_destroy(md_gpu_stream_t s) {
     if (!s || s->is_default) return;
     md_gpu_device_t dev = s->device;
+
+    /* Before anything else: this both flushes the stream and completes its own
+       device-to-host copies, which is what makes forgetting it safe below. */
+    md_gpu_stream_sync(s);
+
     md_mutex_lock(&dev->device_mutex);
     md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
     for (size_t i = 0; i < dev->streams.count; ++i) {
@@ -1543,7 +1636,9 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
             break;
         }
     }
+    md_vk_forget_stream_locked(dev, s);
     md_mutex_unlock(&dev->device_mutex);
+
     md_vk_stream_destroy_internal(s);
 }
 
@@ -2241,9 +2336,14 @@ void md_gpu_tex_destroy(md_gpu_tex_t tex, md_gpu_stream_t stream) {
         r->memory    = t->memory;
         r->storage_slot = t->storage_slot;
         r->sampled_slot = t->sampled_slot;
-        r->wait_count   = 0;
+        r->waits         = NULL;
+        r->wait_count    = 0;
+        r->wait_capacity = (uint32_t)dev->streams.count;
+        if (r->wait_capacity > 0) {
+            r->waits = (md_gpu_sync_t*)md_alloc(dev->alloc, r->wait_capacity * sizeof(md_gpu_sync_t));
+        }
         md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
-        for (size_t i = 0; i < dev->streams.count && r->wait_count < 8; ++i) {
+        for (size_t i = 0; i < dev->streams.count && r->waits; ++i) {
             md_gpu_stream_t s = arr[i];
             uint64_t v = s->has_work ? s->next_value : s->submitted_value;
             if (v > 0) {
@@ -2251,6 +2351,12 @@ void md_gpu_tex_destroy(md_gpu_tex_t tex, md_gpu_stream_t stream) {
                 r->waits[r->wait_count].value  = v;
                 r->wait_count++;
             }
+        }
+        if (!r->waits && dev->streams.count > 0) {
+            /* Out of host memory for the wait list. Waiting on nothing would
+               free the image under the GPU, so stall instead. */
+            md_vk_fail("out of memory recording texture retirement; waiting for the device");
+            vkDeviceWaitIdle(dev->device);
         }
     }
     /* Ownership has moved to the retire list; clear the slot so that device
@@ -2330,6 +2436,15 @@ void md_gpu_sampler_destroy(md_gpu_sampler_t sampler) {
     }
 }
 
+/* How many bytes a copy of `ext` texels moves. vkCmdCopy{Buffer,Image}To* copy
+   the whole extent regardless of any size the caller passed, so a buffer
+   smaller than this is simply overrun -- silently, outside a validation
+   build. */
+static uint64_t md_vk_region_bytes(const md_gpu_tex_desc_t* d, VkExtent3D ext) {
+    return (uint64_t)ext.width * (uint64_t)ext.height * (uint64_t)ext.depth
+         * (uint64_t)md_vk_format_info(d->format).bytes;
+}
+
 static void md_vk_resolve_region(const md_gpu_tex_desc_t* d, const md_gpu_tex_region_t* r, VkOffset3D* off, VkExtent3D* ext) {
     uint32_t w = d->width ? d->width : 1;
     uint32_t h = d->height ? d->height : 1;
@@ -2356,6 +2471,12 @@ bool md_gpu_memcpy_to_tex_async(md_gpu_tex_t tex, const md_gpu_tex_region_t* reg
 
     VkOffset3D off; VkExtent3D ext;
     md_vk_resolve_region(&t->desc, region, &off, &ext);
+
+    const uint64_t need = md_vk_region_bytes(&t->desc, ext);
+    if ((uint64_t)size < need) {
+        return md_vk_fail("texture copy region is %ux%ux%u (%llu bytes) but only %zu bytes were given",
+                          ext.width, ext.height, ext.depth, (unsigned long long)need, size);
+    }
 
     md_vk_block_t* sblk = md_vk_registry_find(dev, (uint64_t)(uintptr_t)src);
     VkBuffer src_buffer; uint64_t src_off;
@@ -2400,6 +2521,12 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t tex, const md_gpu_tex_
 
     VkOffset3D off; VkExtent3D ext;
     md_vk_resolve_region(&t->desc, region, &off, &ext);
+
+    const uint64_t need = md_vk_region_bytes(&t->desc, ext);
+    if ((uint64_t)size < need) {
+        return md_vk_fail("texture copy region is %ux%ux%u (%llu bytes) but only %zu bytes were given",
+                          ext.width, ext.height, ext.depth, (unsigned long long)need, size);
+    }
 
     md_vk_block_t* dblk = md_vk_registry_find(dev, (uint64_t)(uintptr_t)dst);
 
@@ -2859,7 +2986,12 @@ static bool md_vk_snapshot_complete(md_vk_timeline_snapshot_t* snap, md_gpu_sync
 
 /* Fire completed callbacks and reclaim retired objects.
    `fire_user` selects whether user callbacks run; internal ones always do. */
-static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user) {
+/* `only` restricts the callbacks considered to those registered against that
+   stream. md_gpu_stream_sync passes its own stream: its contract is that the
+   stream's device-to-host copies have landed when it returns, and it can only
+   promise that for entries it completes itself. Passing NULL considers every
+   stream, which is what md_gpu_device_poll wants. */
+static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user, md_gpu_stream_t only) {
     uint32_t fired = 0;
     md_vk_timeline_snapshot_t snap = {0};
 
@@ -2871,6 +3003,7 @@ static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user) {
         md_vk_hostfn_t* arr = (md_vk_hostfn_t*)dev->hostfns.data;
         for (size_t i = 0; i < dev->hostfns.count; ++i) {
             if (!fire_user && !arr[i].internal) continue;
+            if (only && arr[i].sync.stream != only) continue;
             if (!md_vk_snapshot_complete(&snap, arr[i].sync)) continue;
             ready = arr[i];
             memmove(&arr[i], &arr[i + 1], (dev->hostfns.count - i - 1) * sizeof(*arr));
@@ -2904,6 +3037,7 @@ static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user) {
         if (r->memory) vkFreeMemory(dev->device, r->memory, NULL);
         if (r->storage_slot != UINT32_MAX && dev->tex_free_count < MD_VK_MAX_TEXTURES) dev->tex_free[dev->tex_free_count++] = r->storage_slot;
         if (r->sampled_slot != UINT32_MAX && dev->tex_free_count < MD_VK_MAX_TEXTURES) dev->tex_free[dev->tex_free_count++] = r->sampled_slot;
+        if (r->waits) md_free(dev->alloc, r->waits, r->wait_capacity * sizeof(md_gpu_sync_t));
         memmove(&rr[i], &rr[i + 1], (dev->retires.count - i - 1) * sizeof(*rr));
         dev->retires.count--;
     }
@@ -2914,7 +3048,7 @@ static uint32_t md_vk_poll_internal(md_gpu_device_t dev, bool fire_user) {
 
 uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
     if (!dev) return 0;
-    return md_vk_poll_internal(dev, true);
+    return md_vk_poll_internal(dev, true, NULL);
 }
 
 /* =========================================================================
@@ -2933,7 +3067,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
             md_vk_stream_submit(s);
         }
         vkDeviceWaitIdle(dev->device);
-        md_vk_poll_internal(dev, true);
+        md_vk_poll_internal(dev, true, NULL);
 
         if (dev->make_grid_kernel) md_gpu_kernel_destroy(dev->make_grid_kernel);
 
@@ -2965,6 +3099,12 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         if (dev->dummy_sampler) vkDestroySampler(dev->device, dev->dummy_sampler, NULL);
 
         md_vk_vec_free(&dev->hostfns,  alloc);
+        {   /* Any retire entry still queued owns its wait list. */
+            md_vk_retire_t* rr = (md_vk_retire_t*)dev->retires.data;
+            for (size_t i = 0; i < dev->retires.count; ++i) {
+                if (rr[i].waits) md_free(alloc, rr[i].waits, rr[i].wait_capacity * sizeof(md_gpu_sync_t));
+            }
+        }
         md_vk_vec_free(&dev->retires,  alloc);
         md_vk_vec_free(&dev->registry, alloc);
 

@@ -2288,4 +2288,134 @@ UTEST(gpu, pool_reuse_across_streams_waits_for_completion) {
     gpu_close(&f);
 }
 
+/* =========================================================================
+   Stream lifetime
+   ========================================================================= */
+
+/* A pool block records the stream it was freed on so that a later allocation
+   can tell whether reuse is safe. Destroying that stream must not leave the
+   record pointing at freed memory -- and must not strand the block either: its
+   free point is a timeline value the destroyed stream will now never signal,
+   so a block left alone would never be reusable again.
+
+   Needs a caching pool. With the default release_threshold of 0 the block is
+   handed straight back to the driver on free, so nothing survives to dangle. */
+UTEST(gpu, stream_destroy_releases_blocks_it_freed) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){
+        .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "caching" });
+    ASSERT_TRUE(pool != NULL);
+
+    enum { N = 1024 };
+    md_gpu_stream_t worker = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "worker");
+    ASSERT_TRUE(worker != NULL);
+
+    uint32_t* a = (uint32_t*)md_gpu_malloc(pool, N * sizeof(uint32_t), worker);
+    ASSERT_TRUE(a != NULL);
+    ASSERT_TRUE(md_gpu_memset_async(a, 0, N * sizeof(uint32_t), worker));
+    md_gpu_stream_sync(worker);
+    md_gpu_free(a, worker);
+
+    md_gpu_pool_stats_t before = {0};
+    md_gpu_pool_stats(pool, &before);
+
+    md_gpu_stream_destroy(worker);
+
+    /* Reading b->free_stream here is what the sanitiser caught. */
+    uint32_t* b = (uint32_t*)md_gpu_malloc(pool, N * sizeof(uint32_t), f.compute);
+    ASSERT_TRUE(b != NULL);
+
+    /* And it must be the cached block, not a fresh one: if the stale free
+       point were left in place the block could never satisfy an allocation. */
+    md_gpu_pool_stats_t after = {0};
+    md_gpu_pool_stats(pool, &after);
+    EXPECT_EQ(before.bytes_reserved, after.bytes_reserved);
+
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 7; fa.dst = DEV_ADDR(b);
+    ASSERT_TRUE(md_gpu_launch(f.compute, f.k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa)));
+    static uint32_t host[N];
+    ASSERT_TRUE(md_gpu_memcpy_async(host, b, sizeof(host), f.compute));
+    md_gpu_stream_sync(f.compute);
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(7 + i), host[i]);
+
+    md_gpu_free(b, f.compute);
+    md_gpu_pool_destroy(pool);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* A texture destroyed with work outstanding waits on every stream that had any.
+   The wait list used to be a fixed eight entries, so past that the image was
+   freed while later streams could still be reading it. */
+UTEST(gpu, texture_destroy_waits_on_every_stream) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { STREAMS = 12, D = 8 };
+    md_gpu_stream_t s[STREAMS];
+    for (int i = 0; i < STREAMS; ++i) {
+        s[i] = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "many");
+        ASSERT_TRUE(s[i] != NULL);
+    }
+
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    /* Give every stream outstanding work touching the texture. */
+    for (int i = 0; i < STREAMS; ++i) {
+        tex_args_t ta = {0};
+        ta.dim[0] = D; ta.dim[1] = D; ta.dim[2] = D;
+        ta.tex = tex; ta.scale = 1.0f;
+        ASSERT_TRUE(md_gpu_launch(s[i], f.k_tex_write, md_gpu_grid(D/4, D/4, D/4), &ta, sizeof(ta)));
+        md_gpu_stream_flush(s[i]);
+    }
+
+    md_gpu_tex_destroy(tex, NULL);
+    md_gpu_device_poll(f.dev);
+
+    for (int i = 0; i < STREAMS; ++i) md_gpu_stream_destroy(s[i]);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* The copy transfers the whole region whatever `size` says, so a buffer too
+   small for it has to be rejected rather than overrun. */
+UTEST(gpu, texture_copy_rejects_undersized_buffer) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+
+    enum { D = 8, VOXELS = D * D * D, FULL = VOXELS * sizeof(float) };
+    md_gpu_tex_desc_t td = {0};
+    td.width = D; td.height = D; td.depth = D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.flags  = MD_GPU_TEX_STORAGE;
+    md_gpu_tex_t tex = md_gpu_tex_create(f.dev, &td);
+    ASSERT_TRUE(tex != 0);
+
+    void* rb = md_gpu_malloc(f.read_pool, FULL, f.compute);
+    ASSERT_TRUE(rb != NULL);
+
+    /* One float short in each direction. */
+    EXPECT_FALSE(md_gpu_memcpy_from_tex_async(rb, tex, NULL, FULL - sizeof(float), f.compute));
+    static float src[VOXELS];
+    EXPECT_FALSE(md_gpu_memcpy_to_tex_async(tex, NULL, src, FULL - sizeof(float), f.compute));
+
+    /* The exact size still works. */
+    EXPECT_TRUE(md_gpu_memcpy_to_tex_async(tex, NULL, src, FULL, f.compute));
+    EXPECT_TRUE(md_gpu_memcpy_from_tex_async(rb, tex, NULL, FULL, f.compute));
+    md_gpu_stream_sync(f.compute);
+
+    md_gpu_free(rb, f.compute);
+    md_gpu_tex_destroy(tex, f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
 #endif /* MD_ENABLE_GPU */
