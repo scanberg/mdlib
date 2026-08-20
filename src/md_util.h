@@ -86,7 +86,7 @@ void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_syst
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_system_t* sys, const md_system_state_t* state, double radius, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_state_t* state, double radius, const struct md_bitfield_t* viable_mask);
 
 // Infer rings formed by covalent bonds
 bool md_util_system_infer_rings(md_system_t* sys);
@@ -141,15 +141,14 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 bool md_util_system_pbc(md_system_state_t* state);
 
 // Unwraps a structure by traversing the supplied topology formed by bonds
-bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
-bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
+void md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
+void md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
 
-// Unwraps all structures in a system
 // Unwraps a single structure by walking the parent hierarchy md_util_system_infer_structures
 // already computed. Linear, allocation free, and does not consult bond connectivity.
-bool md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure);
+void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure);
 
-// Unwraps every structure in the system.
+// Unwraps all structures in a system
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference

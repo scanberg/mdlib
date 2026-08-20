@@ -5740,13 +5740,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Allocate temporary memory
         int32_t* ref_idx[2] = {
-            md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size),
-            md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size)
+            md_temp_alloc_array(temp, int32_t, ref_size),
+            md_temp_alloc_array(temp, int32_t, ref_size)
         };
 
         vec4_t* ref_xyzw[2] = {
-            md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size),
-            md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
+            md_temp_alloc_array(temp, vec4_t, ref_size),
+            md_temp_alloc_array(temp, vec4_t, ref_size)
         };
 
         // Extract indices

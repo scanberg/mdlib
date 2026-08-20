@@ -114,10 +114,13 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
         return true;
     }
 
-    md_array_resize(state->x, num_atoms, alloc);
-    md_array_resize(state->y, num_atoms, alloc);
-    md_array_resize(state->z, num_atoms, alloc);
+    const size_t capacity = ALIGN_TO(num_atoms, 16);
+
+    md_array_resize(state->x, capacity, alloc);
+    md_array_resize(state->y, capacity, alloc);
+    md_array_resize(state->z, capacity, alloc);
     state->num_atoms = num_atoms;
+
     return true;
 }
 

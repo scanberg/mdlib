@@ -5608,9 +5608,9 @@ static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, con
     md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
 }
 
-void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state, double radius, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* state, double radius, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
-    ASSERT(sys);
+    ASSERT(state);
     
     if (radius <= 0.0) return;
     md_temp_scope_t temp = md_temp_begin_avoid(mask->alloc);
@@ -5622,7 +5622,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, co
         num_indices = md_bitfield_iter_extract_indices(indices, num_indices, md_bitfield_iter_create(mask));
 
         int32_t* viable_indices = 0;
-        size_t viable_count = sys->atom.count;
+        size_t viable_count = state->num_atoms;
             
         if (viable_mask) {
             md_bitfield_t temp_mask = md_bitfield_create(temp_arena);
@@ -8421,17 +8421,10 @@ static inline void min_image_triclinic(float dx[3], const float box[3][3], const
     dx[2] = (float)dx_min[2];
 }
 
-static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3]) {
-    for (int i = 0; i < 3; i++) {
-        if (ext[i] > 0.0f) {
-            while (dx[i] > half_ext[i]) {
-                dx[i] -= ext[i];
-            }
-            while (dx[i] <= -half_ext[i]) {
-                dx[i] += ext[i];
-            }
-        }
-    }
+static inline void min_image_ortho(float dx[3], const float ext[3], const float inv_ext[3]) {
+    dx[0] -= ext[0] * nearbyintf(dx[0] * inv_ext[0]);
+    dx[1] -= ext[1] * nearbyintf(dx[1] * inv_ext[1]);
+    dx[2] -= ext[2] * nearbyintf(dx[2] * inv_ext[2]);
 }
 
 void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
@@ -8788,7 +8781,7 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
     }
 
     if (!z) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
+        MD_LOG_ERROR("Missing required input: in_out_z");
         return false;
     }
 
@@ -8803,8 +8796,7 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
     }
 
     md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_alloc);
+    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp.arena);
     md_temp_end(temp);
     return result;
 }
@@ -8832,25 +8824,24 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, con
     return result;
 }
 
-bool md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure) {
+void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure) {
     ASSERT(state);
     ASSERT(structure);
 
     if (structure->count == 0) {
-        return true;
+        return;
     }
 
     const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
     const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
     if (!is_ortho && !is_triclinic) {
         // Nothing to unwrap against
-        return true;
+        return;
     }
 
     float ext[3] = { 0 };
 	float half_ext[3] = { 0 };
     float box[3][3] = { 0 };
-	float half_diag[3] = { 0 };
 
     if (is_ortho) {
         md_unitcell_diag_extract_float(ext, &state->unitcell);
@@ -8859,7 +8850,9 @@ bool md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
 		half_ext[2] = ext[2] * 0.5f;
     } else {
         md_unitcell_A_extract_float(&box[0][0], &state->unitcell);
-		half_diag[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
+		half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
+		half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
+		half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
     }
 
     // md_structure_data_t stores each structure in BFS order, so a single forward pass places every
@@ -8870,32 +8863,30 @@ bool md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
         const int32_t a = structure->atom_idx[i];
         const int32_t p = structure->parent_idx[i];
 
-        float x[3] = { state->x[a], state->y[a], state->z[a] };
-        const float r[3] = { state->x[p], state->y[p], state->z[p] };
-		float dx[3] = { x[0] - r[0], x[1] - r[1], x[2] - r[2] };
+        const vec3_t x = { state->x[a], state->y[a], state->z[a] };
+        const vec3_t r = { state->x[p], state->y[p], state->z[p] };
+	    vec3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
 
         if (is_ortho) {
-            min_image_ortho(dx, ext, half_ext);
+            min_image_ortho(dx.elem, ext, half_ext);
         } else {
-            minimum_image_triclinic(dx, box);
+            min_image_triclinic(dx.elem, box, half_ext);
         }
 
-        state->x[a] = x[0];
-        state->y[a] = x[1];
-        state->z[a] = x[2];
+        state->x[a] = x.x + dx.x;
+        state->y[a] = x.y + dx.y;
+        state->z[a] = x.z + dx.z;
     }
-
-    return true;
 }
 
-void md_util_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
+void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
     ASSERT(state);
     ASSERT(sys);
 
     for (size_t i = 0; i < sys->structure.count; ++i) {
         md_structure_t structure = {0};
         if (md_structure_extract(&structure, &sys->structure, i)) {
-            md_util_unwrap_structure(state, &structure, &state->unitcell);
+            md_util_unwrap_structure(state, &structure);
         }
     }
 }
