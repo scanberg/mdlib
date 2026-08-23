@@ -5120,6 +5120,48 @@ bool md_util_system_infer_rings(md_system_t* sys) {
 #undef MAX_DEPTH
 
 // Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
+// Breadth first traversal of the connected component containing 'seed'.
+//
+// Marks every atom it reaches in 'visited' and never clears it; the caller supplies a bitfield which
+// is clear over the component. When out_atoms is supplied the atoms are written in BFS order and
+// out_count receives how many there were. When out_pred is supplied it records, per global atom
+// index, the atom each one was reached from, with the seed recording itself.
+//
+// Returns the last atom popped from the queue. BFS pops in non decreasing distance order, so that
+// atom is at maximum edge distance from the seed - which is what the double sweep below needs.
+static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred, uint64_t* visited, fifo_t* queue, const md_bond_data_t* bond, int seed) {
+    fifo_clear(queue);
+
+    bitfield_set_bit(visited, seed);
+    if (out_pred) out_pred[seed] = seed;
+    fifo_push(queue, seed);
+
+    size_t count = 0;
+    int last = seed;
+
+    while (!fifo_empty(queue)) {
+        const int cur = fifo_pop(queue);
+        last = cur;
+        if (out_atoms) out_atoms[count] = cur;
+        count += 1;
+
+        md_bond_iter_t it = md_bond_iter(bond, cur);
+        while (md_bond_iter_has_next(&it)) {
+            const int next = md_bond_iter_atom_index(&it);
+            md_bond_iter_next(&it);
+
+            if (bitfield_test_bit(visited, next)) continue;
+
+            bitfield_set_bit(visited, next);
+            if (out_pred) out_pred[next] = cur;
+            fifo_push(queue, next);
+        }
+    }
+
+    if (out_count) *out_count = count;
+    return last;
+}
+
 bool md_util_system_infer_structures(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);
@@ -5129,18 +5171,32 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_array_shrink(sys->structure.offset, 0);
     md_array_shrink(sys->structure.atom_idx, 0);
     md_array_shrink(sys->structure.parent_idx, 0);
+    md_array_shrink(sys->structure.atom_slot, 0);
+    sys->structure.count = 0;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     const size_t atom_count = md_system_atom_count(sys);
 
-    // Create a bitfield to keep track of which atoms have been visited
+    // Reverse map from atom to slot, one entry per atom in the system
+    md_array_resize(sys->structure.atom_slot, atom_count, alloc);
+
+    // Which atoms have been assigned to a structure. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
+
+    // Reused by the sweeps below. Cleared over the atoms of the current component only, so the cost
+    // stays proportional to the component rather than to the system.
+    uint64_t* sweep_visited = make_bitfield(atom_count, temp_arena);
+
+    // Atoms of the component currently being processed, and the predecessor of each atom as recorded
+    // by the second sweep. Only the entries belonging to the current component are meaningful.
+    int32_t* component = md_temp_alloc_array(temp, int32_t, atom_count);
+    int32_t* pred      = md_temp_alloc_array(temp, int32_t, atom_count);
 
     // Parallel queues:
     // - atom_queue   : global atom index to visit
-    // - parent_queue : local parent index within the current structure, -1 for root
+    // - parent_queue : global index of the atom it was reached from (the root is its own parent)
     fifo_t atom_queue   = fifo_create(1024, temp_arena);
     fifo_t parent_queue = fifo_create(1024, temp_arena);
 
@@ -5150,17 +5206,45 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     for (int i = 0; i < (int)atom_count; ++i) {
         if (bitfield_test_bit(visited, i)) continue;
 
+        // Sweep 1: discover the component from an arbitrary seed and note an atom at maximum distance
+        // from it. This is the sweep that claims the atoms in 'visited'; the atom list it produces is
+        // what lets the following sweeps clear their bits without touching the rest of the system.
+        size_t component_size = 0;
+        const int far_a = bfs_traverse(component, &component_size, NULL, visited, &atom_queue, &sys->bond, i);
+
+        // Locate the graph center: the atom whose greatest distance to any other atom in the
+        // component is smallest. Standard double sweep - the midpoint of a longest path. Exact for
+        // acyclic structures, a close approximation in the presence of rings.
+        // Components of two atoms or fewer are their own center.
+        int root = i;
+        if (component_size > 2) {
+            // Sweep 2: from far_a, find the opposite end of the path and the chain leading back
+            for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
+            const int far_b = bfs_traverse(NULL, NULL, pred, sweep_visited, &atom_queue, &sys->bond, far_a);
+
+            int length = 0;
+            for (int a = far_b; a != pred[a]; a = pred[a]) length += 1;
+
+            root = far_b;
+            for (int k = 0; k < length / 2; ++k) root = pred[root];
+        }
+
+        // Sweep 3: emit the component in BFS order from the root, which establishes the
+        // slot(parent) < slot(child) invariant md_structure_data_t documents.
+        for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
+
         fifo_clear(&atom_queue);
         fifo_clear(&parent_queue);
 
-        bitfield_set_bit(visited, i);
-        fifo_push(&atom_queue, i);
-        fifo_push(&parent_queue, i);   // the seed is its own parent
+        bitfield_set_bit(sweep_visited, root);
+        fifo_push(&atom_queue, root);
+        fifo_push(&parent_queue, root);   // the root is its own parent
 
         while (!fifo_empty(&atom_queue)) {
             const int cur        = fifo_pop(&atom_queue);
             const int parent_idx = fifo_pop(&parent_queue);
 
+            sys->structure.atom_slot[cur] = (int32_t)md_array_size(sys->structure.atom_idx);
             md_array_push(sys->structure.atom_idx, cur, alloc);
             md_array_push(sys->structure.parent_idx, parent_idx, alloc);
 
@@ -5169,9 +5253,9 @@ bool md_util_system_infer_structures(md_system_t* sys) {
                 const int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
 
-                if (bitfield_test_bit(visited, next)) continue;
+                if (bitfield_test_bit(sweep_visited, next)) continue;
 
-                bitfield_set_bit(visited, next);
+                bitfield_set_bit(sweep_visited, next);
                 fifo_push(&atom_queue, next);
                 fifo_push(&parent_queue, cur);
             }
@@ -8427,6 +8511,17 @@ static inline void min_image_ortho(float dx[3], const float ext[3], const float 
     dx[2] -= ext[2] * nearbyintf(dx[2] * inv_ext[2]);
 }
 
+// Reciprocal extent for min_image_ortho.
+// @NOTE: this is NOT the half extent min_image_triclinic wants - the two take different quantities
+// and the same local must not be handed to both.
+// A zero extent means that axis is not periodic; a zero reciprocal makes the minimum image a no-op
+// along it rather than producing a NaN.
+static inline void min_image_inv_ext(float out_inv_ext[3], const float ext[3]) {
+    out_inv_ext[0] = ext[0] != 0.0f ? 1.0f / ext[0] : 0.0f;
+    out_inv_ext[1] = ext[1] != 0.0f ? 1.0f / ext[1] : 0.0f;
+    out_inv_ext[2] = ext[2] != 0.0f ? 1.0f / ext[2] : 0.0f;
+}
+
 void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
     if (cell) {
         vec3_t diag = { 0 };
@@ -8434,8 +8529,10 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
         vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
+            vec3_t inv_diag = { 0 };
+            min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
-                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+                min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
             mat3_t A = { 0 };
@@ -8454,8 +8551,10 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
         vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
+            vec3_t inv_diag = { 0 };
+            min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
-                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+                min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
             mat3_t A = { 0 };
@@ -8641,53 +8740,6 @@ static inline void unwrap_atom_triclinic_vec4(vec4_t* pos, const vec4_t* ref, co
     deperiodize_triclinic(pos->elem, ref->elem, A->elem);
 }
 
-static bool unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(bond);
-    ASSERT(cell);
-
-    md_temp_scope_t temp = md_temp_begin();
-
-    if (count == 0) return true;
-
-    if (!bond->conn.offset || bond->conn.offset_count == 0) {
-        MD_LOG_ERROR("Missing bond connectivity");
-        return false;
-    }
-
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
-
-    if (!is_ortho && !is_triclinic) {
-        // Nothing to unwrap against
-        return true;
-    }
-
-    vec4_t ext = {0};
-    mat3_t A = {0};
-
-    if (is_ortho) {
-        md_unitcell_diag_extract_float(ext.elem, cell);
-    } else if (is_triclinic) {
-        md_unitcell_A_extract_float(A.elem, cell);
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        const int idx = indices ? indices[i] : (int)i;
-        
-        if (is_ortho) {
-            unwrap_atom_ortho_vec4(&pos, &ref, ext);
-        } else {
-            unwrap_atom_triclinic_vec4(&pos, &ref, &A);
-        }
-    }
-
-	md_temp_end(temp);
-    return true;
-}
-
 static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
     ASSERT(xyzw);
     ASSERT(bond);
@@ -8769,38 +8821,6 @@ static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t co
     return true;
 }
 
-bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
-    if (!x) {
-        MD_LOG_ERROR("Missing required input: in_out_x");
-        return false;
-    }
-
-    if (!y) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!z) {
-        MD_LOG_ERROR("Missing required input: in_out_z");
-        return false;
-    }
-
-    if (!bond) {
-        MD_LOG_ERROR("Missing bond topology");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp.arena);
-    md_temp_end(temp);
-    return result;
-}
-
 bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
@@ -8840,16 +8860,15 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
     }
 
     float ext[3] = { 0 };
+    float inv_ext[3] = { 0 };
 	float half_ext[3] = { 0 };
     float box[3][3] = { 0 };
 
     if (is_ortho) {
         md_unitcell_diag_extract_float(ext, &state->unitcell);
-		half_ext[0] = ext[0] * 0.5f;
-		half_ext[1] = ext[1] * 0.5f;
-		half_ext[2] = ext[2] * 0.5f;
+        min_image_inv_ext(inv_ext, ext);
     } else {
-        md_unitcell_A_extract_float(&box[0][0], &state->unitcell);
+        md_unitcell_A_extract_float(box, &state->unitcell);
 		half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
 		half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
 		half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
@@ -8868,14 +8887,17 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
 	    vec3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
 
         if (is_ortho) {
-            min_image_ortho(dx.elem, ext, half_ext);
+            min_image_ortho(dx.elem, ext, inv_ext);
         } else {
             min_image_triclinic(dx.elem, box, half_ext);
         }
 
-        state->x[a] = x.x + dx.x;
-        state->y[a] = x.y + dx.y;
-        state->z[a] = x.z + dx.z;
+        // The atom is placed relative to its PARENT, not relative to where it happened to sit:
+        // dx is already the minimum image of (x - r), so the unwrapped position is r + dx.
+        // Adding dx to x instead yields 2x - r, which is wrong even when no image correction applies.
+        state->x[a] = r.x + dx.x;
+        state->y[a] = r.y + dx.y;
+        state->z[a] = r.z + dx.z;
     }
 }
 
@@ -8889,6 +8911,144 @@ void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
             md_util_unwrap_structure(state, &structure);
         }
     }
+}
+
+// Index of the first element in a sorted array which is not less than key
+static inline size_t lower_bound_uint32(const uint32_t* arr, size_t count, uint32_t key) {
+    size_t lo = 0;
+    size_t hi = count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (arr[mid] < key) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+void md_util_unwrap_subset_vec4(vec4_t* out_xyzw, const int32_t* in_idx, size_t count, const float* in_w, const md_system_t* sys, const md_system_state_t* state) {
+    ASSERT(out_xyzw);
+    ASSERT(in_idx);
+    ASSERT(sys);
+    ASSERT(state);
+
+    if (count == 0) {
+        return;
+    }
+
+    const md_structure_data_t* sd = &sys->structure;
+
+    const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
+    const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
+
+    const bool have_structures = (sd->atom_slot != NULL && sd->count > 0);
+
+    if (!have_structures) {
+        MD_LOG_ERROR("Missing structure data, md_util_system_infer_structures has not been run");
+    }
+
+    // Nothing to unwrap against, or nothing to unwrap along: hand back the coordinates as they are
+    // so the caller still gets a populated array.
+    if (!have_structures || (!is_ortho && !is_triclinic)) {
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t a = in_idx[i];
+            out_xyzw[i] = vec4_from_vec3(md_state_coord(state, a), in_w ? in_w[a] : 1.0f);
+        }
+        return;
+    }
+
+    float ext[3]      = { 0 };
+    float inv_ext[3]  = { 0 };
+    float half_ext[3] = { 0 };
+    float box[3][3]   = { 0 };
+
+    if (is_ortho) {
+        md_unitcell_diag_extract_float(ext, &state->unitcell);
+        min_image_inv_ext(inv_ext, ext);
+    } else {
+        md_unitcell_A_extract_float(box, &state->unitcell);
+        half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
+        half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
+        half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // Collect the closure: every selected atom, plus every ancestor needed to reach it from its
+    // structure root. Walking upwards stops as soon as an atom is already in the set, so a shared
+    // path prefix is paid for once no matter how many selected atoms hang off it.
+    md_hashset_t seen = { .allocator = temp_arena };
+    md_hashset_reserve(&seen, count * 2);
+
+    md_array(uint32_t) slots = 0;
+    md_array_ensure(slots, count * 2, temp_arena);
+
+    for (size_t i = 0; i < count; ++i) {
+        int32_t a = in_idx[i];
+        for (;;) {
+            const uint32_t s = (uint32_t)sd->atom_slot[a];
+            if (md_hashmap_index(&seen, s) != UINT32_MAX) break;
+            md_hashset_add(&seen, s);
+            md_array_push(slots, s, temp_arena);
+
+            const int32_t p = sd->parent_idx[s];
+            if (p == a) break;      // reached the root of the structure
+            a = p;
+        }
+    }
+
+    const size_t num_slots = md_array_size(slots);
+
+    // Slots are assigned in BFS order from the root, so slot(parent) < slot(child) and sorting the
+    // closure ascending yields a valid topological order: a single forward pass always finds its
+    // parent already resolved.
+    uint32_t* sort_temp = md_temp_alloc_array(temp, uint32_t, num_slots);
+    sort_radix_inplace_uint32(slots, num_slots, sort_temp);
+
+    vec3_t* pos = md_temp_alloc_array(temp, vec3_t, num_slots);
+
+    for (size_t i = 0; i < num_slots; ++i) {
+        const uint32_t s = slots[i];
+        const int32_t  a = sd->atom_idx[s];
+        const int32_t  p = sd->parent_idx[s];
+        const vec3_t   x = md_state_coord(state, a);
+
+        if (p == a) {
+            // Root of the structure. It defines the image everything below it is placed against and
+            // is therefore left exactly where the state put it.
+            pos[i] = x;
+            continue;
+        }
+
+        const uint32_t parent_slot = (uint32_t)sd->atom_slot[p];
+        const size_t   parent_i    = lower_bound_uint32(slots, num_slots, parent_slot);
+        ASSERT(parent_i < num_slots && slots[parent_i] == parent_slot);
+
+        const vec3_t r = pos[parent_i];
+        vec3_t dx = { x.x - r.x, x.y - r.y, x.z - r.z };
+
+        if (is_ortho) {
+            min_image_ortho(dx.elem, ext, inv_ext);
+        } else {
+            min_image_triclinic(dx.elem, box, half_ext);
+        }
+
+        pos[i] = (vec3_t) { r.x + dx.x, r.y + dx.y, r.z + dx.z };
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const int32_t  a = in_idx[i];
+        const uint32_t s = (uint32_t)sd->atom_slot[a];
+        const size_t   k = lower_bound_uint32(slots, num_slots, s);
+        ASSERT(k < num_slots && slots[k] == s);
+        out_xyzw[i] = vec4_from_vec3(pos[k], in_w ? in_w[a] : 1.0f);
+    }
+
+    md_hashset_free(&seen);
+    md_temp_end(temp);
 }
 
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {

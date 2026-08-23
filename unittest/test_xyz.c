@@ -443,11 +443,11 @@ UTEST(xyz, trajectory_i) {
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
 
     for (size_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
-        EXPECT_EQ(2280, header.num_atoms);
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
+        EXPECT_EQ(2280, state.num_atoms);
     }
 
     md_system_free(&sys);
@@ -473,11 +473,11 @@ UTEST(xyz, trajectory_reader_i) {
     md_trajectory_reader_i reader = {0};
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
-    md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
-    EXPECT_EQ(2280, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
-    EXPECT_EQ(2280, header.num_atoms);
+    md_system_state_t state = {0, x, y, z, {0}};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
+    EXPECT_EQ(2280, state.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
+    EXPECT_EQ(2280, state.num_atoms);
 
     md_system_free(&sys);
     md_arena_allocator_destroy(temp_arena);

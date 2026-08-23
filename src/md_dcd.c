@@ -59,7 +59,8 @@ typedef struct dcd_t {
 	size_t frame_size;
 
 	double* frame_times;          // Precomputed frame timestamps (picoseconds), length = num_frames.
-	md_unit_t time_unit;          // Time unit for frame_times (we try to convert to picoseconds if time data is available, otherwise we fallback to indices)
+	int64_t* frame_steps;         // Simulation step per frame (istart + i*nsavc), length = num_frames.
+	md_unit_t time_unit;          // Time unit for frame_times. Empty when the file carried no timestep and the times are frame ordinals standing in for real time.
 
     md_unitcell_t initial_unitcell; // Store a copy of the initial unitcell in case it is not stored in the trajectory itself.
 
@@ -529,11 +530,12 @@ static bool dcd_get_header(struct md_trajectory_o* inst, md_trajectory_header_t*
 		.num_atoms   = (size_t)dcd->header.natoms,
 		.time_unit   = dcd->time_unit,
 		.frame_times = dcd->frame_times,
+		.frame_steps = dcd->frame_steps,
 	};
     return true;
 }
 
-static bool dcd_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_hdr, float* x, float* y, float* z) {
+static bool dcd_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t idx, size_t* out_num_atoms, md_unitcell_t* out_cell, float* x, float* y, float* z) {
     ASSERT(inst);
     dcd_reader_t* reader = (dcd_reader_t*)inst;
     ASSERT(reader->magic == MD_DCD_TRAJ_READER_MAGIC);
@@ -585,14 +587,14 @@ static bool dcd_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
         }
     }
 
-	if (out_hdr) {
-		*out_hdr = (md_trajectory_frame_header_t){
-			.num_atoms = (size_t)natoms,
-			.index     = idx,
-			.timestamp = dcd->frame_times[idx],
-			.unitcell  = unitcell,
-		};
+	if (out_num_atoms) {
+		*out_num_atoms = (size_t)natoms;
 	}
+
+	if (out_cell) {
+		*out_cell = unitcell;
+	}
+
 	return true;
 }
 
@@ -613,21 +615,22 @@ static void dcd_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     MEMSET(reader, 0, sizeof(*reader));
 }
 
-// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
-// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
-static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
-    md_trajectory_frame_header_t local_header = {0};
-    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
     float* x = state ? state->x : NULL;
     float* y = state ? state->y : NULL;
     float* z = state ? state->z : NULL;
-    if (!dcd_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+    if (!dcd_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
         return false;
     }
     if (state) {
-        state->unitcell = hdr->unitcell;
+        state->unitcell = cell;
         if (state->num_atoms == 0) {
-            state->num_atoms = hdr->num_atoms;
+            state->num_atoms = num_atoms;
         }
     }
     return true;
@@ -723,17 +726,25 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
         goto fail;
     }
 
+    // Simulation step per frame. DCD records the first step and the dump interval, so the step of
+    // every frame follows without reading any of them.
+    int64_t* frame_steps = (int64_t*)md_alloc(alloc, num_frames * sizeof(int64_t));
+    for (size_t i = 0; i < num_frames; ++i) {
+        frame_steps[i] = (int64_t)fhdr.istart + (int64_t)i * (int64_t)fhdr.nsavc;
+    }
+
     // Frame timestamps: convert from AKMA to picoseconds.
     double* frame_times = (double*)md_alloc(alloc, num_frames * sizeof(double));
 	md_unit_t time_unit = md_unit_none();
     if (fhdr.delta > 0) {
         for (size_t i = 0; i < num_frames; ++i) {
-            frame_times[i] = (fhdr.istart + (double)i * fhdr.nsavc) * fhdr.delta * DCD_AKMA_TO_PS;
+            frame_times[i] = (double)frame_steps[i] * fhdr.delta * DCD_AKMA_TO_PS;
         }
 		time_unit = md_unit_picosecond();
     }
     else {
-        // No frame time available, default to frame index
+        // No integration timestep in the file, so real time is unknowable. Fall back to the frame
+        // ordinal and leave time_unit empty rather than labelling a count as picoseconds.
         for (size_t i = 0; i < num_frames; ++i) {
             frame_times[i] = (double)i;
 		}
@@ -756,6 +767,7 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
     dcd->first_frame_size = (size_t)first_frame_size;
     dcd->frame_size       = (size_t)frame_size;
     dcd->frame_times      = frame_times;
+    dcd->frame_steps      = frame_steps;
 	dcd->time_unit        = time_unit;
     
     // When fixed atoms are present, store the full first-frame coordinates.

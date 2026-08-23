@@ -191,9 +191,7 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    md_array_resize(state->x, capacity, state->alloc);
-    md_array_resize(state->y, capacity, state->alloc);
-    md_array_resize(state->z, capacity, state->alloc);
+    md_system_state_init(state, data->num_atoms);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags, capacity, sys->alloc);
 

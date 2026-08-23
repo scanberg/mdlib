@@ -1,5 +1,6 @@
 ﻿#include "utest.h"
 #include <string.h>
+#include <math.h>
 
 #include <md_pdb.h>
 #include <md_gro.h>
@@ -192,8 +193,8 @@ UTEST_F(util, rmsd) {
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 6) + stride * 3;
 
-    md_trajectory_load_frame(traj, 0, NULL, &(md_system_state_t){0, x[0], y[0], z[0], {0}});
-    md_trajectory_load_frame(traj, 1, NULL, &(md_system_state_t){0, x[1], y[1], z[1], {0}});
+    md_trajectory_load_frame(traj, 0, &(md_system_state_t){0, x[0], y[0], z[0], {0}});
+    md_trajectory_load_frame(traj, 1, &(md_system_state_t){0, x[1], y[1], z[1], {0}});
 
     for (int64_t i = 0; i < mol->atom.count; ++i) {
         xyz0[i * 3 + 0] = x[0][i];
@@ -336,6 +337,286 @@ UTEST_F(util, structures) {
 
 	num_structures = md_structure_count(&utest_fixture->mol_centered.structure);
     EXPECT_EQ(num_structures, 253 + 61); // Chains + PFTAA
+}
+
+// Builds a system of 'num_chains' disconnected linear chains of 'chain_len' atoms each.
+// Atom c*chain_len + i is bonded to its two neighbours within the chain and nothing else.
+static void make_chain_system(md_system_t* sys, md_allocator_i* alloc, int num_chains, int chain_len) {
+    const int n = num_chains * chain_len;
+    sys->alloc = alloc;
+    sys->atom.count = (size_t)n;
+    for (int c = 0; c < num_chains; ++c) {
+        for (int i = 0; i < chain_len - 1; ++i) {
+            md_atom_pair_t pair = { c * chain_len + i, c * chain_len + i + 1 };
+            md_array_push(sys->bond.pairs, pair, alloc);
+            sys->bond.count += 1;
+        }
+    }
+    md_bond_build_connectivity(&sys->bond, (size_t)n, alloc);
+}
+
+// The structure hierarchy must be rooted at the graph center and every atom must appear after the
+// atom it was reached from. md_util_unwrap_structure and md_util_unwrap_subset_vec4 both depend on
+// that ordering, and atom_slot must be a consistent inverse of atom_idx.
+UTEST(util, structure_hierarchy) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    {
+        // A chain of nine has a single center, the middle atom
+        md_system_t sys = {0};
+        make_chain_system(&sys, alloc, 1, 9);
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+        ASSERT_EQ(md_structure_count(&sys.structure), 1);
+        EXPECT_EQ(sys.structure.atom_idx[0], 4);
+        EXPECT_EQ(sys.structure.parent_idx[0], sys.structure.atom_idx[0]); // the root is its own parent
+
+        for (size_t slot = 0; slot < 9; ++slot) {
+            const int32_t atom   = sys.structure.atom_idx[slot];
+            const int32_t parent = sys.structure.parent_idx[slot];
+            EXPECT_EQ(md_structure_atom_slot(&sys.structure, atom), (int32_t)slot);
+            EXPECT_EQ(md_structure_atom_parent(&sys.structure, atom), parent);
+            if (parent != atom) {
+                // slot(parent) < slot(child), the invariant a single forward pass relies on
+                EXPECT_LT(md_structure_atom_slot(&sys.structure, parent), (int32_t)slot);
+            }
+        }
+
+        md_system_free(&sys);
+    }
+
+    {
+        // Separate components are rooted independently and stored back to back
+        md_system_t sys = {0};
+        make_chain_system(&sys, alloc, 2, 5);
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+        ASSERT_EQ(md_structure_count(&sys.structure), 2);
+        EXPECT_EQ(sys.structure.offset[0], 0u);
+        EXPECT_EQ(sys.structure.offset[1], 5u);
+        EXPECT_EQ(sys.structure.offset[2], 10u);
+        EXPECT_EQ(sys.structure.atom_idx[0], 2);
+        EXPECT_EQ(sys.structure.atom_idx[5], 7);
+
+        md_system_free(&sys);
+    }
+
+    {
+        // A lone atom and a bonded pair must not trip the double sweep used to locate the center
+        md_system_t sys = {0};
+        sys.alloc = alloc;
+        sys.atom.count = 3;
+        md_atom_pair_t pair = {1, 2};
+        md_array_push(sys.bond.pairs, pair, alloc);
+        sys.bond.count = 1;
+        md_bond_build_connectivity(&sys.bond, 3, alloc);
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+        ASSERT_EQ(md_structure_count(&sys.structure), 2);
+        for (size_t slot = 0; slot < 3; ++slot) {
+            EXPECT_EQ(md_structure_atom_slot(&sys.structure, sys.structure.atom_idx[slot]), (int32_t)slot);
+        }
+
+        md_system_free(&sys);
+    }
+}
+
+// A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
+// itself twice. Unwrapping must recover a straight line whatever subset is asked for.
+UTEST(util, unwrap_subset_ortho) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    md_system_t sys = {0};
+    make_chain_system(&sys, alloc, 1, 9);
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+    float x[9], y[9] = {0}, z[9] = {0};
+    for (int i = 0; i < 9; ++i) {
+        x[i] = fmodf(1.0f + 2.0f * i, 10.0f);
+    }
+    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
+
+    int32_t idx[9];
+    for (int i = 0; i < 9; ++i) idx[i] = i;
+
+    vec4_t xyzw[9];
+    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_NEAR(xyzw[i + 1].x - xyzw[i].x, 2.0f, 1.0e-4f);
+    }
+
+    // The two ends alone, with everything that connects them left out of the selection. Propagation
+    // runs over the structure hierarchy, so they must still come back 16A apart. An unwrap limited
+    // to the subset's own induced subgraph would place them in arbitrary, unrelated images.
+    const int32_t ends_idx[2] = { 0, 8 };
+    vec4_t ends[2];
+    md_util_unwrap_subset_vec4(ends, ends_idx, 2, NULL, &sys, &state);
+    EXPECT_NEAR(ends[1].x - ends[0].x, 16.0f, 1.0e-4f);
+
+    // The indices need not be sorted or contiguous
+    const int32_t mixed_idx[4] = { 7, 1, 8, 3 };
+    vec4_t mixed[4];
+    md_util_unwrap_subset_vec4(mixed, mixed_idx, 4, NULL, &sys, &state);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_NEAR(mixed[i].x, xyzw[mixed_idx[i]].x, 1.0e-4f);
+    }
+
+    md_system_free(&sys);
+}
+
+// The same chain, folded back by whole lattice vectors of a triclinic cell. Unwrapping must recover
+// the original straight line up to a single rigid lattice translation of the whole structure.
+UTEST(util, unwrap_subset_triclinic) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    md_system_t sys = {0};
+    make_chain_system(&sys, alloc, 1, 9);
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+    md_unitcell_t cell = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
+    float A[3][3] = {0};
+    md_unitcell_A_extract_float(A, &cell);
+
+    float tx[9], ty[9], tz[9];
+    float x[9], y[9], z[9];
+    for (int i = 0; i < 9; ++i) {
+        tx[i] = 1.0f + 2.00f * i;
+        ty[i] = 1.0f + 0.50f * i;
+        tz[i] = 1.0f + 0.25f * i;
+
+        const int na = (i >= 5) ? -1 : 0;   // displace the tail by one lattice vector along a
+        const int nb = (i >= 7) ? -1 : 0;   // and the last two also along b
+
+        x[i] = tx[i] + na * A[0][0] + nb * A[1][0];
+        y[i] = ty[i] + na * A[0][1] + nb * A[1][1];
+        z[i] = tz[i] + na * A[0][2] + nb * A[1][2];
+    }
+    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = cell };
+
+    int32_t idx[9];
+    for (int i = 0; i < 9; ++i) idx[i] = i;
+
+    vec4_t xyzw[9];
+    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
+
+    const float ox = xyzw[0].x - tx[0];
+    const float oy = xyzw[0].y - ty[0];
+    const float oz = xyzw[0].z - tz[0];
+
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_NEAR(xyzw[i].x, tx[i] + ox, 1.0e-3f);
+        EXPECT_NEAR(xyzw[i].y, ty[i] + oy, 1.0e-3f);
+        EXPECT_NEAR(xyzw[i].z, tz[i] + oz, 1.0e-3f);
+    }
+
+    md_system_free(&sys);
+}
+
+// md_util_unwrap_structure and md_util_unwrap_subset_vec4 perform the same minimum image
+// propagation over the same hierarchy and must agree atom for atom on a whole structure.
+//
+// @NOTE: this caught min_image_ortho being fed a half extent where it wants a reciprocal one. The
+// two helpers take different quantities - min_image_ortho wants 1/ext, min_image_triclinic wants
+// ext/2 - so a single shared local silently feeds one of them the wrong thing. min_image_inv_ext
+// exists to keep them apart; keep this test as the tripwire.
+UTEST(util, unwrap_structure_matches_unwrap_subset) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    md_system_t sys = {0};
+    make_chain_system(&sys, alloc, 1, 9);
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+
+    float x[9], y[9] = {0}, z[9] = {0};
+    for (int i = 0; i < 9; ++i) {
+        x[i] = fmodf(1.0f + 2.0f * i, 10.0f);
+    }
+    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
+
+    int32_t idx[9];
+    for (int i = 0; i < 9; ++i) idx[i] = i;
+
+    vec4_t xyzw[9];
+    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
+
+    md_structure_t structure = {0};
+    ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
+    md_util_unwrap_structure(&state, &structure);
+
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_NEAR(x[i], xyzw[i].x, 1.0e-4f);
+        EXPECT_NEAR(y[i], xyzw[i].y, 1.0e-4f);
+        EXPECT_NEAR(z[i], xyzw[i].z, 1.0e-4f);
+    }
+
+    // And again through the triclinic branch, which takes the half extent rather than the reciprocal
+    {
+        md_unitcell_t cell = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
+        float A[3][3] = {0};
+        md_unitcell_A_extract_float(A, &cell);
+
+        float tx[9], ty[9], tz[9];
+        for (int i = 0; i < 9; ++i) {
+            const int na = (i >= 5) ? -1 : 0;
+            const int nb = (i >= 7) ? -1 : 0;
+            tx[i] = 1.0f + 2.00f * i + na * A[0][0] + nb * A[1][0];
+            ty[i] = 1.0f + 0.50f * i + na * A[0][1] + nb * A[1][1];
+            tz[i] = 1.0f + 0.25f * i + na * A[0][2] + nb * A[1][2];
+            x[i] = tx[i]; y[i] = ty[i]; z[i] = tz[i];
+        }
+        md_system_state_t tri_state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = cell };
+
+        md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &tri_state);
+        md_util_unwrap_structure(&tri_state, &structure);
+
+        for (int i = 0; i < 9; ++i) {
+            EXPECT_NEAR(x[i], xyzw[i].x, 1.0e-3f);
+            EXPECT_NEAR(y[i], xyzw[i].y, 1.0e-3f);
+            EXPECT_NEAR(z[i], xyzw[i].z, 1.0e-3f);
+        }
+    }
+
+    md_system_free(&sys);
+}
+
+// md_util_min_image_vec3 / _vec4 reduce a separation vector to its shortest periodic image, so no
+// component may exceed half the box and the result must differ from the input by whole box lengths.
+UTEST(util, min_image) {
+    const float e = 10.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(e, e, e);
+
+    vec3_t dx3[4] = {
+        { 1.0f, -2.0f,  3.0f},      // already minimal, must be left alone
+        {12.0f,  0.0f,  0.0f},
+        {-27.0f, 41.0f, -8.0f},
+        { 4.9f, -4.9f,  4.9f},      // just inside the half box
+    };
+    const vec3_t in3[4] = { dx3[0], dx3[1], dx3[2], dx3[3] };
+
+    md_util_min_image_vec3(dx3, 4, &cell);
+
+    for (int i = 0; i < 4; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_LE(fabsf(dx3[i].elem[c]), 0.5f * e + 1.0e-4f);
+            const float shift = in3[i].elem[c] - dx3[i].elem[c];
+            EXPECT_NEAR(shift, e * nearbyintf(shift / e), 1.0e-3f);
+        }
+    }
+
+    EXPECT_NEAR(dx3[0].x,  1.0f, 1.0e-4f);
+    EXPECT_NEAR(dx3[0].y, -2.0f, 1.0e-4f);
+    EXPECT_NEAR(dx3[0].z,  3.0f, 1.0e-4f);
+    EXPECT_NEAR(dx3[1].x,  2.0f, 1.0e-4f);
+    EXPECT_NEAR(dx3[3].x,  4.9f, 1.0e-4f);
+
+    vec4_t dx4[2] = { {12.0f, 0.0f, 0.0f, 7.0f}, {-27.0f, 41.0f, -8.0f, 8.0f} };
+    md_util_min_image_vec4(dx4, 2, &cell);
+    EXPECT_NEAR(dx4[0].x, 2.0f, 1.0e-4f);
+    EXPECT_NEAR(dx4[1].x, 3.0f, 1.0e-4f);
+    EXPECT_NEAR(dx4[1].y, 1.0f, 1.0e-4f);
+    EXPECT_NEAR(dx4[1].z, 2.0f, 1.0e-4f);
+    EXPECT_NEAR(dx4[0].w, 7.0f, 1.0e-4f);   // w must be left untouched
+    EXPECT_NEAR(dx4[1].w, 8.0f, 1.0e-4f);
 }
 
 UTEST_F(util, rings_common) {

@@ -944,7 +944,7 @@ static bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t*
     return true;
 }
 
-static bool xtc_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+static bool xtc_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* out_num_atoms, md_unitcell_t* out_cell, float* out_x, float* out_y, float* out_z) {
     ASSERT(inst);
 
     xtc_reader_t* xtc = (xtc_reader_t*)inst;
@@ -974,11 +974,12 @@ static bool xtc_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
             md_xtc_header_t xtc_header = {0};
 
             if (md_xtc_decode_frame_data_soa_scaled(xtc->frame_data, frame_size, &xtc_header, out_x, out_y, out_z, xtc->num_atoms, 10.0f)) {
-                if (out_header) {
-                    out_header->num_atoms = xtc_header.natoms;
-                    out_header->index     = xtc_header.step;
-                    out_header->timestamp = xtc_header.time;
-                    out_header->unitcell  = md_unitcell_from_matrix_float(xtc_header.box);
+                if (out_num_atoms) {
+                    *out_num_atoms = xtc_header.natoms;
+                }
+                if (out_cell) {
+                    // @NOTE: md_xtc_decode_frame_data_soa_scaled has already applied the scale to the box
+                    *out_cell = md_unitcell_from_matrix_float(xtc_header.box);
                 }
 
                 result = true;
@@ -1008,21 +1009,22 @@ static void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
 }
 
-// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
-// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
-static bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
-    md_trajectory_frame_header_t local_header = {0};
-    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
     float* x = state ? state->x : NULL;
     float* y = state ? state->y : NULL;
     float* z = state ? state->z : NULL;
-    if (!xtc_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+    if (!xtc_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
         return false;
     }
     if (state) {
-        state->unitcell = hdr->unitcell;
+        state->unitcell = cell;
         if (state->num_atoms == 0) {
-            state->num_atoms = hdr->num_atoms;
+            state->num_atoms = num_atoms;
         }
     }
     return true;
@@ -1059,78 +1061,6 @@ static bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md
     reader->free = xtc_trajectory_reader_free;
 
     return true;
-}
-
-static bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
-
-    xtc_t* xtc = (xtc_t*)inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
-        return false;
-    }
-    if (!xtc->frame_offsets) {
-        MD_LOG_ERROR("XTC: Frame offsets is empty");
-        return 0;
-    }
-
-    if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
-        MD_LOG_ERROR("XTC: Frame index is out of range");
-        return 0;
-    }
-
-    bool result = false;
-	md_file_t file = { 0 };
-    if (md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
-        md_temp_scope_t temp = md_temp_begin();
-
-        const int64_t beg = xtc->frame_offsets[frame_idx];
-        const int64_t end = xtc->frame_offsets[frame_idx + 1];
-        if (end <= beg) {
-            MD_LOG_ERROR("XTC: Invalid frame offset range");
-            goto done;
-        }
-        const size_t frame_size = end - beg;
-		const size_t alloc_size = ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES;
-
-		uint8_t* frame_data = md_temp_alloc(temp, alloc_size);
-        if (!frame_data) {
-            MD_LOG_ERROR("XTC: Failed to allocate memory for frame data");
-			goto done;
-		}
-
-        size_t read_size = md_file_read_at(file, beg, frame_data, frame_size);
-		if (read_size == frame_size) {
-            size_t num_atoms = xtc->header.num_atoms;
-            md_xtc_header_t xtc_header = {0};
-
-            if (md_xtc_decode_frame_data_soa_scaled(frame_data, frame_size, &xtc_header, x, y, z, num_atoms, 10.0f)) {
-                if (header) {
-                    for (int i = 0; i < 3; ++i) {
-                        xtc_header.box[i][0] *= 10.0f;
-                        xtc_header.box[i][1] *= 10.0f;
-                        xtc_header.box[i][2] *= 10.0f;
-			        }
-                    header->num_atoms = xtc_header.natoms;
-			        header->index     = xtc_header.step;
-			        header->timestamp = xtc_header.time;
-			        header->unitcell  = md_unitcell_from_matrix_float(xtc_header.box);
-                }
-
-                result = true;
-            } else {
-                MD_LOG_ERROR("XTC: Failed to decode frame data");
-            }
-        } else {
-			MD_LOG_ERROR("XTC: Failed to read frame data from file, expected %zu bytes, got %zu bytes", frame_size, read_size);
-        }
-
-    done:
-        md_temp_end(temp);
-		md_file_close(&file);
-    }
-
-    return result;
 }
 
 typedef struct xtc_cache_t {

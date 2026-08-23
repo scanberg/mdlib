@@ -548,7 +548,7 @@ static size_t xyz_fetch_frame_data(const xyz_trajectory_t* xyz, md_file_t file, 
     return total_size;
 }
 
-static bool xyz_decode_frame_data(const xyz_trajectory_t* xyz, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool xyz_decode_frame_data(const xyz_trajectory_t* xyz, const void* data_ptr, size_t data_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     if (!data_ptr) {
         MD_LOG_ERROR("Data pointer is NULL");
         return false;
@@ -605,12 +605,13 @@ static bool xyz_decode_frame_data(const xyz_trajectory_t* xyz, const void* data_
         i += 1;
     }
 
-    if (header) {
-        header->num_atoms = i;
-        header->index = step;
-        header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        //header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
-        header->unitcell = md_unitcell_from_matrix_float(model.cell);
+    if (num_atoms) {
+        *num_atoms = i;
+    }
+
+    if (cell) {
+        //*cell = md_unitcell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        *cell = md_unitcell_from_matrix_float(model.cell);
     }
 
     return true;
@@ -826,17 +827,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     return result;
 }
 
-bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    (void)inst;
-    (void)frame_idx;
-    (void)header;
-    (void)x;
-    (void)y;
-    (void)z;
-    return false;
-}
-
-static bool xyz_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool xyz_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     ASSERT(inst);
 
     xyz_reader_t* reader = (xyz_reader_t*)inst;
@@ -858,7 +849,7 @@ static bool xyz_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
             return false;
         }
 
-        result = xyz_decode_frame_data(xyz, reader->frame_data, frame_size, header, x, y, z);
+        result = xyz_decode_frame_data(xyz, reader->frame_data, frame_size, num_atoms, cell, x, y, z);
     }
 
     return result;
@@ -881,21 +872,22 @@ static void xyz_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     MEMSET(reader, 0, sizeof(*reader));
 }
 
-// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
-// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
-static bool xyz_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
-    md_trajectory_frame_header_t local_header = {0};
-    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool xyz_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
     float* x = state ? state->x : NULL;
     float* y = state ? state->y : NULL;
     float* z = state ? state->z : NULL;
-    if (!xyz_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+    if (!xyz_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
         return false;
     }
     if (state) {
-        state->unitcell = hdr->unitcell;
+        state->unitcell = cell;
         if (state->num_atoms == 0) {
-            state->num_atoms = hdr->num_atoms;
+            state->num_atoms = num_atoms;
         }
     }
     return true;

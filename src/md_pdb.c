@@ -246,7 +246,7 @@ static size_t pdb_fetch_frame_data(const pdb_trajectory_t* pdb, md_file_t file, 
     return frame_size;
 }
 
-static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame_data, size_t frame_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame_data, size_t frame_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     ASSERT(frame_data);
     ASSERT(frame_size);
 
@@ -277,11 +277,13 @@ static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame
         }
     }
 
-    if (header) {
-        header->num_atoms = i;
-        header->index = step;
-        header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        header->unitcell = pdb->unitcell;
+    if (num_atoms) {
+        *num_atoms = i;
+    }
+
+    if (cell) {
+        // PDB trajectories carry a single CRYST1 record, so every frame shares the file's cell
+        *cell = pdb->unitcell;
     }
 
     return true;
@@ -558,6 +560,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
 
         sys->atom.count += 1;
+
         md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(state->x, x);
         md_array_push_no_grow(state->y, y);
@@ -570,6 +573,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
     md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
+
+    state->num_atoms = sys->atom.count;
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
@@ -708,17 +713,7 @@ bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     return success;
 }
 
-bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    (void)inst;
-    (void)frame_idx;
-    (void)header;
-    (void)x;
-    (void)y;
-    (void)z;
-    return false;
-}
-
-static bool pdb_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool pdb_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     ASSERT(inst);
 
     pdb_reader_t* reader = (pdb_reader_t*)inst;
@@ -740,7 +735,7 @@ static bool pdb_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
             return false;
         }
 
-        result = pdb_decode_frame_data(pdb, reader->frame_data, frame_size, header, x, y, z);
+        result = pdb_decode_frame_data(pdb, reader->frame_data, frame_size, num_atoms, cell, x, y, z);
     }
 
     return result;
@@ -763,21 +758,22 @@ static void pdb_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     MEMSET(reader, 0, sizeof(*reader));
 }
 
-// Adapts the raw reader to the state based interface. Filling state->unitcell from the same header
-// the coordinates were decoded with is what makes a coords/cell mismatch unrepresentable here.
-static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, md_system_state_t* state) {
-    md_trajectory_frame_header_t local_header = {0};
-    md_trajectory_frame_header_t* hdr = out_header ? out_header : &local_header;
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
     float* x = state ? state->x : NULL;
     float* y = state ? state->y : NULL;
     float* z = state ? state->z : NULL;
-    if (!pdb_reader_load_frame_raw(inst, idx, hdr, x, y, z)) {
+    if (!pdb_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
         return false;
     }
     if (state) {
-        state->unitcell = hdr->unitcell;
+        state->unitcell = cell;
         if (state->num_atoms == 0) {
-            state->num_atoms = hdr->num_atoms;
+            state->num_atoms = num_atoms;
         }
     }
     return true;

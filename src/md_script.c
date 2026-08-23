@@ -294,9 +294,8 @@ typedef struct static_backchannel_t {
 
 typedef struct eval_context_t {
     md_script_ir_t* ir;
-    const md_system_t* mol;
+    const md_system_t* sys;
     const md_bitfield_t* mol_ctx;       // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
-    const md_trajectory_i* traj;
 
     const float* atom_mass;
     const float* atom_radius;
@@ -315,16 +314,14 @@ typedef struct eval_context_t {
     uint32_t vis_flags;                 // Visualization flags
     md_bitfield_t* vis_structure;       // Current visualization structure to mark atoms in
 
-    md_trajectory_frame_header_t* frame_header;
-
-    // The state being evaluated. Every coordinate and cell read goes through this, so the two can
-    // never come from different frames.
-    const md_system_state_t* state;
+    // The state being evaluated. Every coordinate, cell and frame read goes through this, so they
+    // can never come from different frames.
+    const md_system_state_t* cur_state;
 
     // The configuration the system's topology was inferred from. Replaces the old
     // initial_configuration, which meant three different things depending on entry point:
     // trajectory frame 0, the system's own coordinates, or whatever the caller passed.
-    const md_system_state_t* reference;
+    const md_system_state_t* ref_state;
 
     // A common spatial acceleration structure which is built lazily.
     // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
@@ -2826,10 +2823,10 @@ static bool evaluate_table_lookup(data_t* dst, const ast_node_t* node, eval_cont
     if (dst) {
         ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
 
-        const size_t num_frames = md_trajectory_num_frames(ctx->traj);
+        const size_t num_frames = md_trajectory_num_frames(ctx->sys->trajectory);
 
-        if (!num_frames || !ctx->frame_header) {
-            MD_LOG_ERROR("Missing trajectory header data, cannot evaluate table");
+        if (!num_frames || !ctx->cur_state || !md_state_has_frame(ctx->cur_state)) {
+            MD_LOG_ERROR("Missing frame information on the evaluated state, cannot evaluate table");
             return false;
         }
         if (!is_type_equivalent(dst->type, node->data.type)) {
@@ -2852,12 +2849,13 @@ static bool evaluate_table_lookup(data_t* dst, const ast_node_t* node, eval_cont
                 return false;
             }
 
-            const double ref_time = ctx->frame_header->timestamp;
+            // Time is derived from the frame rather than stored alongside it, so the two cannot disagree
+            const double ref_time = md_trajectory_time_at_frame(ctx->sys->trajectory, ctx->cur_state->frame);
 
             // Find the row_index in the table which corresponds to the current time
             double t0 = 0.0;
             double t1 = 1.0;
-            const double* traj_times = md_trajectory_frame_times(ctx->traj);
+            const double* traj_times = md_trajectory_frame_times(ctx->sys->trajectory);
             if (traj_times) {
                 t0 = traj_times[0];
                 t1 = traj_times[num_frames - 1];
@@ -2892,8 +2890,12 @@ static bool evaluate_table_lookup(data_t* dst, const ast_node_t* node, eval_cont
                 }
             }
         } else {
-            // Simple case, find the matching frame
-			row_index = ctx->frame_header->index;
+            // Simple case, find the matching frame.
+            // @NOTE: this is the trajectory ORDINAL, which is what a row index wants. It used to be
+            // whatever the file called a frame - the simulation step for XTC and TRR, the MODEL
+            // record number for PDB - so any trajectory written at an interval other than every
+            // step indexed the table with a step count and silently found nothing.
+			row_index = (int64_t)md_state_frame_nearest(ctx->cur_state);
         }
 
         if (row_index == -1) {
@@ -4278,7 +4280,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
 
     table_t* table = find_table(ctx->ir, full_path);
     if (!table) {
-        table = import_table(ctx->ir, node->token, full_path, ctx->traj);
+        table = import_table(ctx->ir, node->token, full_path, ctx->sys->trajectory);
         if (!table) {
             LOG_ERROR(ctx->ir, node->token, "import: failed to import file '"STR_FMT"'", (int)full_path.len, full_path.ptr);
             return false;
@@ -5126,7 +5128,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     // if LHS is a bitfield of length 1, the resulting bitfield length is the same as RHS (M)
                     // if LHS is a bitfield of length N, the resulting bitfield length is (N*M), N may vary for each context.
 
-                    const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->mol); 
+                    const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->sys); 
 
                     node->lhs_context_types = 0;
                     size_t arr_len = 0;
@@ -5409,9 +5411,9 @@ static bool parse_script(md_script_ir_t* ir, md_allocator_i* temp_arena) {
     return result;
 }
 
-static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const md_trajectory_i* traj, md_allocator_i* temp_arena) {
+static bool static_type_check(md_script_ir_t* ir, const md_system_t* sys, md_allocator_i* temp_arena) {
     ASSERT(ir);
-    ASSERT(mol);
+    ASSERT(sys);
 
     bool result = true;
 
@@ -5419,11 +5421,10 @@ static bool static_type_check(md_script_ir_t* ir, const md_system_t* mol, const 
         .ir = ir,
         .temp_alloc = temp_arena,
         .alloc = ir->arena,
-        .mol = mol,
-        .traj = traj,
+        .sys = sys,
         // Static checking has no frame; the reference configuration is the only state available.
-        .state = &mol->reference,
-        .reference = &mol->reference,
+        .cur_state = &sys->reference,
+        .ref_state = &sys->reference,
     };
 
     ir->stage = "Static Type Checking";
@@ -5536,8 +5537,8 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     return true;
 }
 
-static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
-    ASSERT(mol);
+static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
+    ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(ir->arena);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
@@ -5545,10 +5546,10 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* mol) {
 
     eval_context_t ctx = {
         .ir = ir,
-        .mol = mol,
+        .sys = sys,
         .temp_alloc = temp_alloc,
-        .state = &mol->reference,
-        .reference = &mol->reference,
+        .cur_state = &sys->reference,
+        .ref_state = &sys->reference,
     };
 
     ir->stage = "Static Evaluation";
@@ -5734,10 +5735,9 @@ static void clear_property_data(md_script_property_data_t* data) {
     data->max_value = -FLT_MAX;
 }
 
-static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
+static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
-    ASSERT(mol);
-    ASSERT(traj);
+    ASSERT(sys);
     ASSERT(ir);
 
     // No properties to evaluate!
@@ -5750,15 +5750,20 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = true;
 
+    // Per worker states. Each evaluation range owns its coordinates, which is why the whole system
+    // had to be copied before: it was the only way to get a private coordinate buffer.
+    md_system_state_t cur_state = { .alloc = temp_alloc };
+    md_system_state_init(&cur_state, sys->atom.count);
+
     // coordinate data for reading trajectory frames into
-    const size_t stride = ALIGN_TO(mol->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
+    const size_t stride = ALIGN_TO(sys->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
     const size_t coord_bytes = stride * 3 * sizeof(float);
     float* curr_coords = md_temp_alloc_array(temp, float, coord_bytes);
     float* atom_mass   = md_temp_alloc_array(temp, float, stride);
     float* atom_radius = md_temp_alloc_array(temp, float, stride);
 
     md_trajectory_reader_i traj_reader = {0};
-    if (!md_trajectory_reader_init(&traj_reader, traj)) {
+    if (!md_trajectory_reader_init(&traj_reader, sys->trajectory)) {
         MD_LOG_ERROR("Failed to initialize trajectory reader for evaluation");
         result = false;
         goto done;
@@ -5767,8 +5772,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     // This data is meant to hold the evaluated expressions
     data_t* data = md_temp_alloc_array(temp, data_t, num_expr);
 
-    md_atom_extract_masses(atom_mass,   0, mol->atom.count, &mol->atom);
-    md_atom_extract_radii (atom_radius, 0, mol->atom.count, &mol->atom);
+    md_atom_extract_masses(atom_mass,   0, sys->atom.count, &sys->atom);
+    md_atom_extract_radii (atom_radius, 0, sys->atom.count, &sys->atom);
 
     const size_t STACK_RESET_POINT = md_vm_arena_get_pos(temp_alloc);
 
@@ -5776,29 +5781,16 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
     //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
     //uint64_t max_arena_pos = 0;
 
-    md_trajectory_frame_header_t curr_header = { 0 };
-
-
-    float* curr_x = curr_coords + 0 * stride;
-    float* curr_y = curr_coords + 1 * stride;
-    float* curr_z = curr_coords + 2 * stride;
-
-    // Per worker states. Each evaluation range owns its coordinates, which is why the whole system
-    // had to be copied before: it was the only way to get a private coordinate buffer.
-    md_system_state_t curr_state = { mol->atom.count, curr_x, curr_y, curr_z, {0} };
-
 
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
-        .mol = mol,
-        .traj = traj,
+        .sys = sys,
         .atom_mass = atom_mass,
         .atom_radius = atom_radius,
         .temp_alloc = temp_alloc,
         .alloc = temp_alloc,
-        .frame_header = &curr_header,
-        .state = &curr_state,
-        .reference = &mol->reference,
+        .cur_state = &cur_state,
+        .ref_state = &sys->reference,
     };
 
 
@@ -5808,7 +5800,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* mol, cons
             goto done;
         }
         
-        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &curr_header, &curr_state);
+        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &cur_state);
 
         if (!result) {
             MD_LOG_ERROR("Failed to load frame during evaluation");
@@ -6194,7 +6186,7 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     return create_ir(alloc);
 }
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_system_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ctx_ir) {
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_system_t* sys, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("Script Compile: IR is not valid");
         return false;
@@ -6205,7 +6197,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
         return false;
     }
 
-    if (!mol) {
+    if (!sys) {
         MD_LOG_ERROR("Script Compile: Molecule was not supplied");
         return false;
     }
@@ -6221,9 +6213,9 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
 
     ir->compile_success =
         parse_script(ir, temp_alloc) &&
-        static_type_check(ir, mol, traj, temp_alloc) &&
+        static_type_check(ir, sys, temp_alloc) &&
         // optimize ast?
-        //static_evaluation(ir, mol) &&
+        //static_evaluation(ir, sys) &&
         extract_dynamic_evaluation_targets(ir) &&
         extract_identifiers(ir) &&
         extract_properties(ir);
@@ -6564,23 +6556,19 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
     eval->interrupt = false;
 }
 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end) {
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
 
     if (!ir) {
         MD_LOG_ERROR("Script eval: Immediate representation was null");
         return false;
     }
-    if (!mol) {
+    if (!sys) {
         MD_LOG_ERROR("Script eval: Molecule was null");
         return false;
     }
-    if (!traj) {
-        MD_LOG_ERROR("Script eval: Trajectory was null");
-        return false;
-    }
 
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(sys->trajectory);
     if (num_frames == 0) {
         MD_LOG_ERROR("Script eval: Trajectory was empty");
         return false;
@@ -6595,7 +6583,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
     
-    bool result = eval_properties(eval, mol, traj, ir, frame_beg, frame_end);
+    bool result = eval_properties(eval, sys, ir, frame_beg, frame_end);
 
     const uint64_t fingerprint = generate_fingerprint();
     for (size_t i = 0; i < md_array_size(eval->property_data); ++i) {
@@ -6660,7 +6648,7 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
     }
 }
 
-static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_allocator_i* alloc) {
+static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_allocator_i* alloc) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
@@ -6674,11 +6662,11 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_alloca
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .sys = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .state = &mol->reference,
-            .reference = &mol->reference,
+            .cur_state = &sys->reference,
+            .ref_state = &sys->reference,
         };
 
         if (static_check_node(node, &ctx)) {
@@ -6710,7 +6698,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* mol, md_alloca
 }
 
 #if DEBUG
-static void parse_type_check_and_print_expression_to_json(str_t expr, const md_system_t* mol, str_t filename) {
+static void parse_type_check_and_print_expression_to_json(str_t expr, const md_system_t* sys, str_t filename) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(temp_alloc);
@@ -6721,11 +6709,11 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .sys = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .state = &mol->reference,
-            .reference = &mol->reference,
+            .cur_state = &sys->reference,
+            .ref_state = &sys->reference,
             .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -6772,11 +6760,11 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = sys,
+            .sys = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .state = state,
-            .reference = &sys->reference,
+            .cur_state = state,
+            .ref_state = &sys->reference,
             .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -6881,11 +6869,11 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = sys,
+            .sys = sys,
             .temp_alloc = temp_alloc,
             .alloc = temp_alloc,
-            .state = state,
-            .reference = &sys->reference,
+            .cur_state = state,
+            .ref_state = &sys->reference,
             .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
         };
 
@@ -7072,21 +7060,6 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     md_temp_scope_t temp = md_temp_begin_avoid(vis->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
-    size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
-    float* init_x = md_temp_alloc_array(temp, float, num_atoms);
-    float* init_y = md_temp_alloc_array(temp, float, num_atoms);
-    float* init_z = md_temp_alloc_array(temp, float, num_atoms);
-
-    md_trajectory_frame_header_t header = { 0 };
-    md_system_state_t init_state = { num_atoms, init_x, init_y, init_z, {0} };
-    if (vis_ctx->traj) {
-        md_trajectory_load_frame(vis_ctx->traj, 0, &header, &init_state);
-    } else {
-        init_state = vis_ctx->mol->reference;
-    }
-    init_x = init_state.x;
-    init_y = init_state.y;
-    init_z = init_state.z;
 
     md_array(irange_t) ranges = 0;
     if (subidx > -1) {
@@ -7096,15 +7069,13 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
 
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)vis_ctx->ir,
-        .mol = vis_ctx->mol,
-        .traj = vis_ctx->traj,
+        .sys = vis_ctx->sys,
         .temp_alloc = temp_alloc,
         .vis = vis,
         .vis_flags = flags,
         .vis_structure = &vis->atom_mask,
-        .frame_header = &header,
-        .state = &init_state,
-        .reference = &vis_ctx->mol->reference,
+        .cur_state = vis_ctx->state,
+        .ref_state = &vis_ctx->sys->reference,
         .subscript_ranges = ranges,
     };
 
@@ -7149,40 +7120,22 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
     }
 
     if (parse_script(ir, temp_alloc)) {
-        if (static_type_check(ir, vis_ctx->mol, vis_ctx->traj, temp_alloc)) {
+        if (static_type_check(ir, vis_ctx->sys, temp_alloc)) {
             size_t num_nodes = md_array_size(ir->type_checked_expressions);
             if (num_nodes) {
                 md_bitfield_clear(&vis->atom_mask);
                 ir->stage = "Visualize Node";
 
-                size_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
-                float* init_x = md_temp_alloc_array(temp, float, num_atoms);
-                float* init_y = md_temp_alloc_array(temp, float, num_atoms);
-                float* init_z = md_temp_alloc_array(temp, float, num_atoms);
-
-                md_trajectory_frame_header_t header = { 0 };
-                md_system_state_t init_state = { num_atoms, init_x, init_y, init_z, {0} };
-                if (vis_ctx->traj) {
-                    md_trajectory_load_frame(vis_ctx->traj, 0, &header, &init_state);
-                } else {
-                    init_state = vis_ctx->mol->reference;
-                }
-                init_x = init_state.x;
-                init_y = init_state.y;
-                init_z = init_state.z;
-
                 eval_context_t ctx = {
                     .ir = ir,
-                    .mol = vis_ctx->mol,
-                    .traj = vis_ctx->traj,
+                    .sys = vis_ctx->sys,
                     .alloc = temp_alloc,
                     .temp_alloc = temp_alloc,
                     .vis = vis,
                     .vis_flags = flags,
                     .vis_structure = &vis->atom_mask,
-                    .frame_header = &header,
-                    .state = &init_state,
-                    .reference = &vis_ctx->mol->reference,
+                    .cur_state = vis_ctx->state,
+                    .ref_state = &vis_ctx->sys->reference,
                     .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL
                 };
 

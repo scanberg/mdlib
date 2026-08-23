@@ -82,6 +82,7 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->structure.offset, alloc);
     md_array_free(sys->structure.atom_idx, alloc);
     md_array_free(sys->structure.parent_idx, alloc);
+    md_array_free(sys->structure.atom_slot, alloc);
 
     // ASSEMBLY
     md_array_free(sys->assembly.atom_range, alloc);

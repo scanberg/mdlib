@@ -141,8 +141,10 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 bool md_util_system_pbc(md_system_state_t* state);
 
 // Unwraps a structure by traversing the supplied topology formed by bonds
-void md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
-void md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
+// @NOTE: in_out_xyzw is indexed by GLOBAL atom index, not compacted. When in_idx is supplied it
+// selects which atoms take part, it does not remap the array. See md_util_unwrap_subset_vec4 for
+// the compacted form.
+bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
 
 // Unwraps a single structure by walking the parent hierarchy md_util_system_infer_structures
 // already computed. Linear, allocation free, and does not consult bond connectivity.
@@ -150,6 +152,28 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
 
 // Unwraps all structures in a system
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
+
+// Unwraps an arbitrary subset of a system into a COMPACTED destination array:
+//   out_xyzw[i] receives the coordinate of atom in_idx[i], with w taken from in_w[in_idx[i]]
+//   (or 1.0 when in_w is NULL). in_w is indexed by global atom index, out_xyzw is not.
+//
+// The minimum image convention is propagated along the structure hierarchy which
+// md_util_system_infer_structures computed - the same arithmetic md_util_unwrap_structure performs,
+// but only along the paths needed to reach the selected atoms, so the cost follows the size of the
+// selection rather than the size of the structure it sits in.
+//
+// Propagation runs over the hierarchy, NOT over the subset's induced subgraph, so a selection which
+// omits the atoms that connect its parts (every other residue of a chain, the heavy atoms only) is
+// still placed as one coherent piece. What it does NOT do is bring separate structures into a
+// common image: each structure is placed relative to its own root. Use md_util_deperiodize_vec4 for
+// that, it is a different operation.
+//
+// in_idx may be in any order and need not be contiguous or sorted.
+//
+// PRECONDITION: the state's coordinates are expected to lie within the primary cell, as trajectory
+// frames normally store them. This procedure deliberately does not wrap them itself, since wrapping
+// is destructive and the caller may not want it.
+void md_util_unwrap_subset_vec4(vec4_t* out_xyzw, const int32_t* in_idx, size_t count, const float* in_w, const md_system_t* sys, const md_system_state_t* state);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);

@@ -139,21 +139,45 @@ typedef struct md_structure_t {
 // This is the contiguous storage of all structures, the offsets field is used to index into the atom_idx and parent_idx arrays for each structure
 // From this individual structures (md_structure_t) can be extracted
 //
-// Both arrays are indexed the same way and both hold GLOBAL atom indices:
-//   atom_idx[i]   - the atom
-//   parent_idx[i] - the atom it was reached from during the traversal
-// The seed of each structure is its own parent, so a root is parent_idx[i] == atom_idx[i] and
-// consumers need no sentinel branch.
+// The index into atom_idx / parent_idx is referred to as a SLOT. Both arrays are indexed by slot
+// and both hold GLOBAL atom indices:
+//   atom_idx[slot]   - the atom
+//   parent_idx[slot] - the atom it was reached from during the traversal
+// The root of each structure is its own parent, so a root is parent_idx[slot] == atom_idx[slot] and
+// consumers need no sentinel branch. There is exactly one root per structure.
 //
-// INVARIANT - load bearing, md_util_unwrap_structure depends on it:
-//   Within a structure, atoms are stored in BFS order from the seed, so every atom appears after
-//   the one it was reached from. A single forward pass therefore always sees a placed parent.
-//   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx to match.
+// atom_slot is the reverse map, indexed by GLOBAL atom index and covering every atom in the system:
+//   atom_slot[atom] -> the slot which holds that atom
+// It turns "what is the parent of this atom" into an O(1) lookup, which is what lets a caller walk
+// the hierarchy upwards from an arbitrary subset of atoms rather than only downwards from a root
+// (see md_util_unwrap_subset_vec4).
+//
+// ROOT SELECTION:
+//   The root is the most topologically central atom of the structure - the atom whose greatest edge
+//   distance to any other atom in the structure is smallest, i.e. the graph center. This bounds the
+//   depth of the traversal, which bounds both the cost of walking the hierarchy upwards and the
+//   number of minimum image steps accumulated when unwrapping. It also makes the root a property of
+//   the molecule rather than of the atom ordering in the source file, so two identical molecules
+//   stored in different orders get the same traversal.
+//
+//   The center is located with the standard double sweep (farthest atom from an arbitrary seed,
+//   then farthest atom from that, then the midpoint of the path between them). That is exact for
+//   acyclic structures and a close approximation in the presence of rings, which are local and
+//   small in practice.
+//
+// INVARIANT - load bearing, md_util_unwrap_structure and md_util_unwrap_subset_vec4 depend on it:
+//   Within a structure, atoms are stored in BFS order from the root, so every atom appears after
+//   the one it was reached from: slot(parent) < slot(child). A single forward pass therefore always
+//   sees a placed parent, and sorting an arbitrary set of slots ascending yields a valid
+//   topological order.
+//   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx and updating
+//   atom_slot to match.
 typedef struct md_structure_data_t {
     size_t count;
-    uint32_t* offset; // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
-    int32_t* atom_idx;
-    int32_t* parent_idx;
+    uint32_t* offset;    // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
+    int32_t* atom_idx;   // [slot] -> global atom index
+    int32_t* parent_idx; // [slot] -> global atom index of the atom it was reached from (a root is its own parent)
+    int32_t* atom_slot;  // [global atom index] -> slot. Length is the system atom count
 } md_structure_data_t;
 
 typedef struct md_hydrogen_bond_candidates_t {
@@ -203,12 +227,29 @@ typedef struct md_hydrogen_bond_data_t {
 // be set before loading. The two then read symmetrically at the call site, and the state's lifetime
 // is free to differ from the system's - a temp allocator for the state, a persistent one for the
 // system, is a legitimate and useful combination.
+// frame is the trajectory ordinal the coordinates came from, as a continuous quantity: the integer
+// part selects the frame, the fractional part is how far between that frame and the next the state
+// has been interpolated. A NEGATIVE value means the state did not come from a trajectory at all
+// (a topology's own coordinates, a scratch buffer), which is why 0.0 cannot serve as that marker.
+// Use md_state_has_frame / md_state_frame_floor / md_state_frame_nearest / md_state_frame_frac
+// rather than reading the field: a raw cast of the absent value lands on frame 0, which is in range
+// and plausible and therefore the kind of mistake that survives.
+//
+// CAVEAT, unlike the two presence bits above: -1 does not survive zero initialisation. A state
+// built as {0} or with designated initialisers that omit frame reads as frame 0, not as absent.
+// Only md_trajectory_reader_load_frame and the interpolation which produces a state stamp this
+// field, so treat a frame on a state which came from neither as unspecified, and do not consult it.
+//
+// @NOTE: physical time is deliberately NOT stored here. It is derivable from frame and the
+// trajectory's frame times (md_trajectory_time_at_frame), and storing both would reintroduce the
+// very thing this struct exists to prevent - two fields which must agree, with nothing enforcing it.
 typedef struct md_system_state_t {
     size_t num_atoms;
     float* x;
     float* y;
     float* z;
     md_unitcell_t unitcell;
+    double frame;
     md_allocator_i* alloc;
 } md_system_state_t;
 
@@ -338,6 +379,46 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
     }
     return STR_LIT("");
 }
+
+// State helpers
+
+// A state which did not come from a trajectory carries a negative frame.
+// @NOTE: NaN would pass this test, so nothing may ever write one into the field.
+static inline bool md_state_has_frame(const md_system_state_t* state) {
+    ASSERT(state);
+    return state->frame >= 0.0;
+}
+
+// The frame the state sits on or just after: the one to interpolate FORWARD from.
+// @NOTE: a cast truncates toward zero, which is floor for the non negative values md_state_has_frame
+// guarantees. Deliberately not floor() - keeping <math.h> out of this header matters, see below.
+static inline int64_t md_state_frame_floor(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return (int64_t)state->frame;
+}
+
+// The frame the state most closely corresponds to. Use this where a single frame must be named -
+// indexing a per frame array, for instance - not md_state_frame_floor, which would truncate 3.99 to 3.
+static inline int64_t md_state_frame_nearest(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return (int64_t)(state->frame + 0.5);
+}
+
+// How far the state lies between md_state_frame_floor() and the frame after it, in [0,1).
+static inline double md_state_frame_frac(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return state->frame - (double)(int64_t)state->frame;
+}
+
+// @NOTE: do NOT add <math.h> to this header. simde-math.h keys off HUGE_VAL to detect "a math header
+// was already included", and when that fires under C++ it assumes the header was <cmath> and starts
+// emitting std::trunc. On glibc that is harmless (math.h defines an isnan MACRO, which simde checks
+// for first) and on gcc/clang __has_builtin wins before it matters - but MSVC has neither, so any
+// C++ translation unit that reaches simde through this header fails with "trunc is not a member of
+// std". md_system.h is included nearly everywhere, so it is the worst possible place to trip that.
 
 // Atom helpers
 
@@ -673,6 +754,23 @@ static inline bool md_structure_extract(md_structure_t* out_structure, const md_
         return true;
     }
     return false;
+}
+
+// Slot of an atom within the flat structure arrays.
+// Requires md_util_system_infer_structures to have been run.
+static inline int32_t md_structure_atom_slot(const md_structure_data_t* structure_data, int32_t atom_idx) {
+    ASSERT(structure_data);
+    ASSERT(structure_data->atom_slot);
+    return structure_data->atom_slot[atom_idx];
+}
+
+// Global index of the atom the supplied atom was reached from during the traversal.
+// A root atom is its own parent, so parent == atom_idx identifies a root.
+// Requires md_util_system_infer_structures to have been run.
+static inline int32_t md_structure_atom_parent(const md_structure_data_t* structure_data, int32_t atom_idx) {
+    ASSERT(structure_data);
+    ASSERT(structure_data->atom_slot);
+    return structure_data->parent_idx[structure_data->atom_slot[atom_idx]];
 }
 
 // SYSTEM

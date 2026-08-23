@@ -276,10 +276,10 @@ UTEST(xtc, trajectory_i) {
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
 
     for (int64_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
     }
 
     md_temp_end(temp);

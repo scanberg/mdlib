@@ -743,8 +743,8 @@ static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_
 
         // Round up to nearest multiple of 6.0 as it seems like a good granularity for typical molecular configurations.
 		double cell_ext = ceil(max_cutoff / 6.0) * 6.0;
-        md_coord_stream_t coords = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, NULL, ctx->mol->atom.count);
-        md_spatial_acc_init(&ctx->spatial_acc, &coords, cell_ext, &ctx->state->unitcell, 0);
+        md_coord_stream_t coords = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, NULL, ctx->sys->atom.count);
+        md_spatial_acc_init(&ctx->spatial_acc, &coords, cell_ext, &ctx->cur_state->unitcell, 0);
 		ctx->spatial_acc_cell_ext = cell_ext;
     }
 
@@ -1198,7 +1198,7 @@ static inline irange_t get_chain_range_in_context(const md_system_t* sys, const 
 static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const eval_context_t* ctx) {
     ASSERT(ctx);
 
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
     const int ctx_size = ctx_range.end - ctx_range.beg;
     const int32_t ctx_idx = remap_index_to_context(in_idx, ctx_range);
     if (ctx_idx < ctx_range.beg || ctx_idx >= ctx_range.end) {
@@ -1216,7 +1216,7 @@ static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const 
 
 static bool validate_atom_range_in_context(irange_t in_range, token_t token, const eval_context_t* ctx) {
     ASSERT(ctx);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
     const int ctx_size = ctx_range.end - ctx_range.beg;
     const irange_t range = remap_range_to_context(in_range, ctx_range);
     if (!range_in_range(range, ctx_range)) {
@@ -1235,7 +1235,7 @@ static bool validate_atom_range_in_context(irange_t in_range, token_t token, con
 static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     if (element_count(arg) == 0) return 0;
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (ctx->backchannel) {
         ctx->backchannel->unit[0] = md_unit_none();
@@ -1315,7 +1315,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     ASSERT(ctx->vis);
 
     if (element_count(arg) == 0) return;
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
@@ -1414,7 +1414,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
 static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(vec3_t) positions = 0;
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
@@ -1429,7 +1429,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + indices[i] - 1;
-            vec3_t pos = { ctx->state->x[idx], ctx->state->y[idx], ctx->state->z[idx] };
+            vec3_t pos = { ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx] };
             md_array_push(positions, pos, ctx->temp_alloc);
         }
         break;
@@ -1450,7 +1450,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 while (md_bitfield_iter_next(&it)) {
                     const int64_t idx = md_bitfield_iter_idx(&it);
                     if ((k % step) == 0) {
-                        vec3_t pos = { ctx->state->x[idx], ctx->state->y[idx], ctx->state->z[idx] };
+                        vec3_t pos = { ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx] };
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                     ++k;
@@ -1460,7 +1460,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 int64_t len = MAX(0, range.end - range.beg);
                 md_array_ensure(positions, (size_t)((len + step - 1) / step), ctx->temp_alloc);
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    vec3_t pos = { ctx->state->x[j], ctx->state->y[j], ctx->state->z[j] };
+                    vec3_t pos = { ctx->cur_state->x[j], ctx->cur_state->y[j], ctx->cur_state->z[j] };
                     md_array_push(positions, pos, ctx->temp_alloc);
                 }
             }
@@ -1482,7 +1482,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
                 bf = &tmp_bf;
             }
-            positions = extract_vec3(ctx->state->x, ctx->state->y, ctx->state->z, bf, ctx->temp_alloc);
+            positions = extract_vec3(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, bf, ctx->temp_alloc);
         }
         else {
             for (size_t i = 0; i < num_bf; ++i) {
@@ -1498,11 +1498,11 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_array_ensure(positions, md_array_size(positions) + count, ctx->temp_alloc);
                     while (md_bitfield_iter_next(&it)) {
                         const uint64_t idx = md_bitfield_iter_idx(&it);
-                        vec3_t pos = vec3_set(ctx->state->x[idx], ctx->state->y[idx], ctx->state->z[idx]);
+                        vec3_t pos = vec3_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx]);
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                 } else {
-                    vec3_t com = extract_com(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, bf);
+                    vec3_t com = extract_com(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
                     md_array_push(positions, com, ctx->temp_alloc);
                 }
             }
@@ -1524,7 +1524,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
 static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(vec4_t) out_xyzw = 0;
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
@@ -1545,7 +1545,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + in_idx[i] - 1;
-            out_xyzw[i] = vec4_set(ctx->state->x[idx], ctx->state->y[idx], ctx->state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+            out_xyzw[i] = vec4_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
         }
         break;
     }
@@ -1564,7 +1564,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 while (md_bitfield_iter_next(&it)) {
                     const uint64_t idx = md_bitfield_iter_idx(&it);
                     if ((k % step) == 0) {
-                        vec4_t xyzw = vec4_set(ctx->state->x[idx], ctx->state->y[idx], ctx->state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+                        vec4_t xyzw = vec4_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
                         md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                     }
                     ++k;
@@ -1572,7 +1572,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
             }
             else {
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    vec4_t xyzw = vec4_set(ctx->state->x[j], ctx->state->y[j], ctx->state->z[j], ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
+                    vec4_t xyzw = vec4_set(ctx->cur_state->x[j], ctx->cur_state->y[j], ctx->cur_state->z[j], ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
                     md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                 }
             }
@@ -1596,7 +1596,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 bf = &tmp_bf;
             }
             md_array_resize(out_xyzw, md_bitfield_popcount(bf), ctx->temp_alloc);
-            extract_xyzw_vec4(out_xyzw, ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, bf);
+            extract_xyzw_vec4(out_xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
         }
         else {
             md_array(int32_t) indices = 0;
@@ -1609,7 +1609,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 md_array_resize(indices, md_bitfield_popcount(bf), ctx->temp_alloc);
                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                 md_bitfield_iter_extract_indices(indices, md_array_size(indices), it);
-                vec3_t xyz = md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, indices, md_array_size(indices), &ctx->state->unitcell);
+                vec3_t xyz = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, md_array_size(indices), &ctx->cur_state->unitcell);
                 double w = 0;
                 if (ctx->atom_mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
@@ -1637,7 +1637,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
 static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(int) out_indices = NULL;
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
@@ -1719,7 +1719,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     vec3_t com = {0};
 
     md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT: {
@@ -1737,7 +1737,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = vec4_from_vec3(in_pos[i], 1.0f);
         }
-        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->state->unitcell);
+        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_INT: {
@@ -1750,11 +1750,11 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         }
 
         if (num_idx == 1) {
-            com = (vec3_t) { ctx->state->x[idx[0]], ctx->state->y[idx[0]], ctx->state->z[idx[0]] };
+            com = (vec3_t) { ctx->cur_state->x[idx[0]], ctx->cur_state->y[idx[0]], ctx->cur_state->z[idx[0]] };
             goto done;
         }
         
-        com = md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, idx, num_idx, &ctx->state->unitcell);
+        com = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, idx, num_idx, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_IRANGE: {
@@ -1782,7 +1782,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     }
                     ++k;
                 }
-                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, indices, len, &ctx->state->unitcell), 1.0f);
+                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
                 md_array_push(xyzw_arr, xyzw, ctx->temp_alloc);
             }
             else {
@@ -1793,11 +1793,11 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, indices, len, &ctx->state->unitcell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
         }
 
-        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->state->unitcell);
+        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_BITFIELD: {
@@ -1820,7 +1820,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             size_t len = md_bitfield_popcount(bf);
             int32_t* indices = md_temp_alloc_array(temp, int32_t, len);
             md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-            com = md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, indices, len, &ctx->state->unitcell);
+            com = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell);
         }
         else {
             // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
@@ -1836,9 +1836,9 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, indices, len, &ctx->state->unitcell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
-            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->state->unitcell);
+            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->cur_state->unitcell);
         }
         break;
     }
@@ -1955,12 +1955,12 @@ static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf_dst = dst->ptr;
         const md_bitfield_t* bf_src = arg[0].ptr;
 
-        md_bitfield_clear_range(bf_dst, 0, ctx->mol->atom.count);
+        md_bitfield_clear_range(bf_dst, 0, ctx->sys->atom.count);
         const size_t count = element_count(arg[0]);
         for (size_t i = 0; i < count; ++i) {
             md_bitfield_or_inplace(bf_dst, &bf_src[i]);
         }
-        md_bitfield_not_inplace(bf_dst, 0, ctx->mol->atom.count);
+        md_bitfield_not_inplace(bf_dst, 0, ctx->sys->atom.count);
 
         if (ctx->mol_ctx) {
             // This is a bit conceptually strange,
@@ -2219,7 +2219,7 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
         (void)arg;
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        md_bitfield_set_range(bf, 0, ctx->mol->atom.count);
+        md_bitfield_set_range(bf, 0, ctx->sys->atom.count);
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf, ctx->mol_ctx);
         }
@@ -2229,11 +2229,11 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
 
     const str_t* str = as_string_arr(arg[0]);
     const size_t num_str = element_count(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
@@ -2242,7 +2242,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            str_t atom_id = md_atom_name(&ctx->mol->atom, i);
+            str_t atom_id = md_atom_name(&ctx->sys->atom, i);
             for (size_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], atom_id)) {
                     md_bitfield_set_bit(bf, i);
@@ -2259,7 +2259,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                str_t atom_id = md_atom_name(&ctx->mol->atom, i);
+                str_t atom_id = md_atom_name(&ctx->sys->atom, i);
                 if (match_query(str[j], atom_id)) {
                     match = true;
                     break;
@@ -2277,7 +2277,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
 
     md_atomic_number_t* query_z = 0;
 
@@ -2299,17 +2299,17 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return -1;
     }
 
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
 
-        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
+        md_bitfield_reserve_range(bf, 0, ctx->sys->atom.count);
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-            md_atomic_number_t z = md_atom_atomic_number(&ctx->mol->atom, i);
+            md_atomic_number_t z = md_atom_atomic_number(&ctx->sys->atom, i);
 
             for (size_t j = 0; j < num_query_z; ++j) {
                 if (query_z[j] == z) {
@@ -2323,7 +2323,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_atomic_number_t z_j = query_z[j];
             bool found = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
-                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
+                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->sys->atom, i);
                 if (z_i == z_j) {
                     found = true;
                     break;
@@ -2341,11 +2341,11 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
 
     irange_t* ranges = as_irange_arr(arg[0]);
     const size_t num_ranges = element_count(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(dst->ptr);
@@ -2353,7 +2353,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-            md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
+            md_atomic_number_t z_i = md_atom_atomic_number(&ctx->sys->atom, i);
             for (size_t j = 0; j < num_ranges; ++j) {
                 const int64_t step = ranges[j].step > 0 ? ranges[j].step : 1;
                 if (idx_in_range(z_i, ranges[j])) {
@@ -2372,7 +2372,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t step = ranges[j].step > 0 ? ranges[j].step : 1;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->mol->atom, i);
+                md_atomic_number_t z_i = md_atom_atomic_number(&ctx->sys->atom, i);
                 if (idx_in_range(z_i, ranges[j])) {
                     int64_t diff = (int64_t)z_i - (int64_t)ranges[j].beg;
                     if ((diff % step) == 0) {
@@ -2392,7 +2392,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, frange_t range_y, frange_t range_z) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     const md_bitfield_t* src_bf = ctx->mol_ctx;
 
     if (dst) {
@@ -2403,20 +2403,20 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
             while ((beg_bit = md_bitfield_scan(src_bf, beg_bit, end_bit)) != 0) {
                 const int64_t idx = beg_bit - 1;
 
-                if (range_x.beg <= ctx->state->x[idx] && ctx->state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->state->y[idx] && ctx->state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->state->z[idx] && ctx->state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
                 {
                     md_bitfield_set_bit(dst_bf, idx);
                 }
             }
         }
         else {
-            md_bitfield_reserve_range(dst_bf, 0, ctx->mol->atom.count);
-            for (size_t idx = 0; idx < ctx->mol->atom.count; ++idx) {
-                if (range_x.beg <= ctx->state->x[idx] && ctx->state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->state->y[idx] && ctx->state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->state->z[idx] && ctx->state->z[idx] <= range_z.end)
+            md_bitfield_reserve_range(dst_bf, 0, ctx->sys->atom.count);
+            for (size_t idx = 0; idx < ctx->sys->atom.count; ++idx) {
+                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
                 {
                     md_bitfield_set_bit(dst_bf, idx);
                 }
@@ -2431,19 +2431,19 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
             int64_t end_bit = src_bf->end_bit;
             while ((beg_bit = md_bitfield_scan(src_bf, beg_bit, end_bit)) != 0) {
                 const int64_t idx = beg_bit - 1;
-                if (range_x.beg <= ctx->state->x[idx] && ctx->state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->state->y[idx] && ctx->state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->state->z[idx] && ctx->state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
                 {
                     count += 1;
                 }
             }
         }
         else {
-            for (size_t idx = 0; idx < ctx->mol->atom.count; ++idx) {
-                if (range_x.beg <= ctx->state->x[idx] && ctx->state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->state->y[idx] && ctx->state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->state->z[idx] && ctx->state->z[idx] <= range_z.end)
+            for (size_t idx = 0; idx < ctx->sys->atom.count; ++idx) {
+                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
                 {
                     count += 1;
                 }
@@ -2483,7 +2483,7 @@ static void within_float_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
 }
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->state->x && ctx->state->y && ctx->state->z);
+    ASSERT(ctx && ctx->sys && ctx->cur_state);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
@@ -2536,7 +2536,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->state->x && ctx->state->y && ctx->state->z);
+    ASSERT(ctx && ctx->sys && ctx->cur_state);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
 
     const float radius = as_float(arg[0]);
@@ -2554,7 +2554,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             
         md_bitfield_t* bf_dst = 0;
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, idx, num_idx);
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
@@ -2565,7 +2565,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             visualize_atom_mask(ctx->mol_ctx, ctx);
             for (size_t i = 0; i < num_idx; ++i) {
-                vec3_t pos = vec3_set(ctx->state->x[idx[i]], ctx->state->y[idx[i]], ctx->state->z[idx[i]]);
+                vec3_t pos = vec3_set(ctx->cur_state->x[idx[i]], ctx->cur_state->y[idx[i]], ctx->cur_state->z[idx[i]]);
                 push_sphere(pos, radius, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2607,7 +2607,7 @@ static void within_frng_cb(const uint32_t* i_idx, const uint32_t* j_idx, const f
 }
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->state->z);
+    ASSERT(ctx && ctx->sys && ctx->cur_state);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
@@ -2661,7 +2661,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->state->z);
+    ASSERT(ctx && ctx->sys && ctx->cur_state);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
 
     const frange_t rad_range = as_frange(arg[0]);
@@ -2677,7 +2677,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         (void)num_written;
         ASSERT(num_written == num_idx);
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, idx, num_idx);
         md_bitfield_t* bf_dst = 0;
         
         if (dst) {
@@ -2689,7 +2689,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             const float rad = rad_range.end;
             for (size_t i = 0; i < num_idx; ++i) {
-                vec3_t pos = vec3_set(ctx->state->x[idx[i]], ctx->state->y[idx[i]], ctx->state->z[idx[i]]);
+                vec3_t pos = vec3_set(ctx->cur_state->x[idx[i]], ctx->cur_state->y[idx[i]], ctx->cur_state->z[idx[i]]);
                 push_sphere(pos, rad, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2743,8 +2743,8 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
         uint32_t i = i_idx[k];
         uint32_t j = j_idx[k];
         if (data->exclusion_bf && md_bitfield_test_bit(data->exclusion_bf, j)) continue;
-        const vec3_t pos_i = md_state_coord(ctx->state, i);
-        const vec3_t pos_j = md_state_coord(ctx->state, j);
+        const vec3_t pos_i = md_state_coord(ctx->cur_state, i);
+        const vec3_t pos_j = md_state_coord(ctx->cur_state, j);
         md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 255));
         md_script_vis_vertex_t v2 = vertex(pos_j, COLOR_U32(0, 0, 0, 0));
         push_line(v1, v2, ctx->vis);
@@ -2754,7 +2754,7 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
 }
 
 static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
@@ -2800,9 +2800,9 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitfield_iter_t it = md_bitfield_iter_create(bf_b);
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, indices, num_indices);
+        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
 		md_array(int32_t) a_indices = 0;
 
@@ -2842,10 +2842,10 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             md_bitfield_clear(&exclusion_bf);
             md_bitfield_and(&exclusion_bf, bf, bf_b); // Start with overlap
-			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->mol, path_length, NULL);
+			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->sys, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_coord_stream_t a_stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, a_indices, a_length);
+            md_coord_stream_t a_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, a_indices, a_length);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
@@ -2866,11 +2866,11 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
 
     const size_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
@@ -2909,11 +2909,11 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
 
     const size_t num_indices = element_count(arg[0]);
     const int* indices = as_int_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
@@ -2937,7 +2937,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     (void)arg;
 
     int result = 0;
@@ -2949,14 +2949,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
             md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
             int64_t dst_idx = 0;
             for (size_t i = 0; i < num_rings; ++i) {
                 md_bitfield_t* bf = &bf_arr[dst_idx];
             
                 // Only accept the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2976,11 +2976,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         } else {
             ASSERT(ctx->vis);
-            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 // Only visualize the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2993,10 +2993,10 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     if (discard) continue;
                 }
 
-                md_script_vis_vertex_t vbeg = vertex(vec3_set(ctx->state->x[*ring_beg], ctx->state->y[*ring_beg], ctx->state->z[*ring_beg]), COLOR_WHITE);
+                md_script_vis_vertex_t vbeg = vertex(vec3_set(ctx->cur_state->x[*ring_beg], ctx->cur_state->y[*ring_beg], ctx->cur_state->z[*ring_beg]), COLOR_WHITE);
                 md_script_vis_vertex_t v0 = vbeg;
                 for (const md_atom_idx_t* it = ring_beg+1; it != ring_end; ++it) {
-                    md_script_vis_vertex_t v1 = vertex(vec3_set(ctx->state->x[*it], ctx->state->y[*it], ctx->state->z[*it]), COLOR_WHITE);
+                    md_script_vis_vertex_t v1 = vertex(vec3_set(ctx->cur_state->x[*it], ctx->cur_state->y[*it], ctx->cur_state->z[*it]), COLOR_WHITE);
                     push_line(v0, v1, ctx->vis);
                     v0 = v1;
                 }
@@ -3007,11 +3007,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            const size_t num_rings = md_index_data_num_ranges(&ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -3024,7 +3024,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_index_data_num_ranges(&ctx->mol->ring);
+            return (int)md_index_data_num_ranges(&ctx->sys->ring);
         }
     }
 
@@ -3032,7 +3032,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     (void)arg;
 
     int result = 0;
@@ -3045,13 +3045,13 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
                 uint64_t idx = md_bitfield_iter_idx(&it);
-                if (ctx->mol->atom.flags[idx] & flags) {
+                if (ctx->sys->atom.flags[idx] & flags) {
                     md_bitfield_set_bit(bf, idx);
                 }
             }
         } else {
-            for (size_t i = 0; i < ctx->mol->atom.count; ++i) {
-                if (ctx->mol->atom.flags[i] & flags) {
+            for (size_t i = 0; i < ctx->sys->atom.count; ++i) {
+                if (ctx->sys->atom.flags[i] & flags) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -3062,12 +3062,12 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
 }
 
 static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     (void)arg;
 
     int result = 0;
 
-    int* comp_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int* comp_indices = get_comp_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
 	size_t num_comp = md_array_size(comp_indices);
 
     if (dst) {
@@ -3077,13 +3077,13 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         if (cap == 0) return 0;
 
         // Its a pretty good guess that the bitfield should be in the ballpark of the size of the entire thing.
-        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
+        md_bitfield_reserve_range(bf, 0, ctx->sys->atom.count);
 
         int dst_idx = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int comp_idx = comp_indices[i];
-            if (ctx->mol->component.flags[comp_idx] & flags) {
-                const md_urange_t range = md_component_atom_range(&ctx->mol->component, comp_idx);
+            if (ctx->sys->component.flags[comp_idx] & flags) {
+                const md_urange_t range = md_component_atom_range(&ctx->sys->component, comp_idx);
                 ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3091,7 +3091,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         }
     }
     else {
-        if (!ctx->mol->component.count) {
+        if (!ctx->sys->component.count) {
             LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any components");
             return -1;
         }
@@ -3099,7 +3099,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         int count = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int32_t comp_idx = comp_indices[i];
-            if (ctx->mol->component.flags[comp_idx] & flags) {
+            if (ctx->sys->component.flags[comp_idx] & flags) {
                 count += 1;
             }
         }
@@ -3155,7 +3155,7 @@ static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
@@ -3164,7 +3164,7 @@ static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t* ranges = as_irange_arr(arg[0]);
     // Here we use the implicit range given by the context and use that to select substructures within it
     // The supplied iranges will be used as relative indices into the context
-    const irange_t ctx_range = get_comp_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_comp_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3179,10 +3179,10 @@ static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 range = clamp_range(range, ctx_range);
                 const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    //const uint64_t offset = ctx->mol->comp.atom_range[j].beg;
-                    //const uint64_t length = ctx->mol->comp.atom_range[j].end - ctx->mol->comp.atom_range[j].beg;
+                    //const uint64_t offset = ctx->sys->comp.atom_range[j].beg;
+                    //const uint64_t length = ctx->sys->comp.atom_range[j].end - ctx->sys->comp.atom_range[j].beg;
                     //bit_set(result.bits, offset, length);
-                    const md_urange_t atom_range = md_component_atom_range(&ctx->mol->component, j);
+                    const md_urange_t atom_range = md_component_atom_range(&ctx->sys->component, j);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3229,7 +3229,7 @@ static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = STATIC_VALIDATION_ERROR;
-    if (ctx->mol && ctx->mol->component.atom_offset) {
+    if (ctx->sys && ctx->sys->component.atom_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int cap = type_info_array_len(dst->type);
@@ -3240,8 +3240,8 @@ static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const size_t inc = capacity > 1 ? 1 : 0;
 
             size_t dst_idx = 0;
-            for (size_t i = 0; i < ctx->mol->component.count; ++i) {
-                const md_urange_t range = md_component_atom_range(&ctx->mol->component, i);
+            for (size_t i = 0; i < ctx->sys->component.count; ++i) {
+                const md_urange_t range = md_component_atom_range(&ctx->sys->component, i);
                 ASSERT(dst_idx <= capacity);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
@@ -3260,8 +3260,8 @@ static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            for (size_t i = 0; i < ctx->mol->component.count; ++i) {
-                const md_urange_t range = md_component_atom_range(&ctx->mol->component, i);
+            for (size_t i = 0; i < ctx->sys->component.count; ++i) {
+                const md_urange_t range = md_component_atom_range(&ctx->sys->component, i);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
                     count += 1;
@@ -3298,7 +3298,7 @@ static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = 0;
-    if (ctx->mol && ctx->mol->instance.comp_offset) {
+    if (ctx->sys && ctx->sys->instance.comp_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int64_t cap = type_info_array_len(dst->type);
@@ -3306,9 +3306,9 @@ static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t inc = cap > 1 ? 1 : 0;
 
             int64_t dst_idx = 0;
-            for (size_t i = 0; i < ctx->mol->instance.count; ++i) {
+            for (size_t i = 0; i < ctx->sys->instance.count; ++i) {
                 ASSERT(dst_idx <= cap);
-                md_urange_t range = md_system_instance_atom_range(ctx->mol, i);
+                md_urange_t range = md_system_instance_atom_range(ctx->sys, i);
                 if (md_bitfield_popcount_range(src_bf, range.beg, range.end)) {
                     md_bitfield_set_range(&dst_bf[dst_idx], range.beg, range.end);
                     dst_idx += inc;
@@ -3325,8 +3325,8 @@ static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            for (size_t i = 0; i < ctx->mol->instance.count; ++i) {
-                md_urange_t range = md_system_instance_atom_range(ctx->mol, i);
+            for (size_t i = 0; i < ctx->sys->instance.count; ++i) {
+                md_urange_t range = md_system_instance_atom_range(ctx->sys, i);
                 size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
                     count += 1;
@@ -3348,12 +3348,12 @@ static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     int result = 0;
 
-    if (!ctx->mol->component.name) {
+    if (!ctx->sys->component.name) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
         return -1;
     }
@@ -3362,7 +3362,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const str_t* queries = as_string_arr(arg[0]);
     
     // Here we only pick the residues which are represented within the context (by having bits set)
-    int32_t* res_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* res_indices = get_comp_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     const size_t res_count = md_array_size(res_indices);
 
     if (dst) {
@@ -3376,8 +3376,8 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_queries; ++j) {
-                    if (match_query(queries[j], LBL_TO_STR(ctx->mol->component.name[res_idx]))) {
-                        const md_urange_t atom_range = md_component_atom_range(&ctx->mol->component, res_idx);
+                    if (match_query(queries[j], LBL_TO_STR(ctx->sys->component.name[res_idx]))) {
+                        const md_urange_t atom_range = md_component_atom_range(&ctx->sys->component, res_idx);
                         ASSERT(dst_idx < cap);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3403,7 +3403,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (match_query(queries[j], LBL_TO_STR(ctx->mol->component.name[res_idx]))) {
+                if (match_query(queries[j], LBL_TO_STR(ctx->sys->component.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
@@ -3425,12 +3425,12 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
 
-    if (!ctx->mol->component.seq_id) {
+    if (!ctx->sys->component.seq_id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
         return -1;
     }
@@ -3439,7 +3439,7 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t*  rid = arg[0].ptr;
 
     // Here we only pick the residues which are represented within the context (by having bits set)
-    int32_t* res_indices = get_comp_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* res_indices = get_comp_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3453,11 +3453,11 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_rid; ++j) {
                     const int64_t step = rid[j].step > 0 ? rid[j].step : 1;
-                    int seq_id = (int)ctx->mol->component.seq_id[res_idx];
+                    int seq_id = (int)ctx->sys->component.seq_id[res_idx];
                     if (idx_in_range(seq_id, rid[j])) {
                         int64_t diff = (int64_t)seq_id - (int64_t)rid[j].beg;
                         if ((diff % step) != 0) continue;
-                        const md_urange_t atom_range = md_component_atom_range(&ctx->mol->component, res_idx);
+                        const md_urange_t atom_range = md_component_atom_range(&ctx->sys->component, res_idx);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
@@ -3479,7 +3479,7 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t step = rid[j].step > 0 ? rid[j].step : 1;
             for (size_t i = 0; i < md_array_size(res_indices); ++i) {
                 const int64_t res_idx = res_indices[i];
-                int seq = (int)ctx->mol->component.seq_id[res_idx];
+                int seq = (int)ctx->sys->component.seq_id[res_idx];
                 if (idx_in_range(seq, rid[j])) {
                     int64_t diff = (int64_t)seq - (int64_t)rid[j].beg;
                     if ((diff % step) == 0) {
@@ -3504,10 +3504,10 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     if (inst_indices == NULL) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
@@ -3532,7 +3532,7 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
                 for (int64_t j = range.beg; j < range.end; j += step) {
                     md_instance_idx_t inst_idx = inst_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->mol, inst_idx);
+                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, inst_idx);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3565,10 +3565,10 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* chain_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* chain_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     if (chain_indices == NULL) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
@@ -3593,7 +3593,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
                 for (int64_t j = range.beg; j < range.end; j += step) {
                     md_instance_idx_t chain_idx = chain_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->mol, chain_idx);
+                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, chain_idx);
                     ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
                     dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
@@ -3643,7 +3643,7 @@ static int inst_id(md_bitfield_t* out_bf_arr, size_t out_bf_dim, const idx_str_p
                     ASSERT(dst_idx < out_bf_dim);
                     md_bitfield_t* bf = &out_bf_arr[dst_idx];
                     dst_idx = (out_bf_dim == 1) ? dst_idx : dst_idx + 1;
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->mol, inst_idx);
+                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, inst_idx);
                     md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                     if (ctx->mol_ctx) {
                         md_bitfield_and_inplace(bf, ctx->mol_ctx);
@@ -3682,19 +3682,19 @@ static int inst_id(md_bitfield_t* out_bf_arr, size_t out_bf_dim, const idx_str_p
 }
 
 static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
-    if (ctx->mol->instance.count == 0 || !ctx->mol->instance.id) {
+    if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
     for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
         md_instance_idx_t inst_idx = inst_indices[i];
-        str_t inst_id = md_system_instance_id(ctx->mol, inst_idx);
+        str_t inst_id = md_system_instance_id(ctx->sys, inst_idx);
         idx_str_pair_t pair = {inst_idx, inst_id};
         inst[i] = pair;
     }
@@ -3713,19 +3713,19 @@ static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _inst_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
-    if (ctx->mol->instance.count == 0 || !ctx->mol->instance.id) {
+    if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
     for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
         md_instance_idx_t inst_idx = inst_indices[i];
-        str_t inst_id = md_system_instance_auth_id(ctx->mol, inst_idx);
+        str_t inst_id = md_system_instance_auth_id(ctx->sys, inst_idx);
         idx_str_pair_t pair = {inst_idx, inst_id};
         inst[i] = pair;
     }
@@ -3744,19 +3744,19 @@ static int _inst_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
-    if (ctx->mol->instance.count == 0 || !ctx->mol->instance.id) {
+    if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
-    int32_t* inst_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* inst_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
     for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
         md_instance_idx_t inst_idx = inst_indices[i];
-        str_t inst_id = md_system_instance_id(ctx->mol, inst_idx);
+        str_t inst_id = md_system_instance_id(ctx->sys, inst_idx);
         idx_str_pair_t pair = {inst_idx, inst_id};
         inst[i] = pair;
     }
@@ -3775,19 +3775,19 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol);
+    ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
-    if (ctx->mol->instance.count == 0 || !ctx->mol->instance.id) {
+    if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
-    int32_t* inst_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+    int32_t* inst_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
     for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
         md_instance_idx_t inst_idx = inst_indices[i];
-        str_t inst_id = md_system_instance_auth_id(ctx->mol, inst_idx);
+        str_t inst_id = md_system_instance_auth_id(ctx->sys, inst_idx);
         idx_str_pair_t pair = {inst_idx, inst_id};
         inst[i] = pair;
     }
@@ -3858,7 +3858,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t b = coordinate_extract_com(arg[1], ctx);
 
         vec4_t b4 = vec4_from_vec3(b, 0);
-        md_util_deperiodize_vec4(&b4, 1, a, &ctx->state->unitcell);
+        md_util_deperiodize_vec4(&b4, 1, a, &ctx->cur_state->unitcell);
         b = vec3_from_vec4(b4);
         float dist = vec3_distance(a, b);
 
@@ -3901,7 +3901,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t min_i, min_j;
-        float min_dist = md_util_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->state->unitcell);
+        float min_dist = md_util_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -3941,7 +3941,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float dist = md_util_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->state->unitcell);
+        float dist = md_util_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -3992,7 +3992,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             dst_arr = md_temp_alloc_array(temp, float, a_len * b_len);
         }
-        md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->state->unitcell);
+        md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
                 // @NOTE(Robin): This is not trivial...
@@ -4187,7 +4187,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vec3_sub(x[2], x[1]),
             vec3_sub(x[3], x[2]),
         };
-        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->state->unitcell);
+        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->cur_state->unitcell);
         float angle = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
@@ -4291,10 +4291,10 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     bool result = 0;
 
     if (dst) {
-        ASSERT(ctx->mol);
+        ASSERT(ctx->sys);
         ASSERT(ctx->atom_mass);
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-        ASSERT(ctx->reference->x && ctx->reference->y && ctx->reference->z);
+        ASSERT(ctx->ref_state->x && ctx->ref_state->y && ctx->ref_state->z);
 
         if (dst->ptr) {
             const md_bitfield_t* src_bf = as_bitfield(arg[0]);
@@ -4316,14 +4316,14 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
                 };
 
-                extract_xyzw_vec4(xyzw[0], ctx->reference->x, ctx->reference->y, ctx->reference->z, ctx->atom_mass, &bf);
-                extract_xyzw_vec4(xyzw[1], ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, &bf);
+                extract_xyzw_vec4(xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ctx->atom_mass, &bf);
+                extract_xyzw_vec4(xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
 
-                md_util_pbc_vec4(xyzw[0], count, &ctx->state->unitcell);
-                md_util_unwrap_vec4(xyzw[0], NULL, count, &ctx->mol->bond, &ctx->state->unitcell);
+                md_util_pbc_vec4(xyzw[0], count, &ctx->cur_state->unitcell);
+                md_util_unwrap_vec4(xyzw[0], NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
 
-                md_util_pbc_vec4(xyzw[1], count, &ctx->state->unitcell);
-                md_util_unwrap_vec4(xyzw[1], NULL, count, &ctx->mol->bond, &ctx->state->unitcell);
+                md_util_pbc_vec4(xyzw[1], count, &ctx->cur_state->unitcell);
+                md_util_unwrap_vec4(xyzw[1], NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
 
                 const vec3_t com[2] = {
                     md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
@@ -4448,7 +4448,7 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     const int32_t* indices = as_int_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
     const size_t num_idx = element_count(arg[0]);
 
     // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
@@ -4484,7 +4484,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
 
     const size_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
@@ -4650,17 +4650,17 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (split == RES) {
-        if (ctx->mol->comp.count == 0 || !ctx->mol->atom.res_idx) {
+        if (ctx->sys->comp.count == 0 || !ctx->sys->atom.res_idx) {
             LOG_ERROR(ctx->ir, ctx->op_token, "Missing residue information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
     } else if (split == CHAIN) {
-        if (ctx->mol->chain.count == 0 || !ctx->mol->atom.chain_idx) {
+        if (ctx->sys->chain.count == 0 || !ctx->sys->atom.chain_idx) {
             LOG_ERROR(ctx->ir, ctx->op_token, "Missing chain information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
     } else if (split == STRUCT) {
-        if (md_index_data_num_ranges(ctx->mol->structure) == 0) {
+        if (md_index_data_num_ranges(ctx->sys->structure) == 0) {
             LOG_ERROR(ctx->ir, ctx->op_token, "Missing struct information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
@@ -4685,11 +4685,11 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     uint32_t* atom_struct_idx = 0;
     if (split == STRUCT) {
-        atom_struct_idx = md_temp_alloc_array(temp, uint32_t, ctx->mol->atom.count);
-        for (size_t i = 0; i < md_index_data_num_ranges(ctx->mol->structure); ++i) {
+        atom_struct_idx = md_temp_alloc_array(temp, uint32_t, ctx->sys->atom.count);
+        for (size_t i = 0; i < md_index_data_num_ranges(ctx->sys->structure); ++i) {
             uint32_t structure_idx = (uint32_t)i + 1;
-            const int32_t* s_beg_idx = md_index_range_beg(ctx->mol->structure, i);
-            const int32_t* s_end_idx = md_index_range_end(ctx->mol->structure, i);
+            const int32_t* s_beg_idx = md_index_range_beg(ctx->sys->structure, i);
+            const int32_t* s_end_idx = md_index_range_end(ctx->sys->structure, i);
             for (const int32_t* it = s_beg_idx; it != s_end_idx; ++it) {
                 atom_struct_idx[*it] = structure_idx;
             }
@@ -4703,12 +4703,12 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int idx = -1;
         switch (split) {
         case RES:
-            idx = ctx->mol->atom.res_idx[atom_idx];
-            md_bitfield_iter_skip_to_idx(&it, md_component_atom_range(ctx->mol->comp, idx).end);
+            idx = ctx->sys->atom.res_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_component_atom_range(ctx->sys->comp, idx).end);
             break;
         case CHAIN:
-            idx = ctx->mol->atom.chain_idx[atom_idx];
-            md_bitfield_iter_skip_to_idx(&it, md_chain_atom_range(ctx->mol->chain, idx).end);
+            idx = ctx->sys->atom.chain_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_chain_atom_range(ctx->sys->chain, idx).end);
             break;
         case STRUCT:
             idx = atom_struct_idx[atom_idx];
@@ -4769,7 +4769,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Place structure within the same period
-        md_util_unwrap_vec4(xyzw, NULL, count, &ctx->mol->bond, &ctx->state->unitcell);
+        md_util_unwrap_vec4(xyzw, NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
         vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
@@ -4869,7 +4869,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         }
 
         mat3_t A = { 0 };
-        md_unitcell_A_extract(A.elem, &ctx->reference->unitcell);
+        md_unitcell_A_extract(A.elem, &ctx->ref_state->unitcell);
 
         // Reference point
         vec3_t rc = mat3_mul_vec3(A, vec3_set1(0.5f));
@@ -4888,8 +4888,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         size_t count = md_bitfield_popcount(&bf);
         vec4_t* xyzw = md_temp_alloc_array(temp, vec4_t, count);
 
-        extract_xyzw_vec4(xyzw, ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, &bf);
-        //md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+        extract_xyzw_vec4(xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
+        //md_util_pbc_vec4(xyzw, count, &ctx->sys->unit_cell);
 
         vec4_t mid_point = vec4_from_vec3(rc, 0);
         vec4_t period = vec4_from_vec3(re, 0);
@@ -4946,19 +4946,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         md_temp_end(temp);
     } else {
-        md_trajectory_frame_header_t frame_header = {0};
-        const md_unitcell_t* unit_cell = NULL;
-        if (ctx->traj) {
-            md_trajectory_load_frame(ctx->traj, 0, &frame_header, NULL);
-            unit_cell = &frame_header.unitcell;
-        } else {
-            unit_cell = &ctx->state->unitcell;
-        }
-
-        if (!unit_cell) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
-            return STATIC_VALIDATION_ERROR;
-        }
+        // STATIC CHECK
+        const md_unitcell_t* unit_cell = &ctx->ref_state->unitcell;
 
         if (axis == -1) {
             if (unit_cell->flags == 0) {
@@ -4971,7 +4960,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             else if (axis == 1) required_flags = MD_UNITCELL_PBC_Y;
             else if (axis == 2) required_flags = MD_UNITCELL_PBC_Z;
 
-            if (!(ctx->state->unitcell.flags & required_flags)) {
+            if (!(ctx->cur_state->unitcell.flags & required_flags)) {
                 LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined along the given axis");
                 return STATIC_VALIDATION_ERROR;
             }
@@ -5278,7 +5267,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t ref_flags = 0;
     if (ref_idx) {
         ref_len = md_array_size(ref_idx);
-        ref_stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, ref_idx, ref_len);
+        ref_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ref_idx, ref_len);
         ref_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
     } else {
         md_array(vec3_t) ref_pos = coordinate_extract(arg[0], ctx);
@@ -5293,7 +5282,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t trg_flags = 0;
     if (trg_idx) {
         trg_len = md_array_size(trg_idx);
-        trg_stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, trg_idx, trg_len);
+        trg_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_len);
         trg_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
     } else {
         md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
@@ -5303,7 +5292,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
 
     {
         md_spatial_acc_t sa = { .alloc = ctx->temp_alloc };
-        md_spatial_acc_init(&sa, &trg_stream, max_cutoff, &ctx->state->unitcell, trg_flags);
+        md_spatial_acc_init(&sa, &trg_stream, max_cutoff, &ctx->cur_state->unitcell, trg_flags);
 
         rdf_payload_t payload = {
             .exclusion_masks = as_bitfield(arg[0]),
@@ -5484,16 +5473,16 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             return md_bitfield_popcount(&bf);
         }
         case COUNT_TYPE_RESIDUE:
-            for (size_t i = 0; i < ctx->mol->component.count; ++i) {
-                md_urange_t range = md_system_component_atom_range(ctx->mol, i);
+            for (size_t i = 0; i < ctx->sys->component.count; ++i) {
+                md_urange_t range = md_system_component_atom_range(ctx->sys, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
                     count += 1;
                 }
             }
             break;
         case COUNT_TYPE_INSTANCE: {
-            for (size_t i = 0; i < ctx->mol->instance.count; ++i) {
-                md_urange_t range = md_system_instance_atom_range(ctx->mol, i);
+            for (size_t i = 0; i < ctx->sys->instance.count; ++i) {
+                md_urange_t range = md_system_instance_atom_range(ctx->sys, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
                     count += 1;
                 }
@@ -5501,11 +5490,11 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             break;
         }
         case COUNT_TYPE_STRUCTURE: {
-            size_t num_structures = md_structure_count(&ctx->mol->structure);
+            size_t num_structures = md_structure_count(&ctx->sys->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
             for (size_t i = 0; i < num_structures; ++i) {
                 md_structure_t structure = {0};
-                md_structure_extract(&structure, &ctx->mol->structure, i);
+                md_structure_extract(&structure, &ctx->sys->structure, i);
             
                 md_bitfield_clear(&tmp2);
                 md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)structure.atom_idx, structure.count);
@@ -5718,9 +5707,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
 
-        ASSERT(ctx->reference->x);
-        ASSERT(ctx->reference->y);
-        ASSERT(ctx->reference->z);
+        ASSERT(ctx->ref_state->x);
+        ASSERT(ctx->ref_state->y);
+        ASSERT(ctx->ref_state->z);
 
         // This could happen if we have dynamic length as input
         if (num_ref_bitfields == 0) goto done;
@@ -5739,6 +5728,10 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Allocate temporary memory
+        // [0] is the reference frame, taken from the configuration the topology was inferred from.
+        // [1] is refilled below for each of the equivalent structures in the current frame.
+        // The index arrays are not scratch: md_util_unwrap_subset_vec4 needs to know which atom each
+        // compacted coordinate belongs to in order to walk the structure hierarchy.
         int32_t* ref_idx[2] = {
             md_temp_alloc_array(temp, int32_t, ref_size),
             md_temp_alloc_array(temp, int32_t, ref_size)
@@ -5749,29 +5742,25 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_temp_alloc_array(temp, vec4_t, ref_size)
         };
 
-        // Extract indices
-        md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
-
-        const float* const ref_x[2] = {ctx->reference->x, (const float*)ctx->state->x};
-        const float* const ref_y[2] = {ctx->reference->y, (const float*)ctx->state->y};
-        const float* const ref_z[2] = {ctx->reference->z, (const float*)ctx->state->z};
         const float* ref_w = (const float*)ctx->atom_mass;
 
         vec3_t ref_com[2] = {0};
 
-        extract_xyzw_vec4(ref_xyzw[0], ref_x[0], ref_y[0], ref_z[0], ref_w, ref_bf);
+        // Extract and unwrap the reference structure.
+        // @NOTE: each state is unwrapped against its own unit cell, which is what makes this correct
+        // under a varying cell - the reference configuration and the current frame need not share one.
+        md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
+        md_util_unwrap_subset_vec4(ref_xyzw[0], ref_idx[0], ref_size, ref_w, ctx->sys, ctx->ref_state);
+        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0); // @NOTE: the structure is unwrapped, so no unit cell is required here
 
         // Fetch target positions
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
 
-        md_util_unwrap_vec4(ref_xyzw[0], NULL, ref_size, &ctx->mol->bond, &ctx->state->unitcell);
-        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
-
         const double cell_ext = cutoff;
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->state->x, ctx->state->y, ctx->state->z, trg_idx, trg_size);
+        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = ctx->temp_alloc };
-        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));
@@ -5788,8 +5777,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (size_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
 
-            extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
-            md_util_unwrap_vec4(ref_xyzw[1], NULL, ref_size, &ctx->mol->bond, &ctx->state->unitcell);
+            // The bitfields are validated as equivalent during the static check, but a dynamic
+            // expression can still hand us a differently sized one at evaluation time. The buffers
+            // below are sized for ref_size, so a mismatch would be an overrun rather than a bad result.
+            if (md_bitfield_popcount(bf) != ref_size) continue;
+
+            md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
+            md_util_unwrap_subset_vec4(ref_xyzw[1], ref_idx[1], ref_size, ref_w, ctx->sys, ctx->cur_state);
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
@@ -5834,7 +5828,7 @@ done:
         }
 
         // Test for equivalence
-        if (!are_bitfields_equivalent(ref_bf_arr, num_ref_bitfields, ctx->mol)) {
+        if (!are_bitfields_equivalent(ref_bf_arr, num_ref_bitfields, ctx->sys)) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
             return -1;
         }
@@ -5873,7 +5867,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
 
     // Only support orthogonal cells for now
-    if (ctx->state->unitcell.flags & MD_UNITCELL_TRICLINIC) {
+    if (ctx->cur_state->unitcell.flags & MD_UNITCELL_TRICLINIC) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "void_ratio: triclinic unit cells not supported yet");
         *(float*)dst->ptr = 0.0f;
         return 0;
@@ -5904,15 +5898,15 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
 
     float* rad = md_temp_alloc_array(temp, float, count);
-    md_atom_extract_radii(rad, 0, count, &ctx->mol->atom);
+    md_atom_extract_radii(rad, 0, count, &ctx->sys->atom);
 
     // Build a working copy of coordinates and deperiodize to make selection contiguous
     md_array(vec4_t) xyzr = 0;
     md_array_resize(xyzr, count, ctx->temp_alloc);
-    extract_xyzw_vec4(xyzr, ctx->state->x, ctx->state->y, ctx->state->z, rad, bf);
-    const vec3_t com = md_util_com_compute_vec4(xyzr, 0, count, &ctx->state->unitcell);
-    md_util_com_compute(ctx->state->x, ctx->state->y, ctx->state->z, NULL, idx, count, &ctx->state->unitcell);
-    md_util_deperiodize_vec4(xyzr, count, com, &ctx->state->unitcell);
+    extract_xyzw_vec4(xyzr, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, rad, bf);
+    const vec3_t com = md_util_com_compute_vec4(xyzr, 0, count, &ctx->cur_state->unitcell);
+    md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, NULL, idx, count, &ctx->cur_state->unitcell);
+    md_util_deperiodize_vec4(xyzr, count, com, &ctx->cur_state->unitcell);
 
     vec3_t bmin, bmax;
     md_util_aabb_compute_vec4(bmin.elem, bmax.elem, xyzr, 0, count);
@@ -5943,7 +5937,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     for (size_t i = 0; i < count; ++i) {
         const vec4_t p = xyzr[i];
         const float x = p.x, y = p.y, z = p.z;
-        const float r  = md_atom_radius(&ctx->mol->atom, idx[i]);
+        const float r  = md_atom_radius(&ctx->sys->atom, idx[i]);
 
         // Bounding voxel range for this sphere (in ROI grid coordinates)
         int ix_min = (int)floorf((x - r - bmin.x) / dx);
@@ -6032,9 +6026,9 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 if (count > 0) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
 
-                    extract_xyzw_vec4(xyzw, ctx->state->x, ctx->state->y, ctx->state->z, ctx->atom_mass, bf);
-                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->state->unitcell);
-                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->state->unitcell);
+                    extract_xyzw_vec4(xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
+                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->cur_state->unitcell);
+                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->cur_state->unitcell);
 
                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                     out_weights[i] = md_util_shape_weights(&M);
@@ -6043,8 +6037,8 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
-            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->state->unitcell);
-            md_util_deperiodize_vec4(xyzw, count, com, &ctx->state->unitcell);
+            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->cur_state->unitcell);
+            md_util_deperiodize_vec4(xyzw, count, com, &ctx->cur_state->unitcell);
             const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
             out_weights[0] = md_util_shape_weights(&M);
         }

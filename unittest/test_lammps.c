@@ -303,25 +303,54 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
     for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
-        EXPECT_EQ(7800, header.num_atoms);
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
+        EXPECT_EQ(7800, state.num_atoms);
     }
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &state));
     EXPECT_NE(x[0], 0);
     
 
     EXPECT_NEAR(x[0], 0.018331 * 39.121262, 0.0001); //Should be about 0.018331 of cell
-    EXPECT_NEAR(header.unitcell.x, 39.121262, 0.0001);
+    EXPECT_NEAR(state.unitcell.x, 39.121262, 0.0001);
 
     EXPECT_NEAR(y[0], 0.518904 * 39.121262, 0.0001); //Should be about 0.518904 of cell
-    EXPECT_NEAR(header.unitcell.y, 39.121262, 0.0001);
+    EXPECT_NEAR(state.unitcell.y, 39.121262, 0.0001);
 
     EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
-    EXPECT_NEAR(header.unitcell.z, 39.121262, 0.0001);
+    EXPECT_NEAR(state.unitcell.z, 39.121262, 0.0001);
 
     md_temp_end(temp);
+    md_trajectory_free(traj);
+}
+
+// A LAMMPS dump records the TIMESTEP but not dt, so real time is not derivable. The steps must be
+// reported exactly and the times must fall back to ordinals with an empty unit, rather than the
+// steps being handed out as femtoseconds.
+UTEST(lammps, frame_steps_and_time_fallback) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    ASSERT_TRUE(traj);
+
+    md_trajectory_header_t header = {0};
+    ASSERT_TRUE(md_trajectory_get_header(traj, &header));
+
+    ASSERT_TRUE(header.frame_times);
+    ASSERT_TRUE(header.frame_steps);
+
+    // Empty time unit: the times below are ordinals standing in for time, not picoseconds or femtoseconds
+    EXPECT_TRUE(md_unit_is_none(header.time_unit));
+    for (size_t i = 0; i < header.num_frames; ++i) {
+        EXPECT_NEAR(header.frame_times[i], (double)i, 1.0e-9);
+    }
+
+    // Steps are whatever the file said, and must be non decreasing
+    for (size_t i = 1; i < header.num_frames; ++i) {
+        EXPECT_GE(header.frame_steps[i], header.frame_steps[i - 1]);
+    }
+
     md_trajectory_free(traj);
 }
 
@@ -344,23 +373,23 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
 
     for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, &(md_system_state_t){0, x, y, z, {0}}));
-        EXPECT_EQ(7722, header.num_atoms);
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
+        EXPECT_EQ(7722, state.num_atoms);
     }
 
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &state));
 
     EXPECT_NEAR(12.2316074, x[0], 0.0001); //Should be about 0.35 of cell
-    EXPECT_NEAR(39.1199989, header.unitcell.x, 0.0001);
+    EXPECT_NEAR(39.1199989, state.unitcell.x, 0.0001);
 
     EXPECT_NEAR(29.3010769, y[0], 0.0001); //Should be about 0.87 of cell
-    EXPECT_NEAR(35.7833138, header.unitcell.y, 0.0001);
+    EXPECT_NEAR(35.7833138, state.unitcell.y, 0.0001);
 
     EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
-    EXPECT_NEAR(42.3503265, header.unitcell.z, 0.0001);
+    EXPECT_NEAR(42.3503265, state.unitcell.z, 0.0001);
 
     md_temp_end(temp);
     md_trajectory_free(traj);
@@ -386,11 +415,11 @@ UTEST(lammps, trajectory_reader_i) {
     md_trajectory_reader_i reader = {0};
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
-    md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, &(md_system_state_t){0, x, y, z, {0}}));
-    EXPECT_EQ(7800, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, &(md_system_state_t){0, x, y, z, {0}}));
-    EXPECT_EQ(7800, header.num_atoms);
+    md_system_state_t state = {0, x, y, z, {0}};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
+    EXPECT_EQ(7800, state.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
+    EXPECT_EQ(7800, state.num_atoms);
 
     md_trajectory_reader_free(&reader);
     md_temp_end(temp);
