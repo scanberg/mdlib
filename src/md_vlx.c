@@ -2898,24 +2898,32 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 
 	vlx->vib.number_of_normal_modes = number_of_modes;
 
-	md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.force_constants, md_array_size(vlx->vib.force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "force_constants")) {
+		md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.force_constants, md_array_size(vlx->vib.force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.ir_intensities, md_array_size(vlx->vib.ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "ir_intensities")) {
+		md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.ir_intensities, md_array_size(vlx->vib.ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.frequencies, md_array_size(vlx->vib.frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "vib_frequencies")) {
+		md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.frequencies, md_array_size(vlx->vib.frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.reduced_masses, md_array_size(vlx->vib.reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "reduced_masses")) {
+		md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.reduced_masses, md_array_size(vlx->vib.reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
+			return false;
+		}
 	}
 
 	// Check if "normal_modes" is a group or dataset
