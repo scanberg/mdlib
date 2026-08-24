@@ -140,12 +140,6 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
 bool md_util_system_pbc(md_system_state_t* state);
 
-// Unwraps a structure by traversing the supplied topology formed by bonds
-// @NOTE: in_out_xyzw is indexed by GLOBAL atom index, not compacted. When in_idx is supplied it
-// selects which atoms take part, it does not remap the array. See md_util_unwrap_subset_vec4 for
-// the compacted form.
-bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
-
 // Unwraps a single structure by walking the parent hierarchy md_util_system_infer_structures
 // already computed. Linear, allocation free, and does not consult bond connectivity.
 void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure);
@@ -153,30 +147,50 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
 // Unwraps all structures in a system
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
-// Unwraps an arbitrary subset of a system into a COMPACTED destination array:
-//   out_xyzw[i] receives the coordinate of atom in_idx[i], with w taken from in_w[in_idx[i]]
-//   (or 1.0 when in_w is NULL). in_w is indexed by global atom index, out_xyzw is not.
-//
-// The minimum image convention is propagated along the structure hierarchy which
-// md_util_system_infer_structures computed - the same arithmetic md_util_unwrap_structure performs,
-// but only along the paths needed to reach the selected atoms, so the cost follows the size of the
-// selection rather than the size of the structure it sits in.
-//
-// Propagation runs over the hierarchy, NOT over the subset's induced subgraph, so a selection which
-// omits the atoms that connect its parts (every other residue of a chain, the heavy atoms only) is
-// still placed as one coherent piece. What it does NOT do is bring separate structures into a
-// common image: each structure is placed relative to its own root. Use md_util_deperiodize_vec4 for
-// that, it is a different operation.
-//
-// in_idx may be in any order and need not be contiguous or sorted.
-//
-// PRECONDITION: the state's coordinates are expected to lie within the primary cell, as trajectory
-// frames normally store them. This procedure deliberately does not wrap them itself, since wrapping
-// is destructive and the caller may not want it.
-void md_util_unwrap_subset_vec4(vec4_t* out_xyzw, const int32_t* in_idx, size_t count, const float* in_w, const md_system_t* sys, const md_system_state_t* state);
-
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);
+
+// PERIODIC IMAGE SELECTION
+//
+// These let the estimator choose each point's periodic image, using its own objective as the
+// criterion. Prefer them over unwrapping followed by estimation: unwrap has to commit to an image
+// assignment before it knows what is being measured, and it commits using topology, which is
+// unrelated to the measurement. These do not need topology at all, which is also why they work for
+// sparse selections and for points which are not atoms.
+//
+// @NOTE: md_util_unwrap_* remains the right tool for making a whole connected structure whole - for
+// rendering or export - where there is no estimator and no reference to align against, and where the
+// structure may be more extended than half a cell. That is the only case it is for.
+
+// Places a set of points in mutually consistent images and reports its centre.
+//
+// Seeded from the circular mean (which requires no image assignment, so it cannot be skewed by the
+// images the input arrived in) and then alternated to a fixed point: place every point in the image
+// nearest the centre, recompute the centre, repeat. Settles in one or two passes.
+//
+// Correct while the set spans less than half a cell. Beyond that no per point image choice can
+// represent it and the structure has to be unwrapped topologically instead.
+bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com);
+
+// Optimal rigid rotation between a reference set and a target set under periodic boundaries.
+//
+// Solves for the rotation, the target centre AND each target point's periodic image together:
+//     min over R, c, n_k  of  sum_k w_k | R (q_k + A n_k - c) - (p_k - ref_com) |^2
+// Given R and c the best n_k is the image nearest the predicted position, per point and in closed
+// form; given the n_k the best R and c is ordinary Kabsch. Alternating the two decreases the
+// objective monotonically and terminates when no point changes image.
+//
+// out_rot maps the TARGET frame onto the REFERENCE frame: R * (q - out_com) ~= p - ref_com.
+// out_trg_xyzw optionally receives the placed target points (weights preserved); pass NULL if only
+// the transform is wanted.
+//
+// Returns the largest per point residual, which is the margin to an ambiguous image choice. Small
+// against half a cell means the assignment is nowhere near flipping; approaching it means this
+// frame's alignment should not be trusted.
+float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                        const vec4_t* ref_xyzw, vec3_t ref_com,
+                                        const vec4_t* trg_xyzw, size_t count,
+                                        const md_unitcell_t* cell);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process

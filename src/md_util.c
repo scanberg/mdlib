@@ -8732,118 +8732,6 @@ bool md_util_system_pbc(md_system_state_t* state) {
     return true;
 }
 
-static inline void unwrap_atom_ortho_vec4(vec4_t* pos, const vec4_t* ref, vec4_t ext) {
-    *pos = vec4_deperiodize_ortho(*pos, *ref, ext);
-}
-
-static inline void unwrap_atom_triclinic_vec4(vec4_t* pos, const vec4_t* ref, const mat3_t* A) {
-    deperiodize_triclinic(pos->elem, ref->elem, A->elem);
-}
-
-static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
-    ASSERT(xyzw);
-    ASSERT(bond);
-    ASSERT(cell);
-    ASSERT(alloc);
-
-    if (count == 0) return true;
-
-    if (!bond->conn.offset || bond->conn.offset_count == 0) {
-        MD_LOG_ERROR("Missing bond connectivity");
-        return false;
-    }
-
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
-
-    if (!is_ortho && !is_triclinic) {
-        // Nothing to unwrap against
-        return true;
-    }
-
-    const size_t atom_count = bond->conn.offset_count - 1;
-    uint64_t* visited = make_bitfield(atom_count, alloc);
-    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
-    fifo_t queue = fifo_create(256, alloc);
-
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            bitfield_set_bit(membership, indices[i]);
-        }
-    }
-
-    vec4_t ext = {0};
-    mat3_t A = {0};
-
-    if (is_ortho) {
-        md_unitcell_diag_extract_float(ext.elem, cell);
-    } else if (is_triclinic) {
-        md_unitcell_A_extract_float(A.elem, cell);
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        const int seed = indices ? indices[i] : (int)i;
-        if (bitfield_test_bit(visited, seed)) continue;
-
-        bitfield_set_bit(visited, seed);
-        fifo_clear(&queue);
-        fifo_push(&queue, seed);
-
-        while (!fifo_empty(&queue)) {
-            const int cur = fifo_pop(&queue);
-            const vec4_t ref = xyzw[cur];
-            md_bond_iter_t it = md_bond_iter(bond, cur);
-            while (md_bond_iter_has_next(&it)) {
-                const int next = md_bond_iter_atom_index(&it);
-                md_bond_iter_next(&it);
-
-                if (indices) {
-                    if (!bitfield_test_bit(membership, next)) continue;
-                } else if ((size_t)next >= count) {
-                    continue;
-                }
-
-                if (bitfield_test_bit(visited, next)) continue;
-
-                if (is_ortho) {
-                    unwrap_atom_ortho_vec4(&xyzw[next], &ref, ext);
-                } else {
-                    unwrap_atom_triclinic_vec4(&xyzw[next], &ref, &A);
-                }
-
-                bitfield_set_bit(visited, next);
-                fifo_push(&queue, next);
-            }
-        }
-    }
-
-    fifo_free(&queue);
-    return true;
-}
-
-bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
-    if (!xyzw) {
-        MD_LOG_ERROR("Missing required input: in_out_xyzw");
-        return false;
-    }
-
-    if (!bond) {
-        MD_LOG_ERROR("Missing bond topology");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-    md_temp_scope_t temp_scope = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-    const bool result = unwrap_topology_vec4(xyzw, indices, count, bond, cell, temp_arena);
-    md_temp_end(temp_scope);
-    return result;
-}
-
 void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure) {
     ASSERT(state);
     ASSERT(structure);
@@ -8913,144 +8801,6 @@ void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
     }
 }
 
-// Index of the first element in a sorted array which is not less than key
-static inline size_t lower_bound_uint32(const uint32_t* arr, size_t count, uint32_t key) {
-    size_t lo = 0;
-    size_t hi = count;
-    while (lo < hi) {
-        const size_t mid = lo + (hi - lo) / 2;
-        if (arr[mid] < key) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
-}
-
-void md_util_unwrap_subset_vec4(vec4_t* out_xyzw, const int32_t* in_idx, size_t count, const float* in_w, const md_system_t* sys, const md_system_state_t* state) {
-    ASSERT(out_xyzw);
-    ASSERT(in_idx);
-    ASSERT(sys);
-    ASSERT(state);
-
-    if (count == 0) {
-        return;
-    }
-
-    const md_structure_data_t* sd = &sys->structure;
-
-    const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
-    const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
-
-    const bool have_structures = (sd->atom_slot != NULL && sd->count > 0);
-
-    if (!have_structures) {
-        MD_LOG_ERROR("Missing structure data, md_util_system_infer_structures has not been run");
-    }
-
-    // Nothing to unwrap against, or nothing to unwrap along: hand back the coordinates as they are
-    // so the caller still gets a populated array.
-    if (!have_structures || (!is_ortho && !is_triclinic)) {
-        for (size_t i = 0; i < count; ++i) {
-            const int32_t a = in_idx[i];
-            out_xyzw[i] = vec4_from_vec3(md_state_coord(state, a), in_w ? in_w[a] : 1.0f);
-        }
-        return;
-    }
-
-    float ext[3]      = { 0 };
-    float inv_ext[3]  = { 0 };
-    float half_ext[3] = { 0 };
-    float box[3][3]   = { 0 };
-
-    if (is_ortho) {
-        md_unitcell_diag_extract_float(ext, &state->unitcell);
-        min_image_inv_ext(inv_ext, ext);
-    } else {
-        md_unitcell_A_extract_float(box, &state->unitcell);
-        half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
-        half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
-        half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-
-    // Collect the closure: every selected atom, plus every ancestor needed to reach it from its
-    // structure root. Walking upwards stops as soon as an atom is already in the set, so a shared
-    // path prefix is paid for once no matter how many selected atoms hang off it.
-    md_hashset_t seen = { .allocator = temp_arena };
-    md_hashset_reserve(&seen, count * 2);
-
-    md_array(uint32_t) slots = 0;
-    md_array_ensure(slots, count * 2, temp_arena);
-
-    for (size_t i = 0; i < count; ++i) {
-        int32_t a = in_idx[i];
-        for (;;) {
-            const uint32_t s = (uint32_t)sd->atom_slot[a];
-            if (md_hashmap_index(&seen, s) != UINT32_MAX) break;
-            md_hashset_add(&seen, s);
-            md_array_push(slots, s, temp_arena);
-
-            const int32_t p = sd->parent_idx[s];
-            if (p == a) break;      // reached the root of the structure
-            a = p;
-        }
-    }
-
-    const size_t num_slots = md_array_size(slots);
-
-    // Slots are assigned in BFS order from the root, so slot(parent) < slot(child) and sorting the
-    // closure ascending yields a valid topological order: a single forward pass always finds its
-    // parent already resolved.
-    uint32_t* sort_temp = md_temp_alloc_array(temp, uint32_t, num_slots);
-    sort_radix_inplace_uint32(slots, num_slots, sort_temp);
-
-    vec3_t* pos = md_temp_alloc_array(temp, vec3_t, num_slots);
-
-    for (size_t i = 0; i < num_slots; ++i) {
-        const uint32_t s = slots[i];
-        const int32_t  a = sd->atom_idx[s];
-        const int32_t  p = sd->parent_idx[s];
-        const vec3_t   x = md_state_coord(state, a);
-
-        if (p == a) {
-            // Root of the structure. It defines the image everything below it is placed against and
-            // is therefore left exactly where the state put it.
-            pos[i] = x;
-            continue;
-        }
-
-        const uint32_t parent_slot = (uint32_t)sd->atom_slot[p];
-        const size_t   parent_i    = lower_bound_uint32(slots, num_slots, parent_slot);
-        ASSERT(parent_i < num_slots && slots[parent_i] == parent_slot);
-
-        const vec3_t r = pos[parent_i];
-        vec3_t dx = { x.x - r.x, x.y - r.y, x.z - r.z };
-
-        if (is_ortho) {
-            min_image_ortho(dx.elem, ext, inv_ext);
-        } else {
-            min_image_triclinic(dx.elem, box, half_ext);
-        }
-
-        pos[i] = (vec3_t) { r.x + dx.x, r.y + dx.y, r.z + dx.z };
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        const int32_t  a = in_idx[i];
-        const uint32_t s = (uint32_t)sd->atom_slot[a];
-        const size_t   k = lower_bound_uint32(slots, num_slots, s);
-        ASSERT(k < num_slots && slots[k] == s);
-        out_xyzw[i] = vec4_from_vec3(pos[k], in_w ? in_w[a] : 1.0f);
-    }
-
-    md_hashset_free(&seen);
-    md_temp_end(temp);
-}
-
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
@@ -9075,7 +8825,7 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
         mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
-        for (size_t i = 1; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             vec4_t pos = xyzw[i];
             deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
             xyzw[i] = pos;
@@ -9085,6 +8835,185 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 
     // The unit cell is not initialized or is simply not periodic
     return false;
+}
+
+// PERIODIC IMAGE SELECTION
+//
+// Everything below shares one idea: the estimator picks the periodic image of each point, choosing
+// whichever image minimises the estimator's own objective. That is strictly better than deciding the
+// images up front and estimating afterwards, because a preprocessing pass has to commit using some
+// criterion unrelated to what is about to be measured.
+//
+// The payoff is stability. Every image choice has a margin - how far the deciding quantity sits from
+// the half cell flip boundary - and the margin is what determines whether a point flips images
+// between two nearly identical frames. Deciding by distance to a centre gives an atom at radius r a
+// margin of only (L/2 - r), and it is worst for the outer atoms which dominate a rotational fit.
+// Deciding by fit residual gives a margin of nearly L/2, because minimising the residual is the
+// whole point. The method that is most accurate here is also the one that is hardest to flip.
+
+// Decoded cell, hoisted out of the inner loops.
+typedef struct pbc_image_t {
+    bool   periodic;
+    bool   ortho;
+    vec4_t ext;   // orthorhombic extent, w = 0 so the weight lane is carried through untouched
+    mat3_t A;     // triclinic basis
+} pbc_image_t;
+
+static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
+    pbc_image_t im = {0};
+    if (!cell) {
+        return im;
+    }
+    if (md_unitcell_is_orthorhombic(cell)) {
+        vec3_t ext = {0};
+        md_unitcell_diag_extract_float(ext.elem, cell);
+        im.periodic = true;
+        im.ortho    = true;
+        im.ext      = vec4_from_vec3(ext, 0);
+    } else if (md_unitcell_is_triclinic(cell)) {
+        md_unitcell_A_extract_float(im.A.elem, cell);
+        im.periodic = true;
+    }
+    return im;
+}
+
+// The image of 'pos' nearest to 'ref'. The weight in w is carried through untouched.
+static inline vec4_t pbc_image_nearest(const pbc_image_t* im, vec4_t pos, vec3_t ref) {
+    if (!im->periodic) {
+        return pos;
+    }
+    if (im->ortho) {
+        return vec4_deperiodize_ortho(pos, vec4_from_vec3(ref, 0), im->ext);
+    }
+    vec4_t out = pos;
+    deperiodize_triclinic(out.elem, ref.elem, im->A.elem);
+    return out;
+}
+
+// Squared distance below which two placements count as the same image. Generous: a genuine image
+// change moves a point by a whole cell vector, so anything smaller is float noise.
+#define PBC_IMAGE_EPS_SQ 1.0e-6f
+
+// Alternation is a fixed point iteration and settles almost immediately - the assignment is usually
+// stable on the second pass. The cap only bounds pathological input.
+#define PBC_MAX_ITER 8
+
+bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com) {
+    if (!in_out_xyzw) {
+        MD_LOG_ERROR("Missing required input: in_out_xyzw");
+        return false;
+    }
+
+    if (count == 0) {
+        if (out_com) *out_com = vec3_zero();
+        return true;
+    }
+
+    const pbc_image_t im = pbc_image_init(cell);
+
+    if (!im.periodic) {
+        if (out_com) *out_com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+        return true;
+    }
+
+    // Seed with the circular mean. It needs no image assignment to compute, so unlike an arbitrary
+    // reference point it cannot be biased by whichever images the coordinates happened to arrive in.
+    vec3_t com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, cell);
+
+    for (int iter = 0; iter < PBC_MAX_ITER; ++iter) {
+        bool stable = true;
+        for (size_t i = 0; i < count; ++i) {
+            const vec4_t before = in_out_xyzw[i];
+            const vec4_t after  = pbc_image_nearest(&im, before, com);
+            if (vec3_distance_squared(vec3_from_vec4(before), vec3_from_vec4(after)) > PBC_IMAGE_EPS_SQ) {
+                stable = false;
+            }
+            in_out_xyzw[i] = after;
+        }
+
+        // Recompute the centre from the placed points. Both halves decrease the same objective.
+        com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+
+        if (stable) {
+            break;
+        }
+    }
+
+    if (out_com) *out_com = com;
+    return true;
+}
+
+float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                        const vec4_t* ref_xyzw, vec3_t ref_com,
+                                        const vec4_t* trg_xyzw, size_t count,
+                                        const md_unitcell_t* cell)
+{
+    ASSERT(ref_xyzw);
+    ASSERT(trg_xyzw);
+
+    if (out_rot) *out_rot = mat3_ident();
+    if (out_com) *out_com = vec3_zero();
+
+    if (count == 0) {
+        return 0.0f;
+    }
+
+    const pbc_image_t im = pbc_image_init(cell);
+
+    md_temp_scope_t temp = md_temp_begin();
+
+    // The caller can have the placed points if it wants them (rmsd does); otherwise they are scratch.
+    vec4_t* cur = out_trg_xyzw ? out_trg_xyzw : md_temp_alloc_array(temp, vec4_t, count);
+
+    // Image free seed, safe to compute before any assignment exists.
+    vec3_t com = md_util_com_compute_vec4(trg_xyzw, NULL, count, im.periodic ? cell : NULL);
+    mat3_t rot = mat3_ident();
+
+    // Alternating minimisation of  sum_k w_k |R (q_k + A n_k - c) - p_k|^2  over R, c and n_k.
+    // Each block has a closed form optimum given the other, so the objective decreases monotonically
+    // and the discrete part reaches a genuine fixed point rather than a tolerance.
+    bool stable = false;
+    for (int iter = 0; iter < PBC_MAX_ITER && !stable; ++iter) {
+        // rot maps the target frame onto the reference frame, so its transpose carries the reference
+        // template back out into the target's frame, which is where the prediction has to live.
+        const mat3_t rot_inv = mat3_transpose(rot);
+
+        stable = (iter > 0);
+        for (size_t i = 0; i < count; ++i) {
+            const vec3_t p    = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
+            const vec3_t pred = vec3_add(com, mat3_mul_vec3(rot_inv, p));
+            const vec4_t placed = pbc_image_nearest(&im, trg_xyzw[i], pred);
+
+            if (iter > 0 && vec3_distance_squared(vec3_from_vec4(cur[i]), vec3_from_vec4(placed)) > PBC_IMAGE_EPS_SQ) {
+                stable = false;
+            }
+            cur[i] = placed;
+        }
+
+        // Refit. Both are the exact optimum for this assignment.
+        com = md_util_com_compute_vec4(cur, NULL, count, NULL);
+
+        const vec4_t* const sets[2] = { ref_xyzw, cur };
+        const vec3_t        coms[2] = { ref_com,  com };
+        rot = mat3_extract_rotation(mat3_cross_covariance_matrix_vec4(sets, NULL, count, coms));
+    }
+
+    // The largest per point residual is the distance to an ambiguous image choice. Small compared to
+    // half a cell means the assignment above is not close to flipping.
+    float max_dist_sq = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t p = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
+        const vec3_t q = mat3_mul_vec3(rot, vec3_sub(vec3_from_vec4(cur[i]), com));
+        const float  d = vec3_distance_squared(p, q);
+        max_dist_sq = MAX(max_dist_sq, d);
+    }
+
+    md_temp_end(temp);
+
+    if (out_rot) *out_rot = rot;
+    if (out_com) *out_com = com;
+
+    return sqrtf(max_dist_sq);
 }
 
 double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {

@@ -4319,16 +4319,14 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw_vec4(xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ctx->atom_mass, &bf);
                 extract_xyzw_vec4(xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
 
-                md_util_pbc_vec4(xyzw[0], count, &ctx->cur_state->unitcell);
-                md_util_unwrap_vec4(xyzw[0], NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
+                vec3_t com[2] = {0};
 
-                md_util_pbc_vec4(xyzw[1], count, &ctx->cur_state->unitcell);
-                md_util_unwrap_vec4(xyzw[1], NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
-
-                const vec3_t com[2] = {
-                    md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
-                    md_util_com_compute_vec4(xyzw[1], 0, count, NULL),
-                };
+                // The reference is placed against its own circular mean and its own cell; the current
+                // frame then has its images chosen jointly with the rotation, so they are picked to
+                // minimise the very deviation being measured. No topology, so a partial or sparse
+                // selection works exactly as well as a whole molecule.
+                md_util_deperiodize_self_vec4(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
+                md_util_optimal_rotation_pbc_vec4(NULL, &com[1], xyzw[1], xyzw[0], com[0], xyzw[1], count, &ctx->cur_state->unitcell);
 
                 as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
                 md_temp_end(temp);
@@ -4768,9 +4766,11 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
             xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
         }
 
-        // Place structure within the same period
-        md_util_unwrap_vec4(xyzw, NULL, count, &ctx->sys->bond, &ctx->cur_state->unitcell);
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
+        // Bring the points into mutually consistent images. These may not be atoms at all - they can
+        // be centres of mass produced by another expression - so there is no topology to walk here,
+        // and none is needed: the centre is seeded from the circular mean and iterated to a fixed point.
+        vec3_t com = {0};
+        md_util_deperiodize_self_vec4(xyzw, count, &ctx->cur_state->unitcell, &com);
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
 
@@ -5727,16 +5727,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vol = as_float_arr(*dst);
         }
 
-        // Allocate temporary memory
-        // [0] is the reference frame, taken from the configuration the topology was inferred from.
-        // [1] is refilled below for each of the equivalent structures in the current frame.
-        // The index arrays are not scratch: md_util_unwrap_subset_vec4 needs to know which atom each
-        // compacted coordinate belongs to in order to walk the structure hierarchy.
-        int32_t* ref_idx[2] = {
-            md_temp_alloc_array(temp, int32_t, ref_size),
-            md_temp_alloc_array(temp, int32_t, ref_size)
-        };
-
+        // Allocate temporary memory.
+        // [0] is the reference template, taken from the configuration the topology was inferred from.
+        // [1] is refilled below from the current frame for each of the equivalent structures.
         vec4_t* ref_xyzw[2] = {
             md_temp_alloc_array(temp, vec4_t, ref_size),
             md_temp_alloc_array(temp, vec4_t, ref_size)
@@ -5746,12 +5739,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec3_t ref_com[2] = {0};
 
-        // Extract and unwrap the reference structure.
-        // @NOTE: each state is unwrapped against its own unit cell, which is what makes this correct
-        // under a varying cell - the reference configuration and the current frame need not share one.
-        md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
-        md_util_unwrap_subset_vec4(ref_xyzw[0], ref_idx[0], ref_size, ref_w, ctx->sys, ctx->ref_state);
-        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0); // @NOTE: the structure is unwrapped, so no unit cell is required here
+        // The reference template. Placed into mutually consistent images against its own circular
+        // mean, which needs no image assignment to compute and so cannot be skewed by whichever
+        // images the stored configuration happens to use.
+        // @NOTE: against ref_state's OWN cell. The reference configuration and the current frame need
+        // not share one, which matters under a varying cell.
+        extract_xyzw_vec4(ref_xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ref_w, ref_bf);
+        md_util_deperiodize_self_vec4(ref_xyzw[0], ref_size, &ctx->ref_state->unitcell, &ref_com[0]);
 
         // Fetch target positions
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
@@ -5774,6 +5768,17 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->vis->sdf.extent = cutoff;
         }
 
+        // Scale against which an image ambiguity is judged. Left at FLT_MAX when there is no cell,
+        // which disables the guard below - without periodicity there is no ambiguity to guard against.
+        float min_cell_extent = FLT_MAX;
+        if (md_unitcell_flags(&ctx->cur_state->unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) {
+            vec3_t ext = {0};
+            md_unitcell_diag_extract_float(ext.elem, &ctx->cur_state->unitcell);
+            for (int k = 0; k < 3; ++k) {
+                if (ext.elem[k] > 0.0f) min_cell_extent = MIN(min_cell_extent, ext.elem[k]);
+            }
+        }
+
         for (size_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
 
@@ -5782,10 +5787,19 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // below are sized for ref_size, so a mismatch would be an overrun rather than a bad result.
             if (md_bitfield_popcount(bf) != ref_size) continue;
 
-            md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
-            md_util_unwrap_subset_vec4(ref_xyzw[1], ref_idx[1], ref_size, ref_w, ctx->sys, ctx->cur_state);
-            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
-            mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
+            extract_xyzw_vec4(ref_xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ref_w, bf);
+
+            // Rotation, centre and each point's periodic image are solved for together, so the images
+            // are chosen to minimise the very residual this alignment is about to be judged by. No
+            // topology is consulted: the copies need not be whole structures, or even bonded.
+            mat3_t R = {0};
+            const float residual = md_util_optimal_rotation_pbc_vec4(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell);
+
+            // The residual is the margin to an ambiguous image choice. Approaching half a cell means
+            // no per point image assignment can represent this copy and the alignment is meaningless,
+            // so drop the copy rather than smear a wrong orientation into the volume.
+            if (residual > 0.25f * min_cell_extent) continue;
+
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {

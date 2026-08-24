@@ -5758,7 +5758,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
     // coordinate data for reading trajectory frames into
     const size_t stride = ALIGN_TO(sys->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
     const size_t coord_bytes = stride * 3 * sizeof(float);
-    float* curr_coords = md_temp_alloc_array(temp, float, coord_bytes);
+
     float* atom_mass   = md_temp_alloc_array(temp, float, stride);
     float* atom_radius = md_temp_alloc_array(temp, float, stride);
 
@@ -5781,7 +5781,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
     //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
     //uint64_t max_arena_pos = 0;
 
-
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .sys = sys,
@@ -5792,7 +5791,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
         .cur_state = &cur_state,
         .ref_state = &sys->reference,
     };
-
 
     // We evaluate each frame, one at a time
     for (uint32_t f_idx = frame_beg; f_idx < frame_end; ++f_idx) {
@@ -5806,7 +5804,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
             MD_LOG_ERROR("Failed to load frame during evaluation");
             goto done;
         }
-
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;

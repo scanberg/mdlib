@@ -356,7 +356,7 @@ static void make_chain_system(md_system_t* sys, md_allocator_i* alloc, int num_c
 }
 
 // The structure hierarchy must be rooted at the graph center and every atom must appear after the
-// atom it was reached from. md_util_unwrap_structure and md_util_unwrap_subset_vec4 both depend on
+// atom it was reached from. md_util_unwrap_structure depends on
 // that ordering, and atom_slot must be a consistent inverse of atom_idx.
 UTEST(util, structure_hierarchy) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -422,8 +422,13 @@ UTEST(util, structure_hierarchy) {
 }
 
 // A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
-// itself twice. Unwrapping must recover a straight line whatever subset is asked for.
-UTEST(util, unwrap_subset_ortho) {
+// itself twice. md_util_unwrap_structure must recover a straight line.
+//
+// @NOTE: this is the regression test for two bugs that were live together here. min_image_ortho was
+// being fed a half extent where it wants a reciprocal one, and the result was written as x + dx
+// instead of parent + dx, which is wrong for every non root atom even with no image correction at
+// all. Either one alone destroys the spacing checked below.
+UTEST(util, unwrap_structure_ortho) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     md_system_t sys = {0};
@@ -436,38 +441,22 @@ UTEST(util, unwrap_subset_ortho) {
     }
     md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
-    int32_t idx[9];
-    for (int i = 0; i < 9; ++i) idx[i] = i;
-
-    vec4_t xyzw[9];
-    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
+    md_structure_t structure = {0};
+    ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
+    md_util_unwrap_structure(&state, &structure);
 
     for (int i = 0; i < 8; ++i) {
-        EXPECT_NEAR(xyzw[i + 1].x - xyzw[i].x, 2.0f, 1.0e-4f);
-    }
-
-    // The two ends alone, with everything that connects them left out of the selection. Propagation
-    // runs over the structure hierarchy, so they must still come back 16A apart. An unwrap limited
-    // to the subset's own induced subgraph would place them in arbitrary, unrelated images.
-    const int32_t ends_idx[2] = { 0, 8 };
-    vec4_t ends[2];
-    md_util_unwrap_subset_vec4(ends, ends_idx, 2, NULL, &sys, &state);
-    EXPECT_NEAR(ends[1].x - ends[0].x, 16.0f, 1.0e-4f);
-
-    // The indices need not be sorted or contiguous
-    const int32_t mixed_idx[4] = { 7, 1, 8, 3 };
-    vec4_t mixed[4];
-    md_util_unwrap_subset_vec4(mixed, mixed_idx, 4, NULL, &sys, &state);
-    for (int i = 0; i < 4; ++i) {
-        EXPECT_NEAR(mixed[i].x, xyzw[mixed_idx[i]].x, 1.0e-4f);
+        EXPECT_NEAR(x[i + 1] - x[i], 2.0f, 1.0e-4f);
+        EXPECT_NEAR(y[i], 0.0f, 1.0e-4f);
+        EXPECT_NEAR(z[i], 0.0f, 1.0e-4f);
     }
 
     md_system_free(&sys);
 }
 
-// The same chain, folded back by whole lattice vectors of a triclinic cell. Unwrapping must recover
-// the original straight line up to a single rigid lattice translation of the whole structure.
-UTEST(util, unwrap_subset_triclinic) {
+// The same chain folded back by whole lattice vectors of a sheared cell. Unwrapping must recover the
+// original straight line up to a single rigid lattice translation of the whole structure.
+UTEST(util, unwrap_structure_triclinic) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     md_system_t sys = {0};
@@ -494,86 +483,18 @@ UTEST(util, unwrap_subset_triclinic) {
     }
     md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = cell };
 
-    int32_t idx[9];
-    for (int i = 0; i < 9; ++i) idx[i] = i;
-
-    vec4_t xyzw[9];
-    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
-
-    const float ox = xyzw[0].x - tx[0];
-    const float oy = xyzw[0].y - ty[0];
-    const float oz = xyzw[0].z - tz[0];
-
-    for (int i = 0; i < 9; ++i) {
-        EXPECT_NEAR(xyzw[i].x, tx[i] + ox, 1.0e-3f);
-        EXPECT_NEAR(xyzw[i].y, ty[i] + oy, 1.0e-3f);
-        EXPECT_NEAR(xyzw[i].z, tz[i] + oz, 1.0e-3f);
-    }
-
-    md_system_free(&sys);
-}
-
-// md_util_unwrap_structure and md_util_unwrap_subset_vec4 perform the same minimum image
-// propagation over the same hierarchy and must agree atom for atom on a whole structure.
-//
-// @NOTE: this caught min_image_ortho being fed a half extent where it wants a reciprocal one. The
-// two helpers take different quantities - min_image_ortho wants 1/ext, min_image_triclinic wants
-// ext/2 - so a single shared local silently feeds one of them the wrong thing. min_image_inv_ext
-// exists to keep them apart; keep this test as the tripwire.
-UTEST(util, unwrap_structure_matches_unwrap_subset) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-
-    md_system_t sys = {0};
-    make_chain_system(&sys, alloc, 1, 9);
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
-
-    float x[9], y[9] = {0}, z[9] = {0};
-    for (int i = 0; i < 9; ++i) {
-        x[i] = fmodf(1.0f + 2.0f * i, 10.0f);
-    }
-    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
-
-    int32_t idx[9];
-    for (int i = 0; i < 9; ++i) idx[i] = i;
-
-    vec4_t xyzw[9];
-    md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &state);
-
     md_structure_t structure = {0};
     ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
     md_util_unwrap_structure(&state, &structure);
 
+    const float ox = x[0] - tx[0];
+    const float oy = y[0] - ty[0];
+    const float oz = z[0] - tz[0];
+
     for (int i = 0; i < 9; ++i) {
-        EXPECT_NEAR(x[i], xyzw[i].x, 1.0e-4f);
-        EXPECT_NEAR(y[i], xyzw[i].y, 1.0e-4f);
-        EXPECT_NEAR(z[i], xyzw[i].z, 1.0e-4f);
-    }
-
-    // And again through the triclinic branch, which takes the half extent rather than the reciprocal
-    {
-        md_unitcell_t cell = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
-        float A[3][3] = {0};
-        md_unitcell_A_extract_float(A, &cell);
-
-        float tx[9], ty[9], tz[9];
-        for (int i = 0; i < 9; ++i) {
-            const int na = (i >= 5) ? -1 : 0;
-            const int nb = (i >= 7) ? -1 : 0;
-            tx[i] = 1.0f + 2.00f * i + na * A[0][0] + nb * A[1][0];
-            ty[i] = 1.0f + 0.50f * i + na * A[0][1] + nb * A[1][1];
-            tz[i] = 1.0f + 0.25f * i + na * A[0][2] + nb * A[1][2];
-            x[i] = tx[i]; y[i] = ty[i]; z[i] = tz[i];
-        }
-        md_system_state_t tri_state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = cell };
-
-        md_util_unwrap_subset_vec4(xyzw, idx, 9, NULL, &sys, &tri_state);
-        md_util_unwrap_structure(&tri_state, &structure);
-
-        for (int i = 0; i < 9; ++i) {
-            EXPECT_NEAR(x[i], xyzw[i].x, 1.0e-3f);
-            EXPECT_NEAR(y[i], xyzw[i].y, 1.0e-3f);
-            EXPECT_NEAR(z[i], xyzw[i].z, 1.0e-3f);
-        }
+        EXPECT_NEAR(x[i], tx[i] + ox, 1.0e-3f);
+        EXPECT_NEAR(y[i], ty[i] + oy, 1.0e-3f);
+        EXPECT_NEAR(z[i], tz[i] + oz, 1.0e-3f);
     }
 
     md_system_free(&sys);
@@ -617,6 +538,181 @@ UTEST(util, min_image) {
     EXPECT_NEAR(dx4[1].z, 2.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[0].w, 7.0f, 1.0e-4f);   // w must be left untouched
     EXPECT_NEAR(dx4[1].w, 8.0f, 1.0e-4f);
+}
+
+
+// ---- periodic image selection -------------------------------------------------------------
+
+#define PBC_NP 12
+
+// A lumpy, chiral-ish shape so no two points are interchangeable and the fit is well determined.
+static void pbc_make_shape(vec4_t out[PBC_NP], float radius) {
+    for (int i = 0; i < PBC_NP; ++i) {
+        const float t = (float)i / PBC_NP * 6.2831853f;
+        const float u = (float)(i % 5) / 5.0f;
+        out[i] = vec4_set(radius * cosf(t) * (0.4f + u),
+                          radius * sinf(t) * (0.5f + 0.5f * u),
+                          radius * (u - 0.5f),
+                          1.0f + 0.05f * i);
+    }
+}
+
+static mat3_t pbc_rot(float angle) {
+    const float c = cosf(angle), s = sinf(angle);
+    const vec3_t k = vec3_normalize(vec3_set(0.3f, 0.6f, 0.74f));
+    mat3_t m;
+    m.elem[0][0]=c+k.x*k.x*(1-c);     m.elem[1][0]=k.x*k.y*(1-c)-k.z*s; m.elem[2][0]=k.x*k.z*(1-c)+k.y*s;
+    m.elem[0][1]=k.y*k.x*(1-c)+k.z*s; m.elem[1][1]=c+k.y*k.y*(1-c);     m.elem[2][1]=k.y*k.z*(1-c)-k.x*s;
+    m.elem[0][2]=k.z*k.x*(1-c)-k.y*s; m.elem[1][2]=k.z*k.y*(1-c)+k.x*s; m.elem[2][2]=c+k.z*k.z*(1-c);
+    return m;
+}
+
+static float pbc_wrap(float v, float L) { v = fmodf(v, L); return v < 0.0f ? v + L : v; }
+
+// Angle between R and the inverse of R_true, in degrees. Zero when R undoes R_true.
+static float pbc_angle_err(mat3_t R, mat3_t R_true) {
+    const mat3_t E = mat3_mul(R, R_true);
+    const float tr = E.elem[0][0] + E.elem[1][1] + E.elem[2][2];
+    return acosf(CLAMP((tr - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+}
+
+// A set broken across a boundary must come back whole, with a centre that does not depend on which
+// images the input happened to arrive in.
+UTEST(util, pbc_deperiodize_self) {
+    const float L = 20.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+
+    vec4_t shape[PBC_NP];
+    pbc_make_shape(shape, 3.0f);
+
+    // Place it straddling the origin corner, then wrap every point independently
+    vec4_t pts[PBC_NP];
+    for (int i = 0; i < PBC_NP; ++i) {
+        const vec3_t v = vec3_from_vec4(shape[i]);
+        pts[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), shape[i].w);
+    }
+
+    vec3_t com = {0};
+    ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+
+    // Every pairwise separation must match the original shape: the set is whole again
+    for (int i = 0; i < PBC_NP; ++i) {
+        for (int j = i + 1; j < PBC_NP; ++j) {
+            const float got = vec3_distance(vec3_from_vec4(pts[i]), vec3_from_vec4(pts[j]));
+            const float ref = vec3_distance(vec3_from_vec4(shape[i]), vec3_from_vec4(shape[j]));
+            EXPECT_NEAR(got, ref, 1.0e-3f);
+        }
+    }
+
+    // The centre must sit inside the reassembled set, not at some average of scattered images
+    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    for (int i = 0; i < PBC_NP; ++i) {
+        const vec3_t d = vec3_sub(vec3_from_vec4(pts[i]), com);
+        const vec3_t r = vec3_sub(vec3_from_vec4(shape[i]), shape_com);
+        EXPECT_NEAR(d.x, r.x, 1.0e-3f);
+        EXPECT_NEAR(d.y, r.y, 1.0e-3f);
+        EXPECT_NEAR(d.z, r.z, 1.0e-3f);
+    }
+
+    // Already consistent input must be left alone
+    vec4_t again[PBC_NP];
+    MEMCPY(again, pts, sizeof(pts));
+    vec3_t com2 = {0};
+    ASSERT_TRUE(md_util_deperiodize_self_vec4(again, PBC_NP, &cell, &com2));
+    for (int i = 0; i < PBC_NP; ++i) {
+        EXPECT_NEAR(again[i].x, pts[i].x, 1.0e-4f);
+        EXPECT_NEAR(again[i].w, pts[i].w, 1.0e-6f);  // weights carried through untouched
+    }
+}
+
+// The rotation must be recovered from a target whose points arrive scattered across images, for any
+// rotation, without ever consulting topology.
+UTEST(util, pbc_optimal_rotation) {
+    const float L = 20.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+
+    for (int deg = 0; deg <= 180; deg += 20) {
+        vec4_t ref[PBC_NP];
+        pbc_make_shape(ref, 3.0f);
+        const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+
+        const mat3_t R_true = pbc_rot(deg * 3.14159265f / 180.0f);
+        const vec3_t c_true = { 3.0f, 17.0f, 9.0f };   // deliberately near two boundaries
+
+        vec4_t trg[PBC_NP];
+        for (int i = 0; i < PBC_NP; ++i) {
+            const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
+            trg[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
+        }
+
+        mat3_t R = {0};
+        vec3_t com = {0};
+        vec4_t placed[PBC_NP];
+        const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell);
+
+        EXPECT_LT(residual, 1.0e-2f);
+        EXPECT_LT(pbc_angle_err(R, R_true), 0.5f);
+
+        // The placed points must satisfy the transform the call reported
+        for (int i = 0; i < PBC_NP; ++i) {
+            const vec3_t p = vec3_sub(vec3_from_vec4(ref[i]), ref_com);
+            const vec3_t q = mat3_mul_vec3(R, vec3_sub(vec3_from_vec4(placed[i]), com));
+            EXPECT_NEAR(q.x, p.x, 1.0e-2f);
+            EXPECT_NEAR(q.y, p.y, 1.0e-2f);
+            EXPECT_NEAR(q.z, p.z, 1.0e-2f);
+            EXPECT_NEAR(placed[i].w, ref[i].w, 1.0e-6f);
+        }
+    }
+}
+
+// Beyond the regime where any per point image choice can work, the fit must SAY so rather than
+// return a confident wrong answer. A set of radius 8.5 in a 20A cell flipped end for end is past it.
+UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
+    const float L = 20.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+
+    vec4_t ref[PBC_NP];
+    pbc_make_shape(ref, 8.5f);
+    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+
+    const mat3_t R_true = pbc_rot(3.14159265f);
+    const vec3_t c_true = { 3.0f, 17.0f, 9.0f };
+
+    vec4_t trg[PBC_NP];
+    for (int i = 0; i < PBC_NP; ++i) {
+        const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
+        trg[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
+    }
+
+    mat3_t R = {0};
+    vec3_t com = {0};
+    const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell);
+
+    // The certificate is the whole point: a residual on the order of half a cell means do not trust it
+    EXPECT_GT(residual, 0.25f * L);
+}
+
+// Degenerate inputs must not misbehave
+UTEST(util, pbc_optimal_rotation_degenerate) {
+    md_unitcell_t cell = md_unitcell_from_extent(20, 20, 20);
+    vec4_t ref[PBC_NP];
+    pbc_make_shape(ref, 3.0f);
+    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+
+    mat3_t R = {0};
+    vec3_t com = {0};
+
+    // Empty set
+    EXPECT_NEAR(md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, ref, 0, &cell), 0.0f, 1.0e-6f);
+
+    // No cell at all: still a plain Kabsch fit, identity here since target == reference
+    const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL);
+    EXPECT_LT(residual, 1.0e-3f);
+    EXPECT_LT(pbc_angle_err(R, mat3_ident()), 0.5f);
+
+    // A set with no coordinates to speak of
+    vec3_t c = {0};
+    EXPECT_TRUE(md_util_deperiodize_self_vec4(ref, 0, &cell, &c));
 }
 
 UTEST_F(util, rings_common) {
