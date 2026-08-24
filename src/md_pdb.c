@@ -74,13 +74,13 @@ static inline char extract_char(str_t line, size_t idx) {
 
 // Parse atom serial or residue sequence number, which can be "*****" for missing values
 static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
-	size_t len = end - beg + 1;
-    int32_t result = 0;
-    const char* errmsg = hy36decode(len, line.ptr + beg - 1, len, &result);
+	uint32_t len = (uint32_t)(end - beg) + 1;
+    int32_t  res = 0;
+    const char* errmsg = hy36decode(len, line.ptr + beg - 1, len, &res);
     if (errmsg) {
         MD_LOG_DEBUG("Failed to decode id from string '%.*s', error: %s", (int)len, line.ptr + beg - 1, errmsg);
     }
-    return result;
+    return res;
 }
 
 static inline md_pdb_coordinate_t extract_coord(str_t line) {
