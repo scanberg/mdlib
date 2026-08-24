@@ -2234,9 +2234,14 @@ MD_VEC_INLINE vec4_t mat4x3_mul_vec4(mat4x3_t M, vec4_t v) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = linear_combine_3(v.m128, &M.col[0].m128);
 #else
-    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
-    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
-    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z + M.elem[3][2] * v.w;
+    // mat4x3_t is THREE columns of four rows (elem[3][4]). There is no elem[3][..] to read - doing
+    // so runs off the end of the struct - and v.w takes no part in the combination. This mirrors
+    // what linear_combine_3 computes above, w lane included, so the two paths agree for any matrix
+    // and not only for ones whose w row happens to be zero.
+    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z;
+    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z;
+    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z;
+    r.w = M.elem[0][3] * v.x + M.elem[1][3] * v.y + M.elem[2][3] * v.z;
 #endif
     return r;
 }

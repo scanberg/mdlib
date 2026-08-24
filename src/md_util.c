@@ -7489,12 +7489,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_y = _mm512_loadu_ps(in_y + i);
         md_512 v_z = _mm512_loadu_ps(in_z + i);
         md_512 v_w = _mm512_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7528,12 +7528,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_256 v_y = md_mm256_loadu_ps(in_y + i);
         md_256 v_z = md_mm256_loadu_ps(in_z + i);
         md_256 v_w = md_mm256_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7567,12 +7567,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_128 v_y = md_mm_loadu_ps(in_y + i);
         md_128 v_z = md_mm_loadu_ps(in_z + i);
         md_128 v_w = md_mm_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7602,9 +7602,9 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         double y = in_y[i];
         double z = in_z[i];
         double w = in_w[i];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += w * cos(tx);
         acc_s[0] += w * sin(tx);
         acc_c[1] += w * cos(ty);
@@ -7615,16 +7615,23 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     }
 
     const double inv_w = 1.0 / acc_w;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7650,12 +7657,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_512 v_x = _mm512_loadu_ps(in_x + i);
         md_512 v_y = _mm512_loadu_ps(in_y + i);
         md_512 v_z = _mm512_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7685,12 +7692,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_256 v_x = md_mm256_loadu_ps(in_x + i);
         md_256 v_y = md_mm256_loadu_ps(in_y + i);
         md_256 v_z = md_mm256_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7720,12 +7727,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_128 v_x = md_mm_loadu_ps(in_x + i);
         md_128 v_y = md_mm_loadu_ps(in_y + i);
         md_128 v_z = md_mm_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7752,9 +7759,9 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         double x = in_x[i];
         double y = in_y[i];
         double z = in_z[i];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += cos(tx);
         acc_s[0] += sin(tx);
         acc_c[1] += cos(ty);
@@ -7764,16 +7771,23 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     }
 
     const double inv_w = 1.0 / (double)count;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7800,12 +7814,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7836,12 +7850,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
         md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
         md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7872,12 +7886,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
         md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
         md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7905,9 +7919,9 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         double x = in_x[idx];
         double y = in_y[idx];
         double z = in_z[idx];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += cos(tx);
         acc_s[0] += sin(tx);
         acc_c[1] += cos(ty);
@@ -7917,16 +7931,23 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     }
 
     const double inv_w = 1.0 / (double)count;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7956,12 +7977,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
         md_512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7996,12 +8017,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
         md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
         md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -8036,12 +8057,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
         md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
         md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -8072,9 +8093,9 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         double y = in_y[idx];
         double z = in_z[idx];
         double w = in_w[idx];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += w * cos(tx);
         acc_s[0] += w * sin(tx);
         acc_c[1] += w * cos(ty);
@@ -8085,16 +8106,23 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     }
 
     const double inv_w = 1.0 / acc_w;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -8202,8 +8230,13 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
-        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), A));
-        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), Ai));
+        // Cartesian -> fractional, scaled into angle space, and the inverse which takes the mean
+        // angle back out to a Cartesian position. A triclinic basis mixes the components, so both
+        // directions have to be full matrix products: resolving an axis on its own is only valid
+        // when the basis is diagonal, which is why the orthorhombic branch above can get away with
+        // per component scalars and this one cannot.
+        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai));
+        const mat3_t   I = mat3_mul(A, mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
@@ -8221,7 +8254,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4x3_mul_vec4(I, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -8230,6 +8263,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             }
         }
 
+        vec3_t theta_vec = { 0 };
         for (int i = 0; i < 3; ++i) {
             const double y = acc_s.elem[i] / acc_xyzw.w;
             const double x = acc_c.elem[i] / acc_xyzw.w;
@@ -8238,8 +8272,15 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
                 theta_prim += atan2(-y, -x);
             }
-            out_com[i] = (float)(theta_prim * I.elem[i][0] + theta_prim * I.elem[i][1] + theta_prim * I.elem[i][2]);
+            theta_vec.elem[i] = (float)theta_prim;
         }
+
+        // The three mean angles ARE a fractional coordinate (times two pi). Carry it back to
+        // Cartesian as one vector - component i of the result draws on all three angles.
+        const vec3_t com = mat3_mul_vec3(I, theta_vec);
+        out_com[0] = com.x;
+        out_com[1] = com.y;
+        out_com[2] = com.z;
     }
 }
 

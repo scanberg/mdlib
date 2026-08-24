@@ -625,6 +625,277 @@ UTEST(util, pbc_deperiodize_self) {
     }
 }
 
+// Every other test in this block uses a cube, which hides anything that only goes wrong when the
+// basis has off diagonal terms. This one uses a rhombic dodecahedron - the shape GROMACS writes for
+// -bt dodecahedron, and the shape that exposed the bug this test now guards.
+//
+// The circular mean has to be taken in FRACTIONAL space and carried back through the full basis.
+// Handling each Cartesian axis on its own is only valid when the basis is diagonal; do it on a
+// triclinic cell and the centre comes back displaced by a lattice vector, which then drags the
+// whole deperiodize / align chain into the wrong periodic image.
+UTEST(util, pbc_com_triclinic) {
+    // a = b, c = a/sqrt(2), third vector leaning by half a cell in x and y
+    const float a = 47.8497f;
+    const float c = 33.8349f;
+    md_unitcell_t cell = md_unitcell_from_basis_parameters(a, a, c, 0.0, a * 0.5f, a * 0.5f);
+    ASSERT_TRUE(md_unitcell_is_triclinic(&cell));
+
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, &cell);
+    mat3_t I = {0};
+    md_unitcell_I_extract_float(I.elem, &cell);
+
+    // A compact blob sitting well inside the cell, nowhere near a boundary.
+    vec4_t pts[PBC_NP];
+    const vec3_t centre = mat3_mul_vec3(A, vec3_set(0.41f, 0.63f, 0.48f));
+    for (int i = 0; i < PBC_NP; ++i) {
+        const float t = (float)i / PBC_NP * 6.2831853f;
+        pts[i] = vec4_set(centre.x + 6.0f * cosf(t), centre.y + 6.0f * sinf(t), centre.z + 3.0f * cosf(t * 2.0f), 1.0f + (float)(i % 3));
+    }
+
+    // Nothing is wrapped, so the periodic mean must agree with the plain mean. It is the same set
+    // of points either way.
+    const vec3_t com_plain = md_util_com_compute_vec4(pts, 0, PBC_NP, 0);
+    const vec3_t com_pbc   = md_util_com_compute_vec4(pts, 0, PBC_NP, &cell);
+    EXPECT_NEAR(com_pbc.x, com_plain.x, 0.2f);
+    EXPECT_NEAR(com_pbc.y, com_plain.y, 0.2f);
+    EXPECT_NEAR(com_pbc.z, com_plain.z, 0.2f);
+
+    // Same blob, every point folded into the primary cell the way a trajectory stores it. The
+    // recovered centre must be the same one, in the same image - not a lattice vector away.
+    vec4_t wrapped[PBC_NP];
+    for (int i = 0; i < PBC_NP; ++i) {
+        vec3_t f = mat3_mul_vec3(I, vec3_from_vec4(pts[i]));
+        f.x -= floorf(f.x);
+        f.y -= floorf(f.y);
+        f.z -= floorf(f.z);
+        wrapped[i] = vec4_from_vec3(mat3_mul_vec3(A, f), pts[i].w);
+    }
+
+    vec3_t com_wrapped = {0};
+    ASSERT_TRUE(md_util_deperiodize_self_vec4(wrapped, PBC_NP, &cell, &com_wrapped));
+    EXPECT_NEAR(com_wrapped.x, com_plain.x, 0.05f);
+    EXPECT_NEAR(com_wrapped.y, com_plain.y, 0.05f);
+    EXPECT_NEAR(com_wrapped.z, com_plain.z, 0.05f);
+
+    // and the blob itself must be back in one piece, in that same image
+    for (int i = 0; i < PBC_NP; ++i) {
+        EXPECT_NEAR(wrapped[i].x, pts[i].x, 0.05f);
+        EXPECT_NEAR(wrapped[i].y, pts[i].y, 0.05f);
+        EXPECT_NEAR(wrapped[i].z, pts[i].z, 0.05f);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Periodic centre of mass.
+//
+// The circular mean has to be taken in FRACTIONAL space and carried back out through the full
+// basis. Resolving each Cartesian axis against itself alone is only valid when the basis is
+// diagonal, so an ORTHORHOMBIC cell hides that mistake completely and a triclinic one does not.
+// Everything below therefore runs against both a cube and a rhombic dodecahedron - the shape
+// GROMACS writes for -bt dodecahedron, and the shape that surfaced this.
+//
+// md_util_com_compute dispatches to one of four internal variants depending on whether weights and
+// indices are present, and each of those has an AVX512, an AVX2, an SSE2 and a scalar remainder
+// path. The counts below straddle the block sizes (4 / 8 / 16) so that on any given build both the
+// vector body and the remainder loop are exercised, and every variant is called for each count.
+
+#define COM_MAX_PTS 253
+
+static md_unitcell_t com_cell_ortho(void) {
+    return md_unitcell_from_extent(47.8497, 47.8497, 33.8349);
+}
+
+static md_unitcell_t com_cell_triclinic(void) {
+    const double a = 47.8497;   // a = b, c = a/sqrt(2), third vector leaning half a cell in x and y
+    const double c = 33.8349;
+    return md_unitcell_from_basis_parameters(a, a, c, 0.0, a * 0.5, a * 0.5);
+}
+
+// A compact blob sitting well inside the cell, nowhere near a boundary, so the periodic mean has an
+// unambiguous answer: the ordinary arithmetic mean of the very same points.
+static void com_make_blob(float* x, float* y, float* z, float* w, size_t count, const md_unitcell_t* cell) {
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, cell);
+    const vec3_t centre = mat3_mul_vec3(A, vec3_set(0.41f, 0.63f, 0.48f));
+    for (size_t i = 0; i < count; ++i) {
+        const float t = (float)i * 0.7913f;
+        x[i] = centre.x + 3.0f * cosf(t);
+        y[i] = centre.y + 3.0f * sinf(t * 1.3f);
+        z[i] = centre.z + 2.0f * cosf(t * 0.7f);
+        w[i] = 1.0f + (float)(i % 7);
+    }
+}
+
+static const size_t COM_COUNTS[] = { 1, 2, 3, 5, 7, 8, 15, 16, 17, 33, 61, 64, 253 };
+
+// With nothing wrapped, the periodic mean is just the mean. All four variants have to say so, for
+// both cell shapes, at every count - and the vec4 entry point has to agree with the float one.
+UTEST(util, com_pbc_matches_plain_mean) {
+    md_unitcell_t cells[2];
+    cells[0] = com_cell_ortho();
+    cells[1] = com_cell_triclinic();
+    ASSERT_TRUE(md_unitcell_is_orthorhombic(&cells[0]));
+    ASSERT_TRUE(md_unitcell_is_triclinic(&cells[1]));
+
+    for (int ci = 0; ci < 2; ++ci) {
+        for (size_t k = 0; k < ARRAY_SIZE(COM_COUNTS); ++k) {
+            const size_t n = COM_COUNTS[k];
+            float x[COM_MAX_PTS], y[COM_MAX_PTS], z[COM_MAX_PTS], w[COM_MAX_PTS];
+            int32_t idx[COM_MAX_PTS];
+            vec4_t xyzw[COM_MAX_PTS];
+            com_make_blob(x, y, z, w, n, &cells[ci]);
+            for (size_t i = 0; i < n; ++i) {
+                idx[i]  = (int32_t)i;
+                xyzw[i] = vec4_set(x[i], y[i], z[i], w[i]);
+            }
+
+            const vec3_t plain_u = md_util_com_compute(x, y, z, NULL, NULL, n, NULL);
+            const vec3_t plain_w = md_util_com_compute(x, y, z, w,    NULL, n, NULL);
+
+            // the four internal variants, in order: _com_pbc, _com_pbc_w, _com_pbc_i, _com_pbc_iw
+            const vec3_t pbc    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t pbc_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t pbc_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t pbc_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+
+            // and the vec4 entry point, which carries its weight in w
+            const vec3_t pbc_v4 = md_util_com_compute_vec4(xyzw, NULL, n, &cells[ci]);
+            const vec3_t pbc_v4i = md_util_com_compute_vec4(xyzw, idx, n, &cells[ci]);
+
+            for (int e = 0; e < 3; ++e) {
+                EXPECT_NEAR(pbc.elem[e],     plain_u.elem[e], 0.1f);
+                EXPECT_NEAR(pbc_i.elem[e],   plain_u.elem[e], 0.1f);
+                EXPECT_NEAR(pbc_w.elem[e],   plain_w.elem[e], 0.1f);
+                EXPECT_NEAR(pbc_iw.elem[e],  plain_w.elem[e], 0.1f);
+                EXPECT_NEAR(pbc_v4.elem[e],  plain_w.elem[e], 0.1f);
+                EXPECT_NEAR(pbc_v4i.elem[e], plain_w.elem[e], 0.1f);
+            }
+
+            // indexed and contiguous walk the same points, so they must agree exactly, not merely
+            // to within the tolerance above
+            for (int e = 0; e < 3; ++e) {
+                EXPECT_NEAR(pbc_i.elem[e],  pbc.elem[e],   1.0e-4f);
+                EXPECT_NEAR(pbc_iw.elem[e], pbc_w.elem[e], 1.0e-4f);
+            }
+        }
+    }
+}
+
+// The defining property, and the one that needs no tolerance argument: moving individual points by
+// whole lattice vectors does not change the configuration, so it must not move the centre. A
+// per axis circular mean is periodic in the cell EXTENT rather than in the lattice, which is the
+// same thing for a cube and is not the same thing at all for a triclinic cell.
+UTEST(util, com_pbc_invariant_under_lattice_shift) {
+    md_unitcell_t cells[2];
+    cells[0] = com_cell_ortho();
+    cells[1] = com_cell_triclinic();
+
+    for (int ci = 0; ci < 2; ++ci) {
+        mat3_t A = {0};
+        md_unitcell_A_extract_float(A.elem, &cells[ci]);
+
+        for (size_t k = 0; k < ARRAY_SIZE(COM_COUNTS); ++k) {
+            const size_t n = COM_COUNTS[k];
+            float x[COM_MAX_PTS], y[COM_MAX_PTS], z[COM_MAX_PTS], w[COM_MAX_PTS];
+            int32_t idx[COM_MAX_PTS];
+            com_make_blob(x, y, z, w, n, &cells[ci]);
+            for (size_t i = 0; i < n; ++i) idx[i] = (int32_t)i;
+
+            const vec3_t before    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t before_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t before_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t before_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+
+            // scatter the points across images - a different lattice vector for every third one
+            for (size_t i = 0; i < n; ++i) {
+                if (i % 3 != 0) continue;
+                // NOTE: cast before subtracting - i is size_t and the subtraction would wrap
+                const vec3_t nvec = vec3_set((float)((int)(i % 5) - 2), (float)((int)(i % 3) - 1), (float)((int)(i % 7) - 3));
+                const vec3_t shift = mat3_mul_vec3(A, nvec);
+                x[i] += shift.x;
+                y[i] += shift.y;
+                z[i] += shift.z;
+            }
+
+            const vec3_t after    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t after_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t after_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t after_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+
+            for (int e = 0; e < 3; ++e) {
+                EXPECT_NEAR(after.elem[e],    before.elem[e],    0.02f);
+                EXPECT_NEAR(after_w.elem[e],  before_w.elem[e],  0.02f);
+                EXPECT_NEAR(after_i.elem[e],  before_i.elem[e],  0.02f);
+                EXPECT_NEAR(after_iw.elem[e], before_iw.elem[e], 0.02f);
+            }
+        }
+    }
+}
+
+// The indexed variants must read through the index list and nothing else. Bury the real points in a
+// larger array whose unselected slots hold coordinates far away, and the answer must not move.
+UTEST(util, com_pbc_indices_select) {
+    md_unitcell_t cells[2];
+    cells[0] = com_cell_ortho();
+    cells[1] = com_cell_triclinic();
+
+    for (int ci = 0; ci < 2; ++ci) {
+        const size_t n = 61;
+        float xs[COM_MAX_PTS], ys[COM_MAX_PTS], zs[COM_MAX_PTS], ws[COM_MAX_PTS];
+        com_make_blob(xs, ys, zs, ws, n, &cells[ci]);
+
+        const vec3_t want   = md_util_com_compute(xs, ys, zs, NULL, NULL, n, &cells[ci]);
+        const vec3_t want_w = md_util_com_compute(xs, ys, zs, ws,   NULL, n, &cells[ci]);
+
+        // stride the real points through a 3x larger array, junk in between
+        float bx[COM_MAX_PTS * 3], by[COM_MAX_PTS * 3], bz[COM_MAX_PTS * 3], bw[COM_MAX_PTS * 3];
+        int32_t idx[COM_MAX_PTS];
+        for (size_t i = 0; i < n * 3; ++i) {
+            bx[i] = -931.0f + (float)i;
+            by[i] =  757.0f - (float)i;
+            bz[i] =  613.0f + (float)(i * 2);
+            bw[i] =  99.0f;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const size_t slot = i * 3 + 2;
+            bx[slot] = xs[i]; by[slot] = ys[i]; bz[slot] = zs[i]; bw[slot] = ws[i];
+            idx[i] = (int32_t)slot;
+        }
+
+        const vec3_t got   = md_util_com_compute(bx, by, bz, NULL, idx, n, &cells[ci]);
+        const vec3_t got_w = md_util_com_compute(bx, by, bz, bw,   idx, n, &cells[ci]);
+
+        for (int e = 0; e < 3; ++e) {
+            EXPECT_NEAR(got.elem[e],   want.elem[e],   1.0e-4f);
+            EXPECT_NEAR(got_w.elem[e], want_w.elem[e], 1.0e-4f);
+        }
+    }
+}
+
+// Weights have to actually weight. Two points, one ten times heavier, in a triclinic cell: the
+// centre belongs near the heavy one, and nowhere near the midpoint.
+UTEST(util, com_pbc_weights_apply) {
+    md_unitcell_t cell = com_cell_triclinic();
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, &cell);
+
+    const vec3_t p0 = mat3_mul_vec3(A, vec3_set(0.30f, 0.30f, 0.30f));
+    const vec3_t p1 = mat3_mul_vec3(A, vec3_set(0.34f, 0.36f, 0.38f));
+
+    float x[2] = { p0.x, p1.x };
+    float y[2] = { p0.y, p1.y };
+    float z[2] = { p0.z, p1.z };
+    float w[2] = { 10.0f, 1.0f };
+
+    const vec3_t expect = vec3_div1(vec3_add(vec3_mul1(p0, 10.0f), p1), 11.0f);
+    const vec3_t got    = md_util_com_compute(x, y, z, w, NULL, 2, &cell);
+
+    EXPECT_NEAR(got.x, expect.x, 0.05f);
+    EXPECT_NEAR(got.y, expect.y, 0.05f);
+    EXPECT_NEAR(got.z, expect.z, 0.05f);
+}
+
 // The rotation must be recovered from a target whose points arrive scattered across images, for any
 // rotation, without ever consulting topology.
 UTEST(util, pbc_optimal_rotation) {
