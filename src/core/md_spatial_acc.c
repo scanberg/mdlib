@@ -538,6 +538,28 @@ static inline int isign(int a) {
     return (a > 0) - (a < 0);
 }
 
+// Number of cells the search has to reach along each axis, capped at ONE full period.
+//
+// The wrap applied to a neighbour index moves it by exactly one period, so it is only exact while
+// the raw index (cell + offset) stays within [-N, 2N-1], that is while the offset magnitude stays
+// within N. The cap is not an approximation: offsets spanning a full period in each direction
+// already visit every cell of the grid at periodic shifts of -1, 0 and +1, which is the complete
+// set of nearest image candidates. Reaching further only revisits those same cells in a more
+// distant image, which cannot be nearer than one already considered.
+//
+// Without the cap a cutoff approaching the box size drives ncell past cell_dim. cell_dim is CLAMPed
+// to at least 1, so it collapses precisely when the cutoff grows, and the single period wrap then
+// hands back an index that is STILL out of range - which is then read straight into the element
+// arrays.
+static inline void neighbor_cell_extent(int out_ncell[3], double cutoff, const md_spatial_acc_t* acc) {
+    for (int i = 0; i < 3; ++i) {
+        const int dim = (int)acc->cell_dim[i];
+        const double n = ceil(cutoff * (double)acc->inv_cell_ext[i] * (double)acc->cell_dim[i]);
+        // Written so that a NaN lands on 0 rather than on an undefined float to int conversion.
+        out_ncell[i] = !(n > 0.0) ? 0 : (n >= (double)dim ? dim : (int)n);
+    }
+}
+
 static float calc_r2(double cutoff) {
     float r2 = (float)(cutoff * cutoff);
     return nextafterf(r2, r2 + 1.0f); // Round up to ensure we don't miss neighbors due to floating point precision
@@ -821,6 +843,10 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
 						const md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_i_idx + j));
 						const int mask = md_mm256_movemask_ps(v_mask);
 
+                        // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                        // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                        // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                        POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
 						md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -892,6 +918,10 @@ static void for_each_internal_pair_in_neighboring_cells_triclinic(const md_spati
 
                             const int mask = md_mm256_movemask_ps(v_mask);
 
+                            // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                            // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                            // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                            POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                             md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -992,6 +1022,10 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
 						const md_256i v_idxj = md_mm256_loadu_epi32(elem_i_idx + j);
 						const int mask = md_mm256_movemask_ps(v_mask);
 
+                        // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                        // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                        // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                        POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
 						md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1067,6 +1101,10 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
 
                             const int mask = md_mm256_movemask_ps(v_mask);
 
+                            // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                            // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                            // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                            POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                             md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1087,11 +1125,8 @@ static void for_each_internal_pair_in_neighboring_cells_ortho(const md_spatial_a
 }
 
 static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
-    const int ncell[3] = {
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, cutoff, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_pair_within_cutoff_ortho: cutoff too large for cell size");
@@ -1188,6 +1223,10 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
 						    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
 						    v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
+                            // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                            // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                            // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                            POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
 						    md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1268,6 +1307,10 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
                                 v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
                                 v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
+                                // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                                // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                                // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                                POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                                 md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1289,11 +1332,8 @@ static void for_each_internal_pair_within_cutoff_triclinic(const md_spatial_acc_
 }
 
 static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
-    const int ncell[3] = {
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, cutoff, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_pair_within_cutoff_ortho: cutoff too large for cell size");
@@ -1391,6 +1431,10 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 						    v_idxj = md_mm256_permutevar8x32_epi32(v_idxj,  v_idx_mask);
 						    v_d2   = md_mm256_permutevar8x32_ps(v_d2,       v_idx_mask);
 
+                            // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                            // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                            // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                            POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                             ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
 						    md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1475,6 +1519,10 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                                 v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
                                 v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
+                                // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                                // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                                // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                                POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                                 md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1496,11 +1544,8 @@ static void for_each_internal_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 }
 
 static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
-    const int ncell[3] = {
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, cutoff, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: cutoff too large for cell size");
@@ -1629,6 +1674,10 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
                     v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
                     v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
+                    // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                    // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                    // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                    POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                     ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                     md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1647,11 +1696,8 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
 }
 
 static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
-    const int ncell[3] = {
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(cutoff * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, cutoff, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: cutoff too large for cell size");
@@ -1785,6 +1831,10 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
                     v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
                     v_d2   = md_mm256_permutevar8x32_ps(v_d2,      v_idx_mask);
 
+                    // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                    // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                    // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                    POSSIBLY_INVOKE_CALLBACK_PAIR(8);
                     ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                     md_mm256_storeu_epi32(buf_i  + count,  v_idxi);
@@ -1871,6 +1921,19 @@ static inline void cell_range_from_aabb_center_radius(
             cmin = CLAMP(cmin, 0, dim);
             cmax = CLAMP(cmax, 0, dim);
             if (cmax <= cmin) cmax = MIN(cmin + 1, dim);
+        } else {
+            // Cap the span at one full period either side of the centre cell. wrap_coord() moves an
+            // index by exactly one period and the shift derived from it is only ever -1, 0 or +1, so
+            // an index outside [-dim, 2*dim-1] comes back still out of range and is then read
+            // straight into the element arrays. A half extent larger than the cell drives it there.
+            //
+            // Capping loses nothing: a full period in each direction already visits every cell of
+            // the grid in each of its nearest images, and a more distant image cannot be nearer.
+            const int ccen = (int)floor(out_fcen[a] * (double)dim);
+            cmin = MAX(cmin, ccen - dim);
+            cmax = MIN(cmax, ccen + dim + 1);
+            if (cmax <= cmin) cmax = cmin + 1;
+            ASSERT(cmin >= -dim && cmax <= 2 * dim);
         }
 
         out_cmin[a] = cmin;
@@ -1987,6 +2050,10 @@ static void for_each_point_in_aabb_ortho(const md_spatial_acc_t* acc, const doub
                         v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
                         v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
+                        // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                        // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                        // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                        POSSIBLY_INVOKE_CALLBACK_POINT_ORT(8);
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                         md_mm256_storeu_epi32(buf_i + count, v_idxj);
@@ -2125,6 +2192,10 @@ static void for_each_point_in_aabb_triclinic(const md_spatial_acc_t* acc, const 
                         v_sy   = md_mm256_permutevar8x32_ps(v_sy, v_idx_mask);
                         v_sz   = md_mm256_permutevar8x32_ps(v_sz, v_idx_mask);
 
+                        // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                        // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                        // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                        POSSIBLY_INVOKE_CALLBACK_POINT_CART_TRI(8);
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                         md_mm256_storeu_epi32(buf_i + count, v_idxj);
@@ -2148,11 +2219,8 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     ASSERT(acc);
     ASSERT(callback);
 
-    const int ncell[3] = {
-        (int)ceil(radius * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(radius * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(radius * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, radius, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_point_in_sphere_ortho: radius too large for cell size");
@@ -2279,6 +2347,10 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
                 v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
                 v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
+                // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                POSSIBLY_INVOKE_CALLBACK_POINT_ORT(8);
                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                 md_mm256_storeu_epi32(buf_i + count, v_idxj);
@@ -2299,11 +2371,8 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
 static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param) {
     ASSERT(acc->flags & MD_UNITCELL_TRICLINIC && acc->flags & MD_UNITCELL_PBC_ALL);
 
-    const int ncell[3] = {
-        (int)ceil(radius * (double)acc->inv_cell_ext[0] * acc->cell_dim[0]),
-        (int)ceil(radius * (double)acc->inv_cell_ext[1] * acc->cell_dim[1]),
-        (int)ceil(radius * (double)acc->inv_cell_ext[2] * acc->cell_dim[2]),
-    };
+    int ncell[3];
+    neighbor_cell_extent(ncell, radius, acc);
 
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
         MD_LOG_ERROR("for_each_point_in_sphere_triclinic: radius too large for cell size");
@@ -2420,6 +2489,10 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
                 v_yj   = md_mm256_permutevar8x32_ps(v_yj, v_idx_mask);
                 v_zj   = md_mm256_permutevar8x32_ps(v_zj, v_idx_mask);
 
+                // The outer flush is keyed on how big the cell is, which says nothing about how many of its
+                // elements actually match. A single cell can fill the staging buffer on its own as soon as the
+                // cells grow - and they grow with the cutoff - so room for this batch is made right here.
+                POSSIBLY_INVOKE_CALLBACK_POINT_FRACT_TRI(8);
                 ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                 md_mm256_storeu_epi32(buf_i + count, v_idxj);

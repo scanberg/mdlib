@@ -108,6 +108,7 @@ struct script {
     md_allocator_i* arena;
     md_system_t amy;
     md_system_t ala;
+    md_system_t npt;   // Triclinic (rhombic dodecahedron) cell - see the within_* tests below
 };
 
 UTEST_F_SETUP(script) {
@@ -122,6 +123,13 @@ UTEST_F_SETUP(script) {
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
     md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
+
+    // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
+    // is exactly the shape that hides mistakes in the periodic neighbour walk.
+    utest_fixture->npt.alloc = utest_fixture->arena;
+    md_system_state_t npt_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -1162,6 +1170,145 @@ UTEST_F(script, selection_big) {
     md_bitfield_t bf = md_bitfield_create(alloc);
     EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in chain(:)"), mol));
 
+    md_arena_allocator_destroy(alloc);
+}
+
+// ================================================================================================
+// within() with a search radius that reaches or exceeds the periodic cell.
+//
+// Reported: "set the range argument of within(...) in a selection in a representation larger than
+// the cutoff in my trajectories and viamd crashes immediately with a segfault".
+//
+// within() builds an md_spatial_acc grid sized from the radius and then walks a +-ncell neighbourhood
+// of cells around every query point. Two things change character once the radius approaches the box:
+// cell_dim is CLAMPed to at least 1, so an axis collapses to a single cell and its cell size becomes
+// the whole box rather than the requested extent; and the neighbourhood then has to reach across more
+// than one periodic image, which the wrap logic may or may not be able to express.
+//
+// These sweep the whole radius range - well inside the box, around half the box, past the box, and
+// absurd - against an orthorhombic box, a very elongated box, and a triclinic one.
+
+// Ascending, and deliberately straddling the smallest box dimension of every system in the fixture.
+static const double WITHIN_RADII[] = { 2.0, 10.0, 24.0, 47.0, 60.0, 120.0, 700.0, 5000.0 };
+
+// within(r, atom(1)) is every atom within r of atom 1, minus atom 1 itself (within excludes its own
+// input). Two properties have to hold for any r, and neither depends on the geometry:
+//   - monotonicity: a larger radius can only ever select more atoms
+//   - saturation:   once r exceeds the cell diagonal, every other atom is inside it
+// Monotonicity is the interesting one. A guard that bails out and returns an empty set on a large
+// radius does not crash, but it does silently answer "nothing is nearby" - and this catches that too.
+// NOTE: utest's EXPECT_* macros write through a variable named utest_result that UTEST_F declares
+// in the test body, so a shared helper has to take it along explicitly.
+static void within_radius_sweep(int* utest_result, md_system_t* mol, const char* tag, md_allocator_i* alloc) {
+    size_t prev_count = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char expr[128];
+        snprintf(expr, sizeof(expr), "within(%.1f, atom(1))", WITHIN_RADII[i]);
+
+        md_bitfield_t bf = md_bitfield_create(alloc);
+        const bool ok = eval_selection(&bf, str_from_cstr(expr), mol);
+        EXPECT_TRUE(ok);
+        if (!ok) {
+            printf("  [%s] r=%.1f: evaluation failed outright\n", tag, WITHIN_RADII[i]);
+            md_bitfield_free(&bf);
+            continue;
+        }
+
+        const size_t count = md_bitfield_popcount(&bf);
+        if (count < prev_count) {
+            printf("  [%s] r=%.1f selected %zu atoms, but r=%.1f already selected %zu\n",
+                   tag, WITHIN_RADII[i], count, WITHIN_RADII[i - 1], prev_count);
+        }
+        EXPECT_GE(count, prev_count);
+        prev_count = count;
+        md_bitfield_free(&bf);
+    }
+
+    // The last radius in the sweep dwarfs every cell in the fixture, so nothing can be outside it.
+    if (prev_count != mol->atom.count - 1) {
+        printf("  [%s] at r=%.1f expected all %zu atoms bar the query atom, got %zu\n",
+               tag, WITHIN_RADII[ARRAY_SIZE(WITHIN_RADII) - 1], mol->atom.count - 1, prev_count);
+    }
+    EXPECT_EQ(mol->atom.count - 1, prev_count);
+}
+
+UTEST_F(script, within_radius_sweep_ortho) {
+    // 1ALA-560ns: orthorhombic, 46.6 x 96.7 x 48.4 A. Radii past ~46 A exceed the shortest axis.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->ala, "1ALA ortho 47x97x48", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, within_radius_sweep_elongated) {
+    // centered.gro: 216 x 216 x 642 A. Very anisotropic, so the cell grid collapses along x and y
+    // long before it does along z.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->amy, "centered ortho 216x216x642", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, within_radius_sweep_triclinic) {
+    // npt.gro: rhombic dodecahedron, a = b = 47.8 A, c = 33.8 A, third vector leaning half a cell in
+    // x and y. The triclinic neighbour walk is a separate code path from the orthorhombic one.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->npt, "npt triclinic dodecahedron", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+// The frange overload takes a different path into the same machinery, and it is the one the report
+// names ("the range argument"). An inner bound of zero has to agree with the scalar overload.
+UTEST_F(script, within_radius_sweep_frange) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char expr_rng[128];
+        char expr_flt[128];
+        snprintf(expr_rng, sizeof(expr_rng), "within(0:%.1f, atom(1))", WITHIN_RADII[i]);
+        snprintf(expr_flt, sizeof(expr_flt), "within(%.1f, atom(1))",   WITHIN_RADII[i]);
+
+        md_bitfield_t bf_rng = md_bitfield_create(alloc);
+        md_bitfield_t bf_flt = md_bitfield_create(alloc);
+        EXPECT_TRUE(eval_selection(&bf_rng, str_from_cstr(expr_rng), mol));
+        EXPECT_TRUE(eval_selection(&bf_flt, str_from_cstr(expr_flt), mol));
+
+        const size_t n_rng = md_bitfield_popcount(&bf_rng);
+        const size_t n_flt = md_bitfield_popcount(&bf_flt);
+        if (n_rng != n_flt) {
+            printf("  r=%.1f: within(0:r) selected %zu, within(r) selected %zu\n", WITHIN_RADII[i], n_rng, n_flt);
+        }
+        EXPECT_EQ(n_flt, n_rng);
+
+        md_bitfield_free(&bf_rng);
+        md_bitfield_free(&bf_flt);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+// Closest to what the report actually did: a large radius evaluated per frame over a trajectory,
+// which is what a representation does. The spatial acc is rebuilt from each frame's coordinates and
+// unit cell, so a frame dependent failure only shows up here.
+UTEST_F(script, within_radius_over_trajectory) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    ASSERT_GT(num_frames, 0u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char src_buf[160];
+        snprintf(src_buf, sizeof(src_buf), "n%zu = count(within(%.1f, atom(1)));", i, WITHIN_RADII[i]);
+
+        md_script_ir_clear(ir);
+        md_script_ir_compile_from_source(ir, str_from_cstr(src_buf), mol, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+        if (!md_script_ir_valid(ir)) continue;
+
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        ASSERT_NE(NULL, eval);
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        md_script_eval_free(eval);
+    }
     md_arena_allocator_destroy(alloc);
 }
 
