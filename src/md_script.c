@@ -1711,7 +1711,11 @@ static size_t print_type_info(char* buf, size_t cap, type_info_t info) {
     return len;
 }
 
-#define PRINT(...) len += snprintf(buf + len, cap - MIN(len, cap), ##__VA_ARGS__)
+// NOTE: len accumulates snprintf return values, so it is the length the output WOULD have had and
+// can exceed cap. buf + MIN(len, cap) keeps the pointer inside the buffer when that happens; the
+// size argument is then zero and nothing is written. Callers that need the number of bytes
+// actually present must clamp the result to cap - 1.
+#define PRINT(...) len += snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
 
 static size_t print_bitfield(char* buf, size_t cap, const md_bitfield_t* bitfield) {
     ASSERT(bitfield);
@@ -6062,7 +6066,10 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         if (node->data.type.base_type != TYPE_BITFIELD) {
             md_strb_push_char(&sb, '\n');
             char val_buf[128] = {0};
-            size_t val_len = print_data_value(val_buf, sizeof(val_buf), node->data);
+            // print_data_value returns the length the value WOULD have printed to, not what fit.
+            // Pushing that unclamped reads past val_buf - snprintf leaves at most cap - 1 chars.
+            const size_t val_cap = sizeof(val_buf) - 1;
+            const size_t val_len = MIN(print_data_value(val_buf, sizeof(val_buf), node->data), val_cap);
             md_strb_push_cstrl(&sb, val_buf, val_len);
         }
     } else {
