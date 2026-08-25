@@ -1,6 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "dependencies": [
-    "hdf5"
+    {
+      "name": "hdf5",
+      "default-features": false,
+      "features": [ "zlib" ]
+    }
   ]
 }
