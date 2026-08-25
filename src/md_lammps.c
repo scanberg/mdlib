@@ -857,16 +857,22 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 
 bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* data) {
 	ASSERT(sys);
+	ASSERT(state);
 	ASSERT(data);
 
 	if (!sys->alloc) {
-		MD_LOG_ERROR("No allocator set in system");
+		MD_LOG_ERROR("System allocator not set");
+		return false;
+	}
+
+	if (!state || !state->alloc) {
+		MD_LOG_ERROR("State allocator not set");
 		return false;
 	}
 
 	md_system_reset(sys);
+	md_system_state_init(state, 0);
 
-	/* Record system allocator early so subsequent allocations use system-owned allocator. */
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
 	md_array_ensure(state->x,		capacity, state->alloc);
@@ -978,6 +984,8 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
     }
 
 	md_temp_end(temp_scope);
+
+    ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
 	return true;

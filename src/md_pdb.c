@@ -462,14 +462,21 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
 
 bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
+    ASSERT(state);
     ASSERT(data);
 
     if (!sys->alloc) {
-       MD_LOG_ERROR("System allocator not set");
-       return false;
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+
+    if (!state || !state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
+        return false;
     }
 
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
@@ -574,6 +581,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
 
+    ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
     if (data->num_cryst1 > 0) {
@@ -662,7 +670,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     */
 
     result = true;
-    state->num_atoms = sys->atom.count;
     md_temp_end(temp_scope);
     return result;
 }

@@ -237,8 +237,9 @@ typedef struct md_hydrogen_bond_data_t {
 //
 // CAVEAT, unlike the two presence bits above: -1 does not survive zero initialisation. A state
 // built as {0} or with designated initialisers that omit frame reads as frame 0, not as absent.
-// Only md_trajectory_reader_load_frame and the interpolation which produces a state stamp this
-// field, so treat a frame on a state which came from neither as unspecified, and do not consult it.
+// md_system_state_init stamps -1, so any state that went through it reads as absent until something
+// writes a real frame; a hand rolled {0} does not. Only md_trajectory_reader_load_frame and the
+// interpolation which produces a state write a non negative value.
 //
 // @NOTE: physical time is deliberately NOT stored here. It is derivable from frame and the
 // trajectory's frame times (md_trajectory_time_at_frame), and storing both would reintroduce the
@@ -1179,7 +1180,17 @@ static inline bool md_system_state_has_unitcell(const md_system_state_t* state) 
 }
 
 // Allocate coordinate storage for num_atoms using state->alloc, which must be set.
-// Existing storage is freed first. Returns false if the state has no allocator.
+// Existing storage is freed first, so this doubles as the reset for a state being reused, and the
+// padding up to the simd aligned capacity is zeroed. Returns false if the state has no allocator.
+//
+// CONTRACT for anything that produces a system and a state together (the format parsers):
+// validate sys->alloc and state->alloc, then call md_system_reset(sys) and md_system_state_init(state, N)
+// as a pair before touching either. Pass the exact atom count for N when it is known up front and
+// write coordinates by index; pass 0 when atoms are filtered while parsing, then reserve with
+// md_array_ensure(state->x, capacity, state->alloc) and push. Either way finish with
+// state->num_atoms = sys->atom.count, and grow the coordinate arrays with state->alloc and never
+// with sys->alloc - md_system_state_free releases them with state->alloc, and the two allocators
+// are routinely different.
 bool md_system_state_init(md_system_state_t* state, size_t num_atoms);
 
 // Free the coordinate storage and zero the state, preserving the allocator so the state can be

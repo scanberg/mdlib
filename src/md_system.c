@@ -111,6 +111,10 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
     md_system_state_free(state);
     state->alloc = alloc;
 
+    // A freshly initialised state did not come from a trajectory. Only md_trajectory_reader_load_frame
+    // and the interpolation which produces a state write a non negative frame. See md_system_state_t.
+    state->frame = -1.0;
+
     if (num_atoms == 0) {
         return true;
     }
@@ -120,6 +124,16 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
     md_array_resize(state->x, capacity, alloc);
     md_array_resize(state->y, capacity, alloc);
     md_array_resize(state->z, capacity, alloc);
+
+    // Zero the padding past num_atoms. The capacity is rounded up so vectorised code may load whole
+    // 16 wide chunks; an uninitialised tail puts garbage floats into those lanes.
+    const size_t tail_bytes = (capacity - num_atoms) * sizeof(float);
+    if (tail_bytes > 0) {
+        MEMSET(state->x + num_atoms, 0, tail_bytes);
+        MEMSET(state->y + num_atoms, 0, tail_bytes);
+        MEMSET(state->z + num_atoms, 0, tail_bytes);
+    }
+
     state->num_atoms = num_atoms;
 
     return true;
@@ -155,6 +169,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
         MEMCPY(dst->z, src->z, src->num_atoms * sizeof(float));
     }
     dst->unitcell = src->unitcell;
+    dst->frame    = src->frame;
     return true;
 }
 

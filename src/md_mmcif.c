@@ -961,13 +961,15 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             prev_inst_key = inst_key;
             prev_comp_key = comp_key;
  
-            sys->atom.count += 1;
             md_array_push_no_grow(out_state->x, atom_entries[i].x);
             md_array_push_no_grow(out_state->y, atom_entries[i].y);
             md_array_push_no_grow(out_state->z, atom_entries[i].z);
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
             md_array_push_no_grow(sys->atom.flags, flags);
         }
+
+        sys->atom.count = md_array_size(out_state->x);
+        out_state->num_atoms = sys->atom.count;
 
         if (sys->component.atom_offset) {
             md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
@@ -1000,6 +1002,7 @@ done:
 
 bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
     ASSERT(sys);
+    ASSERT(state);
 
     if (str_empty(str)) {
         MD_LOG_ERROR("Input string is empty");
@@ -1017,6 +1020,7 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
     }
 
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
     bool result = mmcif_parse(sys, state, &reader, sys->alloc);
@@ -1026,6 +1030,7 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
 
 bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
     ASSERT(sys);
+    ASSERT(state);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1044,6 +1049,7 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, 
     }
 
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     const size_t cap = MEGABYTES(1);

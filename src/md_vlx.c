@@ -4724,6 +4724,7 @@ const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* 
 
 bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx) {
 	ASSERT(sys);
+	ASSERT(state);
 	ASSERT(vlx);
 	
 	if (vlx->number_of_atoms == 0) {
@@ -4732,23 +4733,23 @@ bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 	}
 
 	if (!sys->alloc) {
-		MD_LOG_ERROR("System allocator is not set");
+		MD_LOG_ERROR("System allocator not set");
 		return false;
     }
 
+	if (!state || !state->alloc) {
+		MD_LOG_ERROR("State allocator not set");
+		return false;
+	}
+
 	md_system_reset(sys);
+	md_system_state_init(state, vlx->number_of_atoms);
 
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	md_array_resize(state->x,		capacity, state->alloc);
-	md_array_resize(state->y,		capacity, state->alloc);
-	md_array_resize(state->z,		capacity, state->alloc);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
 
-	MEMSET(state->x,			0, md_array_bytes(state->x));
-	MEMSET(state->y,			0, md_array_bytes(state->y));
-	MEMSET(state->z,			0, md_array_bytes(state->z));
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 

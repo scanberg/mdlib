@@ -172,6 +172,7 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
 
 bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_gro_data_t* data) {
     ASSERT(sys);
+    ASSERT(state);
     ASSERT(data);
 
     if (!sys->alloc) {
@@ -185,13 +186,13 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
     }
 
     md_system_reset(sys);
+    md_system_state_init(state, data->num_atoms);
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     str_t* atom_names = md_temp_alloc_array(temp, str_t, data->num_atoms);
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    md_system_state_init(state, data->num_atoms);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags, capacity, sys->alloc);
 

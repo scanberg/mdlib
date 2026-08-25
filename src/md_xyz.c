@@ -716,6 +716,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
 
 bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data, md_xyz_options_t options) {
     ASSERT(sys);
+    ASSERT(state);
     ASSERT(data);
 
     if (!sys->alloc) {
@@ -729,6 +730,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     size_t beg_coord_index = 0;
     size_t end_coord_index = data->num_coordinates;
@@ -763,14 +765,16 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, sys->alloc);
 
         sys->atom.count += 1;
-        md_array_push(state->x, x, sys->alloc);
-        md_array_push(state->y, y, sys->alloc);
-        md_array_push(state->z, z, sys->alloc);
+        md_array_push(state->x, x, state->alloc);
+        md_array_push(state->y, y, state->alloc);
+        md_array_push(state->z, z, state->alloc);
         md_array_push(sys->atom.flags, 0, sys->alloc);
         md_array_push(sys->atom.type_idx, atom_type_idx, sys->alloc);
     }
 
     state->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
+
+    ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
     return true;
