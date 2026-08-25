@@ -1958,6 +1958,19 @@ mat3_t mat3_optimal_rotation(const float* const x[2], const float* const y[2], c
 mat3_t mat3_optimal_rotation_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // MAT4
+
+// Braced-initialiser form of mat4_ident(), for use as a C++ default member
+// initialiser: 'mat4_t m = MD_MAT4_IDENT_INIT;' instead of 'mat4_t m = mat4_ident();'.
+//
+// GCC 13 ICEs (gimplify.cc:774, in gimple_add_tmp_var) when a default member
+// initialiser that needs a temporary -- a call returning a class type, or a copy
+// from a constant -- is re-gimplified for a *second* value-initialised temporary
+// of the enclosing type in the same translation unit. The front end shares one
+// initialiser tree across all the use sites, and gimplifying it twice trips the
+// assert. A braced initialiser constructs in place, needs no temporary, and is
+// therefore immune. The value is identical.
+#define MD_MAT4_IDENT_INIT {{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}}
+
 MD_VEC_INLINE mat4_t mat4_ident(void) {
     mat4_t M = {
         {
