@@ -2898,24 +2898,32 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 
 	vlx->vib.number_of_normal_modes = number_of_modes;
 
-	md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.force_constants, md_array_size(vlx->vib.force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "force_constants")) {
+		md_array_resize(vlx->vib.force_constants, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.force_constants, md_array_size(vlx->vib.force_constants), handle, H5T_NATIVE_DOUBLE, "force_constants")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.ir_intensities, md_array_size(vlx->vib.ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "ir_intensities")) {
+		md_array_resize(vlx->vib.ir_intensities, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.ir_intensities, md_array_size(vlx->vib.ir_intensities), handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.frequencies, md_array_size(vlx->vib.frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "vib_frequencies")) {
+		md_array_resize(vlx->vib.frequencies, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.frequencies, md_array_size(vlx->vib.frequencies), handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
+			return false;
+		}
 	}
 
-	md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.reduced_masses, md_array_size(vlx->vib.reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
-		return false;
+	if (h5_check_dataset_exists(handle, "reduced_masses")) {
+		md_array_resize(vlx->vib.reduced_masses, number_of_modes, vlx->arena);
+		if (!h5_read_dataset_data(vlx->vib.reduced_masses, md_array_size(vlx->vib.reduced_masses), handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
+			return false;
+		}
 	}
 
 	// Check if "normal_modes" is a group or dataset
@@ -4500,7 +4508,7 @@ size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx) {
 // Returns atom coordinates for a given optimization step
 const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx) {
 	if (vlx) {
-		if (vlx->opt.coordinates && 0 <= opt_idx && opt_idx < vlx->opt.number_of_steps) {
+		if (vlx->opt.coordinates && opt_idx < vlx->opt.number_of_steps) {
 			const size_t stride = vlx->number_of_atoms;
 			return vlx->opt.coordinates + stride * opt_idx;
 		}
@@ -4714,8 +4722,9 @@ const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* 
 	return NULL;
 }
 
-bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
+bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx) {
 	ASSERT(sys);
+	ASSERT(state);
 	ASSERT(vlx);
 	
 	if (vlx->number_of_atoms == 0) {
@@ -4724,32 +4733,32 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	}
 
 	if (!sys->alloc) {
-		MD_LOG_ERROR("System allocator is not set");
+		MD_LOG_ERROR("System allocator not set");
 		return false;
     }
 
+	if (!state || !state->alloc) {
+		MD_LOG_ERROR("State allocator not set");
+		return false;
+	}
+
 	md_system_reset(sys);
+	md_system_state_init(state, vlx->number_of_atoms);
 
 	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
 
-	md_array_resize(sys->atom.x,		capacity, sys->alloc);
-	md_array_resize(sys->atom.y,		capacity, sys->alloc);
-	md_array_resize(sys->atom.z,		capacity, sys->alloc);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
 
-	MEMSET(sys->atom.x,			0, md_array_bytes(sys->atom.x));
-	MEMSET(sys->atom.y,			0, md_array_bytes(sys->atom.y));
-	MEMSET(sys->atom.z,			0, md_array_bytes(sys->atom.z));
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		sys->atom.x[i] = (float)vlx->atom_coordinates[i].x;
-		sys->atom.y[i] = (float)vlx->atom_coordinates[i].y;
-		sys->atom.z[i] = (float)vlx->atom_coordinates[i].z;
+		state->x[i] = (float)vlx->atom_coordinates[i].x;
+		state->y[i] = (float)vlx->atom_coordinates[i].y;
+		state->z[i] = (float)vlx->atom_coordinates[i].z;
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		str_t sym  = md_atomic_number_symbol(z);
@@ -4762,18 +4771,19 @@ bool md_vlx_system_init_from_data(md_system_t* sys, const md_vlx_t* vlx) {
 	}
 
 	sys->atom.count = vlx->number_of_atoms;
+    state->num_atoms = sys->atom.count;
 
 	return true;
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, str_t filename) {
+bool md_vlx_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 	md_vlx_t* vlx = md_vlx_create(temp_arena);
 
-	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, vlx);
+	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, state, vlx);
 
 	md_temp_end(temp_scope);
 	return success;

@@ -174,7 +174,7 @@ typedef union {
     SIMDE_ALIGN_TO_16 simde__m64_private m64_private[2];
     SIMDE_ALIGN_TO_16 simde__m64         m64[2];
 
-  #if defined(SIMDE_X86_SSE2_NATIVE)
+  #if defined(SIMDE_X86_SSE2_NATIVE) || defined(SIMDE_X86_SVML_NATIVE)
     SIMDE_ALIGN_TO_16 __m128d        n;
   #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
     SIMDE_ALIGN_TO_16 int8x16_t      neon_i8;
@@ -226,7 +226,7 @@ typedef union {
   #endif
 } simde__m128d_private;
 
-#if defined(SIMDE_X86_SSE2_NATIVE)
+#if defined(SIMDE_X86_SSE2_NATIVE) || defined(SIMDE_X86_SVML_NATIVE)
   typedef __m128i simde__m128i;
   typedef __m128d simde__m128d;
 #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
@@ -256,7 +256,7 @@ typedef union {
   typedef simde__m128d_private simde__m128d;
 #endif
 
-#if defined(SIMDE_X86_SSE2_ENABLE_NATIVE_ALIASES)
+#if defined(SIMDE_X86_SSE2_ENABLE_NATIVE_ALIASES) || defined(SIMDE_X86_SVML_ENABLE_NATIVE_ALIASES)
   typedef simde__m128i __m128i;
   typedef simde__m128d __m128d;
 #endif
@@ -3495,13 +3495,13 @@ simde__m128i
 simde_mm_load_si128 (simde__m128i const* mem_addr) {
   #if defined(SIMDE_X86_SSE2_NATIVE)
     return _mm_load_si128(HEDLEY_REINTERPRET_CAST(__m128i const*, mem_addr));
+  #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    return vld1q_s64(HEDLEY_REINTERPRET_CAST(int64_t const*, mem_addr));
   #else
     simde__m128i_private r_;
 
     #if defined(SIMDE_POWER_ALTIVEC_P6_NATIVE)
       r_.altivec_i32 = vec_ld(0, HEDLEY_REINTERPRET_CAST(SIMDE_POWER_ALTIVEC_VECTOR(int) const*, mem_addr));
-    #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
-      r_.neon_i32 = vld1q_s32(HEDLEY_REINTERPRET_CAST(int32_t const*, mem_addr));
     #else
       simde_memcpy(&r_, SIMDE_ALIGN_ASSUME_LIKE(mem_addr, simde__m128i), sizeof(simde__m128i));
     #endif
@@ -4770,6 +4770,28 @@ void
 simde_mm_pause (void) {
   #if defined(SIMDE_X86_SSE2_NATIVE)
     _mm_pause();
+  #elif defined(SIMDE_ARCH_X86)
+    #if defined(_MSC_VER)
+      __asm pause;
+    #else
+      __asm__ __volatile__("pause");
+    #endif
+  #elif defined(SIMDE_ARCH_ARM_NEON)
+    #if defined(_MSC_VER)
+      __isb(_ARM64_BARRIER_SY);
+    #else
+      __asm__ __volatile__("isb\n");
+    #endif
+  #elif defined(SIMDE_ARCH_POWER)
+    __asm__ __volatile__ ("or 27,27,27" ::: "memory");
+  #elif defined(SIMDE_ARCH_WASM)
+    __asm__ __volatile__ ("nop");
+  #elif defined(HEDLEY_GCC_VERSION)
+    #if defined(SIMDE_ARCH_RISCV)
+      __builtin_riscv_pause();
+    #else
+      __asm__ __volatile__ ("nop" ::: "memory");
+    #endif
   #endif
 }
 #if defined(SIMDE_X86_SSE2_ENABLE_NATIVE_ALIASES)
@@ -4949,6 +4971,10 @@ simde_mm_loadu_si32 (void const* mem_addr) {
     return _mm_loadu_si32(mem_addr);
   #elif defined(SIMDE_WASM_SIMD128_NATIVE)
     return simde__m128i_from_wasm_v128(wasm_v128_load32_zero(mem_addr));
+  #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    simde__m128i_private r_;
+    r_.neon_i32 = vsetq_lane_s32(* HEDLEY_REINTERPRET_CAST(const int32_t *, mem_addr), vdupq_n_s32(0), 0);
+    return simde__m128i_from_private(r_);
   #else
     int32_t val;
     simde_memcpy(&val, mem_addr, sizeof(val));
@@ -6600,8 +6626,13 @@ void
 simde_mm_stream_pd (simde_float64 mem_addr[HEDLEY_ARRAY_PARAM(2)], simde__m128d a) {
   #if defined(SIMDE_X86_SSE2_NATIVE)
     _mm_stream_pd(mem_addr, a);
+  #elif HEDLEY_HAS_BUILTIN(__builtin_nontemporal_store) && ( \
+      defined(SIMDE_VECTOR_SUBSCRIPT) || defined(SIMDE_ARM_NEON_A64V8_NATIVE) || \
+      defined(SIMDE_WASM_SIMD128_NATIVE) || defined(SIMDE_POWER_ALTIVEC_P7_NATIVE) || \
+      defined(SIMDE_ZARCH_ZVECTOR_13_NATIVE))
+      __builtin_nontemporal_store(a, SIMDE_ALIGN_CAST(__typeof__(a)*, mem_addr));
   #else
-    simde_memcpy(mem_addr, &a, sizeof(a));
+    simde_mm_store_pd(mem_addr, a);
   #endif
 }
 #if defined(SIMDE_X86_SSE2_ENABLE_NATIVE_ALIASES)
@@ -6613,8 +6644,13 @@ void
 simde_mm_stream_si128 (simde__m128i* mem_addr, simde__m128i a) {
   #if defined(SIMDE_X86_SSE2_NATIVE) && defined(SIMDE_ARCH_AMD64)
     _mm_stream_si128(HEDLEY_STATIC_CAST(__m128i*, mem_addr), a);
+  #elif HEDLEY_HAS_BUILTIN(__builtin_nontemporal_store) && ( \
+      defined(SIMDE_VECTOR_SUBSCRIPT) || defined(SIMDE_ARM_NEON_A32V7_NATIVE) || \
+      defined(SIMDE_WASM_SIMD128_NATIVE) || defined(SIMDE_POWER_ALTIVEC_P6_NATIVE) || \
+      defined(SIMDE_ZARCH_ZVECTOR_13_NATIVE))
+      __builtin_nontemporal_store(a, SIMDE_ALIGN_CAST(__typeof__(a)*, mem_addr));
   #else
-    simde_memcpy(mem_addr, &a, sizeof(a));
+    simde_mm_store_si128(mem_addr, a);
   #endif
 }
 #if defined(SIMDE_X86_SSE2_ENABLE_NATIVE_ALIASES)
@@ -6626,6 +6662,10 @@ void
 simde_mm_stream_si32 (int32_t* mem_addr, int32_t a) {
   #if defined(SIMDE_X86_SSE2_NATIVE)
     _mm_stream_si32(mem_addr, a);
+  #elif HEDLEY_HAS_BUILTIN(__builtin_nontemporal_store)
+    __builtin_nontemporal_store(a, mem_addr);
+  #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    vst1q_lane_s32(mem_addr, vdupq_n_s32(a), 0);
   #else
     *mem_addr = a;
   #endif
@@ -6639,6 +6679,10 @@ void
 simde_mm_stream_si64 (int64_t* mem_addr, int64_t a) {
   #if defined(SIMDE_X86_SSE2_NATIVE) && defined(SIMDE_ARCH_AMD64) && !defined(HEDLEY_MSVC_VERSION)
     _mm_stream_si64(SIMDE_CHECKED_REINTERPRET_CAST(long long int*, int64_t*, mem_addr), a);
+  #elif HEDLEY_HAS_BUILTIN(__builtin_nontemporal_store)
+    __builtin_nontemporal_store(a, mem_addr);
+  #elif defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    vst1_s64(mem_addr, vdup_n_s64(a));
   #else
     *mem_addr = a;
   #endif

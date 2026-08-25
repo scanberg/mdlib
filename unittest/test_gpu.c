@@ -101,6 +101,14 @@ static bool gpu_open(gpu_fixture_t* f) {
            f->k_tex_read && f->k_bump && f->k_layout && f->k_tex_probe;
 }
 
+/* Why the fixture could not be opened -- no Vulkan loader, no driver (ICD), no
+   compute queue, a kernel that failed to build. Without this a CI log shows
+   only "skipped" and gives no way to tell a missing GPU from a broken build. */
+static const char* gpu_no_device_reason(void) {
+    const char* err = md_gpu_last_error();
+    return (err && err[0]) ? err : "No GPU device available";
+}
+
 static void gpu_close(gpu_fixture_t* f) {
     if (f->k_fill)      md_gpu_kernel_destroy(f->k_fill);
     if (f->k_scale)     md_gpu_kernel_destroy(f->k_scale);
@@ -149,7 +157,7 @@ typedef struct {
 
 UTEST(gpu, device_create_destroy) {
     md_gpu_device_t dev = md_gpu_device_create(NULL);
-    if (!dev) UTEST_SKIP("No GPU device available");
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
     md_gpu_device_info_t info;
     ASSERT_TRUE(md_gpu_device_info(dev, &info));
     ASSERT_TRUE(info.name[0] != '\0');
@@ -164,7 +172,7 @@ UTEST(gpu, device_routes_all_host_allocations) {
     md_gpu_device_desc_t dd = {0};
     dd.alloc = &alloc;
     md_gpu_device_t dev = md_gpu_device_create(&dd);
-    if (!dev) UTEST_SKIP("No GPU device available");
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
     md_gpu_pool_desc_t pd = {0};
@@ -183,7 +191,7 @@ UTEST(gpu, device_routes_all_host_allocations) {
 
 UTEST(gpu, streams_create_and_sync) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_stream_t a = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "a");
     ASSERT_TRUE(a != NULL);
@@ -205,7 +213,7 @@ UTEST(gpu, streams_create_and_sync) {
 
 UTEST(gpu, memcpy_roundtrip) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 1024 };
     uint32_t src[N], dst[N];
@@ -226,7 +234,7 @@ UTEST(gpu, memcpy_roundtrip) {
 
 UTEST(gpu, memcpy_device_to_device) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256 };
     uint32_t src[N], dst[N];
@@ -251,7 +259,7 @@ UTEST(gpu, memcpy_device_to_device) {
 
 UTEST(gpu, memset_aligned_and_unaligned) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { BYTES = 256 };
     uint8_t host[BYTES];
@@ -281,7 +289,7 @@ UTEST(gpu, memset_aligned_and_unaligned) {
 
 UTEST(gpu, pointer_arithmetic_subranges) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 128 };
     uint32_t* base = (uint32_t*)md_gpu_malloc(f.pool, N * 2 * sizeof(uint32_t), f.compute);
@@ -312,7 +320,7 @@ UTEST(gpu, pointer_arithmetic_subranges) {
 
 UTEST(gpu, upload_begin_end_zero_copy) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 512 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -334,7 +342,7 @@ UTEST(gpu, upload_begin_end_zero_copy) {
 
 UTEST(gpu, pool_reuses_freed_blocks) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "reuse" });
     ASSERT_TRUE(pool != NULL);
@@ -372,7 +380,7 @@ UTEST(gpu, pool_reuses_freed_blocks) {
    memory, and let the next round be served entirely from cache. */
 UTEST(gpu, pool_reset_recycles_everything) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "reset" });
     ASSERT_TRUE(pool != NULL);
@@ -425,7 +433,7 @@ UTEST(gpu, pool_reset_recycles_everything) {
    blocks only become reusable at that point in the stream. */
 UTEST(gpu, pool_reset_is_stream_ordered) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "reset-order" });
     ASSERT_TRUE(pool != NULL);
@@ -453,7 +461,7 @@ UTEST(gpu, pool_reset_is_stream_ordered) {
 
 UTEST(gpu, pool_trim_releases) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 64 * 1024 * 1024, .label = "trim" });
     ASSERT_TRUE(pool != NULL);
@@ -481,7 +489,7 @@ UTEST(gpu, pool_trim_releases) {
 
 UTEST(gpu, launch_writes_buffer) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 1000 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -505,7 +513,7 @@ UTEST(gpu, launch_writes_buffer) {
    writes with no barrier, no usage declaration and no fence from the caller. */
 UTEST(gpu, program_order_chain) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 4096, STEPS = 40 };
     uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -544,7 +552,7 @@ UTEST(gpu, program_order_chain) {
    survive command-buffer and submission boundaries. */
 UTEST(gpu, program_order_across_submissions) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 1024, STEPS = 8 };
     uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -580,7 +588,7 @@ UTEST(gpu, program_order_across_submissions) {
 
 UTEST(gpu, cross_stream_dependency) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 2048 };
     uint32_t src[N];
@@ -617,7 +625,7 @@ UTEST(gpu, cross_stream_dependency) {
 /* Waiting on a sync from your own stream is a no-op, and a none sync is too. */
 UTEST(gpu, wait_on_none_and_self_is_noop) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 64 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -647,7 +655,7 @@ UTEST(gpu, wait_on_none_and_self_is_noop) {
 
 UTEST(gpu, texture_kernel_write_then_host_read) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 8, VOXELS = D * D * D };
     md_gpu_tex_desc_t td = {0};
@@ -683,7 +691,7 @@ UTEST(gpu, texture_kernel_write_then_host_read) {
 
 UTEST(gpu, texture_host_write_then_kernel_read) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 8, VOXELS = D * D * D };
     md_gpu_tex_desc_t td = {0};
@@ -723,7 +731,7 @@ UTEST(gpu, texture_host_write_then_kernel_read) {
    safe, and the slot must come back after a poll. */
 UTEST(gpu, texture_destroy_while_in_flight) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 16 };
     md_gpu_tex_desc_t td = {0};
@@ -755,7 +763,7 @@ UTEST(gpu, texture_destroy_while_in_flight) {
 
 UTEST(gpu, make_grid_and_indirect_launch) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 500 };
 
@@ -816,7 +824,7 @@ UTEST(gpu, make_grid_and_indirect_launch) {
 
 UTEST(gpu, graph_capture_and_replay) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 1024 };
     uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -870,7 +878,7 @@ UTEST(gpu, graph_capture_and_replay) {
 
 UTEST(gpu, graph_replayed_many_times) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256, REPLAYS = 16 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -918,7 +926,7 @@ static void gpu_test_callback(void* user) {
 
 UTEST(gpu, host_callback_fires_in_poll) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 512 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -979,7 +987,7 @@ static void gpu_order_callback(void* user) {
 
 UTEST(gpu, host_callback_observes_preceding_readback) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256, ITERATIONS = 32 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1012,7 +1020,7 @@ UTEST(gpu, host_callback_observes_preceding_readback) {
 
 UTEST(gpu, sync_on_complete) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 64 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1041,7 +1049,7 @@ UTEST(gpu, sync_on_complete) {
 
 UTEST(gpu, kernel_info_recovers_group_size) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_kernel_info_t info = {0};
     ASSERT_TRUE(md_gpu_kernel_info(f.k_fill, &info));
@@ -1064,7 +1072,7 @@ UTEST(gpu, kernel_info_recovers_group_size) {
 
 UTEST(gpu, stress_alloc_launch_free_cycles) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 4096, CYCLES = 64 };
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 32 * 1024 * 1024, .label = "stress" });
@@ -1098,7 +1106,7 @@ UTEST(gpu, stress_alloc_launch_free_cycles) {
    disjoint buffers must both land, and each stream is internally ordered. */
 UTEST(gpu, two_streams_are_independent) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 512 };
     md_gpu_stream_t sa = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "a");
@@ -1149,7 +1157,7 @@ UTEST(gpu, two_streams_are_independent) {
 
 UTEST(gpu, arg_struct_layout_matches_shader) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 10 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1193,7 +1201,7 @@ UTEST(gpu, arg_struct_layout_matches_shader) {
    handle itself resolved to a real texture (the readback). */
 UTEST(gpu, texture_handle_reaches_shader) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 4, VOXELS = D * D * D, MARKER = 0xC0FFEEu };
     md_gpu_tex_desc_t td = {0};
@@ -1246,7 +1254,7 @@ UTEST(gpu, texture_handle_reaches_shader) {
    a fresh page rather than carve one up. */
 UTEST(gpu, upload_larger_than_one_arena_page) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 512 * 1024 };          /* 2 MiB, well past a 256 KiB page */
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1272,7 +1280,7 @@ UTEST(gpu, upload_larger_than_one_arena_page) {
    from under it. The interleaving is what makes this bite, so alternate. */
 UTEST(gpu, readback_survives_subsequent_staged_work) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256, ROUNDS = 24 };
     uint32_t* a = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1315,7 +1323,7 @@ UTEST(gpu, readback_survives_subsequent_staged_work) {
    then, so a captured upload has to own its bytes. */
 UTEST(gpu, graph_replays_captured_copies_and_fills) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256, REPLAYS = 8 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -1364,7 +1372,7 @@ UTEST(gpu, graph_replays_captured_copies_and_fills) {
    origin, extent, row and slice pitch -- is entirely unexercised. */
 UTEST(gpu, texture_region_subrange_roundtrip) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 8, SUB = 4, VOXELS = D * D * D, SUBVOX = SUB * SUB * SUB };
     md_gpu_tex_desc_t td = {0};
@@ -1458,7 +1466,7 @@ enum {
    backend never declared; the blit reads the same range. */
 UTEST(gpu, hazard_dispatch_to_blit_buffer) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
     ASSERT_TRUE(host != NULL);
@@ -1489,7 +1497,7 @@ UTEST(gpu, hazard_dispatch_to_blit_buffer) {
 /* dispatch -> blit, texture. The GTO volume readback, reduced. */
 UTEST(gpu, hazard_dispatch_to_blit_texture) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_tex_desc_t td = {0};
     td.width = HAZ_D; td.height = HAZ_D; td.depth = HAZ_D;
@@ -1528,7 +1536,7 @@ UTEST(gpu, hazard_dispatch_to_blit_texture) {
    consumes it starts. */
 UTEST(gpu, hazard_blit_to_dispatch_buffer) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     uint32_t* src  = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
     uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
@@ -1565,7 +1573,7 @@ UTEST(gpu, hazard_blit_to_dispatch_buffer) {
 /* blit -> dispatch, texture. */
 UTEST(gpu, hazard_blit_to_dispatch_texture) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 64, VOX = D * D * D };
     md_gpu_tex_desc_t td = {0};
@@ -1611,7 +1619,7 @@ UTEST(gpu, hazard_blit_to_dispatch_texture) {
    kernel that accumulates into the cleared range must not start early. */
 UTEST(gpu, hazard_memset_to_dispatch) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     uint32_t* host = (uint32_t*)malloc(HAZ_N * sizeof(uint32_t));
     ASSERT_TRUE(host != NULL);
@@ -1648,7 +1656,7 @@ UTEST(gpu, hazard_memset_to_dispatch) {
    separately. */
 UTEST(gpu, hazard_dispatch_to_dispatch_via_texture) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 64, VOX = D * D * D };
     md_gpu_tex_desc_t td = {0};
@@ -1696,7 +1704,7 @@ UTEST(gpu, hazard_dispatch_to_dispatch_via_texture) {
    transition anywhere in the chain shows up at the end. */
 UTEST(gpu, hazard_alternating_encoder_chain) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 1 << 18, STEPS = 12 };
     uint32_t* host = (uint32_t*)malloc(N * sizeof(uint32_t));
@@ -1736,7 +1744,7 @@ UTEST(gpu, hazard_alternating_encoder_chain) {
    mechanism again -- a timeline wait rather than an encoder-level one. */
 UTEST(gpu, hazard_across_submission_boundary) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     float* host = (float*)malloc(HAZ_VOX * sizeof(float));
     ASSERT_TRUE(host != NULL);
@@ -1777,7 +1785,7 @@ UTEST(gpu, hazard_across_submission_boundary) {
    that record/wait actually carries a texture dependency. */
 UTEST(gpu, hazard_across_streams_via_sync) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_stream_t producer = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "producer");
     ASSERT_TRUE(producer != NULL);
@@ -1824,7 +1832,7 @@ UTEST(gpu, hazard_across_streams_via_sync) {
    inserted again here -- an easy thing to implement once and forget. */
 UTEST(gpu, hazard_inside_a_replayed_graph) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 64, VOX = D * D * D, REPLAYS = 4 };
     md_gpu_tex_desc_t td = {0};
@@ -1872,7 +1880,7 @@ UTEST(gpu, hazard_inside_a_replayed_graph) {
 /* Samplers are part of the public surface and never touched by a test. */
 UTEST(gpu, sampler_create_and_destroy) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = MD_GPU_FILTER_LINEAR;
@@ -1896,7 +1904,7 @@ UTEST(gpu, sampler_create_and_destroy) {
    they are not. Either way the create handle is what identifies it. */
 UTEST(gpu, texture_storage_and_sampled_handles) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_tex_desc_t td = {0};
     td.width = 8; td.height = 8; td.depth = 8;
@@ -1929,7 +1937,7 @@ UTEST(gpu, texture_storage_and_sampled_handles) {
    writes. */
 UTEST(gpu, wide_cross_stream_fan_in) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { STREAMS = 20, N = 128 };
     md_gpu_stream_t s[STREAMS] = {0};
@@ -2013,7 +2021,7 @@ static void gpu_thread_body(void* user) {
 
 UTEST(gpu, concurrent_streams_from_threads) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { THREADS = 4 };
     gpu_thread_ctx_t ctx[THREADS];
@@ -2041,7 +2049,7 @@ UTEST(gpu, concurrent_streams_from_threads) {
    header should say so. Today it says nothing, so pin the behaviour down. */
 UTEST(gpu, pool_destroy_with_work_in_flight) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .label = "in-flight" });
     ASSERT_TRUE(pool != NULL);
@@ -2075,7 +2083,7 @@ UTEST(gpu, device_destroy_reclaims_undestroyed_objects) {
     md_gpu_device_desc_t dd = {0};
     dd.alloc = &alloc;
     md_gpu_device_t dev = md_gpu_device_create(&dd);
-    if (!dev) UTEST_SKIP("No GPU device available");
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
     md_gpu_stream_t extra = md_gpu_stream_create(dev, MD_GPU_STREAM_COMPUTE, "leaked");
@@ -2103,7 +2111,7 @@ UTEST(gpu, device_destroy_reclaims_undestroyed_objects) {
 
 UTEST(gpu, null_and_zero_arguments_are_tolerated) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     /* Frees and destroys of nothing. */
     md_gpu_free(NULL, f.compute);
@@ -2142,7 +2150,7 @@ UTEST(gpu, null_and_zero_arguments_are_tolerated) {
    pointer must agree with arithmetic on the host view. */
 UTEST(gpu, host_pointer_tracks_device_pointer) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 256 };
     uint32_t* d = (uint32_t*)md_gpu_malloc(f.read_pool, N * sizeof(uint32_t), f.compute);
@@ -2168,7 +2176,7 @@ UTEST(gpu, host_pointer_tracks_device_pointer) {
    the API offers. */
 UTEST(gpu, last_error_describes_the_failure) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     uint32_t host = 0;
     EXPECT_FALSE(md_gpu_memset_async(&host, 0, sizeof(host), f.compute));
@@ -2189,7 +2197,7 @@ UTEST(gpu, last_error_describes_the_failure) {
 
 UTEST(gpu, device_info_is_sane) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_device_info_t info;
     ASSERT_TRUE(md_gpu_device_info(f.dev, &info));
@@ -2209,7 +2217,7 @@ UTEST(gpu, device_info_is_sane) {
    found no work. */
 UTEST(gpu, indirect_launch_with_zero_count) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { N = 64 };
     uint32_t* data  = (uint32_t*)md_gpu_malloc(f.pool, N * sizeof(uint32_t), f.compute);
@@ -2247,7 +2255,7 @@ UTEST(gpu, indirect_launch_with_zero_count) {
    stream has actually passed the free point. */
 UTEST(gpu, pool_reuse_across_streams_waits_for_completion) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){ .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "cross-stream" });
     ASSERT_TRUE(pool != NULL);
@@ -2302,7 +2310,7 @@ UTEST(gpu, pool_reuse_across_streams_waits_for_completion) {
    handed straight back to the driver on free, so nothing survives to dangle. */
 UTEST(gpu, stream_destroy_releases_blocks_it_freed) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     md_gpu_pool_t pool = md_gpu_pool_create(f.dev, &(md_gpu_pool_desc_t){
         .flags = MD_GPU_MEM_DEVICE, .release_threshold = 16 * 1024 * 1024, .label = "caching" });
@@ -2352,7 +2360,7 @@ UTEST(gpu, stream_destroy_releases_blocks_it_freed) {
    freed while later streams could still be reading it. */
 UTEST(gpu, texture_destroy_waits_on_every_stream) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { STREAMS = 12, D = 8 };
     md_gpu_stream_t s[STREAMS];
@@ -2389,7 +2397,7 @@ UTEST(gpu, texture_destroy_waits_on_every_stream) {
    small for it has to be rejected rather than overrun. */
 UTEST(gpu, texture_copy_rejects_undersized_buffer) {
     gpu_fixture_t f;
-    if (!gpu_open(&f)) UTEST_SKIP("No GPU device available");
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
     enum { D = 8, VOXELS = D * D * D, FULL = VOXELS * sizeof(float) };
     md_gpu_tex_desc_t td = {0};

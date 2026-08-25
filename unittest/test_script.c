@@ -66,11 +66,16 @@ static uint32_t         i_off[] = {0, 3, 8, 12, 16};
 static md_entity_idx_t i_eidx[] = {0, 1, 2, 2};
 
 md_system_t test_mol = {
-    .atom = {
-        .count = ATOM_COUNT,
+    // A hand built system still needs a reference state: it is what evaluation reads coordinates
+    // from when there is no trajectory frame.
+    .reference = {
+        .num_atoms = ATOM_COUNT,
         .x = mol_x,
         .y = mol_y,
         .z = mol_z,
+    },
+    .atom = {
+        .count = ATOM_COUNT,
         .type_idx = mol_ti,
         .type = {
             .count = ATOM_TYPE_COUNT,
@@ -103,18 +108,28 @@ struct script {
     md_allocator_i* arena;
     md_system_t amy;
     md_system_t ala;
+    md_system_t npt;   // Triclinic (rhombic dodecahedron) cell - see the within_* tests below
 };
 
 UTEST_F_SETUP(script) {
     utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
     utest_fixture->amy.alloc = utest_fixture->arena;
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
-    md_util_system_postprocess(&utest_fixture->amy, MD_UTIL_POSTPROCESS_ALL);
+    md_system_state_t amy_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    md_util_system_postprocess(&utest_fixture->ala, MD_UTIL_POSTPROCESS_ALL);
+    md_system_state_t ala_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
+
+    // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
+    // is exactly the shape that hides mistakes in the periodic neighbour walk.
+    utest_fixture->npt.alloc = utest_fixture->arena;
+    md_system_state_t npt_state = { .alloc = utest_fixture->arena };
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -205,12 +220,14 @@ done:
 	eval_context_t ctx = { \
 		.ir = ir, \
 		.mol = mol, \
+		.state = &(mol)->reference, \
+		.reference = &(mol)->reference, \
 		.temp_arena = &temp_arena, \
 		.temp_alloc = &temp_alloc, \
 		.alloc = &temp_alloc, \
 	}
 
-ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_system_t* mol, md_allocator_i* arena) {
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_system_t* sys, md_allocator_i* arena) {
     // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
     // Which means that the actual string data is contained within the ir->arena => temp_alloc
     ir->str = str_copy(expr, ir->arena);
@@ -223,7 +240,9 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_s
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .sys = sys,
+            .cur_state = &sys->reference,
+            .ref_state = &sys->reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -250,7 +269,7 @@ UTEST_F(script, common_subexpression_elimination) {
         "y = element('O') in resname('ALA');\n"
     );
 
-    bool result = md_script_ir_compile_from_source(ir, src, &utest_fixture->ala, NULL, NULL);
+    bool result = md_script_ir_compile_from_source(ir, src, &utest_fixture->ala, NULL);
     ASSERT_TRUE(result);
 
     identifier_t* x = get_identifier(ir, STR_LIT("x"));
@@ -512,7 +531,7 @@ UTEST(script, array) {
         );
 
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
         identifier_t* s1 = get_identifier(ir, STR_LIT("s1"));
         identifier_t* s2 = get_identifier(ir, STR_LIT("s2"));
@@ -540,7 +559,7 @@ UTEST(script, array) {
         );
 
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
         identifier_t* d1 = get_identifier(ir, STR_LIT("d1"));
         identifier_t* d2 = get_identifier(ir, STR_LIT("d2"));
@@ -568,7 +587,7 @@ UTEST(script, array) {
         );
 
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
         identifier_t* c1 = get_identifier(ir, STR_LIT("c1"));
         identifier_t* c2 = get_identifier(ir, STR_LIT("c2"));
@@ -598,7 +617,7 @@ UTEST(script, array) {
         );
 
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
         identifier_t* s = get_identifier(ir, STR_LIT("s"));
         EXPECT_TRUE(s);
@@ -615,7 +634,7 @@ UTEST(script, array) {
         );
 
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
         identifier_t* c  = get_identifier(ir, STR_LIT("c"));
         EXPECT_TRUE(c);
@@ -627,7 +646,9 @@ UTEST(script, array) {
             // Evaluate and verify values match mol_x/y/z at indices 0,2,4
             eval_context_t ctx = {
                 .ir = ir,
-                .mol = &test_mol,
+                .sys = &test_mol,
+                .cur_state = &test_mol.reference,
+                .ref_state = &test_mol.reference,
                 .temp_alloc = arena,
                 .alloc = arena,
             };
@@ -747,11 +768,13 @@ UTEST(script, array_subscript) {
             "z    = xyz[:,3];"
         );
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
 
         eval_context_t ctx = {
             .ir = ir,
-            .mol = &test_mol,
+            .sys = &test_mol,
+            .cur_state = &test_mol.reference,
+            .ref_state = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -866,12 +889,14 @@ UTEST(script, array_subscript) {
             "xs  = xyz[1:2:7,1];"
         );
         md_script_ir_clear(ir);
-        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(result);
 
         eval_context_t ctx = {
             .ir = ir,
-            .mol = &test_mol,
+            .sys = &test_mol,
+            .cur_state = &test_mol.reference,
+            .ref_state = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -910,12 +935,14 @@ UTEST(script, dim_op) {
             "sw = shape_weights(residue(1:4));\n"
             "{lin,plan,iso} = transpose(shape_weights(residue(1:4)));"
         );
-        md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        md_script_ir_compile_from_source(ir, src, &test_mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         eval_context_t ctx = {
             .ir = ir,
-            .mol = &test_mol,
+            .sys = &test_mol,
+            .cur_state = &test_mol.reference,
+            .ref_state = &test_mol.reference,
             .temp_alloc = arena,
             .alloc = arena,
         };
@@ -1084,7 +1111,7 @@ UTEST_F(script, compile_script) {
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL, NULL));
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -1094,10 +1121,10 @@ UTEST_F(script, implicit_conversion) {
     md_system_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL, NULL));
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL));
 
     md_script_ir_clear(ir);
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(chain(:), resname(\"PFT\"), 50);"), mol, NULL, NULL));
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(chain(:), resname(\"PFT\"), 50);"), mol, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -1110,10 +1137,10 @@ UTEST_F(script, semantic) {
 
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
         "dih1_pft = dihedral(22, 20, 1, 2) in resname('PFT');"
-    ), mol, NULL, NULL));
+    ), mol, NULL));
 
     md_script_ir_clear(ir);
-    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("p1 = resname('ALA') resname('GLY');"), mol, NULL, NULL));
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("p1 = resname('ALA') resname('GLY');"), mol, NULL));
     
     md_script_ir_clear(ir);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
@@ -1131,7 +1158,7 @@ UTEST_F(script, semantic) {
         "dih3_not_ads = dihedral(29, 27, 9, 10) in not_ads;"
         "dih4_not_ads = dihedral(35, 33, 31 , 29) in not_ads;"
         "dih_center_not_ads = {dih2_not_ads,dih3_not_ads};"
-    ), mol, NULL, NULL));
+    ), mol, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -1146,15 +1173,153 @@ UTEST_F(script, selection_big) {
     md_arena_allocator_destroy(alloc);
 }
 
+// ================================================================================================
+// within() with a search radius that reaches or exceeds the periodic cell.
+//
+// Reported: "set the range argument of within(...) in a selection in a representation larger than
+// the cutoff in my trajectories and viamd crashes immediately with a segfault".
+//
+// within() builds an md_spatial_acc grid sized from the radius and then walks a +-ncell neighbourhood
+// of cells around every query point. Two things change character once the radius approaches the box:
+// cell_dim is CLAMPed to at least 1, so an axis collapses to a single cell and its cell size becomes
+// the whole box rather than the requested extent; and the neighbourhood then has to reach across more
+// than one periodic image, which the wrap logic may or may not be able to express.
+//
+// These sweep the whole radius range - well inside the box, around half the box, past the box, and
+// absurd - against an orthorhombic box, a very elongated box, and a triclinic one.
+
+// Ascending, and deliberately straddling the smallest box dimension of every system in the fixture.
+static const double WITHIN_RADII[] = { 2.0, 10.0, 24.0, 47.0, 60.0, 120.0, 700.0, 5000.0 };
+
+// within(r, atom(1)) is every atom within r of atom 1, minus atom 1 itself (within excludes its own
+// input). Two properties have to hold for any r, and neither depends on the geometry:
+//   - monotonicity: a larger radius can only ever select more atoms
+//   - saturation:   once r exceeds the cell diagonal, every other atom is inside it
+// Monotonicity is the interesting one. A guard that bails out and returns an empty set on a large
+// radius does not crash, but it does silently answer "nothing is nearby" - and this catches that too.
+// NOTE: utest's EXPECT_* macros write through a variable named utest_result that UTEST_F declares
+// in the test body, so a shared helper has to take it along explicitly.
+static void within_radius_sweep(int* utest_result, md_system_t* mol, const char* tag, md_allocator_i* alloc) {
+    size_t prev_count = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char expr[128];
+        snprintf(expr, sizeof(expr), "within(%.1f, atom(1))", WITHIN_RADII[i]);
+
+        md_bitfield_t bf = md_bitfield_create(alloc);
+        const bool ok = eval_selection(&bf, str_from_cstr(expr), mol);
+        EXPECT_TRUE(ok);
+        if (!ok) {
+            printf("  [%s] r=%.1f: evaluation failed outright\n", tag, WITHIN_RADII[i]);
+            md_bitfield_free(&bf);
+            continue;
+        }
+
+        const size_t count = md_bitfield_popcount(&bf);
+        if (count < prev_count) {
+            printf("  [%s] r=%.1f selected %zu atoms, but r=%.1f already selected %zu\n",
+                   tag, WITHIN_RADII[i], count, WITHIN_RADII[i - 1], prev_count);
+        }
+        EXPECT_GE(count, prev_count);
+        prev_count = count;
+        md_bitfield_free(&bf);
+    }
+
+    // The last radius in the sweep dwarfs every cell in the fixture, so nothing can be outside it.
+    if (prev_count != mol->atom.count - 1) {
+        printf("  [%s] at r=%.1f expected all %zu atoms bar the query atom, got %zu\n",
+               tag, WITHIN_RADII[ARRAY_SIZE(WITHIN_RADII) - 1], mol->atom.count - 1, prev_count);
+    }
+    EXPECT_EQ(mol->atom.count - 1, prev_count);
+}
+
+UTEST_F(script, within_radius_sweep_ortho) {
+    // 1ALA-560ns: orthorhombic, 46.6 x 96.7 x 48.4 A. Radii past ~46 A exceed the shortest axis.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->ala, "1ALA ortho 47x97x48", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, within_radius_sweep_elongated) {
+    // centered.gro: 216 x 216 x 642 A. Very anisotropic, so the cell grid collapses along x and y
+    // long before it does along z.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->amy, "centered ortho 216x216x642", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, within_radius_sweep_triclinic) {
+    // npt.gro: rhombic dodecahedron, a = b = 47.8 A, c = 33.8 A, third vector leaning half a cell in
+    // x and y. The triclinic neighbour walk is a separate code path from the orthorhombic one.
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    within_radius_sweep(utest_result, &utest_fixture->npt, "npt triclinic dodecahedron", alloc);
+    md_arena_allocator_destroy(alloc);
+}
+
+// The frange overload takes a different path into the same machinery, and it is the one the report
+// names ("the range argument"). An inner bound of zero has to agree with the scalar overload.
+UTEST_F(script, within_radius_sweep_frange) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char expr_rng[128];
+        char expr_flt[128];
+        snprintf(expr_rng, sizeof(expr_rng), "within(0:%.1f, atom(1))", WITHIN_RADII[i]);
+        snprintf(expr_flt, sizeof(expr_flt), "within(%.1f, atom(1))",   WITHIN_RADII[i]);
+
+        md_bitfield_t bf_rng = md_bitfield_create(alloc);
+        md_bitfield_t bf_flt = md_bitfield_create(alloc);
+        EXPECT_TRUE(eval_selection(&bf_rng, str_from_cstr(expr_rng), mol));
+        EXPECT_TRUE(eval_selection(&bf_flt, str_from_cstr(expr_flt), mol));
+
+        const size_t n_rng = md_bitfield_popcount(&bf_rng);
+        const size_t n_flt = md_bitfield_popcount(&bf_flt);
+        if (n_rng != n_flt) {
+            printf("  r=%.1f: within(0:r) selected %zu, within(r) selected %zu\n", WITHIN_RADII[i], n_rng, n_flt);
+        }
+        EXPECT_EQ(n_flt, n_rng);
+
+        md_bitfield_free(&bf_rng);
+        md_bitfield_free(&bf_flt);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+// Closest to what the report actually did: a large radius evaluated per frame over a trajectory,
+// which is what a representation does. The spatial acc is rebuilt from each frame's coordinates and
+// unit cell, so a frame dependent failure only shows up here.
+UTEST_F(script, within_radius_over_trajectory) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    ASSERT_GT(num_frames, 0u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+        char src_buf[160];
+        snprintf(src_buf, sizeof(src_buf), "n%zu = count(within(%.1f, atom(1)));", i, WITHIN_RADII[i]);
+
+        md_script_ir_clear(ir);
+        md_script_ir_compile_from_source(ir, str_from_cstr(src_buf), mol, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+        if (!md_script_ir_valid(ir)) continue;
+
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        ASSERT_NE(NULL, eval);
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        md_script_eval_free(eval);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST_F(script, dynamic_length) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala.trajectory;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         str_t src = STR_LIT("sel1 = residue(within_z(1:50));");
-        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
@@ -1164,21 +1329,20 @@ UTEST_F(script, dynamic_length) {
 UTEST_F(script, property_compute) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala.trajectory;
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
     {
         md_script_ir_clear(ir);
         str_t src = STR_LIT("num = count(residue(resname('ALA') and within(3.0, protein)));");
-        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1186,7 +1350,7 @@ UTEST_F(script, property_compute) {
     {
         md_script_ir_clear(ir);
         str_t src = STR_LIT("{lin, plan, iso} = shape_weights(:);");
-        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         identifier_t* lin  = get_identifier(ir, STR_LIT("lin"));
@@ -1218,14 +1382,14 @@ UTEST_F(script, property_compute) {
             EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("plan")));
             EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("iso")));
         }
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
         md_script_eval_free(eval);
     }
 
     {
         md_script_ir_clear(ir);
         str_t src = STR_LIT("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
-        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, NULL);
         ASSERT_TRUE(md_script_ir_valid(ir));
 
         identifier_t* prop1 = get_identifier(ir, STR_LIT("prop1"));
@@ -1236,52 +1400,52 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         md_script_eval_free(eval);
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("d1 = 1:5 in residue(1:3);"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("d1 = 1:5 in residue(1:3);"), mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
         // Strided integer range constant in an expression
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("d2 = 1:2:5 in residue(1:3);"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("d2 = 1:2:5 in residue(1:3);"), mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 2;"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 2;"), mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         md_script_eval_free(eval);
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1290,10 +1454,10 @@ UTEST_F(script, property_compute) {
         str_t src = STR_LIT("s1 = count(within(10, residue(:)));");
 
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
         md_script_eval_free(eval);
     }
 
@@ -1322,8 +1486,7 @@ UTEST(script, stride_invalid_ranges) {
 
 typedef struct thread_data_t {
     const md_script_ir_t* ir;
-    const md_system_t* mol;
-    const md_trajectory_i* traj;
+    const md_system_t* sys;
     const md_script_eval_t* ref_eval;
     md_script_eval_t* eval;
     int num_corrupt_values;
@@ -1333,8 +1496,8 @@ void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
     const size_t num_props = md_script_ir_property_count(data->ir);
     const str_t* props = md_script_ir_property_names(data->ir);
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->traj);
-    if (md_script_eval_frame_range(data->eval, data->ir, data->mol, data->traj, 0, num_frames)) {
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->sys->trajectory);
+    if (md_script_eval_frame_range(data->eval, data->ir, data->sys, 0, num_frames)) {
         for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
             const md_script_property_data_t* cur_data = md_script_eval_property_data(data->eval,     props[p_idx]);
             const md_script_property_data_t* ref_data = md_script_eval_property_data(data->ref_eval, props[p_idx]);
@@ -1363,13 +1526,13 @@ UTEST_F(script, parallel_evaluation) {
     size_t num_frames = md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    md_script_ir_compile_from_source(ir, script, mol, traj, NULL);
+    md_script_ir_compile_from_source(ir, script, mol, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
     ASSERT_EQ(1, md_script_ir_property_count(ir));
 
     md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
     EXPECT_EQ(num_frames, md_script_eval_frame_count(ref_eval));
-    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, traj, 0, (uint32_t)num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, 0, (uint32_t)num_frames));
 
     const md_script_property_data_t* data = md_script_eval_property_data(ref_eval, STR_LIT("p1"));
     ASSERT_TRUE(data);
@@ -1392,8 +1555,7 @@ UTEST_F(script, parallel_evaluation) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             thread_data[i] = (thread_data_t) {
                 .ir = ir,
-                .mol = mol,
-                .traj = traj,
+                .sys = mol,
                 .ref_eval = ref_eval,
                 .eval = eval[i],
                 .num_corrupt_values = 0
@@ -1423,25 +1585,25 @@ UTEST_F(script, parse_unary_binary) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sqrt(2) * -4;"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sqrt(2) * -4;"), mol, NULL));
 
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5-4;"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5-4;"), mol, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = -4;"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = -4;"), mol, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (-4);"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (-4);"), mol, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5 * (-4);"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5 * (-4);"), mol, NULL));
 
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5 * -4;"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5 * -4;"), mol, NULL));
 
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (5) - 4;"), mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (5) - 4;"), mol, NULL));
     }
 
     md_arena_allocator_destroy(alloc);
@@ -1459,7 +1621,7 @@ UTEST_F(script, visualize) {
         "sx = w[5,1];"
         );
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, mol, NULL));
 
         identifier_t*  x = get_identifier(ir, STR_LIT("x"));
         identifier_t* sx = get_identifier(ir, STR_LIT("sx"));
@@ -1471,7 +1633,8 @@ UTEST_F(script, visualize) {
         md_script_vis_init(&vis, alloc);
         md_script_vis_ctx_t ctx = {
             .ir = ir,
-            .mol = mol,
+            .sys = mol,
+            .state = &mol->reference,
         };
         
         EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)x->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));

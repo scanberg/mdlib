@@ -15,10 +15,10 @@ jobs:
         permissions:
           contents: read
         steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@v7
 
           - name: Restore vcpkg binary cache
-            uses: actions/cache@v4
+            uses: actions/cache@v6
             with:
               path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
               key: vcpkg-${{ github.workflow }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ env.VCPKG_GIT_COMMIT_ID }}-${{ hashFiles('vcpkg.json') }}
@@ -49,6 +49,11 @@ jobs:
             working-directory: ${{github.workspace}}/build
             shell: bash
             run: cmake --build . --config $BUILD_TYPE
+
+          - name: GPU backend diagnostics
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: ctest -C $BUILD_TYPE -R '^gpu\.device_create_destroy$' -V --no-tests=error
 
           - name: Test
             working-directory: ${{github.workspace}}/build

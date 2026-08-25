@@ -22,11 +22,8 @@ typedef struct md_atom_type_data_t {
 typedef struct md_atom_data_t {
     size_t count;
 
-    // Coordinates
-    float* x;
-    float* y;
-    float* z;
-
+    // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
+    // are is not.
     md_atom_type_idx_t* type_idx;
     md_flags_t* flags;
 
@@ -141,11 +138,46 @@ typedef struct md_structure_t {
 
 // This is the contiguous storage of all structures, the offsets field is used to index into the atom_idx and parent_idx arrays for each structure
 // From this individual structures (md_structure_t) can be extracted
+//
+// The index into atom_idx / parent_idx is referred to as a SLOT. Both arrays are indexed by slot
+// and both hold GLOBAL atom indices:
+//   atom_idx[slot]   - the atom
+//   parent_idx[slot] - the atom it was reached from during the traversal
+// The root of each structure is its own parent, so a root is parent_idx[slot] == atom_idx[slot] and
+// consumers need no sentinel branch. There is exactly one root per structure.
+//
+// atom_slot is the reverse map, indexed by GLOBAL atom index and covering every atom in the system:
+//   atom_slot[atom] -> the slot which holds that atom
+// It turns "what is the parent of this atom" into an O(1) lookup, which is what lets a caller walk
+// the hierarchy upwards from an arbitrary subset of atoms rather than only downwards from a root
+// (see md_util_unwrap_structure).
+//
+// ROOT SELECTION:
+//   The root is the most topologically central atom of the structure - the atom whose greatest edge
+//   distance to any other atom in the structure is smallest, i.e. the graph center. This bounds the
+//   depth of the traversal, which bounds both the cost of walking the hierarchy upwards and the
+//   number of minimum image steps accumulated when unwrapping. It also makes the root a property of
+//   the molecule rather than of the atom ordering in the source file, so two identical molecules
+//   stored in different orders get the same traversal.
+//
+//   The center is located with the standard double sweep (farthest atom from an arbitrary seed,
+//   then farthest atom from that, then the midpoint of the path between them). That is exact for
+//   acyclic structures and a close approximation in the presence of rings, which are local and
+//   small in practice.
+//
+// INVARIANT - load bearing, md_util_unwrap_structure depends on it:
+//   Within a structure, atoms are stored in BFS order from the root, so every atom appears after
+//   the one it was reached from: slot(parent) < slot(child). A single forward pass therefore always
+//   sees a placed parent, and sorting an arbitrary set of slots ascending yields a valid
+//   topological order.
+//   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx and updating
+//   atom_slot to match.
 typedef struct md_structure_data_t {
     size_t count;
-    uint32_t* offset; // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
-    int32_t* atom_idx;
-    int32_t* parent_idx;
+    uint32_t* offset;    // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
+    int32_t* atom_idx;   // [slot] -> global atom index
+    int32_t* parent_idx; // [slot] -> global atom index of the atom it was reached from (a root is its own parent)
+    int32_t* atom_slot;  // [global atom index] -> slot. Length is the system atom count
 } md_structure_data_t;
 
 typedef struct md_hydrogen_bond_candidates_t {
@@ -174,11 +206,52 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_pair_t* bonds;
 } md_hydrogen_bond_data_t;
 
+// A snapshot of the geometric state of a system: where the atoms are and what box they are in.
+//
+// This holds exactly the fields which share one interpolation contract - same type in and out,
+// periodic boundary aware, handled as a unit by md_util_interpolate_*. Quantities which vary over
+// time but do not obey that contract (per atom charge, backbone angles, secondary structure) do
+// not belong here; they interpolate differently and belong with whoever produces them.
+//
+// Two presence bits, both self describing:
+//   num_atoms == 0        -> no coordinates
+//   unitcell.flags == 0   -> no cell
+// num_atoms is used rather than testing x != NULL because md_array_ensure allocates capacity
+// without setting size, so a non NULL x does not imply the coordinates were populated.
+// Ownership: alloc non-NULL means this state owns x/y/z and must be freed with
+// md_system_state_free. alloc NULL means the state is a non owning view over coordinates somebody
+// else owns - a scratch arena during script evaluation, a GPU mapped buffer during interpolation.
+// Both forms are load bearing, and this is the only thing that distinguishes them.
+//
+// Set alloc before handing the state to a producer, exactly as md_system_t requires sys->alloc to
+// be set before loading. The two then read symmetrically at the call site, and the state's lifetime
+// is free to differ from the system's - a temp allocator for the state, a persistent one for the
+// system, is a legitimate and useful combination.
+// frame is the trajectory ordinal the coordinates came from, as a continuous quantity: the integer
+// part selects the frame, the fractional part is how far between that frame and the next the state
+// has been interpolated. A NEGATIVE value means the state did not come from a trajectory at all
+// (a topology's own coordinates, a scratch buffer), which is why 0.0 cannot serve as that marker.
+// Use md_state_has_frame / md_state_frame_floor / md_state_frame_nearest / md_state_frame_frac
+// rather than reading the field: a raw cast of the absent value lands on frame 0, which is in range
+// and plausible and therefore the kind of mistake that survives.
+//
+// CAVEAT, unlike the two presence bits above: -1 does not survive zero initialisation. A state
+// built as {0} or with designated initialisers that omit frame reads as frame 0, not as absent.
+// md_system_state_init stamps -1, so any state that went through it reads as absent until something
+// writes a real frame; a hand rolled {0} does not. Only md_trajectory_reader_load_frame and the
+// interpolation which produces a state write a non negative value.
+//
+// @NOTE: physical time is deliberately NOT stored here. It is derivable from frame and the
+// trajectory's frame times (md_trajectory_time_at_frame), and storing both would reintroduce the
+// very thing this struct exists to prevent - two fields which must agree, with nothing enforcing it.
 typedef struct md_system_state_t {
-    float* atom_x;
-    float* atom_y;
-    float* atom_z;
+    size_t num_atoms;
+    float* x;
+    float* y;
+    float* z;
     md_unitcell_t unitcell;
+    double frame;
+    md_allocator_i* alloc;
 } md_system_state_t;
 
 // This represents the persistent portion (topology) of a system which does not change over time, such as the atom types, bonds, components, etc.
@@ -187,8 +260,14 @@ typedef struct md_system_t {
     md_allocator_i*             alloc;
     md_trajectory_i*            trajectory;
 
-    md_unitcell_t               initial_unitcell;
-    md_unitcell_t               unitcell; // compatibility alias for consumers still using sys->unitcell
+    // The state from which the derived topology below (bonds, rings, structures, backbones) was
+    // inferred. Written by md_util_system_infer as part of performing the inference, so it is by
+    // construction the input which produced that topology and cannot go stale.
+    //
+    // RULE: only inference and load time completion read this. Every other operation takes the
+    // state it works on as an explicit parameter. Reaching for sys->reference to avoid threading
+    // a state through is how the previous coupling arose.
+    md_system_state_t           reference;
 
     md_atom_data_t              atom;
     md_component_data_t         component;
@@ -212,8 +291,6 @@ typedef struct md_system_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-
 
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
@@ -304,6 +381,46 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
     return STR_LIT("");
 }
 
+// State helpers
+
+// A state which did not come from a trajectory carries a negative frame.
+// @NOTE: NaN would pass this test, so nothing may ever write one into the field.
+static inline bool md_state_has_frame(const md_system_state_t* state) {
+    ASSERT(state);
+    return state->frame >= 0.0;
+}
+
+// The frame the state sits on or just after: the one to interpolate FORWARD from.
+// @NOTE: a cast truncates toward zero, which is floor for the non negative values md_state_has_frame
+// guarantees. Deliberately not floor() - keeping <math.h> out of this header matters, see below.
+static inline int64_t md_state_frame_floor(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return (int64_t)state->frame;
+}
+
+// The frame the state most closely corresponds to. Use this where a single frame must be named -
+// indexing a per frame array, for instance - not md_state_frame_floor, which would truncate 3.99 to 3.
+static inline int64_t md_state_frame_nearest(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return (int64_t)(state->frame + 0.5);
+}
+
+// How far the state lies between md_state_frame_floor() and the frame after it, in [0,1).
+static inline double md_state_frame_frac(const md_system_state_t* state) {
+    ASSERT(state);
+    ASSERT(md_state_has_frame(state));
+    return state->frame - (double)(int64_t)state->frame;
+}
+
+// @NOTE: do NOT add <math.h> to this header. simde-math.h keys off HUGE_VAL to detect "a math header
+// was already included", and when that fires under C++ it assumes the header was <cmath> and starts
+// emitting std::trunc. On glibc that is harmless (math.h defines an isnan MACRO, which simde checks
+// for first) and on gcc/clang __has_builtin wins before it matters - but MSVC has neither, so any
+// C++ translation unit that reaches simde through this header fails with "trunc is not a member of
+// std". md_system.h is included nearly everywhere, so it is the worst possible place to trip that.
+
 // Atom helpers
 
 static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
@@ -330,10 +447,10 @@ static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
     return atom_data->count;
 }
 
-static inline vec3_t md_atom_coord(const md_atom_data_t* atom_data, size_t atom_idx) {
-    ASSERT(atom_data);
-    if (atom_idx < atom_data->count) {
-        return vec3_set(atom_data->x[atom_idx], atom_data->y[atom_idx], atom_data->z[atom_idx]);
+static inline vec3_t md_state_coord(const md_system_state_t* state, size_t atom_idx) {
+    ASSERT(state);
+    if (atom_idx < state->num_atoms) {
+        return vec3_set(state->x[atom_idx], state->y[atom_idx], state->z[atom_idx]);
     }
     return vec3_zero();
 }
@@ -638,6 +755,23 @@ static inline bool md_structure_extract(md_structure_t* out_structure, const md_
         return true;
     }
     return false;
+}
+
+// Slot of an atom within the flat structure arrays.
+// Requires md_util_system_infer_structures to have been run.
+static inline int32_t md_structure_atom_slot(const md_structure_data_t* structure_data, int32_t atom_idx) {
+    ASSERT(structure_data);
+    ASSERT(structure_data->atom_slot);
+    return structure_data->atom_slot[atom_idx];
+}
+
+// Global index of the atom the supplied atom was reached from during the traversal.
+// A root atom is its own parent, so parent == atom_idx identifies a root.
+// Requires md_util_system_infer_structures to have been run.
+static inline int32_t md_structure_atom_parent(const md_structure_data_t* structure_data, int32_t atom_idx) {
+    ASSERT(structure_data);
+    ASSERT(structure_data->atom_slot);
+    return structure_data->parent_idx[structure_data->atom_slot[atom_idx]];
 }
 
 // SYSTEM
@@ -1031,6 +1165,41 @@ bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);
 
 // Attach helpers: set or create-and-attach trajectories to a system.
 void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj);
+
+// STATE
+// A state owns its coordinate arrays and must be freed with the same allocator it was created with.
+
+// True if the state carries coordinates. A state may legitimately carry a cell but no coordinates
+// (a topology only format such as PSF), or coordinates but no cell (xyz without a cell).
+static inline bool md_system_state_has_coords(const md_system_state_t* state) {
+    return state && state->num_atoms > 0 && state->x && state->y && state->z;
+}
+
+static inline bool md_system_state_has_unitcell(const md_system_state_t* state) {
+    return state && state->unitcell.flags != 0;
+}
+
+// Allocate coordinate storage for num_atoms using state->alloc, which must be set.
+// Existing storage is freed first, so this doubles as the reset for a state being reused, and the
+// padding up to the simd aligned capacity is zeroed. Returns false if the state has no allocator.
+//
+// CONTRACT for anything that produces a system and a state together (the format parsers):
+// validate sys->alloc and state->alloc, then call md_system_reset(sys) and md_system_state_init(state, N)
+// as a pair before touching either. Pass the exact atom count for N when it is known up front and
+// write coordinates by index; pass 0 when atoms are filtered while parsing, then reserve with
+// md_array_ensure(state->x, capacity, state->alloc) and push. Either way finish with
+// state->num_atoms = sys->atom.count, and grow the coordinate arrays with state->alloc and never
+// with sys->alloc - md_system_state_free releases them with state->alloc, and the two allocators
+// are routinely different.
+bool md_system_state_init(md_system_state_t* state, size_t num_atoms);
+
+// Free the coordinate storage and zero the state, preserving the allocator so the state can be
+// reused. A view (alloc == NULL) is simply zeroed. Takes no allocator argument by design: the state
+// records the one it was allocated with, so it cannot be freed with the wrong one.
+void md_system_state_free(md_system_state_t* state);
+
+// Copy src into dst, reallocating dst as needed. dst->alloc must be set.
+bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src);
 
 #ifdef __cplusplus
 }

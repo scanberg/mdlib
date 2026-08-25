@@ -88,7 +88,10 @@ typedef struct lammps_reader_t {
 typedef struct lammps_cache_t {
 	md_trajectory_cache_header_t header;
 	int64_t* frame_offsets;
-	int64_t* frame_times;
+	// The LAMMPS TIMESTEP of each frame. Always was - it used to be handed out as frame_times, which
+	// meant a run with dt != 1 fs reported a step count labelled as femtoseconds.
+	// @NOTE: same bytes on disk as before, so existing caches stay valid.
+	int64_t* frame_steps;
 	coord_mappings_t coord_mappings;
 } lammps_cache_t;
 
@@ -852,23 +855,29 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
-bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* data) {
+bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* data) {
 	ASSERT(sys);
+	ASSERT(state);
 	ASSERT(data);
 
 	if (!sys->alloc) {
-		MD_LOG_ERROR("No allocator set in system");
+		MD_LOG_ERROR("System allocator not set");
+		return false;
+	}
+
+	if (!state || !state->alloc) {
+		MD_LOG_ERROR("State allocator not set");
 		return false;
 	}
 
 	md_system_reset(sys);
+	md_system_state_init(state, 0);
 
-	/* Record system allocator early so subsequent allocations use system-owned allocator. */
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_ensure(sys->atom.x,		capacity, sys->alloc);
-	md_array_ensure(sys->atom.y,		capacity, sys->alloc);
-	md_array_ensure(sys->atom.z,		capacity, sys->alloc);
+	md_array_ensure(state->x,		capacity, state->alloc);
+	md_array_ensure(state->y,		capacity, state->alloc);
+	md_array_ensure(state->z,		capacity, state->alloc);
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
 	md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
@@ -928,9 +937,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 		}
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
-		md_array_push_no_grow(sys->atom.x, data->atoms[i].x - data->cell.xlo);
-		md_array_push_no_grow(sys->atom.y, data->atoms[i].y - data->cell.ylo);
-		md_array_push_no_grow(sys->atom.z, data->atoms[i].z - data->cell.zlo);
+		md_array_push_no_grow(state->x, data->atoms[i].x - data->cell.xlo);
+		md_array_push_no_grow(state->y, data->atoms[i].y - data->cell.ylo);
+		md_array_push_no_grow(state->z, data->atoms[i].z - data->cell.zlo);
 		md_array_push_no_grow(sys->atom.flags, 0);
 		sys->atom.count +=1;
 
@@ -949,8 +958,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
 	double xy = data->cell.xy;
 	double xz = data->cell.xz;
 	double yz = data->cell.yz;
-    sys->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-	sys->initial_unitcell = sys->unitcell;
+    state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 
 	// Create bonds
 	if (data->num_bonds > 0) {
@@ -976,10 +984,14 @@ bool md_lammps_system_init_from_data(md_system_t* sys, const md_lammps_data_t* d
     }
 
 	md_temp_end(temp_scope);
+
+    ASSERT(md_array_size(state->x) == sys->atom.count);
+    state->num_atoms = sys->atom.count;
+
 	return true;
 }
 
-bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* atom_format) {
+bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -993,14 +1005,14 @@ bool md_lammps_system_init_from_str(md_system_t* sys, str_t str, const char* ato
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
-	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+	bool success = md_lammps_data_parse_str(&data, str, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, state, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
     md_temp_end(temp_scope);
 	return success;
 }
 
-bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const char* atom_format) {
+bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -1014,7 +1026,7 @@ bool md_lammps_system_init_from_file(md_system_t* sys, str_t filename, const cha
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
 	md_lammps_data_t data = { 0 };
-	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, &data);
+	bool success = md_lammps_data_parse_file(&data, filename, atom_format, temp_alloc) && md_lammps_system_init_from_data(sys, state, &data);
 
 	md_lammps_data_free(&data, temp_alloc);
     md_temp_end(temp_scope);
@@ -1273,18 +1285,17 @@ int compare_id_xyz(const void* a, const void* b) {
 	return id_xyz_a->id - id_xyz_b->id;
 }
 
-static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* out_frame_header, float* out_x, float* out_y, float* out_z) {
+static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const void* data_ptr, size_t data_size, size_t* out_num_atoms, md_unitcell_t* out_cell, float* out_x, float* out_y, float* out_z) {
 	ASSERT(data_ptr);
 	ASSERT(data_size);
 
 	bool result = false;
 
 	str_t tokens[32];
-	int64_t timestep = 0;
 	int64_t frame_idx = ((int64_t*)data_ptr)[0];
 	md_unitcell_t cell = {0};
 
-	bool output_header = out_frame_header != NULL;
+	bool output_num_atoms = out_num_atoms != NULL;
 	bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
 
 	if (traj_data->magic != MD_LAMMPS_TRAJ_MAGIC) {
@@ -1393,11 +1404,12 @@ static bool lammps_decode_frame_data(const lammps_trajectory_t* traj_data, const
 		if (!coords_result) goto done;
 	}
 
-	if (output_header) {
-		out_frame_header->num_atoms = header.num_atoms;
-		out_frame_header->index = frame_idx;
-		out_frame_header->timestamp = (double)timestep;
-		out_frame_header->unitcell = cell;
+	if (output_num_atoms) {
+		*out_num_atoms = header.num_atoms;
+	}
+
+	if (out_cell) {
+		*out_cell = cell;
 	}
 
 	result = true;
@@ -1461,7 +1473,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 		}
 
 		md_array_push(cache->frame_offsets, offset, alloc);
-		md_array_push(cache->frame_times, header.timestep, alloc);
+		md_array_push(cache->frame_steps, header.timestep, alloc);
 		num_frames += 1;
 	}
 
@@ -1500,18 +1512,8 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 	return result;
 }
 
-//Loads the frame data from a given frame index, reading only the relevant part file for that frame.
-bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-	(void)inst;
-	(void)frame_idx;
-	(void)header;
-	(void)x;
-	(void)y;
-	(void)z;
-	return false;
-}
 
-static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool lammps_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* out_num_atoms, md_unitcell_t* out_cell, float* x, float* y, float* z) {
 	ASSERT(inst);
 
 	lammps_reader_t* reader = (lammps_reader_t*)inst;
@@ -1533,7 +1535,7 @@ static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_
 			return false;
 		}
 
-		result = lammps_decode_frame_data(lammps_traj, reader->frame_data, frame_size, header, x, y, z);
+		result = lammps_decode_frame_data(lammps_traj, reader->frame_data, frame_size, out_num_atoms, out_cell, x, y, z);
 	}
 
 	return result;
@@ -1554,6 +1556,27 @@ static void lammps_trajectory_reader_free(struct md_trajectory_reader_i* reader)
 	}
 
 	MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool lammps_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!lammps_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = cell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool lammps_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
@@ -1633,16 +1656,16 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 			MD_LOG_ERROR("LAMMPS trajectory: Read frame offset array size is not correct");
 		}
 
-		size_t times_bytes = (cache->header.num_frames) * sizeof(int64_t);
-		md_array_resize(cache->frame_times, cache->header.num_frames, alloc);
-		if (md_file_read(file, cache->frame_times, times_bytes) != times_bytes) {
-			MD_LOG_ERROR("LAMMPS trajectory cache: Failed to read frame times data");
-			md_free(alloc, cache->frame_times, times_bytes);
+		size_t steps_bytes = (cache->header.num_frames) * sizeof(int64_t);
+		md_array_resize(cache->frame_steps, cache->header.num_frames, alloc);
+		if (md_file_read(file, cache->frame_steps, steps_bytes) != steps_bytes) {
+			MD_LOG_ERROR("LAMMPS trajectory cache: Failed to read frame steps data");
+			md_free(alloc, cache->frame_steps, steps_bytes);
 			goto done;
 		}
-		size_t num_times = md_array_size(cache->frame_times);
-		if (num_times != cache->header.num_frames) {
-			MD_LOG_ERROR("LAMMPS trajectory: Read frame times array size is not correct");
+		size_t num_steps = md_array_size(cache->frame_steps);
+		if (num_steps != cache->header.num_frames) {
+			MD_LOG_ERROR("LAMMPS trajectory: Read frame steps array size is not correct");
 		}
 
 		if (md_file_read(file, &cache->coord_mappings, sizeof(cache->coord_mappings)) != sizeof(cache->coord_mappings) || cache->coord_mappings.flags == COORD_FLAG_NONE) {
@@ -1654,7 +1677,7 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 		if (md_file_tell(file) != (int64_t)md_file_size(file)) {
 			MD_LOG_ERROR("PDB trajectory cache: file position was not at the end of the file");
 			md_free(alloc, cache->frame_offsets, offset_bytes);
-			md_free(alloc, cache->frame_times, times_bytes);
+			md_free(alloc, cache->frame_steps, steps_bytes);
 			goto done;
 		}
 
@@ -1689,9 +1712,9 @@ static bool write_cache(lammps_cache_t* cache, str_t cache_file) {
 		goto done;
 	}
 
-	size_t times_bytes = (cache->header.num_frames) * sizeof(int64_t);
-	if (md_file_write(file, cache->frame_times, times_bytes) != times_bytes) {
-		MD_LOG_ERROR("LAMMPS trajectory cache: failed to write frame times");
+	size_t steps_bytes = (cache->header.num_frames) * sizeof(int64_t);
+	if (md_file_write(file, cache->frame_steps, steps_bytes) != steps_bytes) {
+		MD_LOG_ERROR("LAMMPS trajectory cache: failed to write frame steps");
 		goto done;
 	}
 
@@ -1766,9 +1789,12 @@ struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 		max_frame_size = MAX(max_frame_size, frame_size);
 	}
 
+	// A LAMMPS dump file records the TIMESTEP but never the integration timestep dt, so real time is
+	// not derivable. Fall back to the frame ordinal and leave time_unit empty, the way DCD does when
+	// its header carries no delta. The steps themselves are reported separately and exactly.
 	md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
 	for (size_t i = 0; i < cache.header.num_frames; i++) {
-		frame_times[i] = (double)cache.frame_times[i];
+		frame_times[i] = (double)i;
 	}
 
 	void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(lammps_trajectory_t));
@@ -1785,8 +1811,9 @@ struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_al
 	traj_data->header = (md_trajectory_header_t){
 		.num_frames = cache.header.num_frames,
 		.num_atoms = cache.header.num_atoms,
-		.time_unit = md_unit_femtosecond(),
+		.time_unit = md_unit_none(),
 		.frame_times = frame_times,
+		.frame_steps = cache.frame_steps,
 	};
 
 	traj_data->coord_mappings = cache.coord_mappings;

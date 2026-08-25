@@ -17,9 +17,6 @@ void md_system_free(md_system_t* sys) {
     md_trajectory_free(sys->trajectory);
 
     // ATOM
-    md_array_free(sys->atom.x, alloc);
-    md_array_free(sys->atom.y, alloc);
-    md_array_free(sys->atom.z, alloc);
     md_array_free(sys->atom.type_idx, alloc);
     md_array_free(sys->atom.flags, alloc);
 
@@ -85,6 +82,7 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->structure.offset, alloc);
     md_array_free(sys->structure.atom_idx, alloc);
     md_array_free(sys->structure.parent_idx, alloc);
+    md_array_free(sys->structure.atom_slot, alloc);
 
     // ASSEMBLY
     md_array_free(sys->assembly.atom_range, alloc);
@@ -95,7 +93,84 @@ void md_system_free(md_system_t* sys) {
         str_free(sys->description, alloc);
     }
 
+    // REFERENCE STATE
+    md_system_state_free(&sys->reference);
+
     MEMSET(sys, 0, sizeof(md_system_t));
+}
+
+bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
+    ASSERT(state);
+
+    if (!state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
+        return false;
+    }
+
+    md_allocator_i* alloc = state->alloc;
+    md_system_state_free(state);
+    state->alloc = alloc;
+
+    // A freshly initialised state did not come from a trajectory. Only md_trajectory_reader_load_frame
+    // and the interpolation which produces a state write a non negative frame. See md_system_state_t.
+    state->frame = -1.0;
+
+    if (num_atoms == 0) {
+        return true;
+    }
+
+    const size_t capacity = ALIGN_TO(num_atoms, 16);
+
+    md_array_resize(state->x, capacity, alloc);
+    md_array_resize(state->y, capacity, alloc);
+    md_array_resize(state->z, capacity, alloc);
+
+    // Zero the padding past num_atoms. The capacity is rounded up so vectorised code may load whole
+    // 16 wide chunks; an uninitialised tail puts garbage floats into those lanes.
+    const size_t tail_bytes = (capacity - num_atoms) * sizeof(float);
+    if (tail_bytes > 0) {
+        MEMSET(state->x + num_atoms, 0, tail_bytes);
+        MEMSET(state->y + num_atoms, 0, tail_bytes);
+        MEMSET(state->z + num_atoms, 0, tail_bytes);
+    }
+
+    state->num_atoms = num_atoms;
+
+    return true;
+}
+
+void md_system_state_free(md_system_state_t* state) {
+    ASSERT(state);
+
+    // A view owns nothing; zeroing it is the whole job.
+    if (state->alloc) {
+        md_array_free(state->x, state->alloc);
+        md_array_free(state->y, state->alloc);
+        md_array_free(state->z, state->alloc);
+    }
+    md_allocator_i* alloc = state->alloc;
+    MEMSET(state, 0, sizeof(md_system_state_t));
+    state->alloc = alloc;
+}
+
+bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) {
+    ASSERT(dst);
+    ASSERT(src);
+
+    if (dst == src) {
+        return true;
+    }
+    if (!md_system_state_init(dst, src->num_atoms)) {
+        return false;
+    }
+    if (src->num_atoms > 0 && src->x && src->y && src->z) {
+        MEMCPY(dst->x, src->x, src->num_atoms * sizeof(float));
+        MEMCPY(dst->y, src->y, src->num_atoms * sizeof(float));
+        MEMCPY(dst->z, src->z, src->num_atoms * sizeof(float));
+    }
+    dst->unitcell = src->unitcell;
+    dst->frame    = src->frame;
+    return true;
 }
 
 void md_system_reset(md_system_t* sys) {
@@ -133,9 +208,6 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 
     md_allocator_i* alloc = dst->alloc;
 
-    ARRAY_PUSH(atom, x);
-    ARRAY_PUSH(atom, y);
-    ARRAY_PUSH(atom, z);
     ARRAY_PUSH(atom, type_idx);
     ARRAY_PUSH(atom, flags);
 
@@ -185,9 +257,13 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     dst->bond.count           = src->bond.count;
     dst->bond.conn.count      = src->bond.conn.count;
     dst->bond.conn.offset_count = src->bond.conn.offset_count;
-    dst->initial_unitcell     = src->initial_unitcell;
     dst->alloc                = alloc;
     dst->trajectory           = NULL;
+
+    // The derived topology copied above was inferred from src's reference state, so the reference
+    // must travel with it or the two silently disagree.
+    dst->reference.alloc = alloc;
+    md_system_state_copy(&dst->reference, &src->reference);
 
     return true;
 }

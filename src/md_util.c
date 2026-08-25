@@ -1329,7 +1329,7 @@ bool md_util_resname_nucleotide(str_t str) {
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys) {
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state) {
     ASSERT(out_xyzw);
     ASSERT(mask);
     ASSERT(sys);
@@ -1338,7 +1338,7 @@ void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t
     size_t count = 0;
     while (md_bitfield_iter_next(&it)) {
         size_t i = md_bitfield_iter_idx(&it);
-        vec3_t xyz = md_atom_coord(&sys->atom, i);
+        vec3_t xyz = md_state_coord(state, i);
         float mass = md_atom_mass(&sys->atom, i);
         out_xyzw[count] = vec4_from_vec3(xyz, mass);
         count++;
@@ -2117,7 +2117,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &stream, 9.0, cell, 0);
 
@@ -3746,8 +3746,9 @@ static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const floa
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
+    ASSERT(state);
     ASSERT(sys);
     ASSERT(alloc);
 
@@ -3773,7 +3774,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
 
     md_bond_data_clear(bond);
     
-    if (!x || !y || !z) {
+    if (!state->x || !state->y || !state->z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
         goto done;
     }
@@ -3788,7 +3789,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
         }
 	}
 
-    size_t num_atoms = sys->atom.count;
+    size_t num_atoms = state->num_atoms;
     md_array(bond_pair_t) candidates = 0;
     md_array_ensure(candidates, num_atoms, temp_arena);
 
@@ -3824,12 +3825,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
                 // Test internal components
                 for (size_t i = atom_range.beg; i + 1 < atom_range.end; ++i) {
                     for (size_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
-                        test_bb_pair((int)i, (int)j, 4.0f, x, y, z, cell, &candidates, temp_arena);
+                        test_bb_pair((int)i, (int)j, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
                     }
 				}
             }
             if (bb_prev >= 0 && bb_i >= 0) {
-				test_bb_pair(bb_prev, bb_i, 4.0f, x, y, z, cell, &candidates, temp_arena);
+				test_bb_pair(bb_prev, bb_i, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
 			}
 			bb_prev = bb_i;
         }
@@ -3915,9 +3916,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const float* x, const fl
             const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
-            md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, num_atoms);
+            md_coord_stream_t coords = md_coord_stream_from_soa(state->x, state->y, state->z, NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &stream, cell_ext, cell, 0);
+            md_spatial_acc_init(&acc, &coords, cell_ext, &state->unitcell, 0);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
             //MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
         }
@@ -4056,9 +4057,11 @@ done:
     md_temp_end(temp_scope);
 }
 
-void md_util_system_infer_covalent_bonds(md_system_t* sys) {
-    md_util_infer_covalent_bonds(&sys->bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, sys, sys->alloc);
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
+    // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate.
+    md_bond_data_clear(&sys->bond);
+    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
+    md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
 }
 
 #define MIN_RES_LEN 4
@@ -4545,11 +4548,11 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
 
     const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
     
-    md_coord_stream_t acc_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
+    md_coord_stream_t acc_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
     md_spatial_acc_t acc = { .alloc = temp_arena };
     md_spatial_acc_init(&acc, &acc_stream, cell_ext, unitcell, 0);
 
-    md_coord_stream_t don_stream = md_coord_stream_create_soa(atom_x, atom_y, atom_z, don_idx, num_don);
+    md_coord_stream_t don_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, don_idx, num_don);
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
 
     typedef struct {
@@ -5117,6 +5120,48 @@ bool md_util_system_infer_rings(md_system_t* sys) {
 #undef MAX_DEPTH
 
 // Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
+// Breadth first traversal of the connected component containing 'seed'.
+//
+// Marks every atom it reaches in 'visited' and never clears it; the caller supplies a bitfield which
+// is clear over the component. When out_atoms is supplied the atoms are written in BFS order and
+// out_count receives how many there were. When out_pred is supplied it records, per global atom
+// index, the atom each one was reached from, with the seed recording itself.
+//
+// Returns the last atom popped from the queue. BFS pops in non decreasing distance order, so that
+// atom is at maximum edge distance from the seed - which is what the double sweep below needs.
+static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred, uint64_t* visited, fifo_t* queue, const md_bond_data_t* bond, int seed) {
+    fifo_clear(queue);
+
+    bitfield_set_bit(visited, seed);
+    if (out_pred) out_pred[seed] = seed;
+    fifo_push(queue, seed);
+
+    size_t count = 0;
+    int last = seed;
+
+    while (!fifo_empty(queue)) {
+        const int cur = fifo_pop(queue);
+        last = cur;
+        if (out_atoms) out_atoms[count] = cur;
+        count += 1;
+
+        md_bond_iter_t it = md_bond_iter(bond, cur);
+        while (md_bond_iter_has_next(&it)) {
+            const int next = md_bond_iter_atom_index(&it);
+            md_bond_iter_next(&it);
+
+            if (bitfield_test_bit(visited, next)) continue;
+
+            bitfield_set_bit(visited, next);
+            if (out_pred) out_pred[next] = cur;
+            fifo_push(queue, next);
+        }
+    }
+
+    if (out_count) *out_count = count;
+    return last;
+}
+
 bool md_util_system_infer_structures(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);
@@ -5126,18 +5171,32 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_array_shrink(sys->structure.offset, 0);
     md_array_shrink(sys->structure.atom_idx, 0);
     md_array_shrink(sys->structure.parent_idx, 0);
+    md_array_shrink(sys->structure.atom_slot, 0);
+    sys->structure.count = 0;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     const size_t atom_count = md_system_atom_count(sys);
 
-    // Create a bitfield to keep track of which atoms have been visited
+    // Reverse map from atom to slot, one entry per atom in the system
+    md_array_resize(sys->structure.atom_slot, atom_count, alloc);
+
+    // Which atoms have been assigned to a structure. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
+
+    // Reused by the sweeps below. Cleared over the atoms of the current component only, so the cost
+    // stays proportional to the component rather than to the system.
+    uint64_t* sweep_visited = make_bitfield(atom_count, temp_arena);
+
+    // Atoms of the component currently being processed, and the predecessor of each atom as recorded
+    // by the second sweep. Only the entries belonging to the current component are meaningful.
+    int32_t* component = md_temp_alloc_array(temp, int32_t, atom_count);
+    int32_t* pred      = md_temp_alloc_array(temp, int32_t, atom_count);
 
     // Parallel queues:
     // - atom_queue   : global atom index to visit
-    // - parent_queue : local parent index within the current structure, -1 for root
+    // - parent_queue : global index of the atom it was reached from (the root is its own parent)
     fifo_t atom_queue   = fifo_create(1024, temp_arena);
     fifo_t parent_queue = fifo_create(1024, temp_arena);
 
@@ -5147,21 +5206,45 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     for (int i = 0; i < (int)atom_count; ++i) {
         if (bitfield_test_bit(visited, i)) continue;
 
-        const uint32_t base_offset = (uint32_t)md_array_size(sys->structure.atom_idx);
+        // Sweep 1: discover the component from an arbitrary seed and note an atom at maximum distance
+        // from it. This is the sweep that claims the atoms in 'visited'; the atom list it produces is
+        // what lets the following sweeps clear their bits without touching the rest of the system.
+        size_t component_size = 0;
+        const int far_a = bfs_traverse(component, &component_size, NULL, visited, &atom_queue, &sys->bond, i);
+
+        // Locate the graph center: the atom whose greatest distance to any other atom in the
+        // component is smallest. Standard double sweep - the midpoint of a longest path. Exact for
+        // acyclic structures, a close approximation in the presence of rings.
+        // Components of two atoms or fewer are their own center.
+        int root = i;
+        if (component_size > 2) {
+            // Sweep 2: from far_a, find the opposite end of the path and the chain leading back
+            for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
+            const int far_b = bfs_traverse(NULL, NULL, pred, sweep_visited, &atom_queue, &sys->bond, far_a);
+
+            int length = 0;
+            for (int a = far_b; a != pred[a]; a = pred[a]) length += 1;
+
+            root = far_b;
+            for (int k = 0; k < length / 2; ++k) root = pred[root];
+        }
+
+        // Sweep 3: emit the component in BFS order from the root, which establishes the
+        // slot(parent) < slot(child) invariant md_structure_data_t documents.
+        for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
 
         fifo_clear(&atom_queue);
         fifo_clear(&parent_queue);
 
-        bitfield_set_bit(visited, i);
-        fifo_push(&atom_queue, i);
-        fifo_push(&parent_queue, -1);
+        bitfield_set_bit(sweep_visited, root);
+        fifo_push(&atom_queue, root);
+        fifo_push(&parent_queue, root);   // the root is its own parent
 
         while (!fifo_empty(&atom_queue)) {
             const int cur        = fifo_pop(&atom_queue);
             const int parent_idx = fifo_pop(&parent_queue);
 
-            const int local_idx = (int)(md_array_size(sys->structure.atom_idx) - base_offset);
-
+            sys->structure.atom_slot[cur] = (int32_t)md_array_size(sys->structure.atom_idx);
             md_array_push(sys->structure.atom_idx, cur, alloc);
             md_array_push(sys->structure.parent_idx, parent_idx, alloc);
 
@@ -5170,11 +5253,11 @@ bool md_util_system_infer_structures(md_system_t* sys) {
                 const int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
 
-                if (bitfield_test_bit(visited, next)) continue;
+                if (bitfield_test_bit(sweep_visited, next)) continue;
 
-                bitfield_set_bit(visited, next);
+                bitfield_set_bit(sweep_visited, next);
                 fifo_push(&atom_queue, next);
-                fifo_push(&parent_queue, local_idx);
+                fifo_push(&parent_queue, cur);
             }
         }
 
@@ -5609,9 +5692,9 @@ static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, con
     md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
 }
 
-void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, double radius, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* state, double radius, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
-    ASSERT(sys);
+    ASSERT(state);
     
     if (radius <= 0.0) return;
     md_temp_scope_t temp = md_temp_begin_avoid(mask->alloc);
@@ -5623,7 +5706,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         num_indices = md_bitfield_iter_extract_indices(indices, num_indices, md_bitfield_iter_create(mask));
 
         int32_t* viable_indices = 0;
-        size_t viable_count = sys->atom.count;
+        size_t viable_count = state->num_atoms;
             
         if (viable_mask) {
             md_bitfield_t temp_mask = md_bitfield_create(temp_arena);
@@ -5636,10 +5719,10 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_t* sys, do
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = temp_arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
-            md_coord_stream_t stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, viable_indices, viable_count);
-            md_spatial_acc_init(&acc, &stream, cutoff, &sys->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_coord_stream_t stream = md_coord_stream_from_soa(state->x, state->y, state->z, viable_indices, viable_count);
+            md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
-            md_coord_stream_t ext_stream = md_coord_stream_create_soa(sys->atom.x, sys->atom.y, sys->atom.z, indices, num_indices);
+            md_coord_stream_t ext_stream = md_coord_stream_from_soa(state->x, state->y, state->z, indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
@@ -5836,7 +5919,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
-                deperiodize_triclinic(c.elem, ref.elem, A);
+                deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -5919,7 +6002,7 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = in_xyzr[idx];
-                deperiodize_triclinic(c.elem, ref.elem, A);
+                deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -7406,12 +7489,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_y = _mm512_loadu_ps(in_y + i);
         md_512 v_z = _mm512_loadu_ps(in_z + i);
         md_512 v_w = _mm512_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7445,12 +7528,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_256 v_y = md_mm256_loadu_ps(in_y + i);
         md_256 v_z = md_mm256_loadu_ps(in_z + i);
         md_256 v_w = md_mm256_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7484,12 +7567,12 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_128 v_y = md_mm_loadu_ps(in_y + i);
         md_128 v_z = md_mm_loadu_ps(in_z + i);
         md_128 v_w = md_mm_loadu_ps(in_w + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7519,9 +7602,9 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         double y = in_y[i];
         double z = in_z[i];
         double w = in_w[i];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += w * cos(tx);
         acc_s[0] += w * sin(tx);
         acc_c[1] += w * cos(ty);
@@ -7532,16 +7615,23 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     }
 
     const double inv_w = 1.0 / acc_w;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7567,12 +7657,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_512 v_x = _mm512_loadu_ps(in_x + i);
         md_512 v_y = _mm512_loadu_ps(in_y + i);
         md_512 v_z = _mm512_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7602,12 +7692,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_256 v_x = md_mm256_loadu_ps(in_x + i);
         md_256 v_y = md_mm256_loadu_ps(in_y + i);
         md_256 v_z = md_mm256_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7637,12 +7727,12 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_128 v_x = md_mm_loadu_ps(in_x + i);
         md_128 v_y = md_mm_loadu_ps(in_y + i);
         md_128 v_z = md_mm_loadu_ps(in_z + i);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7669,9 +7759,9 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         double x = in_x[i];
         double y = in_y[i];
         double z = in_z[i];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += cos(tx);
         acc_s[0] += sin(tx);
         acc_c[1] += cos(ty);
@@ -7681,16 +7771,23 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     }
 
     const double inv_w = 1.0 / (double)count;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7717,12 +7814,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7753,12 +7850,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
         md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
         md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7789,12 +7886,12 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
         md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
         md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7822,9 +7919,9 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         double x = in_x[idx];
         double y = in_y[idx];
         double z = in_z[idx];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += cos(tx);
         acc_s[0] += sin(tx);
         acc_c[1] += cos(ty);
@@ -7834,16 +7931,23 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     }
 
     const double inv_w = 1.0 / (double)count;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -7873,12 +7977,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
         md_512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7913,12 +8017,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
         md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
         md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_mul_ps(v_x, md_mm256_set1_ps(M[0][2]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_y, md_mm256_set1_ps(M[1][2]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][0]), md_mm256_fmadd_ps(v_z, md_mm256_set1_ps(M[2][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
+        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
+        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
         // Compute sin cos
         md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7953,12 +8057,12 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
         md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
         md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
-        // Compute thetas 
-        // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
-        // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_mul_ps(v_x, md_mm_set1_ps(M[0][2]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_y, md_mm_set1_ps(M[1][2]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][0]), md_mm_fmadd_ps(v_z, md_mm_set1_ps(M[2][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
+        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
+        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
+        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
+        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
+        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
+        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
         // Compute sin cos
         md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
         md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
@@ -7989,9 +8093,9 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         double y = in_y[idx];
         double z = in_z[idx];
         double w = in_w[idx];
-        double tx = x * M[0][0] + x * M[0][1] + x * M[0][2];
-        double ty = y * M[1][0] + y * M[1][1] + y * M[1][2];
-        double tz = z * M[2][0] + z * M[2][1] + z * M[2][2];
+        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
+        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
+        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
         acc_c[0] += w * cos(tx);
         acc_s[0] += w * sin(tx);
         acc_c[1] += w * cos(ty);
@@ -8002,16 +8106,23 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     }
 
     const double inv_w = 1.0 / acc_w;
+    double theta[3];
     for (int j = 0; j < 3; ++j) {
-        double theta = PI;
+        double t = PI;
         double x = acc_c[j] * inv_w;
         double y = acc_s[j] * inv_w;
         double r2 = x * x + y * y;
         if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            theta += atan2(-y, -x);
+            t += atan2(-y, -x);
         }
-        // This is essentially a matrix vector multiplication, but for the single row
-        out_com[j] = (float)(theta * I[j][0] + theta * I[j][1] + theta * I[j][2]);
+        theta[j] = t;
+    }
+
+    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
+    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
+    // on its own. I is column major, so I[col][row].
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
     }
 }
 
@@ -8119,8 +8230,13 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
-        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), A));
-        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), Ai));
+        // Cartesian -> fractional, scaled into angle space, and the inverse which takes the mean
+        // angle back out to a Cartesian position. A triclinic basis mixes the components, so both
+        // directions have to be full matrix products: resolving an axis on its own is only valid
+        // when the basis is diagonal, which is why the orthorhombic branch above can get away with
+        // per component scalars and this one cannot.
+        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai));
+        const mat3_t   I = mat3_mul(A, mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
@@ -8138,7 +8254,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4x3_mul_vec4(I, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -8147,6 +8263,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             }
         }
 
+        vec3_t theta_vec = { 0 };
         for (int i = 0; i < 3; ++i) {
             const double y = acc_s.elem[i] / acc_xyzw.w;
             const double x = acc_c.elem[i] / acc_xyzw.w;
@@ -8155,8 +8272,15 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
                 theta_prim += atan2(-y, -x);
             }
-            out_com[i] = (float)(theta_prim * I.elem[i][0] + theta_prim * I.elem[i][1] + theta_prim * I.elem[i][2]);
+            theta_vec.elem[i] = (float)theta_prim;
         }
+
+        // The three mean angles ARE a fractional coordinate (times two pi). Carry it back to
+        // Cartesian as one vector - component i of the result draws on all three angles.
+        const vec3_t com = mat3_mul_vec3(I, theta_vec);
+        out_com[0] = com.x;
+        out_com[1] = com.y;
+        out_com[2] = com.z;
     }
 }
 
@@ -8232,7 +8356,7 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 out_dist[i * len_b + j] = vec3_length(dx);
             }
         }
@@ -8278,7 +8402,7 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 const float d = vec3_length(dx);
                 if (d < min_dist) {
                     min_dist = d;
@@ -8334,7 +8458,7 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 const float d = vec3_length(dx);
                 if (d > max_dist) {
                     max_dist = d;
@@ -8422,17 +8546,21 @@ static inline void min_image_triclinic(float dx[3], const float box[3][3], const
     dx[2] = (float)dx_min[2];
 }
 
-static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3]) {
-    for (int i = 0; i < 3; i++) {
-        if (ext[i] > 0.0f) {
-            while (dx[i] > half_ext[i]) {
-                dx[i] -= ext[i];
-            }
-            while (dx[i] <= -half_ext[i]) {
-                dx[i] += ext[i];
-            }
-        }
-    }
+static inline void min_image_ortho(float dx[3], const float ext[3], const float inv_ext[3]) {
+    dx[0] -= ext[0] * nearbyintf(dx[0] * inv_ext[0]);
+    dx[1] -= ext[1] * nearbyintf(dx[1] * inv_ext[1]);
+    dx[2] -= ext[2] * nearbyintf(dx[2] * inv_ext[2]);
+}
+
+// Reciprocal extent for min_image_ortho.
+// @NOTE: this is NOT the half extent min_image_triclinic wants - the two take different quantities
+// and the same local must not be handed to both.
+// A zero extent means that axis is not periodic; a zero reciprocal makes the minimum image a no-op
+// along it rather than producing a NaN.
+static inline void min_image_inv_ext(float out_inv_ext[3], const float ext[3]) {
+    out_inv_ext[0] = ext[0] != 0.0f ? 1.0f / ext[0] : 0.0f;
+    out_inv_ext[1] = ext[1] != 0.0f ? 1.0f / ext[1] : 0.0f;
+    out_inv_ext[2] = ext[2] != 0.0f ? 1.0f / ext[2] : 0.0f;
 }
 
 void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
@@ -8442,14 +8570,16 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
         vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
+            vec3_t inv_diag = { 0 };
+            min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
-                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+                min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
             mat3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
             }
         }
     }
@@ -8462,14 +8592,16 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
         vec3_t half_diag = vec3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
+            vec3_t inv_diag = { 0 };
+            min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
-                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+                min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
             mat3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
             }
         }
     }
@@ -8627,344 +8759,86 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
     return false;
 }
 
-bool md_util_system_pbc(md_system_t* sys) {
-    ASSERT(sys);
+bool md_util_system_pbc(md_system_state_t* state) {
+    ASSERT(state);
 
-    if (md_unitcell_is_orthorhombic(&sys->unitcell)) {
+    if (md_unitcell_is_orthorhombic(&state->unitcell)) {
         vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, &sys->unitcell);
-        pbc_ortho(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, ext);
-    } else if (md_unitcell_is_triclinic(&sys->unitcell)) {
-		pbc_triclinic(sys->atom.x, sys->atom.y, sys->atom.z, 0, sys->atom.count, &sys->unitcell);
+        md_unitcell_diag_extract_float(ext.elem, &state->unitcell);
+        pbc_ortho(state->x, state->y, state->z, 0, state->num_atoms, ext);
+    } else if (md_unitcell_is_triclinic(&state->unitcell)) {
+		pbc_triclinic(state->x, state->y, state->z, 0, state->num_atoms, &state->unitcell);
     }
 
     return true;
 }
 
-static inline void unwrap_atom_ortho_vec4(vec4_t* pos, const vec4_t* ref, vec4_t ext) {
-    *pos = vec4_deperiodize_ortho(*pos, *ref, ext);
-}
+void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure) {
+    ASSERT(state);
+    ASSERT(structure);
 
-static inline void unwrap_atom_triclinic_vec4(vec4_t* pos, const vec4_t* ref, const mat3_t* A) {
-    deperiodize_triclinic(pos->elem, ref->elem, A->elem);
-}
-
-static bool unwrap_topology(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(bond);
-    ASSERT(cell);
-    ASSERT(alloc);
-
-    if (count == 0) return true;
-
-    if (!bond->conn.offset || bond->conn.offset_count == 0) {
-        MD_LOG_ERROR("Missing bond connectivity");
-        return false;
+    if (structure->count == 0) {
+        return;
     }
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
 
+    const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
+    const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
     if (!is_ortho && !is_triclinic) {
         // Nothing to unwrap against
-        return true;
+        return;
     }
 
-    const size_t atom_count = bond->conn.offset_count - 1;
-    uint64_t* visited = make_bitfield(atom_count, alloc);
-    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
-    fifo_t queue = fifo_create(256, alloc);
-
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            bitfield_set_bit(membership, indices[i]);
-        }
-    }
-
-    vec4_t ext = {0};
-    mat3_t A = {0};
+    float ext[3] = { 0 };
+    float inv_ext[3] = { 0 };
+	float half_ext[3] = { 0 };
+    float box[3][3] = { 0 };
 
     if (is_ortho) {
-        md_unitcell_diag_extract_float(ext.elem, cell);
-    } else if (is_triclinic) {
-        md_unitcell_A_extract_float(A.elem, cell);
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        const int seed = indices ? indices[i] : (int)i;
-        if (bitfield_test_bit(visited, seed)) continue;
-
-        bitfield_set_bit(visited, seed);
-        fifo_clear(&queue);
-        fifo_push(&queue, seed);
-
-        while (!fifo_empty(&queue)) {
-            const int cur = fifo_pop(&queue);
-            const vec4_t ref = { x[cur], y[cur], z[cur], 0 };
-            md_bond_iter_t it = md_bond_iter(bond, cur);
-            while (md_bond_iter_has_next(&it)) {
-                const int next = md_bond_iter_atom_index(&it);
-                md_bond_iter_next(&it);
-
-                if (indices) {
-                    if (!bitfield_test_bit(membership, next)) continue;
-                } else if ((size_t)next >= count) {
-                    continue;
-                }
-
-                if (bitfield_test_bit(visited, next)) continue;
-
-                vec4_t pos = { x[next], y[next], z[next], 0 };
-                if (is_ortho) {
-                    unwrap_atom_ortho_vec4(&pos, &ref, ext);
-                } else {
-                    unwrap_atom_triclinic_vec4(&pos, &ref, &A);
-                }
-                x[next] = pos.x;
-                y[next] = pos.y;
-                z[next] = pos.z;
-
-                bitfield_set_bit(visited, next);
-                fifo_push(&queue, next);
-            }
-        }
-    }
-
-    fifo_free(&queue);
-    return true;
-}
-
-static bool unwrap_topology_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell, md_allocator_i* alloc) {
-    ASSERT(xyzw);
-    ASSERT(bond);
-    ASSERT(cell);
-    ASSERT(alloc);
-
-    if (count == 0) return true;
-
-    if (!bond->conn.offset || bond->conn.offset_count == 0) {
-        MD_LOG_ERROR("Missing bond connectivity");
-        return false;
-    }
-
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
-
-    if (!is_ortho && !is_triclinic) {
-        // Nothing to unwrap against
-        return true;
-    }
-
-    const size_t atom_count = bond->conn.offset_count - 1;
-    uint64_t* visited = make_bitfield(atom_count, alloc);
-    uint64_t* membership = indices ? make_bitfield(atom_count, alloc) : NULL;
-    fifo_t queue = fifo_create(256, alloc);
-
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            bitfield_set_bit(membership, indices[i]);
-        }
-    }
-
-    vec4_t ext = {0};
-    mat3_t A = {0};
-
-    if (is_ortho) {
-        md_unitcell_diag_extract_float(ext.elem, cell);
-    } else if (is_triclinic) {
-        md_unitcell_A_extract_float(A.elem, cell);
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        const int seed = indices ? indices[i] : (int)i;
-        if (bitfield_test_bit(visited, seed)) continue;
-
-        bitfield_set_bit(visited, seed);
-        fifo_clear(&queue);
-        fifo_push(&queue, seed);
-
-        while (!fifo_empty(&queue)) {
-            const int cur = fifo_pop(&queue);
-            const vec4_t ref = xyzw[cur];
-            md_bond_iter_t it = md_bond_iter(bond, cur);
-            while (md_bond_iter_has_next(&it)) {
-                const int next = md_bond_iter_atom_index(&it);
-                md_bond_iter_next(&it);
-
-                if (indices) {
-                    if (!bitfield_test_bit(membership, next)) continue;
-                } else if ((size_t)next >= count) {
-                    continue;
-                }
-
-                if (bitfield_test_bit(visited, next)) continue;
-
-                if (is_ortho) {
-                    unwrap_atom_ortho_vec4(&xyzw[next], &ref, ext);
-                } else {
-                    unwrap_atom_triclinic_vec4(&xyzw[next], &ref, &A);
-                }
-
-                bitfield_set_bit(visited, next);
-                fifo_push(&queue, next);
-            }
-        }
-    }
-
-    fifo_free(&queue);
-    return true;
-}
-
-bool md_util_unwrap_structure(float* x, float* y, float* z, const md_structure_t* structure, const md_unitcell_t* cell) {
-    if (!x) {
-        MD_LOG_ERROR("Missing required input: in_out_x");
-        return false;
-    }
-
-    if (!y) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!z) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!structure) {
-        MD_LOG_ERROR("Missing structure");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-
-    const bool is_ortho = md_unitcell_is_orthorhombic(cell);
-    const bool is_triclinic = md_unitcell_is_triclinic(cell);
-
-    if (!is_ortho && !is_triclinic) {
-        return true;
-    }
-
-
-    // atom_idx[0] is the root, parent_idx[0] is expected to be -1
-
-    if (is_ortho) {
-        vec4_t ext = {0};
-        md_unitcell_diag_extract_float(ext.elem, cell);
-
-        for (size_t i = 1; i < structure->count; ++i) {
-            const int32_t cur_atom = structure->atom_idx[i];
-            const int32_t par_local = structure->parent_idx[i];
-
-            ASSERT(par_local >= 0);
-            ASSERT((size_t)par_local < i);
-
-            const int32_t ref_atom = structure->atom_idx[par_local];
-
-            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
-            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
-
-            unwrap_atom_ortho_vec4(&pos, &ref, ext);
-
-            x[cur_atom] = pos.x;
-            y[cur_atom] = pos.y;
-            z[cur_atom] = pos.z;
-        }
+        md_unitcell_diag_extract_float(ext, &state->unitcell);
+        min_image_inv_ext(inv_ext, ext);
     } else {
-        mat3_t A = {0};
-        md_unitcell_A_extract_float(A.elem, cell);
+        md_unitcell_A_extract_float(box, &state->unitcell);
+		half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
+		half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
+		half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
+    }
 
-        for (size_t i = 1; i < structure->count; ++i) {
-            const int32_t cur_atom = structure->atom_idx[i];
-            const int32_t par_local = structure->parent_idx[i];
+    // md_structure_data_t stores each structure in BFS order, so a single forward pass places every
+    // atom after the one it was reached from. No queue, no visited set and no bond lookups: the
+    // traversal was already computed by md_util_system_infer_structures.
+    // The seed is its own parent, so it deperiodizes against itself and stays put - no branch.
+    for (size_t i = 0; i < structure->count; ++i) {
+        const int32_t a = structure->atom_idx[i];
+        const int32_t p = structure->parent_idx[i];
 
-            ASSERT(par_local >= 0);
-            ASSERT((size_t)par_local < i);
+        const vec3_t x = { state->x[a], state->y[a], state->z[a] };
+        const vec3_t r = { state->x[p], state->y[p], state->z[p] };
+	    vec3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
 
-            const int32_t ref_atom = structure->atom_idx[par_local];
-
-            vec4_t pos = { x[cur_atom], y[cur_atom], z[cur_atom], 0 };
-            const vec4_t ref = { x[ref_atom], y[ref_atom], z[ref_atom], 0 };
-
-            unwrap_atom_triclinic_vec4(&pos, &ref, &A);
-
-            x[cur_atom] = pos.x;
-            y[cur_atom] = pos.y;
-            z[cur_atom] = pos.z;
+        if (is_ortho) {
+            min_image_ortho(dx.elem, ext, inv_ext);
+        } else {
+            min_image_triclinic(dx.elem, MD_AS_CONST_MAT3(box), half_ext);
         }
-    }
 
-    return true;
+        // The atom is placed relative to its PARENT, not relative to where it happened to sit:
+        // dx is already the minimum image of (x - r), so the unwrapped position is r + dx.
+        // Adding dx to x instead yields 2x - r, which is wrong even when no image correction applies.
+        state->x[a] = r.x + dx.x;
+        state->y[a] = r.y + dx.y;
+        state->z[a] = r.z + dx.z;
+    }
 }
 
-bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
-    if (!x) {
-        MD_LOG_ERROR("Missing required input: in_out_x");
-        return false;
-    }
-
-    if (!y) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!z) {
-        MD_LOG_ERROR("Missing required input: in_out_y");
-        return false;
-    }
-
-    if (!bond) {
-        MD_LOG_ERROR("Missing bond topology");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    const bool result = unwrap_topology(x, y, z, indices, count, bond, cell, temp_alloc);
-    md_temp_end(temp);
-    return result;
-}
-
-bool md_util_unwrap_vec4(vec4_t* xyzw, const int32_t* indices, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell) {
-    if (!xyzw) {
-        MD_LOG_ERROR("Missing required input: in_out_xyzw");
-        return false;
-    }
-
-    if (!bond) {
-        MD_LOG_ERROR("Missing bond topology");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-    md_temp_scope_t temp_scope = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-    const bool result = unwrap_topology_vec4(xyzw, indices, count, bond, cell, temp_arena);
-    md_temp_end(temp_scope);
-    return result;
-}
-
-void md_util_system_unwrap_structures(md_system_t* sys) {
+void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
+    ASSERT(state);
     ASSERT(sys);
 
     for (size_t i = 0; i < sys->structure.count; ++i) {
         md_structure_t structure = {0};
-        md_structure_extract(&structure, &sys->structure, i);
-        md_util_unwrap_structure(sys->atom.x, sys->atom.y, sys->atom.z, &structure, &sys->unitcell);
+        if (md_structure_extract(&structure, &sys->structure, i)) {
+            md_util_unwrap_structure(state, &structure);
+        }
     }
 }
 
@@ -8992,9 +8866,9 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
         mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
-        for (size_t i = 1; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             vec4_t pos = xyzw[i];
-            deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
+            deperiodize_triclinic(pos.elem, ref_xyz.elem, MD_AS_CONST_MAT3(A.elem));
             xyzw[i] = pos;
         }
         return true;
@@ -9002,6 +8876,185 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 
     // The unit cell is not initialized or is simply not periodic
     return false;
+}
+
+// PERIODIC IMAGE SELECTION
+//
+// Everything below shares one idea: the estimator picks the periodic image of each point, choosing
+// whichever image minimises the estimator's own objective. That is strictly better than deciding the
+// images up front and estimating afterwards, because a preprocessing pass has to commit using some
+// criterion unrelated to what is about to be measured.
+//
+// The payoff is stability. Every image choice has a margin - how far the deciding quantity sits from
+// the half cell flip boundary - and the margin is what determines whether a point flips images
+// between two nearly identical frames. Deciding by distance to a centre gives an atom at radius r a
+// margin of only (L/2 - r), and it is worst for the outer atoms which dominate a rotational fit.
+// Deciding by fit residual gives a margin of nearly L/2, because minimising the residual is the
+// whole point. The method that is most accurate here is also the one that is hardest to flip.
+
+// Decoded cell, hoisted out of the inner loops.
+typedef struct pbc_image_t {
+    bool   periodic;
+    bool   ortho;
+    vec4_t ext;   // orthorhombic extent, w = 0 so the weight lane is carried through untouched
+    mat3_t A;     // triclinic basis
+} pbc_image_t;
+
+static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
+    pbc_image_t im = {0};
+    if (!cell) {
+        return im;
+    }
+    if (md_unitcell_is_orthorhombic(cell)) {
+        vec3_t ext = {0};
+        md_unitcell_diag_extract_float(ext.elem, cell);
+        im.periodic = true;
+        im.ortho    = true;
+        im.ext      = vec4_from_vec3(ext, 0);
+    } else if (md_unitcell_is_triclinic(cell)) {
+        md_unitcell_A_extract_float(im.A.elem, cell);
+        im.periodic = true;
+    }
+    return im;
+}
+
+// The image of 'pos' nearest to 'ref'. The weight in w is carried through untouched.
+static inline vec4_t pbc_image_nearest(const pbc_image_t* im, vec4_t pos, vec3_t ref) {
+    if (!im->periodic) {
+        return pos;
+    }
+    if (im->ortho) {
+        return vec4_deperiodize_ortho(pos, vec4_from_vec3(ref, 0), im->ext);
+    }
+    vec4_t out = pos;
+    deperiodize_triclinic(out.elem, ref.elem, im->A.elem);
+    return out;
+}
+
+// Squared distance below which two placements count as the same image. Generous: a genuine image
+// change moves a point by a whole cell vector, so anything smaller is float noise.
+#define PBC_IMAGE_EPS_SQ 1.0e-6f
+
+// Alternation is a fixed point iteration and settles almost immediately - the assignment is usually
+// stable on the second pass. The cap only bounds pathological input.
+#define PBC_MAX_ITER 8
+
+bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com) {
+    if (!in_out_xyzw) {
+        MD_LOG_ERROR("Missing required input: in_out_xyzw");
+        return false;
+    }
+
+    if (count == 0) {
+        if (out_com) *out_com = vec3_zero();
+        return true;
+    }
+
+    const pbc_image_t im = pbc_image_init(cell);
+
+    if (!im.periodic) {
+        if (out_com) *out_com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+        return true;
+    }
+
+    // Seed with the circular mean. It needs no image assignment to compute, so unlike an arbitrary
+    // reference point it cannot be biased by whichever images the coordinates happened to arrive in.
+    vec3_t com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, cell);
+
+    for (int iter = 0; iter < PBC_MAX_ITER; ++iter) {
+        bool stable = true;
+        for (size_t i = 0; i < count; ++i) {
+            const vec4_t before = in_out_xyzw[i];
+            const vec4_t after  = pbc_image_nearest(&im, before, com);
+            if (vec3_distance_squared(vec3_from_vec4(before), vec3_from_vec4(after)) > PBC_IMAGE_EPS_SQ) {
+                stable = false;
+            }
+            in_out_xyzw[i] = after;
+        }
+
+        // Recompute the centre from the placed points. Both halves decrease the same objective.
+        com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+
+        if (stable) {
+            break;
+        }
+    }
+
+    if (out_com) *out_com = com;
+    return true;
+}
+
+float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                        const vec4_t* ref_xyzw, vec3_t ref_com,
+                                        const vec4_t* trg_xyzw, size_t count,
+                                        const md_unitcell_t* cell)
+{
+    ASSERT(ref_xyzw);
+    ASSERT(trg_xyzw);
+
+    if (out_rot) *out_rot = mat3_ident();
+    if (out_com) *out_com = vec3_zero();
+
+    if (count == 0) {
+        return 0.0f;
+    }
+
+    const pbc_image_t im = pbc_image_init(cell);
+
+    md_temp_scope_t temp = md_temp_begin();
+
+    // The caller can have the placed points if it wants them (rmsd does); otherwise they are scratch.
+    vec4_t* cur = out_trg_xyzw ? out_trg_xyzw : md_temp_alloc_array(temp, vec4_t, count);
+
+    // Image free seed, safe to compute before any assignment exists.
+    vec3_t com = md_util_com_compute_vec4(trg_xyzw, NULL, count, im.periodic ? cell : NULL);
+    mat3_t rot = mat3_ident();
+
+    // Alternating minimisation of  sum_k w_k |R (q_k + A n_k - c) - p_k|^2  over R, c and n_k.
+    // Each block has a closed form optimum given the other, so the objective decreases monotonically
+    // and the discrete part reaches a genuine fixed point rather than a tolerance.
+    bool stable = false;
+    for (int iter = 0; iter < PBC_MAX_ITER && !stable; ++iter) {
+        // rot maps the target frame onto the reference frame, so its transpose carries the reference
+        // template back out into the target's frame, which is where the prediction has to live.
+        const mat3_t rot_inv = mat3_transpose(rot);
+
+        stable = (iter > 0);
+        for (size_t i = 0; i < count; ++i) {
+            const vec3_t p    = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
+            const vec3_t pred = vec3_add(com, mat3_mul_vec3(rot_inv, p));
+            const vec4_t placed = pbc_image_nearest(&im, trg_xyzw[i], pred);
+
+            if (iter > 0 && vec3_distance_squared(vec3_from_vec4(cur[i]), vec3_from_vec4(placed)) > PBC_IMAGE_EPS_SQ) {
+                stable = false;
+            }
+            cur[i] = placed;
+        }
+
+        // Refit. Both are the exact optimum for this assignment.
+        com = md_util_com_compute_vec4(cur, NULL, count, NULL);
+
+        const vec4_t* const sets[2] = { ref_xyzw, cur };
+        const vec3_t        coms[2] = { ref_com,  com };
+        rot = mat3_extract_rotation(mat3_cross_covariance_matrix_vec4(sets, NULL, count, coms));
+    }
+
+    // The largest per point residual is the distance to an ambiguous image choice. Small compared to
+    // half a cell means the assignment above is not close to flipping.
+    float max_dist_sq = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t p = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
+        const vec3_t q = mat3_mul_vec3(rot, vec3_sub(vec3_from_vec4(cur[i]), com));
+        const float  d = vec3_distance_squared(p, q);
+        max_dist_sq = MAX(max_dist_sq, d);
+    }
+
+    md_temp_end(temp);
+
+    if (out_rot) *out_rot = rot;
+    if (out_com) *out_com = com;
+
+    return sqrtf(max_dist_sq);
 }
 
 double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {
@@ -9108,7 +9161,7 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
                 simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(A.elem[1][1]));
                 simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(A.elem[2][2]));
             } else if (tricl) {
-                simd_deperiodize_triclinic(x1, x0, A.elem);
+                simd_deperiodize_triclinic(x1, x0, MD_AS_CONST_MAT3(A.elem));
             }
 
             md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
@@ -9197,9 +9250,9 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
             x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
             x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
         } else if (tricl) {
-            simd_deperiodize_triclinic(x0, x1, A.elem);
-            simd_deperiodize_triclinic(x2, x1, A.elem);
-            simd_deperiodize_triclinic(x3, x2, A.elem);
+            simd_deperiodize_triclinic(x0, x1, MD_AS_CONST_MAT3(A.elem));
+            simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
+            simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
         }
 
         const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
@@ -9292,7 +9345,7 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) {
+bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags) {
     ASSERT(sys);
 
     if (sys->atom.count == 0) return false;
@@ -9315,11 +9368,11 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
 
     if (cg) {
-        flags &= ~MD_UTIL_POSTPROCESS_BOND_BIT;
-        flags &= ~MD_UTIL_POSTPROCESS_HBOND_BIT;
+        flags &= ~MD_UTIL_INFER_BOND_BIT;
+        flags &= ~MD_UTIL_INFER_HBOND_BIT;
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_COLOR_BIT) {
+    if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
             for (size_t i = 1; i < sys->atom.type.count; ++i) {
                 uint32_t color = sys->atom.type.color[i];
@@ -9350,13 +9403,13 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
         MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
    
-    if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
-        if (sys->bond.count == 0) {
-            md_util_system_infer_covalent_bonds(sys);
-        }
+    if (flags & MD_UTIL_INFER_BOND_BIT) {
+        // Setting the bit means "derive this", unconditionally. A format which supplies its own
+        // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
+        md_util_system_infer_covalent_bonds(sys, state);
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
+    if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
         if (sys->bond.count) {
             md_util_system_infer_structures(sys);
             md_util_system_infer_rings(sys);
@@ -9364,27 +9417,34 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
     
 #if 0
-    if (flags & MD_UTIL_POSTPROCESS_ORDER_BIT) {
+    if (flags & MD_UTIL_INFER_ORDER_BIT) {
         compute_covalent_bond_order(&sys->bond, &sys->atom, &sys->ring);
     }
 #endif
 
-    if (flags & MD_UTIL_POSTPROCESS_INSTANCE_BIT) {
+    if (flags & MD_UTIL_INFER_INSTANCE_BIT) {
+        // NOT unconditional, unlike the other bits. A loader that had auth_asym_ids in scope
+        // derived better entities than this call can: md_util_system_infer_entity_and_instance(sys,
+        // NULL) has no labels to work from and would replace real chain identity with a guess.
+        // Overwriting here destroys information that cannot be recovered from the system alone.
         if (sys->instance.count == 0 || sys->entity.count == 0) {
             md_util_system_infer_entity_and_instance(sys, NULL);
         }
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
+    if (flags & MD_UTIL_INFER_HBOND_BIT) {
 #if 0
         if (sys->atom.count > 0 && sys->bond.count > 0) {
             md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
-            md_util_hydrogen_bond_infer(&sys->hydrogen_bond, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, 3.0, 150.0);
+            // Candidates above are derived from bonds and elements; the pairs below need geometry.
+            if (md_system_state_has_coords(state)) {
+                md_util_hydrogen_bond_infer(&sys->hydrogen_bond, state->x, state->y, state->z, &state->unitcell, 3.0, 150.0);
+            }
         }
 #endif
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
+    if (flags & MD_UTIL_INFER_BACKBONE_BIT) {
         if (sys->instance.count && sys->atom.type_idx) {
             // Compute backbone data
             // 
@@ -9454,8 +9514,12 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
                 md_array_resize(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, alloc);
 
                 if (sys->protein_backbone.segment.count > 0) {
-                    md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
-                    md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, sys->atom.x, sys->atom.y, sys->atom.z, &sys->unitcell, &sys->protein_backbone);
+                    // Backbone identification above is topological; angles and secondary structure
+                    // are geometric and are only valid for the state they were computed from.
+                    if (md_system_state_has_coords(state)) {
+                        md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
+                        md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
+                    }
                     md_util_backbone_ramachandran_classify(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, sys);
                 }
             }
@@ -9523,12 +9587,19 @@ bool md_util_system_postprocess(md_system_t* sys, md_postprocess_flags_t flags) 
     }
 
 #if 0
-    if ((flags & MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT) && 
-        (sys->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
+    if ((flags & MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT) && 
+        (state->unitcell.flags != 0) && md_structure_count(&sys->structure) > 0)
     {
         md_util_system_unwrap(sys);
     }
 #endif
+
+    // Record the state the topology above was inferred from. Written here, as part of performing
+    // the inference, so it cannot disagree with what it produced.
+    if (state != &sys->reference) {
+        sys->reference.alloc = sys->alloc;
+        md_system_state_copy(&sys->reference, state);
+    }
 
     md_temp_end(temp_scope);
     return true;

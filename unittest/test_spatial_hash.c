@@ -203,7 +203,7 @@ UTEST(spatial_hash, small_periodic) {
 
     md_unitcell_t cell = md_unitcell_from_extent(10, 0, 0);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, 10);
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, 10);
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
     md_spatial_acc_init(&acc, &stream, 10.0, &cell, 0);
     
@@ -228,7 +228,7 @@ UTEST(spatial_hash, aabb_periodic_ortho) {
     float z[] = {5.00f, 5.00f, 5.00f, 5.00f};
 
     md_unitcell_t cell = md_unitcell_from_extent(10.0, 10.0, 10.0);
-    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, ARRAY_SIZE(x));
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, ARRAY_SIZE(x));
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
@@ -275,7 +275,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic) {
     float y[3] = {(float)x0[1], (float)x1[1], (float)x2[1]};
     float z[3] = {(float)x0[2], (float)x1[2], (float)x2[2]};
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, 3);
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, 3);
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
@@ -320,7 +320,7 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
         z[i] = (float)rnd_rng(0.0, Lz);
     }
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, N);
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
@@ -406,7 +406,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
         z[i] = (float)p[2];
     }
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, N);
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
 
@@ -510,7 +510,8 @@ UTEST(spatial_hash, n2) {
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
 
     {
 
@@ -560,7 +561,7 @@ UTEST(spatial_hash, n2) {
             z[i] = cz;
         }
 
-        md_coord_stream_t stream = md_coord_stream_create_soa(x, y, z, NULL, TEST_COUNT);
+        md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, TEST_COUNT);
         md_spatial_acc_t sa = { .alloc = alloc };
 		md_spatial_acc_init(&sa, &stream, 6.0, &test_cell, 0);
 
@@ -644,7 +645,7 @@ UTEST(spatial_hash, n2) {
     }
 
 #if 1
-    md_unitcell_t cell = sys.unitcell;
+    md_unitcell_t cell = sys_state.unitcell;
     const size_t expected_count = 3711879;
 
     double G[3][3], I[3][3];
@@ -656,7 +657,7 @@ UTEST(spatial_hash, n2) {
 
     // Spatial acc implementation
     start = md_time_now();
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
     md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
@@ -685,7 +686,7 @@ UTEST(spatial_hash, n2) {
     // This is so slow that we don't want to run it by default, but it can be useful for validating the reference implementation
     // Brute force
     start = md_time_current();
-    size_t bf_count = do_brute_force_double(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, 5.0, G, I, NULL, NULL);
+    size_t bf_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, 5.0, G, I, NULL, NULL);
     end = md_time_current();
     printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);
@@ -718,18 +719,19 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     md_allocator_i* alloc = utest_fixture->arena;
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
     
     srand(31);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract_double(G, &sys.unitcell);
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    md_unitcell_I_extract_double(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys_state.unitcell);
+    md_unitcell_A_extract_double(A, &sys_state.unitcell);
+    md_unitcell_I_extract_double(I, &sys_state.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -741,7 +743,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         int ref_count = 0;
         const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
 
@@ -752,7 +754,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 
         uint32_t sa_count = 0;
         vec3_t pos = vec3_set(x0[0], x0[1], x0[2]);
-        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {           
@@ -772,17 +774,18 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_allocator_i* alloc = utest_fixture->arena;
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
 
     srand(31);
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract_double(G, &sys.unitcell);
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    md_unitcell_I_extract_double(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys_state.unitcell);
+    md_unitcell_A_extract_double(A, &sys_state.unitcell);
+    md_unitcell_I_extract_double(I, &sys_state.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -795,7 +798,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         int ref_count = 0;
         const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < rad2) {
@@ -804,7 +807,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         }
 
         uint32_t sa_count = 0;
-        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
@@ -824,18 +827,19 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_allocator_i* alloc = utest_fixture->arena;
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract_double(G, &sys.unitcell);
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    md_unitcell_I_extract_double(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys_state.unitcell);
+    md_unitcell_A_extract_double(A, &sys_state.unitcell);
+    md_unitcell_I_extract_double(I, &sys_state.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -848,7 +852,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
         int ref_count = 0;
         const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < rad2) {
@@ -857,7 +861,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
         }
 
         uint32_t sa_count = 0;
-        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {           
@@ -880,18 +884,19 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
     const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract_double(G, &sys.unitcell);
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    md_unitcell_I_extract_double(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys_state.unitcell);
+    md_unitcell_A_extract_double(A, &sys_state.unitcell);
+    md_unitcell_I_extract_double(I, &sys_state.unitcell);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -906,7 +911,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
 #if 0
 		// Do N^2 test as well to validate the reference implementation
-        ref_count = do_brute_force_double(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, radius, G, I, NULL, NULL);
+        ref_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, radius, G, I, NULL, NULL);
 		md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
         EXPECT_NEAR(ref_count, sa_count, 2);
 #endif
@@ -914,7 +919,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
         ref_count = 0;
         const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < rad2) {
@@ -923,7 +928,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
         }
 
         sa_count = 0;
-        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {
@@ -944,18 +949,19 @@ UTEST_F(spatial_hash, npt_triclinic) {
     md_allocator_i* alloc = utest_fixture->arena;
 
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_create_soa(sys.atom.x, sys.atom.y, sys.atom.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys.unitcell, 0);
+    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
     double G[3][3], A[3][3], I[3][3];
-    md_unitcell_G_extract_double(G, &sys.unitcell);
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    md_unitcell_I_extract_double(I, &sys.unitcell);
+    md_unitcell_G_extract_double(G, &sys_state.unitcell);
+    md_unitcell_A_extract_double(A, &sys_state.unitcell);
+    md_unitcell_I_extract_double(I, &sys_state.unitcell);
 
 	EXPECT_EQ((float)G[0][0], acc.G00);
 	EXPECT_EQ((float)G[1][1], acc.G11);
@@ -1002,8 +1008,8 @@ UTEST_F(spatial_hash, npt_triclinic) {
         int i0 = 835;
         int i1 = 6160;
 
-        double x0[3] = { sys.atom.x[i0], sys.atom.y[i0], sys.atom.z[i0] };
-		double x1[3] = { sys.atom.x[i1], sys.atom.y[i1], sys.atom.z[i1] };
+        double x0[3] = { sys_state.x[i0], sys_state.y[i0], sys_state.z[i0] };
+		double x1[3] = { sys_state.x[i1], sys_state.y[i1], sys_state.z[i1] };
 
         double s0[3];
         double s1[3];
@@ -1014,7 +1020,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         double d2_ref = distance_ref_mic27(G, s0, s1);
 
 		vec3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
-        md_util_min_image_vec3(&dx, 1, &sys.unitcell);
+        md_util_min_image_vec3(&dx, 1, &sys_state.unitcell);
         double d2 = dx.x * dx.x + dx.y * dx.y + dx.z * dx.z;
 
 		EXPECT_NEAR(d2_ref, d2, 1.0e-4);
@@ -1033,7 +1039,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
 #if 0
         // Do N^2 test as well to validate the reference implementation
-        ref_count = do_brute_force_double(sys.atom.x, sys.atom.y, sys.atom.z, sys.atom.count, radius, G, I, NULL, NULL);
+        ref_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, radius, G, I, NULL, NULL);
         md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
         EXPECT_NEAR(ref_count, sa_count, 2);
 #endif
@@ -1041,7 +1047,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         ref_count = 0;
         const double rad2 = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys.atom.x[i], sys.atom.y[i], sys.atom.z[i] };
+            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < rad2) {
@@ -1050,7 +1056,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         }
 
         sa_count = 0;
-        md_coord_stream_t ext_stream = md_coord_stream_create_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
+        md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
         if (sa_count != ref_count) {

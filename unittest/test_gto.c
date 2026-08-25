@@ -531,10 +531,16 @@ done:
     return max_delta;
 }
 
+/* Report *why* the device could not be created rather than a bare "skipped". */
+static const char* gto_test_no_device_reason(void) {
+    const char* err = md_gpu_last_error();
+    return (err && err[0]) ? err : "No GPU device available";
+}
+
 UTEST(gto, h2o_lumo_gpu) {
     md_gpu_device_t device = md_gpu_device_create(NULL);
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gto_test_no_device_reason());
     }
 
     md_temp_scope_t temp = md_temp_begin();

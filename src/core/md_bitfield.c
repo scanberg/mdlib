@@ -800,7 +800,6 @@ bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bit
 
 size_t md_bitfield_iter_extract_indices(int32_t* buf, size_t cap, md_bitfield_iter_t it) {
     ASSERT(md_bitfield_validate(it.bf));
-    ASSERT(cap >= 0);
 
     if (!buf || cap == 0) return 0;
 

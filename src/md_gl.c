@@ -926,8 +926,9 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         gl_mol->buffer[GL_BUFFER_ATOM_RADIUS]          = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 1,   NULL, GL_STATIC_DRAW);
         gl_mol->buffer[GL_BUFFER_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(uint8_t),     NULL, GL_STATIC_DRAW);
 
-        if (sys->atom.x && sys->atom.y && sys->atom.z) {
-            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, sys->atom.x, sys->atom.y, sys->atom.z, 0);
+        // Seed with the reference configuration; callers push per frame positions afterwards.
+        if (md_system_state_has_coords(&sys->reference)) {
+            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, sys->reference.x, sys->reference.y, sys->reference.z, 0);
         }
         md_gl_mol_zero_velocity(handle);
 

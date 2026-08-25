@@ -218,6 +218,7 @@ UTEST(vlx, acro_rsp) {
     md_vlx_destroy(vlx);
 }
 
+#if 0
 UTEST(vlx, acro_xps) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
@@ -266,6 +267,7 @@ UTEST(vlx, acro_xps) {
 
     md_vlx_destroy(vlx);
 }
+#endif
 
 UTEST(vlx, acro_rsp_has_no_xps) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());

@@ -170,8 +170,9 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_gro_data_t));
 }
 
-bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* data) {
+bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_gro_data_t* data) {
     ASSERT(sys);
+    ASSERT(state);
     ASSERT(data);
 
     if (!sys->alloc) {
@@ -179,16 +180,19 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
         return false;
     }
 
+    if (!state || !state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
+        return false;
+    }
+
     md_system_reset(sys);
+    md_system_state_init(state, data->num_atoms);
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     str_t* atom_names = md_temp_alloc_array(temp, str_t, data->num_atoms);
 
     const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    md_array_resize(sys->atom.x, capacity, sys->alloc);
-    md_array_resize(sys->atom.y, capacity, sys->alloc);
-    md_array_resize(sys->atom.z, capacity, sys->alloc);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags, capacity, sys->alloc);
 
@@ -217,9 +221,9 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
 
         sys->atom.count += 1;
         atom_names[i] = atom_name;
-        sys->atom.x[i] = x;
-        sys->atom.y[i] = y;
-        sys->atom.z[i] = z;
+        state->x[i] = x;
+        state->y[i] = y;
+        state->z[i] = z;
         sys->atom.type_idx[i] = 0;
         sys->atom.flags[i] = 0;
 
@@ -235,35 +239,37 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, const md_gro_data_t* 
         box[i][2] = data->box[i][2] * NM_TO_ANGSTROM;
     }
 
-    sys->unitcell = md_unitcell_from_matrix_float(box);
-	sys->initial_unitcell = sys->unitcell;
+    state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(box));
 
     md_util_system_infer_atom_types(sys, atom_names);
-    md_util_system_infer_covalent_bonds(sys);
+    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving comp_flags with it.
+    md_util_system_infer_covalent_bonds(sys, state);
     md_util_system_infer_comp_flags(sys);
 
     md_temp_end(temp);
+    state->num_atoms = sys->atom.count;
 
     return true;
 }
 
-bool md_gro_system_init_from_file(md_system_t* sys, str_t filename) {
+bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     
     md_gro_data_t data = {0};
-    bool success = md_gro_data_parse_file(&data, filename, temp_alloc) && md_gro_system_init_from_data(sys, &data);
+    bool success = md_gro_data_parse_file(&data, filename, temp_alloc) && md_gro_system_init_from_data(sys, state, &data);
 
     md_temp_end(temp);
     return success;
 }
 
-bool md_gro_system_init_from_str(md_system_t* sys, str_t str) {
+bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     md_gro_data_t data = {0};
-    bool success = md_gro_data_parse_str(&data, str, temp_alloc) && md_gro_system_init_from_data(sys, &data);
+    bool success = md_gro_data_parse_str(&data, str, temp_alloc) && md_gro_system_init_from_data(sys, state, &data);
 
     md_temp_end(temp);
     return success;

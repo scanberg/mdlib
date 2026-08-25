@@ -770,7 +770,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
     return (field_flags == (CELL_FIELD_A | CELL_FIELD_B | CELL_FIELD_C | CELL_FIELD_ALPHA | CELL_FIELD_BETA | CELL_FIELD_GAMMA));
 }
 
-static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffered_reader_t* reader, md_allocator_i* alloc) {
     bool result = false;
     bool atom_site_parsed = false;
     bool cell_parsed = false;
@@ -889,9 +889,9 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         size_t num_atoms = md_array_size(atom_entries);
         size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-        md_array_ensure(sys->atom.x, reserve_size, alloc);
-        md_array_ensure(sys->atom.y, reserve_size, alloc);
-        md_array_ensure(sys->atom.z, reserve_size, alloc);
+        md_array_ensure(out_state->x, reserve_size, out_state->alloc);
+        md_array_ensure(out_state->y, reserve_size, out_state->alloc);
+        md_array_ensure(out_state->z, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
@@ -961,13 +961,15 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
             prev_inst_key = inst_key;
             prev_comp_key = comp_key;
  
-            sys->atom.count += 1;
-            md_array_push_no_grow(sys->atom.x, atom_entries[i].x);
-            md_array_push_no_grow(sys->atom.y, atom_entries[i].y);
-            md_array_push_no_grow(sys->atom.z, atom_entries[i].z);
+            md_array_push_no_grow(out_state->x, atom_entries[i].x);
+            md_array_push_no_grow(out_state->y, atom_entries[i].y);
+            md_array_push_no_grow(out_state->z, atom_entries[i].z);
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
             md_array_push_no_grow(sys->atom.flags, flags);
         }
+
+        sys->atom.count = md_array_size(out_state->x);
+        out_state->num_atoms = sys->atom.count;
 
         if (sys->component.atom_offset) {
             md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
@@ -977,14 +979,14 @@ static bool mmcif_parse(md_system_t* sys, md_buffered_reader_t* reader, md_alloc
         }
     }
 
-    sys->unitcell = md_unitcell_none();
+    out_state->unitcell = md_unitcell_none();
     if (cell_parsed) {
-        sys->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+        out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-	sys->initial_unitcell = sys->unitcell;
-
-	md_util_system_infer_covalent_bonds(sys);
+    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving comp_flags with it.
+    md_util_system_infer_covalent_bonds(sys, out_state);
     md_util_system_infer_comp_flags(sys);
     if (sys->entity.count == 0 && comp_auth_asym_ids) {
         // Fallback path if no entities are defined within the cif
@@ -998,8 +1000,9 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, str_t str) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
     ASSERT(sys);
+    ASSERT(state);
 
     if (str_empty(str)) {
         MD_LOG_ERROR("Input string is empty");
@@ -1011,14 +1014,23 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, str_t str) {
         return false;
     }
 
+    if (!state || !state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
+        return false;
+    }
+
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    return mmcif_parse(sys, &reader, sys->alloc);
+    bool result = mmcif_parse(sys, state, &reader, sys->alloc);
+    state->num_atoms = sys->atom.count;
+    return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, str_t filename) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
     ASSERT(sys);
+    ASSERT(state);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1031,14 +1043,21 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, str_t filename) {
         return false;
     }
 
+    if (!state || !state->alloc) {
+        MD_LOG_ERROR("State allocator not set");
+        return false;
+    }
+
     md_system_reset(sys);
+    md_system_state_init(state, 0);
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     const size_t cap = MEGABYTES(1);
     char* buf = md_temp_alloc(temp, cap);
 
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-    bool result = mmcif_parse(sys, &reader, sys->alloc);
+    bool result = mmcif_parse(sys, state, &reader, sys->alloc);
+    state->num_atoms = sys->atom.count;
 
     md_temp_end(temp);
     md_file_close(&file);

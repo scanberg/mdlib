@@ -22,10 +22,10 @@ UTEST(trr, trajectory_i) {
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
 
     for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
     }
 
     md_temp_end(temp);
@@ -46,11 +46,11 @@ UTEST(trr, trajectory_reader_i) {
     md_trajectory_reader_i reader = {0};
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
-    md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
-    EXPECT_EQ(6495, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
-    EXPECT_EQ(6495, header.num_atoms);
+    md_system_state_t state = {0, x, y, z, {0}};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
+    EXPECT_EQ(6495, state.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
+    EXPECT_EQ(6495, state.num_atoms);
 
     md_trajectory_reader_free(&reader);
     md_temp_end(temp);
@@ -73,17 +73,17 @@ UTEST(trr, frame_boundary_conditions) {
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
 
-    md_trajectory_frame_header_t header;
+    md_system_state_t state = {0, x, y, z, {0}};
 
     // Test negative frame index
-    EXPECT_FALSE(md_trajectory_load_frame(traj, -1, &header, x, y, z));
+    EXPECT_FALSE(md_trajectory_load_frame(traj, -1, &state));
 
     // Test frame index out of bounds
-    EXPECT_FALSE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj), &header, x, y, z));
+    EXPECT_FALSE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj), &state));
 
     // Test valid boundary frames
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
-    EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &state));
+    EXPECT_TRUE(md_trajectory_load_frame(traj, md_trajectory_num_frames(traj) - 1, &state));
 
     md_temp_end(temp);
     md_trajectory_free(traj);

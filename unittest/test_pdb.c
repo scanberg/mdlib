@@ -36,7 +36,8 @@ UTEST(pdb, tryptophan) {
     EXPECT_EQ(pdb_data.num_atom_coordinates, 28);
 
     md_system_t sys = {.alloc = alloc};
-    EXPECT_TRUE(md_pdb_system_init_from_data(&sys, &pdb_data, MD_PDB_OPTION_NONE));
+    md_system_state_t sys_state = { .alloc = alloc };
+    EXPECT_TRUE(md_pdb_system_init_from_data(&sys, &sys_state, &pdb_data, MD_PDB_OPTION_NONE));
 
     md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
@@ -91,7 +92,8 @@ UTEST(pdb, trajectory_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_system_t sys = {.alloc = arena};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_system_state_t sys_state = { .alloc = arena };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
 
     md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
@@ -105,8 +107,8 @@ UTEST(pdb, trajectory_i) {
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
     for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        md_trajectory_frame_header_t header = {0};
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        md_system_state_t state = {0, x, y, z, {0}};
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
     }
 
     md_system_free(&sys);
@@ -118,7 +120,8 @@ UTEST(pdb, trajectory_reader_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_system_t sys = { .alloc = arena };
-    md_pdb_system_init_from_file(&sys, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    md_system_state_t sys_state = { .alloc = arena };
+    md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
     md_trajectory_i* traj = sys.trajectory;
     ASSERT_TRUE(traj);
 
@@ -131,11 +134,11 @@ UTEST(pdb, trajectory_reader_i) {
     md_trajectory_reader_i reader = {0};
     ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
 
-    md_trajectory_frame_header_t header = {0};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &header, x, y, z));
-    EXPECT_EQ(153, header.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &header, x, y, z));
-    EXPECT_EQ(153, header.num_atoms);
+    md_system_state_t state = {0, x, y, z, {0}};
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
+    EXPECT_EQ(153, state.num_atoms);
+    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
+    EXPECT_EQ(153, state.num_atoms);
 
     md_trajectory_reader_free(&reader);
     md_system_free(&sys);
@@ -149,7 +152,8 @@ UTEST(pdb, create_system) {
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, arena));
     md_system_t sys = {.alloc = arena};
-    EXPECT_TRUE(md_pdb_system_init_from_data(&sys, &pdb_data, MD_PDB_OPTION_NONE));
+    md_system_state_t sys_state = { .alloc = arena };
+    EXPECT_TRUE(md_pdb_system_init_from_data(&sys, &sys_state, &pdb_data, MD_PDB_OPTION_NONE));
     ASSERT_EQ(sys.atom.count, pdb_data.num_atom_coordinates);
 
     EXPECT_EQ(1185, sys.component.count);
@@ -157,9 +161,9 @@ UTEST(pdb, create_system) {
     EXPECT_EQ(1, sys.entity.count);
 
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys.atom.x[i], pdb_data.atom_coordinates[i].x);
-        EXPECT_EQ(sys.atom.y[i], pdb_data.atom_coordinates[i].y);
-        EXPECT_EQ(sys.atom.z[i], pdb_data.atom_coordinates[i].z);
+        EXPECT_EQ(sys_state.x[i], pdb_data.atom_coordinates[i].x);
+        EXPECT_EQ(sys_state.y[i], pdb_data.atom_coordinates[i].y);
+        EXPECT_EQ(sys_state.z[i], pdb_data.atom_coordinates[i].z);
     }
 
     md_system_free(&sys);

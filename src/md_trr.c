@@ -661,7 +661,7 @@ static size_t trr_fetch_frame_data(const trr_t* trr, md_file_t file, int64_t fra
     return frame_size;
 }
 
-static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, size_t frame_data_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
 
@@ -684,24 +684,27 @@ static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, 
     float box[3][3];
     float* coords[3] = { x, y, z };
     result = trr_read_frame_header_buf(&buf, &sh) && trr_read_frame_data(&buf, &sh, box, coords, 0, 0);
-    if (result && header) {
-        // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-        // nm -> Ångström
-        for (int i = 0; i < 3; ++i) {
-            box[i][0] *= 10.0f;
-            box[i][1] *= 10.0f;
-            box[i][2] *= 10.0f;
+    if (result) {
+        if (num_atoms) {
+            *num_atoms = sh.natoms;
         }
-        header->num_atoms = sh.natoms;
-        header->index = sh.step;
-        header->timestamp = sh.t;
-        header->unitcell = md_unitcell_from_basis_parameters(box[0][0], box[1][1], box[2][2], box[0][1], box[0][2], box[1][2]);
+
+        if (cell) {
+            // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
+            // nm -> Ångström
+            for (int i = 0; i < 3; ++i) {
+                box[i][0] *= 10.0f;
+                box[i][1] *= 10.0f;
+                box[i][2] *= 10.0f;
+            }
+            *cell = md_unitcell_from_basis_parameters(box[0][0], box[1][1], box[2][2], box[0][1], box[0][2], box[1][2]);
+        }
     }
 
     return result;
 }
 
-static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool trr_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
     ASSERT(inst);
 
     trr_reader_t* reader = (trr_reader_t*)inst;
@@ -724,7 +727,7 @@ static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t f
             return false;
         }
 
-        result = trr_decode_frame_data(trr, reader->frame_data, frame_size, header, x, y, z);
+        result = trr_decode_frame_data(trr, reader->frame_data, frame_size, num_atoms, cell, x, y, z);
     }
 
     return result;
@@ -745,6 +748,27 @@ static void trr_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
     }
 
     MEMSET(reader, 0, sizeof(*reader));
+}
+
+// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
+// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
+// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
+static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
+    size_t num_atoms = 0;
+    md_unitcell_t cell = {0};
+    float* x = state ? state->x : NULL;
+    float* y = state ? state->y : NULL;
+    float* z = state ? state->z : NULL;
+    if (!trr_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
+        return false;
+    }
+    if (state) {
+        state->unitcell = cell;
+        if (state->num_atoms == 0) {
+            state->num_atoms = num_atoms;
+        }
+    }
+    return true;
 }
 
 static bool trr_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {

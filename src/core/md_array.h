@@ -42,13 +42,24 @@ typedef struct md_array_header_t {
 #define md_array_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), alloc, __FILE__, __LINE__))
 #define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), (n)) ? md_array_set_capacity((a), (n), alloc) : 0), (a) ? md_array_header(a)->size = (n) : 0)
 #define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), (n)) ? md_array_grow((a), (n), alloc) : 0)
-#define md_array_extend(a, n, alloc)    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), md_array_header(a)->size += (n), &((a)[md_array_header(a)->size - (n)])) : 0)
+#define md_array_extend(a, n, alloc)    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), md_array_header(a)->size += (n), &((a)[md_array_header(a)->size - (n)])) : 0)
 
+
+// md_array_ensure(a, n, ...) with n >= 1 leaves the array non NULL: a NULL array has capacity 0, so
+// the grow always runs, and md_array_set_capacity_internal only yields NULL if the allocator failed.
+// The compiler cannot see that. It follows the allocator's NULL return into the header arithmetic
+// below, where (uint8_t*)NULL - sizeof(header) reads as a negative index off the array, and GCC 12+
+// reports "array subscript -1 is outside array bounds" at every call site (MSVC's C6011/C6387 are
+// the same false positive, suppressed per macro below). MD_ASSUME states the invariant instead.
+//
+// Note what this does NOT do: it does not make allocation failure recoverable. These macros write
+// through the returned pointer immediately, so a failed allocation was already a crash - now it is
+// explicitly undefined rather than a fault at address -sizeof(header).
 #if MD_COMPILER_MSVC
 // Suppress incorrect warnings for macros in MSVC
 #define md_array_push(a, item, alloc) \
     __pragma(warning(suppress:6011 6387)) \
-    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[(md_array_header(a)->size)++] = (item))
+    (md_array_ensure((a), md_array_size(a) + 1, alloc), MD_ASSUME((a) != NULL), (a)[(md_array_header(a)->size)++] = (item))
 
 #define md_array_push_no_grow(a, item) \
     __pragma(warning(suppress:6011 6387)) \
@@ -56,12 +67,12 @@ typedef struct md_array_header_t {
 
 #define md_array_push_array(a, items, n, alloc) \
     __pragma(warning(suppress:6011 6387)) \
-    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 
 #else
-#define md_array_push(a, item, alloc) (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item)
+#define md_array_push(a, item, alloc) (md_array_ensure((a), md_array_size(a) + 1, alloc), MD_ASSUME((a) != NULL), (a)[md_array_header(a)->size++] = item)
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
-#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
 #define md_array_free(a, alloc)         ((a) ? (*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__) : 0)
 

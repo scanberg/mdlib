@@ -13,21 +13,21 @@ extern "C" {
 #endif
 
 typedef enum {
-    MD_UTIL_POSTPROCESS_NONE                = 0,
-    MD_UTIL_POSTPROCESS_COLOR_BIT           = 1u << 1,
-    MD_UTIL_POSTPROCESS_BOND_BIT            = 1u << 2,
-    MD_UTIL_POSTPROCESS_INSTANCE_BIT        = 1u << 3,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 1u << 4,
-    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 1u << 5,
-    //MD_UTIL_POSTPROCESS_ORDER_BIT           = 0x0200,
-	//MD_UTIL_POSTPROCESS_SECONDARY_STRUCTURE_BIT = 0x0400,
-    MD_UTIL_POSTPROCESS_HBOND_BIT           = 1u << 6,
-	MD_UTIL_POSTPROCESS_UNWRAP_STRUCTURE_BIT = 1u << 7,
+    MD_UTIL_INFER_NONE                = 0,
+    MD_UTIL_INFER_COLOR_BIT           = 1u << 1,
+    MD_UTIL_INFER_BOND_BIT            = 1u << 2,
+    MD_UTIL_INFER_INSTANCE_BIT        = 1u << 3,
+    MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
+    MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
+    //MD_UTIL_INFER_ORDER_BIT           = 0x0200,
+	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
+    MD_UTIL_INFER_HBOND_BIT           = 1u << 6,
+	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
 
-    MD_UTIL_POSTPROCESS_ALL                 = -1,
-} md_postprocess_flags_t;
+    MD_UTIL_INFER_ALL                 = -1,
+} md_infer_flags_t;
 
-ENUM_FLAGS(md_postprocess_flags_t)
+ENUM_FLAGS(md_infer_flags_t)
 
 // Access to the static arrays (preserved for direct access)
 const str_t* md_util_element_symbols(void);
@@ -54,7 +54,7 @@ bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys);
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
 // Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
 bool md_util_system_infer_comp_flags(md_system_t* sys);
@@ -74,11 +74,11 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
-void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const float* in_x, const float* in_y, const float* in_z, const md_unitcell_t* cell, const md_system_t* sys, struct md_allocator_i* alloc);
+void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-void md_util_system_infer_covalent_bonds(md_system_t* sys);
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -86,7 +86,7 @@ void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_syst
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_system_t* sys, double radius, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_state_t* state, double radius, const struct md_bitfield_t* viable_mask);
 
 // Infer rings formed by covalent bonds
 bool md_util_system_infer_rings(md_system_t* sys);
@@ -108,7 +108,14 @@ bool md_util_system_infer_structures(md_system_t* sys);
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_system_postprocess(struct md_system_t* sys, md_postprocess_flags_t flags);
+// Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
+// bonds) from the supplied state, and records that state as sys->reference.
+//
+// The state is an explicit parameter rather than read off the system so that the recorded
+// reference is by construction the input which produced the topology. Requires coordinates for
+// anything geometric; a state without them (a topology only format such as PSF) still yields the
+// purely graph derived parts, provided the bonds were supplied by the format.
+bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags);
 
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
@@ -130,19 +137,60 @@ void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unitcell_t
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
 
-// Applies periodic boundary conditions to all coordinates in a system
-bool md_util_system_pbc(md_system_t* sys);
+// Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
+bool md_util_system_pbc(md_system_state_t* state);
 
-// Unwraps a structure by traversing the supplied bond topology
-bool md_util_unwrap_structure(float* in_out_x, float* in_out_y, float* in_out_z, const md_structure_t* structure, const md_unitcell_t* cell);
-bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
-bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, const int32_t* in_idx, size_t count, const md_bond_data_t* bond, const md_unitcell_t* cell);
+// Unwraps a single structure by walking the parent hierarchy md_util_system_infer_structures
+// already computed. Linear, allocation free, and does not consult bond connectivity.
+void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure);
 
 // Unwraps all structures in a system
-void md_util_system_unwrap_structures(md_system_t* sys);
+void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);
+
+// PERIODIC IMAGE SELECTION
+//
+// These let the estimator choose each point's periodic image, using its own objective as the
+// criterion. Prefer them over unwrapping followed by estimation: unwrap has to commit to an image
+// assignment before it knows what is being measured, and it commits using topology, which is
+// unrelated to the measurement. These do not need topology at all, which is also why they work for
+// sparse selections and for points which are not atoms.
+//
+// @NOTE: md_util_unwrap_* remains the right tool for making a whole connected structure whole - for
+// rendering or export - where there is no estimator and no reference to align against, and where the
+// structure may be more extended than half a cell. That is the only case it is for.
+
+// Places a set of points in mutually consistent images and reports its centre.
+//
+// Seeded from the circular mean (which requires no image assignment, so it cannot be skewed by the
+// images the input arrived in) and then alternated to a fixed point: place every point in the image
+// nearest the centre, recompute the centre, repeat. Settles in one or two passes.
+//
+// Correct while the set spans less than half a cell. Beyond that no per point image choice can
+// represent it and the structure has to be unwrapped topologically instead.
+bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com);
+
+// Optimal rigid rotation between a reference set and a target set under periodic boundaries.
+//
+// Solves for the rotation, the target centre AND each target point's periodic image together:
+//     min over R, c, n_k  of  sum_k w_k | R (q_k + A n_k - c) - (p_k - ref_com) |^2
+// Given R and c the best n_k is the image nearest the predicted position, per point and in closed
+// form; given the n_k the best R and c is ordinary Kabsch. Alternating the two decreases the
+// objective monotonically and terminates when no point changes image.
+//
+// out_rot maps the TARGET frame onto the REFERENCE frame: R * (q - out_com) ~= p - ref_com.
+// out_trg_xyzw optionally receives the placed target points (weights preserved); pass NULL if only
+// the transform is wanted.
+//
+// Returns the largest per point residual, which is the margin to an ambiguous image choice. Small
+// against half a cell means the assignment is nowhere near flipping; approaching it means this
+// frame's alignment should not be trusted.
+float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                        const vec4_t* ref_xyzw, vec3_t ref_com,
+                                        const vec4_t* trg_xyzw, size_t count,
+                                        const md_unitcell_t* cell);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
