@@ -329,8 +329,12 @@ typedef struct md_mtl_hostfn_t {
 
 typedef struct md_mtl_retire_t {
     __unsafe_unretained id<MTLTexture> texture;
-    md_gpu_sync_t waits[8];
+    /* One entry per stream that had work when the texture was destroyed.
+       Sized to the stream count rather than a fixed cap: truncating this
+       silently retires the texture while a stream is still reading it. */
+    md_gpu_sync_t* waits;
     uint32_t       wait_count;
+    uint32_t       wait_capacity;   /* what md_free must be told */
 } md_mtl_retire_t;
 
 typedef struct md_gpu_device {
@@ -373,7 +377,7 @@ static uint32_t         md_mtl_device_count;
 #define MD_MTL_RETAIN(obj)  ((void)CFBridgingRetain(obj))
 #define MD_MTL_RELEASE(obj) do { if (obj) CFRelease((__bridge CFTypeRef)(obj)); } while (0)
 
-static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user);
+static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user, md_gpu_stream_t only);
 static bool     md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr, void** out_host, id<MTLBuffer>* out_buf, uint64_t* out_off);
 static bool     md_mtl_stream_submit(md_gpu_stream_t s);
 static uint64_t md_mtl_stream_completed(md_gpu_stream_t s);
@@ -893,7 +897,10 @@ void md_gpu_stream_sync(md_gpu_stream_t s) {
            Submissions are already in flight, so this is bounded. */
         md_thread_sleep(0);
     }
-    md_mtl_poll_internal(s->device, false);
+    /* Only this stream's completions. Another thread sitting in its own sync
+       must not be able to pop our entry and run the copy while we return and
+       read the destination -- and equally, we must not pop theirs. */
+    md_mtl_poll_internal(s->device, false, s);
 }
 
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync) {
@@ -918,9 +925,62 @@ static void md_mtl_stream_destroy_internal(md_gpu_stream_t s) {
     md_free(dev->alloc, s, sizeof(*s));
 }
 
+/* Drop every reference the device still holds to `s`, which is about to be
+   freed. The caller has already synchronised it, so anything that was waiting
+   on `s` is by definition satisfied -- the point is only to stop a freed
+   pointer being dereferenced later.
+
+   Three structures outlive a stream and hold one:
+
+     - md_mtl_block_t::free_stream, consulted by md_gpu_malloc and pool trim to
+       decide whether a block may be reused;
+     - md_mtl_hostfn_t::sync.stream, read on every poll;
+     - md_mtl_retire_t::waits[].stream, likewise.
+
+   Caller holds device_mutex. */
+static void md_mtl_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
+    /* Blocks freed on this stream become reusable outright. Note that leaving
+       them alone would not merely dangle: free_value is the value the *next*
+       submit would have signalled, which now never arrives, so the block would
+       also never be reused again. */
+    for (size_t i = 0; i < dev->pools.count; ++i) {
+        md_gpu_pool_t pool = ((md_gpu_pool_t*)dev->pools.data)[i];
+        for (size_t j = 0; j < pool->blocks.count; ++j) {
+            md_mtl_block_t* b = ((md_mtl_block_t**)pool->blocks.data)[j];
+            if (b->free_stream == s) { b->free_stream = NULL; b->free_value = 0; }
+        }
+    }
+
+    /* Clearing the sync makes the entry unconditionally ready, so a pending
+       user callback still fires on the next md_gpu_device_poll -- on the
+       thread that owns polling, as documented -- rather than being dropped
+       here or run on whichever thread happened to destroy the stream. */
+    md_mtl_hostfn_t* h = (md_mtl_hostfn_t*)dev->hostfns.data;
+    for (size_t i = 0; i < dev->hostfns.count; ++i) {
+        if (h[i].sync.stream == s) h[i].sync = (md_gpu_sync_t){0};
+    }
+
+    md_mtl_retire_t* r = (md_mtl_retire_t*)dev->retires.data;
+    for (size_t i = 0; i < dev->retires.count; ++i) {
+        for (uint32_t w = 0; w < r[i].wait_count; ) {
+            if (r[i].waits[w].stream == s) {
+                r[i].waits[w] = r[i].waits[r[i].wait_count - 1];
+                r[i].wait_count--;
+            } else {
+                ++w;
+            }
+        }
+    }
+}
+
 void md_gpu_stream_destroy(md_gpu_stream_t s) {
     if (!s || s->is_default) return;
     md_gpu_device_t dev = s->device;
+
+    /* Before anything else: this both flushes the stream and completes its own
+       device-to-host copies, which is what makes forgetting it safe below. */
+    md_gpu_stream_sync(s);
+
     md_mutex_lock(&dev->device_mutex);
     md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
     for (size_t i = 0; i < dev->streams.count; ++i) {
@@ -930,7 +990,9 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
             break;
         }
     }
+    md_mtl_forget_stream_locked(dev, s);
     md_mutex_unlock(&dev->device_mutex);
+
     md_mtl_stream_destroy_internal(s);
 }
 
@@ -1407,16 +1469,34 @@ void md_gpu_tex_destroy(md_gpu_tex_t tex, md_gpu_stream_t stream) {
     md_mutex_lock(&dev->device_mutex);
     md_mtl_retire_t* r = (md_mtl_retire_t*)md_mtl_vec_push(&dev->retires, dev->alloc);
     if (r) {
-        r->texture    = t->texture;
-        r->wait_count = 0;
+        r->texture       = t->texture;
+        r->waits         = NULL;
+        r->wait_count    = 0;
+        r->wait_capacity = (uint32_t)dev->streams.count;
+        if (r->wait_capacity > 0) {
+            r->waits = (md_gpu_sync_t*)md_alloc(dev->alloc, r->wait_capacity * sizeof(md_gpu_sync_t));
+        }
         md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
-        for (size_t i = 0; i < dev->streams.count && r->wait_count < 8; ++i) {
+        for (size_t i = 0; i < dev->streams.count && r->waits; ++i) {
             md_gpu_stream_t s = arr[i];
             uint64_t v = s->has_work ? s->next_value : s->submitted_value;
             if (v > 0) {
                 r->waits[r->wait_count].stream = s;
                 r->waits[r->wait_count].value  = v;
                 r->wait_count++;
+            }
+        }
+        if (!r->waits && dev->streams.count > 0) {
+            /* Out of host memory for the wait list. Waiting on nothing would
+               release the texture out from under a stream still reading it, so
+               stall instead. Spin rather than call md_gpu_stream_sync: we hold
+               device_mutex and sync polls, which takes it again. */
+            md_mtl_fail("out of memory recording texture retirement; waiting for the device");
+            for (size_t i = 0; i < dev->streams.count; ++i) {
+                md_gpu_stream_t s = arr[i];
+                while (s->submitted_value > 0 && md_mtl_stream_completed(s) < s->submitted_value) {
+                    md_thread_sleep(0);
+                }
             }
         }
     }
@@ -1521,6 +1601,13 @@ bool md_gpu_memcpy_to_tex_async(md_gpu_tex_t tex, const md_gpu_tex_region_t* reg
     uint64_t bpr = (uint64_t)extent.width * fi.bytes;
     uint64_t bpi = bpr * extent.height;
 
+    const uint64_t need = bpi * (uint64_t)extent.depth;
+    if ((uint64_t)size < need) {
+        return md_mtl_fail("texture copy region is %ux%ux%u (%llu bytes) but only %zu bytes were given",
+                           (unsigned)extent.width, (unsigned)extent.height, (unsigned)extent.depth,
+                           (unsigned long long)need, size);
+    }
+
     id<MTLBuffer> src_buf = nil; uint64_t src_off = 0;
     md_mtl_block_t* sblk = md_mtl_registry_find(dev, (uint64_t)(uintptr_t)src);
     if (sblk) {
@@ -1564,6 +1651,13 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t tex, const md_gpu_tex_
     md_mtl_fmt_t fi = md_mtl_format_info(t->desc.format);
     uint64_t bpr = (uint64_t)extent.width * fi.bytes;
     uint64_t bpi = bpr * extent.height;
+
+    const uint64_t need = bpi * (uint64_t)extent.depth;
+    if ((uint64_t)size < need) {
+        return md_mtl_fail("texture copy region is %ux%ux%u (%llu bytes) but only %zu bytes were given",
+                           (unsigned)extent.width, (unsigned)extent.height, (unsigned)extent.depth,
+                           (unsigned long long)need, size);
+    }
 
     md_mtl_block_t* dblk = md_mtl_registry_find(dev, (uint64_t)(uintptr_t)dst);
     id<MTLBuffer> dst_buf = nil; uint64_t dst_off = 0; void* staging_host = NULL;
@@ -2114,7 +2208,7 @@ static bool md_mtl_snapshot_complete(md_mtl_timeline_snapshot_t* snap, md_gpu_sy
     return completed >= sync.value;
 }
 
-static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user) {
+static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user, md_gpu_stream_t only) {
     uint32_t fired = 0;
     md_mtl_timeline_snapshot_t snap = {0};
     for (;;) {
@@ -2124,6 +2218,7 @@ static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user) {
         md_mtl_hostfn_t* arr = (md_mtl_hostfn_t*)dev->hostfns.data;
         for (size_t i = 0; i < dev->hostfns.count; ++i) {
             if (!fire_user && !arr[i].internal) continue;
+            if (only && arr[i].sync.stream != only) continue;
             if (!md_mtl_snapshot_complete(&snap, arr[i].sync)) continue;
             ready = arr[i];
             memmove(&arr[i], &arr[i + 1], (dev->hostfns.count - i - 1) * sizeof(*arr));
@@ -2150,6 +2245,7 @@ static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user) {
             md_mtl_end_residency(dev, r->texture);
             MD_MTL_RELEASE(r->texture);
         }
+        if (r->waits) md_free(dev->alloc, r->waits, r->wait_capacity * sizeof(md_gpu_sync_t));
         memmove(&rr[i], &rr[i + 1], (dev->retires.count - i - 1) * sizeof(*rr));
         dev->retires.count--;
     }
@@ -2159,7 +2255,7 @@ static uint32_t md_mtl_poll_internal(md_gpu_device_t dev, bool fire_user) {
 
 uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
     if (!dev) return 0;
-    return md_mtl_poll_internal(dev, true);
+    return md_mtl_poll_internal(dev, true, NULL);
 }
 
 /* =========================================================================
@@ -2309,7 +2405,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         md_gpu_stream_t s = ((md_gpu_stream_t*)dev->streams.data)[i];
         while (s->submitted_value > 0 && md_mtl_stream_completed(s) < s->submitted_value) md_thread_sleep(0);
     }
-    md_mtl_poll_internal(dev, true);
+    md_mtl_poll_internal(dev, true, NULL);
 
     if (dev->make_grid_kernel) md_gpu_kernel_destroy(dev->make_grid_kernel);
 
@@ -2336,6 +2432,12 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     md_mtl_vec_free(&dev->samplers, alloc);
 
     md_mtl_vec_free(&dev->hostfns,   alloc);
+    {   /* Any retire entry still queued owns its wait list. */
+        md_mtl_retire_t* rr = (md_mtl_retire_t*)dev->retires.data;
+        for (size_t i = 0; i < dev->retires.count; ++i) {
+            if (rr[i].waits) md_free(alloc, rr[i].waits, rr[i].wait_capacity * sizeof(md_gpu_sync_t));
+        }
+    }
     md_mtl_vec_free(&dev->retires,   alloc);
     md_mtl_vec_free(&dev->registry,  alloc);
     md_mtl_vec_free(&dev->live_bufs, alloc);
