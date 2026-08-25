@@ -105,6 +105,20 @@
 #   endif
 #endif
 
+// State an invariant the optimiser cannot derive on its own. Unlike ASSERT this is NOT a check:
+// nothing is tested at runtime in any build, and a false expression is undefined behaviour. Use it
+// only where the invariant is guaranteed by construction and the compiler's inability to see it
+// costs something concrete - a spurious diagnostic, or a branch that can never be taken.
+#ifndef MD_ASSUME
+#   if MD_COMPILER_MSVC
+#       define MD_ASSUME(expr) __assume(expr)
+#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+#       define MD_ASSUME(expr) ((expr) ? (void)0 : __builtin_unreachable())
+#   else
+#       define MD_ASSUME(expr) ((void)0)
+#   endif
+#endif
+
 #ifndef TYPE_COMPATIBLE
 #define TYPE_COMPATIBLE(x, type) _Generic((x), type : 1, default : 0)
 #endif

@@ -5761,7 +5761,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
 
     // coordinate data for reading trajectory frames into
     const size_t stride = ALIGN_TO(sys->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
-    const size_t coord_bytes = stride * 3 * sizeof(float);
 
     float* atom_mass   = md_temp_alloc_array(temp, float, stride);
     float* atom_radius = md_temp_alloc_array(temp, float, stride);

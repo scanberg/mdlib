@@ -24,13 +24,16 @@ typedef enum md_topo_critical_point_type_t {
     MD_TOPO_JOIN_SADDLE = 4,
 } md_topo_critical_point_type_t;
 
-static const char* md_topo_critical_point_type_str[] = {
-    "Undefined",
-    "Maximum",
-    "Split Saddle",
-    "Minimum",
-    "Join Saddle"
-};
+static inline const char* md_topo_critical_point_type_str(int type) {
+    static const char* table[] = {
+        "Undefined",
+        "Maximum",
+        "Split Saddle",
+        "Minimum",
+        "Join Saddle"
+    };
+    return (type >= 0 && type <= (int)MD_TOPO_JOIN_SADDLE) ? table[type] : table[MD_TOPO_UNDEFINED];
+}
 
 // Edge in the Morse-Smale complex
 // Edges connect critical points along integral lines:

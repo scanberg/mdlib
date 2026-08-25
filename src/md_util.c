@@ -5919,7 +5919,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
-                deperiodize_triclinic(c.elem, ref.elem, A);
+                deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -6002,7 +6002,7 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = in_xyzr[idx];
-                deperiodize_triclinic(c.elem, ref.elem, A);
+                deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -8356,7 +8356,7 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 out_dist[i * len_b + j] = vec3_length(dx);
             }
         }
@@ -8402,7 +8402,7 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 const float d = vec3_length(dx);
                 if (d < min_dist) {
                     min_dist = d;
@@ -8458,7 +8458,7 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, A);
+                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
                 const float d = vec3_length(dx);
                 if (d > max_dist) {
                     max_dist = d;
@@ -8579,7 +8579,7 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
             mat3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
             }
         }
     }
@@ -8601,7 +8601,7 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
             mat3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
             }
         }
     }
@@ -8818,7 +8818,7 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
         if (is_ortho) {
             min_image_ortho(dx.elem, ext, inv_ext);
         } else {
-            min_image_triclinic(dx.elem, box, half_ext);
+            min_image_triclinic(dx.elem, MD_AS_CONST_MAT3(box), half_ext);
         }
 
         // The atom is placed relative to its PARENT, not relative to where it happened to sit:
@@ -8868,7 +8868,7 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 
         for (size_t i = 0; i < count; ++i) {
             vec4_t pos = xyzw[i];
-            deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
+            deperiodize_triclinic(pos.elem, ref_xyz.elem, MD_AS_CONST_MAT3(A.elem));
             xyzw[i] = pos;
         }
         return true;
@@ -9161,7 +9161,7 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
                 simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(A.elem[1][1]));
                 simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(A.elem[2][2]));
             } else if (tricl) {
-                simd_deperiodize_triclinic(x1, x0, A.elem);
+                simd_deperiodize_triclinic(x1, x0, MD_AS_CONST_MAT3(A.elem));
             }
 
             md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
@@ -9250,9 +9250,9 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
             x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
             x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
         } else if (tricl) {
-            simd_deperiodize_triclinic(x0, x1, A.elem);
-            simd_deperiodize_triclinic(x2, x1, A.elem);
-            simd_deperiodize_triclinic(x3, x2, A.elem);
+            simd_deperiodize_triclinic(x0, x1, MD_AS_CONST_MAT3(A.elem));
+            simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
+            simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
         }
 
         const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], md_mm256_set1_ps(t), md_mm256_set1_ps(s));

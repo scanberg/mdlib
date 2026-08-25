@@ -115,6 +115,12 @@ typedef struct mat3_t {
 #endif
 } mat3_t;
 
+// ISO C does not implicitly add a qualifier through a pointer to array: float(*)[3] does NOT convert
+// to const float(*)[3] the way float* converts to const float* (C11 6.5.16.1 / 6.7.6.1). So handing
+// a mat3_t's elem - or any float[3][3] - to a function taking const float[3][3] is a constraint
+// violation that -Wpedantic reports. The cast only adds const, so it is always safe.
+#define MD_AS_CONST_MAT3(m) ((const float (*)[3])(m))
+
 typedef struct mat4_t {
     union {
         float elem[4][4];

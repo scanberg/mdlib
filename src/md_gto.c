@@ -1338,7 +1338,7 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_device_t device, const md_gto_
 			}
         }
     }
-done:
+
     md_temp_end(temp);
     if (!success) {
         md_gpu_buffer_destroy(buf);

@@ -4508,7 +4508,7 @@ size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx) {
 // Returns atom coordinates for a given optimization step
 const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx) {
 	if (vlx) {
-		if (vlx->opt.coordinates && 0 <= opt_idx && opt_idx < vlx->opt.number_of_steps) {
+		if (vlx->opt.coordinates && opt_idx < vlx->opt.number_of_steps) {
 			const size_t stride = vlx->number_of_atoms;
 			return vlx->opt.coordinates + stride * opt_idx;
 		}

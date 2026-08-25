@@ -258,12 +258,10 @@ static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame
     str_t str = { .ptr = (char*)frame_data, .len = frame_size };
     str_t line;
 
-    int32_t step = 0;
-    if (str_extract_line(&line, &str)) {
-        if (str_eq_cstr_n(line, "MODEL", 5)) {
-            step = (int32_t)parse_int(str_substr(line, 10, 4));
-        }
-    }
+    // Consume the frame's leading MODEL record. Its model number used to be reported as the frame
+    // step; the ordinal is now stamped by md_trajectory_reader_load_frame, which is the only place
+    // that knows it.
+    str_extract_line(&line, &str);
 
     size_t i = 0;
     while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {

@@ -979,7 +979,7 @@ static bool xtc_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
                 }
                 if (out_cell) {
                     // @NOTE: md_xtc_decode_frame_data_soa_scaled has already applied the scale to the box
-                    *out_cell = md_unitcell_from_matrix_float(xtc_header.box);
+                    *out_cell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(xtc_header.box));
                 }
 
                 result = true;

@@ -239,7 +239,7 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
         box[i][2] = data->box[i][2] * NM_TO_ANGSTROM;
     }
 
-    state->unitcell = md_unitcell_from_matrix_float(box);
+    state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(box));
 
     md_util_system_infer_atom_types(sys, atom_names);
     // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move

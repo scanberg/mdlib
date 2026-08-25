@@ -611,7 +611,7 @@ static bool xyz_decode_frame_data(const xyz_trajectory_t* xyz, const void* data_
 
     if (cell) {
         //*cell = md_unitcell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
-        *cell = md_unitcell_from_matrix_float(model.cell);
+        *cell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(model.cell));
     }
 
     return true;
@@ -772,7 +772,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_push(sys->atom.type_idx, atom_type_idx, sys->alloc);
     }
 
-    state->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
+    state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(data->models[0].cell));
 
     ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
