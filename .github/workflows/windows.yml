@@ -50,6 +50,11 @@ jobs:
             shell: bash
             run: cmake --build . --config $BUILD_TYPE
 
+          - name: GPU backend diagnostics
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: ./unittest/$BUILD_TYPE/md_unittest.exe --filter='*gpu*'
+
           - name: Test
             working-directory: ${{github.workspace}}/build
             shell: bash

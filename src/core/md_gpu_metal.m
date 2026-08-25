@@ -9,7 +9,10 @@
 #include <dispatch/dispatch.h>
 
 #include <core/md_common.h> // Assert
+#include <core/md_log.h>
 #include <core/md_os.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>         // malloc, free
 #include <string.h>         // strcmp
 
@@ -474,12 +477,33 @@ static inline void cmd_reset(struct md_gpu_command_buffer* cmd) {
    Device / queue
    ============================= */
 
+// Records *why* the backend failed, so callers (and unit tests) can report a reason
+// instead of only observing a NULL handle. Also emits the message to the log.
+static char md_gpu_error_str[512];
+
+static void md_gpu_set_error(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(md_gpu_error_str, sizeof(md_gpu_error_str), fmt, args);
+    va_end(args);
+    md_log(MD_LOG_TYPE_ERROR, md_gpu_error_str);
+}
+
+const char* md_gpu_last_error(void) {
+    return md_gpu_error_str;
+}
+
 md_gpu_device_t md_gpu_device_create(void) {
     struct md_gpu_device* dev = (struct md_gpu_device*)calloc(1, sizeof(struct md_gpu_device));
-    if (!dev) return NULL;
+    if (!dev) {
+        md_gpu_set_error("Metal: out of memory when allocating the device");
+        return NULL;
+    }
 
     dev->device = MTLCreateSystemDefaultDevice();
     if (!dev->device) {
+        md_gpu_set_error("Metal: MTLCreateSystemDefaultDevice() returned nil. "
+                         "No Metal capable device is available to this process (headless VM / sandboxed session?).");
         free(dev);
         return NULL;
     }
@@ -490,6 +514,9 @@ md_gpu_device_t md_gpu_device_create(void) {
     ASSERT(dev->queue);
     ASSERT(dev->event_timeline);
     if (!dev->queue || !dev->event_timeline) {
+        md_gpu_set_error("Metal: device '%s' created, but %s could not be created",
+                         [[dev->device name] UTF8String],
+                         dev->queue ? "a shared event" : "a command queue");
         [dev->event_timeline release];
         [dev->queue release];
         [dev->device release];
@@ -497,8 +524,11 @@ md_gpu_device_t md_gpu_device_create(void) {
         return NULL;
     }
 
+    MD_LOG_INFO("Metal: using device '%s'", [[dev->device name] UTF8String]);
+
     dev->compute_queue.dev = dev;
     if (!mtl_transient_pool_init(dev)) {
+        md_gpu_set_error("Metal: failed to initialize the transient buffer pool");
         [dev->event_timeline release];
         [dev->queue release];
         [dev->device release];

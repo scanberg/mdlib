@@ -9,6 +9,13 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Report *why* the device could not be created, so a CI log shows the reason
+ * (missing loader / no ICD / no compute queue) instead of a bare "skipped". */
+static const char* gpu_test_no_device_reason(void) {
+    const char* err = md_gpu_last_error();
+    return (err && err[0]) ? err : "No GPU device available";
+}
+
 static md_gpu_event_t gpu_test_upload_buffer(md_gpu_device_t device, md_gpu_buffer_t dst_buffer, size_t dst_offset, const void* src_data, size_t size) {
     md_gpu_event_t event = {0};
     if (!device || !dst_buffer || !src_data || size == 0) return event;
@@ -67,7 +74,7 @@ static md_gpu_event_t gpu_test_upload_image(md_gpu_device_t device, md_gpu_image
 UTEST(gpu, device_create_destroy) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
     md_gpu_device_destroy(device);
 }
@@ -82,7 +89,7 @@ UTEST(gpu, device_create_destroy) {
 UTEST(gpu, buffer_upload_download) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     const size_t N = 1024;
@@ -131,7 +138,7 @@ UTEST(gpu, buffer_upload_download) {
 UTEST(gpu, buffer_upload_download_with_offset) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     const size_t ELEM = 64;
@@ -180,7 +187,7 @@ UTEST(gpu, buffer_upload_download_with_offset) {
 UTEST(gpu, image_upload_download) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     const uint32_t W = 8, H = 8, D = 8;
@@ -228,7 +235,7 @@ UTEST(gpu, image_upload_download) {
 UTEST(gpu, transient_scratch_buffer_copy) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     const size_t N = 256;
@@ -284,7 +291,7 @@ UTEST(gpu, transient_scratch_buffer_copy) {
 UTEST(gpu, transient_scratch_large_allocation) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     const size_t size = (size_t)(3 * 1024 * 1024);
@@ -324,7 +331,7 @@ UTEST(gpu, transient_scratch_large_allocation) {
 UTEST(gpu, gto_mo_root) {
     md_gpu_device_t device = md_gpu_device_create();
     if (!device) {
-        UTEST_SKIP("No GPU device available");
+        UTEST_SKIP(gpu_test_no_device_reason());
     }
 
     md_gto_gpu_initialize(device);

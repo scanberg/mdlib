@@ -4,6 +4,8 @@
 #include <core/md_intrinsics.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -308,9 +310,52 @@ static void md_vk_release_current_thread_contexts_for_device(md_gpu_device* dev)
     }
 }
 
+// Records *why* the backend failed, so callers (and unit tests) can report a reason
+// instead of only observing a NULL handle. Also emits the message to the log.
+static char md_gpu_error_str[512];
+
+static void md_gpu_set_error(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(md_gpu_error_str, sizeof(md_gpu_error_str), fmt, args);
+    va_end(args);
+    md_log(MD_LOG_TYPE_ERROR, md_gpu_error_str);
+}
+
+const char* md_gpu_last_error(void) {
+    return md_gpu_error_str;
+}
+
+static const char* md_vk_result_str(VkResult res) {
+    switch (res) {
+    case VK_SUCCESS:                        return "VK_SUCCESS";
+    case VK_NOT_READY:                      return "VK_NOT_READY";
+    case VK_TIMEOUT:                        return "VK_TIMEOUT";
+    case VK_INCOMPLETE:                     return "VK_INCOMPLETE";
+    case VK_ERROR_OUT_OF_HOST_MEMORY:       return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:     return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED:    return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST:              return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_MEMORY_MAP_FAILED:        return "VK_ERROR_MEMORY_MAP_FAILED";
+    case VK_ERROR_LAYER_NOT_PRESENT:        return "VK_ERROR_LAYER_NOT_PRESENT";
+    case VK_ERROR_EXTENSION_NOT_PRESENT:    return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case VK_ERROR_FEATURE_NOT_PRESENT:      return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_INCOMPATIBLE_DRIVER:      return "VK_ERROR_INCOMPATIBLE_DRIVER";
+    case VK_ERROR_TOO_MANY_OBJECTS:         return "VK_ERROR_TOO_MANY_OBJECTS";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:     return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FRAGMENTED_POOL:          return "VK_ERROR_FRAGMENTED_POOL";
+    case VK_ERROR_OUT_OF_POOL_MEMORY:       return "VK_ERROR_OUT_OF_POOL_MEMORY";
+    case VK_ERROR_INVALID_EXTERNAL_HANDLE:  return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+    case VK_ERROR_FRAGMENTATION:            return "VK_ERROR_FRAGMENTATION";
+    case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+    case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
+    default:                                return "VkResult";
+    }
+}
+
 static bool md_vk_check(VkResult res, const char* what) {
     if (res == VK_SUCCESS) return true;
-    MD_LOG_ERROR("Vulkan error %d: %s", (int)res, what ? what : "(unknown)");
+    md_gpu_set_error("Vulkan: %s failed with %s (%d)", what ? what : "(unknown call)", md_vk_result_str(res), (int)res);
     return false;
 }
 
@@ -929,7 +974,9 @@ static bool md_vk_pick_physical_device(md_gpu_device* out_dev) {
     uint32_t phys_count = 0;
     if (!md_vk_check(vkEnumeratePhysicalDevices(out_dev->instance, &phys_count, NULL), "vkEnumeratePhysicalDevices(count)")) return false;
     if (phys_count == 0) {
-        MD_LOG_ERROR("Vulkan: no physical devices found");
+        md_gpu_set_error("Vulkan: loader initialized and instance created, but no physical devices were reported. "
+                         "No Vulkan driver (ICD) is installed. On a headless/CI machine, install a software rasterizer "
+                         "(e.g. Mesa lavapipe: 'mesa-vulkan-drivers', VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json).");
         return false;
     }
 
@@ -943,6 +990,7 @@ static bool md_vk_pick_physical_device(md_gpu_device* out_dev) {
 
     // Prefer discrete GPUs, but accept anything with a compute queue.
     VkPhysicalDevice best = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties best_props = {0};
     uint32_t best_graphics_family  = UINT32_MAX;
     uint32_t best_compute_family   = UINT32_MAX;
     uint32_t best_transfer_family  = UINT32_MAX;
@@ -1009,6 +1057,7 @@ static bool md_vk_pick_physical_device(md_gpu_device* out_dev) {
         if (score > best_score) {
             best_score = score;
             best = phys[p];
+            best_props = props;
             best_graphics_family = graphics_family;
             best_compute_family  = compute_family;
             best_transfer_family = transfer_family;
@@ -1018,9 +1067,15 @@ static bool md_vk_pick_physical_device(md_gpu_device* out_dev) {
     free(phys);
 
     if (best == VK_NULL_HANDLE) {
-        MD_LOG_ERROR("Vulkan: no suitable physical device with compute queue found");
+        md_gpu_set_error("Vulkan: %u physical device(s) enumerated, but none exposed a compute capable queue family", phys_count);
         return false;
     }
+
+    MD_LOG_INFO("Vulkan: using physical device '%s' (device type %d, API %u.%u.%u)",
+                best_props.deviceName, (int)best_props.deviceType,
+                VK_API_VERSION_MAJOR(best_props.apiVersion),
+                VK_API_VERSION_MINOR(best_props.apiVersion),
+                VK_API_VERSION_PATCH(best_props.apiVersion));
 
     out_dev->physical_device       = best;
     out_dev->graphics_queue_family = best_graphics_family;
@@ -1254,7 +1309,10 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
         VkQueue vk_queue = VK_NULL_HANDLE;
         vkGetDeviceQueue(out_dev->device, fam, 0, &vk_queue);
-        if (vk_queue == VK_NULL_HANDLE) return false;
+        if (vk_queue == VK_NULL_HANDLE) {
+            md_gpu_set_error("Vulkan: vkGetDeviceQueue returned a null handle for queue family %u", fam);
+            return false;
+        }
 
         md_gpu_queue* q = &out_dev->queues[s];
         q->dev          = out_dev;
@@ -1327,13 +1385,19 @@ static bool md_vk_create_device(md_gpu_device* out_dev) {
 
 md_gpu_device_t md_gpu_device_create(void) {
     if (volkInitialize() != VK_SUCCESS) {
+        md_gpu_set_error("Vulkan: failed to load the Vulkan loader (libvulkan). "
+                         "No Vulkan runtime is installed, or it is not in the library search path.");
         return NULL;
     }
 
     md_gpu_device* dev = (md_gpu_device*)calloc(1, sizeof(md_gpu_device));
-    if (!dev) return NULL;
+    if (!dev) {
+        md_gpu_set_error("Vulkan: out of memory when allocating the device");
+        return NULL;
+    }
 
     if (!md_vk_thread_context_system_init()) {
+        md_gpu_set_error("Vulkan: failed to initialize the per thread context system");
         free(dev);
         return NULL;
     }
@@ -1363,6 +1427,7 @@ md_gpu_device_t md_gpu_device_create(void) {
     volkLoadDevice(dev->device);
 
     if (!md_vk_transient_pool_init(dev)) {
+        md_gpu_set_error("Vulkan: failed to initialize the transient buffer pool");
         vkDestroyDevice(dev->device, NULL);
         vkDestroyInstance(dev->instance, NULL);
         md_vk_thread_context_system_shutdown();

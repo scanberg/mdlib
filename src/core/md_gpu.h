@@ -246,6 +246,14 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* info);
 md_gpu_device_t md_gpu_device_create(void);
 void            md_gpu_device_destroy(md_gpu_device_t device);
 
+// Diagnostics.
+// Returns a human readable description of the most recent failure inside the GPU backend.
+// The string is owned by the backend and stays valid until the next failure is recorded.
+// Returns an empty string if nothing has failed yet.
+// Primarily intended to explain *why* md_gpu_device_create() returned NULL
+// (missing Vulkan loader, no driver/ICD installed, no compute queue, ...).
+const char* md_gpu_last_error(void);
+
 // Device-owned logical queues. These handles always exist; backends may map
 // several logical queues to the same physical queue when dedicated hardware queues are unavailable.
 // The graphics queue is the primary queue for rendering and general-purpose compute.
