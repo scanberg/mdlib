@@ -168,6 +168,11 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 // images the input arrived in) and then alternated to a fixed point: place every point in the image
 // nearest the centre, recompute the centre, repeat. Settles in one or two passes.
 //
+// The set is left in the image it arrived in: the points are made mutually consistent and the
+// cluster as a whole is NOT moved into the reference cell, so the reported centre can be combined
+// with coordinates that were not passed in. Call md_util_pbc afterwards if the cell is wanted.
+// A set straddling a boundary has no image to preserve and may come back on either side.
+//
 // Correct while the set spans less than half a cell. Beyond that no per point image choice can
 // represent it and the structure has to be unwrapped topologically instead.
 bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com);
@@ -182,7 +187,11 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
 //
 // out_rot maps the TARGET frame onto the REFERENCE frame: R * (q - out_com) ~= p - ref_com.
 // out_trg_xyzw optionally receives the placed target points (weights preserved); pass NULL if only
-// the transform is wanted.
+// the transform is wanted, and it may alias trg_xyzw.
+//
+// out_com and the placed points are expressed in the image the TARGET arrived in, not folded into
+// the reference cell - see md_util_deperiodize_self_vec4. ref_com is used only as the reference
+// set's own centre, so its image does not matter.
 //
 // Returns the largest per point residual, which is the margin to an ambiguous image choice. Small
 // against half a cell means the assignment is nowhere near flipping; approaching it means this

@@ -8898,6 +8898,7 @@ typedef struct pbc_image_t {
     bool   ortho;
     vec4_t ext;   // orthorhombic extent, w = 0 so the weight lane is carried through untouched
     mat3_t A;     // triclinic basis
+    mat3_t I;     // triclinic inverse basis, Cartesian -> fractional
 } pbc_image_t;
 
 static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
@@ -8913,6 +8914,7 @@ static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
         im.ext      = vec4_from_vec3(ext, 0);
     } else if (md_unitcell_is_triclinic(cell)) {
         md_unitcell_A_extract_float(im.A.elem, cell);
+        md_unitcell_I_extract_float(im.I.elem, cell);
         im.periodic = true;
     }
     return im;
@@ -8929,6 +8931,52 @@ static inline vec4_t pbc_image_nearest(const pbc_image_t* im, vec4_t pos, vec3_t
     vec4_t out = pos;
     deperiodize_triclinic(out.elem, ref.elem, im->A.elem);
     return out;
+}
+
+// The lattice vector nearest to 'delta'. An axis with no extent is not periodic and contributes
+// nothing.
+static inline vec3_t pbc_image_lattice_round(const pbc_image_t* im, vec3_t delta) {
+    if (!im->periodic) {
+        return vec3_zero();
+    }
+    if (im->ortho) {
+        const vec3_t ext = vec3_from_vec4(im->ext);
+        return vec3_set(ext.x != 0.0f ? roundf(delta.x / ext.x) * ext.x : 0.0f,
+                        ext.y != 0.0f ? roundf(delta.y / ext.y) * ext.y : 0.0f,
+                        ext.z != 0.0f ? roundf(delta.z / ext.z) * ext.z : 0.0f);
+    }
+    const vec3_t f = mat3_mul_vec3(im->I, delta);
+    return mat3_mul_vec3(im->A, vec3_set(roundf(f.x), roundf(f.y), roundf(f.z)));
+}
+
+// KEEPING THE SET IN ITS OWN IMAGE
+//
+// The alternations below settle on images that are consistent RELATIVE to a centre, and that centre
+// is seeded from the circular mean - whose angle is taken in [0, 2pi), so it always lands in the
+// reference cell no matter where the input lives. Left at that, the whole set is quietly translated
+// into image (0,0,0) as a side effect of being made whole.
+//
+// That is invisible to a caller that only reads relative geometry (an rmsd, a covariance, a
+// rotation) and wrong for one that mixes the result back in with coordinates it did not hand over:
+// a transform applied to the full system, an AABB queried against raw positions, a plane offset
+// drawn over the atoms it was fitted to. Those callers get a result a whole cell vector off, and
+// with a rotation in play, off by R times a cell vector, which is not even an image.
+//
+// So the contract is: make the set mutually consistent and otherwise leave it where it came in.
+// The shift back is the lattice vector closest to the displacement of the weighted mean, i.e. the
+// one that moves the input least. A set that genuinely straddles a boundary has no image to
+// preserve - the two candidates are one lattice vector apart and equally good - and a caller that
+// needs the set inside the cell wraps afterwards, explicitly.
+static void pbc_image_restore(const pbc_image_t* im, vec4_t* xyzw, size_t count, vec3_t input_com, vec3_t* in_out_com) {
+    const vec3_t off = pbc_image_lattice_round(im, vec3_sub(input_com, *in_out_com));
+    if (vec3_dot(off, off) == 0.0f) {
+        return;
+    }
+    const vec4_t off4 = vec4_from_vec3(off, 0);
+    for (size_t i = 0; i < count; ++i) {
+        xyzw[i] = vec4_add(xyzw[i], off4);
+    }
+    *in_out_com = vec3_add(*in_out_com, off);
 }
 
 // Squared distance below which two placements count as the same image. Generous: a genuine image
@@ -8957,6 +9005,10 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
         return true;
     }
 
+    // Where the input sits, before anything is moved. Only the image it implies is used - see
+    // pbc_image_restore.
+    const vec3_t input_com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+
     // Seed with the circular mean. It needs no image assignment to compute, so unlike an arbitrary
     // reference point it cannot be biased by whichever images the coordinates happened to arrive in.
     vec3_t com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, cell);
@@ -8979,6 +9031,9 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
             break;
         }
     }
+
+    // Whole, and back in the image it arrived in.
+    pbc_image_restore(&im, in_out_xyzw, count, input_com, &com);
 
     if (out_com) *out_com = com;
     return true;
@@ -9005,6 +9060,10 @@ float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t
 
     // The caller can have the placed points if it wants them (rmsd does); otherwise they are scratch.
     vec4_t* cur = out_trg_xyzw ? out_trg_xyzw : md_temp_alloc_array(temp, vec4_t, count);
+
+    // Where the target sits before anything is moved. Read now: 'cur' is allowed to alias trg_xyzw
+    // and the loop below writes through it.
+    const vec3_t input_com = md_util_com_compute_vec4(trg_xyzw, NULL, count, NULL);
 
     // Image free seed, safe to compute before any assignment exists.
     vec3_t com = md_util_com_compute_vec4(trg_xyzw, NULL, count, im.periodic ? cell : NULL);
@@ -9038,6 +9097,10 @@ float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t
         const vec3_t        coms[2] = { ref_com,  com };
         rot = mat3_extract_rotation(mat3_cross_covariance_matrix_vec4(sets, NULL, count, coms));
     }
+
+    // Back in the image the target arrived in. The rotation and the residual below are measured
+    // relative to 'com', so both are untouched by this.
+    pbc_image_restore(&im, cur, count, input_com, &com);
 
     // The largest per point residual is the distance to an ambiguous image choice. Small compared to
     // half a cell means the assignment above is not close to flipping.

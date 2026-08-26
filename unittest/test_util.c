@@ -625,6 +625,142 @@ UTEST(util, pbc_deperiodize_self) {
     }
 }
 
+// A set that arrives whole, in an image other than the reference one, must be left in THAT image.
+//
+// The alternation seeds from the circular mean, which always lands in the reference cell, so
+// without an explicit correction the whole set is quietly translated into image (0,0,0). That is
+// invisible to a caller reading relative geometry and a whole cell vector wrong for one that
+// combines the reported centre with coordinates it never passed in - which is how viamd's recenter
+// came to place a structure in the middle of the WRONG image on nojump trajectories.
+UTEST(util, pbc_deperiodize_self_keeps_image) {
+    const float L = 20.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+
+    vec4_t shape[PBC_NP];
+    pbc_make_shape(shape, 3.0f);
+    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+
+    for (int nx = -2; nx <= 2; ++nx) {
+        for (int nz = -1; nz <= 1; ++nz) {
+            const vec3_t off = vec3_set(nx * L, 10.0f, 10.0f + nz * L);
+
+            vec4_t pts[PBC_NP];
+            for (int i = 0; i < PBC_NP; ++i) {
+                pts[i] = vec4_from_vec3(vec3_add(vec3_from_vec4(shape[i]), off), shape[i].w);
+            }
+
+            vec3_t com = {0};
+            ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+
+            // Nothing was broken to begin with, so nothing may move
+            for (int i = 0; i < PBC_NP; ++i) {
+                const vec3_t want = vec3_add(vec3_from_vec4(shape[i]), off);
+                EXPECT_NEAR(pts[i].x, want.x, 1.0e-3f);
+                EXPECT_NEAR(pts[i].y, want.y, 1.0e-3f);
+                EXPECT_NEAR(pts[i].z, want.z, 1.0e-3f);
+            }
+
+            // and the centre must be reported in the image the points actually occupy
+            const vec3_t want_com = vec3_add(shape_com, off);
+            EXPECT_NEAR(com.x, want_com.x, 1.0e-3f);
+            EXPECT_NEAR(com.y, want_com.y, 1.0e-3f);
+            EXPECT_NEAR(com.z, want_com.z, 1.0e-3f);
+        }
+    }
+}
+
+// Same contract for the joint fit: out_com and the placed points come back in the target's image,
+// so a caller can build a transform against coordinates it did not hand over. With a rotation in
+// play the old behaviour was not merely one cell vector off - it was off by R times a cell vector,
+// which is not a periodic image at all.
+UTEST(util, pbc_optimal_rotation_keeps_image) {
+    const float L = 20.0f;
+    md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+
+    vec4_t ref[PBC_NP];
+    pbc_make_shape(ref, 3.0f);
+    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+
+    const mat3_t R_true = pbc_rot(40.0f * 3.14159265f / 180.0f);
+
+    for (int nx = -1; nx <= 2; ++nx) {
+        const vec3_t c_true = vec3_set(9.0f + nx * L, 11.0f, 8.0f - nx * L);
+
+        vec4_t trg[PBC_NP];
+        for (int i = 0; i < PBC_NP; ++i) {
+            const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
+            trg[i] = vec4_from_vec3(v, ref[i].w);
+        }
+
+        mat3_t R = {0};
+        vec3_t com = {0};
+        vec4_t placed[PBC_NP];
+        const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell);
+
+        EXPECT_LT(residual, 1.0e-2f);
+        EXPECT_NEAR(com.x, c_true.x, 1.0e-2f);
+        EXPECT_NEAR(com.y, c_true.y, 1.0e-2f);
+        EXPECT_NEAR(com.z, c_true.z, 1.0e-2f);
+
+        // Untouched input, so the placed points must be exactly where they came in
+        for (int i = 0; i < PBC_NP; ++i) {
+            EXPECT_NEAR(placed[i].x, trg[i].x, 1.0e-2f);
+            EXPECT_NEAR(placed[i].y, trg[i].y, 1.0e-2f);
+            EXPECT_NEAR(placed[i].z, trg[i].z, 1.0e-2f);
+        }
+
+        // The recentering transform viamd builds must land the set on the cell centre, in image 0.
+        const vec3_t centre = vec3_set(0.5f * L, 0.5f * L, 0.5f * L);
+        vec3_t sum = vec3_zero();
+        float  wsum = 0.0f;
+        for (int i = 0; i < PBC_NP; ++i) {
+            const vec3_t q = vec3_add(centre, mat3_mul_vec3(R, vec3_sub(vec3_from_vec4(trg[i]), com)));
+            sum = vec3_add(sum, vec3_mul1(q, trg[i].w));
+            wsum += trg[i].w;
+        }
+        sum = vec3_div1(sum, wsum);
+        EXPECT_NEAR(sum.x, centre.x, 1.0e-2f);
+        EXPECT_NEAR(sum.y, centre.y, 1.0e-2f);
+        EXPECT_NEAR(sum.z, centre.z, 1.0e-2f);
+    }
+}
+
+// The image the set is left in has to survive a basis with off diagonal terms, where the lattice
+// vector being undone is not axis aligned.
+UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
+    const float a = 47.8497f;
+    const float c = 33.8349f;
+    md_unitcell_t cell = md_unitcell_from_basis_parameters(a, a, c, 0.0, a * 0.5f, a * 0.5f);
+    ASSERT_TRUE(md_unitcell_is_triclinic(&cell));
+
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, &cell);
+
+    vec4_t shape[PBC_NP];
+    pbc_make_shape(shape, 5.0f);
+    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const vec3_t base = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
+
+    for (int nx = -1; nx <= 1; ++nx) {
+        for (int ny = -1; ny <= 1; ++ny) {
+            const vec3_t off = vec3_add(base, mat3_mul_vec3(A, vec3_set((float)nx, (float)ny, 0.0f)));
+
+            vec4_t pts[PBC_NP];
+            for (int i = 0; i < PBC_NP; ++i) {
+                pts[i] = vec4_from_vec3(vec3_add(vec3_from_vec4(shape[i]), off), shape[i].w);
+            }
+
+            vec3_t com = {0};
+            ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+
+            const vec3_t want_com = vec3_add(shape_com, off);
+            EXPECT_NEAR(com.x, want_com.x, 1.0e-2f);
+            EXPECT_NEAR(com.y, want_com.y, 1.0e-2f);
+            EXPECT_NEAR(com.z, want_com.z, 1.0e-2f);
+        }
+    }
+}
+
 // Every other test in this block uses a cube, which hides anything that only goes wrong when the
 // basis has off diagonal terms. This one uses a rhombic dodecahedron - the shape GROMACS writes for
 // -bt dodecahedron, and the shape that exposed the bug this test now guards.
