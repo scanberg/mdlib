@@ -792,6 +792,11 @@ static inline size_t md_system_atom_type_count(const md_system_t* sys) {
     return md_atom_type_count(&sys->atom.type);
 }
 
+static inline md_flags_t md_system_atom_type_flags(const md_system_t* sys, size_t type_idx) {
+    ASSERT(sys);
+    return md_atom_type_flags(&sys->atom.type, type_idx);
+}
+
 static inline size_t md_system_component_count(const md_system_t* sys) {
     ASSERT(sys);
     return md_component_count(&sys->component);

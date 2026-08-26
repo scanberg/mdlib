@@ -41,6 +41,7 @@ set (SRC_FILES
     test_xvg.c
     rmsd.c
     test_lammps.c
+    test_system_invariants.c
 )
 
 if (${MD_ENABLE_VLX})

@@ -966,9 +966,10 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             md_array_push_no_grow(out_state->z, atom_entries[i].z);
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
             md_array_push_no_grow(sys->atom.flags, flags);
+            sys->atom.count += 1;
         }
 
-        sys->atom.count = md_array_size(out_state->x);
+        ASSERT(md_array_size(out_state->x) == sys->atom.count);
         out_state->num_atoms = sys->atom.count;
 
         if (sys->component.atom_offset) {

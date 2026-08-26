@@ -9360,8 +9360,11 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     bool cg = false;
-    for (size_t i = 0; i < sys->atom.type.count; ++i) {
-        if (sys->atom.type.flags[i] & MD_FLAG_COARSE_GRAINED) {
+    size_t num_atom_types = md_system_atom_type_count(sys);
+
+    for (size_t i = 0; i < num_atom_types; ++i) {
+        md_flags_t type_flags = md_system_atom_type_flags(sys, i);
+        if (type_flags & MD_FLAG_COARSE_GRAINED) {
             cg = true;
             break;
         }
@@ -9374,7 +9377,9 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
-            for (size_t i = 1; i < sys->atom.type.count; ++i) {
+            // @Note: The 0'th type is a sentinel type for representing invalid or unset atoms.
+            // Hence it's skipped here
+            for (size_t i = 1; i < num_atom_types; ++i) {
                 uint32_t color = sys->atom.type.color[i];
                 md_atomic_number_t z = sys->atom.type.z[i];
                 if (color == 0) {
@@ -9458,7 +9463,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
             size_t temp_pos = md_vm_arena_get_pos(temp_arena);
 
             {
-                md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE;
+                const md_flags_t req_flags = MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE;
                 md_array(md_amino_acid_atoms_t) backbone_atoms = 0;
                 md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
                 md_component_idx_t comp_base = -1;
@@ -9575,10 +9580,10 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                     prev_seq_id = -1;
                 }
 
-                sys->nucleic_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
+                sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
                 if (sys->nucleic_backbone.range.count) {
                     // Add end offset
-                    md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
+                    md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
                 }
                 sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
             }

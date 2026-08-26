@@ -187,6 +187,12 @@ void md_system_reset(md_system_t* sys) {
 #define ARRAY_PUSH(A, B) \
         if (src->A.B) md_array_push_array(dst->A.B, src->A.B, src->A.count, alloc)
 
+// Offset arrays are sentinel-terminated: they hold count+1 entries, where entry [count]
+// is the end offset. Copying only 'count' entries drops the sentinel and makes the range
+// accessors read one past the end for the last element.
+#define ARRAY_PUSH_OFFSETS(A, B) \
+        if (src->A.B && src->A.count) md_array_push_array(dst->A.B, src->A.B, src->A.count + 1, alloc)
+
 #define ARRAY_INCREMENT(A, B, C) \
         for (int64_t j = 0; j < src->A.count; j++) \
             if (src->A.B) dst->A.B[dst->A.count + j] += C
@@ -222,18 +228,18 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     ARRAY_PUSH(protein_backbone.segment, rama_type);
     ARRAY_PUSH(protein_backbone.segment, comp_idx);
 
-    md_array_push_array(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, src->protein_backbone.range.count, alloc);
+    ARRAY_PUSH_OFFSETS(protein_backbone.range, offset);
     md_array_push_array(dst->protein_backbone.range.inst_idx, src->protein_backbone.range.inst_idx, src->protein_backbone.range.count, alloc);
 
     ARRAY_PUSH(nucleic_backbone.segment, atoms);
     ARRAY_PUSH(nucleic_backbone.segment, comp_idx);
 
-    md_array_push_array(dst->nucleic_backbone.range.offset, src->nucleic_backbone.range.offset, src->nucleic_backbone.range.count, alloc);
+    ARRAY_PUSH_OFFSETS(nucleic_backbone.range, offset);
     md_array_push_array(dst->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.count, alloc);
 
     ARRAY_PUSH(instance, id);
     ARRAY_PUSH(instance, auth_id);
-    ARRAY_PUSH(instance, comp_offset);
+    ARRAY_PUSH_OFFSETS(instance, comp_offset);
 
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
     md_array_push_array(dst->bond.flags, src->bond.flags, src->bond.count, alloc);
@@ -243,7 +249,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 
     ARRAY_PUSH(component, name);
     ARRAY_PUSH(component, seq_id);
-    ARRAY_PUSH(component, atom_offset);
+    ARRAY_PUSH_OFFSETS(component, atom_offset);
     ARRAY_PUSH(component, flags);
 
     dst->atom.count           = src->atom.count;
@@ -269,6 +275,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 }
 
 #undef ARRAY_PUSH
+#undef ARRAY_PUSH_OFFSETS
 #undef ARRAY_INCREMENT
 #undef ARRAY_INCREMENT_FIELD
 
