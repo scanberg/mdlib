@@ -105,144 +105,462 @@ static void print_windows_error(void) {
 }
 #endif
 
+#if MD_PLATFORM_WINDOWS
+// The Win32 path API comes in an ANSI and a wide flavour. mdlib treats str_t as UTF-8
+// everywhere, and the ANSI flavour would reinterpret every non-ASCII byte in the process
+// code page (and cap paths at MAX_PATH), so the path layer speaks UTF-16 exclusively,
+// just like the file layer further down.
+static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
+    ASSERT(dst);
+    ASSERT(cap > 0);
+
+    if (!src.ptr || src.len == 0) {
+        return false;
+    }
+
+    const int len = MultiByteToWideChar(CP_UTF8, 0, src.ptr, (int)src.len, dst, (int)cap);
+    if (len <= 0 || len >= (int)cap) {
+        return false;
+    }
+
+    dst[len] = L'\0';
+    return true;
+}
+
+static size_t utf16_to_utf8_path(char* dst, size_t cap, const wchar_t* src, int src_len) {
+    ASSERT(dst);
+    ASSERT(cap > 0);
+
+    if (!src || src_len <= 0) {
+        return 0;
+    }
+
+    const int len = WideCharToMultiByte(CP_UTF8, 0, src, src_len, dst, (int)cap, NULL, NULL);
+    if (len <= 0 || len >= (int)cap) {
+        return 0;
+    }
+
+    dst[len] = '\0';
+    return (size_t)len;
+}
+#endif
+
+// Paths are resolved into a single canonical representation which both platforms share:
+// absolute, '/' as separator, no '.' or '..' components and a trailing '/' if the path
+// denotes a directory. Everything below operates on that form, which is what keeps the
+// two backends in agreement.
+
+// Length of the leading part of an absolute path which cannot be expressed relative to
+// anything else: '/' on unix, 'X:/' or '//server/share/' on windows.
+static size_t path_root_len(str_t path) {
+#if MD_PLATFORM_WINDOWS
+    if (path.len >= 2 && path.ptr[0] == '/' && path.ptr[1] == '/') {
+        // UNC path: //server/share/
+        size_t loc = 2;
+        int num_sep = 0;
+        while (loc < path.len && num_sep < 2) {
+            if (path.ptr[loc] == '/') {
+                num_sep += 1;
+            }
+            loc += 1;
+        }
+        return (num_sep == 2) ? loc : path.len;
+    }
+    if (path.len >= 3 && is_alpha(path.ptr[0]) && path.ptr[1] == ':' && path.ptr[2] == '/') {
+        return 3;
+    }
+    return 0;
+#else
+    return (path.len >= 1 && path.ptr[0] == '/') ? 1 : 0;
+#endif
+}
+
+static bool path_char_equal(char a, char b) {
+#if MD_PLATFORM_WINDOWS
+    // Windows paths are case insensitive. Only ASCII is folded here, which is enough to
+    // keep the result correct: a missed match merely yields a longer relative path.
+    return to_lower(a) == to_lower(b);
+#else
+    return a == b;
+#endif
+}
+
+// Length of the longest common prefix of a and b which ends on a folder boundary.
+// Whole components are compared: '/data/foo/' and '/data/foobar/' share '/data/', not
+// '/data/foo'.
+static size_t common_folder_len(str_t a, str_t b) {
+    const size_t len = MIN(a.len, b.len);
+    size_t common = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (!path_char_equal(a.ptr[i], b.ptr[i])) {
+            break;
+        }
+        if (a.ptr[i] == '/') {
+            common = i + 1;
+        }
+    }
+    return common;
+}
+
+#if MD_PLATFORM_UNIX
+// Resolves '.' and '..' components and collapses repeated separators, purely lexically.
+// A trailing separator is preserved. Returns the new length.
+static size_t normalize_path(char* buf, size_t cap, size_t len) {
+    ASSERT(buf);
+    ASSERT(len < cap);
+    (void)cap;
+
+    const size_t root = path_root_len((str_t){buf, len});
+    const bool trailing_sep = (len > 0 && buf[len - 1] == '/');
+
+    size_t w = root;
+    size_t r = root;
+
+    while (r < len) {
+        size_t e = r;
+        while (e < len && buf[e] != '/') {
+            e += 1;
+        }
+        const size_t comp_len = e - r;
+
+        if (comp_len == 0 || (comp_len == 1 && buf[r] == '.')) {
+            // Empty component or '.', drop it
+        } else if (comp_len == 2 && buf[r] == '.' && buf[r + 1] == '.') {
+            if (w > root) {
+                w -= 1; // Skip the trailing separator of the previous component
+                while (w > root && buf[w - 1] != '/') {
+                    w -= 1;
+                }
+            }
+        } else {
+            // The write cursor never overtakes the read cursor, so this stays in bounds
+            MEMMOVE(buf + w, buf + r, comp_len);
+            w += comp_len;
+            buf[w++] = '/';
+        }
+
+        r = (e < len) ? e + 1 : e;
+    }
+
+    if (w > root && !trailing_sep) {
+        w -= 1;
+    }
+    buf[w] = '\0';
+    return w;
+}
+#endif
+
+#if MD_PLATFORM_UNIX
+// Resolves the longest existing prefix of an absolute, lexically normalized path with
+// realpath() and re-attaches the remainder, so that a path pointing at a file which does
+// not exist yet still gets the symlinks in its existing part resolved. Returns the new
+// length, or len if nothing could be resolved.
+static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
+    char tmp[MD_MAX_PATH];
+    if (len + 1 > sizeof(tmp)) {
+        return len;
+    }
+    MEMCPY(tmp, buf, len);
+    tmp[len] = '\0';
+
+    size_t split = len;
+    for (;;) {
+        const char saved = tmp[split];
+        tmp[split] = '\0';
+        char* res = realpath(tmp, NULL);
+        tmp[split] = saved;
+
+        if (res) {
+            const size_t res_len  = strlen(res);
+            const size_t tail_len = len - split;
+            if (res_len + tail_len + 2 > cap) {
+                free(res);
+                return len;
+            }
+            MEMCPY(buf, res, res_len);
+            free(res);
+
+            size_t w = res_len;
+            if (tail_len) {
+                if (w > 0 && buf[w - 1] != '/') {
+                    buf[w++] = '/';
+                }
+                MEMCPY(buf + w, tmp + split, tail_len);
+                w += tail_len;
+            }
+            buf[w] = '\0';
+            return w;
+        }
+
+        if (split <= 1) {
+            return len;
+        }
+        // Strip the trailing component and try again
+        while (split > 1 && tmp[split - 1] == '/') {
+            split -= 1;
+        }
+        while (split > 1 && tmp[split - 1] != '/') {
+            split -= 1;
+        }
+    }
+}
+#endif
+
+// Resolves path into its canonical form (see above). Returns the number of characters
+// written, or 0 on failure. The path does not need to exist.
 static size_t fullpath(char* buf, size_t cap, str_t path) {
+    ASSERT(buf);
+    if (cap == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+
+    if (str_empty(path)) {
+        return 0;
+    }
+
+    size_t len = 0;
+
+#if MD_PLATFORM_WINDOWS
+    wchar_t w_path[MD_MAX_PATH];
+    wchar_t w_full[MD_MAX_PATH];
+
+    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+        MD_LOG_ERROR("Failed to convert path to UTF-16: '" STR_FMT "'", STR_ARG(path));
+        return 0;
+    }
+
+    const DWORD w_len = GetFullPathNameW(w_path, (DWORD)ARRAY_SIZE(w_full), w_full, NULL);
+    if (w_len == 0) {
+        print_windows_error();
+        return 0;
+    }
+    if (w_len >= (DWORD)ARRAY_SIZE(w_full)) {
+        MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+        return 0;
+    }
+
+    len = utf16_to_utf8_path(buf, cap, w_full, (int)w_len);
+    if (len == 0) {
+        MD_LOG_ERROR("Failed to convert path to UTF-8: '" STR_FMT "'", STR_ARG(path));
+        return 0;
+    }
+    replace_char(buf, len, '\\', '/');
+
+#elif MD_PLATFORM_UNIX
     char zbuf[MD_MAX_PATH];
     if (str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
         return 0;
     }
-    
-#if MD_PLATFORM_WINDOWS
-    size_t len = GetFullPathName(zbuf, (DWORD)cap, buf, NULL);
-    if (len == 0) {
-        print_windows_error();
-    }
-    return len;
 
-#elif MD_PLATFORM_UNIX
-    size_t len = 0;
-    if (realpath(zbuf, buf) != NULL) {
-        // realpath will not append a trailing '/' if the path is a directory. We want this to
-        // be able to resolve relative paths more easily
-        len = strnlen(buf, cap);
-        if (len > 0 && md_path_is_directory((str_t){buf, len}) && buf[len-1] != '/') {
-            if (len < cap) {
-                buf[len++] = '/';
-                buf[len]   = '\0';
-            }
+    char* res = realpath(zbuf, NULL);
+    if (res) {
+        len = strlen(res);
+        if (len + 1 > cap) {
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            free(res);
+            return 0;
         }
-    }
-    else {
+        MEMCPY(buf, res, len);
+        buf[len] = '\0';
+        free(res);
+    } else if (errno == ENOENT || errno == ENOTDIR) {
+        // realpath() requires every component of the path to exist, GetFullPathName() does
+        // not. Fall back to a lexical resolution so that both platforms are able to form a
+        // path to a file which has not been created yet.
+        int written = 0;
+        if (zbuf[0] != '/') {
+            char cwd[MD_MAX_PATH];
+            const size_t cwd_len = md_path_write_cwd(cwd, sizeof(cwd));
+            if (cwd_len == 0) {
+                return 0;
+            }
+            written = snprintf(buf, cap, "%.*s/%s", (int)cwd_len, cwd, zbuf);
+        } else {
+            written = snprintf(buf, cap, "%s", zbuf);
+        }
+        if (written < 0 || (size_t)written >= cap) {
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            buf[0] = '\0';
+            return 0;
+        }
+        len = normalize_path(buf, cap, (size_t)written);
+        len = resolve_existing_prefix(buf, cap, len);
+    } else {
         switch (errno) {
         case EACCES:        MD_LOG_ERROR("Read or search permission was denied for a component of the path prefix."); break;
         case EINVAL:        MD_LOG_ERROR("path is NULL or resolved_path is NULL."); break;
         case EIO:           MD_LOG_ERROR("An I/O error occurred while reading from the filesystem."); break;
         case ELOOP:         MD_LOG_ERROR("Too many symbolic links were encountered in translating the pathname."); break;
         case ENAMETOOLONG:  MD_LOG_ERROR("A component of a pathname exceeded NAME_MAX characters, or an entire pathname exceeded PATH_MAX characters."); break;
-        case ENOENT:        MD_LOG_ERROR("The named file does not exist."); break;
         case ENOMEM:        MD_LOG_ERROR("Out of memory."); break;
-        case ENOTDIR:       MD_LOG_ERROR("A component of the path prefix is not a directory."); break;
         default:            MD_LOG_ERROR("Undefined error"); break;
         }
-    }
-    return len;
-#else
-#error "Platform not supported"
-#endif
-}
-
-size_t md_path_write_cwd(char* buf, size_t cap) {
-    char* val;
-    size_t len = 0;
-#if MD_PLATFORM_WINDOWS
-    val = _getcwd(buf, (int)cap);
-    if (val) {
-        len = strnlen(buf, cap);
-        replace_char(buf, len, '\\', '/');
-    }
-#elif MD_PLATFORM_UNIX
-    val = getcwd(buf, (size_t)cap);
-    if (val) {
-        len = strnlen(buf, cap);
+        return 0;
     }
 #else
     ASSERT(false);
+    return 0;
 #endif
-    if (!val) {
-    	MD_LOG_ERROR("Failed to get current working directory");
-		return 0;
+
+    // Directories are given an explicit trailing separator so that they can be told apart
+    // from files further down without hitting the filesystem again.
+    if (len > 0 && buf[len - 1] != '/' && md_path_is_directory((str_t){buf, len})) {
+        if (len + 2 > cap) {
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            buf[0] = '\0';
+            return 0;
+        }
+        buf[len++] = '/';
+        buf[len]   = '\0';
     }
+
+    return len;
+}
+
+size_t md_path_write_cwd(char* buf, size_t cap) {
+    ASSERT(buf);
+    if (cap == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+
+    size_t len = 0;
+#if MD_PLATFORM_WINDOWS
+    wchar_t w_buf[MD_MAX_PATH];
+    const DWORD w_len = GetCurrentDirectoryW((DWORD)ARRAY_SIZE(w_buf), w_buf);
+    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+        MD_LOG_ERROR("Failed to get current working directory");
+        return 0;
+    }
+    len = utf16_to_utf8_path(buf, cap, w_buf, (int)w_len);
+    if (len == 0) {
+        MD_LOG_ERROR("Failed to get current working directory");
+        return 0;
+    }
+    replace_char(buf, len, '\\', '/');
+#elif MD_PLATFORM_UNIX
+    if (getcwd(buf, cap) == NULL) {
+        MD_LOG_ERROR("Failed to get current working directory");
+        return 0;
+    }
+    len = strnlen(buf, cap);
+#else
+    ASSERT(false);
+#endif
     return len;
 }
 
 size_t md_path_write_exe(char* buf, size_t buf_cap) {
+    ASSERT(buf);
+    if (buf_cap == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+
 #if MD_PLATFORM_WINDOWS
-    DWORD res = GetModuleFileName(NULL, buf, (DWORD)buf_cap);
-    if (res != 0) {
-        replace_char(buf, res, '\\', '/');
+    wchar_t w_buf[MD_MAX_PATH];
+    const DWORD w_len = GetModuleFileNameW(NULL, w_buf, (DWORD)ARRAY_SIZE(w_buf));
+    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+        MD_LOG_ERROR("Failed to get path to executable");
+        return 0;
+    }
+    const size_t len = utf16_to_utf8_path(buf, buf_cap, w_buf, (int)w_len);
+    if (len == 0) {
+        MD_LOG_ERROR("Failed to get path to executable");
+        return 0;
+    }
+    replace_char(buf, len, '\\', '/');
+    return len;
+#elif MD_PLATFORM_LINUX
+    const ssize_t res = readlink("/proc/self/exe", buf, buf_cap - 1);
+    if (res != -1) {
+        buf[res] = '\0';
         return (size_t)res;
     }
-#elif MD_PLATFORM_LINUX
-    ssize_t res = readlink("/proc/self/exe", buf, buf_cap);
-    if (res != -1) {
-    	return (size_t)res;
-    }
 #elif MD_PLATFORM_OSX
-	uint32_t buf_cap32 = (uint32_t)buf_cap;
-	int res = _NSGetExecutablePath(buf, &buf_cap32);
-	if (res == 0) {
-    	return (size_t)strnlen(buf, buf_cap);
+    uint32_t buf_cap32 = (uint32_t)buf_cap;
+    const int res = _NSGetExecutablePath(buf, &buf_cap32);
+    if (res == 0) {
+        return strnlen(buf, buf_cap);
     }
 #else
     ASSERT(false);
 #endif
+    MD_LOG_ERROR("Failed to get path to executable");
     return 0;
 }
 
 // https://stackoverflow.com/questions/2899013/how-do-i-get-the-application-data-path-in-windows-using-c
 // https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
+    ASSERT(buf);
+    if (buf_cap == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+
 #if MD_PLATFORM_WINDOWS
     WCHAR* homedir = NULL;
-    HRESULT res = SHGetKnownFolderPath(&FOLDERID_Profile, 0, NULL, &homedir);
-    if (res != S_OK) {
-		MD_LOG_ERROR("Failed to get home directory");
+    HRESULT hres = SHGetKnownFolderPath(&FOLDERID_Profile, 0, NULL, &homedir);
+    if (hres != S_OK) {
+        MD_LOG_ERROR("Failed to get home directory");
         return 0;
-	}
-	res = WideCharToMultiByte(CP_UTF8, 0, homedir, -1, buf, (int)buf_cap, NULL, NULL);
-	CoTaskMemFree(homedir);
-	if (res == 0) {
-		MD_LOG_ERROR("Failed to convert home directory to UTF8");
-		return 0;
-	}
-	return strnlen(buf, buf_cap);
+    }
+    const size_t len = utf16_to_utf8_path(buf, buf_cap, homedir, (int)wcslen(homedir));
+    CoTaskMemFree(homedir);
+    if (len == 0) {
+        MD_LOG_ERROR("Failed to convert home directory to UTF8");
+        return 0;
+    }
+    replace_char(buf, len, '\\', '/');
+    return len;
 #elif MD_PLATFORM_UNIX
     const char *homedir = NULL;
     if ((homedir = getenv("HOME")) == NULL) {
         struct passwd* pwd = getpwuid(getuid());
         if (pwd) {
-			homedir = pwd->pw_dir;
-		}
+            homedir = pwd->pw_dir;
+        }
     }
     if (!homedir) {
         MD_LOG_ERROR("Failed to get home directory");
-		return 0;
+        return 0;
     }
-    return (size_t)snprintf(buf, buf_cap, "%s", homedir);
+    const int written = snprintf(buf, buf_cap, "%s", homedir);
+    if (written < 0 || (size_t)written >= buf_cap) {
+        MD_LOG_ERROR("Failed to get home directory, the path is too long");
+        buf[0] = '\0';
+        return 0;
+    }
+    return (size_t)written;
 #else
     ASSERT(false);
+    return 0;
 #endif
 }
 
 bool md_path_set_cwd(str_t path) {
-    // Ensure zero termination of path
-    char buf[MD_MAX_PATH];
-    str_copy_to_char_buf(buf, sizeof(buf), path);
+    if (str_empty(path)) {
+        MD_LOG_ERROR("CWD: The supplied path is empty");
+        return false;
+    }
 #if MD_PLATFORM_WINDOWS
-    if (SetCurrentDirectory(buf)) {
+    wchar_t w_path[MD_MAX_PATH];
+    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+        MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" STR_FMT "'", STR_ARG(path));
+        return false;
+    }
+    if (SetCurrentDirectoryW(w_path)) {
         return true;
     }
     print_windows_error();
 #elif MD_PLATFORM_UNIX
+    // Ensure zero termination of path
+    char buf[MD_MAX_PATH];
+    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+        return false;
+    }
     if (chdir(buf) == 0) {
         return true;
     }
@@ -264,136 +582,171 @@ bool md_path_set_cwd(str_t path) {
 }
 
 size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
-    size_t len = fullpath(buf, cap, path);
-#if MD_PLATFORM_WINDOWS
-    replace_char(buf, len, '\\', '/');
-#endif
-    return len;
+    return fullpath(buf, cap, path);
 }
 
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char buf[MD_MAX_PATH];
     const size_t len = fullpath(buf, sizeof(buf), path);
-    str_t result = {0};
 
-    if (path.len > 0 && len == 0) {
-        MD_LOG_ERROR("Failed to create canonical path from '%.*s'", (int)path.len, path.ptr);
-        return result;
+    if (len == 0) {
+        if (!str_empty(path)) {
+            MD_LOG_ERROR("Failed to create canonical path from '" STR_FMT "'", STR_ARG(path));
+        }
+        return (str_t){0};
     }
 
-#if MD_PLATFORM_WINDOWS
-    replace_char(buf, len, '\\', '/');
-#endif
-    
     return str_copy_cstrn(buf, len, alloc);
 }
 
 size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t to) {
+    ASSERT(out_buf);
+    if (out_cap == 0) {
+        return 0;
+    }
+    // The buffer is never left in an undefined state: a failed call used to return the
+    // length of whatever happened to be on the caller's stack.
+    out_buf[0] = '\0';
+
+    if (str_empty(from) || str_empty(to)) {
+        MD_LOG_ERROR("Failed to extract relative path: one of the supplied paths is empty.");
+        return 0;
+    }
+
     char from_buf[MD_MAX_PATH];
     char   to_buf[MD_MAX_PATH];
 
-    bool success = false;
-    size_t len = 0;
-
     // Make 2 canonical paths
     const size_t from_len = fullpath(from_buf, sizeof(from_buf), from);
-    const size_t to_len   = fullpath(to_buf, sizeof(to_buf), to);
+    const size_t   to_len = fullpath(to_buf,   sizeof(to_buf),   to);
 
-#if MD_PLATFORM_WINDOWS
-    (void)from_len;
-    (void)to_len;
-    //MD_LOG_DEBUG("rel_from: '%s'", from_buf);
-    //MD_LOG_DEBUG("rel_to:   '%s'", to_buf);
-    
-    success = PathRelativePathTo(out_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
-    len = strnlen(out_buf, out_cap);
-    replace_char(out_buf, len, '\\', '/');
-#elif MD_PLATFORM_UNIX
-
-    // Find the common base
-    str_t can_from = {0};
-    str_t can_to   = {to_buf, to_len};
-
-    if (!extract_folder_path(&can_from, (str_t){from_buf, from_len})) {
-    	MD_LOG_ERROR("Failed to extract folder path from '" STR_FMT "'", STR_ARG(from));
-		return 0;
+    if (from_len == 0 || to_len == 0) {
+        MD_LOG_ERROR("Failed to extract relative path: could not resolve '" STR_FMT "' or '" STR_FMT "'", STR_ARG(from), STR_ARG(to));
+        return 0;
     }
 
-    //MD_LOG_DEBUG("rel_from: '%.*s'", (int)can_from.len, can_from.ptr);
-    //MD_LOG_DEBUG("rel_to:   '%.*s'", (int)can_to.len, can_to.ptr);
-    
-    size_t count = str_count_equal_chars(can_from, can_to);
-    success = count > 0;
+    // 'from' anchors the result: if it identifies a file, the folder holding it is the base
+    str_t base = {from_buf, from_len};
+    if (from_buf[from_len - 1] != '/' && !extract_folder_path(&base, base)) {
+        MD_LOG_ERROR("Failed to extract folder path from '" STR_FMT "'", STR_ARG(from));
+        return 0;
+    }
+    const str_t target = {to_buf, to_len};
 
-    if (success) {
-        str_t rel_from = str_substr(can_from, count, SIZE_MAX);
-        str_t rel_to   = str_substr(can_to,   count, SIZE_MAX);
+    const size_t common = common_folder_len(base, target);
+    if (common == 0 || common < path_root_len(base) || common < path_root_len(target)) {
+        // Separate windows drives or UNC shares: no relative path between them exists
+        MD_LOG_ERROR("Failed to extract relative path: '" STR_FMT "' and '" STR_FMT "' share no common root.", STR_ARG(base), STR_ARG(target));
+        return 0;
+    }
 
-        // Count number of folders as N in from and add N times '../'
-        size_t folder_count = str_count_occur_char(rel_from, '/');
-        if (folder_count) {
-            while (folder_count-- > 0) {
-                len += snprintf(out_buf + len, out_cap - len, "../");
-            }
-        } else {
-            len += snprintf(out_buf + len, out_cap - len, "./");
+    const str_t rel_from = str_substr(base,   common, SIZE_MAX);
+    const str_t rel_to   = str_substr(target, common, SIZE_MAX);
+
+    // One step up for each folder left in from, or './' if it is already the common base
+    const size_t up_count   = str_count_occur_char(rel_from, '/');
+    const size_t prefix_len = up_count ? up_count * 3 : 2;
+    const size_t len        = prefix_len + rel_to.len;
+
+    if (len + 1 > out_cap) {
+        MD_LOG_ERROR("Failed to extract relative path: the result does not fit within the supplied buffer.");
+        return 0;
+    }
+
+    char* dst = out_buf;
+    if (up_count) {
+        for (size_t i = 0; i < up_count; ++i) {
+            MEMCPY(dst, "../", 3);
+            dst += 3;
         }
+    } else {
+        MEMCPY(dst, "./", 2);
+        dst += 2;
+    }
+    if (rel_to.len) {
+        MEMCPY(dst, rel_to.ptr, rel_to.len);
+        dst += rel_to.len;
+    }
+    *dst = '\0';
 
-        len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)rel_to.len, rel_to.ptr);
-    }
-#else
-    ASSERT(false);
-#endif
-    if (!success) {
-        MD_LOG_ERROR("Failed to extract relative path.");
-    }
     return len;
 }
-    
 
 str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
-    size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
-    if (!len) {
+    const size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
+    if (len == 0) {
         return (str_t){0};
     }
     return str_copy_cstrn(rel_buf, len, alloc);
 }
 
+bool md_path_is_absolute(str_t path) {
+    if (str_empty(path)) {
+        return false;
+    }
+    const bool sep0 = (path.ptr[0] == '/' || path.ptr[0] == '\\');
+    if (path.len >= 2 && sep0 && (path.ptr[1] == '/' || path.ptr[1] == '\\')) {
+        // UNC share
+        return true;
+    }
+    if (path.len >= 3 && is_alpha(path.ptr[0]) && path.ptr[1] == ':' && (path.ptr[2] == '/' || path.ptr[2] == '\\')) {
+        // Windows drive
+        return true;
+    }
+    return sep0;
+}
+
 bool md_path_is_valid(str_t path) {
+    if (str_empty(path)) {
+        return false;
+    }
 #if MD_PLATFORM_WINDOWS
-    md_temp_scope_t temp_scope = md_temp_begin();
-    path = str_copy(path, md_temp_allocator(temp_scope));
-    bool result = PathFileExists(path.ptr);
-    md_temp_end(temp_scope);
+    wchar_t w_path[MD_MAX_PATH];
+    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+        return false;
+    }
+    return GetFileAttributesW(w_path) != INVALID_FILE_ATTRIBUTES;
 #elif MD_PLATFORM_UNIX
-    bool result = (access(path.ptr, F_OK) == 0);
+    // str_t is not guaranteed to be zero terminated
+    char buf[MD_MAX_PATH];
+    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+        return false;
+    }
+    return access(buf, F_OK) == 0;
 #else
     ASSERT(false);
+    return false;
 #endif
-    return result;
 }
 
 bool md_path_is_directory(str_t path) {
-#if MD_PLATFORM_WINDOWS
-    md_temp_scope_t temp_scope = md_temp_begin();
-    path = str_copy(path, md_temp_allocator(temp_scope));
-    bool result = PathIsDirectory(path.ptr);
-    md_temp_end(temp_scope);
-#elif MD_PLATFORM_UNIX
-    bool result = false;
-    struct stat s;
-    if (stat(path.ptr, &s) == 0) {
-        if (s.st_mode & S_IFDIR) {
-            result = true;
-        }
+    if (str_empty(path)) {
+        return false;
     }
+#if MD_PLATFORM_WINDOWS
+    wchar_t w_path[MD_MAX_PATH];
+    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+        return false;
+    }
+    const DWORD attr = GetFileAttributesW(w_path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#elif MD_PLATFORM_UNIX
+    // str_t is not guaranteed to be zero terminated
+    char buf[MD_MAX_PATH];
+    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+        return false;
+    }
+    struct stat s;
+    // S_IFDIR is a value within a bitfield, not a flag: masking against it also matches
+    // sockets and block devices, so use the S_ISDIR predicate instead.
+    return stat(buf, &s) == 0 && S_ISDIR(s.st_mode);
 #else
     ASSERT(false);
+    return false;
 #endif
-    return result;
 }
 
 
@@ -419,23 +772,6 @@ bool md_file_valid(md_file_t file) {
 }
 
 #if MD_PLATFORM_WINDOWS
-static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
-    ASSERT(dst);
-    ASSERT(cap > 0);
-
-    if (!src.ptr || src.len == 0) {
-        return false;
-    }
-
-    const int len = MultiByteToWideChar(CP_UTF8, 0, src.ptr, (int)src.len, dst, (int)cap);
-    if (len <= 0 || len >= (int)cap) {
-        return false;
-    }
-
-    dst[len] = L'\0';
-    return true;
-}
-
 static md_file_time_t filetime_to_unix_ns(FILETIME ft) {
     ULARGE_INTEGER value;
     value.LowPart  = ft.dwLowDateTime;

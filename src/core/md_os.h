@@ -130,6 +130,11 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
 size_t md_path_write_relative(char* buf, size_t buf_cap, str_t path_from, str_t path_to);
 str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
+// Checks if a path is absolute, i.e. it does not have to be resolved against a base folder.
+// Recognizes both unix roots and windows drive letters / UNC shares on every platform, so
+// that a path stored on one platform can be classified on another.
+bool md_path_is_absolute(str_t path);
+
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
 bool md_path_is_valid(str_t path);
 bool md_path_is_directory(str_t path);
