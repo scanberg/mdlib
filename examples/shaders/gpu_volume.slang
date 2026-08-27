@@ -5,9 +5,11 @@
 // device-side counter, then process exactly that many with an indirect launch.
 //
 // Vectors in argument structs are fine -- mirror them on the host with
-// md_gpu_uint3 / md_gpu_float4 / ..., whose size and alignment track the
-// backend being built. tools/check_gpu_arg_layout.py verifies that Slang
-// still lays them out the way those types assume.
+// md_gpu_uint4 / md_gpu_float4 / ..., which carry the alignment the ABI
+// requires. The one restriction is that a 3-vector may not appear in an
+// argument struct (12 bytes in SPIR-V, 16 in MSL), so a volume dimension
+// travels as a uint4 and is read back as .xyz.
+// tools/check_gpu_arg_layout.py enforces both at build time.
 
 #include "../../src/shaders/md_gpu.slang"
 
@@ -16,8 +18,9 @@
 //    Stands in for md_gto's density evaluation.
 // ---------------------------------------------------------------------------
 struct EvalArgs {
-    uint3 dim;
+    uint4 dim;         // xyz used
     float freq;
+    uint  _pad;        // handles need an 8-byte offset, same as a vec2
     DescriptorHandle<RWTexture3D<float>> vol;
 };
 struct EvalRoot { EvalArgs* args; };
@@ -27,7 +30,7 @@ struct EvalRoot { EvalArgs* args; };
 [numthreads(4, 4, 4)]
 void eval_field(uint3 tid : SV_DispatchThreadID) {
     EvalArgs a = *eval_root.args;
-    uint3 dim = a.dim;
+    uint3 dim = a.dim.xyz;
     if (any(tid >= dim)) return;
 
     float3 p = (float3(tid) + 0.5f) / float3(dim) * 2.0f - 1.0f;
@@ -41,13 +44,14 @@ void eval_field(uint3 tid : SV_DispatchThreadID) {
 //    the CPU; it drives the indirect launch below.
 // ---------------------------------------------------------------------------
 struct CompactArgs {
-    uint3  dim;
+    uint4  dim;        // xyz used
     float  threshold;
+    uint   _pad0;      // handles need an 8-byte offset, same as a vec2
     DescriptorHandle<RWTexture3D<float>> vol;
     uint*  count;      // single uint32
     uint*  indices;    // capacity assumed sufficient
     uint   capacity;
-    uint   _pad;
+    uint   _pad1;
 };
 struct CompactRoot { CompactArgs* args; };
 [[vk::push_constant]] ConstantBuffer<CompactRoot> compact_root;
@@ -56,7 +60,7 @@ struct CompactRoot { CompactArgs* args; };
 [numthreads(4, 4, 4)]
 void compact_above(uint3 tid : SV_DispatchThreadID) {
     CompactArgs a = *compact_root.args;
-    uint3 dim = a.dim;
+    uint3 dim = a.dim.xyz;
     if (any(tid >= dim)) return;
     if (a.vol[tid] <= a.threshold) return;
 
@@ -72,8 +76,7 @@ void compact_above(uint3 tid : SV_DispatchThreadID) {
 //    voxels. Reads the volume back through the same bindless handle.
 // ---------------------------------------------------------------------------
 struct GatherArgs {
-    uint3  dim;
-    uint   _pad;
+    uint4  dim;        // xyz used
     DescriptorHandle<RWTexture3D<float>> vol;
     uint*  count;
     uint*  indices;

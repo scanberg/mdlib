@@ -58,6 +58,36 @@ function(compile_gpu_shaders OUT_HEADER)
     # Metal reserves 'main', so Slang renames entry points; silence that note.
     set(SLANG_FLAGS "-Wno-40100")
 
+    # Reject argument structs whose layout differs between SPIR-V and MSL.
+    # Vectors and bindless handles are the constructs that diverge, and they
+    # diverge silently, so this is checked at build time rather than trusted.
+    #
+    # The stamp is wired in as a file dependency of the shader binaries rather
+    # than as a custom target. A target per kernel would put ten pseudo-targets
+    # in every IDE's target list to run one script; a stamp the compile step
+    # already depends on gives the same ordering and the same incremental
+    # behaviour with nothing to look at. Same pattern EmbedBinaryFiles.cmake
+    # uses for its generated sources.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    set(LINT_STAMP "")
+    if (Python3_Interpreter_FOUND)
+        set(LINT_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py)
+        set(LINT_STAMP  ${GEN_DIR}/${STEM}.arglayout.stamp)
+        add_custom_command(
+            OUTPUT ${LINT_STAMP}
+            COMMAND ${Python3_EXECUTABLE} ${LINT_SCRIPT}
+                --slangc ${SLANG_EXECUTABLE}
+                --bindless-space ${MD_GPU_BINDLESS_SPACE}
+                ${ABS_SRC} ${G2_ENTRIES}
+            COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
+            DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_SCRIPT}
+            COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
+            VERBATIM
+        )
+    else()
+        message(WARNING "md_gpu: Python3 not found, skipping argument-struct portability check")
+    endif()
+
     set(BIN_FILES "")
     foreach(ENTRY ${G2_ENTRIES})
         if (MD_GPU_BACKEND STREQUAL "VULKAN")
@@ -72,7 +102,7 @@ function(compile_gpu_shaders OUT_HEADER)
                     -bindless-space-index ${MD_GPU_BINDLESS_SPACE}
                     -entry ${ENTRY}
                     -o ${BIN}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS}
+                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_STAMP}
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.spv"
             )
         elseif (MD_GPU_BACKEND STREQUAL "METAL")
@@ -86,7 +116,7 @@ function(compile_gpu_shaders OUT_HEADER)
                     -target metal
                     -entry ${ENTRY}
                     -o ${MSL}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS}
+                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_STAMP}
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.metal"
             )
             add_custom_command(
@@ -101,28 +131,6 @@ function(compile_gpu_shaders OUT_HEADER)
         endif()
         list(APPEND BIN_FILES ${BIN})
     endforeach()
-
-    # Reject argument structs whose layout differs between SPIR-V and MSL.
-    # Vector members are the one construct that diverges, and it diverges
-    # silently, so it is checked at build time rather than trusted.
-    find_package(Python3 COMPONENTS Interpreter QUIET)
-    if (Python3_Interpreter_FOUND)
-        set(LINT_STAMP ${GEN_DIR}/${STEM}.arglayout.stamp)
-        add_custom_command(
-            OUTPUT ${LINT_STAMP}
-            COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py
-                --slangc ${SLANG_EXECUTABLE}
-                ${ABS_SRC} ${G2_ENTRIES}
-            COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
-            DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS}
-            COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
-        )
-        add_custom_target(${G2_TARGET}_${STEM}_arglayout DEPENDS ${LINT_STAMP})
-        add_dependencies(${G2_TARGET} ${G2_TARGET}_${STEM}_arglayout)
-    else()
-        message(WARNING "md_gpu: Python3 not found, skipping argument-struct portability check")
-    endif()
 
     embed_binary_files(
         TARGET     ${G2_TARGET}

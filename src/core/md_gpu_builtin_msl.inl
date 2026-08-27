@@ -8,7 +8,13 @@
    it: the bound buffer holds a *pointer* to the argument struct, matching what
    MD_KERNEL_ARGS produces for every other kernel. It previously took the struct
    by reference, which quietly made this the one kernel the old
-   struct-at-buffer-0 binding was correct for. */
+   struct-at-buffer-0 binding was correct for.
+
+   `local` is a uint4 with an unused .w rather than a uint3, because argument
+   structs may not contain 3-vectors -- SPIR-V would give one 12 bytes and MSL
+   16, and nothing after it would line up. Keep this in step with Args in
+   src/shaders/gpu/md_gpu_make_grid.slang by hand; only the SPIR-V half is
+   generated. */
 
 static const char* md_gpu_make_grid_msl =
 "#include <metal_stdlib>\n"
@@ -17,7 +23,7 @@ static const char* md_gpu_make_grid_msl =
 "struct MdMakeGridArgs {\n"
 "    device uint* count;\n"
 "    device uint* out_grid;\n"
-"    uint3        local;\n"
+"    uint4        local;\n"
 "};\n"
 "\n"
 "struct MdGpuRoot { device MdMakeGridArgs* args; };\n"

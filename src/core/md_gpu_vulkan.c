@@ -2757,11 +2757,11 @@ bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_ptr_t g
     return true;
 }
 
+/* Mirrors Args in src/shaders/gpu/md_gpu_make_grid.slang. */
 typedef struct md_vk_make_grid_args_t {
-    uint64_t count;
-    uint64_t out_grid;
-    uint32_t local[3];
-    uint32_t _pad;
+    uint64_t     count;
+    uint64_t     out_grid;
+    md_gpu_uint4 local;     /* xyz = threads per group, w unused */
 } md_vk_make_grid_args_t;
 
 static bool md_vk_create_builtin_kernels(md_gpu_device_t dev) {
@@ -2778,9 +2778,9 @@ bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_ptr_t out_grid, const md_gpu_ptr
     md_vk_make_grid_args_t a = {0};
     a.count    = (uint64_t)(uintptr_t)count;
     a.out_grid = (uint64_t)(uintptr_t)out_grid;
-    a.local[0] = local && local[0] ? local[0] : 1;
-    a.local[1] = local && local[1] ? local[1] : 1;
-    a.local[2] = local && local[2] ? local[2] : 1;
+    a.local.x  = local && local[0] ? local[0] : 1;
+    a.local.y  = local && local[1] ? local[1] : 1;
+    a.local.z  = local && local[2] ? local[2] : 1;
     return md_gpu_launch(s, s->device->make_grid_kernel, md_gpu_grid(1, 1, 1), &a, sizeof(a));
 }
 

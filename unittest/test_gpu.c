@@ -135,10 +135,12 @@ typedef struct { uint32_t n, delta, pad0, pad1; uint64_t dst; }                b
    with md_gpu.h's vector types rather than raw arrays -- that is the machinery
    under test. */
 typedef struct {
-    md_gpu_uint3    dim;
-    float           scale;
-    md_gpu_uint2    pair;
     md_gpu_float4   v4;
+    uint32_t        dim_x;
+    uint32_t        dim_y;
+    md_gpu_uint2    pair;
+    uint32_t        dim_z;
+    float           scale;
     uint64_t        dst;
 } layout_probe_args_t;
 
@@ -1149,7 +1151,7 @@ UTEST(gpu, two_streams_are_independent) {
 /* =========================================================================
    Argument-struct layout
 
-   md_gpu.h spends a whole section on md_gpu_uint3 and friends because SPIR-V
+   md_gpu.h spends a whole section on md_gpu_float4 and friends because SPIR-V
    and MSL lay vectors out differently, and nothing exercised them. A mismatch
    here does not announce itself -- it shows up as a wrong number several
    launches downstream -- so read the fields straight back.
@@ -1165,7 +1167,7 @@ UTEST(gpu, arg_struct_layout_matches_shader) {
     ASSERT_TRUE(md_gpu_memset_async(d, 0xEE, N * sizeof(uint32_t), f.compute));
 
     layout_probe_args_t a = {0};
-    a.dim.x = 11; a.dim.y = 22; a.dim.z = 33;
+    a.dim_x = 11; a.dim_y = 22; a.dim_z = 33;
     a.scale = 1.5f;
     a.pair.x = 44; a.pair.y = 55;
     a.v4.x = 2.5f; a.v4.y = 3.5f; a.v4.z = 4.5f; a.v4.w = 5.5f;
@@ -1183,7 +1185,7 @@ UTEST(gpu, arg_struct_layout_matches_shader) {
     EXPECT_EQ(11u, host[0]);
     EXPECT_EQ(22u, host[1]);
     EXPECT_EQ(33u, host[2]);
-    EXPECT_EQ(1.5f, scale);          /* uint3: 12 bytes on SPIR-V, 16 on MSL */
+    EXPECT_EQ(1.5f, scale);          /* scalar tail after the 8-aligned uint2 */
     EXPECT_EQ(44u, host[4]);
     EXPECT_EQ(55u, host[5]);         /* uint2: same size, different alignment */
     EXPECT_EQ(2.5f, v4[0]);

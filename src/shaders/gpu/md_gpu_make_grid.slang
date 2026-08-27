@@ -15,8 +15,8 @@
 struct Args {
     uint*  count;      // in : single uint32 element count
     uint*  out_grid;   // out: 3 x uint32 dispatch dimensions
-    uint3  local;      // threads per group
-    uint   _pad;
+    uint4  local;      // xyz = threads per group; w unused -- argument structs
+                       // may not contain 3-vectors (see md_gpu.slang)
 };
 MD_KERNEL_ARGS(Args);
 

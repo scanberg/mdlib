@@ -32,33 +32,35 @@ it did and returns non-zero if a check fails.
 
 /* ---------------------------------------------------------------------------
    Argument structs, mirroring examples/shaders/gpu_volume.slang.
-   The shader's uint3 is mirrored with md_gpu_uint3, whose size and alignment
-   follow the backend being built, so this one C struct is correct on both.
+   The shader's volume dimension travels as a uint4 -- argument structs may not
+   contain 3-vectors -- and md_gpu_uint4 carries the 16-byte alignment the ABI
+   requires, so this one C struct is correct on every backend.
    --------------------------------------------------------------------------- */
 
 typedef struct {
-    md_gpu_uint3 dim;
-    float         freq;
-    uint64_t      vol;
+    md_gpu_uint4 dim;
+    float        freq;
+    uint32_t     _pad;
+    uint64_t     vol;
 } eval_args_t;
 
 typedef struct {
-    md_gpu_uint3 dim;
-    float         threshold;
-    uint64_t      vol;
-    uint64_t      count;
-    uint64_t      indices;
-    uint32_t      capacity;
-    uint32_t      _pad;
+    md_gpu_uint4 dim;
+    float        threshold;
+    uint32_t     _pad0;
+    uint64_t     vol;
+    uint64_t     count;
+    uint64_t     indices;
+    uint32_t     capacity;
+    uint32_t     _pad1;
 } compact_args_t;
 
 typedef struct {
-    md_gpu_uint3 dim;
-    uint32_t      _pad;
-    uint64_t      vol;
-    uint64_t      count;
-    uint64_t      indices;
-    uint64_t      values;
+    md_gpu_uint4 dim;
+    uint64_t     vol;
+    uint64_t     count;
+    uint64_t     indices;
+    uint64_t     values;
 } gather_args_t;
 
 #define DEV(p) ((uint64_t)(uintptr_t)(p))
@@ -193,7 +195,7 @@ int main(void) {
     const float threshold = 0.5f;
 
     eval_args_t ea = {0};
-    ea.dim = (md_gpu_uint3){DIM, DIM, DIM};
+    ea.dim = (md_gpu_uint4){DIM, DIM, DIM, 0};
     ea.freq  = 4.0f;
     ea.vol   = vol;
     CHECK(md_gpu_launch(compute, k_eval, md_gpu_grid(DIM/4, DIM/4, DIM/4),
@@ -202,7 +204,7 @@ int main(void) {
     CHECK(md_gpu_memset_async(count, 0, sizeof(uint32_t), compute), "memset count");
 
     compact_args_t ca = {0};
-    ca.dim = (md_gpu_uint3){DIM, DIM, DIM};
+    ca.dim = (md_gpu_uint4){DIM, DIM, DIM, 0};
     ca.threshold = threshold;
     ca.vol       = vol;
     ca.count     = DEV(count);
@@ -217,7 +219,7 @@ int main(void) {
     CHECK(md_gpu_make_grid(compute, grid, count, local), "make_grid");
 
     gather_args_t ga = {0};
-    ga.dim = (md_gpu_uint3){DIM, DIM, DIM};
+    ga.dim = (md_gpu_uint4){DIM, DIM, DIM, 0};
     ga.vol     = vol;
     ga.count   = DEV(count);
     ga.indices = DEV(indices);

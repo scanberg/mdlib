@@ -14,8 +14,7 @@
 //     #include "md_gpu.slang"
 //
 //     struct Args {
-//         uint3  dim;
-//         uint   _pad;
+//         uint4  dim;                  // xyz used, w spare (see below)
 //         DescriptorHandle<RWTexture3D<float>> vol;
 //         DescriptorHandle<Texture3D<float4>>  src;
 //         DescriptorHandle<SamplerState>       samp;
@@ -26,9 +25,10 @@
 //     [shader("compute")]
 //     [numthreads(4, 4, 4)]
 //     void main(uint3 tid : SV_DispatchThreadID) {
-//         Args a = MD_ARGS;
-//         if (any(tid >= a.dim)) return;
-//         a.vol[tid] = a.src.SampleLevel(a.samp, float3(tid) / float3(a.dim), 0).x;
+//         Args   a   = MD_ARGS;
+//         uint3  dim = a.dim.xyz;
+//         if (any(tid >= dim)) return;
+//         a.vol[tid] = a.src.SampleLevel(a.samp, float3(tid) / float3(dim), 0).x;
 //     }
 //
 // A handle is type-checked: a DescriptorHandle<RWTexture3D<float>> cannot be
@@ -59,42 +59,58 @@
 //
 // MIRRORING THE ARGUMENT STRUCT IN C
 //
-// The two backends do not lay vectors out the same way. Slang emits SPIR-V with
-// *scalar* layout -- a vector's alignment is its component's, and uint3 occupies
-// 12 bytes -- while MSL gives uint2 8/8, uint3 16/16 and uint4 16/16:
+// The two backends do not lay vectors out identically. Slang emits SPIR-V with
+// *scalar* layout -- a vector's alignment is its component's -- while MSL gives
+// vec2 8/8 and vec4 16/16. The sizes agree; only the alignment differs. So one
+// C struct is correct on both backends exactly when every vector member sits at
+// an offset that satisfies the stricter (Metal) alignment:
 //
-//     struct { uint3 dim; float scale; }
-//         SPIR-V: dim@0  scale@12
-//         MSL:    dim@0  scale@16
+//     vec2, texture/sampler handle    offset must be a multiple of 8
+//     vec4, float4x4                  offset must be a multiple of 16
 //
-// You do not have to avoid vectors, and you must not try to fix this with
-// hand-written padding -- a pad lands at offset 12 in SPIR-V but 16 in MSL, so
-// it shifts the two targets by different amounts and nothing is gained.
-//
-// Instead mirror vectors with the md_gpu_* vector types from md_gpu.h. Their
-// size and alignment follow the backend being built, so the surrounding struct
-// falls out of C's own layout rules and matches the shader on both:
+// Mirror those members with md_gpu.h's md_gpu_uint4 / md_gpu_float4x4 / ...
+// which declare that alignment, and the C struct falls out correct with no
+// per-backend #ifdef anywhere:
 //
 //     struct Args {                        // Slang
-//         uint3  dim;
+//         uint4  dim;                      // xyz used
 //         float  scale;
+//         uint   _pad;
 //         DescriptorHandle<RWTexture3D<float>> vol;
 //         float* dst;
 //     };
 //
 //     typedef struct {                     // C
-//         md_gpu_uint3 dim;
-//         float         scale;
+//         md_gpu_uint4 dim;
+//         float        scale;
+//         uint32_t     _pad;
 //         md_gpu_tex_t vol;
-//         uint64_t      dst;
+//         uint64_t     dst;
 //     } my_args_t;
 //
-// Scalars, device pointers and texture handles need no help.
+// Scalars and device pointers place themselves. Texture and sampler handles do
+// not: Slang lowers DescriptorHandle<T> to two 32-bit words, which SPIR-V
+// aligns to 4 and MSL to 8, so a handle after an odd number of 32-bit scalars
+// lands 4 bytes apart on the two targets. Pad it to an 8-byte offset, exactly
+// as for a vec2.
 //
-// This is checked rather than trusted: tools/check_gpu_arg_layout.py compiles
-// each kernel for both targets and verifies Slang still lays the struct out the
-// way those C types assume. If Slang ever changes, the build fails and
-// MD_GPU_VEC_ALIGN* in md_gpu.h is what needs updating.
+// NO THREE-COMPONENT VECTORS IN ARGUMENT STRUCTS. uint3 is 12 bytes in SPIR-V
+// and 16 in MSL, and padding cannot close that: MSL's slack sits *inside* the
+// vector and SPIR-V's sits after it, so every following member shifts by 4 on
+// one target only -- putting the vector on a 16-byte boundary fixes where it
+// starts and nothing else:
+//
+//     struct { uint*a; uint*b; uint3 v; uint pad; uint next; }
+//         SPIR-V: v@16  pad@28  next@32
+//         MSL:    v@16  pad@32  next@36
+//
+// Use uint4 and ignore .w, or three scalars. Everywhere else -- locals,
+// groupshared, arithmetic -- 3-vectors are fine and cost nothing.
+//
+// This is enforced, not trusted: tools/check_gpu_arg_layout.py compiles each
+// kernel for both targets and rejects any argument struct containing a
+// 3-vector, or whose two layouts disagree at any member. If it passes, one C
+// mirror written with the md_gpu_* types is correct on every backend.
 
 // ---------------------------------------------------------------------------
 // Bindless binding assignment

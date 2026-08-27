@@ -132,22 +132,26 @@ void tex_read(uint3 tid : SV_DispatchThreadID) {
 // ---------------------------------------------------------------------------
 // layout_probe: writes every argument field back to a buffer.
 //
-// md_gpu.h's md_gpu_uint3 / md_gpu_float4 / ... exist entirely to make one C
-// struct match both SPIR-V's scalar layout and MSL's vector layout, and nothing
-// in the suite exercised them. Reading the fields back turns a layout mismatch
-// into "field X came through as Y" rather than a wrong result three launches
-// later.
+// md_gpu.h's md_gpu_float4 / md_gpu_uint2 / ... exist to make one C struct match
+// both SPIR-V's scalar layout and MSL's vector layout, and nothing in the suite
+// exercised them. Reading the fields back turns a layout mismatch into "field X
+// came through as Y" rather than a wrong result three launches later.
 //
-// The mix is deliberate: uint3 (12B/16B) is the case that cannot be fixed with
-// hand padding, uint2 and float4 are the cases that differ only in alignment,
-// and the trailing pointer proves the struct's total footprint agrees too.
+// The layout is chosen to be a real test of the ABI rule rather than a trivial
+// one: `pair` sits at offset 24, which the two targets agree on only because 24
+// is a multiple of 8 -- drop `dim_y` and SPIR-V would put it at 20 while MSL
+// kept it at 24, which is exactly what check_gpu_arg_layout.py rejects. The
+// three scalar dimensions stand in for the 3-vector the ABI does not allow, and
+// the trailing pointer proves the struct's total footprint agrees too.
 // ---------------------------------------------------------------------------
 struct LayoutProbeArgs {
-    uint3   dim;
-    float   scale;
-    uint2   pair;
-    float4  v4;
-    uint*   dst;
+    float4  v4;         // @0
+    uint    dim_x;      // @16
+    uint    dim_y;      // @20
+    uint2   pair;       // @24  -- only agrees because 24 % 8 == 0
+    uint    dim_z;      // @32
+    float   scale;      // @36
+    uint*   dst;        // @40
 };
 
 struct LayoutProbeRoot { LayoutProbeArgs* args; };
@@ -158,9 +162,9 @@ struct LayoutProbeRoot { LayoutProbeArgs* args; };
 void layout_probe(uint3 tid : SV_DispatchThreadID) {
     LayoutProbeArgs a = *layout_probe_root.args;
     if (tid.x != 0) return;
-    a.dst[0] = a.dim.x;
-    a.dst[1] = a.dim.y;
-    a.dst[2] = a.dim.z;
+    a.dst[0] = a.dim_x;
+    a.dst[1] = a.dim_y;
+    a.dst[2] = a.dim_z;
     a.dst[3] = asuint(a.scale);
     a.dst[4] = a.pair.x;
     a.dst[5] = a.pair.y;

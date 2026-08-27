@@ -83,12 +83,14 @@ struct md_allocator_i;
 extern "C" {
 #endif
 
-/* Device pointers are real 64-bit addresses. */
 #if defined(__cplusplus)
-static_assert(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
+#  define MD_GPU_STATIC_ASSERT(c, m) static_assert(c, m)
 #else
-_Static_assert(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
+#  define MD_GPU_STATIC_ASSERT(c, m) _Static_assert(c, m)
 #endif
+
+/* Device pointers are real 64-bit addresses. */
+MD_GPU_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
 
 /* =========================================================================
    Handles and value types
@@ -107,14 +109,15 @@ typedef void* md_gpu_ptr_t;
    receives it as a Slang DescriptorHandle<T>:
 
        struct Args {
-           uint3 dim;
-           uint  _pad;
+           uint4 dim;                                  // xyz used, w spare
            DescriptorHandle<RWTexture3D<float>> vol;   // <- this field
            float* dst;
        };
 
-   The value is a bindless heap slot, so it is 8 bytes and 8-byte aligned in
-   the struct. Zero is the null handle. There is no binding table, no class,
+   The value is a bindless heap slot: 8 bytes, but a pair of 32-bit words in
+   SPIR-V against a single 8-aligned value in MSL, so like a 2-vector it has to
+   sit at an offset that is a multiple of 8 -- see the ABI rule below. Zero is
+   the null handle. There is no binding table, no class,
    and nothing to declare in the shader -- adding a new texture type costs no
    host code at all. Slang type-checks the handle against the resource type,
    so using a 3D storage handle where a 2D sampled texture is expected is a
@@ -146,43 +149,59 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
    =========================================================================
 
    A kernel's argument struct is mirrored in C, and the two shader backends do
-   not lay vectors out the same way. Slang emits SPIR-V with scalar layout -- a
-   vector's alignment is its component's, and a 3-vector occupies 12 bytes --
-   while MSL gives vec2 8/8, vec3 16/16 and vec4 16/16. A plain
-   `uint32_t dim[3]` therefore puts the following member at offset 12 on Vulkan
-   and 16 on Metal.
+   not lay vectors out identically. Slang emits SPIR-V with scalar layout -- a
+   vector's alignment is its component's -- while MSL gives vec2 8/8 and vec4
+   16/16. Crucially the *sizes* agree; only the alignment differs. So a single
+   C struct is correct on both backends exactly when every vector member sits
+   at an offset satisfying the stricter (Metal) alignment:
 
-   These types carry the size and alignment of whichever backend is being
-   built, so the surrounding struct falls out of C's own layout rules and
-   matches the shader on both. Use them wherever the shader uses a vector:
+       md_gpu_*2, md_gpu_tex_t     offset must be a multiple of 8
+       md_gpu_*4, md_gpu_float4x4  offset must be a multiple of 16
+
+   That is the entire ABI rule. It is a property of the struct, not of the
+   backend, which is why the types below carry no #ifdef and this header needs
+   to know nothing about which backend it was built against. The types declare
+   the alignment they require, so C places them correctly on its own; the
+   shader side is held to the same rule by tools/check_gpu_arg_layout.py, which
+   compiles every kernel for both targets and rejects any argument struct whose
+   two layouts disagree. A struct that violates the rule is a build error, not
+   a silently wrong number several launches downstream.
+
+   NO THREE-COMPONENT VECTORS IN ARGUMENT STRUCTS
+   ----------------------------------------------
+   uint3 is 12 bytes in SPIR-V and 16 in MSL, and no amount of padding closes
+   that gap: MSL's slack sits *inside* the vector, SPIR-V's sits after it, so
+   every following member shifts by 4 on one target only. Landing the vector on
+   a 16-byte boundary fixes where it starts and nothing else. There is
+   deliberately no md_gpu_uint3 -- use a 4-vector and ignore .w, or three
+   scalars, whichever reads better:
 
        struct Args {                    // Slang
-           uint3  dim;
+           uint4  dim;                  // xyz used
            float  scale;
+           uint   _pad;
            float* dst;
        };
 
-       typedef struct {                 // C, matches on both backends
-           md_gpu_uint3 dim;
-           float         scale;
-           uint64_t      dst;
+       typedef struct {                 // C, correct on every backend
+           md_gpu_uint4 dim;
+           float        scale;
+           uint32_t     _pad;
+           uint64_t     dst;
        } my_args_t;
 
-   Scalars, 8-byte device pointers and md_gpu_tex_t handles need no help.
-   (alignas sits on the first member only -- applying it to a multi-declarator
-   line would align every declarator and inflate the struct.) */
+   Inside shader code -- locals, groupshared, arithmetic -- 3-vectors are fine
+   and cost nothing; `a.dim.xyz` is the usual way to read one back out. The
+   rule constrains the argument struct only.
 
-#if defined(MD_GPU_BACKEND_METAL)
-#  define MD_GPU_VEC_ALIGN2  8
-#  define MD_GPU_VEC_ALIGN3 16
-#  define MD_GPU_VEC_ALIGN4 16
-#  define MD_GPU_VEC3_PAD   1     /* MSL rounds a 3-vector up to 4 components */
-#else
-#  define MD_GPU_VEC_ALIGN2  4
-#  define MD_GPU_VEC_ALIGN3  4
-#  define MD_GPU_VEC_ALIGN4  4
-#  define MD_GPU_VEC3_PAD   0
-#endif
+   Scalars and 8-byte device pointers place themselves and need no help.
+   Texture and sampler handles are the one non-vector member the rule covers:
+   Slang lowers DescriptorHandle<T> to two 32-bit words, so SPIR-V aligns it to
+   4 while MSL aligns it to 8. A handle preceded by an odd number of 32-bit
+   scalars therefore lands 4 bytes apart on the two targets -- pad to an 8-byte
+   offset, exactly as for a 2-vector.
+   (The alignment specifier sits on the first member only -- applying it to a
+   multi-declarator line would align every declarator and inflate the struct.) */
 
 #if defined(__cplusplus)
 #  define MD_GPU_ALIGNAS(n) alignas(n)
@@ -194,28 +213,43 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
 #  define MD_GPU_ALIGNAS(n) _Alignas(n)
 #endif
 
-#if MD_GPU_VEC3_PAD
-#  define MD_GPU_VEC3_TAIL(T) T _pad;
-#else
-#  define MD_GPU_VEC3_TAIL(T)
-#endif
-
-#define MD_GPU_DEFINE_VEC(name, T)                                            \
-    typedef struct { MD_GPU_ALIGNAS(MD_GPU_VEC_ALIGN2) T x; T y; }      name##2; \
-    typedef struct { MD_GPU_ALIGNAS(MD_GPU_VEC_ALIGN3) T x; T y, z;         \
-                     MD_GPU_VEC3_TAIL(T) }                               name##3; \
-    typedef struct { MD_GPU_ALIGNAS(MD_GPU_VEC_ALIGN4) T x; T y, z, w; } name##4
+#define MD_GPU_DEFINE_VEC(name, T)                                             \
+    typedef struct { MD_GPU_ALIGNAS(8)  T x; T y; }       name##2;             \
+    typedef struct { MD_GPU_ALIGNAS(16) T x; T y, z, w; } name##4
 
 MD_GPU_DEFINE_VEC(md_gpu_uint,  uint32_t);
 MD_GPU_DEFINE_VEC(md_gpu_int,   int32_t);
 MD_GPU_DEFINE_VEC(md_gpu_float, float);
 
-/* Slang lowers a float4x4 to four 16-byte columns: 64 bytes on both targets,
-   but 16-byte aligned in MSL and component-aligned in SPIR-V. Same treatment
-   as the vectors -- store column-major, matching Slang. */
+/* Slang lowers a float4x4 to four 16-byte columns: 64 bytes on both targets.
+   Same rule as a 4-vector -- store column-major, matching Slang. */
 typedef struct {
-    MD_GPU_ALIGNAS(MD_GPU_VEC_ALIGN4) float m[16];
+    MD_GPU_ALIGNAS(16) float m[16];
 } md_gpu_float4x4;
+
+#undef MD_GPU_DEFINE_VEC
+#undef MD_GPU_ALIGNAS
+
+/* A toolchain that quietly drops the alignment specifier would reintroduce
+   exactly the bug these types exist to prevent, so say so at compile time.
+   offsetof rather than _Alignof: MSVC's C mode did not accept _Alignof until
+   recently, and the probe works everywhere. */
+struct md_gpu_align_probe2_ { char c; md_gpu_uint2    v; };
+struct md_gpu_align_probe4_ { char c; md_gpu_uint4    v; };
+struct md_gpu_align_probem_ { char c; md_gpu_float4x4 v; };
+
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint2)    ==  8, "md_gpu_*2 must be 8 bytes");
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint4)    == 16, "md_gpu_*4 must be 16 bytes");
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_float4x4) == 64, "md_gpu_float4x4 must be 64 bytes");
+MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe2_, v) ==  8,
+                     "md_gpu_*2 must be 8-byte aligned");
+MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
+                     "md_gpu_*4 must be 16-byte aligned");
+MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
+                     "md_gpu_float4x4 must be 16-byte aligned");
+
+/* Nothing below needs it, and this header leaves no macros behind. */
+#undef MD_GPU_STATIC_ASSERT
 
 /* Launch geometry, in thread groups. */
 typedef struct md_gpu_grid_t {

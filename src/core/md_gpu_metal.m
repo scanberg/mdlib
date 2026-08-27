@@ -1990,14 +1990,14 @@ bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_ptr_t g
     return md_mtl_launch_common(s, k, md_gpu_grid(1, 1, 1), args, args_size, b->buffer, off, true);
 }
 
-/* Mirrors MdMakeGridArgs in md_gpu_builtin_msl.inl. md_gpu_uint3 rather than
-   uint32_t[3] for the same reason the header tells callers to use it: MSL gives
-   a 3-vector 16/16, so a raw array would put the struct's tail in a different
-   place than the shader expects. */
+/* Mirrors MdMakeGridArgs in md_gpu_builtin_msl.inl. md_gpu_uint4 rather than
+   uint32_t[4] so the 16-byte alignment MSL gives a 4-vector is stated by the
+   type rather than left to luck, and rather than a uint3 because argument
+   structs may not contain 3-vectors. */
 typedef struct md_mtl_make_grid_args_t {
     uint64_t     count;
     uint64_t     out_grid;
-    md_gpu_uint3 local;
+    md_gpu_uint4 local;     /* xyz = threads per group, w unused */
 } md_mtl_make_grid_args_t;
 
 bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_ptr_t out_grid, const md_gpu_ptr_t count, const uint32_t local[3]) {
