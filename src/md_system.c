@@ -3,6 +3,7 @@
 
 #include <core/md_log.h>
 #include <core/md_array.h>
+#include <core/md_hash.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 
@@ -96,6 +97,9 @@ void md_system_free(md_system_t* sys) {
     // REFERENCE STATE
     md_system_state_free(&sys->reference);
 
+    // ATTRIBUTES
+    md_attributes_free(&sys->attributes);
+
     MEMSET(sys, 0, sizeof(md_system_t));
 }
 
@@ -178,106 +182,10 @@ void md_system_reset(md_system_t* sys) {
     md_allocator_i* alloc = sys->alloc;
     md_system_free(sys);
     sys->alloc = alloc;
+    // The table allocates through its own handle, so every loader gets a usable table
+    // without having to remember to wire this up itself.
+    sys->attributes.alloc = alloc;
 }
-
-// This is from Mathis work in Openspace modified slightly
-// Some macros to help get the job done. The idea is to clone each field in src to dst,
-// but some index fields need also to be incremented to point to the cloned data.
-
-#define ARRAY_PUSH(A, B) \
-        if (src->A.B) md_array_push_array(dst->A.B, src->A.B, src->A.count, alloc)
-
-// Offset arrays are sentinel-terminated: they hold count+1 entries, where entry [count]
-// is the end offset. Copying only 'count' entries drops the sentinel and makes the range
-// accessors read one past the end for the last element.
-#define ARRAY_PUSH_OFFSETS(A, B) \
-        if (src->A.B && src->A.count) md_array_push_array(dst->A.B, src->A.B, src->A.count + 1, alloc)
-
-#define ARRAY_INCREMENT(A, B, C) \
-        for (int64_t j = 0; j < src->A.count; j++) \
-            if (src->A.B) dst->A.B[dst->A.count + j] += C
-
-#define ARRAY_INCREMENT_FIELD(A, B, C, D) \
-        for (int64_t j = 0; j < src->A.count; j++) \
-            if (src->A.B) dst->A.B[dst->A.count + j].C += D
-
-bool md_system_copy(md_system_t* dst, const md_system_t* src) {
-    ASSERT(dst);
-    ASSERT(src);
-
-    if (!dst->alloc) {
-        MD_LOG_ERROR("System allocator not set");
-        return false;
-    }
-
-    md_system_reset(dst);
-
-    md_allocator_i* alloc = dst->alloc;
-
-    ARRAY_PUSH(atom, type_idx);
-    ARRAY_PUSH(atom, flags);
-
-    ARRAY_PUSH(atom, type.name);
-    ARRAY_PUSH(atom, type.z);
-    ARRAY_PUSH(atom, type.mass);
-    ARRAY_PUSH(atom, type.radius);
-
-    ARRAY_PUSH(protein_backbone.segment, atoms);
-    ARRAY_PUSH(protein_backbone.segment, angle);
-    ARRAY_PUSH(protein_backbone.segment, secondary_structure);
-    ARRAY_PUSH(protein_backbone.segment, rama_type);
-    ARRAY_PUSH(protein_backbone.segment, comp_idx);
-
-    ARRAY_PUSH_OFFSETS(protein_backbone.range, offset);
-    md_array_push_array(dst->protein_backbone.range.inst_idx, src->protein_backbone.range.inst_idx, src->protein_backbone.range.count, alloc);
-
-    ARRAY_PUSH(nucleic_backbone.segment, atoms);
-    ARRAY_PUSH(nucleic_backbone.segment, comp_idx);
-
-    ARRAY_PUSH_OFFSETS(nucleic_backbone.range, offset);
-    md_array_push_array(dst->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.inst_idx, src->nucleic_backbone.range.count, alloc);
-
-    ARRAY_PUSH(instance, id);
-    ARRAY_PUSH(instance, auth_id);
-    ARRAY_PUSH_OFFSETS(instance, comp_offset);
-
-    md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
-    md_array_push_array(dst->bond.flags, src->bond.flags, src->bond.count, alloc);
-    md_array_push_array(dst->bond.conn.atom_idx, src->bond.conn.atom_idx, src->bond.conn.count, alloc);
-    md_array_push_array(dst->bond.conn.bond_idx, src->bond.conn.bond_idx, src->bond.conn.count, alloc);
-    md_array_push_array(dst->bond.conn.offset, src->bond.conn.offset, src->bond.conn.offset_count, alloc);
-
-    ARRAY_PUSH(component, name);
-    ARRAY_PUSH(component, seq_id);
-    ARRAY_PUSH_OFFSETS(component, atom_offset);
-    ARRAY_PUSH(component, flags);
-
-    dst->atom.count           = src->atom.count;
-    dst->atom.type.count      = src->atom.type.count;
-    dst->protein_backbone.segment.count = src->protein_backbone.segment.count;
-    dst->protein_backbone.range.count   = src->protein_backbone.range.count;
-    dst->nucleic_backbone.segment.count = src->nucleic_backbone.segment.count;
-    dst->nucleic_backbone.range.count   = src->nucleic_backbone.range.count;
-    dst->instance.count       = src->instance.count;
-    dst->component.count      = src->component.count;
-    dst->bond.count           = src->bond.count;
-    dst->bond.conn.count      = src->bond.conn.count;
-    dst->bond.conn.offset_count = src->bond.conn.offset_count;
-    dst->alloc                = alloc;
-    dst->trajectory           = NULL;
-
-    // The derived topology copied above was inferred from src's reference state, so the reference
-    // must travel with it or the two silently disagree.
-    dst->reference.alloc = alloc;
-    md_system_state_copy(&dst->reference, &src->reference);
-
-    return true;
-}
-
-#undef ARRAY_PUSH
-#undef ARRAY_PUSH_OFFSETS
-#undef ARRAY_INCREMENT
-#undef ARRAY_INCREMENT_FIELD
 
 static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
     ASSERT(conn);
@@ -365,6 +273,452 @@ void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj)
     if (!sys) return;
     md_trajectory_free(sys->trajectory);
     sys->trajectory = traj;
+}
+
+
+// ATTRIBUTES
+
+static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
+    [MD_ATTRIBUTE_TYPE_NONE] = 0,
+    [MD_ATTRIBUTE_TYPE_F32]  = 4,
+    [MD_ATTRIBUTE_TYPE_F64]  = 8,
+    [MD_ATTRIBUTE_TYPE_I8]   = 1,
+    [MD_ATTRIBUTE_TYPE_U8]   = 1,
+    [MD_ATTRIBUTE_TYPE_I16]  = 2,
+    [MD_ATTRIBUTE_TYPE_U16]  = 2,
+    [MD_ATTRIBUTE_TYPE_I32]  = 4,
+    [MD_ATTRIBUTE_TYPE_U32]  = 4,
+    [MD_ATTRIBUTE_TYPE_I64]  = 8,
+    [MD_ATTRIBUTE_TYPE_U64]  = 8,
+};
+
+size_t md_attribute_type_size(md_attribute_type_t type) {
+    if (type <= MD_ATTRIBUTE_TYPE_NONE || type >= MD_ATTRIBUTE_TYPE_COUNT) {
+        return 0;
+    }
+    return attr_type_size[type];
+}
+
+size_t md_attribute_components(const md_attribute_format_t* format) {
+    ASSERT(format);
+    return format->rank < 2 ? 1 : (size_t)format->shape[format->rank - 1];
+}
+
+size_t md_attribute_value_count(const md_attribute_format_t* format) {
+    ASSERT(format);
+    if (format->rank < 2) {
+        return format->rank == 0 ? 1 : (size_t)format->shape[0];
+    }
+    size_t count = 1;
+    for (uint32_t i = 0; i < format->rank - 1; ++i) {
+        count *= (size_t)format->shape[i];
+    }
+    return count;
+}
+
+size_t md_attribute_element_count(const md_attribute_format_t* format) {
+    ASSERT(format);
+    size_t count = 1;
+    for (uint32_t i = 0; i < format->rank; ++i) {
+        count *= (size_t)format->shape[i];
+    }
+    return count;
+}
+
+size_t md_attribute_byte_size(const md_attribute_format_t* format) {
+    ASSERT(format);
+    return md_attribute_element_count(format) * md_attribute_type_size(format->type);
+}
+
+// Splits at the LAST separator. loc is the separator offset, false if there is none.
+static bool attr_path_split(size_t* loc, str_t path) {
+    return str_rfind_char(loc, path, '/');
+}
+
+str_t md_attribute_category(const md_attribute_t* attr) {
+    ASSERT(attr);
+    size_t loc;
+    if (!attr_path_split(&loc, attr->name)) {
+        return (str_t){0};
+    }
+    return str_substr(attr->name, 0, loc);
+}
+
+str_t md_attribute_field(const md_attribute_t* attr) {
+    ASSERT(attr);
+    size_t loc;
+    if (!attr_path_split(&loc, attr->name)) {
+        return attr->name;
+    }
+    return str_substr(attr->name, loc + 1, SIZE_MAX);
+}
+
+size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
+    ASSERT(attr);
+
+    if (!dst) {
+        return 0;
+    }
+
+    size_t count = md_attribute_element_count(&attr->format);
+    if (count > cap) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' needs %zu floats, %zu supplied", STR_ARG(attr->name), count, cap);
+        return 0;
+    }
+    if (!attr->data || count == 0) {
+        return 0;
+    }
+
+    // md_unit_none() as the target means "as stored". Anything else has to be convertible, and a
+    // refusal here is the point: a silently rescaled quantity is not detectable downstream.
+    double factor = 1.0;
+    if (!md_unit_is_none(dst_unit) && !md_unit_conversion_factor(&factor, attr->unit, dst_unit)) {
+        char from[64], to[64];
+        size_t from_len = md_unit_print(from, sizeof(from), attr->unit);
+        size_t to_len   = md_unit_print(to,   sizeof(to),   dst_unit);
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is '%.*s' and cannot be expressed as '%.*s'",
+            STR_ARG(attr->name), (int)from_len, from, (int)to_len, to);
+        return 0;
+    }
+
+    if (attr->format.type == MD_ATTRIBUTE_TYPE_F32 && factor == 1.0) {
+        MEMCPY(dst, attr->data, count * sizeof(float));
+        return count;
+    }
+
+    // The scale is applied in double and narrowed once, at the end.
+#define MD_ATTR_CONVERT(T)                                          \
+    do {                                                            \
+        const T* src = (const T*)attr->data;                        \
+        for (size_t i = 0; i < count; ++i) {                        \
+            dst[i] = (float)((double)src[i] * factor);              \
+        }                                                           \
+    } while (0)
+
+    switch (attr->format.type) {
+    case MD_ATTRIBUTE_TYPE_F32: MD_ATTR_CONVERT(float);    break;
+    case MD_ATTRIBUTE_TYPE_F64: MD_ATTR_CONVERT(double);   break;
+    case MD_ATTRIBUTE_TYPE_I8:  MD_ATTR_CONVERT(int8_t);   break;
+    case MD_ATTRIBUTE_TYPE_U8:  MD_ATTR_CONVERT(uint8_t);  break;
+    case MD_ATTRIBUTE_TYPE_I16: MD_ATTR_CONVERT(int16_t);  break;
+    case MD_ATTRIBUTE_TYPE_U16: MD_ATTR_CONVERT(uint16_t); break;
+    case MD_ATTRIBUTE_TYPE_I32: MD_ATTR_CONVERT(int32_t);  break;
+    case MD_ATTRIBUTE_TYPE_U32: MD_ATTR_CONVERT(uint32_t); break;
+    case MD_ATTRIBUTE_TYPE_I64: MD_ATTR_CONVERT(int64_t);  break;
+    case MD_ATTRIBUTE_TYPE_U64: MD_ATTR_CONVERT(uint64_t); break;
+    default:
+        MD_LOG_ERROR("Attribute '" STR_FMT "' has no readable type", STR_ARG(attr->name));
+        return 0;
+    }
+
+#undef MD_ATTR_CONVERT
+
+    return count;
+}
+
+static bool attr_path_valid(str_t path) {
+    if (str_empty(path)) {
+        return false;
+    }
+    if (path.ptr[0] == '/' || path.ptr[path.len - 1] == '/') {
+        return false;
+    }
+    for (size_t i = 1; i < path.len; ++i) {
+        if (path.ptr[i] == '/' && path.ptr[i - 1] == '/') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A trailing separator on the prefix is ignored, so "atom" and "atom/" behave identically.
+static str_t attr_prefix_trim(str_t prefix) {
+    while (prefix.len > 0 && prefix.ptr[prefix.len - 1] == '/') {
+        prefix.len -= 1;
+    }
+    return prefix;
+}
+
+// Matches at a segment boundary: "atom" covers "atom" and "atom/charge", never "atomic/z".
+// prefix is expected to have been trimmed.
+static bool attr_path_covered_by(str_t path, str_t prefix) {
+    if (str_empty(prefix)) {
+        return true;
+    }
+    if (!str_begins_with(path, prefix)) {
+        return false;
+    }
+    return path.len == prefix.len || path.ptr[prefix.len] == '/';
+}
+
+// First index whose name is not ordered before name. The array is sorted, so this is where
+// name belongs and, for a prefix, where its run of matches begins.
+static size_t attr_lower_bound(const md_attributes_t* attributes, str_t name) {
+    size_t lo = 0;
+    size_t hi = md_array_size(attributes->attr);
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (str_cmp_lex(attributes->attr[mid].name, name) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static size_t attr_index_from_id(const md_attributes_t* attributes, md_attribute_id_t id) {
+    if (id == MD_ATTRIBUTE_INVALID) {
+        return SIZE_MAX;
+    }
+    for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
+        if (attributes->attr[i].id == id) {
+            return i;
+        }
+    }
+    return SIZE_MAX;
+}
+
+void md_attributes_free(md_attributes_t* attributes) {
+    ASSERT(attributes);
+    md_allocator_i* alloc = attributes->alloc;
+    if (alloc) {
+        for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
+            md_attribute_t* attr = attributes->attr + i;
+            str_free(attr->name, alloc);
+            if (attr->data) {
+                md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
+            }
+        }
+        md_array_free(attributes->attr, alloc);
+    }
+    MEMSET(attributes, 0, sizeof(md_attributes_t));
+}
+
+size_t md_attributes_count(const md_attributes_t* attributes) {
+    ASSERT(attributes);
+    return md_array_size(attributes->attr);
+}
+
+md_attribute_id_t md_attributes_create(md_attributes_t* attributes, str_t name, md_attribute_format_t format, md_unit_t unit, const void* data, size_t byte_size) {
+    ASSERT(attributes);
+
+    if (!attributes->alloc) {
+        MD_LOG_ERROR("Attribute table allocator not set");
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (!attr_path_valid(name)) {
+        MD_LOG_ERROR("Invalid attribute path '" STR_FMT "': expected non empty segments separated by '/'", STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (md_attribute_type_size(format.type) == 0) {
+        MD_LOG_ERROR("Invalid type for attribute '" STR_FMT "'", STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (format.rank > MD_ATTRIBUTE_MAX_RANK) {
+        MD_LOG_ERROR("Rank %u exceeds MD_ATTRIBUTE_MAX_RANK for attribute '" STR_FMT "'", format.rank, STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    for (uint32_t i = 0; i < format.rank; ++i) {
+        if (format.shape[i] == 0) {
+            MD_LOG_ERROR("Zero extent in axis %u of attribute '" STR_FMT "'", i, STR_ARG(name));
+            return MD_ATTRIBUTE_INVALID;
+        }
+    }
+    // Axes beyond the declared rank are not read anywhere, so make sure they cannot be
+    // mistaken for data if someone inspects the format in a debugger.
+    size_t required = md_attribute_byte_size(&format);
+    if (data) {
+        if (byte_size != required) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' declares %zu bytes but %zu were supplied", STR_ARG(name), required, byte_size);
+            return MD_ATTRIBUTE_INVALID;
+        }
+    } else if (byte_size != 0) {
+        // A size without a pointer is a caller who meant to pass one.
+        MD_LOG_ERROR("Attribute '" STR_FMT "' supplied %zu bytes with no data pointer", STR_ARG(name), byte_size);
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    for (uint32_t i = format.rank; i < MD_ATTRIBUTE_MAX_RANK; ++i) {
+        format.shape[i] = 0;
+    }
+
+    size_t idx = attr_lower_bound(attributes, name);
+    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].name, name)) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    md_attribute_id_t id = (md_attribute_id_t)md_hash64_str(name, 0);
+    if (id == MD_ATTRIBUTE_INVALID) {
+        // Zero is the invalid value, so the one path that hashes to it borrows the next id.
+        id = 1;
+    }
+    if (attr_index_from_id(attributes, id) != SIZE_MAX) {
+        MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    md_allocator_i* alloc = attributes->alloc;
+
+    void* storage = md_alloc(alloc, required);
+    if (!storage) {
+        MD_LOG_ERROR("Failed to allocate %zu bytes for attribute '" STR_FMT "'", required, STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (data) {
+        MEMCPY(storage, data, required);
+    } else {
+        MEMSET(storage, 0, required);
+    }
+
+    str_t stored_name = str_copy(name, alloc);
+    if (str_empty(stored_name)) {
+        md_free(alloc, storage, required);
+        MD_LOG_ERROR("Failed to copy attribute path '" STR_FMT "'", STR_ARG(name));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    // Grow by one, then open a hole at idx so the array stays sorted by name.
+    md_attribute_t empty = {0};
+    md_array_push(attributes->attr, empty, alloc);
+
+    size_t count = md_array_size(attributes->attr);
+    if (idx + 1 < count) {
+        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
+    }
+
+    attributes->attr[idx] = (md_attribute_t){
+        .id     = id,
+        .name   = stored_name,
+        .format = format,
+        .unit   = unit,
+        .data   = storage,
+    };
+
+    return id;
+}
+
+bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+
+    size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return false;
+    }
+
+    md_allocator_i* alloc = attributes->alloc;
+    ASSERT(alloc);
+
+    md_attribute_t* attr = attributes->attr + idx;
+    str_free(attr->name, alloc);
+    if (attr->data) {
+        md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
+    }
+
+    size_t count = md_array_size(attributes->attr);
+    if (idx + 1 < count) {
+        MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
+    }
+    md_array_pop(attributes->attr);
+
+    return true;
+}
+
+const md_attribute_t* md_attributes_get(const md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+    size_t idx = attr_index_from_id(attributes, id);
+    return idx == SIZE_MAX ? NULL : attributes->attr + idx;
+}
+
+const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t name) {
+    ASSERT(attributes);
+    size_t idx = attr_lower_bound(attributes, name);
+    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].name, name)) {
+        return attributes->attr + idx;
+    }
+    return NULL;
+}
+
+void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_attribute_type_t expected_type) {
+    ASSERT(attributes);
+    size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return NULL;
+    }
+    md_attribute_t* attr = attributes->attr + idx;
+    if (attr->format.type != expected_type) {
+        MD_LOG_ERROR("Type mismatch for attribute '" STR_FMT "'", STR_ARG(attr->name));
+        return NULL;
+    }
+    return attr->data;
+}
+
+size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix) {
+    ASSERT(attributes);
+
+    str_t base = attr_prefix_trim(prefix);
+    size_t count = 0;
+
+    // Sorted by name, so the run starts at the lower bound of the prefix. A path may begin
+    // with the prefix and continue with a character below '/' (say "atom-x" under "atom"),
+    // which sorts inside the run without being covered by it, hence the two conditions.
+    for (size_t i = str_empty(base) ? 0 : attr_lower_bound(attributes, base); i < md_array_size(attributes->attr); ++i) {
+        str_t name = attributes->attr[i].name;
+        if (!str_empty(base) && !str_begins_with(name, base)) {
+            break;
+        }
+        if (!attr_path_covered_by(name, base)) {
+            continue;
+        }
+        if (out_ids && count < cap) {
+            out_ids[count] = attributes->attr[i].id;
+        }
+        count += 1;
+    }
+
+    return count;
+}
+
+size_t md_attributes_query_children(str_t out_names[], size_t cap, const md_attributes_t* attributes, str_t prefix) {
+    ASSERT(attributes);
+
+    str_t base = attr_prefix_trim(prefix);
+    size_t count = 0;
+    str_t prev = {0};
+
+    for (size_t i = str_empty(base) ? 0 : attr_lower_bound(attributes, base); i < md_array_size(attributes->attr); ++i) {
+        str_t name = attributes->attr[i].name;
+        if (!str_empty(base) && !str_begins_with(name, base)) {
+            break;
+        }
+        if (!attr_path_covered_by(name, base)) {
+            continue;
+        }
+        // The prefix itself is an attribute, not a child of one.
+        if (name.len == base.len) {
+            continue;
+        }
+
+        size_t offset = str_empty(base) ? 0 : base.len + 1;
+        str_t rest = str_substr(name, offset, SIZE_MAX);
+        size_t loc;
+        str_t child = str_find_char(&loc, rest, '/') ? str_substr(rest, 0, loc) : rest;
+
+        // Names are sorted, so every path under one child is contiguous and a duplicate can
+        // only ever be the one just emitted.
+        if (!str_empty(prev) && str_eq(child, prev)) {
+            continue;
+        }
+        prev = child;
+
+        if (out_names && count < cap) {
+            out_names[count] = child;
+        }
+        count += 1;
+    }
+
+    return count;
 }
 
 #ifdef __cplusplus

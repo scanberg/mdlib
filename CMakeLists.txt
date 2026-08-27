@@ -136,6 +136,8 @@ set(SRC_FILES
   src/md_system.h
   src/md_pdb.c
   src/md_pdb.h
+  src/md_pot.c
+  src/md_pot.h
   src/md_script.c
   src/md_script.h
   src/md_script_functions.inl

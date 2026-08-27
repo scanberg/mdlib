@@ -458,6 +458,38 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
+// Publishes one per atom float column as a system attribute.
+//
+// Skipped when every value is identical: a PDB with occupancy 1.00 throughout, or with the
+// b factor column zero filled because it never came from a refinement, carries no information
+// worth putting in a property list. Absence therefore means "the file said nothing useful
+// here", which is what a consumer building a menu wants to branch on. Flip this one predicate
+// if attributes should instead be published unconditionally.
+static void pdb_publish_atom_column(md_system_t* sys, str_t name, md_unit_t unit, const float* values, size_t count) {
+    if (count == 0 || !values) {
+        return;
+    }
+
+    bool uniform = true;
+    for (size_t i = 1; i < count; ++i) {
+        if (values[i] != values[0]) {
+            uniform = false;
+            break;
+        }
+    }
+    if (uniform) {
+        return;
+    }
+
+    md_attribute_format_t format = {
+        .type  = MD_ATTRIBUTE_TYPE_F32,
+        .rank  = 1,
+        .shape = {(uint32_t)count},
+    };
+
+    md_attributes_create(&sys->attributes, name, format, unit, values, count * sizeof(float));
+}
+
 bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
     ASSERT(state);
@@ -495,6 +527,14 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     md_array(str_t) atom_name = 0;
     md_array_ensure(atom_name, capacity, temp_arena);
+
+    // Accumulated over the atoms actually kept, not over the coordinate records: altLoc
+    // entries are skipped below, so a column indexed by record would be misaligned from the
+    // first alternate onwards.
+    md_array(float) atom_occupancy = 0;
+    md_array(float) atom_b_factor  = 0;
+    md_array_ensure(atom_occupancy, capacity, temp_arena);
+    md_array_ensure(atom_b_factor,  capacity, temp_arena);
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
@@ -572,6 +612,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_push_no_grow(state->z, z);
         md_array_push_no_grow(sys->atom.flags, flags);
         md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
+        md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
+        md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);
 
 		prev_comp_key = comp_key;
 
@@ -581,6 +623,10 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
+
+    // Occupancy is a dimensionless fraction; the b factor is a mean square displacement.
+    pdb_publish_atom_column(sys, STR_LIT("atom/occupancy"), md_unit_none(), atom_occupancy, sys->atom.count);
+    pdb_publish_atom_column(sys, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), atom_b_factor, sys->atom.count);
 
     if (data->num_cryst1 > 0) {
         // Use first crystal

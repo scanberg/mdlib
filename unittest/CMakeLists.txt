@@ -25,6 +25,7 @@ set (SRC_FILES
     test_vec_math.c
     test_os.c
     test_pdb.c
+    test_attributes.c
     test_gro.c
     test_trr.c
     test_mmcif.c
@@ -37,6 +38,7 @@ set (SRC_FILES
     test_base64.c
     test_xtc.c
     test_xyz.c
+    test_pot.c
     test_vector_graphics.c
     test_xvg.c
     rmsd.c

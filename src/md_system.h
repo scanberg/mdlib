@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include <md_types.h>
+#include <core/md_unit.h>
 
 // Forward declare trajectory type to avoid including trajectory header here
 typedef struct md_trajectory_i md_trajectory_i;
@@ -206,6 +207,111 @@ typedef struct md_hydrogen_bond_data_t {
     md_hydrogen_bond_pair_t* bonds;
 } md_hydrogen_bond_data_t;
 
+// ATTRIBUTES
+//
+// Auxiliary data attached to a system, keyed by an HDF5 style path. The path is the whole
+// key: the leading segments name the category the data applies to, the last segment names
+// the field.
+//
+//     atom/charge/mulliken    per atom Mulliken charges
+//     atom/velocity           per atom velocities
+//     dipole/magnetic/origin  the magnetic dipole origin
+//     dipole/magnetic/vector  the magnetic dipole vector
+//
+// Categories are NOT predeclared. A producer writes whatever path fits its data; a consumer
+// asks for it by name, or asks for everything below a prefix with md_attributes_query.
+// Prefixes match at segment boundaries, so "atom" matches "atom/charge" but never
+// "atomic_number/z".
+//
+// The path carries the meaning, the format carries only the layout. There is deliberately
+// no semantic tag on the format: atom/velocity is a vector because of what it is called,
+// and a second field saying so could only ever disagree with the name.
+//
+// LAYOUT. The trailing axis of shape is the components of one value; the leading axes index
+// whatever the category is over.
+//
+//     rank 0     a single value                 SCF energy
+//     {N}        N scalars                      atom/charge/mulliken
+//     {N,3}      N three component values       atom/position, atom/velocity
+//     {N,6}      N six component values         atom/adp
+//     {M,N,3}    M sets of N                    atom/normal_mode
+//
+// {N,3} and not {3,N}: the components of one value are contiguous, so a row can be handed
+// straight to something expecting a vec3.
+//
+// Independent quantities over the same category are SIBLING PATHS, never an extra axis.
+// Three charge schemes are atom/charge/{mulliken,hirshfeld,lowdin}, not one {N,3}
+// attribute, which would be indistinguishable from a velocity.
+//
+// ANCHORING. A vector quantity whose category has no implicit anchor publishes its origin as a
+// sibling in the same group, with the SAME shape as the vector so no consumer has to branch:
+//
+//     dipole/ground_state/vector        {1,3}    the moment
+//     dipole/ground_state/origin        {1,3}    where to draw it from
+//     dipole/electric_transition/vector {N,3}    one per excited state
+//     dipole/electric_transition/origin {N,3}    one per excited state
+//
+// atom/velocity needs no origin: atom i is anchored at atom i's position, and that is what makes
+// the per atom case work without any machinery. A dipole has no index space behind it, so its
+// anchor has to be said out loud. Note that the two are commonly in DIFFERENT units, which is
+// the reason unit is carried per attribute rather than per group.
+//
+// UNIT. Dimensionless is (md_unit_t){0}, so a unit is never invalid and a caller with nothing to
+// say passes md_unit_none(). It is descriptive only: nothing here converts, and two attributes in
+// the same group may legitimately disagree, as vector and origin above do.
+//
+// EXTENT IS NOT CHECKED. Nothing here knows that "atom/..." ought to have
+// shape[0] == sys->atom.count; that is the price of not predeclaring categories. A consumer
+// that indexes by atom index checks the extent itself before it does.
+//
+// The table is dataset scoped: it lives on md_system_t and a path is unique within one table
+// only. Two datasets both holding atom/charge/mulliken is the normal case, so do not hoist
+// this into anything global.
+//
+// Set alloc before the first create, exactly as md_system_state_t and md_index_data_t
+// require. md_attributes_free clears it along with everything else.
+
+#define MD_ATTRIBUTE_INVALID  ((md_attribute_id_t)0)
+#define MD_ATTRIBUTE_MAX_RANK 4
+
+// Hash of the full path. Zero is the invalid value, so a zeroed field is not a valid
+// attribute. Stable across a reload, so a consumer may store one and re-find its attribute.
+typedef uint64_t md_attribute_id_t;
+
+typedef enum md_attribute_type_t {
+    MD_ATTRIBUTE_TYPE_NONE = 0,
+    MD_ATTRIBUTE_TYPE_F32,
+    MD_ATTRIBUTE_TYPE_F64,
+    MD_ATTRIBUTE_TYPE_I8,
+    MD_ATTRIBUTE_TYPE_U8,
+    MD_ATTRIBUTE_TYPE_I16,
+    MD_ATTRIBUTE_TYPE_U16,
+    MD_ATTRIBUTE_TYPE_I32,
+    MD_ATTRIBUTE_TYPE_U32,
+    MD_ATTRIBUTE_TYPE_I64,
+    MD_ATTRIBUTE_TYPE_U64,
+    MD_ATTRIBUTE_TYPE_COUNT,
+} md_attribute_type_t;
+
+typedef struct md_attribute_format_t {
+    md_attribute_type_t type;
+    uint32_t            rank;                          // 0 means a single value
+    uint32_t            shape[MD_ATTRIBUTE_MAX_RANK];  // trailing axis is components per value
+} md_attribute_format_t;
+
+typedef struct md_attribute_t {
+    md_attribute_id_t     id;
+    str_t                 name;    // full path, owned by the table
+    md_attribute_format_t format;
+    md_unit_t             unit;    // (md_unit_t){0} is dimensionless, a valid and common value
+    void*                 data;    // owned by the table, md_attribute_byte_size() bytes, zeroed on create
+} md_attribute_t;
+
+typedef struct md_attributes_t {
+    struct md_allocator_i*   alloc;
+    md_array(md_attribute_t) attr;  // kept sorted by name
+} md_attributes_t;
+
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
 //
 // This holds exactly the fields which share one interpolation contract - same type in and out,
@@ -284,6 +390,8 @@ typedef struct md_system_t {
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds
 
     md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
+    
+    md_attributes_t             attributes;         // Custom attributes
 
     str_t                       description;
 } md_system_t;
@@ -291,6 +399,103 @@ typedef struct md_system_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// ATTRIBUTE FORMAT
+// These operate on the format alone, so a producer can size a buffer before it creates anything.
+
+// Bytes of one component. Zero for MD_ATTRIBUTE_TYPE_NONE.
+size_t md_attribute_type_size(md_attribute_type_t type);
+
+// Components of one value: the trailing axis, or 1 when rank < 2.
+size_t md_attribute_components(const md_attribute_format_t* format);
+
+// Number of values: the product of the leading axes, or 1 when rank < 2.
+size_t md_attribute_value_count(const md_attribute_format_t* format);
+
+// Total components: value_count * components == product(shape), or 1 when rank == 0.
+size_t md_attribute_element_count(const md_attribute_format_t* format);
+
+// element_count * type_size.
+size_t md_attribute_byte_size(const md_attribute_format_t* format);
+
+// ATTRIBUTE PATH
+// Views into the attribute's own name, nothing is allocated.
+
+// "atom/charge/mulliken" -> "atom/charge". Empty if the path has no separator.
+str_t md_attribute_category(const md_attribute_t* attr);
+
+// "atom/charge/mulliken" -> "mulliken". The whole path if it has no separator.
+str_t md_attribute_field(const md_attribute_t* attr);
+
+// Extracts the whole attribute into dst, converting the stored type to f32 and the stored unit to
+// dst_unit. Returns the number of floats written, 0 on failure. cap is in floats and must be at
+// least md_attribute_element_count().
+//
+// dst_unit of md_unit_none() means "as stored": no conversion is attempted, whatever the attribute
+// carries. Otherwise the two units must share dimensions or the call FAILS - asking for e a0 in
+// Angstrom is a refusal, not a rescale, because an arrow drawn at 1.9x the right length looks
+// entirely plausible on screen and nothing downstream will catch it.
+//
+// The conversion is applied in double and narrowed once, at the end. Narrowing first loses
+// precision against the small factors (1e-10 for Angstrom in SI) that make up most real conversions.
+//
+// Integral attributes convert numerically, which is right for a charge stored as an integer and
+// meaningless for an index or a label column. Nothing here can tell those apart; the path is what
+// tells the consumer, as designed.
+size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit);
+
+// ATTRIBUTE TABLE
+
+void md_attributes_free(md_attributes_t* attributes);
+
+size_t md_attributes_count(const md_attributes_t* attributes);
+
+// Creates an attribute and returns its id, MD_ATTRIBUTE_INVALID on failure.
+//
+// data NULL reserves the storage and zeroes it, for a producer that computes straight into the
+// attribute through md_attributes_data; byte_size must then be 0. Otherwise byte_size must equal
+// md_attribute_byte_size(&format) exactly and the buffer is copied in.
+//
+// The size is not decoration. Nothing here can inspect what data points at, so it is the only
+// guard against a buffer whose element type or count disagrees with the declared format: handing
+// a float array to a format declaring F64 reads twice past the end and the size catches it. A
+// mismatch is a rejection, never a truncated copy.
+//
+// Populating here rather than afterwards also keeps creation atomic. A create followed by a
+// separate write leaves a fully zeroed, valid looking attribute in the table in between, which
+// any early return in that window makes permanent.
+//
+// Rejects an unset allocator, an empty path, a leading or trailing '/', an empty segment, a
+// duplicate path, a type of NONE, a rank above MD_ATTRIBUTE_MAX_RANK, a zero extent and a
+// byte_size disagreeing with the format.
+md_attribute_id_t md_attributes_create(md_attributes_t* attributes, str_t name, md_attribute_format_t format, md_unit_t unit, const void* data, size_t byte_size);
+
+bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
+
+// NULL if absent.
+// INVALIDATED BY THE NEXT create OR remove: the array reallocates and is kept sorted by name.
+// Hold the id, not the pointer.
+const md_attribute_t* md_attributes_get (const md_attributes_t* attributes, md_attribute_id_t id);
+const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t name);
+
+// Writable view for whoever fills the attribute in. NULL if the id is unknown or the stored
+// type is not expected_type, so nobody memcpys f64 into an f32 attribute and finds out at
+// render time. Same invalidation rule as above.
+
+void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_attribute_type_t expected_type);
+
+// Ids of every attribute at or below prefix, in name order. A prefix matches at segment
+// boundaries and an optional trailing '/' is ignored, so "atom" and "atom/" both match
+// "atom/charge" and "atom/charge/mulliken", and neither matches "atomic_number/z". An empty
+// prefix matches everything.
+// Returns the total number of matches and writes at most cap of them, so pass cap 0 to count.
+size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix);
+
+// Immediate child segments below prefix, deduplicated, in name order: "atom/" yields
+// "charge", "velocity". For walking the paths as a tree. The returned strings are views into
+// the stored names and follow the same invalidation rule.
+// Returns the total number of children and writes at most cap of them.
+size_t md_attributes_query_children(str_t out_names[], size_t cap, const md_attributes_t* attributes, str_t prefix);
 
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
@@ -1164,9 +1369,6 @@ static inline int md_hydrogen_bond_acceptor_num_lone_pairs(const md_hydrogen_bon
 
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
-
-// Ensure that the dst_sys has the allocator set
-bool md_system_copy(md_system_t* dst_sys, const md_system_t* src_sys);
 
 // Attach helpers: set or create-and-attach trajectories to a system.
 void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj);

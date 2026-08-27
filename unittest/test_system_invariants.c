@@ -10,8 +10,7 @@
 
 typedef bool (*sys_load_fn)(md_system_t*, md_system_state_t*, str_t);
 
-// Load a file, run full inference, and assert the structural invariants hold both on the
-// freshly built system and on a copy of it.
+// Load a file, run full inference, and assert the structural invariants hold.
 static void check_file(int* utest_result, sys_load_fn load, str_t path) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
@@ -28,15 +27,6 @@ static void check_file(int* utest_result, sys_load_fn load, str_t path) {
 
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
-
-    md_system_t copy = { .alloc = alloc };
-    if (md_system_copy(&copy, &sys)) {
-        expect_valid_system(utest_result, __FILE__, __LINE__, &copy);
-        md_system_free(&copy);
-    } else {
-        printf("md_system_copy failed for '" STR_FMT "'\n", STR_ARG(path));
-        *utest_result = UTEST_TEST_FAILURE;
-    }
 
     md_system_free(&sys);
     md_temp_end(temp);

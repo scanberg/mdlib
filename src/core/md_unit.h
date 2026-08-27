@@ -140,6 +140,15 @@ md_unit_t md_unit_hertz(void);
 md_unit_t md_unit_pascal(void);
 md_unit_t md_unit_bar(void);
 
+// Electric charge
+md_unit_t md_unit_coulomb(void);
+md_unit_t md_unit_elementary_charge(void);       // e
+
+// Dipole moment (charge * length). Both are scales of C m, so md_unit_conversion_factor
+// converts freely between them.
+md_unit_t md_unit_debye(void);                   // D
+md_unit_t md_unit_elementary_charge_bohr(void);  // e a0, the atomic unit of dipole moment
+
 #ifdef __cplusplus
 }
 #endif

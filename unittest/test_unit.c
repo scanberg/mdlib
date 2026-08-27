@@ -186,3 +186,42 @@ UTEST(unit, add_sub_require_exact_units) {
 	EXPECT_TRUE(md_unit_equal(md_unit_add(m, m), m));
 	EXPECT_TRUE(md_unit_equal(md_unit_sub(m, m), m));
 }
+
+UTEST(unit, charge_and_dipole) {
+    // e is a charge, dimensionally a coulomb
+    EXPECT_TRUE(md_unit_base_equal(md_unit_elementary_charge(), md_unit_coulomb()));
+    EXPECT_FALSE(md_unit_equal(md_unit_elementary_charge(), md_unit_coulomb()));
+
+    double factor;
+    ASSERT_TRUE(md_unit_conversion_factor(&factor, md_unit_elementary_charge(), md_unit_coulomb()));
+    EXPECT_NEAR(factor, 1.602176634e-19, 1.0e-30);
+
+    // e a0 and Debye are both charge times length, so they interconvert
+    md_unit_t au = md_unit_elementary_charge_bohr();
+    EXPECT_TRUE(md_unit_base_equal(au, md_unit_debye()));
+    EXPECT_TRUE(md_unit_equal(au, md_unit_mul(md_unit_elementary_charge(), md_unit_bohr_radius())));
+
+    ASSERT_TRUE(md_unit_conversion_factor(&factor, au, md_unit_debye()));
+    EXPECT_NEAR(factor, 2.541746473, 1.0e-6);
+
+    ASSERT_TRUE(md_unit_conversion_factor(&factor, md_unit_debye(), au));
+    EXPECT_NEAR(factor, 1.0 / 2.541746473, 1.0e-6);
+
+    // a dipole is not a length
+    EXPECT_FALSE(md_unit_conversion_factor(&factor, au, md_unit_angstrom()));
+
+    // print and parse round trip
+    char buf[64];
+    size_t len = md_unit_print(buf, sizeof(buf), md_unit_debye());
+    EXPECT_TRUE(str_eq(str_from_cstrn(buf, len), STR_LIT("D")));
+
+    md_unit_t parsed;
+    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("D")));
+    EXPECT_TRUE(md_unit_equal(parsed, md_unit_debye()));
+    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("e")));
+    EXPECT_TRUE(md_unit_equal(parsed, md_unit_elementary_charge()));
+
+    // adding 'e' to the table must not have shadowed the electronvolt
+    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("eV")));
+    EXPECT_TRUE(md_unit_equal(parsed, md_unit_electronvolt()));
+}

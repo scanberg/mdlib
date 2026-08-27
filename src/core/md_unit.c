@@ -69,6 +69,12 @@ typedef struct {
     str_t       str;
 } unit_name_t;
 
+// Physical constants. The elementary charge is exact by the 2019 SI redefinition; the Bohr radius
+// is CODATA 2022; the Debye is exactly 1e-21 / c coulomb metre.
+#define ELEMENTARY_CHARGE_COULOMB 1.602176634e-19
+#define BOHR_RADIUS_METER         5.29177210544e-11
+#define DEBYE_COULOMB_METER       3.33564095198152e-30
+
 #define UNIT_NONE           {0}
 
 // Base
@@ -86,7 +92,7 @@ typedef struct {
 #define UNIT_MICROMETER     {.base = {.dim = {.length = 1,}},   .mult = 1e-6}
 #define UNIT_NANOMETER      {.base = {.dim = {.length = 1,}},   .mult = 1e-9}
 #define UNIT_ANGSTROM       {.base = {.dim = {.length = 1,}},   .mult = 1e-10}
-#define UNIT_BOHR           {.base = {.dim = {.length = 1,}},   .mult = 5.29177210544e-11}
+#define UNIT_BOHR           {.base = {.dim = {.length = 1,}},   .mult = BOHR_RADIUS_METER}
 #define UNIT_MILLISECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-3}
 #define UNIT_NANOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-9}
 #define UNIT_PICOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-12}
@@ -108,7 +114,13 @@ typedef struct {
 #define UNIT_WATT           {.base = {.dim = {.mass = 1, .length =  2, .time = -3}}, .mult = 1.0}
 #define UNIT_COULOMB        {.base = {.dim = {.time = 1, .current = 1}}, .mult = 1.0}
 #define UNIT_AMPEREHOUR     {.base = {.dim = {.time = 1, .current = 1}}, .mult = 3600.0}
-#define UNIT_ELECTRONVOLT   {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = 1.602176634e-19}
+#define UNIT_ELEMENTARY_CHARGE {.base = {.dim = {.time = 1, .current = 1}}, .mult = ELEMENTARY_CHARGE_COULOMB}
+
+// Dipole moment: charge times length. The Debye and the atomic unit (e a0) differ only in scale,
+// so md_unit_conversion_factor moves between them and between either and C m.
+#define UNIT_DEBYE          {.base = {.dim = {.length = 1, .time = 1, .current = 1}}, .mult = DEBYE_COULOMB_METER}
+#define UNIT_ELEMENTARY_CHARGE_BOHR {.base = {.dim = {.length = 1, .time = 1, .current = 1}}, .mult = ELEMENTARY_CHARGE_COULOMB * BOHR_RADIUS_METER}
+#define UNIT_ELECTRONVOLT   {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = ELEMENTARY_CHARGE_COULOMB}
 #define UNIT_HERTZ          {.base = {.dim = {.time = -1,}}, .mult = 1.0}
 
 // The order matters, the first entry which matches is the one used when printing
@@ -144,6 +156,8 @@ static const unit_name_t predefined_units[] = {
     {UNIT_WATT,         S(u8"W")},
     {UNIT_COULOMB,      S(u8"C")},
     {UNIT_AMPEREHOUR,   S(u8"Ah")},
+    {UNIT_ELEMENTARY_CHARGE, S(u8"e")},
+    {UNIT_DEBYE,        S(u8"D")},
     {UNIT_ELECTRONVOLT, S(u8"eV")},
     {UNIT_HERTZ,        S(u8"Hz")},
 };
@@ -786,4 +800,20 @@ md_unit_t md_unit_pascal(void) {
 
 md_unit_t md_unit_bar(void) {
     return (md_unit_t)UNIT_BAR;
+}
+
+md_unit_t md_unit_coulomb(void) {
+    return (md_unit_t)UNIT_COULOMB;
+}
+
+md_unit_t md_unit_elementary_charge(void) {
+    return (md_unit_t)UNIT_ELEMENTARY_CHARGE;
+}
+
+md_unit_t md_unit_debye(void) {
+    return (md_unit_t)UNIT_DEBYE;
+}
+
+md_unit_t md_unit_elementary_charge_bohr(void) {
+    return (md_unit_t)UNIT_ELEMENTARY_CHARGE_BOHR;
 }
