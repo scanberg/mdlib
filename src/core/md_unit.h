@@ -136,6 +136,7 @@ md_unit_t md_unit_count(void);
 // Common units
 md_unit_t md_unit_joule(void);
 md_unit_t md_unit_electronvolt(void);
+md_unit_t md_unit_hartree(void);                 // Ha, the atomic unit of energy
 md_unit_t md_unit_hertz(void);
 md_unit_t md_unit_pascal(void);
 md_unit_t md_unit_bar(void);
