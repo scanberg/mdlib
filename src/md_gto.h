@@ -159,6 +159,19 @@ static inline uint32_t md_gto_num_sph_ao(uint32_t l) { return 2 * l + 1; }
 // Total AO count of the basis == sum of md_gto_num_cart_ao(shell.l).
 // This is the length of an AO coefficient vector and the dimension N of any
 // N x N AO-basis matrix passed to this library.
+// Assembles a basis from the basis/ paths of a system's attribute table - the read side of what a
+// loader publishes. mdlib owns the mapping between those paths and this struct so that no consumer
+// re-derives it, and so a consumer can evaluate without holding the reader which produced the data.
+//
+// Allocates shells/alpha/coeff from alloc; release with md_gto_basis_free, or let an arena do it.
+// Refuses rather than guesses: a wrong type, a wrong rank, columns of disagreeing length, or a
+// shell spanning primitives which were not published are all failures.
+struct md_attributes_t;
+struct md_allocator_i;
+bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const struct md_attributes_t* attributes, struct md_allocator_i* alloc);
+
+void md_gto_basis_free(md_gto_basis_t* basis, struct md_allocator_i* alloc);
+
 size_t md_gto_basis_num_ao(const md_gto_basis_t* basis);
 
 // Total spherical AO count, i.e. what the same shell list would occupy in the

@@ -17,12 +17,10 @@ struct md_system_loader_i;
 
 typedef struct md_vlx_t md_vlx_t;
 
-typedef struct md_vlx_atomic_property_t {
-	str_t    label;
-	uint64_t key;
-	size_t   dim[2];	// dim[0] = number of atoms, dim[1] = 1 for scalar properties, N for multi-dimensional properties.
-	double*  data;
-} md_vlx_atomic_property_t;
+// Atomic properties are not exposed here. They are published into the system's attribute table as
+// "atom/<dataset name>" by md_vlx_system_init_from_data, and a consumer reads them from there:
+// md_attributes_query(..., "atom") to enumerate, md_attribute_extract_slice_f32 to read one.
+// See the ATTRIBUTES section of md_system.h.
 
 typedef struct md_vlx_density_property_t {
 	str_t    label;
@@ -274,6 +272,12 @@ double md_vlx_rsp_rixs_gamma_fwhm_ev(const struct md_vlx_t* vlx);
 // RSP NTO api
 
 bool md_vlx_rsp_has_nto(const struct md_vlx_t* vlx);
+
+// A practical upper bound on the natural transition orbital pairs one excited state can carry.
+// Generous for any real calculation and small enough that a row sits on the stack; the extract
+// below truncates at whatever capacity it is given, so this is a convenience and not a limit of
+// the data.
+#define MD_VLX_NTO_MAX_LAMBDAS 32
 size_t md_vlx_rsp_nto_lambdas_extract(double* out_lambdas, const md_vlx_t* vlx, size_t state_idx, size_t lambda_count);
 
 // Extract transition-density AO matrix [N][N] in shell order from response eigenvectors.
@@ -342,9 +346,6 @@ const md_vlx_xps_group_t* md_vlx_xps_group_by_index(const struct md_vlx_t* vlx, 
 const md_vlx_xps_group_t* md_vlx_xps_group_by_element(const struct md_vlx_t* vlx, md_element_t element);
 
 // Atomic properties
-size_t md_vlx_atomic_property_count(const struct md_vlx_t* vlx);
-const md_vlx_atomic_property_t* md_vlx_atomic_property_by_index(const md_vlx_t* vlx, size_t idx);
-const md_vlx_atomic_property_t* md_vlx_atomic_property_by_key(const md_vlx_t* vlx, uint64_t key);
 
 // Density properties (Various propperties that are defined using AO densities)
 size_t md_vlx_density_property_count(const struct md_vlx_t* vlx);
@@ -353,6 +354,41 @@ const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* 
 
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx);
+
+// Publishes everything this file carries which fits the attribute model onto an already
+// initialised system:
+//
+//   vlx/molecular_charge, vlx/nuclear_repulsion_energy        rank 0, single values
+//   vlx/scf/history/*                                         {I} per SCF iteration
+//   vlx/scf/orbital/{alpha,beta}/*                            {M} per molecular orbital
+//   vlx/rsp/{oscillator,rotatory}_strength                    {S} per excited state
+//   vlx/rsp/frequency, vlx/rsp/{cpp,tpa}/*                    {F} over the response frequencies
+//   vlx/rsp/rixs/*                                            {P}, {C}, and {F,P} for the 2D maps
+//   vlx/rsp/nto/lambda                                        {S,Lmax}, ragged rows zero padded
+//   vlx/xps/*                                                 {C} per core-hole state, one path
+//                                                             per field of the record
+//   vlx/vib/*                                                 {D} per normal mode
+//   vlx/opt/{energy,coordinate}                               {P} per optimisation step
+//   atom/normal_mode                        {M,N} x 3 components, atom axis last
+//   dipole/{ground_state,electric_transition,               each a vector and an origin of the
+//           magnetic_transition,velocity_transition}/*      same shape, anchored at the centre
+//                                                           of charge
+//
+// Most are read with md_attribute_extract_f32; the multi axis ones by building an
+// md_attribute_slice_t, asking md_attribute_slice_count how big it is and extracting into that.
+//
+// Separate from md_vlx_system_init_from_data because that path parses only the core blocks; these
+// need a full md_vlx_parse_file. A block the file does not contain publishes nothing, so a consumer
+// asks the attribute table what is there rather than asking the vlx object what it parsed.
+//
+// The vlx/ prefix is deliberate for the format specific tree: these are one program's output, and a
+// path is a promise, so a quantity moves to a format neutral name once a second loader produces the
+// same thing rather than in anticipation of one. atom/ and dipole/ are already format neutral
+// conventions which md_system.h documents, so those land there directly.
+//
+// Idempotent: a path already present is replaced, so loading another file into the same system
+// leaves no stale series behind.
+void md_vlx_publish_attributes(struct md_system_t* sys, const md_vlx_t* vlx);
 bool md_vlx_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename);
 bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, str_t filename);
 

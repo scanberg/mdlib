@@ -8,6 +8,8 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
+#include <core/md_array.h>
+#include <md_system.h>
 
 #include <stdbool.h>
 #include <float.h>
@@ -2402,4 +2404,104 @@ size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float
         out_gtos[num_gtos++] = in_gtos[i];
     }
     return num_gtos;
+}
+
+// ---------------------------------------------------------------------------
+// Basis from the attribute table
+// ---------------------------------------------------------------------------
+
+// Finds one of our own columns and hands back its storage. Every check is explicit because the
+// table is open - anyone may publish under any path - so a basis/ path with the wrong type or rank
+// is a mistake to refuse rather than to reinterpret.
+static const void* gto_attr_column(size_t* out_count, const md_attributes_t* attributes, str_t path, md_attribute_type_t type) {
+    const md_attribute_t* attr = md_attributes_find(attributes, path);
+    if (!attr) {
+        return NULL;
+    }
+    if (attr->format.type != type || attr->format.rank != 1 || md_attribute_components(&attr->format) != 1 || !attr->data) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is not the plain column a basis expects", STR_ARG(path));
+        return NULL;
+    }
+    if (out_count) *out_count = attr->format.shape[0];
+    return attr->data;
+}
+
+bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t* attributes, md_allocator_i* alloc) {
+    ASSERT(out);
+    ASSERT(alloc);
+
+    if (!attributes) {
+        return false;
+    }
+
+    MEMSET(out, 0, sizeof(*out));
+
+    size_t num_atom_idx = 0, num_offset = 0, num_count = 0, num_angl = 0;
+    const uint32_t* atom_idx = (const uint32_t*)gto_attr_column(&num_atom_idx, attributes, STR_LIT("basis/shell/atom_index"),        MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* offset   = (const uint32_t*)gto_attr_column(&num_offset,   attributes, STR_LIT("basis/shell/primitive_offset"),  MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* count    = (const uint32_t*)gto_attr_column(&num_count,    attributes, STR_LIT("basis/shell/primitive_count"),   MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* angl     = (const uint32_t*)gto_attr_column(&num_angl,     attributes, STR_LIT("basis/shell/angular_momentum"),  MD_ATTRIBUTE_TYPE_U32);
+
+    size_t num_alpha = 0, num_coeff = 0;
+    const float* alpha = (const float*)gto_attr_column(&num_alpha, attributes, STR_LIT("basis/primitive/exponent"),    MD_ATTRIBUTE_TYPE_F32);
+    const float* coeff = (const float*)gto_attr_column(&num_coeff, attributes, STR_LIT("basis/primitive/coefficient"), MD_ATTRIBUTE_TYPE_F32);
+
+    if (!atom_idx || !offset || !count || !angl || !alpha || !coeff) {
+        return false;
+    }
+
+    // These four are COLUMNS of one table, so they must be equal length - that is a property of
+    // this particular group and not a general rule about siblings. Anything else is a table written
+    // in pieces by more than one producer, and guessing which piece is current is not something to
+    // attempt.
+    const size_t num_shells = num_atom_idx;
+    if (num_offset != num_shells || num_count != num_shells || num_angl != num_shells) {
+        MD_LOG_ERROR("basis/shell columns disagree on length");
+        return false;
+    }
+    const size_t num_primitives = num_alpha;
+    if (num_coeff != num_primitives) {
+        MD_LOG_ERROR("basis/primitive columns disagree on length");
+        return false;
+    }
+    if (num_shells == 0 || num_primitives == 0) {
+        return false;
+    }
+
+    // The shell list is stored as four columns rather than as a record, so that every value in the
+    // table is a self describing quantity and a new field is additive. The cost is this one
+    // interleave, paid once when a consumer builds a basis and not per evaluation.
+    md_array_resize(out->shells, num_shells, alloc);
+    for (size_t i = 0; i < num_shells; ++i) {
+        if ((size_t)offset[i] + (size_t)count[i] > num_primitives) {
+            MD_LOG_ERROR("Shell %zu spans primitives [%u,%u) beyond the %zu published", i, offset[i], offset[i] + count[i], num_primitives);
+            md_array_free(out->shells, alloc);
+            MEMSET(out, 0, sizeof(*out));
+            return false;
+        }
+        out->shells[i] = (md_gto_shell_t){
+            .atom_idx         = atom_idx[i],
+            .primitive_offset = offset[i],
+            .num_primitives   = count[i],
+            .l                = angl[i],
+        };
+    }
+
+    md_array_resize(out->alpha, num_primitives, alloc);
+    md_array_resize(out->coeff, num_primitives, alloc);
+    MEMCPY(out->alpha, alpha, num_primitives * sizeof(float));
+    MEMCPY(out->coeff, coeff, num_primitives * sizeof(float));
+
+    out->num_shells     = (uint32_t)num_shells;
+    out->num_primitives = (uint32_t)num_primitives;
+    return true;
+}
+
+void md_gto_basis_free(md_gto_basis_t* basis, md_allocator_i* alloc) {
+    if (!basis) return;
+    ASSERT(alloc);
+    md_array_free(basis->shells, alloc);
+    md_array_free(basis->alpha,  alloc);
+    md_array_free(basis->coeff,  alloc);
+    MEMSET(basis, 0, sizeof(*basis));
 }

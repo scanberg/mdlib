@@ -481,13 +481,22 @@ static void pdb_publish_atom_column(md_system_t* sys, str_t name, md_unit_t unit
         return;
     }
 
+    // One scalar per atom: the atom axis is the only index axis, and a value is one component
+    // wide. components is stated rather than left to a default; see md_system.h.
     md_attribute_format_t format = {
-        .type  = MD_ATTRIBUTE_TYPE_F32,
-        .rank  = 1,
-        .shape = {(uint32_t)count},
+        .type       = MD_ATTRIBUTE_TYPE_F32,
+        .components = 1,
+        .rank       = 1,
+        .shape      = {(uint32_t)count},
     };
 
-    md_attributes_create(&sys->attributes, name, format, unit, values, count * sizeof(float));
+    md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
+        .path      = name,
+        .format    = format,
+        .unit      = unit,
+        .data      = values,
+        .byte_size = count * sizeof(float),
+    });
 }
 
 bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {

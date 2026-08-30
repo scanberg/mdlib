@@ -210,59 +210,106 @@ typedef struct md_hydrogen_bond_data_t {
 // ATTRIBUTES
 //
 // Auxiliary data attached to a system, keyed by an HDF5 style path. The path is the whole
-// key: the leading segments name the category the data applies to, the last segment names
-// the field.
+// key: the leading segments name the group the data belongs to, the last segment names the
+// leaf.
 //
 //     atom/charge/mulliken    per atom Mulliken charges
 //     atom/velocity           per atom velocities
 //     dipole/magnetic/origin  the magnetic dipole origin
 //     dipole/magnetic/vector  the magnetic dipole vector
 //
-// Categories are NOT predeclared. A producer writes whatever path fits its data; a consumer
-// asks for it by name, or asks for everything below a prefix with md_attributes_query.
-// Prefixes match at segment boundaries, so "atom" matches "atom/charge" but never
-// "atomic_number/z".
+// The table is a flat array of LEAVES sorted by path. There are no group objects; a group
+// exists only as a prefix shared by the leaves under it. Groups are NOT predeclared: a
+// producer writes whatever path fits its data; a consumer asks for it by name, or asks for
+// everything below a prefix with md_attributes_query. Prefixes match at segment boundaries,
+// so "atom" matches "atom/charge" but never "atomic_number/z".
 //
 // The path carries the meaning, the format carries only the layout. There is deliberately
 // no semantic tag on the format: atom/velocity is a vector because of what it is called,
 // and a second field saying so could only ever disagree with the name.
 //
-// LAYOUT. The trailing axis of shape is the components of one value; the leading axes index
-// whatever the category is over.
+// LAYOUT. A format says two independent things, and keeping them apart is the whole point:
 //
-//     rank 0     a single value                 SCF energy
-//     {N}        N scalars                      atom/charge/mulliken
-//     {N,3}      N three component values       atom/position, atom/velocity
-//     {N,6}      N six component values         atom/adp
-//     {M,N,3}    M sets of N                    atom/normal_mode
+//   type + components   WHAT ONE VALUE IS. A value is atomic: it is never indexed and never
+//                       sub-set. components is how many type sized components make up one
+//                       value. It is always >= 1, never 0, and never implied by an axis.
+//   rank + shape        WHERE THE VALUES LIVE. Every axis in shape is an INDEX axis and all
+//                       of them are indexable. Row major: the last index axis varies fastest
+//                       and the components of one value are contiguous below that.
 //
-// {N,3} and not {3,N}: the components of one value are contiguous, so a row can be handed
-// straight to something expecting a vec3.
+//     rank 0                      a single value            scf/energy      (components 1)
+//     rank 1 {1}   components 3   one 3-vector              dipole/*/vector
+//     rank 1 {N}   components 1   N scalars                 atom/charge/mulliken
+//     rank 1 {N}   components 3   N 3-vectors               atom/position, atom/velocity
+//     rank 1 {N}   components 6   N 6-vectors               atom/adp
+//     rank 2 {S,N} components 1   N scalars per state       per state Mulliken charges
+//     rank 2 {M,N} components 3   N 3-vectors per mode      atom/normal_mode
 //
-// Independent quantities over the same category are SIBLING PATHS, never an extra axis.
-// Three charge schemes are atom/charge/{mulliken,hirshfeld,lowdin}, not one {N,3}
-// attribute, which would be indistinguishable from a velocity.
+// This is the split HDF5 and numpy both make, and for the same reason. HDF5 puts the extents
+// in the dataspace and the component count in the datatype (H5T_ARRAY), and the rule which
+// removes the ambiguity is behavioural rather than a naming convention: dataspace axes can be
+// hyperslabbed, array datatype axes cannot. components here is that datatype axis. Folding it
+// into shape instead would make {S,N} and {N,3} the same spelling, and a consumer drawing one
+// arrow per value would happily read a 3 atom system's per state charges as vectors.
 //
-// ANCHORING. A vector quantity whose category has no implicit anchor publishes its origin as a
-// sibling in the same group, with the SAME shape as the vector so no consumer has to branch:
+// components is NOT defaulted. Zero is a rejection, not a 1. It is the only guard against a
+// producer who wrote the extents and forgot to say how wide a value is - a mistake a positional
+// axis could never have caught, because every spelling of it is legal.
 //
-//     dipole/ground_state/vector        {1,3}    the moment
-//     dipole/ground_state/origin        {1,3}    where to draw it from
-//     dipole/electric_transition/vector {N,3}    one per excited state
-//     dipole/electric_transition/origin {N,3}    one per excited state
+// Independent quantities over the same group are SIBLING PATHS, never an extra axis or extra
+// components. Three charge schemes are atom/charge/{mulliken,hirshfeld,lowdin}, not one
+// attribute with three components, which would be indistinguishable from a velocity.
 //
-// atom/velocity needs no origin: atom i is anchored at atom i's position, and that is what makes
-// the per atom case work without any machinery. A dipole has no index space behind it, so its
-// anchor has to be said out loud. Note that the two are commonly in DIFFERENT units, which is
-// the reason unit is carried per attribute rather than per group.
+// ANCHORING. A vector quantity whose group has no implicit anchor publishes its origin as a
+// sibling in the same group. The members of a group are addressable by the SAME INDEX SPACE; they
+// do NOT have to have the same shape. A member with fewer index axes is CONSTANT over the ones it
+// lacks, which is ordinary broadcasting and is how a shared anchor is spelled:
+//
+//     dipole/ground_state/vector        rank 1 {1} components 3   the moment
+//     dipole/ground_state/origin        rank 1 {1} components 3   where to draw it from
+//     dipole/electric_transition/vector rank 1 {N} components 3   one per excited state
+//     dipole/electric_transition/origin rank 0     components 3   ONE origin, shared by all N
+//
+// Requiring equal shapes instead would mean publishing that shared origin N times, which is the
+// same three numbers stored N times with nothing keeping the copies equal. A consumer reads a
+// group member by clamping its slice to that member's own rank - one line - and that is cheaper
+// than the duplication the alternative forces.
+//
+// atom/velocity needs no origin at all: atom i is anchored at atom i's position, so the anchor is
+// atom/position, a different path with its own shape. A dipole has no index space behind it, so
+// its anchor has to be said out loud. Note that a vector and its origin are commonly in DIFFERENT
+// units, which is the reason unit is carried per attribute rather than per group.
+//
+// EXTENT IS NOT CHECKED. The convention is that the atom axis is the LAST index axis, so an
+// "atom/..." path has shape[rank-1] == sys->atom.count and one whole per atom array is
+// contiguous. Nothing here knows that; it is the price of not predeclaring groups. A consumer
+// that indexes by atom index checks the extent itself before it does.
 //
 // UNIT. Dimensionless is (md_unit_t){0}, so a unit is never invalid and a caller with nothing to
 // say passes md_unit_none(). It is descriptive only: nothing here converts, and two attributes in
 // the same group may legitimately disagree, as vector and origin above do.
 //
-// EXTENT IS NOT CHECKED. Nothing here knows that "atom/..." ought to have
-// shape[0] == sys->atom.count; that is the price of not predeclaring categories. A consumer
-// that indexes by atom index checks the extent itself before it does.
+// LABEL AND DESCRIPTION are PRESENTATION ONLY and carry NO IDENTITY. Nothing is ever looked up
+// by label, duplicate labels are legal and not a warning, and an empty label is a valid state
+// which a consumer answers by prettifying the last path segment. They are struct fields rather
+// than path entries on purpose: giving metadata an address would give it everything an address
+// implies - uniqueness, ordering, prefix query semantics, an id, removal - and every
+// query_children consumer would then have to filter data from metadata. A namespace is for what
+// a consumer looks up; metadata is for what it reads once it has already looked something up.
+// In a group with a canonical leaf and support leaves (vector canonical, origin support), only
+// the canonical leaf carries a label: support leaves are never enumerated for the user, so there
+// is nothing duplicated and nothing to keep in sync.
+//
+// OWNERSHIP. md_attributes_create COPIES the supplied bytes and the table owns the copy for the
+// lifetime of the system. A producer is free to release its own buffers, and its own object, as
+// soon as it has published.
+//
+// TWO THINGS A CONSUMER MUST NOT ASSUME, so the storage behind the table stays free to change:
+//   - Distinct paths do not imply distinct data. Two paths may come to share one buffer (the
+//     same quantity reachable as both vlx/... and atom/...), so never decide "same datum" by
+//     comparing id.
+//   - data is the storage of a RESIDENT attribute and may be NULL. md_attribute_extract_f32 is
+//     the access path which is valid for every attribute.
 //
 // The table is dataset scoped: it lives on md_system_t and a path is unique within one table
 // only. Two datasets both holding atom/charge/mulliken is the normal case, so do not hoist
@@ -276,6 +323,7 @@ typedef struct md_hydrogen_bond_data_t {
 
 // Hash of the full path. Zero is the invalid value, so a zeroed field is not a valid
 // attribute. Stable across a reload, so a consumer may store one and re-find its attribute.
+// It identifies an ADDRESS, not a datum: see the note on distinct paths above.
 typedef uint64_t md_attribute_id_t;
 
 typedef enum md_attribute_type_t {
@@ -294,22 +342,77 @@ typedef enum md_attribute_type_t {
 } md_attribute_type_t;
 
 typedef struct md_attribute_format_t {
-    md_attribute_type_t type;
-    uint32_t            rank;                          // 0 means a single value
-    uint32_t            shape[MD_ATTRIBUTE_MAX_RANK];  // trailing axis is components per value
+    md_attribute_type_t type;                          // what one component is
+    uint32_t            components;                    // components of ONE value, >= 1, never indexed
+    uint32_t            rank;                          // number of index axes, 0 means a single value
+    uint32_t            shape[MD_ATTRIBUTE_MAX_RANK];  // extent of each index axis, row major
 } md_attribute_format_t;
 
 typedef struct md_attribute_t {
     md_attribute_id_t     id;
-    str_t                 name;    // full path, owned by the table
+    str_t                 path;         // full path, owned by the table
+    str_t                 label;        // presentation only, no identity, may be empty
+    str_t                 description;  // presentation only, may be empty
     md_attribute_format_t format;
-    md_unit_t             unit;    // (md_unit_t){0} is dimensionless, a valid and common value
-    void*                 data;    // owned by the table, md_attribute_byte_size() bytes, zeroed on create
+    md_unit_t             unit;         // (md_unit_t){0} is dimensionless, a valid and common value
+    void*                 data;         // owned by the table, md_attribute_byte_size() bytes, zeroed on create
 } md_attribute_t;
+
+// What a producer fills in to publish one attribute. Designated initialisers only: everything
+// not mentioned is zero, and zero is the right default for label, description and data - but
+// NOT for format.components, where zero is rejected.
+typedef struct md_attribute_desc_t {
+    str_t                 path;         // "atom/charge/mulliken"
+    md_attribute_format_t format;
+    md_unit_t             unit;         // md_unit_none() when there is nothing to say
+    str_t                 label;        // optional
+    str_t                 description;  // optional
+    const void*           data;         // copied in; NULL to reserve zeroed storage and fill later
+    size_t                byte_size;    // must equal md_attribute_byte_size(&format), 0 iff data is NULL
+} md_attribute_desc_t;
+
+// A selection of one contiguous window of an attribute: the first num_idx axes are fixed, every
+// axis after them is taken whole.
+//
+// It carries no attribute and nothing derived from one, which is what makes it reusable: the same
+// slice applies to any attribute it fits, and the window is worked out against whichever one it is
+// handed. Applying one slice across a group is therefore normal - clamp num_idx to each member's
+// own rank and a member which is constant over an axis simply ignores it.
+//
+// This is deliberately the CONTIGUOUS subset of what a general hyperslab can select - fixed leading
+// indices only, no stride and no per axis count. Every such selection is one run in row major
+// order, which is why extraction is a single copy and why a computed attribute could serve one with
+// a single call. A strided selection would be a gather, and nothing in the tree needs one.
+//
+// num_idx 0 selects the whole attribute, so a caller which does not care never branches.
+typedef struct md_attribute_slice_t {
+    uint32_t idx[MD_ATTRIBUTE_MAX_RANK];  // index along each fixed leading axis
+    uint32_t num_idx;                     // how many leading axes are fixed
+} md_attribute_slice_t;
+
+static inline md_attribute_slice_t md_attribute_slice_all(void) {
+    md_attribute_slice_t s = {0};
+    return s;
+}
+
+static inline md_attribute_slice_t md_attribute_slice_1(uint32_t i) {
+    md_attribute_slice_t s = {0};
+    s.idx[0] = i;
+    s.num_idx = 1;
+    return s;
+}
+
+static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) {
+    md_attribute_slice_t s = {0};
+    s.idx[0] = i;
+    s.idx[1] = j;
+    s.num_idx = 2;
+    return s;
+}
 
 typedef struct md_attributes_t {
     struct md_allocator_i*   alloc;
-    md_array(md_attribute_t) attr;  // kept sorted by name
+    md_array(md_attribute_t) attr;  // kept sorted by path
 } md_attributes_t;
 
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
@@ -402,30 +505,31 @@ extern "C" {
 
 // ATTRIBUTE FORMAT
 // These operate on the format alone, so a producer can size a buffer before it creates anything.
+// None of them branch on rank: a rank 0 format is the empty product, not a special case.
 
 // Bytes of one component. Zero for MD_ATTRIBUTE_TYPE_NONE.
 size_t md_attribute_type_size(md_attribute_type_t type);
 
-// Components of one value: the trailing axis, or 1 when rank < 2.
+// Components of one value. Reads format->components straight out; a valid format never holds 0.
 size_t md_attribute_components(const md_attribute_format_t* format);
 
-// Number of values: the product of the leading axes, or 1 when rank < 2.
+// Number of values: product(shape[0 .. rank-1]), so 1 at rank 0.
 size_t md_attribute_value_count(const md_attribute_format_t* format);
 
-// Total components: value_count * components == product(shape), or 1 when rank == 0.
+// Total components stored: value_count * components.
 size_t md_attribute_element_count(const md_attribute_format_t* format);
 
 // element_count * type_size.
 size_t md_attribute_byte_size(const md_attribute_format_t* format);
 
 // ATTRIBUTE PATH
-// Views into the attribute's own name, nothing is allocated.
+// Views into the attribute's own path, nothing is allocated.
 
 // "atom/charge/mulliken" -> "atom/charge". Empty if the path has no separator.
-str_t md_attribute_category(const md_attribute_t* attr);
+str_t md_attribute_group(const md_attribute_t* attr);
 
 // "atom/charge/mulliken" -> "mulliken". The whole path if it has no separator.
-str_t md_attribute_field(const md_attribute_t* attr);
+str_t md_attribute_leaf(const md_attribute_t* attr);
 
 // Extracts the whole attribute into dst, converting the stored type to f32 and the stored unit to
 // dst_unit. Returns the number of floats written, 0 on failure. cap is in floats and must be at
@@ -444,6 +548,43 @@ str_t md_attribute_field(const md_attribute_t* attr);
 // tells the consumer, as designed.
 size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit);
 
+// The same into doubles. Not a convenience: quantum chemistry data is stored double at the boundary
+// on purpose - AO coefficients, total energies - and narrowing to ask a question and widening again
+// throws away exactly the precision that boundary exists to keep. Use f32 for anything headed for a
+// colour ramp or a plot, f64 for anything headed back into a computation.
+size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit);
+
+// SLICING
+// Ask first, allocate, then extract. The size of a slice is a function of the FORMAT alone, so it
+// can be answered for an attribute whose storage does not exist yet - which is what lets the same
+// two step shape serve a computed attribute later without any caller changing.
+
+// Elements the slice selects, which is what a caller allocates for. In elements and not bytes,
+// because the byte size depends on the destination type: count * sizeof(float) or * sizeof(double).
+// Zero when the slice does not apply - more indices than axes, or one of them out of range.
+size_t md_attribute_slice_count(const md_attribute_t* attr, const md_attribute_slice_t* slice);
+
+// The format of what comes back: the attribute's own type and components, with the fixed leading
+// axes removed. A caller slicing {s} out of a rank 3 {S,A,A} gets rank 2 {A,A} and can interpret
+// the buffer it just filled without redoing the arithmetic itself.
+bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t* attr, const md_attribute_slice_t* slice);
+
+// Extracts the slice. Everything else is md_attribute_extract_f32: same conversion, same unit
+// refusal, same return of values written.
+//
+//     rank 2 {S,N} components 1, slice_1(s)  ->  N values, state s's per atom values
+//     rank 2 {M,N} components 3, slice_1(m)  ->  3N values, mode m's displacements
+//     rank 3 {S,A,A} components 1, slice_1(s) -> A*A values, one state's matrix
+//
+// A slice selecting no axes is the whole attribute, so the plain extract above is this call with
+// md_attribute_slice_all().
+//
+// This exists because the alternative is a consumer computing the offset itself from rank, shape
+// and components, which is the one piece of layout arithmetic that must not be duplicated: it is
+// where a wrong answer still looks like data. An out of range index is an error, never a clamp.
+size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit);
+size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit);
+
 // ATTRIBUTE TABLE
 
 void md_attributes_free(md_attributes_t* attributes);
@@ -452,9 +593,12 @@ size_t md_attributes_count(const md_attributes_t* attributes);
 
 // Creates an attribute and returns its id, MD_ATTRIBUTE_INVALID on failure.
 //
-// data NULL reserves the storage and zeroes it, for a producer that computes straight into the
-// attribute through md_attributes_data; byte_size must then be 0. Otherwise byte_size must equal
-// md_attribute_byte_size(&format) exactly and the buffer is copied in.
+// The descriptor is taken by pointer and read once; nothing in it is retained. path, label and
+// description are copied into the table, and so is data.
+//
+// desc->data NULL reserves the storage and zeroes it, for a producer that computes straight into
+// the attribute through md_attributes_data; byte_size must then be 0. Otherwise byte_size must
+// equal md_attribute_byte_size(&desc->format) exactly and the buffer is copied in.
 //
 // The size is not decoration. Nothing here can inspect what data points at, so it is the only
 // guard against a buffer whose element type or count disagrees with the declared format: handing
@@ -466,17 +610,17 @@ size_t md_attributes_count(const md_attributes_t* attributes);
 // any early return in that window makes permanent.
 //
 // Rejects an unset allocator, an empty path, a leading or trailing '/', an empty segment, a
-// duplicate path, a type of NONE, a rank above MD_ATTRIBUTE_MAX_RANK, a zero extent and a
-// byte_size disagreeing with the format.
-md_attribute_id_t md_attributes_create(md_attributes_t* attributes, str_t name, md_attribute_format_t format, md_unit_t unit, const void* data, size_t byte_size);
+// duplicate path, a type of NONE, COMPONENTS OF ZERO, a rank above MD_ATTRIBUTE_MAX_RANK, a zero
+// extent, an extent set beyond the declared rank, and a byte_size disagreeing with the format.
+md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc);
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
 
 // NULL if absent.
-// INVALIDATED BY THE NEXT create OR remove: the array reallocates and is kept sorted by name.
+// INVALIDATED BY THE NEXT create OR remove: the array reallocates and is kept sorted by path.
 // Hold the id, not the pointer.
 const md_attribute_t* md_attributes_get (const md_attributes_t* attributes, md_attribute_id_t id);
-const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t name);
+const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t path);
 
 // Writable view for whoever fills the attribute in. NULL if the id is unknown or the stored
 // type is not expected_type, so nobody memcpys f64 into an f32 attribute and finds out at
@@ -484,16 +628,16 @@ const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_
 
 void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_attribute_type_t expected_type);
 
-// Ids of every attribute at or below prefix, in name order. A prefix matches at segment
+// Ids of every attribute at or below prefix, in path order. A prefix matches at segment
 // boundaries and an optional trailing '/' is ignored, so "atom" and "atom/" both match
 // "atom/charge" and "atom/charge/mulliken", and neither matches "atomic_number/z". An empty
 // prefix matches everything.
 // Returns the total number of matches and writes at most cap of them, so pass cap 0 to count.
 size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix);
 
-// Immediate child segments below prefix, deduplicated, in name order: "atom/" yields
+// Immediate child segments below prefix, deduplicated, in path order: "atom/" yields
 // "charge", "velocity". For walking the paths as a tree. The returned strings are views into
-// the stored names and follow the same invalidation rule.
+// the stored paths and follow the same invalidation rule.
 // Returns the total number of children and writes at most cap of them.
 size_t md_attributes_query_children(str_t out_names[], size_t cap, const md_attributes_t* attributes, str_t prefix);
 
