@@ -4916,27 +4916,27 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	// segment when there is none, so "gradient_norm" needs no help and "ir_intensity" does.
 
 	// ---- Molecule level scalars. rank 0 is a single value, not an array of one. ----
-	vlx_publish_scalar(sys, STR_LIT("vlx/molecular_charge"),          (str_t){0}, md_unit_none(), md_vlx_molecular_charge(vlx));
-	vlx_publish_scalar(sys, STR_LIT("vlx/nuclear_repulsion_energy"),  (str_t){0}, hartree,        md_vlx_nuclear_repulsion_energy(vlx));
+	vlx_publish_scalar(sys, STR_LIT("vlx/molecular_charge"),          STR_LIT("Molecular Charge"),			md_unit_none(), md_vlx_molecular_charge(vlx));
+	vlx_publish_scalar(sys, STR_LIT("vlx/nuclear_repulsion_energy"),  STR_LIT("Nuclear Repulsion Energy"),	hartree,        md_vlx_nuclear_repulsion_energy(vlx));
 	if (md_vlx_rsp_type(vlx) == MD_VLX_RSP_C6) {
 		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/c6"), STR_LIT("C6 Coefficient"), md_unit_none(), md_vlx_c6_value(vlx));
 	}
 
 	// ---- SCF: one value per iteration of the convergence history. ----
 	const size_t num_iter = md_vlx_scf_history_size(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/history/energy"),        (str_t){0}, hartree,        md_vlx_scf_history_energy(vlx),        num_iter);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/history/energy_diff"),   (str_t){0}, hartree,        md_vlx_scf_history_energy_diff(vlx),   num_iter);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/history/density_diff"),  (str_t){0}, md_unit_none(), md_vlx_scf_history_density_diff(vlx),  num_iter);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/history/gradient_norm"), (str_t){0}, md_unit_none(), md_vlx_scf_history_gradient_norm(vlx), num_iter);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/history/max_gradient"),  (str_t){0}, md_unit_none(), md_vlx_scf_history_max_gradient(vlx),  num_iter);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/history/energy"),        STR_LIT("Energy"),				hartree,		md_vlx_scf_history_energy(vlx),			num_iter);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/history/energy_diff"),   STR_LIT("Energy Difference"),		hartree,        md_vlx_scf_history_energy_diff(vlx),	num_iter);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/history/density_diff"),  STR_LIT("Density Difference"),	md_unit_none(), md_vlx_scf_history_density_diff(vlx),	num_iter);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/history/gradient_norm"), STR_LIT("Gradient Norm"),			md_unit_none(), md_vlx_scf_history_gradient_norm(vlx),	num_iter);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/history/max_gradient"),  STR_LIT("Max Gradient"),			md_unit_none(), md_vlx_scf_history_max_gradient(vlx),	num_iter);
 
 	// ---- SCF: one value per molecular orbital, per spin. Sibling paths rather than one {2,M}
 	// attribute, because a beta set is either present or absent and never an index to loop over.
 	const size_t num_mos = md_vlx_scf_number_of_molecular_orbitals(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/energy"),     (str_t){0}, hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_ALPHA),     num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/occupation"), (str_t){0}, md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA), num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/energy"),      (str_t){0}, hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_BETA),      num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/occupation"),  (str_t){0}, md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA),  num_mos);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/energy"),     STR_LIT("Energy"),		hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_ALPHA),		num_mos);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/occupation"), STR_LIT("Occupation"), md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA),	num_mos);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/energy"),      STR_LIT("Energy"),		hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_BETA),		num_mos);
+	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/occupation"),  STR_LIT("Occupation"), md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA),		num_mos);
 
 	// ---- The GTO basis and the MO coefficients: everything an evaluator needs to turn an orbital
 	// into samples on a grid, with no reader in the loop.
@@ -4960,17 +4960,17 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 			const size_t num_primitives = basis.num_primitives;
 			const size_t shell_stride   = sizeof(md_gto_shell_t);
 
-			vlx_publish_column(sys, STR_LIT("basis/shell/atom_index"),       (str_t){0}, md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->atom_idx,         shell_stride, num_shells);
-			vlx_publish_column(sys, STR_LIT("basis/shell/primitive_offset"), (str_t){0}, md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->primitive_offset, shell_stride, num_shells);
-			vlx_publish_column(sys, STR_LIT("basis/shell/primitive_count"),  (str_t){0}, md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->num_primitives,   shell_stride, num_shells);
-			vlx_publish_column(sys, STR_LIT("basis/shell/angular_momentum"), (str_t){0}, md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->l,                shell_stride, num_shells);
+			vlx_publish_column(sys, STR_LIT("basis/shell/atom_index"),       STR_LIT("Atom Index"),       md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->atom_idx,         shell_stride, num_shells);
+			vlx_publish_column(sys, STR_LIT("basis/shell/primitive_offset"), STR_LIT("Primitive Offset"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->primitive_offset, shell_stride, num_shells);
+			vlx_publish_column(sys, STR_LIT("basis/shell/primitive_count"),  STR_LIT("Primitive Count"),  md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->num_primitives,   shell_stride, num_shells);
+			vlx_publish_column(sys, STR_LIT("basis/shell/angular_momentum"), STR_LIT("Angular Momentum"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis.shells->l,                shell_stride, num_shells);
 
 			// Exponents are bohr^-2 and the contraction coefficients carry the shell's radial
 			// normalisation; the per monomial factor is applied at evaluation. See the AO
 			// CONVENTION block in md_gto.h - these values only mean anything against it.
 			const md_unit_t inv_bohr_sq = md_unit_pow(md_unit_bohr_radius(), -2);
-			vlx_publish_column(sys, STR_LIT("basis/primitive/exponent"),    (str_t){0}, inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis.alpha, sizeof(float), num_primitives);
-			vlx_publish_column(sys, STR_LIT("basis/primitive/coefficient"), (str_t){0}, md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis.coeff, sizeof(float), num_primitives);
+			vlx_publish_column(sys, STR_LIT("basis/primitive/exponent"),    STR_LIT("Exponent"),	inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis.alpha, sizeof(float), num_primitives);
+			vlx_publish_column(sys, STR_LIT("basis/primitive/coefficient"), STR_LIT("Coefficient"), md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis.coeff, sizeof(float), num_primitives);
 
 			// The MO matrix is stored [M][A] contiguously and is already Cartesian - the spherical
 			// to Cartesian conversion happens once at parse time - so this is a straight copy into
@@ -4994,10 +4994,10 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 					const double* beta_coeff  = md_vlx_scf_mo_coefficients(vlx, 0, MD_VLX_SPIN_BETA);
 
 					if (alpha_coeff) {
-						vlx_publish(sys, STR_LIT("orbital/alpha/coefficient"), (str_t){0}, md_unit_none(), format, alpha_coeff, byte_size);
+						vlx_publish(sys, STR_LIT("orbital/alpha/coefficient"),	STR_LIT("Alpha Coefficient"),	md_unit_none(), format, alpha_coeff, byte_size);
 					}
 					if (beta_coeff && beta_coeff != alpha_coeff) {
-						vlx_publish(sys, STR_LIT("orbital/beta/coefficient"), (str_t){0}, md_unit_none(), format, beta_coeff, byte_size);
+						vlx_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
 					}
 				}
 			}
@@ -5017,13 +5017,13 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	const size_t num_freqs = md_vlx_rsp_number_of_frequencies(vlx);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/frequency"),            STR_LIT("Response Frequency"),       hartree,        md_vlx_rsp_frequencies(vlx),       num_freqs);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/cpp/sigma"),            STR_LIT("Absorption Cross Section"), md_unit_none(), md_vlx_rsp_sigma(vlx),             num_freqs);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"),    STR_LIT(u8"\xCE\x94\xCE\xB5"),       md_unit_none(), md_vlx_rsp_delta_epsilons(vlx),    num_freqs);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"),    STR_LIT(u8"Δε"),					  md_unit_none(), md_vlx_rsp_delta_epsilons(vlx),    num_freqs);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/cpp/optical_rotation"), STR_LIT("Optical Rotation"),         md_unit_none(), md_vlx_rsp_optical_rotations(vlx), num_freqs);
 
 	// ---- RSP two photon absorption. ----
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/cross_section"),   STR_LIT("Cross Section"),           md_unit_none(), md_vlx_rsp_tpa_cross_sections(vlx),  num_freqs);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/gamma_re"),        STR_LIT(u8"Re \xCE\xB3"),           md_unit_none(), md_vlx_rsp_tpa_gamma_re(vlx),        num_freqs);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/gamma_im"),        STR_LIT(u8"Im \xCE\xB3"),           md_unit_none(), md_vlx_rsp_tpa_gamma_im(vlx),        num_freqs);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/gamma_re"),        STR_LIT(u8"γ (Re)"),				md_unit_none(), md_vlx_rsp_tpa_gamma_re(vlx),        num_freqs);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/gamma_im"),        STR_LIT(u8"γ (Im)"),				md_unit_none(), md_vlx_rsp_tpa_gamma_im(vlx),        num_freqs);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/linear"),          STR_LIT("Linear Polarisation"),     md_unit_none(), md_vlx_rsp_tpa_trans_linear(vlx),    num_freqs);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/tpa/circular"),        STR_LIT("Circular Polarisation"),   md_unit_none(), md_vlx_rsp_tpa_trans_circular(vlx),  num_freqs);
 
@@ -5032,13 +5032,13 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	const size_t num_photon = md_vlx_rsp_rixs_number_of_photon_energies(vlx);
 	const size_t num_final  = md_vlx_rsp_rixs_number_of_final_states(vlx);
 	const size_t num_core   = md_vlx_rsp_rixs_number_of_core_states(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/photon_energy"),           (str_t){0}, hartree,        md_vlx_rsp_rixs_photon_energies(vlx),         num_photon);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/elastic_cross_section"),   (str_t){0}, md_unit_none(), md_vlx_rsp_rixs_elastic_cross_sections(vlx),  num_photon);
-	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/cross_section"),           (str_t){0}, md_unit_none(), md_vlx_rsp_rixs_cross_sections(vlx),          num_final, num_photon);
-	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/energy_loss"),             (str_t){0}, hartree,        md_vlx_rsp_rixs_energy_losses(vlx),           num_final, num_photon);
-	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/emission_energy"),         (str_t){0}, hartree,        md_vlx_rsp_rixs_emission_energies(vlx),       num_final, num_photon);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/core_energy"),             (str_t){0}, hartree,        md_vlx_rsp_rixs_core_eigenvalues(vlx),        num_core);
-	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/core_oscillator_strength"),(str_t){0}, md_unit_none(), md_vlx_rsp_rixs_core_osc_strengths(vlx),      num_core);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/photon_energy"),           STR_LIT("Photon Energy"),				hartree,		md_vlx_rsp_rixs_photon_energies(vlx),			num_photon);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/elastic_cross_section"),   STR_LIT("Elastic Cross Section"),		md_unit_none(),	md_vlx_rsp_rixs_elastic_cross_sections(vlx),	num_photon);
+	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/cross_section"),           STR_LIT("Cross Section"),				md_unit_none(), md_vlx_rsp_rixs_cross_sections(vlx),			num_final, num_photon);
+	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/energy_loss"),             STR_LIT("Energy Loss"),				hartree,        md_vlx_rsp_rixs_energy_losses(vlx),				num_final, num_photon);
+	vlx_publish_matrix(sys, STR_LIT("vlx/rsp/rixs/emission_energy"),         STR_LIT("Emission Energy"),			hartree,        md_vlx_rsp_rixs_emission_energies(vlx),			num_final, num_photon);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/core_energy"),             STR_LIT("Core Energy"),				hartree,        md_vlx_rsp_rixs_core_eigenvalues(vlx),			num_core);
+	vlx_publish_series(sys, STR_LIT("vlx/rsp/rixs/core_oscillator_strength"),STR_LIT("Core Oscillator Strength"),	md_unit_none(), md_vlx_rsp_rixs_core_osc_strengths(vlx),		num_core);
 	if (num_core > 0) {
 		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/rixs/gamma_fwhm"), STR_LIT("Core-hole Lifetime Broadening"), md_unit_electronvolt(), md_vlx_rsp_rixs_gamma_fwhm_ev(vlx));
 	}
@@ -5063,12 +5063,12 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 			STATIC_ASSERT(sizeof(bool) == 1, "XPS is_delocalized is published as a single byte");
 
 			const size_t stride = sizeof(md_vlx_xps_entry_t);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/ionization_energy"), (str_t){0},                         md_unit_electronvolt(), MD_ATTRIBUTE_TYPE_F64, &xps->ionization_energy, stride, num_xps);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/contribution"),      STR_LIT("Core MO Contribution"),    md_unit_none(),         MD_ATTRIBUTE_TYPE_F64, &xps->contribution,      stride, num_xps);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/atom_index"),        (str_t){0},                         md_unit_none(),         MD_ATTRIBUTE_TYPE_I32, &xps->atom_index,        stride, num_xps);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/mo_index"),          STR_LIT("MO Index"),                md_unit_none(),         MD_ATTRIBUTE_TYPE_I32, &xps->mo_index,          stride, num_xps);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/element"),           STR_LIT("Atomic Number"),           md_unit_none(),         MD_ATTRIBUTE_TYPE_U8,  &xps->element,           stride, num_xps);
-			vlx_publish_column(sys, STR_LIT("vlx/xps/is_delocalized"),    (str_t){0},                         md_unit_none(),         MD_ATTRIBUTE_TYPE_U8,  &xps->is_delocalized,    stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/ionization_energy"), STR_LIT("Ionization Energy"),		md_unit_electronvolt(), MD_ATTRIBUTE_TYPE_F64, &xps->ionization_energy, stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/contribution"),      STR_LIT("Core MO Contribution"),  md_unit_none(),         MD_ATTRIBUTE_TYPE_F64, &xps->contribution,      stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/atom_index"),        STR_LIT("Atom Index"),            md_unit_none(),         MD_ATTRIBUTE_TYPE_I32, &xps->atom_index,        stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/mo_index"),          STR_LIT("MO Index"),              md_unit_none(),         MD_ATTRIBUTE_TYPE_I32, &xps->mo_index,          stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/element"),           STR_LIT("Atomic Number"),         md_unit_none(),         MD_ATTRIBUTE_TYPE_U8,  &xps->element,           stride, num_xps);
+			vlx_publish_column(sys, STR_LIT("vlx/xps/is_delocalized"),    STR_LIT("Is Delocalized"),		md_unit_none(),			MD_ATTRIBUTE_TYPE_U8,  &xps->is_delocalized,	stride, num_xps);
 		}
 	}
 
@@ -5108,21 +5108,21 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 
 	// ---- VIB: one value per normal mode. ----
 	const size_t num_modes = md_vlx_vib_number_of_normal_modes(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/vib/frequency"),      (str_t){0},              wavenumber,     md_vlx_vib_frequencies(vlx),     num_modes);
-	vlx_publish_series(sys, STR_LIT("vlx/vib/ir_intensity"),   STR_LIT("IR Intensity"), km_per_mol,     md_vlx_vib_ir_intensities(vlx),  num_modes);
-	vlx_publish_series(sys, STR_LIT("vlx/vib/reduced_mass"),   (str_t){0},              amu,            md_vlx_vib_reduced_masses(vlx),  num_modes);
-	vlx_publish_series(sys, STR_LIT("vlx/vib/force_constant"), (str_t){0},              md_unit_none(), md_vlx_vib_force_constants(vlx), num_modes);
-	vlx_publish_series(sys, STR_LIT("vlx/vib/external_frequency"), (str_t){0}, hartree, md_vlx_vib_external_frequencies(vlx), md_vlx_vib_number_of_external_frequencies(vlx));
+	vlx_publish_series(sys, STR_LIT("vlx/vib/frequency"),			STR_LIT("Frequency"),			wavenumber,		md_vlx_vib_frequencies(vlx),			num_modes);
+	vlx_publish_series(sys, STR_LIT("vlx/vib/ir_intensity"),		STR_LIT("IR Intensity"),		km_per_mol,     md_vlx_vib_ir_intensities(vlx),			num_modes);
+	vlx_publish_series(sys, STR_LIT("vlx/vib/reduced_mass"),		STR_LIT("Reduced Mass"),		amu,            md_vlx_vib_reduced_masses(vlx),			num_modes);
+	vlx_publish_series(sys, STR_LIT("vlx/vib/force_constant"),		STR_LIT("Force Constant"),		md_unit_none(), md_vlx_vib_force_constants(vlx),		num_modes);
+	vlx_publish_series(sys, STR_LIT("vlx/vib/external_frequency"),	STR_LIT("External Frequency"),	hartree,		md_vlx_vib_external_frequencies(vlx),	md_vlx_vib_number_of_external_frequencies(vlx));
 
 	// The displacements are per atom, so the atom axis is the last index axis and the mode axis
 	// leads: one mode's displacements are contiguous. This is the {M,N} case the ATTRIBUTES note in
 	// md_system.h uses as its example, and it is why an atom axis is not always shape[0].
-	vlx_publish_vec3_rows(sys, STR_LIT("atom/normal_mode"), (str_t){0}, md_unit_none(), vlx, num_modes, md_vlx_number_of_atoms(vlx), md_vlx_vib_normal_mode);
+	vlx_publish_vec3_rows(sys, STR_LIT("atom/normal_mode"), STR_LIT("Normal Mode"), md_unit_none(), vlx, num_modes, md_vlx_number_of_atoms(vlx), md_vlx_vib_normal_mode);
 
 	// ---- OPT: one value per optimisation step, and the geometry at each one. ----
 	const size_t num_steps = md_vlx_opt_number_of_steps(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/opt/energy"), (str_t){0}, hartree, md_vlx_opt_energies(vlx), num_steps);
-	vlx_publish_vec3_rows(sys, STR_LIT("vlx/opt/coordinate"), (str_t){0}, angstrom, vlx, num_steps, md_vlx_number_of_atoms(vlx), md_vlx_opt_coordinates);
+	vlx_publish_series(sys,		STR_LIT("vlx/opt/energy"),		STR_LIT("Energy"),		hartree, md_vlx_opt_energies(vlx), num_steps);
+	vlx_publish_vec3_rows(sys,	STR_LIT("vlx/opt/coordinate"),	STR_LIT("Coordinate"),	angstrom, vlx, num_steps, md_vlx_number_of_atoms(vlx), md_vlx_opt_coordinates);
 
 	// ---- Dipole groups. Every vector gets an origin beside it in the SAME shape, because a dipole
 	// has no index space of its own to anchor it - see the ANCHORING note in md_system.h. Publishing
@@ -5131,7 +5131,7 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	dvec3_t origin = {0, 0, 0};
 	if (vlx_centre_of_charge(&origin, vlx)) {
 		const dvec3_t ground_state = md_vlx_scf_ground_state_dipole_moment(vlx);
-		vlx_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), (str_t){0}, e_bohr, &ground_state, 1);
+		vlx_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), STR_LIT("Ground State"), e_bohr, &ground_state, 1);
 		vlx_publish_origin(sys, STR_LIT("dipole/ground_state/origin"), origin);
 
 		// One per excited state. The magnetic and velocity forms are different quantities in

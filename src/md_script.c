@@ -35,6 +35,7 @@
 #include <md_edr.h>
 #include <md_csv.h>
 
+#include <core/md_coord_stream.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>

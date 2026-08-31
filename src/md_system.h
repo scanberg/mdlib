@@ -319,7 +319,7 @@ typedef struct md_hydrogen_bond_data_t {
 // require. md_attributes_free clears it along with everything else.
 
 #define MD_ATTRIBUTE_INVALID  ((md_attribute_id_t)0)
-#define MD_ATTRIBUTE_MAX_RANK 4
+#define MD_ATTRIBUTE_MAX_RANK 5
 
 // Hash of the full path. Zero is the invalid value, so a zeroed field is not a valid
 // attribute. Stable across a reload, so a consumer may store one and re-find its attribute.
@@ -341,34 +341,89 @@ typedef enum md_attribute_type_t {
     MD_ATTRIBUTE_TYPE_COUNT,
 } md_attribute_type_t;
 
+typedef enum md_attribute_storage_t {
+	MD_ATTRIBUTE_STORAGE_NONE = 0,
+	MD_ATTRIBUTE_STORAGE_RESIDENT,  // data is resident in the table, and data points to it
+	MD_ATTRIBUTE_STORAGE_VIRTUAL,   // data is not resident, it is computed on demand by a provider
+} md_attribute_storage_t;
+
 typedef struct md_attribute_format_t {
-    md_attribute_type_t type;                          // what one component is
-    uint32_t            components;                    // components of ONE value, >= 1, never indexed
-    uint32_t            rank;                          // number of index axes, 0 means a single value
-    uint32_t            shape[MD_ATTRIBUTE_MAX_RANK];  // extent of each index axis, row major
+	md_attribute_type_t type;                          // what one component is
+	uint32_t            components;                    // components of ONE value, >= 1, never indexed
+	uint32_t            rank;                          // number of index axes, 0 means a single value
+	uint32_t            shape[MD_ATTRIBUTE_MAX_RANK];  // extent of each index axis, row major
 } md_attribute_format_t;
 
+// Forward declared: md_attribute_t and md_attribute_slice_t are both defined further below (the
+// slice alongside the extraction procedures it already serves). A virtual attribute is read
+// through the exact same slice, so the provider is declared to take one rather than a resolved
+// offset - see md_attribute_virtual_t.
+typedef struct md_attribute_t md_attribute_t;
+typedef struct md_attribute_slice_t md_attribute_slice_t;
+
+// A virtual attribute's provider is handed the SAME slice a caller asked to extract, never a
+// pre-resolved offset: it is the one place a computed attribute is allowed to know its own
+// layout, and reusing md_attribute_slice_t keeps that knowledge in the one format already used by
+// md_attribute_extract_slice_f32/f64 rather than inventing a second one. slice is NULL for a plain
+// (non sliced) extract, which selects the whole attribute - the same convention slice_t itself
+// uses (num_idx 0).
+//
+// dst is cap elements of attr->format.type, components already folded in - the same units as
+// md_attribute_slice_count. The provider writes the STORED type and the STORED unit; it never
+// converts - conversion to whatever the caller asked for happens once, centrally, exactly as it
+// does for a resident attribute.
+//
+// Returns elements written, which must equal cap on success and 0 on failure.
+typedef size_t (*md_attribute_provider_fn)(
+	void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data
+);
+
+typedef struct md_attribute_virtual_t {
+	md_attribute_provider_fn provider;
+
+	// Either NULL, or memory allocated with md_attributes_alloc_user_data - nothing else. That is
+	// the one sanctioned way to give a provider private state that outlives a single extract call:
+	// it then lives and dies with this table's allocator, exactly like path/label/description and
+	// a resident attribute's data. A BORROWED pointer (sys itself, a trajectory already owned
+	// elsewhere) is also legal here and needs no bookkeeping, since nothing in the table ever
+	// frees user_data unless it came from that allocator - see user_data_size.
+	void*  user_data;
+
+	// Bytes to release through this table's allocator when the attribute is torn down. Zero for a
+	// borrowed user_data (including NULL); non-zero only for memory md_attributes_alloc_user_data
+	// returned. There is deliberately no release callback: this table is allocator scoped like
+	// everything else md_attributes_create copies in, teardown is by size, the same as attr->data.
+	size_t user_data_size;
+} md_attribute_virtual_t;
+
 typedef struct md_attribute_t {
-    md_attribute_id_t     id;
-    str_t                 path;         // full path, owned by the table
-    str_t                 label;        // presentation only, no identity, may be empty
-    str_t                 description;  // presentation only, may be empty
-    md_attribute_format_t format;
-    md_unit_t             unit;         // (md_unit_t){0} is dimensionless, a valid and common value
-    void*                 data;         // owned by the table, md_attribute_byte_size() bytes, zeroed on create
+	md_attribute_id_t       id;
+	str_t                   path;           // full path, owned by the table
+	str_t                   label;          // presentation only, no identity, may be empty
+	str_t                   description;    // presentation only, may be empty
+	md_attribute_format_t   format;
+	md_unit_t               unit;           // (md_unit_t){0} is dimensionless, a valid and common value
+	md_attribute_storage_t  storage;        // how the data is stored
+	void*                   data;           // RESIDENT only: owned by the table, md_attribute_byte_size() bytes, zeroed on create
+	md_attribute_virtual_t  virt;           // VIRTUAL only: how to compute it; zeroed for a resident attribute
 } md_attribute_t;
 
 // What a producer fills in to publish one attribute. Designated initialisers only: everything
 // not mentioned is zero, and zero is the right default for label, description and data - but
 // NOT for format.components, where zero is rejected.
+//
+// Exactly one of {data, virt} may be set. Setting virt publishes a VIRTUAL attribute: data must be
+// NULL and byte_size 0, since there is no resident storage to size or copy. Setting neither is the
+// same "reserve zeroed storage" case data == NULL already means for a resident attribute.
 typedef struct md_attribute_desc_t {
-    str_t                 path;         // "atom/charge/mulliken"
-    md_attribute_format_t format;
-    md_unit_t             unit;         // md_unit_none() when there is nothing to say
-    str_t                 label;        // optional
-    str_t                 description;  // optional
-    const void*           data;         // copied in; NULL to reserve zeroed storage and fill later
-    size_t                byte_size;    // must equal md_attribute_byte_size(&format), 0 iff data is NULL
+	str_t                 path;         // "atom/charge/mulliken"
+	md_attribute_format_t format;
+	md_unit_t             unit;         // md_unit_none() when there is nothing to say
+	str_t                 label;        // optional
+	str_t                 description;  // optional
+	const void*           data;         // copied in; NULL to reserve zeroed storage and fill later
+	size_t                byte_size;    // must equal md_attribute_byte_size(&format), 0 iff data is NULL
+	const md_attribute_virtual_t* virt; // NULL for a resident attribute; see above otherwise
 } md_attribute_desc_t;
 
 // A selection of one contiguous window of an attribute: the first num_idx axes are fixed, every
@@ -591,6 +646,16 @@ void md_attributes_free(md_attributes_t* attributes);
 
 size_t md_attributes_count(const md_attributes_t* attributes);
 
+// Allocates size bytes through the table's own allocator, for a provider that needs private state
+// which outlives a single extract call (md_attribute_virtual_t.user_data). This is the ONE
+// sanctioned way to obtain such a pointer: the table never frees anything it did not hand out
+// itself, and handing it out through here is what lets it be freed by size alone, exactly like
+// attr->data, when the owning attribute is torn down.
+//
+// Returns NULL if size is 0 or the allocator is unset. Not tied to any particular attribute - a
+// provider shared by a whole group may allocate once and hand the same user_data to every member.
+void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size);
+
 // Creates an attribute and returns its id, MD_ATTRIBUTE_INVALID on failure.
 //
 // The descriptor is taken by pointer and read once; nothing in it is retained. path, label and
@@ -599,6 +664,10 @@ size_t md_attributes_count(const md_attributes_t* attributes);
 // desc->data NULL reserves the storage and zeroes it, for a producer that computes straight into
 // the attribute through md_attributes_data; byte_size must then be 0. Otherwise byte_size must
 // equal md_attribute_byte_size(&desc->format) exactly and the buffer is copied in.
+//
+// desc->virt non-NULL instead publishes a VIRTUAL attribute: desc->data must be NULL and
+// desc->byte_size 0, since there is no resident storage to size or copy. *desc->virt is copied by
+// value (the provider pointer and the user_data/user_data_size pair), never retained by address.
 //
 // The size is not decoration. Nothing here can inspect what data points at, so it is the only
 // guard against a buffer whose element type or count disagrees with the declared format: handing
@@ -611,7 +680,8 @@ size_t md_attributes_count(const md_attributes_t* attributes);
 //
 // Rejects an unset allocator, an empty path, a leading or trailing '/', an empty segment, a
 // duplicate path, a type of NONE, COMPONENTS OF ZERO, a rank above MD_ATTRIBUTE_MAX_RANK, a zero
-// extent, an extent set beyond the declared rank, and a byte_size disagreeing with the format.
+// extent, an extent set beyond the declared rank, a byte_size disagreeing with the format, desc->virt
+// with no provider, and desc->virt combined with desc->data or a non-zero desc->byte_size.
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc);
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);

@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_smiles.h>
 
+#include <core/md_coord_stream.h>
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -5720,7 +5721,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* s
             md_spatial_acc_t acc = {.alloc = temp_arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
             md_coord_stream_t stream = md_coord_stream_from_soa(state->x, state->y, state->z, viable_indices, viable_count);
-            md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
             md_coord_stream_t ext_stream = md_coord_stream_from_soa(state->x, state->y, state->z, indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
@@ -9039,11 +9040,10 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
     return true;
 }
 
-float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
-                                        const vec4_t* ref_xyzw, vec3_t ref_com,
-                                        const vec4_t* trg_xyzw, size_t count,
-                                        const md_unitcell_t* cell)
-{
+float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                             const vec4_t* ref_xyzw, vec3_t ref_com,
+                                             const vec4_t* trg_xyzw, size_t count,
+                                             const md_unitcell_t* cell, int max_iter, float tol) {
     ASSERT(ref_xyzw);
     ASSERT(trg_xyzw);
 
@@ -9073,7 +9073,7 @@ float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t
     // Each block has a closed form optimum given the other, so the objective decreases monotonically
     // and the discrete part reaches a genuine fixed point rather than a tolerance.
     bool stable = false;
-    for (int iter = 0; iter < PBC_MAX_ITER && !stable; ++iter) {
+    for (int iter = 0; iter < max_iter && !stable; ++iter) {
         // rot maps the target frame onto the reference frame, so its transpose carries the reference
         // template back out into the target's frame, which is where the prediction has to live.
         const mat3_t rot_inv = mat3_transpose(rot);
@@ -9084,7 +9084,7 @@ float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t
             const vec3_t pred = vec3_add(com, mat3_mul_vec3(rot_inv, p));
             const vec4_t placed = pbc_image_nearest(&im, trg_xyzw[i], pred);
 
-            if (iter > 0 && vec3_distance_squared(vec3_from_vec4(cur[i]), vec3_from_vec4(placed)) > PBC_IMAGE_EPS_SQ) {
+            if (iter > 0 && vec3_distance_squared(vec3_from_vec4(cur[i]), vec3_from_vec4(placed)) > tol) {
                 stable = false;
             }
             cur[i] = placed;
@@ -9118,6 +9118,67 @@ float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t
     if (out_com) *out_com = com;
 
     return sqrtf(max_dist_sq);
+}
+
+void md_util_convert_to_relative_coordinates_vec4(vec4_t in_out_xyzw[], vec3_t ref_xyz, size_t count, const md_unitcell_t* cell) {
+	ASSERT(in_out_xyzw);
+	vec4_t com = vec4_from_vec3(ref_xyz, 0);
+	for (size_t i = 0; i < count; ++i) {
+		in_out_xyzw[i] = vec4_sub(in_out_xyzw[i], com);
+	}
+	if (cell) {
+		md_util_min_image_vec4(in_out_xyzw, count, cell);
+	}
+}
+
+mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_t* trg_rel_xyzw, size_t count) {
+    ASSERT(ref_rel_xyzw);
+    ASSERT(trg_rel_xyzw);
+
+    if (count == 0) {
+        return mat3_ident();
+    }
+
+    double A[3][3] = { 0 };
+    double w_sum = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+		const vec4_t p = ref_rel_xyzw[i];
+		const vec4_t q = trg_rel_xyzw[i];
+
+        // The question here is how to combine the weights.
+        // For now we just take the average.
+        // This should be equivalent to the other case where the weights for both sets are equal.
+        const float w = (p.w + q.w) * 0.5f;
+
+        A[0][0] += w * p.x * q.x;
+        A[0][1] += w * p.x * q.y;
+        A[0][2] += w * p.x * q.z;
+        A[1][0] += w * p.y * q.x;
+        A[1][1] += w * p.y * q.y;
+        A[1][2] += w * p.y * q.z;
+        A[2][0] += w * p.z * q.x;
+        A[2][1] += w * p.z * q.y;
+        A[2][2] += w * p.z * q.z;
+        w_sum += w;
+    }
+
+	if (w_sum == 0.0) {
+		return mat3_ident();
+	}
+
+    mat3_t C;
+	C.elem[0][0] = (float)(A[0][0] / w_sum);
+    C.elem[0][1] = (float)(A[0][1] / w_sum);
+	C.elem[0][2] = (float)(A[0][2] / w_sum);
+	C.elem[1][0] = (float)(A[1][0] / w_sum);
+	C.elem[1][1] = (float)(A[1][1] / w_sum);
+	C.elem[1][2] = (float)(A[1][2] / w_sum);
+	C.elem[2][0] = (float)(A[2][0] / w_sum);
+	C.elem[2][1] = (float)(A[2][1] / w_sum);
+	C.elem[2][2] = (float)(A[2][2] / w_sum);
+
+    return mat3_extract_rotation(C);
 }
 
 double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {

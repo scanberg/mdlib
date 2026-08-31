@@ -2,7 +2,7 @@
 
 #include <md_gro.h>
 #include <md_system.h>
-#include <core/md_intrinsics.h>
+#include <core/md_coord_stream.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_arena_allocator.h>
 
