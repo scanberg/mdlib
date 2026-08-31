@@ -224,7 +224,7 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
     };
 }
 
-mat3_t mat3_cross_covariance_matrix_raw_vec4(const vec4_t* in_xyzw[2], size_t count) {
+mat3_t mat3_cross_covariance_matrix_raw_vec4(const vec4_t* const in_xyzw[2], size_t count) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
