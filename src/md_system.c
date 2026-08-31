@@ -359,9 +359,13 @@ str_t md_attribute_leaf(const md_attribute_t* attr) {
 // floats; AO coefficients and total energies are double at the boundary on purpose, and narrowing
 // them to ask a question and widening them again would throw away the precision that boundary
 // exists to keep.
+// first/count/slice all describe the SAME window: first and count are its resolved offset and
+// length in elements, slice is the (possibly NULL) selection that produced them, forwarded on
+// unchanged so a virtual attribute's provider sees exactly what the caller asked for rather than
+// an offset it would have to reverse back into indices.
 #define MD_ATTR_DEFINE_EXTRACT_RANGE(SUFFIX, DST_T)                                                 \
 static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr,      \
-                                          size_t first, size_t count, md_unit_t dst_unit) {         \
+                                          size_t first, size_t count, const md_attribute_slice_t* slice, md_unit_t dst_unit) { \
     ASSERT(attr);                                                                                   \
                                                                                                     \
     if (!dst) {                                                                                     \
@@ -371,7 +375,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         MD_LOG_ERROR("Attribute '" STR_FMT "' needs %zu values, %zu supplied", STR_ARG(attr->path), count, cap); \
         return 0;                                                                                   \
     }                                                                                               \
-    if (!attr->data || count == 0) {                                                                \
+    if (count == 0) {                                                                               \
         return 0;                                                                                   \
     }                                                                                               \
                                                                                                     \
@@ -387,37 +391,70 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         return 0;                                                                                   \
     }                                                                                               \
                                                                                                     \
+    /* A virtual attribute has no attr->data: it is read through its provider into a scratch     */ \
+    /* buffer of the STORED type, and from there on is indistinguishable from a resident one - the*/ \
+    /* conversion below is shared by both. */                                                       \
+    const void* src = NULL;                                                                         \
+    md_temp_scope_t temp = {0};                                                                     \
+    bool own_temp = false;                                                                          \
+    if (attr->storage == MD_ATTRIBUTE_STORAGE_VIRTUAL) {                                            \
+        if (!attr->virt.provider) {                                                                 \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual but has no provider", STR_ARG(attr->path)); \
+            return 0;                                                                               \
+        }                                                                                           \
+        temp = md_temp_begin();                                                                     \
+        own_temp = true;                                                                            \
+        void* buf = md_temp_alloc(temp, count * md_attribute_type_size(attr->format.type));          \
+        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data);         \
+        if (written != count) {                                                                     \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' provider wrote %zu of %zu requested values", STR_ARG(attr->path), written, count); \
+            md_temp_end(temp);                                                                       \
+            return 0;                                                                               \
+        }                                                                                           \
+        src = buf;                                                                                  \
+    } else {                                                                                        \
+        if (!attr->data) {                                                                          \
+            return 0;                                                                               \
+        }                                                                                           \
+        src = (const uint8_t*)attr->data + first * md_attribute_type_size(attr->format.type);        \
+    }                                                                                                \
+                                                                                                    \
+    size_t result = count;                                                                          \
     /* The stored type already matching the destination, with nothing to rescale, is a memcpy. */    \
     if (attr->format.type == MD_ATTRIBUTE_TYPE_##SUFFIX && factor == 1.0) {                         \
-        MEMCPY(dst, (const DST_T*)attr->data + first, count * sizeof(DST_T));                       \
-        return count;                                                                               \
-    }                                                                                               \
+        MEMCPY(dst, src, count * sizeof(DST_T));                                                    \
+    } else {                                                                                        \
+        /* The scale is applied in double and narrowed once, at the end. */                         \
+        switch (attr->format.type) {                                                                \
+        case MD_ATTRIBUTE_TYPE_F32: MD_ATTR_CONVERT(float,    DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_F64: MD_ATTR_CONVERT(double,   DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_I8:  MD_ATTR_CONVERT(int8_t,   DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_U8:  MD_ATTR_CONVERT(uint8_t,  DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_I16: MD_ATTR_CONVERT(int16_t,  DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_U16: MD_ATTR_CONVERT(uint16_t, DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_I32: MD_ATTR_CONVERT(int32_t,  DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_U32: MD_ATTR_CONVERT(uint32_t, DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_I64: MD_ATTR_CONVERT(int64_t,  DST_T); break;                        \
+        case MD_ATTRIBUTE_TYPE_U64: MD_ATTR_CONVERT(uint64_t, DST_T); break;                        \
+        default:                                                                                    \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' has no readable type", STR_ARG(attr->path));      \
+            result = 0;                                                                             \
+            break;                                                                                  \
+        }                                                                                            \
+    }                                                                                                \
                                                                                                     \
-    /* The scale is applied in double and narrowed once, at the end. */                             \
-    switch (attr->format.type) {                                                                    \
-    case MD_ATTRIBUTE_TYPE_F32: MD_ATTR_CONVERT(float,    DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_F64: MD_ATTR_CONVERT(double,   DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_I8:  MD_ATTR_CONVERT(int8_t,   DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_U8:  MD_ATTR_CONVERT(uint8_t,  DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_I16: MD_ATTR_CONVERT(int16_t,  DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_U16: MD_ATTR_CONVERT(uint16_t, DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_I32: MD_ATTR_CONVERT(int32_t,  DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_U32: MD_ATTR_CONVERT(uint32_t, DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_I64: MD_ATTR_CONVERT(int64_t,  DST_T); break;                            \
-    case MD_ATTRIBUTE_TYPE_U64: MD_ATTR_CONVERT(uint64_t, DST_T); break;                            \
-    default:                                                                                        \
-        MD_LOG_ERROR("Attribute '" STR_FMT "' has no readable type", STR_ARG(attr->path));          \
-        return 0;                                                                                   \
-    }                                                                                               \
+    if (own_temp) {                                                                                 \
+        md_temp_end(temp);                                                                          \
+    }                                                                                                \
                                                                                                     \
-    return count;                                                                                   \
+    return result;                                                                                  \
 }
 
 #define MD_ATTR_CONVERT(SRC_T, DST_T)                               \
     do {                                                            \
-        const SRC_T* src = (const SRC_T*)attr->data + first;        \
+        const SRC_T* s = (const SRC_T*)src;                         \
         for (size_t i = 0; i < count; ++i) {                        \
-            dst[i] = (DST_T)((double)src[i] * factor);              \
+            dst[i] = (DST_T)((double)s[i] * factor);                \
         }                                                           \
     } while (0)
 
@@ -498,12 +535,12 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
 
 size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
-    return attr_extract_range_F32(dst, cap, attr, 0, md_attribute_element_count(&attr->format), dst_unit);
+    return attr_extract_range_F32(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
 }
 
 size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
-    return attr_extract_range_F64(dst, cap, attr, 0, md_attribute_element_count(&attr->format), dst_unit);
+    return attr_extract_range_F64(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
 }
 
 size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
@@ -512,7 +549,7 @@ size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribut
     if (!attr_slice_window(&first, &count, attr, slice)) {
         return 0;
     }
-    return attr_extract_range_F32(dst, cap, attr, first, count, dst_unit);
+    return attr_extract_range_F32(dst, cap, attr, first, count, slice, dst_unit);
 }
 
 size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
@@ -521,7 +558,7 @@ size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribu
     if (!attr_slice_window(&first, &count, attr, slice)) {
         return 0;
     }
-    return attr_extract_range_F64(dst, cap, attr, first, count, dst_unit);
+    return attr_extract_range_F64(dst, cap, attr, first, count, slice, dst_unit);
 }
 
 static bool attr_path_valid(str_t path) {
@@ -601,6 +638,11 @@ void md_attributes_free(md_attributes_t* attributes) {
             if (attr->data) {
                 md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
             }
+            // user_data_size is 0 for a borrowed pointer, so this only ever frees memory this
+            // table itself handed out through md_attributes_alloc_user_data.
+            if (attr->virt.user_data && attr->virt.user_data_size) {
+                md_free(alloc, attr->virt.user_data, attr->virt.user_data_size);
+            }
         }
         md_array_free(attributes->attr, alloc);
     }
@@ -610,6 +652,18 @@ void md_attributes_free(md_attributes_t* attributes) {
 size_t md_attributes_count(const md_attributes_t* attributes) {
     ASSERT(attributes);
     return md_array_size(attributes->attr);
+}
+
+void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size) {
+    ASSERT(attributes);
+    if (size == 0) {
+        return NULL;
+    }
+    if (!attributes->alloc) {
+        MD_LOG_ERROR("Attribute table allocator not set");
+        return NULL;
+    }
+    return md_alloc(attributes->alloc, size);
 }
 
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
@@ -665,7 +719,16 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
     }
 
     size_t required = md_attribute_byte_size(&format);
-    if (desc->data) {
+    if (desc->virt) {
+        if (!desc->virt->provider) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' declares virt with no provider", STR_ARG(path));
+            return MD_ATTRIBUTE_INVALID;
+        }
+        if (desc->data || desc->byte_size != 0) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' declares virt and resident data at the same time", STR_ARG(path));
+            return MD_ATTRIBUTE_INVALID;
+        }
+    } else if (desc->data) {
         if (desc->byte_size != required) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' declares %zu bytes but %zu were supplied", STR_ARG(path), required, desc->byte_size);
             return MD_ATTRIBUTE_INVALID;
@@ -694,20 +757,25 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 
     md_allocator_i* alloc = attributes->alloc;
 
-    void* storage = md_alloc(alloc, required);
-    if (!storage) {
-        MD_LOG_ERROR("Failed to allocate %zu bytes for attribute '" STR_FMT "'", required, STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
-    if (desc->data) {
-        MEMCPY(storage, desc->data, required);
-    } else {
-        MEMSET(storage, 0, required);
+    void* storage = NULL;
+    if (!desc->virt) {
+        storage = md_alloc(alloc, required);
+        if (!storage) {
+            MD_LOG_ERROR("Failed to allocate %zu bytes for attribute '" STR_FMT "'", required, STR_ARG(path));
+            return MD_ATTRIBUTE_INVALID;
+        }
+        if (desc->data) {
+            MEMCPY(storage, desc->data, required);
+        } else {
+            MEMSET(storage, 0, required);
+        }
     }
 
     str_t stored_path = str_copy(path, alloc);
     if (str_empty(stored_path)) {
-        md_free(alloc, storage, required);
+        if (storage) {
+            md_free(alloc, storage, required);
+        }
         MD_LOG_ERROR("Failed to copy attribute path '" STR_FMT "'", STR_ARG(path));
         return MD_ATTRIBUTE_INVALID;
     }
@@ -733,7 +801,9 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         .description = stored_desc,
         .format      = format,
         .unit        = desc->unit,
+        .storage     = desc->virt ? MD_ATTRIBUTE_STORAGE_VIRTUAL : MD_ATTRIBUTE_STORAGE_RESIDENT,
         .data        = storage,
+        .virt        = desc->virt ? *desc->virt : (md_attribute_virtual_t){0},
     };
 
     return id;
@@ -756,6 +826,9 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
     if (attr->description.ptr) str_free(attr->description, alloc);
     if (attr->data) {
         md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
+    }
+    if (attr->virt.user_data && attr->virt.user_data_size) {
+        md_free(alloc, attr->virt.user_data, attr->virt.user_data_size);
     }
 
     size_t count = md_array_size(attributes->attr);
@@ -789,6 +862,10 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
         return NULL;
     }
     md_attribute_t* attr = attributes->attr + idx;
+    if (attr->storage != MD_ATTRIBUTE_STORAGE_RESIDENT) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual and has no resident storage", STR_ARG(attr->path));
+        return NULL;
+    }
     if (attr->format.type != expected_type) {
         MD_LOG_ERROR("Type mismatch for attribute '" STR_FMT "'", STR_ARG(attr->path));
         return NULL;
