@@ -1990,29 +1990,45 @@ typedef struct {
     gpu_fixture_t* f;
     int            index;
     bool           ok;
+    char           failure[256];
 } gpu_thread_ctx_t;
 
 static void gpu_thread_body(void* user) {
     gpu_thread_ctx_t* c = (gpu_thread_ctx_t*)user;
     enum { N = 512, ITERS = 24 };
     md_gpu_stream_t s = md_gpu_stream_create(c->f->dev, MD_GPU_STREAM_COMPUTE, "worker");
-    if (!s) { c->ok = false; return; }
+    if (!s) { snprintf(c->failure, sizeof(c->failure), "stream creation: %s", gpu_no_device_reason()); return; }
 
     bool ok = true;
     for (int it = 0; it < ITERS && ok; ++it) {
         uint32_t* d = (uint32_t*)md_gpu_malloc(c->f->pool, N * sizeof(uint32_t), s);
-        if (!d) { ok = false; break; }
+        if (!d) {
+            snprintf(c->failure, sizeof(c->failure), "allocation: %s", gpu_no_device_reason());
+            ok = false;
+            break;
+        }
 
         fill_args_t fa = {0};
         fa.n = N; fa.base = (uint32_t)(c->index * 100000 + it); fa.dst = DEV_ADDR(d);
-        ok = ok && md_gpu_launch(s, c->f->k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa));
+        if (!md_gpu_launch(s, c->f->k_fill, md_gpu_grid_1d(N, 64), &fa, sizeof(fa))) {
+            snprintf(c->failure, sizeof(c->failure), "launch: %s", gpu_no_device_reason());
+            ok = false;
+            break;
+        }
 
         uint32_t host[N];
-        ok = ok && md_gpu_memcpy_async(host, d, sizeof(host), s);
+        if (!md_gpu_memcpy_async(host, d, sizeof(host), s)) {
+            snprintf(c->failure, sizeof(c->failure), "copy: %s", gpu_no_device_reason());
+            ok = false;
+            break;
+        }
         md_gpu_stream_sync(s);
 
         for (int i = 0; i < N && ok; ++i) {
-            if (host[i] != (uint32_t)(c->index * 100000 + it + i)) ok = false;
+            if (host[i] != (uint32_t)(c->index * 100000 + it + i)) {
+                snprintf(c->failure, sizeof(c->failure), "readback data mismatch");
+                ok = false;
+            }
         }
         md_gpu_free(d, s);
     }
@@ -2029,13 +2045,13 @@ UTEST(gpu, concurrent_streams_from_threads) {
     gpu_thread_ctx_t ctx[THREADS];
     md_thread_t* th[THREADS];
     for (int i = 0; i < THREADS; ++i) {
-        ctx[i].f = &f; ctx[i].index = i; ctx[i].ok = false;
+        ctx[i].f = &f; ctx[i].index = i; ctx[i].ok = false; ctx[i].failure[0] = '\0';
         th[i] = md_thread_create(gpu_thread_body, &ctx[i]);
         ASSERT_TRUE(th[i] != NULL);
     }
     for (int i = 0; i < THREADS; ++i) {
         md_thread_join(th[i]);
-        EXPECT_TRUE(ctx[i].ok);
+        EXPECT_TRUE_MSG(ctx[i].ok, ctx[i].failure[0] ? ctx[i].failure : "unknown failure");
     }
 
     md_gpu_device_poll(f.dev);
