@@ -1934,6 +1934,9 @@ mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, s
 // mean[2]:              mean (com if coordinates)
 mat3_t mat3_cross_covariance_matrix(const float* const x[2], const float* const y[2], const float* const z[2], const float* const w[2], const int32_t* const indices[2], size_t count, const vec3_t mean[2]);
 
+// Computes the cross covariance matrix for two set of relative coordinates (coordinates with center of mass subtracted).
+mat3_t mat3_cross_covariance_matrix_raw_vec4(const vec4_t* const xyzw[2], size_t count);
+
 // Compute the cross covariance matrix for two set of coordinates with given center of mass.
 // xyzw[2]: coordinate + weights
 // indices: indices into coordinates and weights (optional)

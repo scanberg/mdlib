@@ -224,9 +224,49 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
     };
 }
 
+mat3_t mat3_cross_covariance_matrix_raw_vec4(const vec4_t* in_xyzw[2], size_t count) {
+    double A[3][3] = {0};
+    double w_sum = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t p = in_xyzw[0][i];
+        vec4_t q = in_xyzw[1][i];
+
+        // The question here is how to combine the weights.
+        // For now we just take the average.
+        // This should be equivalent to the other case where the weights for both sets are equal.
+        const float w = (p.w + q.w) * 0.5f;
+
+        A[0][0] += w * p.x * q.x;
+        A[0][1] += w * p.x * q.y;
+        A[0][2] += w * p.x * q.z;
+        A[1][0] += w * p.y * q.x;
+        A[1][1] += w * p.y * q.y;
+        A[1][2] += w * p.y * q.z;
+        A[2][0] += w * p.z * q.x;
+        A[2][1] += w * p.z * q.y;
+        A[2][2] += w * p.z * q.z;
+        w_sum += w;
+    }
+
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            A[i][j] /= w_sum;
+        }
+    }
+
+    return (mat3_t) {
+        (float)A[0][0], (float)A[0][1], (float)A[0][2],
+        (float)A[1][0], (float)A[1][1], (float)A[1][2],
+        (float)A[2][0], (float)A[2][1], (float)A[2][2],
+    };
+}
+
 mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
+    const vec4_t com0 = vec4_from_vec3(com[0], 0);
+    const vec4_t com1 = vec4_from_vec3(com[1], 0);
 
     if (in_idx) {
         ASSERT(in_idx[0]);
@@ -234,8 +274,8 @@ mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const i
         for (size_t i = 0; i < count; ++i) {
             const int32_t i0 = in_idx[0][i];
             const int32_t i1 = in_idx[1][i];
-            vec4_t p = vec4_sub(in_xyzw[0][i0], vec4_from_vec3(com[0], 0));
-            vec4_t q = vec4_sub(in_xyzw[1][i1], vec4_from_vec3(com[1], 0));
+            vec4_t p = vec4_sub(in_xyzw[0][i0], com0);
+            vec4_t q = vec4_sub(in_xyzw[1][i1], com1);
 
             // The question here is how to combine the weights.
             // For now we just take the average.
@@ -255,8 +295,8 @@ mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const i
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            vec4_t p = vec4_sub(in_xyzw[0][i], vec4_from_vec3(com[0], 0));
-            vec4_t q = vec4_sub(in_xyzw[1][i], vec4_from_vec3(com[1], 0));
+            vec4_t p = vec4_sub(in_xyzw[0][i], com0);
+            vec4_t q = vec4_sub(in_xyzw[1][i], com1);
 
             // The question here is how to combine the weights.
             // For now we just take the average.

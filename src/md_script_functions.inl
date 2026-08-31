@@ -2802,7 +2802,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
 		md_array(int32_t) a_indices = 0;
 
@@ -2846,7 +2846,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             // Iterate over atoms in set A and exclude those potential contact points
             md_coord_stream_t a_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, a_indices, a_length);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
             }
@@ -4309,8 +4309,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const size_t count = md_bitfield_popcount(&bf);
             if (count > 0) {
                 md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
-                //int32_t* indices = md_alloc(ctx->temp_alloc, sizeof(int32_t) * count);
-                //md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&bf));
+                
                 vec4_t* xyzw[2] = {
                     md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
                     md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
@@ -4319,14 +4318,15 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw_vec4(xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ctx->atom_mass, &bf);
                 extract_xyzw_vec4(xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
 
-                vec3_t com[2] = {0};
+                vec3_t com[2] = {
+                    md_util_com_compute_vec4(xyzw[0], NULL, count, &ctx->ref_state->unitcell),
+                    md_util_com_compute_vec4(xyzw[1], NULL, count, &ctx->cur_state->unitcell),
+                };
 
-                // The reference is placed against its own circular mean and its own cell; the current
-                // frame then has its images chosen jointly with the rotation, so they are picked to
-                // minimise the very deviation being measured. No topology, so a partial or sparse
-                // selection works exactly as well as a whole molecule.
-                md_util_deperiodize_self_vec4(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
-                md_util_optimal_rotation_pbc_vec4(NULL, &com[1], xyzw[1], xyzw[0], com[0], xyzw[1], count, &ctx->cur_state->unitcell);
+				md_util_convert_to_relative_coordinates_vec4(xyzw[0], com[0], count, &ctx->ref_state->unitcell);
+                md_util_convert_to_relative_coordinates_vec4(xyzw[1], com[1], count, &ctx->cur_state->unitcell);
+                
+				md_util_optimal_rotation_rel_vec4(xyzw[0], xyzw[1], count);
 
                 as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
                 md_temp_end(temp);
@@ -5268,7 +5268,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     if (ref_idx) {
         ref_len = md_array_size(ref_idx);
         ref_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ref_idx, ref_len);
-        ref_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
+        ref_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
         md_array(vec3_t) ref_pos = coordinate_extract(arg[0], ctx);
         ref_len = md_array_size(ref_pos);
@@ -5283,7 +5283,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     if (trg_idx) {
         trg_len = md_array_size(trg_idx);
         trg_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_len);
-        trg_flags = MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX;
+        trg_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
         md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
         trg_len = md_array_size(trg_pos);
@@ -5754,7 +5754,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const double cell_ext = cutoff;
         md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = ctx->temp_alloc };
-        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
+        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));
@@ -5793,7 +5793,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // are chosen to minimise the very residual this alignment is about to be judged by. No
             // topology is consulted: the copies need not be whole structures, or even bonded.
             mat3_t R = {0};
-            const float residual = md_util_optimal_rotation_pbc_vec4(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell);
+            const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell, 8, 1.0e-6f);
 
             // The residual is the margin to an ambiguous image choice. Approaching half a cell means
             // no per point image assignment can represent this copy and the alignment is meaningless,

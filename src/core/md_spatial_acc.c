@@ -1,5 +1,6 @@
 ﻿#include "md_spatial_acc.h"
 
+#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -152,18 +153,18 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
 	MEMSET(acc->origin, 0, sizeof(acc->origin));
 }
 
-void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
+void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
     ASSERT(acc);
-    ASSERT(stream);
+    ASSERT(coords);
 
     if (!acc->alloc) {
         MD_LOG_ERROR("Must have allocator set within spatial acc");
         return;
     }
 
-    if (in_flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
-        if (!stream->idx) {
-            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_STORE_SUPPLIED_IDX is set, but coordinate stream index is not supplied");
+    if (in_flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) {
+        if (!coords->idx) {
+            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX is set, but coordinate stream index is not supplied");
             return;
         }
     }
@@ -171,7 +172,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 	// Reset acc, but to not free memory
     md_spatial_acc_reset(acc);
 
-    if (stream->count == 0) {
+    if (coords->count == 0) {
 		// Not a real error, but nothing to build. Leave acc in a valid empty state.
         return;
     }
@@ -202,8 +203,8 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
         ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
         // Unit cell either missing or not periodic along one or more axis
         vec4_t aabb_min = {0}, aabb_max = {0};
-        for (size_t i = 0; i < stream->count; i++) {
-            vec4_t v = md_coord_stream_load_vec4(stream, i);
+        for (size_t i = 0; i < coords->count; i++) {
+            vec4_t v = md_coord_stream_load_vec4(coords, i);
             aabb_min = vec4_min(aabb_min, v);
             aabb_max = vec4_max(aabb_max, v);
         }
@@ -307,12 +308,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 
     // Temporary arrays
     md_temp_scope_t temp_scope = md_temp_begin_avoid(acc->alloc);
-    uint32_t* local_idx = (uint32_t*)md_temp_alloc(temp_scope, stream->count * sizeof(uint32_t));
-    uint32_t* cell_idx  = (uint32_t*)md_temp_alloc(temp_scope, stream->count * sizeof(uint32_t));
-    elem_t* scratch_s   = (elem_t*)  md_temp_alloc(temp_scope, stream->count * sizeof(elem_t));  // unsorted fractional coords
+    uint32_t* local_idx = (uint32_t*)md_temp_alloc(temp_scope, coords->count * sizeof(uint32_t));
+    uint32_t* cell_idx  = (uint32_t*)md_temp_alloc(temp_scope, coords->count * sizeof(uint32_t));
+    elem_t* scratch_s   = (elem_t*)  md_temp_alloc(temp_scope, coords->count * sizeof(elem_t));  // unsorted fractional coords
 
     // Resize / allocate persistent arrays
-    size_t alloc_len = ALIGN_TO(stream->count, 16);
+    size_t alloc_len = ALIGN_TO(coords->count, 16);
 
     md_array_resize(acc->elem_x, alloc_len, acc->alloc);
     md_array_resize(acc->elem_y, alloc_len, acc->alloc);
@@ -338,9 +339,9 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
 	uint64_t cell_mask[3][16] = { 0 };
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
-    for (size_t i = 0; i < stream->count; ++i) {
-        uint32_t idx = md_coord_stream_load_idx(stream, i);
-        vec4_t r     = md_coord_stream_load_vec4(stream, i);
+    for (size_t i = 0; i < coords->count; ++i) {
+        uint32_t idx = md_coord_stream_load_idx(coords, i);
+        vec4_t r     = md_coord_stream_load_vec4(coords, i);
 
         // Fractional coordinates
         vec4_t s = vec4_linear_combine_3(vec4_sub(r, origin), vI);
@@ -364,7 +365,7 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
         local_idx[i] = acc->cell_off[ci]++;  // count for now
         cell_idx[i]  = (uint32_t)ci;
 
-        uint32_t elem_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)i;
+        uint32_t elem_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) ? idx : (uint32_t)i;
 
         // stash fractional coordinates
         scratch_s[i] = (elem_t){s.x, s.y, s.z, elem_idx};
@@ -377,19 +378,19 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* stream,
         acc->cell_off[ci] = sum;
         sum += len;
     }
-    ASSERT(sum == stream->count);
+    ASSERT(sum == coords->count);
 
     // 3) Scatter fractional coords into 'elements' in cell order
-    for (size_t i = 0; i < stream->count; ++i) {
+    for (size_t i = 0; i < coords->count; ++i) {
         uint32_t dst = acc->cell_off[cell_idx[i]] + local_idx[i];
-        ASSERT(dst < stream->count);
+        ASSERT(dst < coords->count);
         acc->elem_x[dst] = scratch_s[i].x;
         acc->elem_y[dst] = scratch_s[i].y;
         acc->elem_z[dst] = scratch_s[i].z;
         acc->elem_idx[dst] = scratch_s[i].idx;
     }
 
-    acc->num_elems = stream->count;
+    acc->num_elems = coords->count;
 
     MEMCPY(acc->cell_mask, cell_mask, sizeof(acc->cell_mask));
     MEMCPY(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
@@ -1552,7 +1553,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
         return;
     }
 
-    if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
+    if (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) {
         if (!ext_stream->idx) {
             MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_stream->idx is NULL");
             return;
@@ -1610,7 +1611,7 @@ static void for_each_external_pair_within_cutoff_triclinic(const md_spatial_acc_
         vec4_t f = vec4_cart_to_fract(r, acc);
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, cell_dim)));
 
-        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
+        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) ? idx : (uint32_t)ei;
         const md_256i v_idxi = md_mm256_set1_epi32(idx_i);
 
         for (uint32_t n = 0; n < num_neighbors; ++n) {
@@ -1704,9 +1705,9 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
         return;
     }
 
-    if (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) {
+    if (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) {
         if (!ext_stream->idx) {
-            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX flag is set but ext_stream->idx is NULL");
+            MD_LOG_ERROR("for_each_external_pair_within_cutoff_ortho: MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX flag is set but ext_stream->idx is NULL");
             return;
         }
     }
@@ -1764,7 +1765,7 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
 		f = vec4_blend(f, vec4_fract(f), fract_mask);
 		ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
 
-        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX) ? idx : (uint32_t)ei;
+        uint32_t idx_i = (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) ? idx : (uint32_t)ei;
         const md_256i v_idxi = md_mm256_set1_epi32(idx_i);
 
         for (uint32_t n = 0; n < num_neighbors; ++n) {

@@ -150,6 +150,9 @@ void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);
 
+// Converts absolute coordinates (in unitcell) to relative coordinates (with respect to given reference point)
+void md_util_convert_to_relative_coordinates_vec4(vec4_t* in_out_rel_xyzw, vec3_t ref_xyz, size_t count, const md_unitcell_t* cell);
+
 // PERIODIC IMAGE SELECTION
 //
 // These let the estimator choose each point's periodic image, using its own objective as the
@@ -196,10 +199,12 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
 // Returns the largest per point residual, which is the margin to an ambiguous image choice. Small
 // against half a cell means the assignment is nowhere near flipping; approaching it means this
 // frame's alignment should not be trusted.
-float md_util_optimal_rotation_pbc_vec4(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
-                                        const vec4_t* ref_xyzw, vec3_t ref_com,
-                                        const vec4_t* trg_xyzw, size_t count,
-                                        const md_unitcell_t* cell);
+float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
+                                             const vec4_t* ref_xyzw, vec3_t ref_com,
+                                             const vec4_t* trg_xyzw, size_t count,
+                                             const md_unitcell_t* cell, int max_iter, float tol);
+
+mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_t* trg_rel_xyzw, size_t count);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process

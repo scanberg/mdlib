@@ -1,5 +1,6 @@
 ﻿#include "utest.h"
 
+#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_spatial_acc.h>

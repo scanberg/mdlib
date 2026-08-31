@@ -695,7 +695,7 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
         mat3_t R = {0};
         vec3_t com = {0};
         vec4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell);
+        const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_NEAR(com.x, c_true.x, 1.0e-2f);
@@ -1055,7 +1055,7 @@ UTEST(util, pbc_optimal_rotation) {
         mat3_t R = {0};
         vec3_t com = {0};
         vec4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell);
+        const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_LT(pbc_angle_err(R, R_true), 0.5f);
@@ -1093,7 +1093,7 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 
     mat3_t R = {0};
     vec3_t com = {0};
-    const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell);
+    const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
     // The certificate is the whole point: a residual on the order of half a cell means do not trust it
     EXPECT_GT(residual, 0.25f * L);
@@ -1110,10 +1110,10 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
     vec3_t com = {0};
 
     // Empty set
-    EXPECT_NEAR(md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, ref, 0, &cell), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
 
     // No cell at all: still a plain Kabsch fit, identity here since target == reference
-    const float residual = md_util_optimal_rotation_pbc_vec4(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL);
+    const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
     EXPECT_LT(residual, 1.0e-3f);
     EXPECT_LT(pbc_angle_err(R, mat3_ident()), 0.5f);
 
