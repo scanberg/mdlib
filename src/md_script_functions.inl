@@ -5753,7 +5753,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         const double cell_ext = cutoff;
         md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_size);
-		md_spatial_acc_t spatial_acc = { .alloc = ctx->temp_alloc };
+		md_spatial_acc_t spatial_acc = { .alloc = temp.arena };
         md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_SUPPLIED_IDX);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
