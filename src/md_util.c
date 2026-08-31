@@ -9073,7 +9073,7 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
     // Each block has a closed form optimum given the other, so the objective decreases monotonically
     // and the discrete part reaches a genuine fixed point rather than a tolerance.
     bool stable = false;
-    for (int iter = 0; iter < PBC_MAX_ITER && !stable; ++iter) {
+    for (int iter = 0; iter < max_iter && !stable; ++iter) {
         // rot maps the target frame onto the reference frame, so its transpose carries the reference
         // template back out into the target's frame, which is where the prediction has to live.
         const mat3_t rot_inv = mat3_transpose(rot);
@@ -9168,15 +9168,15 @@ mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_
 	}
 
     mat3_t C;
-	C.elem[0][0] = A[0][0] / w_sum;
-    C.elem[0][1] = A[0][1] / w_sum;
-	C.elem[0][2] = A[0][2] / w_sum;
-	C.elem[1][0] = A[1][0] / w_sum;
-	C.elem[1][1] = A[1][1] / w_sum;
-	C.elem[1][2] = A[1][2] / w_sum;
-	C.elem[2][0] = A[2][0] / w_sum;
-	C.elem[2][1] = A[2][1] / w_sum;
-	C.elem[2][2] = A[2][2] / w_sum;
+	C.elem[0][0] = (float)(A[0][0] / w_sum);
+    C.elem[0][1] = (float)(A[0][1] / w_sum);
+	C.elem[0][2] = (float)(A[0][2] / w_sum);
+	C.elem[1][0] = (float)(A[1][0] / w_sum);
+	C.elem[1][1] = (float)(A[1][1] / w_sum);
+	C.elem[1][2] = (float)(A[1][2] / w_sum);
+	C.elem[2][0] = (float)(A[2][0] / w_sum);
+	C.elem[2][1] = (float)(A[2][1] / w_sum);
+	C.elem[2][2] = (float)(A[2][2] / w_sum);
 
     return mat3_extract_rotation(C);
 }
