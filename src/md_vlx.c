@@ -3343,23 +3343,31 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 	md_temp_end(temp);
 }
 
-static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_type_t type) {
+// The whole of the transition density reconstruction, in terms of a plain solution vector and a
+// plain AO coefficient matrix rather than a md_vlx_t. This is what lets the attribute provider
+// below reconstruct the same matrix with no vlx object in reach: everything it needs is one row of
+// a response solution and the (already resident) alpha MO coefficients.
+static bool vlx_build_transition_density_matrix(double* out_matrix, const double* solution_vector, size_t vec_len,
+	size_t nocc, size_t nvir, const double* coeff, size_t num_ao, md_vlx_transition_type_t type)
+{
 	ASSERT(out_matrix);
-	ASSERT(vlx);
+	ASSERT(solution_vector);
+	ASSERT(coeff);
 
-	size_t nocc = 0;
-	size_t nvir = 0;
-	size_t amp_count = 0;
-	bool has_y = false;
-
-	const double* solution_vector = vlx_rsp_get_solution_vector(vlx, state_idx, &nocc, &nvir, &amp_count, &has_y);
-	if (!solution_vector) {
+	if (nocc == 0 || nvir == 0 || num_ao == 0) {
 		return false;
 	}
 
-	const md_vlx_2d_data_t* coeff = &vlx->scf.alpha.coefficients;
-	const size_t num_ao = coeff->size[1];
-	const double* coeff_data = coeff->data;
+	const size_t amp_count = nocc * nvir;
+	bool has_y;
+	if (vec_len == amp_count) {
+		has_y = false;
+	} else if (vec_len == 2 * amp_count) {
+		has_y = true;
+	} else {
+		MD_LOG_ERROR("Response solution vector holds %zu values, expected %zu or %zu (%zu occupied x %zu virtual)", vec_len, amp_count, 2 * amp_count, nocc, nvir);
+		return false;
+	}
 
 	md_temp_scope_t temp = md_temp_begin();
 	double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
@@ -3407,12 +3415,12 @@ static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const 
 	}
 
 	if (type == MD_VLX_TRANSITION_DETACHMENT) {
-		vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff_data, 0, nocc, num_ao);
+		vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff, 0, nocc, num_ao);
 	} else {
-		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff_data, nocc, nvir, num_ao);
+		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff, nocc, nvir, num_ao);
 		if (type == MD_VLX_TRANSITION_DIFFERENCE) {
 			detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
-			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff_data, 0, nocc, num_ao);
+			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff, 0, nocc, num_ao);
 			for (size_t i = 0; i < num_ao * num_ao; ++i) {
 				out_matrix[i] -= detach_ao[i];
 			}
@@ -3422,6 +3430,26 @@ static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const 
 	vlx_symmetrize_square(out_matrix, num_ao);
 	md_temp_end(temp);
 	return true;
+}
+
+static bool vlx_rsp_extract_transition_density_matrix(double* out_matrix, const md_vlx_t* vlx, size_t state_idx, md_vlx_transition_type_t type) {
+	ASSERT(out_matrix);
+	ASSERT(vlx);
+
+	size_t nocc = 0;
+	size_t nvir = 0;
+	size_t amp_count = 0;
+	bool has_y = false;
+
+	const double* solution_vector = vlx_rsp_get_solution_vector(vlx, state_idx, &nocc, &nvir, &amp_count, &has_y);
+	if (!solution_vector) {
+		return false;
+	}
+
+	const md_vlx_2d_data_t* coeff = &vlx->scf.alpha.coefficients;
+	const size_t vec_len = has_y ? 2 * amp_count : amp_count;
+
+	return vlx_build_transition_density_matrix(out_matrix, solution_vector, vec_len, nocc, nvir, coeff->data, coeff->size[1], type);
 }
 
 static double vlx_dot(const double* a, const double* b, size_t count) {
@@ -4728,6 +4756,23 @@ static md_attribute_id_t vlx_publish(md_system_t* sys, str_t path, str_t label, 
 	});
 }
 
+// Same replace-on-reload idempotency as vlx_publish(), for an attribute computed through a
+// provider instead of one copied in. The provider's user_data is 'sys' itself (see the transition
+// density providers below), a borrowed pointer that needs no bookkeeping and outlives 'vlx'.
+static md_attribute_id_t vlx_publish_virtual(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_format_t format, const md_attribute_virtual_t* virt) {
+	const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
+	if (existing) {
+		md_attributes_remove(&sys->attributes, existing->id);
+	}
+	return md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
+		.path   = path,
+		.format = format,
+		.unit   = unit,
+		.label  = label,
+		.virt   = virt,
+	});
+}
+
 // rank 1 {N}, one scalar per element.
 static void vlx_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
 	if (!values || count == 0) {
@@ -4892,6 +4937,153 @@ static bool vlx_centre_of_charge(dvec3_t* out_angstrom, const md_vlx_t* vlx) {
 	return true;
 }
 
+// Reconstructs one excited state's AO-basis transition density purely from attributes already on
+// 'sys' - the response solution vectors and the alpha MO coefficients - so this runs with no vlx
+// object in reach, and keeps working after one is torn down. 'type' is baked in by the three thin
+// wrappers below, one per sibling path, the same shape as the MO coefficient split above.
+//
+// A whole (unsliced) request reconstructs every state one after another into 'dst'; expensive, but
+// no more so than the vlx-based accessor doing the same loop, and slicing by state is how a caller
+// avoids paying for states it does not need.
+static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_vlx_transition_type_t type) {
+	md_system_t* sys = (md_system_t*)user_data;
+
+	const md_attribute_t* sol   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/solution_matrix"));
+	const md_attribute_t* coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* core  = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_core"));
+	const md_attribute_t* val   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_valence"));
+	const md_attribute_t* vir   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_virtual"));
+	if (!sol || !coeff || !core || !val || !vir) {
+		MD_LOG_ERROR("'" STR_FMT "' is missing the response data it reconstructs from", STR_ARG(attr->path));
+		return 0;
+	}
+
+	double num_core = 0.0, num_valence = 0.0, num_virtual = 0.0;
+	md_attribute_extract_f64(&num_core,    1, core, md_unit_none());
+	md_attribute_extract_f64(&num_valence, 1, val,  md_unit_none());
+	md_attribute_extract_f64(&num_virtual, 1, vir,  md_unit_none());
+
+	const size_t nocc       = num_core > 0.0 ? (size_t)num_core : (size_t)num_valence;
+	const size_t nvir       = (size_t)num_virtual;
+	const size_t num_states = sol->format.shape[0];
+	const size_t vec_len    = sol->format.shape[1];
+	const size_t num_ao     = coeff->format.shape[1];
+	const size_t num_mo     = coeff->format.shape[0];
+
+	if (nocc == 0 || nvir == 0 || num_ao == 0 || num_states == 0) {
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	double* coeff_data = md_temp_alloc_array(temp, double, num_mo * num_ao);
+	double* row        = md_temp_alloc_array(temp, double, vec_len);
+
+	bool ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao;
+
+	if (ok && slice && slice->num_idx > 0) {
+		const md_attribute_slice_t row_slice = md_attribute_slice_1(slice->idx[0]);
+		ok = md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) == vec_len
+		  && vlx_build_transition_density_matrix((double*)dst, row, vec_len, nocc, nvir, coeff_data, num_ao, type);
+	} else if (ok) {
+		for (size_t s = 0; s < num_states && ok; ++s) {
+			const md_attribute_slice_t row_slice = md_attribute_slice_1((uint32_t)s);
+			ok = md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) == vec_len
+			  && vlx_build_transition_density_matrix((double*)dst + s * num_ao * num_ao, row, vec_len, nocc, nvir, coeff_data, num_ao, type);
+		}
+	}
+
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
+static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, MD_VLX_TRANSITION_ATTACHMENT);
+}
+
+static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, MD_VLX_TRANSITION_DETACHMENT);
+}
+
+static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, MD_VLX_TRANSITION_DIFFERENCE);
+}
+
+// D[ao_i][ao_j] = sum_mo occ[mo] * C[mo][ao_i] * C[mo][ao_j] - the definition of the one particle
+// density matrix in terms of the (possibly fractionally occupied) orbitals that produced it, so
+// this reconstructs the ground state density EXACTLY from data already resident as attributes,
+// with no separate density read needed. A zero occupied MO contributes nothing, so it is skipped
+// rather than paid for.
+static bool vlx_build_occupation_density_matrix(double* out_matrix, const double* coeff, const double* occ, size_t num_mo, size_t num_ao) {
+	ASSERT(out_matrix);
+	ASSERT(coeff);
+	ASSERT(occ);
+
+	if (num_mo == 0 || num_ao == 0) {
+		return false;
+	}
+
+	MEMSET(out_matrix, 0, sizeof(double) * num_ao * num_ao);
+	for (size_t mo = 0; mo < num_mo; ++mo) {
+		const double w = occ[mo];
+		if (w == 0.0) continue;
+		const double* c = coeff + mo * num_ao;
+		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
+			const double wci = w * c[ao_i];
+			if (wci == 0.0) continue;
+			for (size_t ao_j = 0; ao_j < num_ao; ++ao_j) {
+				out_matrix[ao_i * num_ao + ao_j] += wci * c[ao_j];
+			}
+		}
+	}
+	return true;
+}
+
+// Reconstructs one spin's ground state AO density from the MO coefficients and occupations this
+// system already carries as attributes - the same 'no vlx object in reach' shape as the transition
+// density providers above, sharing the same rationale: recomputing on demand costs one pass over
+// the occupied orbitals instead of holding a second, redundant [A][A] copy alongside them.
+static size_t vlx_scf_density_provide(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, md_vlx_spin_t spin) {
+	md_system_t* sys = (md_system_t*)user_data;
+
+	str_t coeff_path = spin == MD_VLX_SPIN_ALPHA ? STR_LIT("orbital/alpha/coefficient")        : STR_LIT("orbital/beta/coefficient");
+	str_t occ_path   = spin == MD_VLX_SPIN_ALPHA ? STR_LIT("vlx/scf/orbital/alpha/occupation") : STR_LIT("vlx/scf/orbital/beta/occupation");
+
+	const md_attribute_t* coeff = md_attributes_find(&sys->attributes, coeff_path);
+	const md_attribute_t* occ   = md_attributes_find(&sys->attributes, occ_path);
+	if (!coeff || !occ) {
+		MD_LOG_ERROR("'" STR_FMT "' is missing the orbital data it reconstructs from", STR_ARG(attr->path));
+		return 0;
+	}
+
+	const size_t num_mo = coeff->format.shape[0];
+	const size_t num_ao = coeff->format.shape[1];
+	if (occ->format.shape[0] != num_mo) {
+		MD_LOG_ERROR("'" STR_FMT "': occupation holds %u values, coefficients hold %zu orbitals", STR_ARG(attr->path), occ->format.shape[0], num_mo);
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	double* coeff_data = md_temp_alloc_array(temp, double, num_mo * num_ao);
+	double* occ_data   = md_temp_alloc_array(temp, double, num_mo);
+
+	bool ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao
+	       && md_attribute_extract_f64(occ_data, num_mo, occ, md_unit_none()) == num_mo
+	       && vlx_build_occupation_density_matrix((double*)dst, coeff_data, occ_data, num_mo, num_ao);
+
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
+static size_t vlx_scf_alpha_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	(void)slice; // one whole {A,A} matrix, not indexed by anything a slice could fix
+	return vlx_scf_density_provide(dst, cap, attr, user_data, MD_VLX_SPIN_ALPHA);
+}
+
+static size_t vlx_scf_beta_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	(void)slice;
+	return vlx_scf_density_provide(dst, cap, attr, user_data, MD_VLX_SPIN_BETA);
+}
+
 void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	ASSERT(sys);
 
@@ -4999,6 +5191,22 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 					if (beta_coeff && beta_coeff != alpha_coeff) {
 						vlx_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
 					}
+
+					// Ground state densities: computed on demand from the coefficients and occupations
+					// just published above rather than kept as a second resident [A][A] copy. See
+					// vlx_build_occupation_density_matrix() for why this is exact, not approximate.
+					md_attribute_format_t density_format = {
+						.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
+						.shape = { (uint32_t)num_ao, (uint32_t)num_ao },
+					};
+					if (alpha_coeff) {
+						md_attribute_virtual_t alpha_density_virt = { .provider = vlx_scf_alpha_density_provider, .user_data = sys };
+						vlx_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"), md_unit_none(), density_format, &alpha_density_virt);
+					}
+					if (beta_coeff && beta_coeff != alpha_coeff) {
+						md_attribute_virtual_t beta_density_virt = { .provider = vlx_scf_beta_density_provider, .user_data = sys };
+						vlx_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), density_format, &beta_density_virt);
+					}
 				}
 			}
 		}
@@ -5010,6 +5218,37 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	const size_t num_states = md_vlx_rsp_number_of_excited_states(vlx);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/oscillator_strength"), STR_LIT("Oscillator Strength"), md_unit_none(), md_vlx_rsp_oscillator_strengths(vlx), num_states);
 	vlx_publish_series(sys, STR_LIT("vlx/rsp/rotatory_strength"),   STR_LIT("Rotatory Strength"),   md_unit_none(), md_vlx_rsp_rotatory_strengths(vlx),   num_states);
+
+	// ---- RSP: the raw solution vectors and the occupied/virtual split they are indexed by. These
+	// are not meant for direct consumption - a consumer wants the reconstructed density, not the
+	// eigenvector it came from - they exist purely so vlx_transition_density_provide() below can
+	// rebuild a transition density with no 'vlx' object in reach, which is the whole point of
+	// storing them as attributes rather than reaching back into 'vlx' from the provider.
+	if (vlx->rsp.solution_matrix.data && num_states > 0) {
+		vlx_publish_matrix(sys, STR_LIT("vlx/rsp/solution_matrix"), (str_t){0}, md_unit_none(),
+			vlx->rsp.solution_matrix.data, vlx->rsp.solution_matrix.size[0], vlx->rsp.solution_matrix.size[1]);
+		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/num_core"),    (str_t){0}, md_unit_none(), (double)vlx->rsp.num_core);
+		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/num_valence"), (str_t){0}, md_unit_none(), (double)vlx->rsp.num_valence);
+		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/num_virtual"), (str_t){0}, md_unit_none(), (double)vlx->rsp.num_virtual);
+
+		// One virtual attribute per sibling density, each computed on demand from the solution
+		// vectors and MO coefficients above. rank {S,A,A}: slice by state for one density, or take
+		// the whole thing and pay for reconstructing every state - see the caveat on
+		// vlx_transition_density_provide() about that cost.
+		const size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+		if (num_ao > 0) {
+			md_attribute_format_t density_format = {
+				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
+				.shape = { (uint32_t)num_states, (uint32_t)num_ao, (uint32_t)num_ao },
+			};
+			md_attribute_virtual_t attach_virt = { .provider = vlx_transition_density_attachment_provider, .user_data = sys };
+			md_attribute_virtual_t detach_virt = { .provider = vlx_transition_density_detachment_provider, .user_data = sys };
+			md_attribute_virtual_t diff_virt   = { .provider = vlx_transition_density_difference_provider, .user_data = sys };
+			vlx_publish_virtual(sys, STR_LIT("vlx/rsp/transition_density/attachment"), STR_LIT("Attachment Density"), md_unit_none(), density_format, &attach_virt);
+			vlx_publish_virtual(sys, STR_LIT("vlx/rsp/transition_density/detachment"), STR_LIT("Detachment Density"), md_unit_none(), density_format, &detach_virt);
+			vlx_publish_virtual(sys, STR_LIT("vlx/rsp/transition_density/difference"), STR_LIT("Difference Density"), md_unit_none(), density_format, &diff_virt);
+		}
+	}
 
 	// ---- RSP: the frequency axis, and the quantities sampled over it. What the axis MEANS depends
 	// on md_vlx_rsp_type: excitation energies for a linear response, a sampled grid for a complex

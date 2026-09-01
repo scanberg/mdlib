@@ -280,3 +280,46 @@ UTEST(vlx, acro_rsp_has_no_xps) {
 
     md_vlx_destroy(vlx);
 }
+
+// 'orbital/{alpha,beta}/density' is never stored: it is reconstructed on demand from the
+// coefficient and occupation attributes (vlx_build_occupation_density_matrix). This is the check
+// that the reconstruction is actually the same matrix the file carried, not just plausible.
+UTEST(vlx, orbital_density_matches_stored) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5")));
+
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_vlx_system_init_from_data(&sys, &state, vlx));
+    md_vlx_publish_attributes(&sys, vlx);
+
+    const size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    ASSERT_TRUE(num_ao > 0);
+
+    double* reconstructed = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
+
+    const md_attribute_t* alpha_density = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/density"));
+    ASSERT_TRUE(alpha_density != NULL);
+    EXPECT_EQ(alpha_density->storage, MD_ATTRIBUTE_STORAGE_VIRTUAL);
+    EXPECT_EQ(alpha_density->format.shape[0], (uint32_t)num_ao);
+    EXPECT_EQ(alpha_density->format.shape[1], (uint32_t)num_ao);
+    ASSERT_EQ(md_attribute_extract_f64(reconstructed, num_ao * num_ao, alpha_density, md_unit_none()), num_ao * num_ao);
+
+    const double* stored_alpha = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
+    ASSERT_TRUE(stored_alpha != NULL);
+    ASSERT_EQ(md_vlx_scf_density_matrix_size(vlx), num_ao);
+
+    double max_diff = 0.0;
+    for (size_t i = 0; i < num_ao * num_ao; ++i) {
+        max_diff = MAX(max_diff, fabs(reconstructed[i] - stored_alpha[i]));
+    }
+    EXPECT_NEAR(0.0, max_diff, 1.0e-8);
+
+    // h2o.h5 is a restricted calculation, so beta shares alpha's buffers and no separate
+    // 'orbital/beta/density' is published - the same aliasing 'orbital/beta/coefficient' obeys.
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("orbital/beta/density")) == NULL);
+
+    md_vlx_destroy(vlx);
+    md_arena_allocator_destroy(alloc);
+}

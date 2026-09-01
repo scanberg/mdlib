@@ -766,3 +766,198 @@ UTEST(attributes, extract_slice_f64_row) {
 
     md_attributes_free(&t);
 }
+
+// --- VIRTUAL ATTRIBUTES ---------------------------------------------------------------------
+
+// 3 states x 4 atoms, value(state, atom) = state + atom / 10. Computed rather than stored, so the
+// same formula must come back whether asked for whole or one state's row - that agreement is the
+// point of the test, not the formula itself.
+static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+    (void)user_data;
+    float* out = (float*)dst;
+    size_t num_atoms = attr->format.shape[1];
+    if (slice && slice->num_idx > 0) {
+        // one fixed state, cap == num_atoms
+        for (size_t atom = 0; atom < cap; ++atom) {
+            out[atom] = (float)slice->idx[0] + (float)atom * 0.1f;
+        }
+    } else {
+        for (size_t i = 0; i < cap; ++i) {
+            out[i] = (float)(i / num_atoms) + (float)(i % num_atoms) * 0.1f;
+        }
+    }
+    return cap;
+}
+
+// Reads a single constant out of user_data, so the provider itself carries no state.
+static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+    (void)attr;
+    (void)slice;
+    float value = *(const float*)user_data;
+    float* out = (float*)dst;
+    for (size_t i = 0; i < cap; ++i) {
+        out[i] = value;
+    }
+    return cap;
+}
+
+// A provider that never honours cap, to exercise the "provider lied" error path.
+static size_t provider_wrong_count(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+    (void)dst;
+    (void)attr;
+    (void)slice;
+    (void)user_data;
+    return cap > 0 ? cap - 1 : 0;
+}
+
+UTEST(attributes, virtual_create_and_reject) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
+
+    // no provider is a rejection, not a virtual attribute that always fails
+    md_attribute_virtual_t no_provider = {0};
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &no_provider}), MD_ATTRIBUTE_INVALID);
+
+    // virt and resident data at the same time is ambiguous about which one is authoritative
+    const float data[12] = {0};
+    md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+
+    EXPECT_EQ(md_attributes_count(&t), 0u);
+
+    // the correct call publishes a virtual attribute with no resident storage
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* a = md_attributes_get(&t, id);
+    ASSERT_TRUE(a != NULL);
+    EXPECT_EQ(a->storage, MD_ATTRIBUTE_STORAGE_VIRTUAL);
+    EXPECT_TRUE(a->data == NULL);
+
+    md_attributes_free(&t);
+}
+
+// The provider must be reachable through both the whole-attribute and the sliced extraction path,
+// and the two must agree, since nothing else here would catch them disagreeing.
+UTEST(attributes, virtual_extract_whole_and_slice_agree) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
+    md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* a = md_attributes_get(&t, id);
+
+    float whole[12] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(whole, ARRAY_SIZE(whole), a, md_unit_none()), 12u);
+    EXPECT_NEAR(whole[0],  0.0f, 1.0e-6f);
+    EXPECT_NEAR(whole[11], 2.3f, 1.0e-6f);
+
+    float row[4] = {0};
+    const md_attribute_slice_t state1 = md_attribute_slice_1(1);
+    EXPECT_EQ(md_attribute_extract_slice_f32(row, ARRAY_SIZE(row), a, &state1, md_unit_none()), 4u);
+    EXPECT_NEAR(row[0], whole[4], 1.0e-6f);
+    EXPECT_NEAR(row[3], whole[7], 1.0e-6f);
+
+    md_attributes_free(&t);
+}
+
+// Unit conversion happens centrally regardless of where the values came from, so a virtual
+// attribute refuses and rescales exactly like a resident one.
+UTEST(attributes, virtual_extract_converts_unit) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    float length_angstrom = 10.0f;
+    md_attribute_virtual_t virt = {.provider = provider_constant_f32, .user_data = &length_angstrom};
+    md_attribute_format_t single = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {2}};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/length"), .format = single, .unit = md_unit_angstrom(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* a = md_attributes_get(&t, id);
+
+    float dst[2] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), a, md_unit_nanometer()), 2u);
+    EXPECT_NEAR(dst[0], 1.0f, 1.0e-6f);
+
+    // a dipole is not a length, virtual or otherwise
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), a, md_unit_debye()), 0u);
+
+    md_attributes_free(&t);
+}
+
+// A provider that does not honour cap must fail the whole extraction, not return a partial buffer.
+UTEST(attributes, virtual_provider_lying_about_count_fails) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    md_attribute_virtual_t virt = {.provider = provider_wrong_count};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    float dst[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, id), md_unit_none()), 0u);
+    EXPECT_EQ(dst[0], -1.0f);   // nothing written
+
+    md_attributes_free(&t);
+}
+
+// There is no buffer to hand out for a computed attribute, so this is a refusal, not a NULL that
+// happens to also mean "not found".
+UTEST(attributes, virtual_attributes_data_returns_null) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
+    md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    EXPECT_TRUE(md_attributes_data(&t, id, MD_ATTRIBUTE_TYPE_F32) == NULL);
+
+    md_attributes_free(&t);
+}
+
+// user_data allocated through the table is owned by it and must survive to every provider call;
+// a borrowed pointer must be left alone by removal and by freeing the whole table.
+UTEST(attributes, virtual_user_data_lifecycle) {
+    md_attributes_t no_alloc = {0};
+    EXPECT_TRUE(md_attributes_alloc_user_data(&no_alloc, sizeof(float)) == NULL);
+
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    EXPECT_TRUE(md_attributes_alloc_user_data(&t, 0) == NULL);
+
+    float* owned = (float*)md_attributes_alloc_user_data(&t, sizeof(float));
+    ASSERT_TRUE(owned != NULL);
+    *owned = 42.0f;
+
+    md_attribute_virtual_t owned_virt = {.provider = provider_constant_f32, .user_data = owned, .user_data_size = sizeof(float)};
+    md_attribute_id_t owned_id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/owned"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &owned_virt});
+    ASSERT_NE(owned_id, MD_ATTRIBUTE_INVALID);
+
+    float dst[1] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, 1, md_attributes_get(&t, owned_id), md_unit_none()), 1u);
+    EXPECT_EQ(dst[0], 42.0f);
+
+    // a borrowed pointer (user_data_size 0) must not be freed by remove or by md_attributes_free
+    float borrowed = 7.0f;
+    md_attribute_virtual_t borrowed_virt = {.provider = provider_constant_f32, .user_data = &borrowed, .user_data_size = 0};
+    md_attribute_id_t borrowed_id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("a/borrowed"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &borrowed_virt});
+    ASSERT_NE(borrowed_id, MD_ATTRIBUTE_INVALID);
+
+    EXPECT_TRUE(md_attributes_remove(&t, borrowed_id));
+    EXPECT_EQ(borrowed, 7.0f);  // still alive after removal
+
+    md_attributes_free(&t);
+    EXPECT_EQ(borrowed, 7.0f);  // still alive after the table is gone
+}
