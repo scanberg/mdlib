@@ -391,36 +391,53 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         return 0;                                                                                   \
     }                                                                                               \
                                                                                                     \
-    /* A virtual attribute has no attr->data: it is read through its provider into a scratch     */ \
+    /* A computed attribute has no attr->data: it is read through its provider into a scratch     */ \
     /* buffer of the STORED type, and from there on is indistinguishable from a resident one - the*/ \
-    /* conversion below is shared by both. */                                                       \
+    /* conversion below is shared by both.                                                        */ \
+    /*                                                                                            */ \
+    /* The test is the PROVIDER and not the storage tag, and that distinction is load bearing: an */ \
+    /* ALIAS is a second NAME for a datum, not a different kind of storage, so how it is read is  */ \
+    /* its target's business - which is exactly why it inherits both 'data' and 'virt'. Switching */ \
+    /* on storage sent an alias of a computed attribute down the resident path, where it found no */ \
+    /* data and returned nothing at all. */                                                          \
     const void* src = NULL;                                                                         \
     md_temp_scope_t temp = {0};                                                                     \
     bool own_temp = false;                                                                          \
-    if (attr->storage == MD_ATTRIBUTE_STORAGE_VIRTUAL) {                                            \
-        if (!attr->virt.provider) {                                                                 \
-            MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual but has no provider", STR_ARG(attr->path)); \
-            return 0;                                                                               \
-        }                                                                                           \
+    if (attr->virt.provider) {                                                                      \
         temp = md_temp_begin();                                                                     \
         own_temp = true;                                                                            \
-        void* buf = md_temp_alloc(temp, count * md_attribute_type_size(attr->format.type));          \
-        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data);         \
+        void* buf = md_temp_alloc(temp, count * md_attribute_type_size(attr->format.type));         \
+        if (!buf) {                                                                                 \
+            /* count is bounded by the caller's own cap, so this is a real allocation failure and  */ \
+            /* not a runaway slice - but the provider contract says dst is cap elements, and it is */ \
+            /* entitled to write without checking. */                                               \
+            MD_LOG_ERROR("Failed to allocate scratch for %zu values of virtual attribute '" STR_FMT "'", count, STR_ARG(attr->path)); \
+            md_temp_end(temp);                                                                      \
+            return 0;                                                                               \
+        }                                                                                           \
+        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data);        \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" STR_FMT "' provider wrote %zu of %zu requested values", STR_ARG(attr->path), written, count); \
-            md_temp_end(temp);                                                                       \
+            md_temp_end(temp);                                                                      \
             return 0;                                                                               \
         }                                                                                           \
         src = buf;                                                                                  \
     } else {                                                                                        \
-        if (!attr->data) {                                                                          \
+        if (attr->storage == MD_ATTRIBUTE_STORAGE_VIRTUAL) {                                        \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual but has no provider", STR_ARG(attr->path)); \
             return 0;                                                                               \
         }                                                                                           \
-        src = (const uint8_t*)attr->data + first * md_attribute_type_size(attr->format.type);        \
-    }                                                                                                \
+        if (!attr->data) {                                                                          \
+            /* Reserved but never filled in. Silence here is what hid the alias bug above, so say */ \
+            /* it: a caller getting 0 back has no other way to tell this from an empty slice. */      \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' has no data to read", STR_ARG(attr->path));        \
+            return 0;                                                                               \
+        }                                                                                           \
+        src = (const uint8_t*)attr->data + first * md_attribute_type_size(attr->format.type);       \
+    }                                                                                               \
                                                                                                     \
     size_t result = count;                                                                          \
-    /* The stored type already matching the destination, with nothing to rescale, is a memcpy. */    \
+    /* The stored type already matching the destination, with nothing to rescale, is a memcpy. */   \
     if (attr->format.type == MD_ATTRIBUTE_TYPE_##SUFFIX && factor == 1.0) {                         \
         MEMCPY(dst, src, count * sizeof(DST_T));                                                    \
     } else {                                                                                        \
@@ -440,12 +457,12 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
             MD_LOG_ERROR("Attribute '" STR_FMT "' has no readable type", STR_ARG(attr->path));      \
             result = 0;                                                                             \
             break;                                                                                  \
-        }                                                                                            \
-    }                                                                                                \
+        }                                                                                           \
+    }                                                                                               \
                                                                                                     \
     if (own_temp) {                                                                                 \
         md_temp_end(temp);                                                                          \
-    }                                                                                                \
+    }                                                                                               \
                                                                                                     \
     return result;                                                                                  \
 }
@@ -458,6 +475,10 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         }                                                           \
     } while (0)
 
+MD_ATTR_DEFINE_EXTRACT_RANGE(I32, int32_t)
+MD_ATTR_DEFINE_EXTRACT_RANGE(I64, int64_t)
+MD_ATTR_DEFINE_EXTRACT_RANGE(U32, uint32_t)
+MD_ATTR_DEFINE_EXTRACT_RANGE(U64, uint64_t)
 MD_ATTR_DEFINE_EXTRACT_RANGE(F32, float)
 MD_ATTR_DEFINE_EXTRACT_RANGE(F64, double)
 
@@ -635,7 +656,9 @@ void md_attributes_free(md_attributes_t* attributes) {
             // to hand to an allocator.
             if (attr->label.ptr)       str_free(attr->label, alloc);
             if (attr->description.ptr) str_free(attr->description, alloc);
-            if (attr->data) {
+            // An alias shares the owner's buffer and frees none of it. Its user_data_size is zero
+            // for the same reason, so the guard below already leaves the provider state alone.
+            if (attr->storage == MD_ATTRIBUTE_STORAGE_RESIDENT && attr->data) {
                 md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
             }
             // user_data_size is 0 for a borrowed pointer, so this only ever frees memory this
@@ -664,6 +687,15 @@ void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size) {
         return NULL;
     }
     return md_alloc(attributes->alloc, size);
+}
+
+md_attribute_id_t md_attributes_id_from_path(str_t path) {
+    md_attribute_id_t id = (md_attribute_id_t)md_hash64_str(path, 0);
+    if (id == MD_ATTRIBUTE_INVALID) {
+        // Zero is the invalid value, so the one path that hashes to it borrows the next id.
+        id = 1;
+    }
+    return id;
 }
 
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
@@ -745,11 +777,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         return MD_ATTRIBUTE_INVALID;
     }
 
-    md_attribute_id_t id = (md_attribute_id_t)md_hash64_str(path, 0);
-    if (id == MD_ATTRIBUTE_INVALID) {
-        // Zero is the invalid value, so the one path that hashes to it borrows the next id.
-        id = 1;
-    }
+    md_attribute_id_t id = md_attributes_id_from_path(path);
     if (attr_index_from_id(attributes, id) != SIZE_MAX) {
         MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(path));
         return MD_ATTRIBUTE_INVALID;
@@ -804,19 +832,97 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         .storage     = desc->virt ? MD_ATTRIBUTE_STORAGE_VIRTUAL : MD_ATTRIBUTE_STORAGE_RESIDENT,
         .data        = storage,
         .virt        = desc->virt ? *desc->virt : (md_attribute_virtual_t){0},
+        .root        = id,   // it owns its own storage; an alias is what points elsewhere
     };
 
     return id;
 }
 
-bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
+md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, str_t path, str_t label, str_t description) {
     ASSERT(attributes);
 
-    size_t idx = attr_index_from_id(attributes, id);
-    if (idx == SIZE_MAX) {
-        return false;
+    if (!attributes->alloc) {
+        MD_LOG_ERROR("Attribute table allocator not set");
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (!attr_path_valid(path)) {
+        MD_LOG_ERROR("Invalid attribute path '" STR_FMT "': expected non empty segments separated by '/'", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
     }
 
+    size_t target_idx = attr_index_from_id(attributes, target);
+    if (target_idx == SIZE_MAX) {
+        MD_LOG_ERROR("Cannot alias '" STR_FMT "': no such target attribute", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    size_t idx = attr_lower_bound(attributes, path);
+    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    md_attribute_id_t id = md_attributes_id_from_path(path);
+    if (attr_index_from_id(attributes, id) != SIZE_MAX) {
+        MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    // Everything inherited is copied out BEFORE the array grows: md_array_push may reallocate, and
+    // a pointer into the old block is exactly the stale pointer the header warns callers about.
+    // Aliasing an alias flattens here - root already names the owner - so a chain is never walked.
+    const md_attribute_t*        tgt      = attributes->attr + target_idx;
+    const md_attribute_format_t  format   = tgt->format;
+    const md_unit_t              unit     = tgt->unit;
+    void* const                  data     = tgt->data;
+    const md_attribute_id_t      root     = tgt->root;
+    md_attribute_virtual_t       virt     = tgt->virt;
+
+    // The target keeps ownership of its provider's private state. Zero the size so teardown of the
+    // alias never reaches it - the size IS the ownership marker, as md_attribute_virtual_t says.
+    virt.user_data_size = 0;
+
+    md_allocator_i* alloc = attributes->alloc;
+
+    str_t stored_path = str_copy(path, alloc);
+    if (str_empty(stored_path)) {
+        MD_LOG_ERROR("Failed to copy attribute path '" STR_FMT "'", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    str_t stored_label = str_empty(label)       ? (str_t){0} : str_copy(label, alloc);
+    str_t stored_desc  = str_empty(description) ? (str_t){0} : str_copy(description, alloc);
+
+    md_attribute_t empty = {0};
+    md_array_push(attributes->attr, empty, alloc);
+
+    size_t count = md_array_size(attributes->attr);
+    if (idx + 1 < count) {
+        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
+    }
+
+    attributes->attr[idx] = (md_attribute_t){
+        .id          = id,
+        .path        = stored_path,
+        .label       = stored_label,
+        .description = stored_desc,
+        .format      = format,
+        .unit        = unit,
+        .storage     = MD_ATTRIBUTE_STORAGE_ALIAS,
+        .data        = data,
+        .virt        = virt,
+        .root        = root,
+    };
+
+    return id;
+}
+
+bool md_attribute_same_data(const md_attribute_t* a, const md_attribute_t* b) {
+    ASSERT(a);
+    ASSERT(b);
+    return a->root == b->root;
+}
+
+static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
     md_allocator_i* alloc = attributes->alloc;
     ASSERT(alloc);
 
@@ -824,7 +930,8 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
     str_free(attr->path, alloc);
     if (attr->label.ptr)       str_free(attr->label, alloc);
     if (attr->description.ptr) str_free(attr->description, alloc);
-    if (attr->data) {
+    // Only an owner releases storage; an alias borrows both the buffer and the provider state.
+    if (attr->storage == MD_ATTRIBUTE_STORAGE_RESIDENT && attr->data) {
         md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
     }
     if (attr->virt.user_data && attr->virt.user_data_size) {
@@ -836,6 +943,39 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
         MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     md_array_pop(attributes->attr);
+}
+
+bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+
+    if (attr_index_from_id(attributes, id) == SIZE_MAX) {
+        return false;
+    }
+
+    // Aliases read this attribute's storage, so they cannot outlive it. They go first, one at a
+    // time because every removal shifts the array; aliases are flattened at creation, so nothing
+    // aliases an alias and one pass over the survivors always terminates.
+    for (;;) {
+        size_t alias_idx = SIZE_MAX;
+        for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
+            const md_attribute_t* a = attributes->attr + i;
+            if (a->storage == MD_ATTRIBUTE_STORAGE_ALIAS && a->root == id) {
+                alias_idx = i;
+                break;
+            }
+        }
+        if (alias_idx == SIZE_MAX) {
+            break;
+        }
+        attr_remove_at(attributes, alias_idx);
+    }
+
+    // Re-find: removing the aliases shifted everything after them.
+    size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return false;
+    }
+    attr_remove_at(attributes, idx);
 
     return true;
 }
@@ -862,6 +1002,12 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
         return NULL;
     }
     md_attribute_t* attr = attributes->attr + idx;
+    if (attr->storage == MD_ATTRIBUTE_STORAGE_ALIAS) {
+        // Writing through a second name would be writing to somebody else's attribute behind its
+        // back. Fill the owner in and every name sees it.
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is an alias; fill in the attribute which owns the storage", STR_ARG(attr->path));
+        return NULL;
+    }
     if (attr->storage != MD_ATTRIBUTE_STORAGE_RESIDENT) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual and has no resident storage", STR_ARG(attr->path));
         return NULL;

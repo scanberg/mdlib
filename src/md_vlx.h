@@ -22,12 +22,10 @@ typedef struct md_vlx_t md_vlx_t;
 // md_attributes_query(..., "atom") to enumerate, md_attribute_extract_slice_f32 to read one.
 // See the ATTRIBUTES section of md_system.h.
 
-typedef struct md_vlx_density_property_t {
-	str_t    label;
-	uint64_t key;
-	size_t 	 dim[2];
-	double*  data;
-} md_vlx_density_property_t;
+// Density properties are not exposed here. They are published into the system's attribute table as
+// "vlx/density_property/<dataset name>", rank 2 {A,A}, by md_vlx_publish_attributes, and a consumer
+// reads them from there: md_attributes_query(..., "vlx/density_property") to enumerate,
+// md_attribute_extract_slice_f64 to read one. See the ATTRIBUTES section of md_system.h.
 
 // XPS: one entry per computed core-hole state.
 // VeloxChem performs the calculation per element, removing one core electron from each atom of that
@@ -346,11 +344,6 @@ const md_vlx_xps_group_t* md_vlx_xps_group_by_index(const struct md_vlx_t* vlx, 
 const md_vlx_xps_group_t* md_vlx_xps_group_by_element(const struct md_vlx_t* vlx, md_element_t element);
 
 // Atomic properties
-
-// Density properties (Various propperties that are defined using AO densities)
-size_t md_vlx_density_property_count(const struct md_vlx_t* vlx);
-const md_vlx_density_property_t* md_vlx_density_property_by_index(const md_vlx_t* vlx, size_t idx);
-const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* vlx, uint64_t key);
 
 // SYSTEM
 bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_vlx_t* vlx);

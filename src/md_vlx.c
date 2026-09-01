@@ -25,6 +25,16 @@ typedef struct md_vlx_atomic_property_t {
 	double* data;       // num_dims dims worth of values, in that same order
 } md_vlx_atomic_property_t;
 
+// Internal only, and for the same reason as md_vlx_atomic_property_t above: what a density
+// property looks like between reading it out of the h5 file and publishing it as an attribute.
+typedef struct md_vlx_density_property_t {
+	str_t    label;     // Display text, as authored in the file
+	str_t    name;      // Dataset name in the h5 file. The identity, and what the attribute path is built from
+	uint64_t key;
+	size_t 	 dim[2];
+	double*  data;      // dim[0] * dim[1] values, row major
+} md_vlx_density_property_t;
+
 #include <float.h>
 #include <math.h>
 #include <stdlib.h>	// qsort
@@ -1852,6 +1862,7 @@ static bool h5_read_density_properties_in_group(md_vlx_t* vlx, hid_t group_handl
 		
 		md_vlx_density_property_t property = {
 			 .label = str_copy_cstr(property_label, vlx->arena),
+			 .name = str_copy_cstr(name_buf, vlx->arena),
 			 .key = key,
 			 .dim[0] = dims[0],
 			 .dim[1] = dims[1],
@@ -2526,6 +2537,59 @@ static bool h5_read_optional_1d_data(md_vlx_1d_data_t* out_data, hid_t handle, c
 	return true;
 }
 
+// The occupied/virtual split the response solution vectors are indexed by.
+//
+// VeloxChem writes num_core/num_valence/num_virtual only for some calculations - none of the files
+// in test_data carries them - and without that split a solution vector is an undifferentiated run
+// of amplitudes that nothing can be reconstructed from. So when the file is silent, derive it: an
+// ordinary valence excitation spans every occupied orbital and every virtual one, which the SCF
+// occupations already say.
+//
+// Derived, never assumed: the split has to reproduce the solution vector's own length (amp_count,
+// or twice it when the vector carries both X and Y), and it is adopted only when it does. That
+// check is what makes this safe for a core excitation, where the file DOES name num_core and the
+// derived valence split would be wrong - there, the stored values are kept and this does nothing.
+static void vlx_rsp_infer_occupied_virtual_split(md_vlx_t* vlx) {
+	ASSERT(vlx);
+
+	if (vlx->rsp.num_core > 0 || vlx->rsp.num_valence > 0) {
+		return;     // the file said so
+	}
+	const size_t vec_len = vlx->rsp.solution_matrix.size[1];
+	if (!vlx->rsp.solution_matrix.data || vec_len == 0) {
+		return;
+	}
+
+	const double* occ    = vlx->scf.alpha.occupancy.data;
+	const size_t  num_mo = vlx->scf.alpha.occupancy.size;
+	if (!occ || num_mo == 0) {
+		MD_LOG_ERROR("Response data has no occupied/virtual split and no SCF occupations to derive one from");
+		return;
+	}
+
+	size_t nocc = 0;
+	for (size_t i = 0; i < num_mo; ++i) {
+		if (occ[i] > 0.0) nocc += 1;
+	}
+	const size_t nvir = num_mo - nocc;
+
+	if (nocc == 0 || nvir == 0) {
+		MD_LOG_ERROR("Cannot derive an occupied/virtual split: %zu of %zu orbitals are occupied", nocc, num_mo);
+		return;
+	}
+
+	const size_t amp_count = nocc * nvir;
+	if (vec_len != amp_count && vec_len != 2 * amp_count) {
+		MD_LOG_ERROR("Derived %zu occupied x %zu virtual orbitals, which does not explain a solution vector of %zu values (expected %zu or %zu)",
+			nocc, nvir, vec_len, amp_count, 2 * amp_count);
+		return;
+	}
+
+	vlx->rsp.num_valence = nocc;
+	vlx->rsp.num_virtual = nvir;
+	MD_LOG_DEBUG("Derived the response occupied/virtual split from the SCF occupations: %zu x %zu", nocc, nvir);
+}
+
 static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 
 	h5_read_scalar(&vlx->rsp.number_of_frequencies, handle, H5T_NATIVE_HSIZE, "number_of_states");
@@ -2586,6 +2650,10 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 			}
 		}
 	}
+
+	// After the solution matrix is in hand, so its length is available to check a derived split
+	// against, and after the SCF block was read - which vlx_read_h5_file guarantees.
+	vlx_rsp_infer_occupied_virtual_split(vlx);
 
 	if (vlx->rsp.type == MD_VLX_RSP_UNKNOWN) {
 		// No standard response data, check for other types of response data by looking for type field
@@ -4709,31 +4777,20 @@ const md_vlx_xps_group_t* md_vlx_xps_group_by_element(const md_vlx_t* vlx, md_el
 	return NULL;
 }
 
-size_t md_vlx_density_property_count(const md_vlx_t* vlx) {
-	if (vlx) {
-		return md_array_size(vlx->density_properties);
+// Builds an attribute path from a fixed group prefix and a name taken from the file. A '/' inside
+// the name would silently introduce a group level in a namespace where the separator is the only
+// structure there is, so it is folded to '_'. Returns an empty str_t when the name does not fit,
+// which the callers treat as "skip this one" rather than as a reason to stop publishing.
+static str_t vlx_attribute_path(char* buf, size_t cap, str_t group, str_t name) {
+	int len = snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(group), STR_ARG(name));
+	if (len <= 0 || (size_t)len >= cap) {
+		MD_LOG_ERROR("Attribute path '" STR_FMT "/" STR_FMT "' does not fit in %zu characters", STR_ARG(group), STR_ARG(name), cap - 1);
+		return (str_t){0};
 	}
-	return 0;
-}
-
-const md_vlx_density_property_t* md_vlx_density_property_by_index(const md_vlx_t* vlx, size_t idx) {
-	if (vlx) {
-		if (idx < md_array_size(vlx->density_properties)) {
-			return &vlx->density_properties[idx];
-		}
+	for (int c = (int)group.len + 1; c < len; ++c) {
+		if (buf[c] == '/') buf[c] = '_';
 	}
-	return NULL;
-}
-
-const md_vlx_density_property_t* md_vlx_density_property_by_key(const md_vlx_t* vlx, uint64_t key) {
-	if (vlx) {
-		for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-			if (vlx->density_properties[i].key == key) {
-				return &vlx->density_properties[i];
-			}
-		}
-	}
-	return NULL;
+	return str_from_cstrn(buf, (size_t)len);
 }
 
 // Publishes one attribute under a path this publisher owns.
@@ -4774,14 +4831,40 @@ static md_attribute_id_t vlx_publish_virtual(md_system_t* sys, str_t path, str_t
 }
 
 // rank 1 {N}, one scalar per element.
-static void vlx_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
+static md_attribute_id_t vlx_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
 	if (!values || count == 0) {
-		return;
+		return MD_ATTRIBUTE_INVALID;
 	}
 	md_attribute_format_t format = {
 		.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)count },
 	};
-	vlx_publish(sys, path, label, unit, format, values, count * sizeof(double));
+	return vlx_publish(sys, path, label, unit, format, values, count * sizeof(double));
+}
+
+// Gives an already published attribute a second, format neutral name. Both names then read one
+// datum - no copy, and a consumer of either is unaffected when the other appears or goes.
+static md_attribute_id_t vlx_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
+	if (target != MD_ATTRIBUTE_INVALID) {
+		const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
+		if (existing) {
+			md_attributes_remove(&sys->attributes, existing->id);
+		}
+		return md_attributes_alias(&sys->attributes, target, path, (str_t){0}, (str_t){0});
+	}
+	return MD_ATTRIBUTE_INVALID;
+}
+
+// Publishes beta's copy of a per orbital series, or a SECOND NAME for alpha's when the two share
+// storage. md_vlx shallow copies beta from alpha for anything but an unrestricted calculation, so
+// comparing the POINTERS is what tells the cases apart - and it is the only test that gets the
+// restricted open shell case right, where the orbitals are shared but the occupations are read
+// separately. Switching on md_vlx_scf_type() instead would alias an occupation array that differs.
+static md_attribute_id_t vlx_publish_or_alias(md_system_t* sys, md_attribute_id_t alpha_id, str_t path, str_t label, md_unit_t unit,
+                                              const double* alpha_values, const double* beta_values, size_t count) {
+	if (beta_values && beta_values == alpha_values) {
+		return vlx_alias(sys, alpha_id, path);
+	}
+	return vlx_publish_series(sys, path, label, unit, beta_values, count);
 }
 
 // rank 0, a single scalar. The value is copied, so a local is fine.
@@ -4970,30 +5053,65 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	const size_t num_ao     = coeff->format.shape[1];
 	const size_t num_mo     = coeff->format.shape[0];
 
+	// A provider that returns 0 is reported by the extract as "wrote 0 of N", which says nothing
+	// about WHICH input was missing. Each of these is a distinct, actionable state, so each says so.
 	if (nocc == 0 || nvir == 0 || num_ao == 0 || num_states == 0) {
+		MD_LOG_ERROR("'" STR_FMT "': %zu occupied, %zu virtual, %zu atomic orbitals, %zu states - none of these may be zero",
+			STR_ARG(attr->path), nocc, nvir, num_ao, num_states);
+		return 0;
+	}
+
+	// The destination is sized by the CALLER's slice, and this writes num_ao^2 per state. Nothing
+	// upstream guarantees the two agree - the shape was published from
+	// md_vlx_scf_number_of_atomic_orbitals() while num_ao here comes off the coefficient matrix -
+	// so disagreeing is an overrun, not a wrong picture. Check before writing a single value.
+	const size_t states_written = (slice && slice->num_idx > 0) ? 1 : num_states;
+	const size_t needed = states_written * num_ao * num_ao;
+	if (needed != cap) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, would write %zu (%zu state(s) x %zu x %zu atomic orbitals)",
+			STR_ARG(attr->path), cap, needed, states_written, num_ao, num_ao);
 		return 0;
 	}
 
 	md_temp_scope_t temp = md_temp_begin();
+	size_t result = 0;
+
 	double* coeff_data = md_temp_alloc_array(temp, double, num_mo * num_ao);
 	double* row        = md_temp_alloc_array(temp, double, vec_len);
-
-	bool ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao;
-
-	if (ok && slice && slice->num_idx > 0) {
-		const md_attribute_slice_t row_slice = md_attribute_slice_1(slice->idx[0]);
-		ok = md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) == vec_len
-		  && vlx_build_transition_density_matrix((double*)dst, row, vec_len, nocc, nvir, coeff_data, num_ao, type);
-	} else if (ok) {
-		for (size_t s = 0; s < num_states && ok; ++s) {
-			const md_attribute_slice_t row_slice = md_attribute_slice_1((uint32_t)s);
-			ok = md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) == vec_len
-			  && vlx_build_transition_density_matrix((double*)dst + s * num_ao * num_ao, row, vec_len, nocc, nvir, coeff_data, num_ao, type);
-		}
+	if (!coeff_data || !row) {
+		MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), num_mo * num_ao + vec_len);
+		goto done;
 	}
 
+	// Every step below gets its own report. An '&&' chain here costs nothing to write and tells a
+	// reader of the log only that the provider produced nothing, which is exactly the position this
+	// was debugged from - and there are five separate attributes it can be let down by.
+	if (md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) != num_mo * num_ao) {
+		MD_LOG_ERROR("'" STR_FMT "': could not read the %zu x %zu coefficients from '" STR_FMT "'",
+			STR_ARG(attr->path), num_mo, num_ao, STR_ARG(coeff->path));
+		goto done;
+	}
+
+	for (size_t s = 0; s < states_written; ++s) {
+		const uint32_t state_idx = (slice && slice->num_idx > 0) ? slice->idx[0] : (uint32_t)s;
+		const md_attribute_slice_t row_slice = md_attribute_slice_1(state_idx);
+
+		if (md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) != vec_len) {
+			MD_LOG_ERROR("'" STR_FMT "': could not read state %u's %zu element solution vector from '" STR_FMT "' (%u x %u)",
+				STR_ARG(attr->path), state_idx, vec_len, STR_ARG(sol->path), sol->format.shape[0], sol->format.shape[1]);
+			goto done;
+		}
+		if (!vlx_build_transition_density_matrix((double*)dst + s * num_ao * num_ao, row, vec_len, nocc, nvir, coeff_data, num_ao, type)) {
+			MD_LOG_ERROR("'" STR_FMT "': could not build state %u's density from %zu occupied x %zu virtual over %zu atomic orbitals",
+				STR_ARG(attr->path), state_idx, nocc, nvir, num_ao);
+			goto done;
+		}
+	}
+	result = cap;
+
+done:
 	md_temp_end(temp);
-	return ok ? cap : 0;
+	return result;
 }
 
 static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
@@ -5062,13 +5180,22 @@ static size_t vlx_scf_density_provide(void* dst, size_t cap, const md_attribute_
 		return 0;
 	}
 
+	if (num_ao * num_ao != cap) {
+		MD_LOG_ERROR("'" STR_FMT "' was asked for %zu values and its coefficients span %zu atomic orbitals", STR_ARG(attr->path), cap, num_ao);
+		return 0;
+	}
+
 	md_temp_scope_t temp = md_temp_begin();
 	double* coeff_data = md_temp_alloc_array(temp, double, num_mo * num_ao);
 	double* occ_data   = md_temp_alloc_array(temp, double, num_mo);
 
-	bool ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao
-	       && md_attribute_extract_f64(occ_data, num_mo, occ, md_unit_none()) == num_mo
-	       && vlx_build_occupation_density_matrix((double*)dst, coeff_data, occ_data, num_mo, num_ao);
+	bool ok = coeff_data && occ_data;
+	if (!ok) {
+		MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), num_mo * num_ao + num_mo);
+	}
+	ok = ok && md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao
+	        && md_attribute_extract_f64(occ_data, num_mo, occ, md_unit_none()) == num_mo
+	        && vlx_build_occupation_density_matrix((double*)dst, coeff_data, occ_data, num_mo, num_ao);
 
 	md_temp_end(temp);
 	return ok ? cap : 0;
@@ -5082,6 +5209,60 @@ static size_t vlx_scf_alpha_density_provider(void* dst, size_t cap, const md_att
 static size_t vlx_scf_beta_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
 	(void)slice;
 	return vlx_scf_density_provide(dst, cap, attr, user_data, MD_VLX_SPIN_BETA);
+}
+
+// alpha +/- beta. Both halves are themselves virtual, so this is a derivation over derivations -
+// legal because the graph stays acyclic, and the case the acyclicity rule in md_system.h exists
+// for. A restricted calculation gets this for free: beta is an ALIAS of alpha there, so the total
+// comes out as twice alpha and the difference as zero without a special case anywhere.
+//
+// Each read rebuilds both matrices. That is the caller's to cache, and a representation already
+// keys one on the volume hash it computes from its own settings.
+static size_t vlx_scf_density_combine(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, double beta_scale) {
+	md_system_t* sys = (md_system_t*)user_data;
+
+	const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
+	const md_attribute_t* beta  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
+	if (!alpha || !beta) {
+		MD_LOG_ERROR("'" STR_FMT "' is missing a spin density it combines", STR_ARG(attr->path));
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	double* beta_data = md_temp_alloc_array(temp, double, cap);
+
+	bool ok = beta_data != NULL;
+	if (!ok) {
+		MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), cap);
+	}
+	if (ok && md_attribute_extract_f64((double*)dst, cap, alpha, md_unit_none()) != cap) {
+		MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
+		ok = false;
+	}
+	if (ok && md_attribute_extract_f64(beta_data, cap, beta, md_unit_none()) != cap) {
+		MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(beta->path));
+		ok = false;
+	}
+
+	if (ok) {
+		double* out = (double*)dst;
+		for (size_t i = 0; i < cap; ++i) {
+			out[i] += beta_scale * beta_data[i];
+		}
+	}
+
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
+static size_t vlx_scf_total_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	(void)slice; // one whole {A,A} matrix, not indexed by anything a slice could fix
+	return vlx_scf_density_combine(dst, cap, attr, user_data, 1.0);
+}
+
+static size_t vlx_scf_difference_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+	(void)slice;
+	return vlx_scf_density_combine(dst, cap, attr, user_data, -1.0);
 }
 
 void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
@@ -5125,10 +5306,32 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	// ---- SCF: one value per molecular orbital, per spin. Sibling paths rather than one {2,M}
 	// attribute, because a beta set is either present or absent and never an index to loop over.
 	const size_t num_mos = md_vlx_scf_number_of_molecular_orbitals(vlx);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/energy"),     STR_LIT("Energy"),		hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_ALPHA),		num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/occupation"), STR_LIT("Occupation"), md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA),	num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/energy"),      STR_LIT("Energy"),		hartree,        md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_BETA),		num_mos);
-	vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/beta/occupation"),  STR_LIT("Occupation"), md_unit_none(), md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA),		num_mos);
+	const double* alpha_energy_data = md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_ALPHA);
+	const double* beta_energy_data  = md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_BETA);
+	const double* alpha_occ_data    = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA);
+	const double* beta_occ_data     = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA);
+
+	const md_attribute_id_t alpha_energy = vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/energy"),     STR_LIT("Energy"),		hartree,        alpha_energy_data,	num_mos);
+	const md_attribute_id_t alpha_occ    = vlx_publish_series(sys, STR_LIT("vlx/scf/orbital/alpha/occupation"), STR_LIT("Occupation"), md_unit_none(), alpha_occ_data,		num_mos);
+
+	// A restricted calculation has one set of orbitals; beta is a second name for it, not a second
+	// copy. The open shell case shares the energies and not the occupations, and falls out of the
+	// same pointer test without being special cased.
+	const md_attribute_id_t beta_energy  = vlx_publish_or_alias(sys, alpha_energy, STR_LIT("vlx/scf/orbital/beta/energy"),      STR_LIT("Energy"),		hartree,        alpha_energy_data, beta_energy_data, num_mos);
+	const md_attribute_id_t beta_occ     = vlx_publish_or_alias(sys, alpha_occ,    STR_LIT("vlx/scf/orbital/beta/occupation"),  STR_LIT("Occupation"), md_unit_none(), alpha_occ_data,    beta_occ_data,    num_mos);
+
+	// An orbital's coefficients and density are already published under the neutral orbital/ tree,
+	// because md_gto_basis_t is mdlib's representation and not this program's. Its energy and
+	// occupation are the same objects described the same way by every QM code, so leaving them
+	// only under vlx/ splits one set of orbitals across two namespaces.
+	//
+	// Aliasing rather than moving them: a consumer already reading the vlx/ path keeps working,
+	// and one written against the neutral name works too. That is the whole reason a second name
+	// is cheaper than a rename.
+	vlx_alias(sys, alpha_energy, STR_LIT("orbital/alpha/energy"));
+	vlx_alias(sys, alpha_occ,    STR_LIT("orbital/alpha/occupation"));
+	vlx_alias(sys, beta_energy,  STR_LIT("orbital/beta/energy"));
+	vlx_alias(sys, beta_occ,     STR_LIT("orbital/beta/occupation"));
 
 	// ---- The GTO basis and the MO coefficients: everything an evaluator needs to turn an orbital
 	// into samples on a grid, with no reader in the loop.
@@ -5185,11 +5388,19 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 					const double* alpha_coeff = md_vlx_scf_mo_coefficients(vlx, 0, MD_VLX_SPIN_ALPHA);
 					const double* beta_coeff  = md_vlx_scf_mo_coefficients(vlx, 0, MD_VLX_SPIN_BETA);
 
+					md_attribute_id_t alpha_coeff_id = MD_ATTRIBUTE_INVALID;
 					if (alpha_coeff) {
-						vlx_publish(sys, STR_LIT("orbital/alpha/coefficient"),	STR_LIT("Alpha Coefficient"),	md_unit_none(), format, alpha_coeff, byte_size);
+						alpha_coeff_id = vlx_publish(sys, STR_LIT("orbital/alpha/coefficient"),	STR_LIT("Alpha Coefficient"),	md_unit_none(), format, alpha_coeff, byte_size);
 					}
-					if (beta_coeff && beta_coeff != alpha_coeff) {
-						vlx_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
+					// Beta previously went unpublished whenever it shared alpha's buffer, so a
+					// restricted calculation simply had no orbital/beta/coefficient for anyone to
+					// read. A second name costs nothing and makes it present and correct.
+					if (beta_coeff) {
+						if (beta_coeff == alpha_coeff) {
+							vlx_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
+						} else {
+							vlx_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
+						}
 					}
 
 					// Ground state densities: computed on demand from the coefficients and occupations
@@ -5199,19 +5410,74 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 						.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
 						.shape = { (uint32_t)num_ao, (uint32_t)num_ao },
 					};
+					md_attribute_id_t alpha_density_id = MD_ATTRIBUTE_INVALID;
 					if (alpha_coeff) {
 						md_attribute_virtual_t alpha_density_virt = { .provider = vlx_scf_alpha_density_provider, .user_data = sys };
-						vlx_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"), md_unit_none(), density_format, &alpha_density_virt);
+						alpha_density_id = vlx_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"), md_unit_none(), density_format, &alpha_density_virt);
 					}
-					if (beta_coeff && beta_coeff != alpha_coeff) {
-						md_attribute_virtual_t beta_density_virt = { .provider = vlx_scf_beta_density_provider, .user_data = sys };
-						vlx_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), density_format, &beta_density_virt);
+					if (beta_coeff) {
+						// A density is built from coefficients AND occupations, so it is the same
+						// density only when BOTH are shared. Restricted open shell shares the
+						// orbitals and not the occupations, so beta gets its own provider there -
+						// which now works, because the coefficients it reads exist as an alias.
+						const bool same_density = (beta_coeff == alpha_coeff) &&
+							(md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA) == md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA));
+
+						if (same_density) {
+							vlx_alias(sys, alpha_density_id, STR_LIT("orbital/beta/density"));
+						} else {
+							md_attribute_virtual_t beta_density_virt = { .provider = vlx_scf_beta_density_provider, .user_data = sys };
+							vlx_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), density_format, &beta_density_virt);
+						}
+
+						// The two the UI offers besides the spins. Published rather than combined at
+						// the point of use, so that "which densities does this system have" is one
+						// question asked of the table and not four cases in a consumer.
+						md_attribute_virtual_t total_density_virt = { .provider = vlx_scf_total_density_provider,      .user_data = sys };
+						md_attribute_virtual_t diff_density_virt  = { .provider = vlx_scf_difference_density_provider, .user_data = sys };
+						vlx_publish_virtual(sys, STR_LIT("orbital/total/density"),      STR_LIT("Total Density"),       md_unit_none(), density_format, &total_density_virt);
+						vlx_publish_virtual(sys, STR_LIT("orbital/difference/density"), STR_LIT("Spin Difference Density"), md_unit_none(), density_format, &diff_density_virt);
 					}
 				}
 			}
 		}
 
 		md_temp_end(temp);
+	}
+
+	// ---- Density properties: AO basis {A,A} matrices carried through from the file as they were
+	// found. Unlike the SCF densities above these are not derived from anything else the table
+	// holds - there is nothing to compute them from - so they are resident, one path per property.
+	//
+	// The path is built from the DATASET NAME, not from the label and not from the index. An index
+	// silently re-points at a different property whenever the set changes across a reload, and a
+	// label is display text that two datasets are free to share.
+	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
+		const md_vlx_density_property_t* prop = &vlx->density_properties[i];
+		if (!prop || !prop->data || prop->dim[0] == 0 || prop->dim[1] == 0) {
+			continue;
+		}
+
+		str_t name = str_empty(prop->name) ? prop->label : prop->name;
+		if (str_empty(name)) {
+			continue;
+		}
+
+		char path_buf[256];
+		str_t path = vlx_attribute_path(path_buf, sizeof(path_buf), STR_LIT("vlx/density_property"), name);
+		if (str_empty(path)) {
+			continue;
+		}
+
+		// The label is what the file called it for a human, the path is its identity. When they are
+		// the same word there is nothing for the label to add, and an absent one is a valid state.
+		str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
+
+		md_attribute_format_t format = {
+			.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
+			.shape = { (uint32_t)prop->dim[0], (uint32_t)prop->dim[1] },
+		};
+		vlx_publish(sys, path, label, md_unit_none(), format, prop->data, prop->dim[0] * prop->dim[1] * sizeof(double));
 	}
 
 	// ---- RSP: one value per excited state. ----
@@ -5341,6 +5607,44 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 				}
 			} else if (id != MD_ATTRIBUTE_INVALID) {
 				md_attributes_remove(&sys->attributes, id);
+			}
+		}
+
+		// The NTO coefficient vectors themselves, {S,Lmax,A}, padded on the lambda axis exactly as
+		// the weights above so the two index the same space and a consumer moves one slider.
+		//
+		// RESIDENT rather than computed on demand, unlike the transition densities. The reason is
+		// size, not principle: S x Lmax x A doubles is under a megabyte for a realistic file, while
+		// a transition density is A^2 PER STATE. And it is what keeps this self contained - the NTO
+		// math reads the vlx object, so a provider would have to close over the reader, which is
+		// the one thing the port exists to avoid. Paying it once at load buys that outright.
+		const size_t num_ao_nto = md_vlx_scf_number_of_atomic_orbitals(vlx);
+		if (max_lambdas > 0 && num_ao_nto > 0) {
+			const md_vlx_nto_type_t types[2] = { MD_VLX_NTO_PARTICLE, MD_VLX_NTO_HOLE };
+			str_t paths[2] = { STR_LIT("vlx/rsp/nto/particle/coefficient"), STR_LIT("vlx/rsp/nto/hole/coefficient") };
+			str_t labels[2] = { STR_LIT("Particle"), STR_LIT("Hole") };
+
+			md_attribute_format_t format = {
+				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
+				.shape = { (uint32_t)num_states, (uint32_t)max_lambdas, (uint32_t)num_ao_nto },
+			};
+
+			for (int t = 0; t < 2; ++t) {
+				md_attribute_id_t id = vlx_publish(sys, paths[t], labels[t], md_unit_none(), format, NULL, 0);
+				double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
+				if (!dst) {
+					if (id != MD_ATTRIBUTE_INVALID) md_attributes_remove(&sys->attributes, id);
+					continue;
+				}
+
+				// One state at a time, straight into its own plane of the table's storage. The
+				// extract writes [lambda_count][num_ao] which is exactly the plane's layout, and a
+				// state with fewer pairs leaves the rest of its plane at the zero it was created
+				// with.
+				const size_t plane = max_lambdas * num_ao_nto;
+				for (size_t s = 0; s < num_states; ++s) {
+					md_vlx_rsp_nto_coefficients_extract(dst + s * plane, NULL, vlx, s, types[t], max_lambdas);
+				}
 			}
 		}
 	}
@@ -5476,17 +5780,10 @@ bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 		}
 
 		char path_buf[256];
-		int len = snprintf(path_buf, sizeof(path_buf), "atom/" STR_FMT, STR_ARG(name));
-		if (len <= 0 || len >= (int)sizeof(path_buf)) {
-			MD_LOG_ERROR("Atomic property '" STR_FMT "' does not fit an attribute path", STR_ARG(name));
+		str_t path = vlx_attribute_path(path_buf, sizeof(path_buf), STR_LIT("atom"), name);
+		if (str_empty(path)) {
 			continue;
 		}
-		// A '/' inside the dataset name would silently introduce a group level in a namespace where
-		// the separator is the only structure there is.
-		for (int c = (int)sizeof("atom/") - 1; c < len; ++c) {
-			if (path_buf[c] == '/') path_buf[c] = '_';
-		}
-		str_t path = str_from_cstrn(path_buf, (size_t)len);
 
 		// The label is what the file called it for a human, the path is its identity. When they are
 		// the same word there is nothing for the label to add, and an absent one is a valid state.

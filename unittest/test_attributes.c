@@ -961,3 +961,294 @@ UTEST(attributes, virtual_user_data_lifecycle) {
     md_attributes_free(&t);
     EXPECT_EQ(borrowed, 7.0f);  // still alive after the table is gone
 }
+
+// A second name for one datum: same storage, same numbers, its own label - and NOT a copy.
+UTEST(attributes, alias_shares_storage) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float charges[4] = {0.5f, -0.25f, 0.125f, 1.0f};
+    md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .label = STR_LIT("Mulliken (VeloxChem)"),
+        .data = charges, .byte_size = sizeof(charges)});
+    ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
+
+    md_attribute_id_t alias = md_attributes_alias(&t, src, STR_LIT("atom/charge/mulliken"), STR_LIT("Mulliken"), (str_t){0});
+    ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 2u);
+
+    const md_attribute_t* a = md_attributes_get(&t, src);
+    const md_attribute_t* b = md_attributes_get(&t, alias);
+    ASSERT_TRUE(a && b);
+
+    // Same datum, different names. The id differs - that is exactly why comparing ids is the wrong
+    // question and md_attribute_same_data is the right one.
+    EXPECT_NE(a->id, b->id);
+    EXPECT_TRUE(md_attribute_same_data(a, b));
+    EXPECT_TRUE(md_attribute_same_data(a, a));
+
+    // Shared, not copied: the resident fast path works through either name and finds one buffer.
+    EXPECT_TRUE(a->data == b->data);
+    EXPECT_EQ(b->storage, MD_ATTRIBUTE_STORAGE_ALIAS);
+
+    // Format and unit come from the target; the label is the alias's own.
+    EXPECT_EQ(md_attribute_element_count(&b->format), 4u);
+    EXPECT_TRUE(str_eq(b->label, STR_LIT("Mulliken")));
+    EXPECT_TRUE(str_eq(a->label, STR_LIT("Mulliken (VeloxChem)")));
+
+    // and it reads as data, through the name a consumer of the neutral path would use
+    float dst[4] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), b, md_unit_none()), 4u);
+    EXPECT_NEAR(dst[1], -0.25f, 1.0e-6f);
+
+    // Both names are in the table and the prefix queries see each under its own group.
+    md_attribute_id_t ids[8];
+    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &t, STR_LIT("atom")), 1u);
+    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &t, STR_LIT("vlx")), 1u);
+
+    md_attributes_free(&t);
+}
+
+// An alias cannot outlive the storage it reads, so removing the target takes it with it.
+UTEST(attributes, alias_cannot_outlive_its_target) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float v[2] = {1.0f, 2.0f};
+    md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("vlx/a"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
+
+    md_attribute_id_t one = md_attributes_alias(&t, src, STR_LIT("a/one"), (str_t){0}, (str_t){0});
+    md_attribute_id_t two = md_attributes_alias(&t, src, STR_LIT("a/two"), (str_t){0}, (str_t){0});
+    ASSERT_NE(one, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(two, MD_ATTRIBUTE_INVALID);
+
+    // Aliasing an alias flattens: three names, one owner.
+    md_attribute_id_t three = md_attributes_alias(&t, two, STR_LIT("a/three"), (str_t){0}, (str_t){0});
+    ASSERT_NE(three, MD_ATTRIBUTE_INVALID);
+    EXPECT_TRUE(md_attribute_same_data(md_attributes_get(&t, three), md_attributes_get(&t, src)));
+    EXPECT_EQ(md_attributes_get(&t, three)->root, src);
+
+    EXPECT_EQ(md_attributes_count(&t), 4u);
+    EXPECT_TRUE(md_attributes_remove(&t, src));
+    EXPECT_EQ(md_attributes_count(&t), 0u);   // every name went with the datum
+
+    md_attributes_free(&t);
+}
+
+// Removing an alias leaves the datum, and every other name for it, alone.
+UTEST(attributes, removing_an_alias_leaves_the_target) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float v[2] = {3.0f, 4.0f};
+    md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("vlx/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    md_attribute_id_t alias = md_attributes_alias(&t, src, STR_LIT("b/neutral"), (str_t){0}, (str_t){0});
+    ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
+
+    EXPECT_TRUE(md_attributes_remove(&t, alias));
+    EXPECT_EQ(md_attributes_count(&t), 1u);
+
+    float dst[2] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, src), md_unit_none()), 2u);
+    EXPECT_NEAR(dst[0], 3.0f, 1.0e-6f);
+
+    // A duplicate path is refused whichever way it is published, and so is a missing target.
+    EXPECT_EQ(md_attributes_alias(&t, src, STR_LIT("vlx/b"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_alias(&t, alias, STR_LIT("b/gone"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
+
+    // Writing goes through the owner, never through a second name for it.
+    md_attribute_id_t again = md_attributes_alias(&t, src, STR_LIT("b/neutral"), (str_t){0}, (str_t){0});
+    ASSERT_NE(again, MD_ATTRIBUTE_INVALID);
+    EXPECT_TRUE(md_attributes_data(&t, again, MD_ATTRIBUTE_TYPE_F32) == NULL);
+    EXPECT_TRUE(md_attributes_data(&t, src,   MD_ATTRIBUTE_TYPE_F32) != NULL);
+
+    md_attributes_free(&t);
+}
+
+// An id is a function of the PATH, which is what makes it the right thing for a consumer to store.
+// It resolves before anything is published, it is the id create hands back, and it survives the
+// attribute being removed and published again - none of which an index into a list can do.
+UTEST(attributes, id_from_path_resolves_without_the_table) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const str_t path = STR_LIT("vlx/density_property/relaxed");
+    const md_attribute_id_t expected = md_attributes_id_from_path(path);
+
+    EXPECT_NE(expected, MD_ATTRIBUTE_INVALID);
+    EXPECT_TRUE(md_attributes_get(&t, expected) == NULL);   // names a path, not a thing that exists
+
+    const double v[4] = {1.0, 2.0, 3.0, 4.0};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = path, .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 4),
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    EXPECT_EQ(id, expected);
+
+    // And again after a reload, which is the case the whole thing exists for.
+    EXPECT_TRUE(md_attributes_remove(&t, id));
+    id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = path, .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 4),
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    EXPECT_EQ(id, expected);
+
+    // Different paths are different ids; the same path is the same id however it is spelled in the
+    // caller's own storage.
+    EXPECT_NE(md_attributes_id_from_path(STR_LIT("vlx/density_property/relaxed2")), expected);
+    EXPECT_EQ(md_attributes_id_from_path(str_from_cstr("vlx/density_property/relaxed")), expected);
+
+    md_attributes_free(&t);
+}
+
+// A rank 3 attribute sliced by its leading axis is a matrix, and the format says so without the
+// caller redoing the arithmetic. This is what the density and NTO paths rely on.
+UTEST(attributes, slice_format_narrows_rank_3_to_a_matrix) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    double v[2 * 3 * 3] = {0};
+    for (int i = 0; i < 2 * 3 * 3; ++i) v[i] = (double)i;
+
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3, .shape = {2, 3, 3},
+    };
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("rsp/transition_density"), .format = format,
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* attr = md_attributes_get(&t, id);
+    md_attribute_slice_t slice = md_attribute_slice_1(1);
+
+    md_attribute_format_t sliced = {0};
+    ASSERT_TRUE(md_attribute_slice_format(&sliced, attr, &slice));
+    EXPECT_EQ(sliced.rank, 2u);
+    EXPECT_EQ(sliced.shape[0], 3u);
+    EXPECT_EQ(sliced.shape[1], 3u);
+    EXPECT_EQ(md_attribute_slice_count(attr, &slice), 9u);
+
+    double dst[9] = {0};
+    EXPECT_EQ(md_attribute_extract_slice_f64(dst, ARRAY_SIZE(dst), attr, &slice, md_unit_none()), 9u);
+    EXPECT_NEAR(dst[0], 9.0, 1.0e-12);   // plane 1 starts at 1 * 3 * 3
+    EXPECT_NEAR(dst[8], 17.0, 1.0e-12);
+
+    // No slice at all is the whole thing, still rank 3.
+    md_attribute_format_t whole = {0};
+    ASSERT_TRUE(md_attribute_slice_format(&whole, attr, NULL));
+    EXPECT_EQ(whole.rank, 3u);
+    EXPECT_EQ(md_attribute_slice_count(attr, NULL), 18u);
+
+    // An index past the axis selects nothing rather than reading past the end.
+    md_attribute_slice_t bad = md_attribute_slice_1(2);
+    EXPECT_EQ(md_attribute_slice_count(attr, &bad), 0u);
+    EXPECT_FALSE(md_attribute_slice_format(&whole, attr, &bad));
+
+    md_attributes_free(&t);
+}
+
+// A provider that reads two OTHER attributes out of the table and combines them. This is the shape
+// the SCF total/difference densities have: a derivation over derivations, which is legal as long as
+// the graph stays acyclic.
+typedef struct combine_ctx_t {
+    md_attributes_t* table;
+    str_t            lhs;
+    str_t            rhs;
+    double           rhs_scale;
+} combine_ctx_t;
+
+static size_t provider_combine_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+    (void)attr;
+    (void)slice;
+    combine_ctx_t* ctx = (combine_ctx_t*)user_data;
+
+    const md_attribute_t* lhs = md_attributes_find(ctx->table, ctx->lhs);
+    const md_attribute_t* rhs = md_attributes_find(ctx->table, ctx->rhs);
+    if (!lhs || !rhs) return 0;
+
+    md_temp_scope_t temp = md_temp_begin();
+    float* rhs_data = md_temp_alloc_array(temp, float, cap);
+    bool ok = rhs_data
+           && md_attribute_extract_f32((float*)dst, cap, lhs, md_unit_none()) == cap
+           && md_attribute_extract_f32(rhs_data,    cap, rhs, md_unit_none()) == cap;
+    if (ok) {
+        float* out = (float*)dst;
+        for (size_t i = 0; i < cap; ++i) out[i] += (float)ctx->rhs_scale * rhs_data[i];
+    }
+    md_temp_end(temp);
+    return ok ? cap : 0;
+}
+
+// An ALIAS is a second NAME, not a different kind of storage - so aliasing a VIRTUAL attribute has
+// to read through the same provider. It did not: the extract branched on the storage tag, sent the
+// alias down the resident path, found no data and returned 0 with no diagnostic. Every consumer of
+// the alias saw an attribute that existed and held nothing.
+UTEST(attributes, alias_of_a_virtual_attribute_reads_through_its_provider) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    float constant = 2.5f;
+    md_attribute_virtual_t virt = {.provider = provider_constant_f32, .user_data = &constant};
+    md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {4}};
+
+    md_attribute_id_t alpha = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &virt});
+    ASSERT_NE(alpha, MD_ATTRIBUTE_INVALID);
+
+    md_attribute_id_t beta = md_attributes_alias(&t, alpha, STR_LIT("orbital/beta/density"), (str_t){0}, (str_t){0});
+    ASSERT_NE(beta, MD_ATTRIBUTE_INVALID);
+
+    float dst[4] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, beta), md_unit_none()), 4u);
+    EXPECT_NEAR(dst[0], 2.5f, 1.0e-6f);
+    EXPECT_NEAR(dst[3], 2.5f, 1.0e-6f);
+
+    // And through a slice, which takes the same path.
+    md_attribute_slice_t all = md_attribute_slice_all();
+    MEMSET(dst, 0, sizeof(dst));
+    EXPECT_EQ(md_attribute_extract_slice_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, beta), &all, md_unit_none()), 4u);
+    EXPECT_NEAR(dst[2], 2.5f, 1.0e-6f);
+
+    // Writing still goes through the owner, and neither name has resident storage to hand out.
+    EXPECT_TRUE(md_attributes_data(&t, beta,  MD_ATTRIBUTE_TYPE_F32) == NULL);
+    EXPECT_TRUE(md_attributes_data(&t, alpha, MD_ATTRIBUTE_TYPE_F32) == NULL);
+
+    md_attributes_free(&t);
+}
+
+// The case the bug actually showed up in: a virtual attribute combining a virtual one with an ALIAS
+// of it. In a restricted SCF calculation beta IS alpha, so the total comes out as twice alpha and
+// the difference as exactly zero - with no special case anywhere.
+UTEST(attributes, virtual_over_an_alias_of_a_virtual) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    float constant = 3.0f;
+    md_attribute_virtual_t spin_virt = {.provider = provider_constant_f32, .user_data = &constant};
+    md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {4}};
+
+    md_attribute_id_t alpha = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &spin_virt});
+    ASSERT_NE(md_attributes_alias(&t, alpha, STR_LIT("orbital/beta/density"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
+
+    combine_ctx_t total_ctx = {&t, STR_LIT("orbital/alpha/density"), STR_LIT("orbital/beta/density"),  1.0};
+    combine_ctx_t diff_ctx  = {&t, STR_LIT("orbital/alpha/density"), STR_LIT("orbital/beta/density"), -1.0};
+
+    md_attribute_virtual_t total_virt = {.provider = provider_combine_f32, .user_data = &total_ctx};
+    md_attribute_virtual_t diff_virt  = {.provider = provider_combine_f32, .user_data = &diff_ctx};
+
+    md_attribute_id_t total = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("orbital/total/density"), .format = fmt, .unit = md_unit_none(), .virt = &total_virt});
+    md_attribute_id_t diff = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("orbital/difference/density"), .format = fmt, .unit = md_unit_none(), .virt = &diff_virt});
+    ASSERT_NE(total, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(diff,  MD_ATTRIBUTE_INVALID);
+
+    float dst[4] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, total), md_unit_none()), 4u);
+    EXPECT_NEAR(dst[0], 6.0f, 1.0e-6f);
+    EXPECT_NEAR(dst[3], 6.0f, 1.0e-6f);
+
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, diff), md_unit_none()), 4u);
+    EXPECT_NEAR(dst[0], 0.0f, 1.0e-6f);
+    EXPECT_NEAR(dst[3], 0.0f, 1.0e-6f);
+
+    md_attributes_free(&t);
+}

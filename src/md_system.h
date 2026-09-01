@@ -305,9 +305,9 @@ typedef struct md_hydrogen_bond_data_t {
 // soon as it has published.
 //
 // TWO THINGS A CONSUMER MUST NOT ASSUME, so the storage behind the table stays free to change:
-//   - Distinct paths do not imply distinct data. Two paths may come to share one buffer (the
-//     same quantity reachable as both vlx/... and atom/...), so never decide "same datum" by
-//     comparing id.
+//   - Distinct paths do not imply distinct data. Two paths may share one buffer - the same
+//     quantity reachable as both vlx/... and atom/... - so decide "same datum" with
+//     md_attribute_same_data and never by comparing id. See md_attributes_alias.
 //   - data is the storage of a RESIDENT attribute and may be NULL. md_attribute_extract_f32 is
 //     the access path which is valid for every attribute.
 //
@@ -345,7 +345,15 @@ typedef enum md_attribute_storage_t {
 	MD_ATTRIBUTE_STORAGE_NONE = 0,
 	MD_ATTRIBUTE_STORAGE_RESIDENT,  // data is resident in the table, and data points to it
 	MD_ATTRIBUTE_STORAGE_VIRTUAL,   // data is not resident, it is computed on demand by a provider
+	MD_ATTRIBUTE_STORAGE_ALIAS,     // a second name for another attribute's storage; owns none of it
 } md_attribute_storage_t;
+
+// READING vs OWNING. The tag above says how an attribute was DECLARED and who owns what, which is
+// what teardown and write access need. It is NOT how to read one: an ALIAS is transparent, so an
+// alias of a VIRTUAL attribute is read through the provider it inherited, exactly like its target.
+// Read paths therefore branch on whether there IS a provider, never on this tag - see the extract
+// implementation. Branching on the tag instead sends an alias of a computed attribute down the
+// resident path, where it finds no data.
 
 typedef struct md_attribute_format_t {
 	md_attribute_type_t type;                          // what one component is
@@ -372,6 +380,21 @@ typedef struct md_attribute_slice_t md_attribute_slice_t;
 // md_attribute_slice_count. The provider writes the STORED type and the STORED unit; it never
 // converts - conversion to whatever the caller asked for happens once, centrally, exactly as it
 // does for a resident attribute.
+//
+// A provider is entered from inside an extract, so two constraints follow which nothing checks:
+//
+//   - It may read OTHER attributes (that is the point - a derivation over the table keeps a system
+//     self contained, with no reader held open behind it), but the dependency graph must be
+//     ACYCLIC. Two virtual attributes reading each other recurse until the stack goes; there is no
+//     cycle detection and adding one would cost every extract. Depend on resident attributes where
+//     you can, and know the chain where you cannot.
+//   - Scratch comes from the calling thread's temp allocator, which is thread local, so two threads
+//     extracting at once is safe. Nesting is also safe as long as a provider unwinds its own temp
+//     scopes before returning - which it must anyway.
+//
+// The table never caches what a provider returns: a virtual attribute is recomputed on every
+// extract. Caching is the CALLER's, keyed on whatever it already keys other derived work on. That
+// is deliberate - a cache inside a const read is mutation nothing can see.
 //
 // Returns elements written, which must equal cap on success and 0 on failure.
 typedef size_t (*md_attribute_provider_fn)(
@@ -406,6 +429,12 @@ typedef struct md_attribute_t {
 	md_attribute_storage_t  storage;        // how the data is stored
 	void*                   data;           // RESIDENT only: owned by the table, md_attribute_byte_size() bytes, zeroed on create
 	md_attribute_virtual_t  virt;           // VIRTUAL only: how to compute it; zeroed for a resident attribute
+
+	// The attribute whose storage this one reads. Equal to id for anything but an alias, so
+	// comparing it answers "same datum?" in one compare and without the table - which is what
+	// md_attribute_same_data does. Aliases are flattened at creation, so this always names a real
+	// owner and never another alias.
+	md_attribute_id_t       root;
 } md_attribute_t;
 
 // What a producer fills in to publish one attribute. Designated initialisers only: everything
@@ -656,6 +685,12 @@ size_t md_attributes_count(const md_attributes_t* attributes);
 // provider shared by a whole group may allocate once and hand the same user_data to every member.
 void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size);
 
+// The id a path HAS, whether or not anything is published there. Ids are derived from the path
+// alone, so a consumer that stores one - a saved workspace, a representation naming what it draws -
+// can resolve it before the table holding it exists, and gets the same answer after a reload. This
+// is why an id is the right thing for a consumer to hold and an index never is.
+md_attribute_id_t md_attributes_id_from_path(str_t path);
+
 // Creates an attribute and returns its id, MD_ATTRIBUTE_INVALID on failure.
 //
 // The descriptor is taken by pointer and read once; nothing in it is retained. path, label and
@@ -685,6 +720,34 @@ void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size);
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc);
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
+
+// Publishes a SECOND NAME for an existing attribute. Both paths then address one datum: the alias
+// shares the target's storage rather than copying it, so a resident target stays resident through
+// either name - attr->data is the same pointer - and a virtual one is computed by the same provider.
+//
+// This is what lets a quantity live under a format specific path and a format neutral one at the
+// same time, which is the migration a path is otherwise too rigid to allow: publish under vlx/,
+// alias into the neutral name once a second loader produces the same thing, and no consumer of
+// either name has to move.
+//
+// FORMAT AND UNIT COME FROM THE TARGET and cannot be overridden. It is the same data; an alias may
+// disagree with its target about what it is CALLED - path, label and description are its own, and
+// that is the entire point - but never about what it IS.
+//
+// Aliasing an alias is legal and FLATTENS: the new one points at the original owner, so a chain is
+// never walked at read time and md_attribute_same_data stays a single compare.
+//
+// LIFETIME: an alias cannot outlive its target, so removing a target REMOVES ITS ALIASES TOO. That
+// matters for a publisher which republishes by remove-then-create, as md_vlx_publish_attributes
+// does: the aliases go with the old attribute and have to be re-established, which is natural when
+// publishing is wholesale and a trap when it is piecemeal.
+//
+// Returns the new id, MD_ATTRIBUTE_INVALID on failure (no such target, bad or duplicate path).
+md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, str_t path, str_t label, str_t description);
+
+// Do two attributes read the same datum? The question a consumer must ask instead of comparing
+// ids, because distinct paths do not imply distinct data once aliases exist. One compare, no table.
+bool md_attribute_same_data(const md_attribute_t* a, const md_attribute_t* b);
 
 // NULL if absent.
 // INVALIDATED BY THE NEXT create OR remove: the array reallocates and is kept sorted by path.
