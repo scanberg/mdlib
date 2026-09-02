@@ -87,6 +87,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         md_gro_atom_t* atom = &data->atom_data[i];
 
         const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
+        atom->vx = atom->vy = atom->vz = NAN;
         if (num_tokens < 3) {
             warn_about_fixed_width = true;
             // Fallback to fixed width format
@@ -97,6 +98,14 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
             atom->x = (float)parse_float_wide(tokens[0].ptr, tokens[0].len);
             atom->y = (float)parse_float_wide(tokens[1].ptr, tokens[1].len);
             atom->z = (float)parse_float_wide(tokens[2].ptr, tokens[2].len);
+
+            // Velocities are all three or none: a line carrying only part of them is malformed, and
+            // guessing which component was meant is worse than reading none.
+            if (num_tokens >= 6) {
+                atom->vx = (float)parse_float_wide(tokens[3].ptr, tokens[3].len);
+                atom->vy = (float)parse_float_wide(tokens[4].ptr, tokens[4].len);
+                atom->vz = (float)parse_float_wide(tokens[5].ptr, tokens[5].len);
+            }
         }
         
         atom->res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
@@ -230,6 +239,23 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 		prev_comp_key = comp_key;
     }
 	md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
+
+    // The optional velocity columns. Stored in the file's own nm/ps rather than converted the way
+    // the coordinates are, because a velocity has a unit and the attribute carries it - a consumer
+    // wanting Angstrom per picosecond asks the extract for it and gets a checked conversion, which
+    // is strictly better than a silent one here that no one downstream can see happened.
+    {
+        const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
+        float* velocity = md_temp_alloc_array(temp, float, data->num_atoms * 3);
+        if (velocity) {
+            for (size_t i = 0; i < data->num_atoms; ++i) {
+                velocity[i * 3 + 0] = data->atom_data[i].vx;
+                velocity[i * 3 + 1] = data->atom_data[i].vy;
+                velocity[i * 3 + 2] = data->atom_data[i].vz;
+            }
+            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), nm_per_ps, 3, velocity, data->num_atoms);
+        }
+    }
 
     float box[3][3] = {0};
     // convert from nm to Ångström

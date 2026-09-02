@@ -10,6 +10,7 @@
 #include <core/md_array.h>
 
 struct md_bitfield_t;
+struct md_attributes_t;
 struct md_system_t;
 struct md_trajectory_i;
 struct md_allocator_i;
@@ -244,6 +245,23 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
 // Extract property data within in an evaluation
 size_t md_script_eval_property_count(const md_script_eval_t* eval);
 const md_script_property_data_t* md_script_eval_property_data(const md_script_eval_t* eval, str_t name);
+
+// The properties as ATTRIBUTES, published under 'script/'. This is the same storage the structs
+// above point at, not a copy of it, and it is where this API is headed: everything a consumer
+// currently digs out of md_script_property_data_t is addressable here by path.
+//
+//   script/<ident>            the values. Temporal properties carry MD_ATTRIBUTE_FLAG_TEMPORAL and
+//                             are shaped {num_frames, population}; a distribution is {num_bins};
+//                             a volume is {x, y, z}.
+//   script/<ident>/mean       per frame summary over the population, when there is one
+//   script/<ident>/variance
+//   script/<ident>/extent     2 components, (min, max)
+//   script/<ident>/weight     a distribution's per bin weight
+//   script/<ident>/bin        a distribution's bin coordinates
+//
+// Versions bump when an evaluation completes, so a consumer caching something derived from a
+// property compares md_attributes_version instead of md_script_property_data_t::fingerprint.
+const struct md_attributes_t* md_script_eval_attributes(const md_script_eval_t* eval);
 
 // Get the frames encoded as a bitfield of the completed frames
 size_t md_script_eval_frame_count(const md_script_eval_t* eval);

@@ -1252,3 +1252,307 @@ UTEST(attributes, virtual_over_an_alias_of_a_virtual) {
 
     md_attributes_free(&t);
 }
+
+// The shared per atom column publisher every structure loader now goes through. Its rules are the
+// contract between them: two readers for one file family must agree on whether a column exists.
+UTEST(attributes, publish_atom_column_rules) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    const float nan_v = (float)NAN;
+
+    // A constant column carries nothing a property list wants.
+    const float constant[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    EXPECT_EQ(md_attributes_publish_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, constant, 4), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 0u);
+
+    // Neither does one that is entirely absent. NAN != NAN, so this is the case a naive
+    // "all values equal" test publishes as a column of nothing.
+    const float absent[4] = {nan_v, nan_v, nan_v, nan_v};
+    EXPECT_EQ(md_attributes_publish_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, absent, 4), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 0u);
+
+    // A partly filled column DOES publish, gaps intact: a gap is not a zero, and nothing downstream
+    // can recover the difference once it has been filled in.
+    const float partial[4] = {0.5f, nan_v, 1.0f, nan_v};
+    md_attribute_id_t id = md_attributes_publish_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, partial, 4);
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* attr = md_attributes_get(&t, id);
+    ASSERT_TRUE(attr != NULL);
+    EXPECT_EQ(attr->format.rank, 1u);
+    EXPECT_EQ(attr->format.shape[0], 4u);
+    EXPECT_EQ(md_attribute_components(&attr->format), 1u);
+
+    float dst[12] = {0};
+    ASSERT_EQ(md_attribute_extract_f32(dst, 4, attr, md_unit_none()), 4u);
+    EXPECT_NEAR(dst[0], 0.5f, 1.0e-6f);
+    EXPECT_TRUE(dst[1] != dst[1]);      // still absent
+    EXPECT_NEAR(dst[2], 1.0f, 1.0e-6f);
+
+    // Uniformity is a property of the whole VALUE. Every atom moving identically is uninformative;
+    // sharing only an x component is not.
+    const float same_vec[6] = {1.0f, 2.0f, 3.0f, 1.0f, 2.0f, 3.0f};
+    EXPECT_EQ(md_attributes_publish_atom_column(&t, STR_LIT("atom/velocity"), md_unit_none(), 3, same_vec, 2), MD_ATTRIBUTE_INVALID);
+
+    const float shared_x[6] = {1.0f, 2.0f, 3.0f, 1.0f, 9.0f, 3.0f};
+    md_attribute_id_t vel = md_attributes_publish_atom_column(&t, STR_LIT("atom/velocity"), md_unit_none(), 3, shared_x, 2);
+    ASSERT_NE(vel, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* v = md_attributes_get(&t, vel);
+    EXPECT_EQ(md_attribute_components(&v->format), 3u);
+    EXPECT_EQ(v->format.shape[0], 2u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), v, md_unit_none()), 6u);
+    EXPECT_NEAR(dst[4], 9.0f, 1.0e-6f);
+
+    // A unit is carried, not applied: the loader stores what the file said and the extract converts.
+    md_attributes_remove(&t, vel);
+    const float nm_ps[6] = {1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
+    vel = md_attributes_publish_atom_column(&t, STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, nm_ps, 2);
+    ASSERT_NE(vel, MD_ATTRIBUTE_INVALID);
+    ASSERT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, vel),
+        md_unit_div(md_unit_angstrom(), md_unit_picosecond())), 6u);
+    EXPECT_NEAR(dst[0], 10.0f, 1.0e-4f);   // 1 nm/ps is 10 A/ps
+    EXPECT_NEAR(dst[3], 20.0f, 1.0e-4f);
+
+    md_attributes_free(&t);
+}
+
+// TEMPORAL is a claim about the outermost axis, checked at create against the frame count the table
+// is indexed by - which is the point of tagging rather than inferring from a shape that merely looks
+// frame sized.
+UTEST(attributes, temporal_flag_is_verified_against_the_frame_count) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 2};
+
+    float data[2 * 3 * 2];
+    for (int i = 0; i < 2 * 3 * 2; ++i) data[i] = (float)i;
+
+    const md_attribute_format_t fmt = {
+        .type = MD_ATTRIBUTE_TYPE_F32, .components = 2, .rank = 2, .shape = {2, 3},
+    };
+
+    // The outermost extent disagreeing with the trajectory is a bug, and it is refused here rather
+    // than surviving until something reads past the end of it.
+    const md_attribute_format_t wrong = {
+        .type = MD_ATTRIBUTE_TYPE_F32, .components = 2, .rank = 2, .shape = {5, 3},
+    };
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
+
+    // Temporal with no index axes at all has no outermost axis to be about.
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("backbone/angle"), .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 0},
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 0u);
+
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("backbone/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_radian(), .data = data, .byte_size = sizeof(data)});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_get(&t, id)->flags, MD_ATTRIBUTE_FLAG_TEMPORAL);
+
+    // The same shape WITHOUT the tag is fine: a leading extent that happens to equal the frame
+    // count is a coincidence, and nothing tries to infer intent from it.
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("some/matrix"), .format = fmt, .unit = md_unit_none(),
+        .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+
+    // A table with no trajectory behind it cannot check, and says so by not failing.
+    md_attributes_t u = {.alloc = md_get_heap_allocator()};
+    ASSERT_NE(md_attributes_create(&u, &(md_attribute_desc_t){
+        .path = STR_LIT("backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
+    md_attributes_free(&u);
+
+    // An alias is a second name for one datum, so it is the same kind of quantity.
+    md_attribute_id_t alias = md_attributes_alias(&t, id, STR_LIT("backbone/phi_psi"), (str_t){0}, (str_t){0});
+    ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_get(&t, alias)->flags, MD_ATTRIBUTE_FLAG_TEMPORAL);
+
+    md_attributes_free(&t);
+}
+
+// Whole-extraction is refused by COST, not by the frame axis. A resident temporal attribute is a
+// copy of bytes that already exist - 'frame/time' is exactly that, and a plot wants all of it.
+UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 4};
+
+    const double times[4] = {0.0, 1.0, 2.0, 3.0};
+    md_attribute_id_t time_id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("frame/time"),
+        .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {4}},
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
+        .data = times, .byte_size = sizeof(times)});
+    ASSERT_NE(time_id, MD_ATTRIBUTE_INVALID);
+
+    double dst[8] = {0};
+    ASSERT_EQ(md_attribute_extract_f64(dst, ARRAY_SIZE(dst), md_attributes_get(&t, time_id), md_unit_none()), 4u);
+    EXPECT_NEAR(dst[3], 3.0, 1.0e-12);
+
+    // The same quantity computed on demand is the case the rule exists for: all of it means
+    // producing every frame.
+    float constant = 1.0f;
+    md_attribute_virtual_t virt = {.provider = provider_constant_f32, .user_data = &constant};
+    md_attribute_id_t vir_id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/position"),
+        .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = {4, 2}},
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .virt = &virt});
+    ASSERT_NE(vir_id, MD_ATTRIBUTE_INVALID);
+
+    float fdst[24] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(fdst, ARRAY_SIZE(fdst), md_attributes_get(&t, vir_id), md_unit_none()), 0u);
+
+    // Fixing the frame is all it takes.
+    md_attribute_slice_t frame1 = md_attribute_slice_1(1);
+    EXPECT_EQ(md_attribute_extract_slice_f32(fdst, ARRAY_SIZE(fdst), md_attributes_get(&t, vir_id), &frame1, md_unit_none()), 6u);
+
+    md_attributes_free(&t);
+}
+
+// Prefix and kind compose in one pass, which is what one producer emitting both kinds needs.
+UTEST(attributes, query_narrows_by_flags) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 3};
+
+    const float series[3] = {1.0f, 2.0f, 3.0f};
+    const float bins[4]   = {0.5f, 1.5f, 2.5f, 3.5f};
+
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("script/dist"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(),
+        .data = series, .byte_size = sizeof(series)}), MD_ATTRIBUTE_INVALID);
+
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("script/rdf"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
+
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("script/rdf/bin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_angstrom(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
+
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
+
+    // One script, both kinds, one namespace - the case a second table would have split.
+    EXPECT_EQ(md_attributes_query(NULL, 0, &t, STR_LIT("script")), 3u);
+    EXPECT_EQ(md_attributes_query_flags(NULL, 0, &t, STR_LIT("script"),
+        MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL), 1u);
+    EXPECT_EQ(md_attributes_query_flags(NULL, 0, &t, STR_LIT("script"),
+        MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_NONE), 2u);
+
+    // "Everything temporal in this dataset" is the same call with no prefix.
+    EXPECT_EQ(md_attributes_query_flags(NULL, 0, &t, (str_t){0},
+        MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL), 1u);
+
+    md_attributes_free(&t);
+}
+
+// Replace is what a producer that can run twice needs: create refuses a duplicate path, so a plain
+// create only fails on the SECOND load, which is the worst time to find out.
+UTEST(attributes, replace_is_idempotent_across_reloads) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float first[3]  = {1.0f, 2.0f, 3.0f};
+    const double second[3] = {10.0, 20.0, 30.0};
+
+    const md_attribute_desc_t a = {
+        .path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .unit = md_unit_none(), .data = first, .byte_size = sizeof(first),
+    };
+    md_attribute_id_t id = md_attributes_replace(&t, &a);
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 1u);
+
+    // A plain create is what this replaces - it refuses, which is the bug being designed out.
+    EXPECT_EQ(md_attributes_create(&t, &a), MD_ATTRIBUTE_INVALID);
+
+    // Replacing with a DIFFERENT type and values is the reload case: same path, new answer. The id
+    // is a hash of the path, so anything holding it keeps working.
+    const md_attribute_desc_t b = {
+        .path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
+        .unit = md_unit_none(), .data = second, .byte_size = sizeof(second),
+    };
+    md_attribute_id_t id2 = md_attributes_replace(&t, &b);
+    EXPECT_EQ(id2, id);
+    EXPECT_EQ(md_attributes_count(&t), 1u);
+
+    const md_attribute_t* attr = md_attributes_get(&t, id2);
+    ASSERT_TRUE(attr != NULL);
+    EXPECT_EQ(attr->format.type, MD_ATTRIBUTE_TYPE_F64);
+
+    float dst[3] = {0};
+    ASSERT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), attr, md_unit_none()), 3u);
+    EXPECT_NEAR(dst[0], 10.0f, 1.0e-6f);
+
+    // A path nothing occupies is a plain create.
+    md_attribute_id_t fresh = md_attributes_replace(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .unit = md_unit_none(), .data = first, .byte_size = sizeof(first)});
+    ASSERT_NE(fresh, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 2u);
+
+    // Replacing a target takes its aliases with it - the lifetime rule is unchanged.
+    ASSERT_NE(md_attributes_alias(&t, fresh, STR_LIT("atom/weight"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_count(&t), 3u);
+    md_attributes_replace(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .unit = md_unit_none(), .data = first, .byte_size = sizeof(first)});
+    EXPECT_EQ(md_attributes_count(&t), 2u);
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/weight")) == NULL);
+
+    md_attributes_free(&t);
+}
+
+// Versioning is what lets a consumer cache something DERIVED from an attribute. The contract that
+// matters is the negative one: md_attributes_data must NOT bump, because a producer holding that
+// pointer may take seconds to fill it and a consumer looking in that window would cache garbage.
+UTEST(attributes, version_tracks_content_not_access) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float v[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const md_attribute_desc_t desc = {
+        .path = STR_LIT("backbone/angle"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .data = v, .byte_size = sizeof(v),
+    };
+
+    // Absent is 0, which is distinct from every real version - "gone", not "unchanged".
+    EXPECT_EQ(md_attributes_version(&t, md_attributes_id_from_path(desc.path)), 0u);
+
+    md_attribute_id_t id = md_attributes_create(&t, &desc);
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+
+    const uint64_t v0 = md_attributes_version(&t, id);
+    EXPECT_TRUE(v0 > 0);
+
+    // Taking a write pointer is not a change: the producer has not written anything yet.
+    ASSERT_TRUE(md_attributes_data(&t, id, MD_ATTRIBUTE_TYPE_F32) != NULL);
+    EXPECT_EQ(md_attributes_version(&t, id), v0);
+
+    // Saying so is.
+    const uint64_t v1 = md_attributes_touch(&t, id);
+    EXPECT_TRUE(v1 > v0);
+    EXPECT_EQ(md_attributes_version(&t, id), v1);
+
+    // Monotonic and never reused, so versions order as well as compare. A REPLACED attribute keeps
+    // its id and must still read as newer - a per attribute counter that reset would say otherwise.
+    md_attribute_id_t again = md_attributes_replace(&t, &desc);
+    EXPECT_EQ(again, id);
+    const uint64_t v2 = md_attributes_version(&t, id);
+    EXPECT_TRUE(v2 > v1);
+
+    // The counter is table wide, so a second attribute never collides with the first's history.
+    md_attribute_id_t other = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("backbone/secondary_structure"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_I32, 4),
+        .unit = md_unit_none()});
+    ASSERT_NE(other, MD_ATTRIBUTE_INVALID);
+    EXPECT_TRUE(md_attributes_version(&t, other) > v2);
+    EXPECT_EQ(md_attributes_version(&t, id), v2);        // untouched by its neighbour
+
+    // Removal reads as gone, not as some stale version.
+    EXPECT_TRUE(md_attributes_remove(&t, id));
+    EXPECT_EQ(md_attributes_version(&t, id), 0u);
+
+    // Touching something absent is a no-op that reports it, rather than inventing a version.
+    EXPECT_EQ(md_attributes_touch(&t, id), 0u);
+
+    md_attributes_free(&t);
+}

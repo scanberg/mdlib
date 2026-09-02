@@ -458,47 +458,6 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-// Publishes one per atom float column as a system attribute.
-//
-// Skipped when every value is identical: a PDB with occupancy 1.00 throughout, or with the
-// b factor column zero filled because it never came from a refinement, carries no information
-// worth putting in a property list. Absence therefore means "the file said nothing useful
-// here", which is what a consumer building a menu wants to branch on. Flip this one predicate
-// if attributes should instead be published unconditionally.
-static void pdb_publish_atom_column(md_system_t* sys, str_t name, md_unit_t unit, const float* values, size_t count) {
-    if (count == 0 || !values) {
-        return;
-    }
-
-    bool uniform = true;
-    for (size_t i = 1; i < count; ++i) {
-        if (values[i] != values[0]) {
-            uniform = false;
-            break;
-        }
-    }
-    if (uniform) {
-        return;
-    }
-
-    // One scalar per atom: the atom axis is the only index axis, and a value is one component
-    // wide. components is stated rather than left to a default; see md_system.h.
-    md_attribute_format_t format = {
-        .type       = MD_ATTRIBUTE_TYPE_F32,
-        .components = 1,
-        .rank       = 1,
-        .shape      = {(uint32_t)count},
-    };
-
-    md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
-        .path      = name,
-        .format    = format,
-        .unit      = unit,
-        .data      = values,
-        .byte_size = count * sizeof(float),
-    });
-}
-
 bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
     ASSERT(sys);
     ASSERT(state);
@@ -633,9 +592,11 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     ASSERT(md_array_size(state->x) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
-    // Occupancy is a dimensionless fraction; the b factor is a mean square displacement.
-    pdb_publish_atom_column(sys, STR_LIT("atom/occupancy"), md_unit_none(), atom_occupancy, sys->atom.count);
-    pdb_publish_atom_column(sys, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), atom_b_factor, sys->atom.count);
+    // Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The paths
+    // and the units are md_system's to define, not this loader's - md_mmcif publishes the same two
+    // out of the same file family and they have to agree.
+    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(),                     1, atom_occupancy, sys->atom.count);
+    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), 1, atom_b_factor,  sys->atom.count);
 
     if (data->num_cryst1 > 0) {
         // Use first crystal

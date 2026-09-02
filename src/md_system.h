@@ -280,6 +280,22 @@ typedef struct md_hydrogen_bond_data_t {
 // its anchor has to be said out loud. Note that a vector and its origin are commonly in DIFFERENT
 // units, which is the reason unit is carried per attribute rather than per group.
 //
+// AXIS COORDINATES are the same idea applied to an INDEX axis rather than to a position. Values
+// indexed by something whose meaning is not implicit publish that meaning as a sibling:
+//
+//     script/rdf                  rank 1 {B}   the values
+//     script/rdf/bin              rank 1 {B}   what bin b actually is, in its own unit
+//     script/rdf/weight           rank 1 {B}   whatever else is indexed the same way
+//
+// A bin index means nothing without its coordinate, exactly as a dipole means nothing without its
+// origin, and the answer is the same one: a sibling in the group, not a reference field on the
+// attribute. That keeps the relationship expressible with the machinery already here - a coordinate
+// has a shape, a type, a unit and a version like anything else - and it handles a non uniform axis,
+// which a stored min/max could not.
+//
+// The frame axis needs no sibling. Every attribute flagged MD_ATTRIBUTE_FLAG_TEMPORAL has it as
+// axis 0 and there is one per trajectory, so "frame/time" describes it once for all of them.
+//
 // EXTENT IS NOT CHECKED. The convention is that the atom axis is the LAST index axis, so an
 // "atom/..." path has shape[rank-1] == sys->atom.count and one whole per atom array is
 // contiguous. Nothing here knows that; it is the price of not predeclaring groups. A consumer
@@ -355,6 +371,27 @@ typedef enum md_attribute_storage_t {
 // implementation. Branching on the tag instead sends an alias of a computed attribute down the
 // resident path, where it finds no data.
 
+// What KIND of quantity this is, as opposed to how it is stored. A flag rather than a separate
+// table because one producer emits both kinds into one namespace - a script yields temporal series
+// and distributions, and both are "script/..." - so a table boundary would cut through a group and
+// make enumerating or removing that namespace two operations on two containers.
+//
+// Flags also compose where tables do not: a second axis kind (an ensemble member, a replica) is
+// another bit and another expected extent, not a third container.
+typedef enum md_attribute_flags_t {
+	MD_ATTRIBUTE_FLAG_NONE     = 0,
+
+	// The OUTERMOST index axis is the frame axis: shape[0] is the trajectory's frame count. The tag
+	// is a claim, and md_attributes_create verifies it against md_attributes_t::num_frames - which
+	// is the point of tagging rather than relying on the shape looking right.
+	//
+	// It also decides what "the whole attribute" means. For a resident one that is just its bytes,
+	// so a whole extract is a copy and is allowed. For a VIRTUAL one it means producing every frame,
+	// which for anything the size of a coordinate array is not a request anybody means to make - see
+	// md_attribute_extract_f32.
+	MD_ATTRIBUTE_FLAG_TEMPORAL = 1,
+} md_attribute_flags_t;
+
 typedef struct md_attribute_format_t {
 	md_attribute_type_t type;                          // what one component is
 	uint32_t            components;                    // components of ONE value, >= 1, never indexed
@@ -421,6 +458,8 @@ typedef struct md_attribute_virtual_t {
 
 typedef struct md_attribute_t {
 	md_attribute_id_t       id;
+	uint64_t                version;    // bumped whenever the contents change; see md_attributes_version
+	md_attribute_flags_t    flags;      // what kind of quantity this is; see md_attribute_flags_t
 	str_t                   path;           // full path, owned by the table
 	str_t                   label;          // presentation only, no identity, may be empty
 	str_t                   description;    // presentation only, may be empty
@@ -447,6 +486,8 @@ typedef struct md_attribute_t {
 typedef struct md_attribute_desc_t {
 	str_t                 path;         // "atom/charge/mulliken"
 	md_attribute_format_t format;
+	md_attribute_flags_t  flags;        // MD_ATTRIBUTE_FLAG_NONE unless the quantity says otherwise;
+	                                    // a claim ABOUT the format, which is why it sits beside it
 	md_unit_t             unit;         // md_unit_none() when there is nothing to say
 	str_t                 label;        // optional
 	str_t                 description;  // optional
@@ -497,14 +538,37 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
 typedef struct md_attributes_t {
     struct md_allocator_i*   alloc;
     md_array(md_attribute_t) attr;  // kept sorted by path
+
+    // Monotonic, table wide, stamped into each attribute when its contents change. Never reused,
+    // so comparing two versions also orders them - and a replaced attribute keeps its id but gets a
+    // higher version, which is exactly the case a per attribute counter reset would get wrong.
+    uint64_t version_counter;
+
+    // Frames in the trajectory these attributes are indexed against, or 0 when there is none / it
+    // is not known yet. Set by whoever owns the table, before anything temporal is published.
+    //
+    // This is what makes MD_ATTRIBUTE_FLAG_TEMPORAL checkable: create refuses a temporal attribute
+    // whose shape[0] disagrees, which catches the mistake where it is made rather than 12000
+    // elements into an extract. 0 skips the check rather than failing it - a table with no
+    // trajectory behind it can still hold temporal attributes it cannot yet verify.
+    uint32_t num_frames;
 } md_attributes_t;
 
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
 //
-// This holds exactly the fields which share one interpolation contract - same type in and out,
-// periodic boundary aware, handled as a unit by md_util_interpolate_*. Quantities which vary over
-// time but do not obey that contract (per atom charge, backbone angles, secondary structure) do
-// not belong here; they interpolate differently and belong with whoever produces them.
+// The FIELDS hold exactly what shares one interpolation contract - same type in and out, periodic
+// boundary aware, handled as a unit by md_util_interpolate_*. Nothing which interpolates differently
+// becomes a field here, because a field in this struct is a promise that it does.
+//
+// 'attributes' is how a frame carries everything else. A TRR frame has velocities and forces beside
+// its coordinates; they belong to that frame and to no other, and load_frame hands back one object
+// precisely so a caller cannot pair one frame's velocities with another frame's positions. They are
+// NOT part of the interpolation contract and nothing pretends otherwise: md_util_interpolate_* takes
+// raw coordinate arrays and never sees this table, so an interpolated state carries whatever its
+// producer chose to put there and no quantity is silently blended.
+//
+// The table's allocator is the state's own, set by md_system_state_init, so a view state
+// (alloc NULL) has no table - the same ownership rule the coordinates follow.
 //
 // Two presence bits, both self describing:
 //   num_atoms == 0        -> no coordinates
@@ -544,6 +608,7 @@ typedef struct md_system_state_t {
     float* z;
     md_unitcell_t unitcell;
     double frame;
+    md_attributes_t attributes;   // per frame quantities beyond the interpolation contract above
     md_allocator_i* alloc;
 } md_system_state_t;
 
@@ -578,7 +643,17 @@ typedef struct md_system_t {
 
     md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
     
-    md_attributes_t             attributes;         // Custom attributes
+    // ONE table, holding everything this system carries that is not one of the fields above.
+    //
+    // Whether a quantity varies over the trajectory is a FLAG on the attribute
+    // (MD_ATTRIBUTE_FLAG_TEMPORAL), not a separate table, because a single producer emits both
+    // kinds into one namespace: a script yields temporal series AND distributions, and both are
+    // "script/...". Splitting by kind would cut a group in half and make enumerating or removing
+    // that namespace two operations on two containers.
+    //
+    // "What varies over time in this dataset" is md_attributes_query_flags with the temporal bit,
+    // which composes with a path prefix in one pass.
+    md_attributes_t             attributes;
 
     str_t                       description;
 } md_system_t;
@@ -721,6 +796,62 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
 
+// Create, replacing whatever is already at desc->path. Otherwise identical to md_attributes_create.
+//
+// This is what a PRODUCER wants, and md_attributes_create is not: loading another file into the
+// same system is a new answer for the paths that producer owns, and a plain create refuses a
+// duplicate - so every producer that can run twice grew the same three line find/remove/create
+// dance, and forgetting it is a failure that only appears on the second load.
+//
+// The id is a hash of the path, so it is unchanged by the replacement and anything holding one
+// keeps working.
+md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_attribute_desc_t* desc);
+
+// INVALIDATION. A consumer that caches something DERIVED from an attribute - a density plot, a GPU
+// upload, a histogram - needs to know whether the attribute changed since it last looked. It stores
+// the version it computed from and compares.
+//
+// 0 means no such attribute, which is distinct from every real version and therefore reads as
+// "gone" rather than "unchanged".
+//
+// md_attributes_data does NOT bump the version, and that is deliberate. It hands out a writable
+// pointer, and the producer holding one may take seconds to fill it - VIAMD's backbone task fills a
+// whole trajectory across many threads. Bumping at handout would publish "changed" before the data
+// existed, and a consumer that looked in that window would cache garbage and never re-read. So the
+// producer says when it is DONE, with md_attributes_touch. Create and replace bump on their own,
+// because there the contents demonstrably changed by the time the call returns.
+uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_id_t id);
+
+// "The contents of this attribute changed." Returns the new version, 0 if there is no such
+// attribute. Call it after finishing a write through md_attributes_data.
+//
+// NOT thread safe against concurrent touches - the counter is a plain increment. That fits the rule
+// the tables already follow: populated by one producer, then read. A parallel fill should write its
+// disjoint parts and have ONE thread touch when the whole thing is done, which is also the only
+// point at which "changed" is true for a consumer.
+uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id);
+
+// Publishes one PER ATOM column: rank 1 {count}, with 'components' floats per atom - 1 for a scalar
+// like an occupancy, 3 for a velocity - which is the shape every structure file's extra columns
+// arrive in. 'values' holds count * components floats, interleaved. Returns the new id, or
+// MD_ATTRIBUTE_INVALID when nothing was published.
+//
+// SKIPPED WHEN EVERY VALUE IS IDENTICAL. A PDB with occupancy 1.00 throughout, or a b factor column
+// zero filled because it never came from a refinement, carries no information worth putting in a
+// property list. Absence therefore means "the file said nothing useful here", which is what a
+// consumer building a menu wants to branch on - and it is why a loader may call this
+// unconditionally for every column its format defines.
+//
+// NAN means "no value for THIS atom" - an optional column a file fills in only sometimes. A column
+// that is entirely NAN is skipped like a constant one; a partly filled one is published with the
+// gaps intact, because a gap is not a zero and nothing downstream can recover the difference once
+// it has been filled in.
+//
+// Shared rather than written per loader so that the same column out of a PDB, an mmCIF or a LAMMPS
+// data file lands on the same path, in the same unit, under the same rule. Two loaders for one file
+// family disagreeing about whether 'atom/occupancy' exists is a difference a user cannot explain.
+md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count);
+
 // Publishes a SECOND NAME for an existing attribute. Both paths then address one datum: the alias
 // shares the target's storage rather than copying it, so a resident target stays resident through
 // either name - attr->data is the same pointer - and a virtual one is computed by the same provider.
@@ -767,6 +898,17 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
 // prefix matches everything.
 // Returns the total number of matches and writes at most cap of them, so pass cap 0 to count.
 size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix);
+
+// The same, narrowed by flags: an attribute is included when (flags & mask) == value. Prefix and
+// kind compose in one pass, which is what a consumer of one producer's output wants - "the temporal
+// things under script/" is one call rather than a query plus a filter, and it is the reason kind is
+// a flag on the attribute rather than a second table to query separately.
+//
+// mask 0 matches everything, so md_attributes_query is this with no narrowing.
+//     MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL  -> only temporal
+//     MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_NONE      -> everything but
+size_t md_attributes_query_flags(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix,
+                                 md_attribute_flags_t mask, md_attribute_flags_t value);
 
 // Immediate child segments below prefix, deduplicated, in path order: "atom/" yields
 // "charge", "velocity". For walking the paths as a tree. The returned strings are views into

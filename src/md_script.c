@@ -479,6 +479,10 @@ struct md_script_eval_t {
 
     md_array(str_t)                     property_names;
     md_array(md_script_property_data_t) property_data;
+
+    // The published form of the properties above. The table OWNS every buffer they point at, so
+    // this is not a second copy of anything - see the note above allocate_property_data.
+    md_attributes_t                     attributes;
     md_array(volatile uint32_t)         property_dist_count;   // Counters property distributions
     md_array(md_mutex_t)                property_dist_mutex;   // Protect the data when writing to it in a threaded context (Distributions)
 };
@@ -5571,8 +5575,103 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
     return result;
 }
 
- static void allocate_property_data(md_script_property_data_t* data, md_script_property_flags_t flags, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
-    ASSERT(data);    
+// ### PROPERTY ATTRIBUTES ###
+//
+// Every property an evaluation computes is published into the evaluation's own attribute table
+// under 'script/'. The TABLE owns the storage and md_script_property_data_t only points into it,
+// which is the whole point of doing it this way: nothing is copied, the two views cannot drift
+// apart, and the older struct can be removed later without a byte moving.
+//
+// The property kind picks the shape and nothing else needs to be said about it:
+//
+//   temporal      script/<ident>          {num_frames, population}   MD_ATTRIBUTE_FLAG_TEMPORAL
+//                 script/<ident>/mean     {num_frames}               only when a population exists
+//                 script/<ident>/variance {num_frames}
+//                 script/<ident>/extent   {num_frames}, 2 components (min, max)
+//   distribution  script/<ident>          {num_bins}
+//                 script/<ident>/weight   {num_bins}
+//                 script/<ident>/bin      {num_bins}, virtual: the x coordinate of each bin
+//   volume        script/<ident>          {x, y, z}
+//
+// A distribution's bin coordinates are a SIBLING attribute rather than a pair of numbers hung off
+// the values, which is the same choice the coordinate axes elsewhere in the table make. A consumer
+// that can already plot one attribute against another then needs no special case for a histogram.
+
+// A script identifier is one path segment. Nothing in the grammar produces a '/', but a stray one
+// would silently turn the leaf into a group, so it is folded rather than trusted.
+static str_t script_attr_path(char* buf, size_t cap, str_t ident, const char* suffix) {
+    size_t len = 0;
+#define SCRIPT_ATTR_PUT(c) do { if (len + 1 < cap) buf[len++] = (c); } while (0)
+    for (const char* c = "script/"; *c; ++c) SCRIPT_ATTR_PUT(*c);
+    for (size_t i = 0; i < ident.len; ++i)   SCRIPT_ATTR_PUT(ident.ptr[i] == '/' ? '_' : ident.ptr[i]);
+    for (const char* c = suffix ? suffix : ""; *c; ++c) SCRIPT_ATTR_PUT(*c);
+#undef SCRIPT_ATTR_PUT
+    buf[len] = '\0';
+    return (str_t){buf, len};
+}
+
+// Reserves zeroed storage inside the table and hands back the writable view. A table that refuses
+// the attribute costs the published NAME and nothing else: the caller still gets a buffer, so a
+// rejected path can never break an evaluation.
+static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* alloc, str_t path, md_unit_t unit,
+                                  md_attribute_flags_t flags, uint32_t components, uint32_t rank,
+                                  const uint32_t shape[], size_t num_floats)
+{
+    md_attribute_desc_t desc = {
+        .path   = path,
+        .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = components, .rank = rank },
+        .flags  = flags,
+        .unit   = unit,
+    };
+    for (uint32_t i = 0; i < rank; ++i) {
+        desc.format.shape[i] = shape[i];
+    }
+
+    md_attribute_id_t id = md_attributes_replace(attributes, &desc);
+    float* ptr = id ? (float*)md_attributes_data(attributes, id, MD_ATTRIBUTE_TYPE_F32) : NULL;
+    if (!ptr) {
+        MD_LOG_DEBUG("Script eval: could not publish attribute '"STR_FMT"', falling back to plain storage", STR_ARG(path));
+        ptr = md_alloc(alloc, num_floats * sizeof(float));
+        MEMSET(ptr, 0, num_floats * sizeof(float));
+    }
+    return ptr;
+}
+
+// The bin coordinates of a distribution are its x-range cut into equal bins, and that range is not
+// known until frames have been evaluated - it may be widened by the data itself. Computing them on
+// demand keeps them correct without anyone having to remember to rewrite them.
+static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+    const md_script_property_data_t* data = (const md_script_property_data_t*)user_data;
+    if (!data || attr->format.rank != 1) {
+        return 0;
+    }
+
+    const size_t num_bins = attr->format.shape[0];
+    size_t beg   = 0;
+    size_t count = num_bins;
+    if (slice && slice->num_idx > 0) {
+        beg   = slice->idx[0];
+        count = (beg < num_bins) ? 1 : 0;
+    }
+    if (count > cap) {
+        count = cap;
+    }
+
+    const double x_min = data->min_range[0];
+    const double x_max = data->max_range[0];
+    const double x_scl = num_bins ? (x_max - x_min) / (double)num_bins : 0.0;
+
+    float* out = (float*)dst;
+    for (size_t i = 0; i < count; ++i) {
+        out[i] = (float)(x_min + ((double)(beg + i) + 0.5) * x_scl);
+    }
+    return count;
+}
+
+// data->unit must already be set: the attributes carry it and it is not patchable afterwards.
+static void allocate_property_data(md_script_property_data_t* data, md_attributes_t* attributes, str_t ident, md_script_property_flags_t flags, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
+    ASSERT(data);
+    ASSERT(attributes);
     ASSERT(alloc);
 
     // @NOTE: We need to 'normalize' the dimensionality of the types in a consistent way, since the properties will be exposed
@@ -5617,42 +5716,74 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
             break;
     }
 
-    const size_t num_values = (size_t)dim_size(data->dim);
-    const size_t num_bytes  = num_values * sizeof(float);
-    data->values = md_alloc(alloc, num_bytes);
-    MEMSET(data->values, 0, num_bytes);
-    data->num_values = num_values;
+    char path[512];
+    const md_unit_t value_unit = data->unit[1];
+    const md_unit_t coord_unit = data->unit[0];
 
-    if (flags == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-        data->weights = data->values + data->dim[2];
-        for (size_t i = 0; i < num_values; ++i) {
-            data->weights[i] = 1.0f;
+    switch (flags) {
+        case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL: {
+            const uint32_t shape[2] = { (uint32_t)data->dim[0], (uint32_t)data->dim[1] };
+            data->num_values = (size_t)shape[0] * (size_t)shape[1];
+            data->values = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
+                                               value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 2, shape, data->num_values);
+
+            if (shape[1] > 1) {
+                // The population has more than one member, so the per frame summary over it is a
+                // quantity in its own right and gets published as one.
+                const uint32_t frames[1] = { shape[0] };
+                data->aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
+                MEMSET(data->aggregate, 0, sizeof(md_script_aggregate_t));
+                data->aggregate->num_values = num_frames;
+
+                data->aggregate->population_mean = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/mean"),
+                                                                       value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames, num_frames);
+                data->aggregate->population_var  = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/variance"),
+                                                                       md_unit_mul(value_unit, value_unit), MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames, num_frames);
+                // min and max are two COMPONENTS of one value, not two positions along an axis:
+                // they are not interchangeable and nothing indexes between them. That is also
+                // exactly the vec2_t the aggregate already stores.
+                data->aggregate->population_ext  = (vec2_t*)script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/extent"),
+                                                                       value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames, num_frames * 2);
+            }
+            break;
         }
-    }
-
-    if (flags == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-        int ndim = dim_ndims(data->dim);
-        if (data->dim[ndim - 1] > 1) {
-            // Allocate data for aggregate
-            const size_t aggregate_size = num_frames;
-            data->aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
-
-            MEMSET(data->aggregate, 0, sizeof(md_script_aggregate_t));
-            data->aggregate->num_values = aggregate_size;
-
-            if (aggregate_size != num_values) {
-                data->aggregate->population_mean = md_alloc(alloc, aggregate_size * sizeof(float));
-                MEMSET(data->aggregate->population_mean, 0, aggregate_size * sizeof(float));
-            } else {
-                data->aggregate->population_mean = data->values;
+        case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
+            const uint32_t bins[1] = { (uint32_t)data->dim[2] };
+            data->num_values = bins[0];
+            data->values  = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
+                                                value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins, bins[0]);
+            data->weights = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/weight"),
+                                                md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins, bins[0]);
+            for (uint32_t i = 0; i < bins[0]; ++i) {
+                data->weights[i] = 1.0f;
             }
 
-            data->aggregate->population_var = md_alloc(alloc, aggregate_size * sizeof(float));
-            MEMSET(data->aggregate->population_var, 0, aggregate_size * sizeof(float));
-
-            data->aggregate->population_ext = md_alloc(alloc, aggregate_size * sizeof(vec2_t));
-            MEMSET(data->aggregate->population_ext, 0, aggregate_size * sizeof(vec2_t));
+            md_attribute_virtual_t virt = {
+                .provider  = script_bin_coord_provide,
+                // Borrowed: the property data lives in the same arena as the table and outlives it
+                // by construction, so there is nothing here for the table to release.
+                .user_data = data,
+                .user_data_size = 0,
+            };
+            md_attribute_desc_t desc = {
+                .path   = script_attr_path(path, sizeof(path), ident, "/bin"),
+                .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = { bins[0] } },
+                .unit   = coord_unit,
+                .virt   = &virt,
+            };
+            md_attributes_replace(attributes, &desc);
+            break;
         }
+        case MD_SCRIPT_PROPERTY_FLAG_VOLUME: {
+            const uint32_t shape[3] = { (uint32_t)data->dim[1], (uint32_t)data->dim[2], (uint32_t)data->dim[3] };
+            data->num_values = (size_t)shape[0] * (size_t)shape[1] * (size_t)shape[2];
+            data->values = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
+                                               value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 3, shape, data->num_values);
+            break;
+        }
+        default:
+            ASSERT(false);
+            break;
     }
 }
 
@@ -5726,6 +5857,9 @@ static void compute_min_max_mean_variance(float* out_min, float* out_max, float*
 }
 
 static void clear_property_data(md_script_property_data_t* data) {
+    // @NOTE: weights are not cleared. They are a separate buffer now and are overwritten wholesale
+    // by the first evaluated frame; zeroing them would only replace their 1.0 default with a value
+    // that means something different.
     MEMSET(data->values, 0, data->num_values * sizeof(float));
     if (data->aggregate) {
         MEMSET(data->aggregate->population_mean, 0, data->aggregate->num_values * sizeof(float));
@@ -5900,11 +6034,18 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
                     const md_256 N   = md_mm256_set1_ps((float)(count));
                     const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
-                    const int64_t length = ALIGN_TO(num_bins, 8);
-                    for (int64_t i = 0; i < length; i += 8) {
+                    // @NOTE: This used to run to ALIGN_TO(num_bins, 8) and relied on the weights
+                    // sitting directly behind the bins to absorb the overrun. They are separate
+                    // attributes now, so the tail is done scalar.
+                    const size_t simd_end = num_bins & ~(size_t)7;
+                    for (size_t i = 0; i < simd_end; i += 8) {
                         md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(p_data->values + i), N);
                         md_256 new_val = md_mm256_loadu_ps(values + i);
                         md_mm256_storeu_ps(p_data->values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
+                    }
+                    const float n_scl = 1.0f / (float)(count + 1);
+                    for (size_t i = simd_end; i < num_bins; ++i) {
+                        p_data->values[i] = (values[i] + p_data->values[i] * (float)count) * n_scl;
                     }
 
                     // Copy weights
@@ -6524,15 +6665,24 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     md_bitfield_init(&eval->frame_mask, eval->arena);
     md_bitfield_reserve_range(&eval->frame_mask, 0, num_frames);
 
+    eval->attributes.alloc      = eval->arena;
+    eval->attributes.num_frames = (uint32_t)num_frames;
+
+    // Sized up front rather than pushed one at a time: a published attribute may hold the address
+    // of the property data it describes, and a growing array would move it out from under one.
     size_t num_props = md_array_size(ir->property_names);
+    md_array_resize(eval->property_names, num_props, eval->arena);
+    md_array_resize(eval->property_data,  num_props, eval->arena);
+    MEMSET(eval->property_data, 0, num_props * sizeof(md_script_property_data_t));
+
     for (size_t i = 0; i < num_props; ++i) {
-        md_array_push(eval->property_names, ir->property_names[i], eval->arena);
-        md_array_push(eval->property_data, (md_script_property_data_t){0}, eval->arena);
-        md_script_property_data_t* data = md_array_last(eval->property_data);
+        eval->property_names[i] = ir->property_names[i];
+        md_script_property_data_t* data = &eval->property_data[i];
         const ast_node_t* node = ir->property_nodes[i];
-        allocate_property_data(data, ir->property_flags[i], node->data.type, num_frames, eval->arena);
+        // Units first: the attributes carry them and are not patchable after the fact.
         data->unit[0] = node->data.unit[0];
         data->unit[1] = node->data.unit[1];
+        allocate_property_data(data, &eval->attributes, ir->property_names[i], ir->property_flags[i], node->data.type, num_frames, eval->arena);
     }
     
     md_array_resize(eval->property_dist_count, num_props, eval->arena);
@@ -6594,7 +6744,20 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         eval->property_data[i].fingerprint = fingerprint;
     }
 
+    // The buffers were written through md_attributes_data, which deliberately does not bump a
+    // version. This is the producer saying it is done.
+    for (size_t i = 0; i < md_array_size(eval->attributes.attr); ++i) {
+        md_attributes_touch(&eval->attributes, eval->attributes.attr[i].id);
+    }
+
     return result;
+}
+
+const md_attributes_t* md_script_eval_attributes(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        return &eval->attributes;
+    }
+    return NULL;
 }
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval) {

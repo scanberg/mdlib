@@ -661,7 +661,17 @@ static size_t trr_fetch_frame_data(const trr_t* trr, md_file_t file, int64_t fra
     return frame_size;
 }
 
-static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, size_t frame_data_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
+// The optional per atom sections a TRR frame may carry beside its coordinates. Requested by handing
+// over planar destination arrays; each 'present' flag reports whether this particular frame actually
+// had that section, which is not something the caller can infer from the values it gets back.
+typedef struct trr_frame_extras_t {
+    float* v[3];        // NULL to skip the section
+    float* f[3];
+    bool   v_present;
+    bool   f_present;
+} trr_frame_extras_t;
+
+static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, size_t frame_data_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z, trr_frame_extras_t* extras) {
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
 
@@ -683,8 +693,15 @@ static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, 
     trr_header_t sh;
     float box[3][3];
     float* coords[3] = { x, y, z };
-    result = trr_read_frame_header_buf(&buf, &sh) && trr_read_frame_data(&buf, &sh, box, coords, 0, 0);
+    result = trr_read_frame_header_buf(&buf, &sh)
+          && trr_read_frame_data(&buf, &sh, box, coords, extras ? extras->v : 0, extras ? extras->f : 0);
     if (result) {
+        if (extras) {
+            // The section sizes come off the frame header, so this is what the file says rather
+            // than a guess from whether the values look written.
+            extras->v_present = (sh.v_size != 0);
+            extras->f_present = (sh.f_size != 0);
+        }
         if (num_atoms) {
             *num_atoms = sh.natoms;
         }
@@ -704,7 +721,7 @@ static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, 
     return result;
 }
 
-static bool trr_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
+static bool trr_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z, trr_frame_extras_t* extras) {
     ASSERT(inst);
 
     trr_reader_t* reader = (trr_reader_t*)inst;
@@ -727,7 +744,7 @@ static bool trr_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64
             return false;
         }
 
-        result = trr_decode_frame_data(trr, reader->frame_data, frame_size, num_atoms, cell, x, y, z);
+        result = trr_decode_frame_data(trr, reader->frame_data, frame_size, num_atoms, cell, x, y, z, extras);
     }
 
     return result;
@@ -759,16 +776,66 @@ static bool trr_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t i
     float* x = state ? state->x : NULL;
     float* y = state ? state->y : NULL;
     float* z = state ? state->z : NULL;
-    if (!trr_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
-        return false;
+
+    // A TRR frame may carry velocities and forces beside its coordinates. They are per FRAME, so
+    // they land on the state's own attribute table rather than on the system - which is the whole
+    // reason that table exists. Only asked for when the state can hold them: a view state owns no
+    // allocator and a raw coordinate fetch wants no extra decoding work.
+    md_temp_scope_t temp = md_temp_begin();
+    trr_frame_extras_t extras = {0};
+    const size_t n = state ? state->num_atoms : 0;
+    const bool want_extras = (state && state->attributes.alloc && n > 0);
+    float* planar = NULL;
+
+    if (want_extras) {
+        planar = (float*)md_temp_alloc(temp, sizeof(float) * n * 6);
+        if (planar) {
+            for (int i = 0; i < 3; ++i) {
+                extras.v[i] = planar + n * i;
+                extras.f[i] = planar + n * (3 + i);
+            }
+        }
     }
-    if (state) {
+
+    bool result = trr_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z, planar ? &extras : NULL);
+    if (result && state) {
         state->unitcell = cell;
         if (state->num_atoms == 0) {
             state->num_atoms = num_atoms;
         }
+
+        if (planar && num_atoms == n) {
+            // Planar out of the decoder, interleaved into the table: an attribute of 3 component
+            // values stores xyz together, which is also what every consumer of a vector wants.
+            float* xyz = (float*)md_temp_alloc(temp, sizeof(float) * n * 3);
+            if (xyz) {
+                if (extras.v_present) {
+                    for (size_t i = 0; i < n; ++i) {
+                        xyz[i * 3 + 0] = extras.v[0][i];
+                        xyz[i * 3 + 1] = extras.v[1][i];
+                        xyz[i * 3 + 2] = extras.v[2][i];
+                    }
+                    // The decoder already scaled nm/ps to Angstrom/ps, matching the coordinates.
+                    md_attributes_publish_atom_column(&state->attributes, STR_LIT("atom/velocity"),
+                        md_unit_div(md_unit_angstrom(), md_unit_picosecond()), 3, xyz, n);
+                }
+                if (extras.f_present) {
+                    for (size_t i = 0; i < n; ++i) {
+                        xyz[i * 3 + 0] = extras.f[0][i];
+                        xyz[i * 3 + 1] = extras.f[1][i];
+                        xyz[i * 3 + 2] = extras.f[2][i];
+                    }
+                    // Forces are NOT rescaled by the decoder, so they stay in GROMACS' kJ/mol/nm.
+                    const md_unit_t kj_per_mol_nm = md_unit_div(
+                        md_unit_div(md_unit_scl(md_unit_joule(), 1.0e3), md_unit_mole()), md_unit_nanometer());
+                    md_attributes_publish_atom_column(&state->attributes, STR_LIT("atom/force"), kj_per_mol_nm, 3, xyz, n);
+                }
+            }
+        }
     }
-    return true;
+
+    md_temp_end(temp);
+    return result;
 }
 
 static bool trr_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {

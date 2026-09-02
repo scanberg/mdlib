@@ -88,13 +88,19 @@ typedef struct {
     char label_comp_id[8];
     char label_entity_id[8];
 //    char pdbx_PDB_ins_code;
-//    int8_t pdbx_formal_charge;
 
     float x, y, z;
     int label_seq_id;
     int auth_seq_id;
-//    float occupancy;
-//    float b_iso_or_equiv;
+
+    // The optional per atom columns. Kept as floats even for the integral formal charge, because
+    // that is what they are published as - one scalar per atom - and converting once here beats
+    // three columns that each need a different read. NAN marks a column the file does not define,
+    // so a partially populated one is still publishable and an absent one is not silently a zero.
+    float occupancy;
+    float b_iso_or_equiv;
+    float formal_charge;
+
     char label_asym_id[4];
     char auth_asym_id[4];
     char type_symbol[3];
@@ -193,6 +199,20 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
     };
     md_array_push(*entities, ent, alloc);
     return md_array_last(*entities);
+}
+
+// An optional _atom_site column: absent from this file, or present and holding one of mmCIF's two
+// null tokens ('.' unknown, '?' not applicable). NAN for all three, which the publisher below reads
+// as "this atom has no value" without confusing it with a real zero.
+static inline float mmcif_optional_float(const str_t tok[], const int table[], int field) {
+    if (table[field] == -1) {
+        return NAN;
+    }
+    str_t t = tok[table[field]];
+    if (t.len == 0 || (t.len == 1 && (t.ptr[0] == '.' || t.ptr[0] == '?'))) {
+        return NAN;
+    }
+    return (float)parse_float(t);
 }
 
 static inline int parse_int_with_default(str_t tok, int def) {
@@ -691,6 +711,9 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
             .label_seq_id = parse_int_with_default(label_seq_id, default_value),
             .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
             .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
+            .occupancy      = mmcif_optional_float(tok, table, ATOM_SITE_OCCUPANCY),
+            .b_iso_or_equiv = mmcif_optional_float(tok, table, ATOM_SITE_B_ISO_OR_EQUIV),
+            .formal_charge  = mmcif_optional_float(tok, table, ATOM_SITE_PDBX_FORMAL_CHARGE),
         };
 
         str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
@@ -897,6 +920,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
 
         md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);  // Ensure that index 0 is always unknown
 
+        // Gathered alongside the coordinates rather than from atom_entries afterwards, because the
+        // loop SKIPS alternate locations - so entry i and atom i are not the same index, and a
+        // column built from the entries would be shifted against the atoms it describes.
+        float* occupancy      = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
+        float* b_iso          = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
+        float* formal_charge  = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
+
         uint64_t prev_comp_key = 0; // Key of active componenent
         uint64_t prev_inst_key = 0; // Key of active instance
 
@@ -966,11 +996,25 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             md_array_push_no_grow(out_state->z, atom_entries[i].z);
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
             md_array_push_no_grow(sys->atom.flags, flags);
+            if (occupancy && b_iso && formal_charge) {
+                occupancy[sys->atom.count]     = atom_entries[i].occupancy;
+                b_iso[sys->atom.count]         = atom_entries[i].b_iso_or_equiv;
+                formal_charge[sys->atom.count] = atom_entries[i].formal_charge;
+            }
             sys->atom.count += 1;
         }
 
         ASSERT(md_array_size(out_state->x) == sys->atom.count);
         out_state->num_atoms = sys->atom.count;
+
+        // The same three paths and units md_pdb publishes, because they are the same quantities out
+        // of the same file family and a consumer must not have to ask which reader produced a
+        // structure. A column the file omits is all NAN, which is uniform, so it publishes nothing.
+        if (occupancy && b_iso && formal_charge) {
+            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"),     md_unit_none(),                     1, occupancy,     sys->atom.count);
+            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),      md_unit_pow(md_unit_angstrom(), 2), 1, b_iso,         sys->atom.count);
+            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(),                     1, formal_charge, sys->atom.count);
+        }
 
         if (sys->component.atom_offset) {
             md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel

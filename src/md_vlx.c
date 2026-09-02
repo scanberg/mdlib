@@ -4793,17 +4793,10 @@ static str_t vlx_attribute_path(char* buf, size_t cap, str_t group, str_t name) 
 	return str_from_cstrn(buf, (size_t)len);
 }
 
-// Publishes one attribute under a path this publisher owns.
-//
-// Replaces rather than skips when the path is already there: loading another file into the same
-// system is a new answer for these paths, and the id is a hash of the path so it comes back
-// unchanged after the replacement. Anything holding one keeps working.
+// Publishes one attribute under a path this publisher owns, replacing whatever was there - see
+// md_attributes_replace on why that is what a producer wants.
 static md_attribute_id_t vlx_publish(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_format_t format, const void* data, size_t byte_size) {
-	const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
-	if (existing) {
-		md_attributes_remove(&sys->attributes, existing->id);
-	}
-	return md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
+	return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
 		.path      = path,
 		.format    = format,
 		.unit      = unit,
@@ -4813,15 +4806,11 @@ static md_attribute_id_t vlx_publish(md_system_t* sys, str_t path, str_t label, 
 	});
 }
 
-// Same replace-on-reload idempotency as vlx_publish(), for an attribute computed through a
-// provider instead of one copied in. The provider's user_data is 'sys' itself (see the transition
-// density providers below), a borrowed pointer that needs no bookkeeping and outlives 'vlx'.
+// The same, for an attribute computed through a provider instead of one copied in. The provider's
+// user_data is 'sys' itself (see the transition density providers below), a borrowed pointer that
+// needs no bookkeeping and outlives 'vlx'.
 static md_attribute_id_t vlx_publish_virtual(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_format_t format, const md_attribute_virtual_t* virt) {
-	const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
-	if (existing) {
-		md_attributes_remove(&sys->attributes, existing->id);
-	}
-	return md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
+	return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
 		.path   = path,
 		.format = format,
 		.unit   = unit,

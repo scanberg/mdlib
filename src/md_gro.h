@@ -22,6 +22,12 @@ typedef struct md_gro_atom_t {
     float x;
     float y;
     float z;
+    // GROMACS writes three optional velocity columns after the coordinates. NAN when the line has
+    // none, which is the common case for a plain structure file - see md_attributes_publish_atom_column
+    // on why absence is a value here rather than a zero.
+    float vx;
+    float vy;
+    float vz;
     char res_name[8];
     char atom_name[8];
 } md_gro_atom_t;

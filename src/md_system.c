@@ -115,6 +115,10 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
     md_system_state_free(state);
     state->alloc = alloc;
 
+    // The table allocates through its own handle, exactly as a system's does, so a producer can
+    // publish into a freshly initialised state without a second setup step.
+    state->attributes.alloc = alloc;
+
     // A freshly initialised state did not come from a trajectory. Only md_trajectory_reader_load_frame
     // and the interpolation which produces a state write a non negative frame. See md_system_state_t.
     state->frame = -1.0;
@@ -151,6 +155,7 @@ void md_system_state_free(md_system_state_t* state) {
         md_array_free(state->x, state->alloc);
         md_array_free(state->y, state->alloc);
         md_array_free(state->z, state->alloc);
+        md_attributes_free(&state->attributes);
     }
     md_allocator_i* alloc = state->alloc;
     MEMSET(state, 0, sizeof(md_system_state_t));
@@ -174,6 +179,12 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
     }
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;
+
+    // The attribute table is deliberately NOT carried over. The one caller is md_util_system_infer
+    // writing sys->reference, and topology inference reads coordinates and the cell - nothing else.
+    // Duplicating a frame's velocities into a reference snapshot would put a second copy of them in
+    // the system with nothing keeping the two in step, which is the whole class of problem the
+    // reference field's own rule exists to prevent.
     return true;
 }
 
@@ -182,8 +193,8 @@ void md_system_reset(md_system_t* sys) {
     md_allocator_i* alloc = sys->alloc;
     md_system_free(sys);
     sys->alloc = alloc;
-    // The table allocates through its own handle, so every loader gets a usable table
-    // without having to remember to wire this up itself.
+    // The table allocates through its own handle, so every loader gets a usable table without
+    // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;
 }
 
@@ -554,18 +565,41 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
     return true;
 }
 
+// "The whole attribute" of a temporal one is every frame of it, and whether that is reasonable
+// depends on what producing it COSTS, not on the frame axis itself.
+//
+// Resident: the bytes already exist and the extract is a copy of an array the caller could have
+// memcpy'd. 'frame/time' is exactly this - a plot legitimately wants every frame time, and it is a
+// few hundred kilobytes.
+//
+// Virtual: every frame has to be produced, which for a per atom quantity means decoding the whole
+// trajectory into one buffer. That is never what a caller meant to type, and refusing it is the
+// point of the rule. An ALIAS is read through whatever it inherited, so it is judged by its
+// provider, not by its storage tag - same reason the extract branches on the provider throughout.
+static bool attr_reject_whole_temporal(const md_attribute_t* attr) {
+    if ((attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && attr->virt.provider) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal and computed on demand: fix the frame axis with a slice rather than asking for every frame",
+            STR_ARG(attr->path));
+        return true;
+    }
+    return false;
+}
+
 size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
+    if (attr_reject_whole_temporal(attr)) return 0;
     return attr_extract_range_F32(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
 }
 
 size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
+    if (attr_reject_whole_temporal(attr)) return 0;
     return attr_extract_range_F64(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
 }
 
 size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
     ASSERT(attr);
+    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
     size_t first, count;
     if (!attr_slice_window(&first, &count, attr, slice)) {
         return 0;
@@ -575,6 +609,7 @@ size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribut
 
 size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
     ASSERT(attr);
+    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
     size_t first, count;
     if (!attr_slice_window(&first, &count, attr, slice)) {
         return 0;
@@ -771,6 +806,22 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         return MD_ATTRIBUTE_INVALID;
     }
 
+    // TEMPORAL is a claim about the outermost axis, so it is checked rather than believed. This is
+    // the whole reason for tagging instead of inferring: a shape that merely looks frame sized is a
+    // coincidence, while a tag that disagrees with num_frames is a bug, and catching it here beats
+    // finding it partway through an extract.
+    if (desc->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) {
+        if (desc->format.rank == 0) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal but has no index axes", STR_ARG(path));
+            return MD_ATTRIBUTE_INVALID;
+        }
+        if (attributes->num_frames != 0 && desc->format.shape[0] != attributes->num_frames) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal with an outermost extent of %u, but the table is indexed against %u frames",
+                STR_ARG(path), desc->format.shape[0], attributes->num_frames);
+            return MD_ATTRIBUTE_INVALID;
+        }
+    }
+
     size_t idx = attr_lower_bound(attributes, path);
     if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(path));
@@ -829,6 +880,8 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         .description = stored_desc,
         .format      = format,
         .unit        = desc->unit,
+        .flags       = desc->flags,
+        .version     = ++attributes->version_counter,
         .storage     = desc->virt ? MD_ATTRIBUTE_STORAGE_VIRTUAL : MD_ATTRIBUTE_STORAGE_RESIDENT,
         .data        = storage,
         .virt        = desc->virt ? *desc->virt : (md_attribute_virtual_t){0},
@@ -875,6 +928,7 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
     const md_attribute_format_t  format   = tgt->format;
     const md_unit_t              unit     = tgt->unit;
     void* const                  data     = tgt->data;
+    const md_attribute_flags_t   flags    = tgt->flags;
     const md_attribute_id_t      root     = tgt->root;
     md_attribute_virtual_t       virt     = tgt->virt;
 
@@ -907,6 +961,8 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
         .description = stored_desc,
         .format      = format,
         .unit        = unit,
+        .flags       = flags,
+        .version     = ++attributes->version_counter,
         .storage     = MD_ATTRIBUTE_STORAGE_ALIAS,
         .data        = data,
         .virt        = virt,
@@ -943,6 +999,83 @@ static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
         MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     md_array_pop(attributes->attr);
+}
+
+md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
+    ASSERT(attributes);
+
+    if (count == 0 || components == 0 || !values) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    // Uniformity is a property of the whole VALUE, not of each component: a velocity column where
+    // every atom moves the same way is as uninformative as a constant occupancy, and one where only
+    // the x components happen to agree is not.
+    const size_t num_elements = count * (size_t)components;
+
+    // NAN is how a loader marks "this atom has no value", for a column its format defines but this
+    // particular file leaves blank per atom. Two NANs are the same absence and IEEE does not say so,
+    // hence the explicit test - and a column that is entirely absent is exactly as uninformative as
+    // a constant one, so it is skipped for the same reason.
+    bool uniform = true;
+    bool all_absent = true;
+    for (size_t i = 0; i < num_elements; ++i) {
+        const size_t c = i % components;
+        const bool absent_i = (values[i] != values[i]);
+        const bool absent_0 = (values[c] != values[c]);
+        if (!absent_i) {
+            all_absent = false;
+        }
+        if (absent_i != absent_0 || (!absent_i && values[i] != values[c])) {
+            uniform = false;
+        }
+    }
+    if (uniform || all_absent) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    // One scalar per atom: the atom axis is the only index axis, and a value is one component wide.
+    // components is stated rather than left to a default; see the ATTRIBUTES note above.
+    const md_attribute_desc_t desc = {
+        .path   = path,
+        .format = {
+            .type       = MD_ATTRIBUTE_TYPE_F32,
+            .components = components,
+            .rank       = 1,
+            .shape      = {(uint32_t)count},
+        },
+        .unit      = unit,
+        .data      = values,
+        .byte_size = num_elements * sizeof(float),
+    };
+    return md_attributes_create(attributes, &desc);
+}
+
+uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+    size_t idx = attr_index_from_id(attributes, id);
+    return idx == SIZE_MAX ? 0 : attributes->attr[idx].version;
+}
+
+uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+    size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return 0;
+    }
+    attributes->attr[idx].version = ++attributes->version_counter;
+    return attributes->attr[idx].version;
+}
+
+md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
+    ASSERT(attributes);
+    ASSERT(desc);
+
+    const md_attribute_t* existing = md_attributes_find(attributes, desc->path);
+    if (existing) {
+        md_attributes_remove(attributes, existing->id);
+    }
+    return md_attributes_create(attributes, desc);
 }
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
@@ -1020,6 +1153,11 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
 }
 
 size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix) {
+    return md_attributes_query_flags(out_ids, cap, attributes, prefix, MD_ATTRIBUTE_FLAG_NONE, MD_ATTRIBUTE_FLAG_NONE);
+}
+
+size_t md_attributes_query_flags(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix,
+                                 md_attribute_flags_t mask, md_attribute_flags_t value) {
     ASSERT(attributes);
 
     str_t base = attr_prefix_trim(prefix);
@@ -1034,6 +1172,9 @@ size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_att
             break;
         }
         if (!attr_path_covered_by(name, base)) {
+            continue;
+        }
+        if ((attributes->attr[i].flags & mask) != value) {
             continue;
         }
         if (out_ids && count < cap) {

@@ -951,6 +951,22 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
 	}
 
+	// The per atom charge the 'charge' and 'full' atom styles carry. It was parsed and then dropped;
+	// nothing in mdlib reads a partial charge, so it belongs in the attribute table rather than in
+	// md_atom_data_t. A style without a q column leaves every value at 0, which is uniform and
+	// therefore publishes nothing - so this needs no guard on the atom style.
+	{
+		md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+		float* charge = (float*)md_temp_alloc(temp, sizeof(float) * MAX(data->num_atoms, (size_t)1));
+		if (charge) {
+			for (size_t i = 0; i < data->num_atoms; ++i) {
+				charge[i] = data->atoms[i].charge;
+			}
+			md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_none(), 1, charge, data->num_atoms);
+		}
+		md_temp_end(temp);
+	}
+
 	// Create unit cell
 	double x = data->cell.xhi - data->cell.xlo;
 	double y = data->cell.yhi - data->cell.ylo;
