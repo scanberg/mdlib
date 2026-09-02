@@ -34,9 +34,54 @@ UTEST(vlx, parse) {
     ASSERT_TRUE(num_iter > 0);
     EXPECT_NEAR(ref_ener_tot, energy[num_iter - 1], 1.0e-5);
 
-    // @TODO: Test RSP
 
     md_vlx_destroy(vlx);
+}
+
+// The Z/Y sign convention, pinned.
+//
+// mdlib DERIVES the NTOs from the response solution vector, as the SVD of T = Z - Y, where Z and
+// Y name the two halves of that vector as VeloxChem writes them. VeloxChem also publishes its own
+// NTO eigenvalues in 'rsp/nto_lambdas', computed independently by its own code. If the two agree,
+// mdlib is combining the halves the way VeloxChem does; if a future change flips a sign, these
+// numbers separate immediately and loudly.
+//
+// The reference values below were read straight out of the test files' nto_lambdas datasets.
+// Verified 2026-09-02 that Z+Y and Z alone do NOT reproduce them (h2o: 1.0419 and 1.0006 for the
+// leading value against the stored 0.9606), so this is a real discriminator and not a test that
+// would pass under any convention.
+UTEST(vlx, nto_lambdas_match_the_file) {
+    struct {
+        const char* path;
+        size_t count;
+        double lambda[4];
+    } cases[] = {
+        { MD_UNITTEST_DATA_DIR "/vlx/h2o.h5",   4, { 0.960565601258, 0.000257984966, 0.000199122711, 0.000157261013 } },
+        { MD_UNITTEST_DATA_DIR "/vlx/amide.h5", 4, { 0.951067058354, 0.001038273356, 0.000565841191, 0.000215796789 } },
+    };
+
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+        ASSERT_TRUE(md_vlx_parse_file(vlx, str_from_cstr(cases[c].path)));
+        ASSERT_TRUE(md_vlx_rsp_has_nto(vlx));
+
+        double lambdas[MD_VLX_NTO_MAX_LAMBDAS] = {0};
+        const size_t num = md_vlx_rsp_nto_lambdas_extract(lambdas, vlx, 0, ARRAY_SIZE(lambdas));
+        ASSERT_TRUE(num >= cases[c].count);
+
+        for (size_t i = 0; i < cases[c].count; ++i) {
+            EXPECT_NEAR(cases[c].lambda[i], lambdas[i], 1.0e-6);
+        }
+
+        // Lambdas come out largest first, and they do not sum to one: the transition density is
+        // not normalized the way the solution vector is. Anything downstream that treats them as
+        // shares has to renormalize, which is what the charge transfer diagram does.
+        for (size_t i = 1; i < num; ++i) {
+            EXPECT_TRUE(lambdas[i] <= lambdas[i - 1] + 1.0e-12);
+        }
+
+        md_vlx_destroy(vlx);
+    }
 }
 
 UTEST(vlx, minimal_example) {

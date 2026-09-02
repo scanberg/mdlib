@@ -119,6 +119,8 @@ set(SRC_FILES
   src/md_edr.c
   src/md_edr.h
   src/md_filter.h
+  src/md_flow.c
+  src/md_flow.h
   src/md_gfx.c
   src/md_gfx.h
   src/md_gl.c
