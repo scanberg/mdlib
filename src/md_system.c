@@ -301,6 +301,9 @@ static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
     [MD_ATTRIBUTE_TYPE_U32]  = 4,
     [MD_ATTRIBUTE_TYPE_I64]  = 8,
     [MD_ATTRIBUTE_TYPE_U64]  = 8,
+    // The handle, not the text. That is the whole trick: the element stays fixed width, so every
+    // layout rule keeps working, and the variable length part lives in the pool.
+    [MD_ATTRIBUTE_TYPE_STR]  = 4,
 };
 
 size_t md_attribute_type_size(md_attribute_type_t type) {
@@ -387,6 +390,12 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         return 0;                                                                                   \
     }                                                                                               \
     if (count == 0) {                                                                               \
+        return 0;                                                                                   \
+    }                                                                                               \
+    /* Refused, not converted: a pool handle reinterpreted as a number is the failure where a  */    \
+    /* wrong answer still looks like data. md_attribute_extract_str is the way to read these.  */    \
+    if (attr->format.type == MD_ATTRIBUTE_TYPE_STR) {                                               \
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is a string; read it with md_attribute_extract_str", STR_ARG(attr->path)); \
         return 0;                                                                                   \
     }                                                                                               \
                                                                                                     \
@@ -703,6 +712,10 @@ void md_attributes_free(md_attributes_t* attributes) {
             }
         }
         md_array_free(attributes->attr, alloc);
+        // The pool is append only for the table's whole life, so this is the one place it goes.
+        md_array_free(attributes->str_data,   alloc);
+        md_array_free(attributes->str_offset, alloc);
+        md_array_free(attributes->str_index,  alloc);
     }
     MEMSET(attributes, 0, sizeof(md_attributes_t));
 }
@@ -731,6 +744,144 @@ md_attribute_id_t md_attributes_id_from_path(str_t path) {
         id = 1;
     }
     return id;
+}
+
+// ---------------------------------------------------------------------------
+// The string pool
+// ---------------------------------------------------------------------------
+// Append only, interning, and freed with the table. See the STRINGS note in md_system.h for why the
+// element is a handle rather than the text.
+
+// Entry 0 is the empty string, so a zeroed handle reads as "" instead of as garbage. Called before
+// every intern rather than at table creation, because a table is zero initialised by its owner and
+// there is no init hook to hang this on.
+static bool attr_str_pool_init(md_attributes_t* attributes) {
+    if (md_array_size(attributes->str_offset) > 0) {
+        return true;
+    }
+    md_array_push(attributes->str_data,   '\0', attributes->alloc);
+    md_array_push(attributes->str_offset, 0u,   attributes->alloc);
+    md_array_push(attributes->str_offset, 1u,   attributes->alloc);
+    return md_array_size(attributes->str_offset) == 2;
+}
+
+static str_t attr_str_pool_get(const md_attributes_t* attributes, uint32_t handle) {
+    const size_t count = md_array_size(attributes->str_offset);
+    if (count < 2 || (size_t)handle + 1 >= count) {
+        return (str_t){0};
+    }
+    const uint32_t beg = attributes->str_offset[handle];
+    const uint32_t end = attributes->str_offset[handle + 1];
+    // The stored NUL is not part of the string, but it IS there, so str_ptr can be handed to a C
+    // API without a copy.
+    return (str_t){ attributes->str_data + beg, (size_t)(end - beg - 1) };
+}
+
+static void attr_str_index_insert(md_attributes_t* attributes, uint64_t hash, uint32_t handle) {
+    const size_t mask = md_array_size(attributes->str_index) - 1;
+    size_t slot = (size_t)hash & mask;
+    while (attributes->str_index[slot] != 0) {
+        slot = (slot + 1) & mask;
+    }
+    attributes->str_index[slot] = handle + 1;
+}
+
+// Grown at 2/3 load. Rehashing walks the pool rather than storing the hashes: the entries are right
+// there and this happens O(log n) times over a table's life.
+static bool attr_str_index_reserve(md_attributes_t* attributes, size_t needed) {
+    const size_t cap = md_array_size(attributes->str_index);
+    if (cap != 0 && needed * 3 <= cap * 2) {
+        return true;
+    }
+    size_t new_cap = cap ? cap * 2 : 64;
+    while (needed * 3 > new_cap * 2) {
+        new_cap *= 2;
+    }
+
+    md_array(uint32_t) old_index = attributes->str_index;
+    attributes->str_index = 0;
+    md_array_resize(attributes->str_index, new_cap, attributes->alloc);
+    if (md_array_size(attributes->str_index) != new_cap) {
+        attributes->str_index = old_index;
+        return false;
+    }
+    MEMSET(attributes->str_index, 0, sizeof(uint32_t) * new_cap);
+
+    const size_t num_entries = md_array_size(attributes->str_offset) - 1;
+    for (uint32_t h = 0; h < (uint32_t)num_entries; ++h) {
+        const str_t s = attr_str_pool_get(attributes, h);
+        attr_str_index_insert(attributes, md_hash64_str(s, 0), h);
+    }
+    md_array_free(old_index, attributes->alloc);
+    return true;
+}
+
+// The one way text enters the table. Returns the handle; 0 (the empty string) is a valid answer and
+// also what a failure degrades to, which keeps a caller from having to branch on an error it cannot
+// do anything about.
+static uint32_t attr_str_intern(md_attributes_t* attributes, str_t str) {
+    if (!attr_str_pool_init(attributes) || str_empty(str)) {
+        return 0;
+    }
+
+    const uint64_t hash = md_hash64_str(str, 0);
+    if (md_array_size(attributes->str_index) > 0) {
+        const size_t mask = md_array_size(attributes->str_index) - 1;
+        size_t slot = (size_t)hash & mask;
+        while (attributes->str_index[slot] != 0) {
+            const uint32_t handle = attributes->str_index[slot] - 1;
+            if (str_eq(attr_str_pool_get(attributes, handle), str)) {
+                return handle;
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    const uint32_t handle = (uint32_t)(md_array_size(attributes->str_offset) - 1);
+    md_array_push_array(attributes->str_data, str.ptr, str.len, attributes->alloc);
+    md_array_push(attributes->str_data, '\0', attributes->alloc);
+    md_array_push(attributes->str_offset, (uint32_t)md_array_size(attributes->str_data), attributes->alloc);
+
+    if (!attr_str_index_reserve(attributes, (size_t)handle + 1)) {
+        return handle;  // interned and readable; only the dedup lookup is degraded
+    }
+    attr_str_index_insert(attributes, hash, handle);
+    return handle;
+}
+
+str_t md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* attr, size_t index) {
+    ASSERT(attributes);
+    ASSERT(attr);
+    if (attr->format.type != MD_ATTRIBUTE_TYPE_STR || !attr->data) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is not a resident string attribute", STR_ARG(attr->path));
+        return (str_t){0};
+    }
+    if (index >= md_attribute_element_count(&attr->format)) {
+        return (str_t){0};
+    }
+    return attr_str_pool_get(attributes, ((const uint32_t*)attr->data)[index]);
+}
+
+size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr) {
+    ASSERT(attributes);
+    ASSERT(attr);
+    if (!dst) {
+        return 0;
+    }
+    if (attr->format.type != MD_ATTRIBUTE_TYPE_STR || !attr->data) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is not a resident string attribute", STR_ARG(attr->path));
+        return 0;
+    }
+    const size_t count = md_attribute_element_count(&attr->format);
+    if (count > cap) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' needs %zu values, %zu supplied", STR_ARG(attr->path), count, cap);
+        return 0;
+    }
+    const uint32_t* handles = (const uint32_t*)attr->data;
+    for (size_t i = 0; i < count; ++i) {
+        dst[i] = attr_str_pool_get(attributes, handles[i]);
+    }
+    return count;
 }
 
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
@@ -786,6 +937,20 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
     }
 
     size_t required = md_attribute_byte_size(&format);
+
+    // A string attribute is published as the TEXT and stored as handles, so what the caller hands
+    // over and what the table keeps are different sizes. The guard is checked against the input,
+    // where the caller's mistake would be.
+    const bool is_str = (format.type == MD_ATTRIBUTE_TYPE_STR);
+    const size_t input_size = is_str ? md_attribute_element_count(&format) * sizeof(str_t) : required;
+
+    if (is_str && desc->virt) {
+        // A provider writes the STORED type, and the stored type here is a handle into a pool the
+        // provider has no way to intern into.
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is a string and cannot be virtual", STR_ARG(path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+
     if (desc->virt) {
         if (!desc->virt->provider) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' declares virt with no provider", STR_ARG(path));
@@ -796,8 +961,8 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
             return MD_ATTRIBUTE_INVALID;
         }
     } else if (desc->data) {
-        if (desc->byte_size != required) {
-            MD_LOG_ERROR("Attribute '" STR_FMT "' declares %zu bytes but %zu were supplied", STR_ARG(path), required, desc->byte_size);
+        if (desc->byte_size != input_size) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' declares %zu bytes but %zu were supplied", STR_ARG(path), input_size, desc->byte_size);
             return MD_ATTRIBUTE_INVALID;
         }
     } else if (desc->byte_size != 0) {
@@ -843,7 +1008,16 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
             MD_LOG_ERROR("Failed to allocate %zu bytes for attribute '" STR_FMT "'", required, STR_ARG(path));
             return MD_ATTRIBUTE_INVALID;
         }
-        if (desc->data) {
+        if (desc->data && is_str) {
+            // Interned one at a time. A zeroed handle is the empty string, so a failure to intern
+            // degrades to "" rather than to a dangling index.
+            const str_t* values = (const str_t*)desc->data;
+            uint32_t* handles = (uint32_t*)storage;
+            const size_t count = md_attribute_element_count(&format);
+            for (size_t i = 0; i < count; ++i) {
+                handles[i] = attr_str_intern(attributes, values[i]);
+            }
+        } else if (desc->data) {
             MEMCPY(storage, desc->data, required);
         } else {
             MEMSET(storage, 0, required);
@@ -1143,6 +1317,13 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
     }
     if (attr->storage != MD_ATTRIBUTE_STORAGE_RESIDENT) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' is virtual and has no resident storage", STR_ARG(attr->path));
+        return NULL;
+    }
+    if (attr->format.type == MD_ATTRIBUTE_TYPE_STR) {
+        // The storage is handles into the pool. Handing it out writable invites a producer to
+        // fabricate one, which is how a table ends up pointing at text it does not own. Publish the
+        // strings through md_attributes_create instead - that is the only way text gets in.
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is a string; publish its values rather than writing handles", STR_ARG(attr->path));
         return NULL;
     }
     if (attr->format.type != expected_type) {

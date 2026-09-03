@@ -243,7 +243,7 @@ typedef struct md_hydrogen_bond_data_t {
 //     rank 1 {N}   components 3   N 3-vectors               atom/position, atom/velocity
 //     rank 1 {N}   components 6   N 6-vectors               atom/adp
 //     rank 2 {S,N} components 1   N scalars per state       per state Mulliken charges
-//     rank 2 {M,N} components 3   N 3-vectors per mode      atom/normal_mode
+//     rank 2 {M,N} components 3   N 3-vectors per mode      qm/atom/normal_mode
 //
 // This is the split HDF5 and numpy both make, and for the same reason. HDF5 puts the extents
 // in the dataspace and the component count in the datatype (H5T_ARRAY), and the rule which
@@ -354,6 +354,12 @@ typedef enum md_attribute_type_t {
     MD_ATTRIBUTE_TYPE_U32,
     MD_ATTRIBUTE_TYPE_I64,
     MD_ATTRIBUTE_TYPE_U64,
+
+    // Text. The ELEMENT is a 4 byte handle into the table's string pool, which is what keeps every
+    // layout rule below intact - byte size, slice count and shape mean exactly what they mean for a
+    // float. The bytes themselves are variable length and live in the pool. See STRINGS.
+    MD_ATTRIBUTE_TYPE_STR,
+
     MD_ATTRIBUTE_TYPE_COUNT,
 } md_attribute_type_t;
 
@@ -538,6 +544,13 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
 typedef struct md_attributes_t {
     struct md_allocator_i*   alloc;
     md_array(md_attribute_t) attr;  // kept sorted by path
+
+    // The string pool behind MD_ATTRIBUTE_TYPE_STR. Private: reach it through md_attribute_str and
+    // md_attribute_extract_str, never directly. Entry 0 is the empty string, so a zeroed handle
+    // reads as "" rather than as garbage. See STRINGS.
+    md_array(char)     str_data;    // NUL terminated entries, back to back
+    md_array(uint32_t) str_offset;  // [count+1]; entry i is str_data + str_offset[i]
+    md_array(uint32_t) str_index;   // open addressing, power of two, holds handle+1; 0 is empty
 
     // Monotonic, table wide, stamped into each attribute when its contents change. Never reused,
     // so comparing two versions also orders them - and a replaced attribute keeps its id but gets a
@@ -741,6 +754,40 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
 // This exists because the alternative is a consumer computing the offset itself from rank, shape
 // and components, which is the one piece of layout arithmetic that must not be duplicated: it is
 // where a wrong answer still looks like data. An out of range index is an error, never a clamp.
+// STRINGS
+//
+// One string type and no second one, ever. The element of a MD_ATTRIBUTE_TYPE_STR attribute is a 4
+// byte handle into a pool owned by the table; the bytes are variable length and live there. That is
+// what keeps the layout rules above whole - byte size and md_attribute_slice_count stay functions
+// of the FORMAT alone, and {N} is N strings exactly as {N} of floats is N floats. A single string is
+// rank 1 {1}, by the same rule that makes a single 3-vector rank 2 {1,3}.
+//
+// ALWAYS UTF-8. There is no encoding field and no alternative, deliberately: the reason a certain
+// well known hierarchical format is painful to consume is that it made the STORAGE STRATEGY part of
+// the type system - fixed against variable length, ASCII against UTF-8, null terminated against
+// null padded against space padded - so every consumer pays for the cross product. Here a producer
+// hands over str_t and a consumer gets str_t back, and how it is stored is nobody's business.
+//
+// The pool interns: publishing the same text twice stores it once, so two attributes naming the
+// same thing hold the same handle and equality is an integer compare. It is APPEND ONLY and is
+// freed with the table - replacing a string attribute leaves its old entries interned until
+// md_attributes_free. That is the deliberate trade for immutability, and interning is what makes
+// republishing the same strings cost nothing.
+//
+// PUBLISHING: desc->data points at str_t[] and desc->byte_size is count * sizeof(str_t) - the
+// input, not the stored form, because a producer must not fabricate handles. The size guard still
+// does its job: it catches a buffer whose element type or count disagrees with the format.
+// md_attributes_data refuses a string attribute for the same reason.
+//
+// READING: md_attribute_str for one, md_attribute_extract_str for the lot. Both take the TABLE as
+// well as the attribute, because the pool lives there - the one asymmetry with the numeric path,
+// and preferable to hanging a pool pointer on every attribute and making its lifetime depend on the
+// table's in a way nothing else does. md_attribute_extract_f32 and friends REFUSE a string
+// attribute: handles reinterpreted as numbers is the failure where a wrong answer still looks like
+// data.
+str_t  md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* attr, size_t index);
+size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr);
+
 size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit);
 size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit);
 

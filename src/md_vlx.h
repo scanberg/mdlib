@@ -352,6 +352,7 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 // initialised system:
 //
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy        rank 0, single values
+//   vlx/basis_set, vlx/dft_functional                         rank 1 {1} strings
 //   vlx/scf/history/*                                         {I} per SCF iteration
 //   vlx/scf/orbital/{alpha,beta}/*                            {M} per molecular orbital
 //   vlx/rsp/{oscillator,rotatory}_strength                    {S} per excited state
@@ -362,7 +363,14 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 //                                                             per field of the record
 //   vlx/vib/*                                                 {D} per normal mode
 //   vlx/opt/{energy,coordinate}                               {P} per optimisation step
-//   atom/normal_mode                        {M,N} x 3 components, atom axis last
+//   basis/overlap                           {A,A} the AO overlap, in the same Cartesian order and
+//                                           convention as the coefficients, and singular with it
+//   qm/atom/{atomic_number,coordinate}      the QM ATOM DOMAIN - the atoms this calculation
+//                                           covered, in its order and at its geometry. NOT the
+//                                           system's atoms; basis/shell/atom_index indexes THIS
+//                                           space, and qm/atom/system_index (written by the system
+//                                           entry points, not here) is the only bridge across.
+//   qm/atom/normal_mode                     {M,N} x 3, one displacement per QM atom per mode
 //   dipole/{ground_state,electric_transition,               each a vector and an origin of the
 //           magnetic_transition,velocity_transition}/*      same shape, anchored at the centre
 //                                                           of charge
@@ -370,9 +378,14 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 // Most are read with md_attribute_extract_f32; the multi axis ones by building an
 // md_attribute_slice_t, asking md_attribute_slice_count how big it is and extracting into that.
 //
-// Separate from md_vlx_system_init_from_data because that path parses only the core blocks; these
-// need a full md_vlx_parse_file. A block the file does not contain publishes nothing, so a consumer
-// asks the attribute table what is there rather than asking the vlx object what it parsed.
+// Called for you by both entry points below, so a loaded system carries its table from the moment
+// it is loaded and no consumer has to parse the file a second time to make the data appear. A block
+// the file does not contain publishes nothing, so a consumer asks the attribute table what is there
+// rather than asking the vlx object what it parsed.
+//
+// The vlx object does not have to outlive the system: resident attributes are copied into the
+// system's own allocator, and the virtual ones capture 'sys' and rebuild from what was published
+// beside them. Both entry points below rely on that and parse into a temporary arena.
 //
 // The vlx/ prefix is deliberate for the format specific tree: these are one program's output, and a
 // path is a promise, so a quantity moves to a format neutral name once a second loader produces the
@@ -383,6 +396,13 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 // leaves no stale series behind.
 void md_vlx_publish_attributes(struct md_system_t* sys, const md_vlx_t* vlx);
 bool md_vlx_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename);
+
+// For a file whose atoms are a subset of an ALREADY loaded system - see
+// md_vlx_system_is_file_supplemental, which is how a caller decides between the two. Parses and
+// publishes onto that system, leaving its atoms and its state untouched where
+// md_vlx_system_init_from_file would replace them.
+bool md_vlx_system_supplement_from_file(struct md_system_t* sys, str_t filename);
+
 bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, str_t filename);
 
 #ifdef __cplusplus

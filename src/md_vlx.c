@@ -4876,6 +4876,18 @@ static void vlx_publish_vec3_series(md_system_t* sys, str_t path, str_t label, m
 	vlx_publish(sys, path, label, unit, format, values, count * 3 * sizeof(double));
 }
 
+// A single string is rank 1 {1}, by the same rule that makes a single 3-vector rank 2 {1,3}. The
+// descriptor carries the TEXT and the table stores a handle - see the STRINGS note in md_system.h.
+static void vlx_publish_str(md_system_t* sys, str_t path, str_t label, str_t value) {
+	if (str_empty(value)) {
+		return;
+	}
+	md_attribute_format_t format = {
+		.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 },
+	};
+	vlx_publish(sys, path, label, md_unit_none(), format, &value, sizeof(str_t));
+}
+
 // rank 2 {A,B}, one scalar per (a,b), row major with b fastest - which is the layout md_vlx.h
 // documents for the 2D response quantities, so no rearrangement happens here.
 static void vlx_publish_matrix(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols) {
@@ -5280,8 +5292,50 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	// ---- Molecule level scalars. rank 0 is a single value, not an array of one. ----
 	vlx_publish_scalar(sys, STR_LIT("vlx/molecular_charge"),          STR_LIT("Molecular Charge"),			md_unit_none(), md_vlx_molecular_charge(vlx));
 	vlx_publish_scalar(sys, STR_LIT("vlx/nuclear_repulsion_energy"),  STR_LIT("Nuclear Repulsion Energy"),	hartree,        md_vlx_nuclear_repulsion_energy(vlx));
+	// The two facts about a calculation that are TEXT and nothing else - no consumer can derive them
+	// from the columns, the way it can derive the SCF type from whether the spin channels share data.
+	vlx_publish_str(sys, STR_LIT("vlx/basis_set"),      STR_LIT("Basis Set"),      md_vlx_basis_set_ident(vlx));
+	vlx_publish_str(sys, STR_LIT("vlx/dft_functional"), STR_LIT("DFT Functional"), md_vlx_dft_func_label(vlx));
+
 	if (md_vlx_rsp_type(vlx) == MD_VLX_RSP_C6) {
 		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/c6"), STR_LIT("C6 Coefficient"), md_unit_none(), md_vlx_c6_value(vlx));
+	}
+
+	// ---- The QM ATOM DOMAIN. ----
+	//
+	// The atoms this calculation covered, in ITS order and at ITS geometry. That is not the
+	// system's atom set: a calculation can cover part of a loaded system - a chromophore inside a
+	// protein - so the two spaces differ in length AND in order, and qm/atom/system_index is the
+	// only bridge between them.
+	//
+	// Its own prefix, and NOT atom/*, which is the SYSTEM's atom domain: a consumer walking atom/
+	// has no idea quantum chemistry exists and would index a QM column by system atom - silently,
+	// and wrongly, on exactly the subset case this domain exists for. atom_property_query already
+	// filters by extent and component count, but that filter passes a scalar QM column whenever the
+	// two atom counts happen to agree, which is not a distinction worth resting on.
+	//
+	// Not under basis/ either, though the shell list indexes this space: the basis is one thing
+	// defined OVER these atoms, and so are the normal modes below. A nuclear coordinate is not a
+	// property of a basis set, and a file can carry a geometry without carrying a basis at all.
+	// basis/shell/atom_index is an index INTO qm/atom, which is the relationship stated plainly.
+	{
+		const size_t num_qm_atoms = md_vlx_number_of_atoms(vlx);
+		const md_element_t* atomic_number = md_vlx_atomic_numbers(vlx);
+
+		if (num_qm_atoms > 0 && atomic_number) {
+			md_attribute_format_t format = {
+				.type = MD_ATTRIBUTE_TYPE_U8, .components = 1, .rank = 1, .shape = { (uint32_t)num_qm_atoms },
+			};
+			vlx_publish(sys, STR_LIT("qm/atom/atomic_number"), STR_LIT("Atomic Number"), md_unit_none(),
+						format, atomic_number, num_qm_atoms * sizeof(md_element_t));
+		}
+
+		// Angstrom, matching the system's own coordinates rather than the bohr the evaluator works
+		// in: a consumer comparing this geometry against md_system_state_t should not have to convert
+		// first. This is the geometry the CALCULATION was run at, which is not necessarily where the
+		// system's atoms are now - a trajectory frame or an optimisation step moves them.
+		vlx_publish_vec3_series(sys, STR_LIT("qm/atom/coordinate"), STR_LIT("Coordinate"), angstrom,
+								md_vlx_atom_coordinates(vlx), num_qm_atoms);
 	}
 
 	// ---- SCF: one value per iteration of the convergence history. ----
@@ -5390,6 +5444,27 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 						} else {
 							vlx_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
 						}
+					}
+
+					// The AO overlap S, {A,A} and symmetric. It belongs to the BASIS and not to a spin
+					// channel: both channels and every density in this table are expressed against this
+					// one metric, so basis/ and not orbital/.
+					//
+					// It is in the same AO order and convention as the coefficients above - converted by
+					// vlx_cart_convert_square and permuted by ao_permute_square, exactly as they are - so
+					// the two can be used together without further ceremony. Read the AO CONVENTION block
+					// in md_gto.h first: this is the CARTESIAN overlap, and the Cartesian embedding of a
+					// spherical basis is rank deficient, so for any file that stored spherical data this
+					// matrix is SINGULAR. That is fine for what it is wanted for - Mulliken partitioning
+					// and tr(DS) - and fatal for anything that inverts or factorises it.
+					const double* overlap = md_vlx_scf_overlap_matrix_data(vlx);
+					if (overlap && md_vlx_scf_overlap_matrix_size(vlx) == num_ao) {
+						md_attribute_format_t overlap_format = {
+							.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
+							.shape = { (uint32_t)num_ao, (uint32_t)num_ao },
+						};
+						vlx_publish(sys, STR_LIT("basis/overlap"), STR_LIT("AO Overlap"), md_unit_none(),
+									overlap_format, overlap, num_ao * num_ao * sizeof(double));
 					}
 
 					// Ground state densities: computed on demand from the coefficients and occupations
@@ -5649,7 +5724,7 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	// The displacements are per atom, so the atom axis is the last index axis and the mode axis
 	// leads: one mode's displacements are contiguous. This is the {M,N} case the ATTRIBUTES note in
 	// md_system.h uses as its example, and it is why an atom axis is not always shape[0].
-	vlx_publish_vec3_rows(sys, STR_LIT("atom/normal_mode"), STR_LIT("Normal Mode"), md_unit_none(), vlx, num_modes, md_vlx_number_of_atoms(vlx), md_vlx_vib_normal_mode);
+	vlx_publish_vec3_rows(sys, STR_LIT("qm/atom/normal_mode"), STR_LIT("Normal Mode"), md_unit_none(), vlx, num_modes, md_vlx_number_of_atoms(vlx), md_vlx_vib_normal_mode);
 
 	// ---- OPT: one value per optimisation step, and the geometry at each one. ----
 	const size_t num_steps = md_vlx_opt_number_of_steps(vlx);
@@ -5791,6 +5866,54 @@ bool md_vlx_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 	return true;
 }
 
+// Which system atom each QM atom is, or nothing at all when the two spaces coincide.
+//
+// The file cannot decide this for itself: the same h5 carries a local-to-global map whether it is
+// opened standalone - where the system IS the QM atoms and the map must NOT be applied - or against
+// a larger system, where it must. What resolves it is WHICH ENTRY POINT WAS CALLED, which is why
+// this takes the answer as an argument rather than trying to work it out.
+//
+// Publishing nothing is not the same as leaving it alone: a stale map from a previous load would
+// send every evaluation to the wrong atoms, so the standalone case actively removes it.
+static void vlx_publish_atom_system_index(md_system_t* sys, const md_vlx_t* vlx, bool supplemental) {
+	ASSERT(sys);
+
+	const str_t path = STR_LIT("qm/atom/system_index");
+	// Declared before the if: this is C, not the C++ side of the tree.
+	const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
+	if (existing) {
+		md_attributes_remove(&sys->attributes, existing->id);
+	}
+	if (!supplemental) {
+		return;
+	}
+
+	const size_t num_qm_atoms = md_vlx_number_of_atoms(vlx);
+	const int* local_to_global = md_vlx_local_to_global_atom_idx(vlx);
+	if (num_qm_atoms == 0 || !local_to_global) {
+		return;
+	}
+
+	md_attribute_format_t format = {
+		.type = MD_ATTRIBUTE_TYPE_U32, .components = 1, .rank = 1, .shape = { (uint32_t)num_qm_atoms },
+	};
+	md_attribute_id_t id = md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
+		.path   = path,
+			.format = format,
+			.unit   = md_unit_none(),
+			.label  = STR_LIT("System Atom Index"),
+	});
+
+	uint32_t* dst = (uint32_t*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_U32);
+	if (!dst) {
+		if (id != MD_ATTRIBUTE_INVALID) md_attributes_remove(&sys->attributes, id);
+		return;
+	}
+	for (size_t i = 0; i < num_qm_atoms; ++i) {
+		dst[i] = (uint32_t)local_to_global[i];
+	}
+}
+
 bool md_vlx_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
@@ -5798,7 +5921,42 @@ bool md_vlx_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 	md_vlx_t* vlx = md_vlx_create(temp_arena);
 
-	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_CORE) && md_vlx_system_init_from_data(sys, state, vlx);
+	// VLX_FLAG_ALL rather than CORE, and the publish right here: the attribute table is populated
+	// on the LOAD path, so a system carries its data the moment it is loaded and a consumer finds it
+	// by asking the system. It used to be published by the veloxchem UI component, which meant the
+	// data existed only because that component was compiled in and had parsed the same file a second
+	// time - and meant no other reader could ever put comparable data in the same table.
+	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_ALL) && md_vlx_system_init_from_data(sys, state, vlx);
+	if (success) {
+		md_vlx_publish_attributes(sys, vlx);
+		// Standalone: the system IS the QM atoms, so the map is cleared rather than written.
+		vlx_publish_atom_system_index(sys, vlx, false);
+	}
+
+	md_temp_end(temp_scope);
+	return success;
+}
+
+bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
+	ASSERT(sys);
+
+	if (!sys->attributes.alloc) {
+		MD_LOG_ERROR("Cannot supplement a system which has not been initialised");
+		return false;
+	}
+
+	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
+	md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+	md_vlx_t* vlx = md_vlx_create(temp_arena);
+
+	// The atoms and the state are deliberately left alone - they belong to whatever loaded the
+	// system first, and this file only adds to its table. Whether the file actually belongs to this
+	// system is md_vlx_system_is_file_supplemental's question and the caller has already asked it.
+	bool success = vlx_parse_file(vlx, filename, VLX_FLAG_ALL);
+	if (success) {
+		md_vlx_publish_attributes(sys, vlx);
+		vlx_publish_atom_system_index(sys, vlx, true);
+	}
 
 	md_temp_end(temp_scope);
 	return success;
