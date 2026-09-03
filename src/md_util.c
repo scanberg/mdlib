@@ -4687,10 +4687,17 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
 #define MAX_GROUPED_COMP_SIZE 4
 
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[]) {
-    if (!sys || sys->component.count == 0) {
+    if (!sys) {
         MD_LOG_ERROR("Missing system or components");
         return false;
     }
+
+    if (sys->component.count == 0) {
+        // Not an error, qm systems for example do not provide components/residues
+        // But there is no work to be done here
+        return true;
+    }
+
     ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
 
