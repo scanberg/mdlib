@@ -353,6 +353,14 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 //
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy        rank 0, single values
 //   vlx/basis_set, vlx/dft_functional                         rank 1 {1} strings
+//   vlx/rsp/type, vlx/opt/type                                rank 1 {1} strings: WHICH kind of
+//                                                             run this was, lowercased
+//                                                             enumerator names. Absent when the
+//                                                             file does not say, which is what a
+//                                                             consumer treats as unknown. Text
+//                                                             rather than an integer so nothing
+//                                                             stored depends on this header's
+//                                                             enum ordering.
 //   vlx/scf/history/*                                         {I} per SCF iteration
 //   vlx/scf/orbital/{alpha,beta}/*                            {M} per molecular orbital
 //   vlx/rsp/{oscillator,rotatory}_strength                    {S} per excited state
@@ -361,8 +369,12 @@ bool md_vlx_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 //   vlx/rsp/nto/lambda                                        {S,Lmax}, ragged rows zero padded
 //   vlx/xps/*                                                 {C} per core-hole state, one path
 //                                                             per field of the record
-//   vlx/vib/*                                                 {D} per normal mode
-//   vlx/opt/{energy,coordinate}                               {P} per optimisation step
+//   vlx/vib/*                                                 {D} per normal mode, plus
+//                                                             vlx/vib/raman_activity {E,D} - one
+//                                                             row per external frequency
+//   vlx/opt/{energy,coordinate}                               {P} per optimisation step;
+//                                                             vlx/opt/irc_ts_index is rank 0 and
+//                                                             present for an IRC scan only
 //   basis/overlap                           {A,A} the AO overlap, in the same Cartesian order and
 //                                           convention as the coefficients, and singular with it
 //   qm/atom/{atomic_number,coordinate}      the QM ATOM DOMAIN - the atoms this calculation

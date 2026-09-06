@@ -5266,6 +5266,42 @@ static size_t vlx_scf_difference_density_provider(void* dst, size_t cap, const m
 	return vlx_scf_density_combine(dst, cap, attr, user_data, -1.0);
 }
 
+// The two calculation-kind enums as TEXT, for the attribute table.
+//
+// Text and not the enum's integer: a number in the table is a contract on THIS header's ordering,
+// which nothing else can read and which an inserted enumerator silently breaks. A second QM reader
+// naming its own run "rixs" says the same thing without ever having heard of md_vlx_rsp_type_t,
+// which is the whole reason these leave the reader at all. The strings are the enumerator names
+// lowercased, so nothing is needed to read the mapping by.
+//
+// UNKNOWN publishes nothing rather than the word "unknown": an absent path already means "this file
+// does not say", and a consumer which has to handle the absent case gains nothing from a second
+// spelling of it.
+static str_t vlx_rsp_type_str(md_vlx_rsp_type_t type) {
+	switch (type) {
+	case MD_VLX_RSP_LINEAR:			return STR_LIT("linear");
+	case MD_VLX_RSP_CPP:			return STR_LIT("cpp");
+	case MD_VLX_RSP_C6:				return STR_LIT("c6");
+	case MD_VLX_RSP_TPA:			return STR_LIT("tpa");
+	case MD_VLX_RSP_TPA_TRANSITION:	return STR_LIT("tpa_transition");
+	case MD_VLX_RSP_RIXS:			return STR_LIT("rixs");
+	case MD_VLX_RSP_UNKNOWN:
+	default:						return (str_t){0};
+	}
+}
+
+static str_t vlx_opt_type_str(md_vlx_opt_type_t type) {
+	switch (type) {
+	case MD_VLX_OPT_GEOMETRY:		return STR_LIT("geometry");
+	case MD_VLX_OPT_CONSTRAINED:	return STR_LIT("constrained");
+	case MD_VLX_OPT_TS:				return STR_LIT("transition_state");
+	case MD_VLX_OPT_IRC:			return STR_LIT("irc");
+	case MD_VLX_OPT_UNKNOWN:
+	case MD_VLX_OPT_COUNT:
+	default:						return (str_t){0};
+	}
+}
+
 void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	ASSERT(sys);
 
@@ -5296,6 +5332,12 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	// from the columns, the way it can derive the SCF type from whether the spin channels share data.
 	vlx_publish_str(sys, STR_LIT("vlx/basis_set"),      STR_LIT("Basis Set"),      md_vlx_basis_set_ident(vlx));
 	vlx_publish_str(sys, STR_LIT("vlx/dft_functional"), STR_LIT("DFT Functional"), md_vlx_dft_func_label(vlx));
+
+	// WHICH response calculation this was. Not derivable from the columns: a linear response and a
+	// two-photon transition run both publish peaks over the same frequency axis, and telling them
+	// apart by which optional sibling happens to be present is a guess that a file carrying partial
+	// data gets wrong. The reader knows which it read; this is it saying so.
+	vlx_publish_str(sys, STR_LIT("vlx/rsp/type"), STR_LIT("Response Type"), vlx_rsp_type_str(md_vlx_rsp_type(vlx)));
 
 	if (md_vlx_rsp_type(vlx) == MD_VLX_RSP_C6) {
 		vlx_publish_scalar(sys, STR_LIT("vlx/rsp/c6"), STR_LIT("C6 Coefficient"), md_unit_none(), md_vlx_c6_value(vlx));
@@ -5721,6 +5763,13 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	vlx_publish_series(sys, STR_LIT("vlx/vib/force_constant"),		STR_LIT("Force Constant"),		md_unit_none(), md_vlx_vib_force_constants(vlx),		num_modes);
 	vlx_publish_series(sys, STR_LIT("vlx/vib/external_frequency"),	STR_LIT("External Frequency"),	hartree,		md_vlx_vib_external_frequencies(vlx),	md_vlx_vib_number_of_external_frequencies(vlx));
 
+	// {E,M}: one row of per mode activities per external frequency, which is exactly how the reader
+	// stores them, so this is a straight copy. The external frequency axis leads for the same reason
+	// the mode axis leads the displacements below - one row is contiguous, so a consumer plotting the
+	// spectrum at one frequency hands ImPlot a pointer rather than a stride.
+	vlx_publish_matrix(sys, STR_LIT("vlx/vib/raman_activity"), STR_LIT("Raman Activity"), md_unit_none(),
+					   vlx->vib.raman_activities, md_vlx_vib_number_of_external_frequencies(vlx), num_modes);
+
 	// The displacements are per atom, so the atom axis is the last index axis and the mode axis
 	// leads: one mode's displacements are contiguous. This is the {M,N} case the ATTRIBUTES note in
 	// md_system.h uses as its example, and it is why an atom axis is not always shape[0].
@@ -5730,6 +5779,20 @@ void md_vlx_publish_attributes(md_system_t* sys, const md_vlx_t* vlx) {
 	const size_t num_steps = md_vlx_opt_number_of_steps(vlx);
 	vlx_publish_series(sys,		STR_LIT("vlx/opt/energy"),		STR_LIT("Energy"),		hartree, md_vlx_opt_energies(vlx), num_steps);
 	vlx_publish_vec3_rows(sys,	STR_LIT("vlx/opt/coordinate"),	STR_LIT("Coordinate"),	angstrom, vlx, num_steps, md_vlx_number_of_atoms(vlx), md_vlx_opt_coordinates);
+
+	// WHICH optimisation, for the same reason as the response type above: a geometry optimisation and
+	// an IRC scan are the same energy-per-step column, and only the reader knows that the middle of
+	// one of them is a transition state rather than a step on the way down.
+	if (num_steps > 0) {
+		vlx_publish_str(sys, STR_LIT("vlx/opt/type"), STR_LIT("Optimization Type"), vlx_opt_type_str(md_vlx_opt_type(vlx)));
+
+		// Only for an IRC, where it names the step the path was walked out from in both directions -
+		// the energy every other step is measured against. Any other run has no such step, and
+		// publishing 0 there would name one.
+		if (md_vlx_opt_type(vlx) == MD_VLX_OPT_IRC) {
+			vlx_publish_scalar(sys, STR_LIT("vlx/opt/irc_ts_index"), STR_LIT("Transition State Step"), md_unit_none(), (double)md_vlx_opt_irc_ts_index(vlx));
+		}
+	}
 
 	// ---- Dipole groups. Every vector gets an origin beside it in the SAME shape, because a dipole
 	// has no index space of its own to anchor it - see the ANCHORING note in md_system.h. Publishing
