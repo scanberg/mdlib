@@ -1,6 +1,7 @@
 ﻿#include "ubench.h"
 
 #include <md_vlx.h>
+#include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
@@ -18,16 +19,26 @@
 UBENCH_EX(gto, evaluate_grid) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     
-    md_vlx_t* vlx = md_vlx_create(arena);
-    md_vlx_parse_file(vlx, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.out"));
+    // md_vlx has no reader object: a file is loaded into a system and everything it carried - the
+    // geometry, the basis, the MO coefficients - is read back out of that system's attribute table.
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    if (!md_vlx_system_init_from_file(&sys, &state, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.out"))) {
+        MD_LOG_ERROR("Could not load benchmark vlx file");
+        return;
+    }
 
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
-	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
-    vec3_t* atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * md_vlx_number_of_atoms(vlx));
-    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
-        atom_xyz[i] = vec3_set((float)(coords[i].x * ANGSTROM_TO_BOHR), (float)(coords[i].y * ANGSTROM_TO_BOHR), (float)(coords[i].z * ANGSTROM_TO_BOHR));
+    const md_attribute_t* coord_attr = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"));
+    const size_t num_atoms = coord_attr ? md_attribute_value_count(&coord_attr->format) : 0;
+    double* coords = (double*)md_arena_allocator_push(arena, sizeof(double) * 3 * num_atoms);
+    md_attribute_extract_f64(coords, 3 * num_atoms, coord_attr, md_unit_none());
+
+    vec3_t* atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        atom_xyz[i] = vec3_set((float)(coords[3*i+0] * ANGSTROM_TO_BOHR), (float)(coords[3*i+1] * ANGSTROM_TO_BOHR), (float)(coords[3*i+2] * ANGSTROM_TO_BOHR));
         min_box = vec3_min(min_box, atom_xyz[i]);
         max_box = vec3_max(max_box, atom_xyz[i]);
     }
@@ -56,14 +67,16 @@ UBENCH_EX(gto, evaluate_grid) {
     };
 
     md_gto_basis_t basis = {0};
-    md_vlx_gto_basis_extract(&basis, vlx, arena);
+    md_gto_basis_extract_attributes(&basis, &sys.attributes, arena);
 
     size_t num_gtos = md_gto_pgto_count(&basis);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
 
-    size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    size_t num_aos = md_gto_basis_num_ao(&basis);
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
-    md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
+    const md_attribute_t* coeff_attr = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_slice_t mo_slice = md_attribute_slice_1(120);
+    md_attribute_extract_slice_f64(mo_coeffs, num_aos, coeff_attr, &mo_slice, md_unit_none());
 
     md_gto_expand_with_ao_coeffs(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 

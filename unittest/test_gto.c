@@ -5,7 +5,8 @@
 #include <core/md_gpu.h>
 #endif
 
-#include <md_vlx.h>
+#include "vlx_test_util.h"
+
 #include <md_cube.h>
 #include <md_gto.h>
 
@@ -19,26 +20,27 @@
 
 static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
     md_temp_scope_t temp = md_temp_begin_avoid(arena);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-    md_vlx_t* vlx = md_vlx_create(temp_arena);
-    bool read = md_vlx_parse_file(vlx, filename);
+    vlx_test_t t = {0};
+    if (!vlx_test_load(&t, filename, MEGABYTES(64))) {
+        md_temp_end(temp);
+        return;
+    }
+
+    const size_t num_atoms = t.sys.atom.count;
+    float* atom_xyz = md_temp_alloc_array(temp, float, 3 * num_atoms);
+    vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t);
 
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
-
-	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
-    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
-        vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
+    for (size_t i = 0; i < num_atoms; ++i) {
+        vec3_t c = {atom_xyz[3*i+0], atom_xyz[3*i+1], atom_xyz[3*i+2]};
         min_box = vec3_min(min_box, c);
         max_box = vec3_max(max_box, c);
     }
 
-    min_box = vec3_sub1(min_box, 2.0f);
-    max_box = vec3_add1(max_box, 2.0f);
-
-    min_box = vec3_mul1(min_box, ANGSTROM_TO_BOHR);
-    max_box = vec3_mul1(max_box, ANGSTROM_TO_BOHR);
+    min_box = vec3_sub1(min_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
+    max_box = vec3_add1(max_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
 
     float* vol_data = md_temp_alloc_zero_array(temp, float, vol_dim * vol_dim * vol_dim);
 
@@ -54,24 +56,17 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
     *grid_data = vol_data;
 
     md_gto_basis_t basis = {0};
-    md_vlx_gto_basis_extract(&basis, vlx, temp_arena);
+    vlx_test_basis(&basis, &t);
 
-    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-    float* atom_xyz = md_temp_alloc_array(temp, float, 3 * num_atoms);
-    for (size_t i = 0; i < num_atoms; i++) {
-        atom_xyz[3*i+0] = (float)(coords[i].x * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+1] = (float)(coords[i].y * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+2] = (float)(coords[i].z * ANGSTROM_TO_BOHR);
-    }
-
-    size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
     double* mo_coeffs = md_temp_alloc_array(temp, double, num_ao);
-    md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, 120, MD_VLX_SPIN_ALPHA);
+    vlx_test_row(mo_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), 120);
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = md_alloc(arena, sizeof(md_gto_t) * (*num_gtos));
-    *num_gtos = md_gto_expand_with_ao_coeffs(*gtos, &basis, atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
+    *num_gtos = md_gto_expand_with_ao_coeffs(*gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
 
+    vlx_test_free(&t);
     md_temp_end(temp);
 }
 
@@ -362,26 +357,29 @@ UTEST(gto, h2o_lumo_cpu) {
     md_cube_t cube_lumo = {0};
     ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
-    md_vlx_t* vlx = md_vlx_create(temp.arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5")));
+    // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
+    // attribute table, which is the only way anything reaches a consumer now.
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
 
-    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-    const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
+    size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
-    for (size_t i = 0; i < num_atoms; i++) {
-        atom_xyz[3*i+0] = (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+1] = (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+2] = (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR);
-    }
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
 
     md_gto_basis_t basis = {0};
-    md_vlx_gto_basis_extract(&basis, vlx, temp_arena);
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-    const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, lumo_idx, MD_VLX_SPIN_ALPHA);
+    ASSERT_TRUE(vlx_test_basis(&basis, &t));
+
+    // The LUMO, derived from the published occupations by the rule the reader used: the first
+    // orbital with zero occupancy.
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t num_ao   = md_gto_basis_num_ao(&basis);
+    double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
+    ASSERT_EQ(vlx_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_cpu(atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);  
 
+    vlx_test_free(&t);
     md_temp_end(temp);
 }
 
@@ -549,26 +547,29 @@ UTEST(gto, h2o_lumo_gpu) {
     md_cube_t cube_lumo = {0};
     ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
-    md_vlx_t* vlx = md_vlx_create(temp.arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5")));
+    // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
+    // attribute table, which is the only way anything reaches a consumer now.
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
 
-    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-    const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
+    size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
-    for (size_t i = 0; i < num_atoms; i++) {
-        atom_xyz[3*i+0] = (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+1] = (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR);
-        atom_xyz[3*i+2] = (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR);
-    }
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
 
     md_gto_basis_t basis = {0};
-    md_vlx_gto_basis_extract(&basis, vlx, temp_arena);
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-    const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, lumo_idx, MD_VLX_SPIN_ALPHA);
+    ASSERT_TRUE(vlx_test_basis(&basis, &t));
+
+    // The LUMO, derived from the published occupations by the rule the reader used: the first
+    // orbital with zero occupancy.
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t num_ao   = md_gto_basis_num_ao(&basis);
+    double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
+    ASSERT_EQ(vlx_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_gpu(device, atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);
 
+    vlx_test_free(&t);
     md_temp_end(temp);
     md_gpu_device_destroy(device);
 }
@@ -577,73 +578,8 @@ UTEST(gto, h2o_lumo_gpu) {
 
 #endif
 
-#if 0
-UTEST(gto, amide) {
-    md_temp_scope_t temp = md_temp_begin();
+// The amide / ne / myjob cube comparisons used to sit here, disabled. They were removed with the
+// md_vlx object API they were written against: they called a compare_vlx_and_cube() that no longer
+// exists and reference *_homo.cube / *_lumo.cube files that are not in test_data, so there was
+// nothing to re-enable. gto.h2o_lumo_cpu is the live version of the same check.
 
-    md_cube_t cube_lumo = {0};
-    md_cube_t cube_homo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide_lumo.cube"), temp.arena));
-    ASSERT_TRUE(md_cube_file_load(&cube_homo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide_homo.cube"), temp.arena));
-
-    md_vlx_t* vlx = md_vlx_create(temp.arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.out")));
-
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
-
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, temp.arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, temp.arena);
-
-    EXPECT_LT(max_delta_lumo, 1.0E-4);
-    EXPECT_LT(max_delta_homo, 1.0E-4);
-
-    md_temp_end(temp);
-}
-
-UTEST(gto, ne) {
-    md_temp_scope_t temp = md_temp_begin();
-
-    md_cube_t cube_lumo = {0};
-    md_cube_t cube_homo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/ne_lumo.cube"), temp.arena));
-    ASSERT_TRUE(md_cube_file_load(&cube_homo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/ne_homo.cube"), temp.arena));
-
-    md_vlx_t* vlx = md_vlx_create(temp.arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/ne.out")));
-
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
-
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, temp.arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, temp.arena);
-
-    EXPECT_LT(max_delta_lumo, 1.0E-4);
-    EXPECT_LT(max_delta_homo, 1.0E-4);
-
-    md_temp_end(temp);
-}
-
-UTEST(gto, myjob) {
-    md_temp_scope_t temp = md_temp_begin();
-
-    md_cube_t cube_lumo = {0};
-    md_cube_t cube_homo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/myjob_lumo.cube"), temp.arena));
-    ASSERT_TRUE(md_cube_file_load(&cube_homo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/myjob_homo.cube"), temp.arena));
-
-    md_vlx_t* vlx = md_vlx_create(temp.arena);
-    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/myjob.out")));
-
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-    size_t homo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
-
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, VALUE_CUTOFF, &cube_lumo, temp.arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, VALUE_CUTOFF, &cube_homo, temp.arena);
-
-    EXPECT_LT(max_delta_lumo, 1.0E-4);
-    EXPECT_LT(max_delta_homo, 1.0E-4);
-
-    md_temp_end(temp);
-}
-#endif
