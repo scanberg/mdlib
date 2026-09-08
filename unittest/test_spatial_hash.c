@@ -1072,3 +1072,568 @@ UTEST_F(spatial_hash, npt_triclinic) {
         }
     }
 }
+
+// --- NEAREST ELEMENT QUERY ---
+
+#define NEAREST_MAX_ELEM 4096
+#define NEAREST_MAX_QRY  1024
+
+typedef struct {
+    float x[NEAREST_MAX_ELEM];
+    float y[NEAREST_MAX_ELEM];
+    float z[NEAREST_MAX_ELEM];
+    float r[NEAREST_MAX_ELEM];
+    size_t count;
+} nearest_elems_t;
+
+typedef struct {
+    float x[NEAREST_MAX_QRY];
+    float y[NEAREST_MAX_QRY];
+    float z[NEAREST_MAX_QRY];
+    size_t count;
+} nearest_points_t;
+
+// Brute force additively weighted nearest for an orthorhombic frame, with per axis periodicity
+static double nearest_ref_ortho(const nearest_elems_t* e, const float* radii, const double q[3], const double L[3], const int pbc[3], uint32_t* out_idx) {
+    double best = DBL_MAX;
+    uint32_t best_i = MD_SPATIAL_ACC_INVALID_IDX;
+    for (size_t i = 0; i < e->count; ++i) {
+        double d[3] = { (double)e->x[i] - q[0], (double)e->y[i] - q[1], (double)e->z[i] - q[2] };
+        for (int a = 0; a < 3; ++a) {
+            if (pbc[a] && L[a] > 0.0) d[a] = wrap_mic_ortho(d[a], L[a]);
+        }
+        const double dist = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - (radii ? (double)radii[i] : 0.0);
+        if (dist < best) {
+            best = dist;
+            best_i = (uint32_t)i;
+        }
+    }
+    if (out_idx) *out_idx = best_i;
+    return best;
+}
+
+// Brute force additively weighted nearest for a fully periodic triclinic frame
+static double nearest_ref_tri(const nearest_elems_t* e, const float* radii, const double q[3], const double I[3][3], const double G[3][3], uint32_t* out_idx) {
+    double sq[3];
+    cart_to_fract(sq, q, I);
+
+    double best = DBL_MAX;
+    uint32_t best_i = MD_SPATIAL_ACC_INVALID_IDX;
+    for (size_t i = 0; i < e->count; ++i) {
+        const double c[3] = { (double)e->x[i], (double)e->y[i], (double)e->z[i] };
+        double sc[3];
+        cart_to_fract(sc, c, I);
+        const double dist = sqrt(distance_ref_mic27(G, sq, sc)) - (radii ? (double)radii[i] : 0.0);
+        if (dist < best) {
+            best = dist;
+            best_i = (uint32_t)i;
+        }
+    }
+    if (out_idx) *out_idx = best_i;
+    return best;
+}
+
+static void nearest_gen_elems(nearest_elems_t* e, size_t count, double ext[3], bool with_radii, double r_min, double r_max) {
+    e->count = count;
+    for (size_t i = 0; i < count; ++i) {
+        e->x[i] = (float)rnd_rng(0, ext[0]);
+        e->y[i] = (float)rnd_rng(0, ext[1]);
+        e->z[i] = (float)rnd_rng(0, ext[2]);
+        e->r[i] = with_radii ? (float)rnd_rng(r_min, r_max) : 0.0f;
+    }
+}
+
+static void nearest_gen_points(nearest_points_t* p, size_t count, const double lo[3], const double hi[3]) {
+    p->count = count;
+    for (size_t i = 0; i < count; ++i) {
+        p->x[i] = (float)rnd_rng(lo[0], hi[0]);
+        p->y[i] = (float)rnd_rng(lo[1], hi[1]);
+        p->z[i] = (float)rnd_rng(lo[2], hi[2]);
+    }
+}
+
+UTEST(spatial_acc_nearest, ortho_periodic) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(31);
+
+    for (int with_radii = 0; with_radii < 2; ++with_radii) {
+        double ext[3] = { 60.0, 45.0, 30.0 };
+
+        nearest_elems_t e;
+        nearest_gen_elems(&e, 2000, ext, with_radii != 0, 0.5, 3.0);
+
+        nearest_points_t p;
+        const double lo[3] = { 0, 0, 0 };
+        nearest_gen_points(&p, 700, lo, ext);
+
+        md_unitcell_t cell = md_unitcell_from_extent(ext[0], ext[1], ext[2]);
+
+        md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+        md_spatial_acc_t acc = { .alloc = alloc };
+        md_spatial_acc_desc_t desc = {
+            .coords   = &elem_stream,
+            .radii    = with_radii ? e.r : NULL,
+            .cell_ext = 6.0,
+            .unitcell = &cell,
+        };
+        md_spatial_acc_init_desc(&acc, &desc);
+
+        md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+        uint32_t idx[NEAREST_MAX_QRY];
+        float    dist[NEAREST_MAX_QRY];
+        md_spatial_acc_query_nearest(&acc, &qry_stream, 1000.0, idx, dist);
+
+        const int pbc[3] = { 1, 1, 1 };
+        for (size_t i = 0; i < p.count; ++i) {
+            const double q[3] = { p.x[i], p.y[i], p.z[i] };
+            uint32_t ref_idx = 0;
+            const double ref = nearest_ref_ortho(&e, with_radii ? e.r : NULL, q, ext, pbc, &ref_idx);
+            EXPECT_NEAR(ref, (double)dist[i], 1.0e-3);
+            ASSERT_LT(idx[i], (uint32_t)e.count);
+        }
+
+        md_spatial_acc_free(&acc);
+    }
+}
+
+UTEST(spatial_acc_nearest, ortho_film_pbc_xy) {
+    // The geometry of a supported film: periodic in x and y, open in z
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(7);
+
+    double ext[3] = { 50.0, 50.0, 20.0 };
+
+    nearest_elems_t e;
+    nearest_gen_elems(&e, 1500, ext, true, 1.0, 4.0);
+
+    // Query well outside the slab along the open axis as well as inside it
+    nearest_points_t p;
+    const double lo[3] = { -10.0, -10.0, -25.0 };
+    const double hi[3] = {  60.0,  60.0,  45.0 };
+    nearest_gen_points(&p, 600, lo, hi);
+
+    md_unitcell_t cell = md_unitcell_from_extent(ext[0], ext[1], 0.0);
+    ASSERT_TRUE((md_unitcell_flags(&cell) & MD_UNITCELL_PBC_Z) == 0);
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = {
+        .coords   = &elem_stream,
+        .radii    = e.r,
+        .cell_ext = 5.0,
+        .unitcell = &cell,
+    };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 1000.0, idx, dist);
+
+    const int pbc[3] = { 1, 1, 0 };
+    for (size_t i = 0; i < p.count; ++i) {
+        const double q[3] = { p.x[i], p.y[i], p.z[i] };
+        const double ref = nearest_ref_ortho(&e, e.r, q, ext, pbc, NULL);
+        EXPECT_NEAR(ref, (double)dist[i], 1.0e-3);
+    }
+
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, no_unitcell) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(101);
+
+    double ext[3] = { 30.0, 30.0, 30.0 };
+
+    nearest_elems_t e;
+    nearest_gen_elems(&e, 800, ext, true, 0.5, 2.0);
+
+    nearest_points_t p;
+    const double lo[3] = { -40.0, -40.0, -40.0 };
+    const double hi[3] = {  70.0,  70.0,  70.0 };
+    nearest_gen_points(&p, 500, lo, hi);
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = {
+        .coords   = &elem_stream,
+        .radii    = e.r,
+        .cell_ext = 4.0,
+    };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 10000.0, idx, dist);
+
+    const int pbc[3] = { 0, 0, 0 };
+    for (size_t i = 0; i < p.count; ++i) {
+        const double q[3] = { p.x[i], p.y[i], p.z[i] };
+        const double ref = nearest_ref_ortho(&e, e.r, q, ext, pbc, NULL);
+        EXPECT_NEAR(ref, (double)dist[i], 1.0e-3);
+    }
+
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, triclinic_periodic) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(1337);
+
+    const double A[3][3] = {
+        { 40.0,  0.0,  0.0 },
+        {  8.0, 35.0,  0.0 },
+        {  5.0,  6.0, 30.0 },
+    };
+
+    nearest_elems_t e;
+    e.count = 1200;
+    for (size_t i = 0; i < e.count; ++i) {
+        const double s[3] = { rnd_rng(0, 1), rnd_rng(0, 1), rnd_rng(0, 1) };
+        double c[3];
+        fract_to_cart(c, s, A);
+        e.x[i] = (float)c[0];
+        e.y[i] = (float)c[1];
+        e.z[i] = (float)c[2];
+        e.r[i] = (float)rnd_rng(0.5, 2.5);
+    }
+
+    nearest_points_t p;
+    p.count = 500;
+    for (size_t i = 0; i < p.count; ++i) {
+        const double s[3] = { rnd_rng(0, 1), rnd_rng(0, 1), rnd_rng(0, 1) };
+        double c[3];
+        fract_to_cart(c, s, A);
+        p.x[i] = (float)c[0];
+        p.y[i] = (float)c[1];
+        p.z[i] = (float)c[2];
+    }
+
+    md_unitcell_t cell = md_unitcell_from_matrix_double(A);
+    ASSERT_TRUE((md_unitcell_flags(&cell) & MD_UNITCELL_TRICLINIC) != 0);
+
+    double I[3][3], G[3][3];
+    md_unitcell_I_extract_double(I, &cell);
+    // G = A^T A, expressed through the same [col][row] convention used by the helpers above
+    for (int a = 0; a < 3; ++a) {
+        for (int b = 0; b < 3; ++b) {
+            G[a][b] = A[a][0] * A[b][0] + A[a][1] * A[b][1] + A[a][2] * A[b][2];
+        }
+    }
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = {
+        .coords   = &elem_stream,
+        .radii    = e.r,
+        .cell_ext = 6.0,
+        .unitcell = &cell,
+    };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 1000.0, idx, dist);
+
+    for (size_t i = 0; i < p.count; ++i) {
+        const double q[3] = { p.x[i], p.y[i], p.z[i] };
+        const double ref = nearest_ref_tri(&e, e.r, q, I, G, NULL);
+        EXPECT_NEAR(ref, (double)dist[i], 2.0e-3);
+    }
+
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, max_dist_and_empty) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    // A single element at the origin, no unit cell
+    float ex[1] = { 0.0f };
+    float ey[1] = { 0.0f };
+    float ez[1] = { 0.0f };
+    float er[1] = { 2.0f };
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(ex, ey, ez, NULL, 1);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = { .coords = &elem_stream, .radii = er, .cell_ext = 4.0 };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    float qx[3] = { 5.0f, 20.0f,  0.0f };
+    float qy[3] = { 0.0f,  0.0f,  0.0f };
+    float qz[3] = { 0.0f,  0.0f,  0.0f };
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(qx, qy, qz, NULL, 3);
+    uint32_t idx[3];
+    float    dist[3];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 10.0, idx, dist);
+
+    // Inside the search radius: the additively weighted distance is the distance to the surface
+    EXPECT_NEAR(3.0, (double)dist[0], 1.0e-4);
+    EXPECT_EQ(0u, idx[0]);
+
+    // Outside it: reported as not found, at exactly the supplied maximum
+    EXPECT_NEAR(10.0, (double)dist[1], 1.0e-4);
+    EXPECT_EQ(MD_SPATIAL_ACC_INVALID_IDX, idx[1]);
+
+    // A point inside the element itself yields a negative distance
+    EXPECT_NEAR(-2.0, (double)dist[2], 1.0e-4);
+    EXPECT_EQ(0u, idx[2]);
+
+    md_spatial_acc_free(&acc);
+
+    // An empty structure reports nothing found for every point
+    md_coord_stream_t empty_stream = md_coord_stream_from_soa(ex, ey, ez, NULL, 0);
+    md_spatial_acc_t empty_acc = { .alloc = alloc };
+    md_spatial_acc_init(&empty_acc, &empty_stream, 4.0, NULL, 0);
+    md_spatial_acc_query_nearest(&empty_acc, &qry_stream, 7.0, idx, dist);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(MD_SPATIAL_ACC_INVALID_IDX, idx[i]);
+        EXPECT_NEAR(7.0, (double)dist[i], 1.0e-4);
+    }
+    md_spatial_acc_free(&empty_acc);
+}
+
+UTEST(spatial_acc_nearest, cylinder_analytic) {
+    // A cylinder built from overlapping beads on a common axis. Sampled in the plane of a bead the additively
+    // weighted distance is exactly the analytic distance to the cylinder surface, rho - R, which is the smallest
+    // case that still distinguishes a weighted distance field from an unweighted one.
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const double L[3] = { 60.0, 60.0, 40.0 };
+    const double axis[2] = { 30.0, 30.0 };
+    const double R = 5.0;
+    const double spacing = 2.0;
+
+    nearest_elems_t e;
+    e.count = 0;
+    for (double z = 0.0; z < L[2] - 0.5 * spacing; z += spacing) {
+        e.x[e.count] = (float)axis[0];
+        e.y[e.count] = (float)axis[1];
+        e.z[e.count] = (float)z;
+        e.r[e.count] = (float)R;
+        e.count += 1;
+    }
+
+    // Sample the plane z = 0, which holds a bead, out to a radius where the periodic images cannot interfere
+    nearest_points_t p;
+    p.count = 0;
+    double rho_expected[NEAREST_MAX_QRY];
+    for (int i = 0; i < 64; ++i) {
+        const double ang = 2.0 * 3.14159265358979323846 * (double)i / 64.0;
+        for (double rho = 6.0; rho <= 20.0; rho += 2.0) {
+            p.x[p.count] = (float)(axis[0] + rho * cos(ang));
+            p.y[p.count] = (float)(axis[1] + rho * sin(ang));
+            p.z[p.count] = 0.0f;
+            rho_expected[p.count] = rho;
+            p.count += 1;
+        }
+    }
+
+    md_unitcell_t cell = md_unitcell_from_extent(L[0], L[1], L[2]);
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = {
+        .coords   = &elem_stream,
+        .radii    = e.r,
+        .cell_ext = 5.0,
+        .unitcell = &cell,
+    };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 100.0, idx, dist);
+
+    for (size_t i = 0; i < p.count; ++i) {
+        EXPECT_NEAR(rho_expected[i] - R, (double)dist[i], 2.0e-4);
+    }
+
+    // The same field without radii is the distance to the axis rather than to the surface
+    md_spatial_acc_t acc_no_rad = { .alloc = alloc };
+    md_spatial_acc_init(&acc_no_rad, &elem_stream, 5.0, &cell, 0);
+    md_spatial_acc_query_nearest(&acc_no_rad, &qry_stream, 100.0, idx, dist);
+    for (size_t i = 0; i < p.count; ++i) {
+        EXPECT_NEAR(rho_expected[i], (double)dist[i], 2.0e-4);
+    }
+
+    md_spatial_acc_free(&acc_no_rad);
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, batch_invariance) {
+    // The traversal is shared within a batch, so the result must not depend on how the points are grouped
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(55);
+
+    double ext[3] = { 40.0, 40.0, 40.0 };
+
+    nearest_elems_t e;
+    nearest_gen_elems(&e, 600, ext, true, 0.5, 3.0);
+
+    nearest_points_t p;
+    const double lo[3] = { -5, -5, -5 };
+    const double hi[3] = { 45, 45, 45 };
+    nearest_gen_points(&p, 900, lo, hi);
+
+    md_unitcell_t cell = md_unitcell_from_extent(ext[0], ext[1], ext[2]);
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = { .coords = &elem_stream, .radii = e.r, .cell_ext = 5.0, .unitcell = &cell };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 1000.0, idx, dist);
+
+    for (size_t i = 0; i < p.count; ++i) {
+        md_coord_stream_t one = md_coord_stream_from_soa(p.x + i, p.y + i, p.z + i, NULL, 1);
+        uint32_t one_idx = 0;
+        float    one_dist = 0;
+        md_spatial_acc_query_nearest(&acc, &one, 1000.0, &one_idx, &one_dist);
+        EXPECT_EQ(idx[i], one_idx);
+        EXPECT_EQ(dist[i], one_dist);
+    }
+
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, block_outside_grid) {
+    // A compact block of query points sitting entirely outside the structure, on both sides of it. A batch shares
+    // one traversal keyed on its own cell box, and that box is outside the grid here - which is exactly the case
+    // where clipping the traversal to a window measured from the block can empty it and report nothing found.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    srand(4711);
+
+    double ext[3] = { 30.0, 30.0, 30.0 };
+
+    nearest_elems_t e;
+    nearest_gen_elems(&e, 500, ext, true, 0.5, 2.0);
+
+    // Three compact clusters: far on the negative side, far on the positive side, and inside
+    nearest_points_t p;
+    p.count = 0;
+    const double cluster[3][3] = {
+        { -60.0, -60.0, -60.0 },
+        {  80.0,  80.0,  80.0 },
+        {  10.0,  10.0,  10.0 },
+    };
+    for (int c = 0; c < 3; ++c) {
+        for (int i = 0; i < 300; ++i) {
+            p.x[p.count] = (float)(cluster[c][0] + rnd_rng(0, 5));
+            p.y[p.count] = (float)(cluster[c][1] + rnd_rng(0, 5));
+            p.z[p.count] = (float)(cluster[c][2] + rnd_rng(0, 5));
+            p.count += 1;
+        }
+    }
+
+    md_coord_stream_t elem_stream = md_coord_stream_from_soa(e.x, e.y, e.z, NULL, e.count);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_desc_t desc = { .coords = &elem_stream, .radii = e.r, .cell_ext = 4.0 };
+    md_spatial_acc_init_desc(&acc, &desc);
+
+    md_coord_stream_t qry_stream = md_coord_stream_from_soa(p.x, p.y, p.z, NULL, p.count);
+    uint32_t idx[NEAREST_MAX_QRY];
+    float    dist[NEAREST_MAX_QRY];
+    md_spatial_acc_query_nearest(&acc, &qry_stream, 1000.0, idx, dist);
+
+    const int pbc[3] = { 0, 0, 0 };
+    for (size_t i = 0; i < p.count; ++i) {
+        const double q[3] = { p.x[i], p.y[i], p.z[i] };
+        const double ref = nearest_ref_ortho(&e, e.r, q, ext, pbc, NULL);
+        EXPECT_NEAR(ref, (double)dist[i], 1.0e-3);
+        EXPECT_NE(MD_SPATIAL_ACC_INVALID_IDX, idx[i]);
+    }
+
+    md_spatial_acc_free(&acc);
+}
+
+UTEST(spatial_acc_nearest, accessible_surface_area) {
+    // Shrake-Rupley through the nearest query, against the analytic accessible surface area of two overlapping
+    // spheres: with a = R + probe and centre distance d <= 2a, the exposed area is 4*pi*a^2 + 2*pi*a*d.
+    //
+    // A sample point lies exactly on its own sphere, so its own distance is zero up to rounding. Exposure is
+    // therefore decided by which element the query returns, not by the sign of that distance. The second offset
+    // below places the pair at the coordinates of a 670 nm box, where a float carries around 1e-3 A of rounding at
+    // the sample point - enough to flip any sign test, and irrelevant to the index test.
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const double PI_D = 3.14159265358979323846;
+    const double R = 10.0;
+    const double D = 14.0;
+    const int    NP = 1024;
+
+    const double offsets[2] = { 30.0, 6700.0 };
+    const double probes[3]  = { 0.0, 1.4, 3.0 };
+
+    md_array(float) px = 0;
+    md_array(float) py = 0;
+    md_array(float) pz = 0;
+    md_array(uint32_t) idx = 0;
+    md_array_resize(px,  NP, alloc);
+    md_array_resize(py,  NP, alloc);
+    md_array_resize(pz,  NP, alloc);
+    md_array_resize(idx, NP, alloc);
+
+    for (int oi = 0; oi < 2; ++oi) {
+        const double O = offsets[oi];
+
+        for (int pi = 0; pi < 3; ++pi) {
+            const double a = R + probes[pi];
+
+            float ex[2] = { (float)O, (float)(O + D) };
+            float ey[2] = { (float)O, (float)O };
+            float ez[2] = { (float)O, (float)O };
+            float er[2] = { (float)a, (float)a };
+
+            md_coord_stream_t elem_stream = md_coord_stream_from_soa(ex, ey, ez, NULL, 2);
+            md_spatial_acc_t acc = { .alloc = alloc };
+            md_spatial_acc_desc_t desc = {
+                .coords   = &elem_stream,
+                .radii    = er,
+                .cell_ext = 8.0,
+            };
+            md_spatial_acc_init_desc(&acc, &desc);
+
+            double area = 0.0;
+            for (int i = 0; i < 2; ++i) {
+                const double golden = PI_D * (3.0 - sqrt(5.0));
+                for (int k = 0; k < NP; ++k) {
+                    const double cz  = 1.0 - 2.0 * ((double)k + 0.5) / (double)NP;
+                    const double rho = sqrt(MAX(0.0, 1.0 - cz * cz));
+                    const double th  = golden * (double)k;
+                    px[k] = (float)((double)ex[i] + a * rho * cos(th));
+                    py[k] = (float)((double)ey[i] + a * rho * sin(th));
+                    pz[k] = (float)((double)ez[i] + a * cz);
+                }
+
+                md_coord_stream_t qry_stream = md_coord_stream_from_soa(px, py, pz, NULL, NP);
+                md_spatial_acc_query_nearest(&acc, &qry_stream, 2.0 * a + 1.0, idx, NULL);
+
+                int exposed = 0;
+                for (int k = 0; k < NP; ++k) exposed += (idx[k] == (uint32_t)i);
+
+                area += 4.0 * PI_D * a * a * (double)exposed / (double)NP;
+            }
+
+            const double truth = 4.0 * PI_D * a * a + 2.0 * PI_D * a * D;
+            EXPECT_NEAR(1.0, area / truth, 0.01);
+            if (fabs(area / truth - 1.0) > 0.01) {
+                printf("offset %.0f, probe %.1f: expected %.2f, got %.2f\n", O, probes[pi], truth, area);
+            }
+
+            md_spatial_acc_free(&acc);
+        }
+    }
+
+    md_array_free(px,  alloc);
+    md_array_free(py,  alloc);
+    md_array_free(pz,  alloc);
+    md_array_free(idx, alloc);
+}

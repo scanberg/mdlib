@@ -33,8 +33,8 @@ typedef struct md_coord_stream_t {
 } md_coord_stream_t;
 
 static inline md_coord_stream_t md_coord_stream_from_soa(const float* x, const float* y, const float* z, const int* idx, size_t count) {
-    md_coord_stream_t stream = {0};
-    stream.layout = MD_COORD_STREAM_LAYOUT_SOA;
+    // The first member is the enum, so it carries the zero initializer. Writing 0 here instead is an error in C++.
+    md_coord_stream_t stream = { MD_COORD_STREAM_LAYOUT_SOA };
     stream.count = count;
     stream.idx = idx;
     stream.soa.x = x;
@@ -44,8 +44,7 @@ static inline md_coord_stream_t md_coord_stream_from_soa(const float* x, const f
 }
 
 static inline md_coord_stream_t md_coord_stream_from_aos(const float* base_xyz, size_t stride_xyz, const int* idx, size_t count) {
-    md_coord_stream_t stream = {0};
-    stream.layout = MD_COORD_STREAM_LAYOUT_AOS;
+    md_coord_stream_t stream = { MD_COORD_STREAM_LAYOUT_AOS };
     stream.count = count;
     stream.idx = idx;
     stream.aos.base = base_xyz;

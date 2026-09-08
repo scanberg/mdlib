@@ -14,6 +14,7 @@
 #define SPATIAL_ACC_BUFLEN 1024
 #define SPATIAL_ACC_MAX_NEIGHBOR_CELLS 5
 #define SPATIAL_ACC_MAX_CELLS_PER_DIM 1024
+#define SPATIAL_ACC_COARSE_DIV 8
 
 typedef md_128i ivec4_t;
 
@@ -128,6 +129,10 @@ void md_spatial_acc_free(md_spatial_acc_t* acc) {
         if (acc->elem_z)   md_array_free(acc->elem_z,   acc->alloc);
         if (acc->elem_idx) md_array_free(acc->elem_idx, acc->alloc);
         if (acc->cell_off) md_array_free(acc->cell_off, acc->alloc);
+        if (acc->elem_rad)       md_array_free(acc->elem_rad,       acc->alloc);
+        if (acc->cell_rad_max)   md_array_free(acc->cell_rad_max,   acc->alloc);
+        if (acc->coarse_count)   md_array_free(acc->coarse_count,   acc->alloc);
+        if (acc->coarse_rad_max) md_array_free(acc->coarse_rad_max, acc->alloc);
     }
     MEMSET(acc, 0, sizeof(md_spatial_acc_t));
 }
@@ -139,9 +144,16 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
 	md_array_shrink(acc->elem_z, 0);
 	md_array_shrink(acc->elem_idx, 0);
 	md_array_shrink(acc->cell_off, 0);
+	md_array_shrink(acc->elem_rad, 0);
+	md_array_shrink(acc->cell_rad_max, 0);
+	md_array_shrink(acc->coarse_count, 0);
+	md_array_shrink(acc->coarse_rad_max, 0);
 
     acc->num_cells = 0;
     acc->num_elems = 0;
+    acc->num_coarse_cells = 0;
+    acc->max_rad = 0.0f;
+	MEMSET(acc->coarse_dim, 0, sizeof(acc->coarse_dim));
 
     acc->G00 = acc->G11 = acc->G22 = 0.0f;
     acc->H01 = acc->H02 = acc->H12 = 0.0f;
@@ -153,7 +165,7 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
 	MEMSET(acc->origin, 0, sizeof(acc->origin));
 }
 
-void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
+static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, const float* in_radii, double in_cell_ext, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
     ASSERT(acc);
     ASSERT(coords);
 
@@ -202,8 +214,12 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords,
     if ((flags & MD_UNITCELL_PBC_ALL) != MD_UNITCELL_PBC_ALL) {
         ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
         // Unit cell either missing or not periodic along one or more axis
-        vec4_t aabb_min = {0}, aabb_max = {0};
-        for (size_t i = 0; i < coords->count; i++) {
+        // Seed from the first point, not from the origin. A system which sits far from the origin would otherwise
+        // get a grid spanning all the way back to it, and the cell count grows with that distance: two points at
+        // 6700 A with an 8 A cell extent produce 840 cells per axis instead of 2.
+        vec4_t aabb_min = md_coord_stream_load_vec4(coords, 0);
+        vec4_t aabb_max = aabb_min;
+        for (size_t i = 1; i < coords->count; i++) {
             vec4_t v = md_coord_stream_load_vec4(coords, i);
             aabb_min = vec4_min(aabb_min, v);
             aabb_max = vec4_max(aabb_max, v);
@@ -322,6 +338,11 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords,
     md_array_resize(acc->cell_off, num_cells + 1, acc->alloc);
     MEMSET(acc->cell_off, 0, (num_cells + 1) * sizeof(uint32_t));
 
+    if (in_radii) {
+        md_array_resize(acc->elem_rad, alloc_len, acc->alloc);
+        MEMSET(acc->elem_rad, 0, alloc_len * sizeof(float));
+    }
+
     const vec4_t  fcell_dim = vec4_set((float)cell_dim[0], (float)cell_dim[1], (float)cell_dim[2], 0);
     const ivec4_t icell_min = ivec4_set1(0);
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
@@ -388,6 +409,10 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords,
         acc->elem_y[dst] = scratch_s[i].y;
         acc->elem_z[dst] = scratch_s[i].z;
         acc->elem_idx[dst] = scratch_s[i].idx;
+        if (in_radii) {
+            // The radii follow the same indirection as the coordinates of the stream
+            acc->elem_rad[dst] = in_radii[coords->idx ? (size_t)coords->idx[i] : i];
+        }
     }
 
     acc->num_elems = coords->count;
@@ -435,7 +460,68 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords,
 
     acc->flags = flags;
 
+    // Largest element radius per cell and overall. These bound the additively weighted distance of anything within a
+    // cell, which is what keeps the pruning in the nearest queries exact.
+    acc->max_rad = 0.0f;
+    if (in_radii) {
+        md_array_resize(acc->cell_rad_max, num_cells, acc->alloc);
+        for (size_t ci = 0; ci < num_cells; ++ci) {
+            float r_max = 0.0f;
+            for (uint32_t i = acc->cell_off[ci]; i < acc->cell_off[ci + 1]; ++i) {
+                r_max = MAX(r_max, acc->elem_rad[i]);
+            }
+            acc->cell_rad_max[ci] = r_max;
+            acc->max_rad = MAX(acc->max_rad, r_max);
+        }
+    }
+
+    // Coarse tier. A coarse cell spans SPATIAL_ACC_COARSE_DIV fine cells along each axis wherever the fine grid is
+    // large enough for it. The mapping is proportional rather than a fixed stride, so the coarse grid partitions the
+    // period exactly and wraps consistently with the fine grid even when the two dimensions are not commensurate.
+    uint32_t coarse_dim[3];
+    for (int a = 0; a < 3; ++a) {
+        coarse_dim[a] = MAX(1u, cell_dim[a] / SPATIAL_ACC_COARSE_DIV);
+    }
+    const size_t num_coarse_cells = (size_t)coarse_dim[0] * coarse_dim[1] * coarse_dim[2];
+
+    md_array_resize(acc->coarse_count, num_coarse_cells, acc->alloc);
+    MEMSET(acc->coarse_count, 0, num_coarse_cells * sizeof(uint32_t));
+    if (in_radii) {
+        md_array_resize(acc->coarse_rad_max, num_coarse_cells, acc->alloc);
+        MEMSET(acc->coarse_rad_max, 0, num_coarse_cells * sizeof(float));
+    }
+
+    for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
+        const uint32_t kz = (uint32_t)(((uint64_t)cz * coarse_dim[2]) / cell_dim[2]);
+        for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
+            const uint32_t ky = (uint32_t)(((uint64_t)cy * coarse_dim[1]) / cell_dim[1]);
+            for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
+                const uint32_t kx = (uint32_t)(((uint64_t)cx * coarse_dim[0]) / cell_dim[0]);
+
+                const size_t ci  = (size_t)cz * c01 + (size_t)cy * c0 + (size_t)cx;
+                const size_t kci = ((size_t)kz * coarse_dim[1] + (size_t)ky) * coarse_dim[0] + (size_t)kx;
+
+                acc->coarse_count[kci] += acc->cell_off[ci + 1] - acc->cell_off[ci];
+                if (in_radii) {
+                    acc->coarse_rad_max[kci] = MAX(acc->coarse_rad_max[kci], acc->cell_rad_max[ci]);
+                }
+            }
+        }
+    }
+
+    MEMCPY(acc->coarse_dim, coarse_dim, sizeof(acc->coarse_dim));
+    acc->num_coarse_cells = num_coarse_cells;
+
     md_temp_end(temp_scope);
+}
+
+void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double cell_ext, const md_unitcell_t* unitcell, md_spatial_acc_flags_t flags) {
+    spatial_acc_init_internal(acc, coords, NULL, cell_ext, unitcell, flags);
+}
+
+void md_spatial_acc_init_desc(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc) {
+    ASSERT(desc);
+    spatial_acc_init_internal(acc, desc->coords, desc->radii, desc->cell_ext, desc->unitcell, desc->flags);
 }
 
 // Generate forward neighbor offsets for a 3D grid cell
@@ -2590,3 +2676,375 @@ bool md_spatial_acc_for_each_external_point_in_neighboring_cells(const md_spatia
     return md_spatial_acc_for_each_external_point_within_cutoff(acc, ext_x, ext_y, ext_z, ext_idx, ext_count, min_ext, callback, user_param);
 }
 #endif
+
+// --- NEAREST ELEMENT QUERY ---
+
+// Number of query points processed together. The batch shares one traversal of the cell neighborhood, so a compact
+// block of points amortizes it. Multiple of 8 so the tail can be padded rather than special cased.
+#define SPATIAL_ACC_QUERY_BLOCK 256
+
+// Fine cell range [beg, end) covered by coarse cell k along one axis.
+// Exact inverse of the mapping k = floor(fine * coarse_dim / fine_dim) used when building the coarse tier.
+static inline void coarse_cell_fine_range(uint32_t out_range[2], uint32_t k, uint32_t fine_dim, uint32_t coarse_dim) {
+    out_range[0] = (uint32_t)(((uint64_t)k       * fine_dim + coarse_dim - 1) / coarse_dim);
+    out_range[1] = (uint32_t)(((uint64_t)(k + 1) * fine_dim + coarse_dim - 1) / coarse_dim);
+}
+
+static inline int iabs(int a) {
+    return a < 0 ? -a : a;
+}
+
+// Floor division. The traversal walks unwrapped cell indices, which reach outside the grid before being wrapped in.
+static inline int floor_div(int a, int b) {
+    const int q = a / b;
+    const int r = a % b;
+    return q - (int)((r != 0) && ((r < 0) != (b < 0)));
+}
+
+typedef struct {
+    // Query points in fractional coordinates, wrapped into [0,1) along periodic axes
+    float px[SPATIAL_ACC_QUERY_BLOCK];
+    float py[SPATIAL_ACC_QUERY_BLOCK];
+    float pz[SPATIAL_ACC_QUERY_BLOCK];
+
+    float    best_d[SPATIAL_ACC_QUERY_BLOCK];
+    uint32_t best_i[SPATIAL_ACC_QUERY_BLOCK];
+
+    size_t count;         // Number of valid points
+    size_t count_padded;  // Rounded up to a multiple of 8
+} query_block_t;
+
+typedef struct {
+    const md_spatial_acc_t* acc;
+    int    pbc[3];
+    int    fdim[3];
+    int    kdim[3];
+    double h[3];        // Perpendicular thickness of one fine cell
+    double H[3];        // Guaranteed minimum perpendicular thickness of one coarse cell
+    int    bmin[3];     // Fine cell box of the block, unwrapped
+    int    bmax[3];
+    int    cbmin[3];    // Coarse cell box of the block, unwrapped
+    int    cbmax[3];
+    float  max_rad;
+    bool   tri;
+} query_ctx_t;
+
+// Test every element of a single cell against every point of the block.
+// shift is the periodic image offset of the cell in fractional units, applied to the elements.
+static void query_scan_cell(query_block_t* blk, const md_spatial_acc_t* acc, size_t cell_idx, const float shift[3], bool tri) {
+    const uint32_t beg = acc->cell_off[cell_idx];
+    const uint32_t end = acc->cell_off[cell_idx + 1];
+
+    const md_256 G00 = md_mm256_set1_ps(acc->G00);
+    const md_256 G11 = md_mm256_set1_ps(acc->G11);
+    const md_256 G22 = md_mm256_set1_ps(acc->G22);
+    const md_256 H01 = md_mm256_set1_ps(acc->H01);
+    const md_256 H02 = md_mm256_set1_ps(acc->H02);
+    const md_256 H12 = md_mm256_set1_ps(acc->H12);
+
+    for (uint32_t j = beg; j < end; ++j) {
+        const md_256  e_x = md_mm256_set1_ps(acc->elem_x[j] + shift[0]);
+        const md_256  e_y = md_mm256_set1_ps(acc->elem_y[j] + shift[1]);
+        const md_256  e_z = md_mm256_set1_ps(acc->elem_z[j] + shift[2]);
+        const md_256  e_r = md_mm256_set1_ps(acc->elem_rad ? acc->elem_rad[j] : 0.0f);
+        const md_256i e_i = md_mm256_set1_epi32((int)acc->elem_idx[j]);
+
+        for (size_t i = 0; i < blk->count_padded; i += 8) {
+            const md_256 dx = md_mm256_sub_ps(md_mm256_loadu_ps(blk->px + i), e_x);
+            const md_256 dy = md_mm256_sub_ps(md_mm256_loadu_ps(blk->py + i), e_y);
+            const md_256 dz = md_mm256_sub_ps(md_mm256_loadu_ps(blk->pz + i), e_z);
+
+            const md_256 d2 = tri ? distance_squared_tri_256(dx, dy, dz, G00, G11, G22, H01, H02, H12)
+                                  : distance_squared_ort_256(dx, dy, dz, G00, G11, G22);
+
+            // This element improves on the current best exactly when sqrt(d2) - r < best, i.e. when sqrt(d2) is
+            // below best + r. Testing that squared keeps the square root off the path taken by the elements which
+            // do not improve anything, which is nearly all of them.
+            const md_256 bd = md_mm256_loadu_ps(blk->best_d + i);
+            const md_256 t  = md_mm256_add_ps(bd, e_r);
+            const md_256 mask = md_mm256_and_ps(md_mm256_cmplt_ps(d2, md_mm256_mul_ps(t, t)),
+                                                md_mm256_cmpgt_ps(t, md_mm256_setzero_ps()));
+            if (!md_mm256_movemask_ps(mask)) continue;
+
+            // Additively weighted distance: the signed distance to the surface of the element
+            const md_256 d = md_mm256_sub_ps(md_mm256_sqrt_ps(d2), e_r);
+
+            const md_256i bi = md_mm256_loadu_si256((const md_256i*)(blk->best_i + i));
+            md_mm256_storeu_ps(blk->best_d + i, md_mm256_blendv_ps(bd, d, mask));
+            md_mm256_storeu_epi32(blk->best_i + i, md_mm256_castps_si256(
+                md_mm256_blendv_ps(md_mm256_castsi256_ps(bi), md_mm256_castsi256_ps(e_i), mask)));
+        }
+    }
+}
+
+// Lower bound on the distance from the block to anything inside the cell at the supplied unwrapped index.
+// Only whole cell layers strictly between the block box and the cell are counted, and each layer contributes its
+// perpendicular thickness. For an orthorhombic frame the per axis gaps are mutually orthogonal so they combine
+// pythagorean; for a triclinic frame they do not, and the largest single gap is the bound that stays sound.
+static inline double query_cell_lower_bound(const int n[3], const int lo[3], const int hi[3], const double ext[3], bool tri) {
+    double gap[3];
+    for (int a = 0; a < 3; ++a) {
+        int d = 0;
+        if (n[a] > hi[a])      d = n[a] - hi[a];
+        else if (n[a] < lo[a]) d = lo[a] - n[a];
+        gap[a] = (double)MAX(0, d - 1) * ext[a];
+    }
+    if (tri) {
+        return MAX(gap[0], MAX(gap[1], gap[2]));
+    }
+    return sqrt(gap[0] * gap[0] + gap[1] * gap[1] + gap[2] * gap[2]);
+}
+
+// Visit one fine cell at the supplied unwrapped index, given the periodic image shift it belongs to.
+static void query_visit_fine_cell(query_block_t* blk, const query_ctx_t* ctx, int fx, int fy, int fz, const int sh[3], float best_max) {
+    const md_spatial_acc_t* acc = ctx->acc;
+    const int f[3] = { fx, fy, fz };
+
+    const uint32_t wx = (uint32_t)(fx - sh[0] * ctx->fdim[0]);
+    const uint32_t wy = (uint32_t)(fy - sh[1] * ctx->fdim[1]);
+    const uint32_t wz = (uint32_t)(fz - sh[2] * ctx->fdim[2]);
+    const size_t   ci = ((size_t)wz * (size_t)ctx->fdim[1] + (size_t)wy) * (size_t)ctx->fdim[0] + (size_t)wx;
+
+    if (acc->cell_off[ci] == acc->cell_off[ci + 1]) return;
+
+    const double flb  = query_cell_lower_bound(f, ctx->bmin, ctx->bmax, ctx->h, ctx->tri);
+    const double crad = acc->cell_rad_max ? (double)acc->cell_rad_max[ci] : 0.0;
+    if (flb - crad > (double)best_max) return;
+
+    const float shift[3] = { (float)sh[0], (float)sh[1], (float)sh[2] };
+    query_scan_cell(blk, acc, ci, shift, ctx->tri);
+}
+
+// Visit one coarse cell: prune it as a whole, then descend into the fine cells it covers which are still in range.
+static void query_visit_coarse_cell(query_block_t* blk, const query_ctx_t* ctx, int kx, int ky, int kz, float best_max) {
+    const md_spatial_acc_t* acc = ctx->acc;
+    const int n[3] = { kx, ky, kz };
+
+    int w[3], sh[3];
+    for (int a = 0; a < 3; ++a) {
+        if (ctx->pbc[a]) {
+            sh[a] = floor_div(n[a], ctx->kdim[a]);
+            w[a]  = n[a] - sh[a] * ctx->kdim[a];
+        } else {
+            if (n[a] < 0 || n[a] >= ctx->kdim[a]) return;
+            sh[a] = 0;
+            w[a]  = n[a];
+        }
+    }
+
+    const size_t kci = ((size_t)w[2] * (size_t)ctx->kdim[1] + (size_t)w[1]) * (size_t)ctx->kdim[0] + (size_t)w[0];
+    if (acc->coarse_count[kci] == 0) return;
+
+    const double lb   = query_cell_lower_bound(n, ctx->cbmin, ctx->cbmax, ctx->H, ctx->tri);
+    const double crad = acc->coarse_rad_max ? (double)acc->coarse_rad_max[kci] : 0.0;
+    if (lb - crad > (double)best_max) return;
+
+    // Fine cell range covered by this coarse cell, in the same unwrapped index space, clipped to the window which
+    // can still improve on the current best. A cell outside that window is separated from the block by at least
+    // win, so it cannot win.
+    //
+    // The clip is skipped rather than saturated when the window is not a usable integer. Saturating it at the grid
+    // dimension looks harmless and is not: a block sitting outside the grid has a cell box outside it too, so
+    // `bmax + nwin + 1` can land below the first cell of the coarse range and empty it at every shell, and the
+    // query then reports nothing found no matter how far it searches.
+    const double win = (double)best_max + (double)ctx->max_rad;
+    int flo[3], fhi[3];
+    for (int a = 0; a < 3; ++a) {
+        uint32_t rng[2];
+        coarse_cell_fine_range(rng, (uint32_t)w[a], (uint32_t)ctx->fdim[a], (uint32_t)ctx->kdim[a]);
+        flo[a] = (int)rng[0] + sh[a] * ctx->fdim[a];
+        fhi[a] = (int)rng[1] + sh[a] * ctx->fdim[a];
+
+        if (ctx->h[a] > 0.0) {
+            const double c = ceil(win / ctx->h[a]) + 1.0;
+            if (c >= 0.0 && c < 1.0e9) {
+                const int nwin = (int)c;
+                flo[a] = MAX(flo[a], ctx->bmin[a] - nwin);
+                fhi[a] = MIN(fhi[a], ctx->bmax[a] + nwin + 1);
+            }
+        }
+        if (flo[a] >= fhi[a]) return;
+    }
+
+    for (int fz = flo[2]; fz < fhi[2]; ++fz) {
+        for (int fy = flo[1]; fy < fhi[1]; ++fy) {
+            for (int fx = flo[0]; fx < fhi[0]; ++fx) {
+                query_visit_fine_cell(blk, ctx, fx, fy, fz, sh, best_max);
+            }
+        }
+    }
+}
+
+void md_spatial_acc_query_nearest(const md_spatial_acc_t* acc, const md_coord_stream_t* points, double max_dist, uint32_t* out_idx, float* out_dist) {
+    ASSERT(acc);
+    ASSERT(points);
+
+    if (points->count == 0) return;
+
+    const float d_max = (float)max_dist;
+
+    if (acc->num_elems == 0 || acc->num_cells == 0 || acc->num_coarse_cells == 0) {
+        for (size_t i = 0; i < points->count; ++i) {
+            if (out_idx)  out_idx[i]  = MD_SPATIAL_ACC_INVALID_IDX;
+            if (out_dist) out_dist[i] = d_max;
+        }
+        return;
+    }
+
+    query_ctx_t ctx = {0};
+    ctx.acc     = acc;
+    ctx.tri     = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
+    ctx.max_rad = acc->max_rad;
+
+    double H_min = DBL_MAX;
+    for (int a = 0; a < 3; ++a) {
+        ctx.pbc[a]  = (acc->flags & (MD_UNITCELL_PBC_X << a)) != 0;
+        ctx.fdim[a] = (int)acc->cell_dim[a];
+        ctx.kdim[a] = (int)acc->coarse_dim[a];
+        ctx.h[a]    = md_spatial_acc_cell_extent(acc, a);
+        ctx.H[a]    = ctx.h[a] * (double)(ctx.fdim[a] / ctx.kdim[a]);
+        if (ctx.H[a] > 0.0) H_min = MIN(H_min, ctx.H[a]);
+    }
+    // A degenerate frame yields no guaranteed radius, which only costs the early termination, never correctness.
+    if (H_min == DBL_MAX) H_min = 0.0;
+
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    const vec4_t fract_mask = vec4_set(ctx.pbc[0] ? val : 0, ctx.pbc[1] ? val : 0, ctx.pbc[2] ? val : 0, 0);
+
+    query_block_t blk;
+
+    for (size_t base = 0; base < points->count; base += SPATIAL_ACC_QUERY_BLOCK) {
+        const size_t n = MIN((size_t)SPATIAL_ACC_QUERY_BLOCK, points->count - base);
+        blk.count = n;
+        blk.count_padded = ALIGN_TO(n, 8);
+
+        double fmin[3] = { DBL_MAX, DBL_MAX, DBL_MAX };
+        double fmax[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+
+        for (size_t i = 0; i < n; ++i) {
+            vec4_t r = md_coord_stream_load_vec4(points, base + i);
+            vec4_t f = vec4_cart_to_fract(r, acc);
+            f = vec4_blend(f, vec4_fract(f), fract_mask);
+
+            blk.px[i] = f.x;
+            blk.py[i] = f.y;
+            blk.pz[i] = f.z;
+            blk.best_d[i] = d_max;
+            blk.best_i[i] = MD_SPATIAL_ACC_INVALID_IDX;
+
+            fmin[0] = MIN(fmin[0], (double)f.x);
+            fmin[1] = MIN(fmin[1], (double)f.y);
+            fmin[2] = MIN(fmin[2], (double)f.z);
+            fmax[0] = MAX(fmax[0], (double)f.x);
+            fmax[1] = MAX(fmax[1], (double)f.y);
+            fmax[2] = MAX(fmax[2], (double)f.z);
+        }
+
+        // Pad the tail lanes with a copy of the first point so the vectorized inner loop stays in bounds
+        for (size_t i = n; i < blk.count_padded; ++i) {
+            blk.px[i] = blk.px[0];
+            blk.py[i] = blk.py[0];
+            blk.pz[i] = blk.pz[0];
+            blk.best_d[i] = d_max;
+            blk.best_i[i] = MD_SPATIAL_ACC_INVALID_IDX;
+        }
+
+        int kmax = 0;
+        for (int a = 0; a < 3; ++a) {
+            ctx.bmin[a] = (int)floor(fmin[a] * (double)ctx.fdim[a]);
+            ctx.bmax[a] = (int)floor(fmax[a] * (double)ctx.fdim[a]);
+            if (ctx.pbc[a]) {
+                // The fractional coordinates are wrapped, so the box is inside the grid regardless of rounding
+                ctx.bmin[a] = CLAMP(ctx.bmin[a], 0, ctx.fdim[a] - 1);
+                ctx.bmax[a] = CLAMP(ctx.bmax[a], 0, ctx.fdim[a] - 1);
+            }
+            ctx.cbmin[a] = (int)floor((double)ctx.bmin[a] * (double)ctx.kdim[a] / (double)ctx.fdim[a]);
+            ctx.cbmax[a] = (int)floor((double)ctx.bmax[a] * (double)ctx.kdim[a] / (double)ctx.fdim[a]);
+
+            // Shells beyond this reach nothing new: one full period for a periodic axis, and for an open axis the
+            // span needed to reach either end of the grid from the block, which may sit outside it.
+            int lim;
+            if (ctx.pbc[a]) {
+                lim = ctx.kdim[a];
+            } else {
+                const int e = ctx.kdim[a] - 1;
+                lim = MAX(MAX(iabs(ctx.cbmin[a]), iabs(ctx.cbmax[a])), MAX(iabs(ctx.cbmin[a] - e), iabs(ctx.cbmax[a] - e)));
+            }
+            kmax = MAX(kmax, lim);
+        }
+
+        {
+            float seed_max = d_max;
+            for (int fz = ctx.bmin[2] - 1; fz <= ctx.bmax[2] + 1; ++fz) {
+                for (int fy = ctx.bmin[1] - 1; fy <= ctx.bmax[1] + 1; ++fy) {
+                    for (int fx = ctx.bmin[0] - 1; fx <= ctx.bmax[0] + 1; ++fx) {
+                        int n_arr[3] = { fx, fy, fz };
+                        int sh[3];
+                        bool ok = true;
+                        for (int a = 0; a < 3; ++a) {
+                            if (ctx.pbc[a]) {
+                                sh[a] = floor_div(n_arr[a], ctx.fdim[a]);
+                            } else if (n_arr[a] < 0 || n_arr[a] >= ctx.fdim[a]) {
+                                ok = false;
+                                break;
+                            } else {
+                                sh[a] = 0;
+                            }
+                        }
+                        if (ok) query_visit_fine_cell(&blk, &ctx, fx, fy, fz, sh, seed_max);
+                    }
+                }
+            }
+        }
+
+        for (int kc = 0; kc <= kmax; ++kc) {
+            const int lo[3] = { ctx.cbmin[0] - kc, ctx.cbmin[1] - kc, ctx.cbmin[2] - kc };
+            const int hi[3] = { ctx.cbmax[0] + kc, ctx.cbmax[1] + kc, ctx.cbmax[2] + kc };
+
+            float best_max = -FLT_MAX;
+            for (size_t i = 0; i < n; ++i) best_max = MAX(best_max, blk.best_d[i]);
+
+            // Walk only the shell, and only the part of it which can hold cells. Clamping the iteration on an open
+            // axis is what keeps a block far outside the structure cheap: without it every shell sweeps its whole
+            // surface through empty index space, and the walk out to a distant structure costs O(shells^3) visits
+            // which each do nothing.
+            int itlo[3], ithi[3];
+            for (int a = 0; a < 3; ++a) {
+                itlo[a] = ctx.pbc[a] ? lo[a] : MAX(lo[a], 0);
+                ithi[a] = ctx.pbc[a] ? hi[a] : MIN(hi[a], ctx.kdim[a] - 1);
+            }
+
+            for (int kz = itlo[2]; kz <= ithi[2]; ++kz) {
+                const bool z_bnd = (kz == lo[2] || kz == hi[2]);
+                for (int ky = itlo[1]; ky <= ithi[1]; ++ky) {
+                    const bool y_bnd = (ky == lo[1] || ky == hi[1]);
+                    if (kc == 0 || z_bnd || y_bnd) {
+                        for (int kx = itlo[0]; kx <= ithi[0]; ++kx) {
+                            query_visit_coarse_cell(&blk, &ctx, kx, ky, kz, best_max);
+                        }
+                    } else {
+                        // Off the y and z faces the shell is just the two x faces
+                        if (lo[0] >= itlo[0] && lo[0] <= ithi[0]) {
+                            query_visit_coarse_cell(&blk, &ctx, lo[0], ky, kz, best_max);
+                        }
+                        if (hi[0] != lo[0] && hi[0] >= itlo[0] && hi[0] <= ithi[0]) {
+                            query_visit_coarse_cell(&blk, &ctx, hi[0], ky, kz, best_max);
+                        }
+                    }
+                }
+            }
+
+            // Everything within kc * H_min of the block has now been visited, so an element which has not been
+            // visited lies at least that far away and its weighted distance is at least kc * H_min - max_rad.
+            best_max = -FLT_MAX;
+            for (size_t i = 0; i < n; ++i) best_max = MAX(best_max, blk.best_d[i]);
+            if ((double)kc * H_min >= (double)best_max + (double)acc->max_rad) break;
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            if (out_idx)  out_idx[base + i]  = blk.best_i[i];
+            if (out_dist) out_dist[base + i] = blk.best_d[i];
+        }
+    }
+}
