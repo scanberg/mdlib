@@ -264,12 +264,13 @@ typedef struct vlx_t {
 // for them, and a unit only ever constructed in one place is better constructed there than named
 // globally - but they are needed by the readers now that a reader publishes what it reads, so they
 // sit here rather than inside one function.
-static inline md_unit_t vlx_unit_hartree(void)    { return md_unit_hartree(); }
-static inline md_unit_t vlx_unit_e_bohr(void)     { return md_unit_elementary_charge_bohr(); }
-static inline md_unit_t vlx_unit_angstrom(void)   { return md_unit_angstrom(); }
-static inline md_unit_t vlx_unit_wavenumber(void) { return md_unit_pow(md_unit_scl(md_unit_meter(), 1.0e-2), -1); }              // cm^-1
-static inline md_unit_t vlx_unit_km_per_mol(void) { return md_unit_div(md_unit_scl(md_unit_meter(), 1.0e3), md_unit_mole()); }
-static inline md_unit_t vlx_unit_amu(void)        { return md_unit_scl(md_unit_kilogram(), 1.66053906660e-27); }
+static inline md_unit_t vlx_unit_hartree(void)			{ return md_unit_hartree(); }
+static inline md_unit_t vlx_unit_e_bohr(void)			{ return md_unit_elementary_charge_bohr(); }
+static inline md_unit_t vlx_unit_bohr_magneton(void)	{ return md_unit_scl(md_unit_mul(md_unit_ampere(), md_unit_pow(md_unit_meter(), 2)), 1.85480201315e-23); }
+static inline md_unit_t vlx_unit_angstrom(void)			{ return md_unit_angstrom(); }
+static inline md_unit_t vlx_unit_wavenumber(void)		{ return md_unit_pow(md_unit_scl(md_unit_meter(), 1.0e-2), -1); }              // cm^-1
+static inline md_unit_t vlx_unit_km_per_mol(void)		{ return md_unit_div(md_unit_scl(md_unit_meter(), 1.0e3), md_unit_mole()); }
+static inline md_unit_t vlx_unit_amu(void)				{ return md_unit_scl(md_unit_kilogram(), 1.66053906660e-27); }
 
 // The two calculation-kind enums as TEXT, for the attribute table.
 //
@@ -4949,6 +4950,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 
 	const md_unit_t hartree  = vlx_unit_hartree();
 	const md_unit_t e_bohr   = vlx_unit_e_bohr();
+	const md_unit_t bohr_magneton = vlx_unit_bohr_magneton();
 
 	// A label is only carried where the leaf cannot spell it: a consumer prettifies the last path
 	// segment when there is none, so "gradient_norm" needs no help and "ir_intensity" does.
@@ -5279,7 +5281,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 				vlx_publish_origin(sys, STR_LIT("dipole/electric_transition/origin"), origin);
 			}
 			if (magnetic) {
-				vlx_publish_vec3_series(sys, STR_LIT("dipole/magnetic_transition/vector"), STR_LIT("Magnetic Transition"), md_unit_none(), magnetic, num_states);
+				vlx_publish_vec3_series(sys, STR_LIT("dipole/magnetic_transition/vector"), STR_LIT("Magnetic Transition"), bohr_magneton, magnetic, num_states);
 				vlx_publish_origin(sys, STR_LIT("dipole/magnetic_transition/origin"), origin);
 			}
 			if (velocity) {

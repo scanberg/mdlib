@@ -479,8 +479,8 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     // large enough for it. The mapping is proportional rather than a fixed stride, so the coarse grid partitions the
     // period exactly and wraps consistently with the fine grid even when the two dimensions are not commensurate.
     uint32_t coarse_dim[3];
-    for (int a = 0; a < 3; ++a) {
-        coarse_dim[a] = MAX(1u, cell_dim[a] / SPATIAL_ACC_COARSE_DIV);
+    for (int i = 0; i < 3; ++i) {
+        coarse_dim[i] = MAX(1u, cell_dim[i] / SPATIAL_ACC_COARSE_DIV);
     }
     const size_t num_coarse_cells = (size_t)coarse_dim[0] * coarse_dim[1] * coarse_dim[2];
 

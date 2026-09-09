@@ -103,6 +103,8 @@ bool md_unit_parse(md_unit_t* unit, str_t str);
 
 md_unit_t md_unit_none(void);   // No unit (dimensionless), equivalent to (md_unit_t){0}
 
+bool md_unit_is_atomic(md_unit_t unit);  // True if the unit is one of the atomic units (Ha, e a0, a0, etc.)
+
 // Base units
 
 // Length units

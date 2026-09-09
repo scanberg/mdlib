@@ -38,15 +38,14 @@ static const si_prefix_t si_prefixes[] = {
     {1e24,  S(u8"Y"), false},
 };
 
-// Relative comparison, the scale factors are the result of floating point arithmetic
-// and will not always land exactly on the tabulated values.
-// The comparison has to remain relative over the full range, the scale factors span
-// many orders of magnitude and 1e-30 is not the same thing as 1e-24.
 static inline bool value_equal(double a, double b) {
     if (a == b) return true;
-    const double d = fabs(a - b);
-    const double scale = MAX(fabs(a), fabs(b));
-    return d <= 16.0 * DBL_EPSILON * scale;
+
+    if (!(a > 0.0) || !(b > 0.0))
+        return false;
+
+    const double r = a > b ? a / b : b / a;
+    return r <= 1.0 + 16.0 * DBL_EPSILON;
 }
 
 static str_t find_prefix_str_from_value(double value) {
@@ -723,6 +722,17 @@ bool md_unit_parse(md_unit_t* unit, str_t str) {
 
 md_unit_t md_unit_none(void) {
     return (md_unit_t)UNIT_NONE;
+}
+
+bool md_unit_is_atomic(md_unit_t unit) {
+    // The atomic units currently modelled: length (bohr radius), energy (hartree) and charge
+    // (elementary charge), plus the derived atomic unit of dipole moment (e a0). md_unit_equal
+    // checks both dimensions and scale, so this rejects anything merely convertible (e.g. eV,
+    // which shares hartree's dimensions but not its scale).
+    return md_unit_equal(unit, md_unit_bohr_radius())
+        || md_unit_equal(unit, md_unit_hartree())
+        || md_unit_equal(unit, md_unit_elementary_charge())
+        || md_unit_equal(unit, md_unit_elementary_charge_bohr());
 }
 
 md_unit_t md_unit_meter(void) {
