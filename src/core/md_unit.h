@@ -147,10 +147,11 @@ md_unit_t md_unit_bar(void);
 md_unit_t md_unit_coulomb(void);
 md_unit_t md_unit_elementary_charge(void);       // e
 
-// Dipole moment (charge * length). Both are scales of C m, so md_unit_conversion_factor
-// converts freely between them.
+// Dipole moment units
 md_unit_t md_unit_debye(void);                   // D
 md_unit_t md_unit_elementary_charge_bohr(void);  // e a0, the atomic unit of dipole moment
+md_unit_t md_unit_bohr_magneton(void);           // μB, the atomic unit of magnetic dipole moment
+md_unit_t md_unit_bohr_velocity(void);           // a0 / t0, the atomic unit of velocity
 
 #ifdef __cplusplus
 }

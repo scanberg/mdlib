@@ -266,7 +266,8 @@ typedef struct vlx_t {
 // sit here rather than inside one function.
 static inline md_unit_t vlx_unit_hartree(void)			{ return md_unit_hartree(); }
 static inline md_unit_t vlx_unit_e_bohr(void)			{ return md_unit_elementary_charge_bohr(); }
-static inline md_unit_t vlx_unit_bohr_magneton(void)	{ return md_unit_scl(md_unit_mul(md_unit_ampere(), md_unit_pow(md_unit_meter(), 2)), 1.85480201315e-23); }
+static inline md_unit_t vlx_unit_bohr_magneton(void)	{ return md_unit_bohr_magneton(); }
+static inline md_unit_t vlx_unit_bohr_velocity(void)	{ return md_unit_bohr_velocity(); }
 static inline md_unit_t vlx_unit_angstrom(void)			{ return md_unit_angstrom(); }
 static inline md_unit_t vlx_unit_wavenumber(void)		{ return md_unit_pow(md_unit_scl(md_unit_meter(), 1.0e-2), -1); }              // cm^-1
 static inline md_unit_t vlx_unit_km_per_mol(void)		{ return md_unit_div(md_unit_scl(md_unit_meter(), 1.0e3), md_unit_mole()); }
@@ -962,7 +963,7 @@ static size_t vlx_pgto_count(const vlx_t* vlx) {
 
 	size_t count = 0;
 
-	basis_func_t basis_funcs[128];
+	basis_func_t basis_funcs[256];
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int angl = 0; angl <= max_angl; angl++) {
@@ -4934,9 +4935,6 @@ static size_t vlx_scf_difference_density_provider(void* dst, size_t cap, const m
 	return vlx_scf_density_combine(dst, cap, attr, user_data, -1.0);
 }
 
-
-
-
 void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	ASSERT(sys);
 
@@ -4951,6 +4949,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	const md_unit_t hartree  = vlx_unit_hartree();
 	const md_unit_t e_bohr   = vlx_unit_e_bohr();
 	const md_unit_t bohr_magneton = vlx_unit_bohr_magneton();
+	const md_unit_t bohr_velocity = vlx_unit_bohr_velocity();
 
 	// A label is only carried where the leaf cannot spell it: a consumer prettifies the last path
 	// segment when there is none, so "gradient_norm" needs no help and "ir_intensity" does.
@@ -5285,7 +5284,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 				vlx_publish_origin(sys, STR_LIT("dipole/magnetic_transition/origin"), origin);
 			}
 			if (velocity) {
-				vlx_publish_vec3_series(sys, STR_LIT("dipole/velocity_transition/vector"), STR_LIT("Velocity Transition"), md_unit_none(), velocity, num_states);
+				vlx_publish_vec3_series(sys, STR_LIT("dipole/velocity_transition/vector"), STR_LIT("Velocity Transition"), bohr_velocity, velocity, num_states);
 				vlx_publish_origin(sys, STR_LIT("dipole/velocity_transition/origin"), origin);
 			}
 		}
@@ -5306,7 +5305,7 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 	}
 
 	// ---- Molecule level scalars. rank 0 is a single value, not an array of one. ----
-	vlx_publish_scalar(sys, STR_LIT("vlx/molecular_charge"),          STR_LIT("Molecular Charge"),			md_unit_none(), vlx->molecular_charge);
+	vlx_publish_scalar(sys, STR_LIT("vlx/molecular_charge"),          STR_LIT("Molecular Charge"),			md_unit_none(),		vlx->molecular_charge);
 	vlx_publish_scalar(sys, STR_LIT("vlx/nuclear_repulsion_energy"),  STR_LIT("Nuclear Repulsion Energy"),	vlx_unit_hartree(),        vlx->nuclear_repulsion_energy);
 	// The two facts about a calculation that are TEXT and nothing else - no consumer can derive them
 	// from the columns, the way it can derive the SCF type from whether the spin channels share data.

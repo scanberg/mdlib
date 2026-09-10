@@ -70,10 +70,16 @@ typedef struct {
 
 // Physical constants. The elementary charge is exact by the 2019 SI redefinition; the Bohr radius
 // is CODATA 2022; the Debye is exactly 1e-21 / c coulomb metre.
-#define ELEMENTARY_CHARGE_COULOMB 1.602176634e-19
-#define BOHR_RADIUS_METER         5.29177210544e-11
-#define HARTREE_JOULE             4.3597447222060e-18
-#define DEBYE_COULOMB_METER       3.33564095198152e-30
+#define ELEMENTARY_CHARGE_COULOMB   1.602176634e-19
+#define BOHR_RADIUS_METER           5.29177210544e-11
+#define REDUCED_PLANCK_JOULE_SECOND 1.054571817e-34
+#define ELECTRON_MASS_KILOGRAM      9.1093837015e-31
+
+// Derived constants, exact or CODATA 2022
+#define HARTREE_JOULE               4.3597447222060e-18     // atomic unit of energy
+#define BOHR_VELOCITY_METER_SECOND  2.1876912633e6          // atomic unit of velocity
+#define ATOMIC_UNIT_TIME_SECOND     2.4188843265857e-17     // atomic unit of time
+#define DEBYE_COULOMB_METER         3.33564095198152e-30    // atomic unit of electric dipole moment
 
 #define UNIT_NONE           {0}
 
@@ -120,6 +126,8 @@ typedef struct {
 // so md_unit_conversion_factor moves between them and between either and C m.
 #define UNIT_DEBYE          {.base = {.dim = {.length = 1, .time = 1, .current = 1}}, .mult = DEBYE_COULOMB_METER}
 #define UNIT_ELEMENTARY_CHARGE_BOHR {.base = {.dim = {.length = 1, .time = 1, .current = 1}}, .mult = ELEMENTARY_CHARGE_COULOMB * BOHR_RADIUS_METER}
+#define UNIT_BOHR_MAGNETON    {.base = {.dim = {.length = 2, .current = 1}}, .mult = 9.274010065729e-24}
+#define UNIT_BOHR_VELOCITY    {.base = {.dim = {.length = 1, .time = -1}}, .mult = BOHR_VELOCITY_METER_SECOND}
 #define UNIT_ELECTRONVOLT   {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = ELEMENTARY_CHARGE_COULOMB}
 #define UNIT_HARTREE        {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = HARTREE_JOULE}
 #define UNIT_HERTZ          {.base = {.dim = {.time = -1,}}, .mult = 1.0}
@@ -732,7 +740,8 @@ bool md_unit_is_atomic(md_unit_t unit) {
     return md_unit_equal(unit, md_unit_bohr_radius())
         || md_unit_equal(unit, md_unit_hartree())
         || md_unit_equal(unit, md_unit_elementary_charge())
-        || md_unit_equal(unit, md_unit_elementary_charge_bohr());
+        || md_unit_equal(unit, md_unit_elementary_charge_bohr())
+        || md_unit_equal(unit, md_unit_bohr_magneton());
 }
 
 md_unit_t md_unit_meter(void) {
@@ -833,4 +842,12 @@ md_unit_t md_unit_debye(void) {
 
 md_unit_t md_unit_elementary_charge_bohr(void) {
     return (md_unit_t)UNIT_ELEMENTARY_CHARGE_BOHR;
+}
+
+md_unit_t md_unit_bohr_magneton(void) {
+	return (md_unit_t)UNIT_BOHR_MAGNETON;
+}
+
+md_unit_t md_unit_bohr_velocity(void) {
+    return (md_unit_t)UNIT_BOHR_VELOCITY;
 }
