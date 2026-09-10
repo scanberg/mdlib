@@ -5466,9 +5466,9 @@ static const atom_type_t predefined_atom_types[] = {
     { "ION", "CA",  20, 40.08f,     2.7f, MD_FLAG_ION },
 	{ "ION", "MG",  12, 24.31f,     2.0f, MD_FLAG_ION },
 
-    {"*", "IC", 0,   3240.0f,   19.5f, MD_FLAG_COARSE_GRAINED},
-    {"*", "OC", 0,   3240.0f,   13.5f, MD_FLAG_COARSE_GRAINED},
-    {"*", "CC", 0,   3900.0f,   10.0f, MD_FLAG_COARSE_GRAINED},
+    {"*", "IC", 0,   3240.0f,   12.5f, MD_FLAG_COARSE_GRAINED},
+    {"*", "OC", 0,   3240.0f,   12.5f, MD_FLAG_COARSE_GRAINED},
+    {"*", "CC", 0,   3900.0f,   14.0f, MD_FLAG_COARSE_GRAINED},
 
     {"P10", "X1", 0, 3.31E6f,   50.0f,  MD_FLAG_COARSE_GRAINED},
     {"P20", "X2", 0, 2.65E7f,   100.0f, MD_FLAG_COARSE_GRAINED},
