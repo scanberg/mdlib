@@ -61,6 +61,16 @@ md_mtl_stream_ensure_cmd waits on the stream's own timeline.
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 
+/* This file targets macOS 13+ at runtime but has, historically, only compiled
+   against the macOS 15 SDK. Everything genuinely macOS-15-only is reached
+   dynamically (NSClassFromString / respondsToSelector: / performSelector:), so
+   the only thing an older SDK actually lacks is this spelling of the enum --
+   renamed from MTLPipelineOptionArgumentInfo in Xcode 16, same value, 1 << 0.
+   Guard on the SDK version (MAX_ALLOWED), never on the deployment target. */
+#if !defined(__MAC_OS_X_VERSION_MAX_ALLOWED) || __MAC_OS_X_VERSION_MAX_ALLOWED < 150000
+#define MTLPipelineOptionBindingInfo MTLPipelineOptionArgumentInfo
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -434,7 +444,7 @@ static md_mtl_block_t* md_mtl_find_anywhere(uint64_t addr) {
    4. Buffers, residency and transient arenas
    ========================================================================= */
 
-static void md_mtl_make_resident(md_gpu_device_t dev, id<MTLAllocation> res) {
+static void md_mtl_make_resident(md_gpu_device_t dev, id<MTLResource> res) {
     if (dev->has_residency_set) {
         id set = dev->residency_set;
         [set performSelector:@selector(addAllocation:) withObject:res];
@@ -442,7 +452,7 @@ static void md_mtl_make_resident(md_gpu_device_t dev, id<MTLAllocation> res) {
     }
 }
 
-static void md_mtl_end_residency(md_gpu_device_t dev, id<MTLAllocation> res) {
+static void md_mtl_end_residency(md_gpu_device_t dev, id<MTLResource> res) {
     if (dev->has_residency_set) {
         id set = dev->residency_set;
         [set performSelector:@selector(removeAllocation:) withObject:res];
