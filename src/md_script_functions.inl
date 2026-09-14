@@ -836,6 +836,35 @@ static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis)
     md_array_push(vis->text, text, vis->alloc);
 } 
 
+// A label which is a quantity. 'str' is still filled in with the default spelling so the label can
+// be drawn without looking at anything else, but the value and its unit are carried alongside for a
+// viewer which would rather show it in a unit of its own choosing.
+static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, md_script_vis_t* vis) {
+    ASSERT(vis);
+    ASSERT(vis->alloc);
+
+    char buf[64];
+    size_t len = (size_t)snprintf(buf, sizeof(buf), "%.2f", value);
+    if (len < sizeof(buf) && !md_unit_is_none(unit)) {
+        char unit_buf[32];
+        const size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), unit);
+        if (unit_len > 0) {
+            // The degree sign hugs the number the way the convention has it, everything else takes a space.
+            const char* sep = strcmp(unit_buf, "\xC2\xB0") == 0 ? "" : " ";
+            len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%s%s", sep, unit_buf);
+        }
+    }
+    len = MIN(len, sizeof(buf) - 1);
+
+    md_script_vis_text_t text = {
+        .pos   = xyz,
+        .str   = str_copy((str_t){buf, len}, vis->alloc),
+        .value = value,
+        .unit  = unit,
+    };
+    md_array_push(vis->text, text, vis->alloc);
+}
+
 static inline md_bitfield_t* push_structure(md_script_vis_t* vis) {
     ASSERT(vis);
     ASSERT(vis->alloc);
@@ -3809,9 +3838,8 @@ static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis) {
     vec3_t c = vec3_mul1(vec3_add(c_a, c_b), 0.5f);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.2f", value);
-    push_text(c, buf, vis);
+    // Coordinates are Angstrom, so that is what the separation between two of them is.
+    push_quantity_text(c, value, md_unit_angstrom(), vis);
 }
 
 // Draw single distance between two points
@@ -4086,14 +4114,12 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
     }
     push_line(vb, vp, vis);
 
-    // Add text
+    // Add text. The angle is carried in radians with its unit rather than converted here, so a
+    // viewer showing angles in something else is not fighting a conversion baked into the string.
     quat_t q = quat_axis_angle(axis, angle * 0.5f);
     vec3_t n = quat_mul_vec3(q, v);
     c = vec3_add(c, vec3_mul1(n, len + 0.1f));
-    char buf[32];
-    angle = (float)RAD_TO_DEG(angle);
-    snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", angle);
-    push_text(c, buf, vis);
+    push_quantity_text(c, angle, md_unit_radian(), vis);
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {

@@ -115,6 +115,7 @@ md_unit_t md_unit_bohr_radius(void);
 
 // Mass units
 md_unit_t md_unit_kilogram(void);
+md_unit_t md_unit_dalton(void);                  // u (Da), the unified atomic mass unit
 
 // Time units
 md_unit_t md_unit_second(void);
@@ -139,6 +140,7 @@ md_unit_t md_unit_count(void);
 md_unit_t md_unit_joule(void);
 md_unit_t md_unit_electronvolt(void);
 md_unit_t md_unit_hartree(void);                 // Ha, the atomic unit of energy
+md_unit_t md_unit_calorie(void);                 // cal, the thermochemical calorie
 md_unit_t md_unit_hertz(void);
 md_unit_t md_unit_pascal(void);
 md_unit_t md_unit_bar(void);

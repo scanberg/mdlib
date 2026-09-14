@@ -74,6 +74,8 @@ typedef struct {
 #define BOHR_RADIUS_METER           5.29177210544e-11
 #define REDUCED_PLANCK_JOULE_SECOND 1.054571817e-34
 #define ELECTRON_MASS_KILOGRAM      9.1093837015e-31
+#define DALTON_KILOGRAM             1.66053906892e-27   // unified atomic mass unit, CODATA 2022
+#define CALORIE_JOULE               4.184                // thermochemical calorie, exact by definition
 
 // Derived constants, exact or CODATA 2022
 #define HARTREE_JOULE               4.3597447222060e-18     // atomic unit of energy
@@ -130,6 +132,8 @@ typedef struct {
 #define UNIT_BOHR_VELOCITY    {.base = {.dim = {.length = 1, .time = -1}}, .mult = BOHR_VELOCITY_METER_SECOND}
 #define UNIT_ELECTRONVOLT   {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = ELEMENTARY_CHARGE_COULOMB}
 #define UNIT_HARTREE        {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = HARTREE_JOULE}
+#define UNIT_DALTON         {.base = {.dim = {.mass = 1,}}, .mult = DALTON_KILOGRAM}
+#define UNIT_CALORIE        {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = CALORIE_JOULE}
 #define UNIT_HERTZ          {.base = {.dim = {.time = -1,}}, .mult = 1.0}
 
 // The order matters, the first entry which matches is the one used when printing
@@ -154,8 +158,8 @@ static const unit_name_t predefined_units[] = {
     {UNIT_NANOMETER,    S(u8"nm")},
     {UNIT_ANGSTROM,     S(u8"Å")},
     {UNIT_BOHR,         S(u8"bohr")},
-    {UNIT_DEGREE,       S(u8"deg")},
     {UNIT_DEGREE,       S(u8"°")},
+    {UNIT_DEGREE,       S(u8"deg")},
     {UNIT_PASCAL,       S(u8"Pa")},
     {UNIT_BAR,          S(u8"bar")},
     {UNIT_JOULE,        S(u8"J")},
@@ -169,7 +173,10 @@ static const unit_name_t predefined_units[] = {
     {UNIT_DEBYE,        S(u8"D")},
     {UNIT_ELECTRONVOLT, S(u8"eV")},
     {UNIT_HARTREE,      S(u8"Ha")},
+    {UNIT_CALORIE,      S(u8"cal")},
     {UNIT_HERTZ,        S(u8"Hz")},
+    {UNIT_DALTON,       S(u8"u")},
+    {UNIT_DALTON,       S(u8"Da")},
 };
 
 static bool find_unit_from_predefined(md_unit_t* unit, str_t name) {
@@ -764,6 +771,10 @@ md_unit_t md_unit_kilogram(void) {
     return (md_unit_t)UNIT_KILOGRAM;
 }
 
+md_unit_t md_unit_dalton(void) {
+    return (md_unit_t)UNIT_DALTON;
+}
+
 md_unit_t md_unit_second(void) {
     return (md_unit_t)UNIT_SECOND;
 }
@@ -814,6 +825,10 @@ md_unit_t md_unit_electronvolt(void) {
 
 md_unit_t md_unit_hartree(void) {
     return (md_unit_t)UNIT_HARTREE;
+}
+
+md_unit_t md_unit_calorie(void) {
+    return (md_unit_t)UNIT_CALORIE;
 }
 
 md_unit_t md_unit_hertz(void) {

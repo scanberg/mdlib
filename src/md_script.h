@@ -114,9 +114,15 @@ typedef struct md_script_vis_sphere_t {
     uint32_t color;
 } md_script_vis_sphere_t;
 
+// A label placed in the scene. 'str' is always filled in and can be drawn as it stands.
+// When the label is a QUANTITY, 'value' and 'unit' carry it in numeric form as well, so a viewer
+// which shows values in units of its own choosing can format it rather than take the default
+// spelling in 'str'. A label which is not a quantity leaves 'unit' as none.
 typedef struct md_script_vis_text_t {
     vec3_t pos;
     str_t  str;
+    double value;
+    md_unit_t unit;
 } md_script_vis_text_t;
 
 typedef struct md_script_vis_t {
