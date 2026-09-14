@@ -861,6 +861,10 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
 // 0 means no such attribute, which is distinct from every real version and therefore reads as
 // "gone" rather than "unchanged".
 //
+// A version belongs to the DATUM, not to the name. Every alias of an attribute reports the same
+// version as its target and moves with it, so a consumer reading through a neutral path is
+// invalidated by a producer that only ever touched the format specific one.
+//
 // md_attributes_data does NOT bump the version, and that is deliberate. It hands out a writable
 // pointer, and the producer holding one may take seconds to fill it - VIAMD's backbone task fills a
 // whole trajectory across many threads. Bumping at handout would publish "changed" before the data
@@ -871,6 +875,10 @@ uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_i
 
 // "The contents of this attribute changed." Returns the new version, 0 if there is no such
 // attribute. Call it after finishing a write through md_attributes_data.
+//
+// It bumps every NAME of the datum - the attribute and all of its aliases - to one shared counter
+// value. A producer therefore touches whatever path it publishes under and does not have to know
+// who aliased it.
 //
 // NOT thread safe against concurrent touches - the counter is a plain increment. That fits the rule
 // the tables already follow: populated by one producer, then read. A parallel fill should write its
@@ -892,7 +900,12 @@ uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id);
 // NAN means "no value for THIS atom" - an optional column a file fills in only sometimes. A column
 // that is entirely NAN is skipped like a constant one; a partly filled one is published with the
 // gaps intact, because a gap is not a zero and nothing downstream can recover the difference once
-// it has been filled in.
+// it has been filled in. NAN in, NAN out: the extract returns the sentinel bit for bit, through a
+// unit conversion and through the widening to f64, and nothing here interprets it.
+//
+// Be aware when you go looking for one that mdlib is built with /fp:fast on MSVC and -ffast-math
+// on Clang, which let the compiler assume no operand is NaN - so in a consumer compiled the same
+// way 'v != v' and isnan(v) both answer "not a NaN" for a gap that is demonstrably there.
 //
 // Shared rather than written per loader so that the same column out of a PDB, an mmCIF or a LAMMPS
 // data file lands on the same path, in the same unit, under the same rule. Two loaders for one file

@@ -306,6 +306,20 @@ static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
     [MD_ATTRIBUTE_TYPE_STR]  = 4,
 };
 
+// Absence is decided on the BIT PATTERN and never on a float comparison - see the note in
+// md_attributes_publish_atom_column for why every float spelling of this test is unusable in a
+// build with /fp:fast or -ffast-math. Internal, and staying internal: what a NAN MEANS is the
+// producer's and the consumer's business, and the table only has to avoid destroying it.
+static inline uint32_t attr_f32_bits(float v) {
+    uint32_t u;
+    MEMCPY(&u, &v, sizeof(u));
+    return u;
+}
+
+static inline bool attr_f32_bits_absent(uint32_t bits) {
+    return (bits & 0x7fffffffu) > 0x7f800000u;   // exponent all ones and a non zero mantissa
+}
+
 size_t md_attribute_type_size(md_attribute_type_t type) {
     if (type <= MD_ATTRIBUTE_TYPE_NONE || type >= MD_ATTRIBUTE_TYPE_COUNT) {
         return 0;
@@ -495,10 +509,9 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
         }                                                           \
     } while (0)
 
-MD_ATTR_DEFINE_EXTRACT_RANGE(I32, int32_t)
-MD_ATTR_DEFINE_EXTRACT_RANGE(I64, int64_t)
-MD_ATTR_DEFINE_EXTRACT_RANGE(U32, uint32_t)
-MD_ATTR_DEFINE_EXTRACT_RANGE(U64, uint64_t)
+// Only the two the header exposes. The integer destinations were instantiated as well, and
+// nothing ever called them: a consumer wanting an index column takes it through f64, which is
+// exact to 2^53 and therefore lossless for every integer type an attribute can hold.
 MD_ATTR_DEFINE_EXTRACT_RANGE(F32, float)
 MD_ATTR_DEFINE_EXTRACT_RANGE(F64, double)
 
@@ -689,27 +702,113 @@ static size_t attr_index_from_id(const md_attributes_t* attributes, md_attribute
     return SIZE_MAX;
 }
 
+// The storage tag is STATED by the producer rather than derived from the other fields, and stating
+// it is what makes this check possible: every alternative reading of an attribute - who owns the
+// bytes, who computes them, whose name this is - is already recorded elsewhere in the struct, so
+// the tag and those fields can be held against each other. A derived tag could never disagree and
+// could never catch anything either.
+//
+// What each tag claims, and what would contradict it:
+//   RESIDENT  owns its bytes, under its own name, nothing computes it.
+//   VIRTUAL   computed under its own name, so there are no resident bytes to own.
+//   ALIAS     a second NAME for somebody else's datum, so root names that owner and never itself,
+//             and it owns no provider state (user_data_size is the ownership marker, and an alias
+//             zeroes it when it inherits virt).
+// Note an ALIAS is deliberately unconstrained in data/provider: it inherits whichever its target
+// had, which is exactly why read paths branch on the provider and not on this tag.
+static bool attr_storage_consistent(const md_attribute_t* attr) {
+    ASSERT(attr);
+    switch (attr->storage) {
+    case MD_ATTRIBUTE_STORAGE_RESIDENT:
+        return attr->root == attr->id && attr->virt.provider == NULL;
+    case MD_ATTRIBUTE_STORAGE_VIRTUAL:
+        return attr->root == attr->id && attr->virt.provider != NULL && attr->data == NULL;
+    case MD_ATTRIBUTE_STORAGE_ALIAS:
+        return attr->root != attr->id && attr->virt.user_data_size == 0;
+    default:
+        return false;
+    }
+}
+
+// Everything a new path has to clear before anything is allocated for it, shared by the two
+// producers so they cannot drift on what "this path is available" means. Hands back where the
+// entry belongs in the sorted array and the id it will have.
+static bool attr_reserve_slot(md_attributes_t* attributes, str_t path, size_t* out_idx, md_attribute_id_t* out_id) {
+    ASSERT(attributes);
+
+    if (!attributes->alloc) {
+        MD_LOG_ERROR("Attribute table allocator not set");
+        return false;
+    }
+    if (!attr_path_valid(path)) {
+        MD_LOG_ERROR("Invalid attribute path '" STR_FMT "': expected non empty segments separated by '/'", STR_ARG(path));
+        return false;
+    }
+
+    size_t idx = attr_lower_bound(attributes, path);
+    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(path));
+        return false;
+    }
+
+    md_attribute_id_t id = md_attributes_id_from_path(path);
+    if (attr_index_from_id(attributes, id) != SIZE_MAX) {
+        MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(path));
+        return false;
+    }
+
+    *out_idx = idx;
+    *out_id  = id;
+    return true;
+}
+
+// The one place an attribute enters the table, which is why the tag is checked here: both producers
+// pass through it and neither can install a struct whose storage disagrees with the rest of it.
+// idx comes from attr_reserve_slot, so opening the hole keeps the array sorted by path.
+static void attr_insert_at(md_attributes_t* attributes, size_t idx, const md_attribute_t* attr) {
+    ASSERT(attr_storage_consistent(attr));
+
+    md_attribute_t empty = {0};
+    md_array_push(attributes->attr, empty, attributes->alloc);
+
+    size_t count = md_array_size(attributes->attr);
+    if (idx + 1 < count) {
+        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
+    }
+    attributes->attr[idx] = *attr;
+}
+
+// Everything one attribute owns. Removing one and tearing the whole table down have to agree about
+// this, and when they were two copies of the list they were one edit away from disagreeing - which
+// is a leak in one path or a double free in the other, neither visible until it is.
+static void attr_release(md_attribute_t* attr, md_allocator_i* alloc) {
+    ASSERT(attr);
+    ASSERT(alloc);
+    // A tag disagreeing with the rest of the struct is a leak on one branch and a double free on
+    // the other, and neither shows up where it was caused.
+    ASSERT(attr_storage_consistent(attr));
+    str_free(attr->path, alloc);
+    // Both are optional and an absent one is a zeroed str_t, which is not something to hand to an
+    // allocator.
+    if (attr->label.ptr)       str_free(attr->label, alloc);
+    if (attr->description.ptr) str_free(attr->description, alloc);
+    // Only an owner releases storage; an alias borrows both the buffer and the provider state.
+    if (attr->storage == MD_ATTRIBUTE_STORAGE_RESIDENT && attr->data) {
+        md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
+    }
+    // user_data_size is 0 for a borrowed pointer, so this only ever frees memory this table itself
+    // handed out through md_attributes_alloc_user_data.
+    if (attr->virt.user_data && attr->virt.user_data_size) {
+        md_free(alloc, attr->virt.user_data, attr->virt.user_data_size);
+    }
+}
+
 void md_attributes_free(md_attributes_t* attributes) {
     ASSERT(attributes);
     md_allocator_i* alloc = attributes->alloc;
     if (alloc) {
         for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
-            md_attribute_t* attr = attributes->attr + i;
-            str_free(attr->path, alloc);
-            // Both are optional and an absent one is a zeroed str_t, which is not something
-            // to hand to an allocator.
-            if (attr->label.ptr)       str_free(attr->label, alloc);
-            if (attr->description.ptr) str_free(attr->description, alloc);
-            // An alias shares the owner's buffer and frees none of it. Its user_data_size is zero
-            // for the same reason, so the guard below already leaves the provider state alone.
-            if (attr->storage == MD_ATTRIBUTE_STORAGE_RESIDENT && attr->data) {
-                md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
-            }
-            // user_data_size is 0 for a borrowed pointer, so this only ever frees memory this
-            // table itself handed out through md_attributes_alloc_user_data.
-            if (attr->virt.user_data && attr->virt.user_data_size) {
-                md_free(alloc, attr->virt.user_data, attr->virt.user_data_size);
-            }
+            attr_release(attributes->attr + i, alloc);
         }
         md_array_free(attributes->attr, alloc);
         // The pool is append only for the table's whole life, so this is the one place it goes.
@@ -895,14 +994,15 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
     md_attribute_format_t format = desc->format;
     const str_t path = desc->path;
 
-    if (!attributes->alloc) {
-        MD_LOG_ERROR("Attribute table allocator not set");
+    // The path is settled before the format is looked at: it is the cheaper rejection, and "that
+    // path is taken" is a more actionable message than a format complaint about a create which was
+    // never going to land anyway.
+    size_t idx;
+    md_attribute_id_t id;
+    if (!attr_reserve_slot(attributes, path, &idx, &id)) {
         return MD_ATTRIBUTE_INVALID;
     }
-    if (!attr_path_valid(path)) {
-        MD_LOG_ERROR("Invalid attribute path '" STR_FMT "': expected non empty segments separated by '/'", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
+
     if (md_attribute_type_size(format.type) == 0) {
         MD_LOG_ERROR("Invalid type for attribute '" STR_FMT "'", STR_ARG(path));
         return MD_ATTRIBUTE_INVALID;
@@ -987,18 +1087,6 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         }
     }
 
-    size_t idx = attr_lower_bound(attributes, path);
-    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
-        MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
-
-    md_attribute_id_t id = md_attributes_id_from_path(path);
-    if (attr_index_from_id(attributes, id) != SIZE_MAX) {
-        MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
-
     md_allocator_i* alloc = attributes->alloc;
 
     void* storage = NULL;
@@ -1038,16 +1126,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
     str_t stored_label = str_empty(desc->label) ? (str_t){0} : str_copy(desc->label, alloc);
     str_t stored_desc  = str_empty(desc->description) ? (str_t){0} : str_copy(desc->description, alloc);
 
-    // Grow by one, then open a hole at idx so the array stays sorted by path.
-    md_attribute_t empty = {0};
-    md_array_push(attributes->attr, empty, alloc);
-
-    size_t count = md_array_size(attributes->attr);
-    if (idx + 1 < count) {
-        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
-    }
-
-    attributes->attr[idx] = (md_attribute_t){
+    const md_attribute_t entry = {
         .id          = id,
         .path        = stored_path,
         .label       = stored_label,
@@ -1061,6 +1140,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         .virt        = desc->virt ? *desc->virt : (md_attribute_virtual_t){0},
         .root        = id,   // it owns its own storage; an alias is what points elsewhere
     };
+    attr_insert_at(attributes, idx, &entry);
 
     return id;
 }
@@ -1068,30 +1148,15 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, str_t path, str_t label, str_t description) {
     ASSERT(attributes);
 
-    if (!attributes->alloc) {
-        MD_LOG_ERROR("Attribute table allocator not set");
-        return MD_ATTRIBUTE_INVALID;
-    }
-    if (!attr_path_valid(path)) {
-        MD_LOG_ERROR("Invalid attribute path '" STR_FMT "': expected non empty segments separated by '/'", STR_ARG(path));
+    size_t idx;
+    md_attribute_id_t id;
+    if (!attr_reserve_slot(attributes, path, &idx, &id)) {
         return MD_ATTRIBUTE_INVALID;
     }
 
     size_t target_idx = attr_index_from_id(attributes, target);
     if (target_idx == SIZE_MAX) {
         MD_LOG_ERROR("Cannot alias '" STR_FMT "': no such target attribute", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
-
-    size_t idx = attr_lower_bound(attributes, path);
-    if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
-        MD_LOG_ERROR("Attribute '" STR_FMT "' already exists", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
-    }
-
-    md_attribute_id_t id = md_attributes_id_from_path(path);
-    if (attr_index_from_id(attributes, id) != SIZE_MAX) {
-        MD_LOG_ERROR("Hash collision for attribute '" STR_FMT "'", STR_ARG(path));
         return MD_ATTRIBUTE_INVALID;
     }
 
@@ -1104,6 +1169,7 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
     void* const                  data     = tgt->data;
     const md_attribute_flags_t   flags    = tgt->flags;
     const md_attribute_id_t      root     = tgt->root;
+    const uint64_t               version  = tgt->version;
     md_attribute_virtual_t       virt     = tgt->virt;
 
     // The target keeps ownership of its provider's private state. Zero the size so teardown of the
@@ -1120,15 +1186,7 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
     str_t stored_label = str_empty(label)       ? (str_t){0} : str_copy(label, alloc);
     str_t stored_desc  = str_empty(description) ? (str_t){0} : str_copy(description, alloc);
 
-    md_attribute_t empty = {0};
-    md_array_push(attributes->attr, empty, alloc);
-
-    size_t count = md_array_size(attributes->attr);
-    if (idx + 1 < count) {
-        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
-    }
-
-    attributes->attr[idx] = (md_attribute_t){
+    const md_attribute_t entry = {
         .id          = id,
         .path        = stored_path,
         .label       = stored_label,
@@ -1136,12 +1194,16 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
         .format      = format,
         .unit        = unit,
         .flags       = flags,
-        .version     = ++attributes->version_counter,
+        // Inherited, not stamped: naming a datum a second time does not change its contents, and a
+        // fresh counter value here would read to a consumer as "this changed" on every reload that
+        // re-established the alias.
+        .version     = version,
         .storage     = MD_ATTRIBUTE_STORAGE_ALIAS,
         .data        = data,
         .virt        = virt,
         .root        = root,
     };
+    attr_insert_at(attributes, idx, &entry);
 
     return id;
 }
@@ -1156,17 +1218,7 @@ static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
     md_allocator_i* alloc = attributes->alloc;
     ASSERT(alloc);
 
-    md_attribute_t* attr = attributes->attr + idx;
-    str_free(attr->path, alloc);
-    if (attr->label.ptr)       str_free(attr->label, alloc);
-    if (attr->description.ptr) str_free(attr->description, alloc);
-    // Only an owner releases storage; an alias borrows both the buffer and the provider state.
-    if (attr->storage == MD_ATTRIBUTE_STORAGE_RESIDENT && attr->data) {
-        md_free(alloc, attr->data, md_attribute_byte_size(&attr->format));
-    }
-    if (attr->virt.user_data && attr->virt.user_data_size) {
-        md_free(alloc, attr->virt.user_data, attr->virt.user_data_size);
-    }
+    attr_release(attributes->attr + idx, alloc);
 
     size_t count = md_array_size(attributes->attr);
     if (idx + 1 < count) {
@@ -1188,19 +1240,31 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
     const size_t num_elements = count * (size_t)components;
 
     // NAN is how a loader marks "this atom has no value", for a column its format defines but this
-    // particular file leaves blank per atom. Two NANs are the same absence and IEEE does not say so,
-    // hence the explicit test - and a column that is entirely absent is exactly as uninformative as
-    // a constant one, so it is skipped for the same reason.
+    // particular file leaves blank per atom. A column that is entirely absent is exactly as
+    // uninformative as a constant one, so it is skipped for the same reason.
+    //
+    // BOTH TESTS BELOW ARE ON BITS, NOT ON FLOATS, and that is not a micro optimisation. This
+    // library is built with /fp:fast on MSVC and -ffast-math on Clang, which license the compiler
+    // to assume no operand is ever NaN - and it takes the licence: 'x != x' folds to false,
+    // isnan() folds to 0, and even a comparison AGAINST a NaN reports equal. Written as float
+    // comparisons this loop dropped any column whose FIRST atom was blank, which is a partly
+    // filled column silently becoming no column at all.
+    //
+    // Bit equality also decides uniformity, which is stricter than '==' in exactly one place:
+    // +0.0 and -0.0 read as different values. A column mixing the two therefore publishes. That
+    // is the harmless direction, and no format in the tree distinguishes them anyway.
     bool uniform = true;
     bool all_absent = true;
     for (size_t i = 0; i < num_elements; ++i) {
         const size_t c = i % components;
-        const bool absent_i = (values[i] != values[i]);
-        const bool absent_0 = (values[c] != values[c]);
-        if (!absent_i) {
+        const uint32_t bits_i = attr_f32_bits(values[i]);
+        const uint32_t bits_0 = attr_f32_bits(values[c]);
+        if (!attr_f32_bits_absent(bits_i)) {
             all_absent = false;
         }
-        if (absent_i != absent_0 || (!absent_i && values[i] != values[c])) {
+        // Covers both questions at once: a present value against an absent one differs in bits,
+        // and so do two different present values.
+        if (bits_i != bits_0) {
             uniform = false;
         }
     }
@@ -1237,8 +1301,20 @@ uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id) 
     if (idx == SIZE_MAX) {
         return 0;
     }
-    attributes->attr[idx].version = ++attributes->version_counter;
-    return attributes->attr[idx].version;
+
+    // A version describes a DATUM and an alias is a second name for one, so a touch has to reach
+    // every name of it. Bumping only the name the producer happened to call is the invalidation
+    // hole aliases were always going to open: the whole point of aliasing is that a consumer reads
+    // through the neutral path, and that consumer would have cached against a version which never
+    // moved again. One counter value for all of them, so they compare equal as well as fresh.
+    const md_attribute_id_t root = attributes->attr[idx].root;
+    const uint64_t version = ++attributes->version_counter;
+    for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
+        if (attributes->attr[i].root == root) {
+            attributes->attr[i].version = version;
+        }
+    }
+    return version;
 }
 
 md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_attribute_desc_t* desc) {

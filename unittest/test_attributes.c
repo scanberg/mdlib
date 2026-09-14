@@ -6,6 +6,25 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 
+// Is this value the NAN a loader writes for "no value for this atom"? A question about the BUILD,
+// not about attributes, which is why it lives here and not in md_system.h: mdlib compiles with
+// /fp:fast on MSVC and -ffast-math on Clang, and both let the compiler assume no operand is ever a
+// NaN. It takes the licence - 'v != v' folds to false, isnan(v) folds to 0, and even comparing
+// AGAINST a NaN reports equal - so the assertions below have to read the bits the extract actually
+// wrote. The attribute table stores and returns those bits untouched; what they MEAN is the
+// producer's and the consumer's business, and this test is the consumer.
+static bool is_nan_f32(float v) {
+    uint32_t bits;
+    MEMCPY(&bits, &v, sizeof(bits));
+    return (bits & 0x7fffffffu) > 0x7f800000u;
+}
+
+static bool is_nan_f64(double v) {
+    uint64_t bits;
+    MEMCPY(&bits, &v, sizeof(bits));
+    return (bits & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
+}
+
 // N scalars: one index axis of extent n, values one component wide.
 static md_attribute_format_t fmt_scalars(md_attribute_type_t type, uint32_t n) {
     md_attribute_format_t f = {0};
@@ -1285,8 +1304,39 @@ UTEST(attributes, publish_atom_column_rules) {
     float dst[12] = {0};
     ASSERT_EQ(md_attribute_extract_f32(dst, 4, attr, md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 0.5f, 1.0e-6f);
-    EXPECT_TRUE(dst[1] != dst[1]);      // still absent
+    EXPECT_TRUE(is_nan_f32(dst[1]));    // still absent
     EXPECT_NEAR(dst[2], 1.0f, 1.0e-6f);
+
+    // REGRESSION. A column whose FIRST atom is blank is still a partly filled column. Spelled with
+    // float comparisons this was the case that lost the whole column under /fp:fast and
+    // -ffast-math: the compiler is entitled to assume no operand is NaN, so the gap compared EQUAL
+    // to every real value after it and the column read as constant. Nothing here may compare a
+    // float to decide absence.
+    md_attributes_remove(&t, id);
+    const float leading_gap[4] = {nan_v, 0.5f, 1.0f, 0.25f};
+    id = md_attributes_publish_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, leading_gap, 4);
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+    ASSERT_EQ(md_attribute_extract_f32(dst, 4, md_attributes_get(&t, id), md_unit_none()), 4u);
+    EXPECT_TRUE(is_nan_f32(dst[0]));
+    EXPECT_NEAR(dst[1], 0.5f, 1.0e-6f);
+
+    // The extract PROPAGATES the gap rather than filling it - on the memcpy path above, through a
+    // unit conversion, and widened into a double. The bytes were never the problem; only the test
+    // for them was.
+    double wide[4] = {0};
+    ASSERT_EQ(md_attribute_extract_f64(wide, 4, md_attributes_get(&t, id), md_unit_none()), 4u);
+    EXPECT_TRUE(is_nan_f64(wide[0]));
+    EXPECT_NEAR(wide[1], 0.5, 1.0e-12);
+
+    // and the same for a vector column, which is how a .gro whose first atom carries no velocity
+    // arrives - md_gro.c fills vx/vy/vz with NAN before it parses.
+    const float gro_vel[6] = {nan_v, nan_v, nan_v, 1.0f, 2.0f, 3.0f};
+    md_attribute_id_t gap_vel = md_attributes_publish_atom_column(&t, STR_LIT("atom/force"), md_unit_none(), 3, gro_vel, 2);
+    ASSERT_NE(gap_vel, MD_ATTRIBUTE_INVALID);
+    ASSERT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, gap_vel), md_unit_none()), 6u);
+    EXPECT_TRUE(is_nan_f32(dst[0]));
+    EXPECT_NEAR(dst[3], 1.0f, 1.0e-6f);
+    md_attributes_remove(&t, gap_vel);
 
     // Uniformity is a property of the whole VALUE. Every atom moving identically is uninformative;
     // sharing only an x component is not.
@@ -1505,6 +1555,55 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
 // Versioning is what lets a consumer cache something DERIVED from an attribute. The contract that
 // matters is the negative one: md_attributes_data must NOT bump, because a producer holding that
 // pointer may take seconds to fill it and a consumer looking in that window would cache garbage.
+// A version describes the DATUM. An alias is a second NAME for one, so a producer touching the path
+// it publishes under has to invalidate the consumer reading the neutral path - which is the entire
+// reason aliases exist. Bumping only the name that was passed in left that consumer caching forever.
+UTEST(attributes, touch_reaches_every_name_of_the_datum) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const float charges[4] = {0.5f, -0.25f, 0.125f, 1.0f};
+    md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .data = charges, .byte_size = sizeof(charges)});
+    ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
+
+    md_attribute_id_t alias = md_attributes_alias(&t, src, STR_LIT("atom/charge/mulliken"), (str_t){0}, (str_t){0});
+    ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
+
+    // Naming a datum twice does not change it, so both names read the same version from the start.
+    const uint64_t v0 = md_attributes_version(&t, src);
+    EXPECT_EQ(md_attributes_version(&t, alias), v0);
+
+    // The producer writes through the owner and says so, knowing nothing about who aliased it.
+    float* w = (float*)md_attributes_data(&t, src, MD_ATTRIBUTE_TYPE_F32);
+    ASSERT_TRUE(w != NULL);
+    w[0] = 99.0f;
+    const uint64_t v1 = md_attributes_touch(&t, src);
+    EXPECT_TRUE(v1 > v0);
+    EXPECT_EQ(md_attributes_version(&t, alias), v1);
+
+    // and the other way round: the alias is not a lesser name.
+    const uint64_t v2 = md_attributes_touch(&t, alias);
+    EXPECT_TRUE(v2 > v1);
+    EXPECT_EQ(md_attributes_version(&t, src), v2);
+
+    // The value really did change through both names, so a consumer re-reading on the new version
+    // sees the write rather than a version bump over stale bytes.
+    float dst[4] = {0};
+    EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, alias), md_unit_none()), 4u);
+    EXPECT_NEAR(dst[0], 99.0f, 1.0e-6f);
+
+    // A neighbour is untouched: the sweep is over the datum, not over the table.
+    md_attribute_id_t other = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("atom/b_factor"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none()});
+    const uint64_t vo = md_attributes_version(&t, other);
+    md_attributes_touch(&t, src);
+    EXPECT_EQ(md_attributes_version(&t, other), vo);
+
+    md_attributes_free(&t);
+}
+
 UTEST(attributes, version_tracks_content_not_access) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
