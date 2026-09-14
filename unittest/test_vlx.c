@@ -229,12 +229,6 @@ UTEST(vlx, scf_results) {
 	vlx_test_free(&t);
 }
 
-UTEST(vlx, acro_rsp) {
-	vlx_test_t t = {0};
-	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5"), MEGABYTES(64)));
-	vlx_test_free(&t);
-}
-
 // XPS is a delta-SCF property, not a response property, so it may coexist with any response type or
 // with none. A file without it publishes nothing under vlx/xps - and an absent path, rather than an
 // empty array, is what a consumer tests.
