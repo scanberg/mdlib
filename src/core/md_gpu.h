@@ -558,7 +558,11 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t src, const md_gpu_tex_
    ========================================================================= */
 
 typedef struct md_gpu_kernel_desc_t {
-    /* SPIR-V on Vulkan, a metallib on Metal. */
+    /* SPIR-V on Vulkan. On Metal, either a compiled metallib or Metal Shading
+       Language source text -- the backend identifies which from the bytes and
+       compiles source at load time. Which one a build produces depends on
+       whether Apple's offline Metal compiler was available; see
+       cmake/CompileGpuShaders.cmake. */
     const void* code;
     size_t      code_size;
     const char* entry_point;   /* NULL = "main" */

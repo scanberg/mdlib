@@ -1707,6 +1707,87 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t tex, const md_gpu_tex_
    9. Kernels and launches
    ========================================================================= */
 
+/* --- Obtaining an MTLLibrary ------------------------------------------------
+
+   A kernel blob is whatever compile_gpu_shaders() embedded for it, and which of
+   the two it is depends on the machine the build ran on:
+
+     Apple's offline compiler present -> .metallib bytes -> newLibraryWithData:
+     absent (no Xcode Metal toolchain) -> MSL source text -> newLibraryWithSource:
+
+   Both yield an ordinary MTLLibrary holding the same entry points under the same
+   names, so nothing past this function knows which one it got.
+
+   The blob says which it is rather than a compile-time switch: every metallib
+   starts with 'MTLB' and MSL source cannot. That keeps a metallib loadable by a
+   build that would itself have emitted source, which is what makes a packaged
+   release and a local source build interchangeable, and it keeps the choice out
+   of md_gpu_kernel_desc_t -- the public header stays a plain C blob interface.
+
+   There is deliberately no fallback from one path to the other. A metallib that
+   fails to load and MSL that fails to compile are both real errors; retrying one
+   as the other turns a broken package or a broken shader into a confusing
+   second-order failure. The *absence* of a metallib is the normal case for a
+   source build without Xcode, and that is decided at build time, not here. */
+
+static bool md_mtl_blob_is_metallib(const void* code, size_t size) {
+    /* Mach-O-style 4-byte magic at offset 0 of every .metallib Apple emits. */
+    return size >= 4 && memcmp(code, "MTLB", 4) == 0;
+}
+
+/* The embedded MSL is raw file bytes with no terminator, and NSString's
+   byte-range initialisers are +1 under MRR and owned under ARC -- a difference
+   this file would otherwise have to take a position on. Copying into a
+   NUL-terminated scratch buffer and using the autoreleased +stringWithUTF8String:
+   sidesteps that, and rejects a non-UTF-8 blob for free (it returns nil). */
+static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void* code, size_t size, const char* who) {
+    char* buf = (char*)md_alloc(dev->alloc, size + 1);
+    if (!buf) { md_mtl_fail("out of memory preparing Metal source for '%s'", who); return nil; }
+    memcpy(buf, code, size);
+    buf[size] = '\0';
+
+    NSString* src = [NSString stringWithUTF8String:buf];
+    md_free(dev->alloc, buf, size + 1);
+    if (!src) {
+        md_mtl_fail("shader blob for '%s' is neither a metallib nor valid UTF-8 Metal source", who);
+        return nil;
+    }
+
+    NSError* err = nil;
+    id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:nil error:&err];
+    if (!lib) {
+        /* The framework's diagnostic is multi-line and routinely longer than
+           md_mtl_error_buf, so it goes to the log in full and the stored error
+           stays a one-liner pointing at it. */
+        MD_LOG_ERROR("md_gpu: failed to compile Metal shaders at runtime.\n"
+                     "Shader: %s\n\nMetal compiler error:\n%s",
+                     who, err ? [[err localizedDescription] UTF8String] : "(no diagnostic returned)");
+        md_mtl_fail("runtime Metal compilation of '%s' failed (compiler error above)", who);
+        return nil;
+    }
+    MD_LOG_DEBUG("md_gpu: compiled '%s' from embedded MSL at runtime", who);
+    return lib;
+}
+
+static id<MTLLibrary> md_mtl_library_from_blob(md_gpu_device_t dev, const void* code, size_t size, const char* label) {
+    const char* who = label ? label : "kernel";
+
+    if (!md_mtl_blob_is_metallib(code, size)) {
+        return md_mtl_library_from_source(dev, code, size, who);
+    }
+
+    NSError* err = nil;
+    dispatch_data_t data = dispatch_data_create(code, size, dispatch_get_main_queue(),
+                                                DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    id<MTLLibrary> lib = [dev->device newLibraryWithData:data error:&err];
+    if (!lib) {
+        md_mtl_fail("newLibraryWithData failed for '%s': %s", who,
+                    err ? [[err localizedDescription] UTF8String] : "?");
+        return nil;
+    }
+    return lib;
+}
+
 /* A kernel takes exactly one buffer -- the root -- so the first (and only)
    buffer binding reflection reports is the one we want. Slang numbers these per
    file rather than per entry point, so a multi-entry file puts different kernels
@@ -1732,14 +1813,8 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
         return NULL;
     }
     NSError* err = nil;
-    dispatch_data_t data = dispatch_data_create(desc->code, desc->code_size,
-                                                dispatch_get_main_queue(),
-                                                DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-    id<MTLLibrary> lib = [dev->device newLibraryWithData:data error:&err];
-    if (!lib) {
-        md_mtl_fail("newLibraryWithData failed: %s", err ? [[err localizedDescription] UTF8String] : "?");
-        return NULL;
-    }
+    id<MTLLibrary> lib = md_mtl_library_from_blob(dev, desc->code, desc->code_size, desc->label);
+    if (!lib) return NULL;
 
     /* Metal reserves 'main', so Slang renames entry points to '<name>_0'. Try
        the requested name, then the Slang-mangled form, then the sole function. */
@@ -1752,7 +1827,8 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     if (!fn && lib.functionNames.count == 1) {
         fn = [lib newFunctionWithName:lib.functionNames[0]];
     }
-    if (!fn) { md_mtl_fail("entry point '%s' not found in metallib", want); return NULL; }
+    if (!fn) { md_mtl_fail("entry point '%s' not found in shader library for '%s'", want,
+                            desc->label ? desc->label : "kernel"); return NULL; }
 
     MTLComputePipelineReflection* refl = nil;
     id<MTLComputePipelineState> pso = [dev->device newComputePipelineStateWithFunction:fn
@@ -2266,10 +2342,12 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 
 static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
     NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:md_gpu_make_grid_msl];
-    id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:nil error:&err];
-    if (!lib) return md_mtl_fail("built-in make_grid failed to compile: %s",
-                                 err ? [[err localizedDescription] UTF8String] : "?");
+    /* Always source; this kernel is hand-written MSL and never goes through
+       slangc, so it has no offline-compiled form to prefer. */
+    id<MTLLibrary> lib = md_mtl_library_from_blob(dev, md_gpu_make_grid_msl,
+                                                  strlen(md_gpu_make_grid_msl),
+                                                  "md_gpu make_grid");
+    if (!lib) return false;
     id<MTLFunction> fn = [lib newFunctionWithName:@"md_gpu_make_grid"];
     if (!fn) return md_mtl_fail("built-in make_grid entry point missing");
     MTLComputePipelineReflection* refl = nil;
