@@ -11,7 +11,12 @@ struct GTO {
 
 // Compact representation of GTO to minimize the footprint in group shared memory
 struct CompGTO {
-    vec3  coord;
+    // Scalar coordinates rather than a vec3: a vec3 member forces 16-byte
+    // struct alignment under std430-style shared layout, which pads this
+    // struct from 24 to 32 bytes and pushes the shared array past the
+    // 32 KB guaranteed limit of GL_MAX_COMPUTE_SHARED_MEMORY_SIZE.
+    // The price is a scalar gather when reconstructing the vec3.
+    float x, y, z;
     float coeff;
     float alpha;
     uint  packed_ijkl;
@@ -117,7 +122,9 @@ void main() {
                 // Push to workgroup GTOs
                 uint idx = atomicAdd(s_num_gtos, 1);
                 if (idx < MAX_CGTOS) {
-                    s_gtos[idx].coord = in_gtos[i].coord;
+                    s_gtos[idx].x = in_gtos[i].coord.x;
+                    s_gtos[idx].y = in_gtos[i].coord.y;
+                    s_gtos[idx].z = in_gtos[i].coord.z;
                     s_gtos[idx].coeff = in_gtos[i].coeff;
                     s_gtos[idx].alpha = in_gtos[i].alpha;
                     s_gtos[idx].packed_ijkl = in_gtos[i].packed_ijkl;
@@ -136,7 +143,7 @@ void main() {
 
         for (uint i = 0; i < s_num_gtos; ++i) {
             uvec4 ijkl = unpack_ijkl(s_gtos[i].packed_ijkl);
-            vec3  d  = coord - s_gtos[i].coord;
+            vec3  d  = coord - vec3(s_gtos[i].x, s_gtos[i].y, s_gtos[i].z);
             float r2 = dot(d, d);
             float fx = safe_pow(d.x, ijkl.x);
             float fy = safe_pow(d.y, ijkl.y);
