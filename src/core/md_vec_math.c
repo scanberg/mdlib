@@ -512,25 +512,30 @@ mat4_t mat4_ortho_2d_inv(float l, float r, float b, float t) {
     return M;
 }
 
-mat4_t mat4_persp(float fovy, float aspect, float near, float far) {
+// NOT 'near' and 'far': windef.h, which windows.h drags in, does '#define near' and
+// '#define far' as empty macros for the old segmented-memory keywords, so parameters by
+// those names preprocess away and leave a bare 'float,' in the list. It only shows up in
+// builds whose include chain reaches that header, so it reads as an architecture problem
+// and is not one.
+mat4_t mat4_persp(float fovy, float aspect, float z_near, float z_far) {
     const float tan_half_fovy = tanf(fovy * 0.5f);
     mat4_t M = {0};
     M.elem[0][0] = 1.0f / (aspect * tan_half_fovy);
     M.elem[1][1] = 1.0f / (tan_half_fovy);
-    M.elem[2][2] = -(far + near) / (far - near);
+    M.elem[2][2] = -(z_far + z_near) / (z_far - z_near);
     M.elem[2][3] = -1;
-    M.elem[3][2] = -(2 * far * near) / (far - near);
+    M.elem[3][2] = -(2 * z_far * z_near) / (z_far - z_near);
     return M;
 }
 
-mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far) {
+mat4_t mat4_persp_inv(float fovy, float aspect, float z_near, float z_far) {
     const float tan_half_fovy = tanf(fovy * 0.5f);
     mat4_t M = {0};
     M.elem[0][0] = aspect * tan_half_fovy;
     M.elem[1][1] = tan_half_fovy;
-    M.elem[2][3] = (near - far) / (2 * far * near);
+    M.elem[2][3] = (z_near - z_far) / (2 * z_far * z_near);
     M.elem[3][2] = -1;
-    M.elem[3][3] = (near + far) / (2 * far * near);
+    M.elem[3][3] = (z_near + z_far) / (2 * z_far * z_near);
     return M;
 }
 

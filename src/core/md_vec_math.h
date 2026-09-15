@@ -2275,16 +2275,18 @@ vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t vie
 
 mat4_t mat4_look_at(vec3_t eye, vec3_t center, vec3_t up);
 
-mat4_t mat4_ortho(float left, float right, float bottom, float top, float near, float far);
-mat4_t mat4_ortho_inv(float left, float right, float bottom, float top, float near, float far);
+// 'near'/'far' are off limits as parameter names here: windef.h defines both away to nothing
+// (see the note by mat4_persp in md_vec_math.c).
+mat4_t mat4_ortho(float left, float right, float bottom, float top, float z_near, float z_far);
+mat4_t mat4_ortho_inv(float left, float right, float bottom, float top, float z_near, float z_far);
 mat4_t mat4_ortho_2d(float left, float right, float bottom, float top);
 mat4_t mat4_ortho_2d_inv(float left, float right, float bottom, float top);
 
-mat4_t mat4_persp(float fovy, float aspect, float near, float far);
-mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far);
+mat4_t mat4_persp(float fovy, float aspect, float z_near, float z_far);
+mat4_t mat4_persp_inv(float fovy, float aspect, float z_near, float z_far);
 
-mat4_t mat4_frustum(float left, float right, float bottom, float top, float near, float far);
-mat4_t mat4_frustum_inv(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_frustum(float left, float right, float bottom, float top, float z_near, float z_far);
+mat4_t mat4_frustum_inv(float left, float right, float bottom, float top, float z_near, float z_far);
 
 // These are routines for performing the same operation on many items
 void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, size_t count, vec3_t translation);
