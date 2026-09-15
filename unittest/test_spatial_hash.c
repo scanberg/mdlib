@@ -742,13 +742,18 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         double radius = rnd() * 20;
 
         int ref_count = 0;
-        const double rad2 = radius * radius;
+        // NOT 'rad2': something in the ARM64-only include chain (md_intrinsics.h pulls in
+        // <intrin.h>, which on ARM64 drags in the NEON/intrinsic headers) defines rad2 as an
+        // object-like macro expanding to an integer constant, so the declaration becomes
+        // 'const double <literal> = ...'. x64 never sees that header, which is why this only
+        // breaks on the arm64 build.
+        const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
 
-            if (distance_ref_mic27(G, s0, si) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < radius_sq) {
                 ref_count += 1;
             }
         }
@@ -797,12 +802,12 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         double radius = rnd() * 20.0;
 
         int ref_count = 0;
-        const double rad2 = radius * radius;
+        const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
-            if (distance_ref_mic27(G, s0, si) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < radius_sq) {
                 ref_count += 1;
             }
         }
@@ -851,12 +856,12 @@ UTEST_F(spatial_hash, test_correctness_water) {
         double radius = rnd() * 20.0;
 
         int ref_count = 0;
-        const double rad2 = radius * radius;
+        const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
-            if (distance_ref_mic27(G, s0, si) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < radius_sq) {
                 ref_count += 1;
             }
         }
@@ -918,12 +923,12 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 #endif
 
         ref_count = 0;
-        const double rad2 = radius * radius;
+        const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
-            if (distance_ref_mic27(G, s0, si) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < radius_sq) {
                 ref_count += 1;
             }
         }
@@ -1046,12 +1051,12 @@ UTEST_F(spatial_hash, npt_triclinic) {
 #endif
 
         ref_count = 0;
-        const double rad2 = radius * radius;
+        const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
             double si[3];
             cart_to_fract(si, xi, I);
-            if (distance_ref_mic27(G, s0, si) < rad2) {
+            if (distance_ref_mic27(G, s0, si) < radius_sq) {
                 ref_count += 1;
             }
         }
