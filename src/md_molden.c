@@ -75,9 +75,6 @@ typedef struct molden_t {
     bool has_gto;
 } molden_t;
 
-static inline md_unit_t molden_unit_wavenumber(void) { return md_unit_pow(md_unit_scl(md_unit_meter(), 1.0e-2), -1); }
-static inline md_unit_t molden_unit_km_per_mol(void) { return md_unit_div(md_unit_scl(md_unit_meter(), 1.0e3), md_unit_mole()); }
-
 // ---------------------------------------------------------------------------
 // Angular conventions
 // ---------------------------------------------------------------------------
@@ -722,44 +719,6 @@ static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const 
 // Publishing
 // ---------------------------------------------------------------------------
 
-static void molden_publish_str(md_system_t* sys, str_t path, str_t label, str_t value) {
-    if (str_empty(value)) {
-        return;
-    }
-    md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 },
-    };
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = md_unit_none(), .label = label,
-        .data = &value, .byte_size = sizeof(str_t),
-    });
-}
-
-// A second name for an attribute already published: one datum, two paths, no copy.
-static void molden_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
-    if (target == MD_ATTRIBUTE_INVALID) {
-        return;
-    }
-    const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
-    if (existing) {
-        md_attributes_remove(&sys->attributes, existing->id);
-    }
-    md_attributes_alias(&sys->attributes, target, path, (str_t){0}, (str_t){0});
-}
-
-static md_attribute_id_t molden_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
-    if (!values || count == 0) {
-        return MD_ATTRIBUTE_INVALID;
-    }
-    md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-    };
-    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = unit, .label = label,
-        .data = values, .byte_size = count * sizeof(double),
-    });
-}
-
 // "6D10F15G", "5D7F9G" and the six other spellings the markers can produce. Published because a
 // consumer cannot recover it afterwards: the basis in the table is Cartesian whichever way the file
 // stated it, which is the point of converting at load time.
@@ -806,10 +765,10 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
         const bool beta = (spin == 1);
 
         if (beta && restricted) {
-            molden_alias(sys, alpha_ids[0], STR_LIT("orbital/beta/energy"));
-            molden_alias(sys, alpha_ids[1], STR_LIT("orbital/beta/occupation"));
-            molden_alias(sys, alpha_ids[2], STR_LIT("orbital/beta/symmetry"));
-            molden_alias(sys, alpha_ids[3], STR_LIT("orbital/beta/coefficient"));
+            md_qm_alias(sys, alpha_ids[0], STR_LIT("orbital/beta/energy"));
+            md_qm_alias(sys, alpha_ids[1], STR_LIT("orbital/beta/occupation"));
+            md_qm_alias(sys, alpha_ids[2], STR_LIT("orbital/beta/symmetry"));
+            md_qm_alias(sys, alpha_ids[3], STR_LIT("orbital/beta/coefficient"));
             break;
         }
 
@@ -853,31 +812,19 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
         const str_t sym_path    = beta ? STR_LIT("orbital/beta/symmetry")    : STR_LIT("orbital/alpha/symmetry");
         const str_t coeff_path  = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
 
-        const md_attribute_id_t ener_id = molden_publish_series(sys, energy_path, STR_LIT("Energy"),     md_unit_hartree(), energy, count);
-        const md_attribute_id_t occ_id  = molden_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
+        const md_attribute_id_t ener_id = md_qm_publish_series(sys, energy_path, STR_LIT("Energy"),     md_unit_hartree(), energy, count);
+        const md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
         md_attribute_id_t sym_id = MD_ATTRIBUTE_INVALID;
 
         if (have_symmetry) {
-            md_attribute_format_t sym_format = {
-                .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-            };
-            sym_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-                .path = sym_path, .format = sym_format, .unit = md_unit_none(), .label = STR_LIT("Symmetry"),
-                .data = sym, .byte_size = count * sizeof(str_t),
-            });
+            sym_id = md_qm_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count);
         }
 
         // f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's precision at
         // the boundary, and there is no point publishing them already narrowed.
-        md_attribute_format_t coeff_format = {
-            .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-            .shape = { (uint32_t)count, (uint32_t)num_cart_ao },
-        };
-        const md_attribute_id_t coeff_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-            .path = coeff_path, .format = coeff_format, .unit = md_unit_none(),
-            .label = beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
-            .data = coeff, .byte_size = count * num_cart_ao * sizeof(double),
-        });
+        const md_attribute_id_t coeff_id = md_qm_publish_matrix(sys, coeff_path,
+            beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
+            md_unit_none(), coeff, count, num_cart_ao);
 
         if (!beta) {
             alpha_ids[0] = ener_id;
@@ -894,8 +841,8 @@ static void molden_publish_vibrations(md_system_t* sys, const molden_t* molden) 
     const size_t num_atoms = md_array_size(molden->atomic_number);
     const size_t num_freq  = md_array_size(molden->frequency);
 
-    molden_publish_series(sys, STR_LIT("molden/vib/frequency"), STR_LIT("Frequency"), molden_unit_wavenumber(), molden->frequency, num_freq);
-    molden_publish_series(sys, STR_LIT("molden/vib/ir_intensity"), STR_LIT("IR Intensity"), molden_unit_km_per_mol(),
+    md_qm_publish_series(sys, STR_LIT("molden/vib/frequency"), STR_LIT("Frequency"), md_qm_unit_wavenumber(), molden->frequency, num_freq);
+    md_qm_publish_series(sys, STR_LIT("molden/vib/ir_intensity"), STR_LIT("IR Intensity"), md_qm_unit_km_per_mol(),
                           molden->ir_intensity, md_array_size(molden->ir_intensity));
 
     if (molden->num_modes == 0 || num_atoms == 0) {
@@ -911,11 +858,8 @@ static void molden_publish_vibrations(md_system_t* sys, const molden_t* molden) 
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 2,
         .shape = { (uint32_t)molden->num_modes, (uint32_t)num_atoms },
     };
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("qm/atom/normal_mode"), .format = format, .unit = md_unit_none(),
-        .label = STR_LIT("Normal Mode"),
-        .data = molden->normal_mode, .byte_size = molden->num_modes * num_atoms * 3 * sizeof(double),
-    });
+    md_qm_publish(sys, STR_LIT("qm/atom/normal_mode"), STR_LIT("Normal Mode"), md_unit_none(),
+                  format, molden->normal_mode, molden->num_modes * num_atoms * 3 * sizeof(double));
 }
 
 // Builds the system's atoms and state, then publishes. It has to happen in this order:
@@ -966,14 +910,14 @@ static bool molden_publish(md_system_t* sys, const molden_t* molden, md_allocato
         return false;
     }
 
-    molden_publish_str(sys, STR_LIT("molden/title"),   STR_LIT("Title"),   molden->title);
-    molden_publish_str(sys, STR_LIT("molden/program"), STR_LIT("Program"), molden->program);
+    md_qm_publish_str(sys, STR_LIT("molden/title"),   STR_LIT("Title"),   molden->title);
+    md_qm_publish_str(sys, STR_LIT("molden/program"), STR_LIT("Program"), molden->program);
 
     md_qm_publish_atoms(sys, molden->atomic_number, molden->coord, md_array_size(molden->atomic_number));
 
     if (molden->has_gto) {
         char buf[32];
-        molden_publish_str(sys, STR_LIT("molden/ao_convention"), STR_LIT("AO Convention"), molden_ao_convention(molden, buf, sizeof(buf)));
+        md_qm_publish_str(sys, STR_LIT("molden/ao_convention"), STR_LIT("AO Convention"), molden_ao_convention(molden, buf, sizeof(buf)));
 
         md_gto_basis_t basis = {0};
         if (molden_gto_basis_extract(&basis, molden, temp)) {

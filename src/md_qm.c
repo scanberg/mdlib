@@ -9,9 +9,192 @@
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_unit.h>
+#include <core/md_parse.h>
 
 #include <math.h>
 #include <string.h>
+
+// ---------------------------------------------------------------------------
+// Units
+// ---------------------------------------------------------------------------
+
+md_unit_t md_qm_unit_wavenumber(void) { return md_unit_pow(md_unit_scl(md_unit_meter(), 1.0e-2), -1); }
+md_unit_t md_qm_unit_km_per_mol(void) { return md_unit_div(md_unit_scl(md_unit_meter(), 1.0e3), md_unit_mole()); }
+md_unit_t md_qm_unit_amu(void)        { return md_unit_scl(md_unit_kilogram(), 1.66053906660e-27); }
+
+// ---------------------------------------------------------------------------
+// Publishing vocabulary
+// ---------------------------------------------------------------------------
+
+md_attribute_id_t md_qm_publish(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+                                md_attribute_format_t format, const void* data, size_t byte_size) {
+    ASSERT(sys);
+    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+        .path      = path,
+        .format    = format,
+        .unit      = unit,
+        .label     = label,
+        .data      = data,
+        .byte_size = byte_size,
+    });
+}
+
+md_attribute_id_t md_qm_publish_virtual(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+                                        md_attribute_format_t format, const md_attribute_virtual_t* virt) {
+    ASSERT(sys);
+    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+        .path   = path,
+        .format = format,
+        .unit   = unit,
+        .label  = label,
+        .virt   = virt,
+    });
+}
+
+md_attribute_id_t md_qm_publish_scalar(md_system_t* sys, str_t path, str_t label, md_unit_t unit, double value) {
+    // The value is copied, so a local is fine.
+    md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 0 };
+    return md_qm_publish(sys, path, label, unit, format, &value, sizeof(double));
+}
+
+md_attribute_id_t md_qm_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
+    if (!values || count == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)count },
+    };
+    return md_qm_publish(sys, path, label, unit, format, values, count * sizeof(double));
+}
+
+md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const dvec3_t* values, size_t count) {
+    if (!values || count == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    // dvec3_t is three contiguous doubles, so the source array is already the interleaved layout an
+    // attribute stores and this is a straight copy.
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 1, .shape = { (uint32_t)count },
+    };
+    return md_qm_publish(sys, path, label, unit, format, values, count * 3 * sizeof(double));
+}
+
+md_attribute_id_t md_qm_publish_matrix(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols) {
+    if (!values || rows == 0 || cols == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    // Row major with the last index fastest, which is what every 2D quantity in the tree is.
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)rows, (uint32_t)cols },
+    };
+    return md_qm_publish(sys, path, label, unit, format, values, rows * cols * sizeof(double));
+}
+
+md_attribute_id_t md_qm_publish_str(md_system_t* sys, str_t path, str_t label, str_t value) {
+    if (str_empty(value)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    // A single string is rank 1 {1}, by the same rule that makes a single 3-vector rank 1 {1} of 3
+    // components. The descriptor carries the TEXT and the table stores a handle - see STRINGS in
+    // md_system.h.
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 },
+    };
+    return md_qm_publish(sys, path, label, md_unit_none(), format, &value, sizeof(str_t));
+}
+
+md_attribute_id_t md_qm_publish_strings(md_system_t* sys, str_t path, str_t label, const str_t* values, size_t count) {
+    if (!values || count == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)count },
+    };
+    return md_qm_publish(sys, path, label, md_unit_none(), format, values, count * sizeof(str_t));
+}
+
+md_attribute_id_t md_qm_publish_column(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_type_t type,
+                                       const void* base, size_t stride, size_t count) {
+    ASSERT(sys);
+    if (!base || count == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_format_t format = {
+        .type = type, .components = 1, .rank = 1, .shape = { (uint32_t)count },
+    };
+    // The source is strided and an attribute is contiguous, so the values are gathered into the
+    // table's own storage rather than through a temporary which is then copied again.
+    md_attribute_id_t id = md_qm_publish(sys, path, label, unit, format, NULL, 0);
+    if (id == MD_ATTRIBUTE_INVALID) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    uint8_t* dst = (uint8_t*)md_attributes_data(&sys->attributes, id, type);
+    if (!dst) {
+        md_attributes_remove(&sys->attributes, id);
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const size_t   elem_size = md_attribute_type_size(type);
+    const uint8_t* src       = (const uint8_t*)base;
+    for (size_t i = 0; i < count; ++i) {
+        MEMCPY(dst + i * elem_size, src + i * stride, elem_size);
+    }
+    return id;
+}
+
+md_attribute_id_t md_qm_publish_origin(md_system_t* sys, str_t path, dvec3_t origin) {
+    md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 0 };
+    return md_qm_publish(sys, path, (str_t){0}, md_unit_angstrom(), format, &origin, 3 * sizeof(double));
+}
+
+md_attribute_id_t md_qm_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
+    ASSERT(sys);
+    if (target == MD_ATTRIBUTE_INVALID) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
+    if (existing) {
+        md_attributes_remove(&sys->attributes, existing->id);
+    }
+    return md_attributes_alias(&sys->attributes, target, path, (str_t){0}, (str_t){0});
+}
+
+md_attribute_id_t md_qm_publish_or_alias(md_system_t* sys, md_attribute_id_t alpha_id, str_t path, str_t label,
+                                         md_unit_t unit, const double* alpha_values, const double* beta_values, size_t count) {
+    if (beta_values && beta_values == alpha_values) {
+        return md_qm_alias(sys, alpha_id, path);
+    }
+    return md_qm_publish_series(sys, path, label, unit, beta_values, count);
+}
+
+str_t md_qm_attribute_path(char* buf, size_t cap, str_t group, str_t name) {
+    int len = snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(group), STR_ARG(name));
+    if (len <= 0 || (size_t)len >= cap) {
+        MD_LOG_ERROR("Attribute path '" STR_FMT "/" STR_FMT "' does not fit in %zu characters", STR_ARG(group), STR_ARG(name), cap - 1);
+        return (str_t){0};
+    }
+    for (int c = (int)group.len + 1; c < len; ++c) {
+        if (buf[c] == '/') buf[c] = '_';
+    }
+    return str_from_cstrn(buf, (size_t)len);
+}
+
+size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num_mo, const md_gto_basis_t* basis) {
+    if (!dst || !src || !basis || num_mo == 0) {
+        return 0;
+    }
+    const size_t n_sph  = md_gto_basis_num_sph_ao(basis);
+    const size_t n_cart = md_gto_basis_num_ao(basis);
+    if (n_sph == 0 || n_cart == 0) {
+        return 0;
+    }
+    for (size_t mo = 0; mo < num_mo; ++mo) {
+        if (md_gto_sph_to_cart_vector(dst + mo * n_cart, src + mo * n_sph, basis) != n_cart) {
+            MD_LOG_ERROR("Spherical to Cartesian conversion failed for orbital %zu", mo);
+            return 0;
+        }
+    }
+    return num_mo;
+}
 
 // ---------------------------------------------------------------------------
 // Normalisation
@@ -151,38 +334,6 @@ double md_qm_cart_coeff_factor(uint32_t l, uint32_t cart_idx) {
 // Publishing
 // ---------------------------------------------------------------------------
 
-// One COLUMN of an array of structs, gathered into the table's own storage. The same shape
-// md_vlx.c's vlx_publish_column has, and for the same reason: a record of six fields is six sibling
-// paths over one index space, because a value has one type.
-static bool qm_publish_column(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_type_t type,
-                              const void* base, size_t stride, size_t count) {
-    if (!base || count == 0) {
-        return false;
-    }
-    md_attribute_format_t format = {
-        .type = type, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-    };
-    md_attribute_id_t id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = unit, .label = label,
-    });
-    if (id == MD_ATTRIBUTE_INVALID) {
-        return false;
-    }
-
-    uint8_t* dst = (uint8_t*)md_attributes_data(&sys->attributes, id, type);
-    if (!dst) {
-        md_attributes_remove(&sys->attributes, id);
-        return false;
-    }
-
-    const size_t   elem_size = md_attribute_type_size(type);
-    const uint8_t* src       = (const uint8_t*)base;
-    for (size_t i = 0; i < count; ++i) {
-        MEMCPY(dst + i * elem_size, src + i * stride, elem_size);
-    }
-    return true;
-}
-
 bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
     ASSERT(sys);
 
@@ -199,17 +350,17 @@ bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
     const size_t shell_stride   = sizeof(md_gto_shell_t);
 
     bool ok = true;
-    ok = qm_publish_column(sys, STR_LIT("basis/shell/atom_index"),       STR_LIT("Atom Index"),       md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->atom_idx,         shell_stride, num_shells) && ok;
-    ok = qm_publish_column(sys, STR_LIT("basis/shell/primitive_offset"), STR_LIT("Primitive Offset"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->primitive_offset, shell_stride, num_shells) && ok;
-    ok = qm_publish_column(sys, STR_LIT("basis/shell/primitive_count"),  STR_LIT("Primitive Count"),  md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->num_primitives,   shell_stride, num_shells) && ok;
-    ok = qm_publish_column(sys, STR_LIT("basis/shell/angular_momentum"), STR_LIT("Angular Momentum"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->l,                shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/atom_index"),       STR_LIT("Atom Index"),       md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->atom_idx,         shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/primitive_offset"), STR_LIT("Primitive Offset"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->primitive_offset, shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/primitive_count"),  STR_LIT("Primitive Count"),  md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->num_primitives,   shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/angular_momentum"), STR_LIT("Angular Momentum"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->l,                shell_stride, num_shells) && ok;
 
     // Exponents are bohr^-2 and the contraction coefficients carry the shell's radial normalisation;
     // the per monomial factor is applied at evaluation. See the AO CONVENTION block in md_gto.h -
     // these values only mean anything against it.
     const md_unit_t inv_bohr_sq = md_unit_pow(md_unit_bohr_radius(), -2);
-    ok = qm_publish_column(sys, STR_LIT("basis/primitive/exponent"),    STR_LIT("Exponent"),    inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis->alpha, sizeof(float), num_primitives) && ok;
-    ok = qm_publish_column(sys, STR_LIT("basis/primitive/coefficient"), STR_LIT("Coefficient"), md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis->coeff, sizeof(float), num_primitives) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/primitive/exponent"),    STR_LIT("Exponent"),    inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis->alpha, sizeof(float), num_primitives) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/primitive/coefficient"), STR_LIT("Coefficient"), md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis->coeff, sizeof(float), num_primitives) && ok;
 
     return ok;
 }
@@ -228,29 +379,14 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
     md_attribute_format_t z_format = {
         .type = MD_ATTRIBUTE_TYPE_U8, .components = 1, .rank = 1, .shape = { (uint32_t)count },
     };
-    md_attribute_id_t z_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path      = STR_LIT("qm/atom/atomic_number"),
-        .format    = z_format,
-        .unit      = md_unit_none(),
-        .label     = STR_LIT("Atomic Number"),
-        .data      = atomic_number,
-        .byte_size = count * sizeof(uint8_t),
-    });
+    md_attribute_id_t z_id = md_qm_publish(sys, STR_LIT("qm/atom/atomic_number"), STR_LIT("Atomic Number"),
+                                           md_unit_none(), z_format, atomic_number, count * sizeof(uint8_t));
 
     // Angstrom, matching the system's own coordinates rather than the bohr the evaluator works in.
     // This is the geometry the CALCULATION was run at, which need not be where the system's atoms
-    // are now.
-    md_attribute_format_t xyz_format = {
-        .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 1, .shape = { (uint32_t)count },
-    };
-    md_attribute_id_t xyz_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path      = STR_LIT("qm/atom/coordinate"),
-        .format    = xyz_format,
-        .unit      = md_unit_angstrom(),
-        .label     = STR_LIT("Coordinate"),
-        .data      = coord_angstrom,
-        .byte_size = count * 3 * sizeof(double),
-    });
+    // are now - a trajectory frame or an optimisation step moves them.
+    md_attribute_id_t xyz_id = md_qm_publish_vec3_series(sys, STR_LIT("qm/atom/coordinate"), STR_LIT("Coordinate"),
+                                                         md_unit_angstrom(), coord_angstrom, count);
 
     return z_id != MD_ATTRIBUTE_INVALID && xyz_id != MD_ATTRIBUTE_INVALID;
 }
@@ -261,8 +397,8 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
 
 // The one dimensional Gaussian overlap of two monomials, integral of
 // (x-Ax)^la (x-Bx)^lb exp(-p (x-Px)^2) dx, divided by the sqrt(pi/p) all three axes share.
-// The Hermite style expansion is written out rather than recursed: l is at most 4 here, so the
-// double sum is 25 terms in the worst case and needs no table.
+// The expansion is written out rather than recursed: l is at most 4 here, so the double sum is 25
+// terms in the worst case and needs no table.
 static double qm_overlap_1d(int la, int lb, double pa, double pb, double p) {
     static const int binom[5][5] = {
         {1,0,0,0,0}, {1,1,0,0,0}, {1,2,1,0,0}, {1,3,3,1,0}, {1,4,6,4,1},
@@ -439,10 +575,7 @@ bool md_qm_publish_overlap(md_system_t* sys) {
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)num_ao, (uint32_t)num_ao },
     };
     md_attribute_virtual_t virt = { .provider = qm_overlap_provider, .user_data = sys };
-    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("basis/overlap"), .format = format, .unit = md_unit_none(),
-        .label = STR_LIT("AO Overlap"), .virt = &virt,
-    }) != MD_ATTRIBUTE_INVALID;
+    return md_qm_publish_virtual(sys, STR_LIT("basis/overlap"), STR_LIT("AO Overlap"), md_unit_none(), format, &virt) != MD_ATTRIBUTE_INVALID;
 }
 
 // D_ij = sum_mo occ[mo] * C[mo][i] * C[mo][j]. Exact, not an approximation: an SCF density IS that
@@ -577,62 +710,55 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
         return false;
     }
 
+    // EVERYTHING THIS NEEDS TO KNOW IS READ FIRST, as values. md_attributes_find returns a pointer
+    // INTO the table's array, and publishing anything can move it - so a decision taken from a
+    // pointer fetched before the first publish is taken from freed memory. It reads as a plausible
+    // answer, which is how this came to be written that way in the first place: the restricted
+    // case quietly stopped aliasing beta and reconstructed it a second time instead.
     const md_attribute_t* alpha_coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/coefficient"));
-    const md_attribute_t* beta_coeff  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/coefficient"));
     if (!alpha_coeff || alpha_coeff->format.rank != 2) {
         return false;
     }
+    const md_attribute_t* beta_coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/coefficient"));
+    const md_attribute_t* alpha_occ  = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/occupation"));
+    const md_attribute_t* beta_occ   = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/occupation"));
 
-    const uint32_t num_ao = alpha_coeff->format.shape[1];
+    const uint32_t num_ao   = alpha_coeff->format.shape[1];
+    const bool     has_beta = beta_coeff != NULL;
+
+    // Same coefficients AND same occupations means one density, reachable under both names. That is
+    // the restricted case, and comparing the DATA rather than a spin flag is what also gets
+    // restricted open shell right, where the orbitals are shared and the occupations are not.
+    const bool same_density = has_beta
+                           && md_attribute_same_data(alpha_coeff, beta_coeff)
+                           && alpha_occ && beta_occ && md_attribute_same_data(alpha_occ, beta_occ);
+
     md_attribute_format_t format = {
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { num_ao, num_ao },
     };
 
     md_attribute_virtual_t alpha_virt = { .provider = qm_alpha_density_provider, .user_data = sys };
-    md_attribute_id_t alpha_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/alpha/density"), .format = format, .unit = md_unit_none(),
-        .label = STR_LIT("Alpha Density"), .virt = &alpha_virt,
-    });
+    md_attribute_id_t alpha_id = md_qm_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"),
+                                                       md_unit_none(), format, &alpha_virt);
     if (alpha_id == MD_ATTRIBUTE_INVALID) {
         return false;
     }
 
-    if (!beta_coeff) {
+    if (!has_beta) {
         return true;
     }
 
-    // Same coefficients AND same occupations means one density, reachable under both names. That is
-    // the restricted case, and comparing the DATA rather than a spin flag is what also gets
-    // restricted open shell right, where the orbitals are shared and the occupations are not.
-    const md_attribute_t* alpha_occ = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/occupation"));
-    const md_attribute_t* beta_occ  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/occupation"));
-    const bool same_density = md_attribute_same_data(alpha_coeff, beta_coeff)
-                           && alpha_occ && beta_occ && md_attribute_same_data(alpha_occ, beta_occ);
-
     if (same_density) {
-        const md_attribute_t* existing = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
-        if (existing) {
-            md_attributes_remove(&sys->attributes, existing->id);
-        }
-        md_attributes_alias(&sys->attributes, alpha_id, STR_LIT("orbital/beta/density"), (str_t){0}, (str_t){0});
+        md_qm_alias(sys, alpha_id, STR_LIT("orbital/beta/density"));
     } else {
         md_attribute_virtual_t beta_virt = { .provider = qm_beta_density_provider, .user_data = sys };
-        md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-            .path = STR_LIT("orbital/beta/density"), .format = format, .unit = md_unit_none(),
-            .label = STR_LIT("Beta Density"), .virt = &beta_virt,
-        });
+        md_qm_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), format, &beta_virt);
     }
 
     md_attribute_virtual_t total_virt = { .provider = qm_total_density_provider,      .user_data = sys };
     md_attribute_virtual_t diff_virt  = { .provider = qm_difference_density_provider, .user_data = sys };
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/total/density"), .format = format, .unit = md_unit_none(),
-        .label = STR_LIT("Total Density"), .virt = &total_virt,
-    });
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/difference/density"), .format = format, .unit = md_unit_none(),
-        .label = STR_LIT("Spin Difference Density"), .virt = &diff_virt,
-    });
+    md_qm_publish_virtual(sys, STR_LIT("orbital/total/density"),      STR_LIT("Total Density"),           md_unit_none(), format, &total_virt);
+    md_qm_publish_virtual(sys, STR_LIT("orbital/difference/density"), STR_LIT("Spin Difference Density"), md_unit_none(), format, &diff_virt);
 
     return true;
 }

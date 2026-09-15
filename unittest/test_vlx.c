@@ -23,15 +23,15 @@ UTEST(vlx, parse) {
 	EXPECT_EQ(26u, t.sys.atom.count);
 	EXPECT_EQ(26u, t.state.num_atoms);
 
-	EXPECT_EQ(0.0, vlx_test_scalar(&t, STR_LIT("vlx/molecular_charge"), -1.0));
-	EXPECT_EQ(1.0, vlx_test_scalar(&t, STR_LIT("vlx/spin_multiplicity"), -1.0));
-	EXPECT_EQ(41.0, vlx_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), -1.0));
-	EXPECT_EQ(41.0, vlx_test_scalar(&t, STR_LIT("vlx/electron_count/beta"), -1.0));
+	EXPECT_EQ(0.0, qm_test_scalar(&t, STR_LIT("vlx/molecular_charge"), -1.0));
+	EXPECT_EQ(1.0, qm_test_scalar(&t, STR_LIT("vlx/spin_multiplicity"), -1.0));
+	EXPECT_EQ(41.0, qm_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), -1.0));
+	EXPECT_EQ(41.0, qm_test_scalar(&t, STR_LIT("vlx/electron_count/beta"), -1.0));
 
-	EXPECT_TRUE(str_eq(vlx_test_string(&t, STR_LIT("vlx/basis_set")), STR_LIT("DEF2-SVP")));
+	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/basis_set")), STR_LIT("DEF2-SVP")));
 
 	// The QM geometry, in Angstrom, as the calculation was run at.
-	const md_attribute_t* coord = vlx_test_attr(&t, STR_LIT("qm/atom/coordinate"));
+	const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
 	ASSERT_TRUE(coord != NULL);
 	ASSERT_EQ(md_attribute_components(&coord->format), 3u);
 	ASSERT_EQ(md_attribute_value_count(&coord->format), 26u);
@@ -47,14 +47,14 @@ UTEST(vlx, parse) {
 	EXPECT_NEAR(xyz[1], (double)t.state.y[0], 1.0e-5);
 	EXPECT_NEAR(xyz[2], (double)t.state.z[0], 1.0e-5);
 
-	const size_t num_iter = vlx_test_count(&t, STR_LIT("vlx/scf/history/energy"));
+	const size_t num_iter = qm_test_count(&t, STR_LIT("vlx/scf/history/energy"));
 	ASSERT_TRUE(num_iter > 0);
 
 	double* energy = (double*)md_alloc(t.alloc, sizeof(double) * num_iter);
-	ASSERT_EQ(vlx_test_series(energy, num_iter, &t, STR_LIT("vlx/scf/history/energy")), num_iter);
+	ASSERT_EQ(qm_test_series(energy, num_iter, &t, STR_LIT("vlx/scf/history/energy")), num_iter);
 	EXPECT_NEAR(ref_ener_tot, energy[num_iter - 1], 1.0e-5);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // The facts about a calculation that are TEXT and nothing else, plus the counts that used to be
@@ -64,21 +64,21 @@ UTEST(vlx, run_description_is_published) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
 
-	EXPECT_TRUE(str_eq(vlx_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
-	EXPECT_TRUE(vlx_test_scalar(&t, STR_LIT("vlx/spin_multiplicity"), 0.0) == 1.0);
-	EXPECT_TRUE(vlx_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), 0.0) > 0.0);
-	EXPECT_TRUE(vlx_test_scalar(&t, STR_LIT("vlx/nuclear_repulsion_energy"), 0.0) > 0.0);
+	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
+	EXPECT_TRUE(qm_test_scalar(&t, STR_LIT("vlx/spin_multiplicity"), 0.0) == 1.0);
+	EXPECT_TRUE(qm_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), 0.0) > 0.0);
+	EXPECT_TRUE(qm_test_scalar(&t, STR_LIT("vlx/nuclear_repulsion_energy"), 0.0) > 0.0);
 
 	// A response calculation, so the type is there and names which one.
-	EXPECT_TRUE(str_eq(vlx_test_string(&t, STR_LIT("vlx/rsp/type")), STR_LIT("linear")));
+	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/rsp/type")), STR_LIT("linear")));
 
 	// No geometry optimisation in this file, so nothing under vlx/opt. An absent path is how a
 	// consumer learns a block is missing - not a zero it would have to interpret.
-	EXPECT_FALSE(vlx_test_has(&t, STR_LIT("vlx/opt/type")));
-	EXPECT_FALSE(vlx_test_has(&t, STR_LIT("vlx/opt/state_index")));
-	EXPECT_FALSE(vlx_test_has(&t, STR_LIT("vlx/opt/irc_ts_index")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/opt/type")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/opt/state_index")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/opt/irc_ts_index")));
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // The Z/Y sign convention, pinned.
@@ -108,7 +108,7 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(cases[c].path), MEGABYTES(64)));
 
 		// {S,Lmax}: one row per excited state, padded to the widest row with zeros.
-		const md_attribute_t* a = vlx_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
+		const md_attribute_t* a = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
 		ASSERT_TRUE(a != NULL);
 		ASSERT_EQ(a->format.rank, 2u);
 
@@ -116,7 +116,7 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 		ASSERT_TRUE(num_lambdas >= cases[c].count);
 
 		double* lambdas = (double*)md_alloc(t.alloc, sizeof(double) * num_lambdas);
-		ASSERT_EQ(vlx_test_row(lambdas, num_lambdas, &t, STR_LIT("vlx/rsp/nto/lambda"), 0), num_lambdas);
+		ASSERT_EQ(qm_test_row(lambdas, num_lambdas, &t, STR_LIT("vlx/rsp/nto/lambda"), 0), num_lambdas);
 
 		for (size_t i = 0; i < cases[c].count; ++i) {
 			EXPECT_NEAR(cases[c].lambda[i], lambdas[i], 1.0e-6);
@@ -131,7 +131,7 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 			EXPECT_TRUE(lambdas[i] <= lambdas[i - 1] + 1.0e-12);
 		}
 
-		vlx_test_free(&t);
+		qm_test_free(&t);
 	}
 }
 
@@ -159,14 +159,14 @@ UTEST(vlx, minimal_example) {
 
 	// Extract the GTO basis from the attributes the loader published
 	md_gto_basis_t basis = {0};
-	ASSERT_TRUE(vlx_test_basis(&basis, &t));
+	ASSERT_TRUE(qm_test_basis(&basis, &t));
 
 	size_t num_gtos = md_gto_pgto_count(&basis);
 	md_gto_t* gtos = (md_gto_t*)md_alloc(arena, sizeof(md_gto_t) * num_gtos);
 
 	const size_t num_aos = md_gto_basis_num_ao(&basis);
 	double* mo_coeffs = (double*)md_alloc(arena, sizeof(double) * num_aos);
-	ASSERT_EQ(vlx_test_row(mo_coeffs, num_aos, &t, STR_LIT("orbital/alpha/coefficient"), mo_idx), num_aos);
+	ASSERT_EQ(qm_test_row(mo_coeffs, num_aos, &t, STR_LIT("orbital/alpha/coefficient"), mo_idx), num_aos);
 
 	md_gto_expand_with_ao_coeffs(gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
 
@@ -214,19 +214,19 @@ UTEST(vlx, minimal_example) {
 	}
 	EXPECT_TRUE(max_value > 1.0e-6);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 UTEST(vlx, mol) {
 	vlx_test_t t = {0};
 	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), MEGABYTES(64)));
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 UTEST(vlx, scf_results) {
 	vlx_test_t t = {0};
 	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/tq.scf.results.h5"), MEGABYTES(64)));
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // XPS is a delta-SCF property, not a response property, so it may coexist with any response type or
@@ -239,13 +239,13 @@ UTEST(vlx, file_without_xps_publishes_none) {
 	vlx_test_t t = {0};
 	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(64)));
 
-	EXPECT_FALSE(vlx_test_has(&t, STR_LIT("vlx/xps/ionization_energy")));
-	EXPECT_FALSE(vlx_test_has(&t, STR_LIT("vlx/xps/element")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/xps/ionization_energy")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/xps/element")));
 
 	md_attribute_id_t ids[8];
 	EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &t.sys.attributes, STR_LIT("vlx/xps")), 0u);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // XPS entries, published as one attribute per field of the record over a shared {C} index space.
@@ -256,7 +256,7 @@ UTEST(vlx, acro_xps) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5"), MEGABYTES(64)));
 
-	const size_t count = vlx_test_count(&t, STR_LIT("vlx/xps/ionization_energy"));
+	const size_t count = qm_test_count(&t, STR_LIT("vlx/xps/ionization_energy"));
 	ASSERT_TRUE(count > 0);
 
 	double* energy       = (double*)md_alloc(t.alloc, sizeof(double) * count);
@@ -264,10 +264,10 @@ UTEST(vlx, acro_xps) {
 	double* contribution = (double*)md_alloc(t.alloc, sizeof(double) * count);
 	double* atom_index   = (double*)md_alloc(t.alloc, sizeof(double) * count);
 
-	ASSERT_EQ(vlx_test_series(energy,       count, &t, STR_LIT("vlx/xps/ionization_energy")), count);
-	ASSERT_EQ(vlx_test_series(element,      count, &t, STR_LIT("vlx/xps/element")),           count);
-	ASSERT_EQ(vlx_test_series(contribution, count, &t, STR_LIT("vlx/xps/contribution")),      count);
-	ASSERT_EQ(vlx_test_series(atom_index,   count, &t, STR_LIT("vlx/xps/atom_index")),        count);
+	ASSERT_EQ(qm_test_series(energy,       count, &t, STR_LIT("vlx/xps/ionization_energy")), count);
+	ASSERT_EQ(qm_test_series(element,      count, &t, STR_LIT("vlx/xps/element")),           count);
+	ASSERT_EQ(qm_test_series(contribution, count, &t, STR_LIT("vlx/xps/contribution")),      count);
+	ASSERT_EQ(qm_test_series(atom_index,   count, &t, STR_LIT("vlx/xps/atom_index")),        count);
 
 	// Sorted by (element, ionization energy), which is what makes one element's states a contiguous
 	// run a consumer can find by scanning.
@@ -282,7 +282,7 @@ UTEST(vlx, acro_xps) {
 		EXPECT_TRUE(atom_index[i] >= 0.0 && atom_index[i] < (double)t.sys.atom.count);
 	}
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // 'orbital/alpha/density' is never stored: it is reconstructed on demand from the coefficient and
@@ -300,9 +300,9 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
 
-	const md_attribute_t* coeff = vlx_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
-	const md_attribute_t* occup = vlx_test_attr(&t, STR_LIT("orbital/alpha/occupation"));
-	const md_attribute_t* dens  = vlx_test_attr(&t, STR_LIT("orbital/alpha/density"));
+	const md_attribute_t* coeff = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* occup = qm_test_attr(&t, STR_LIT("orbital/alpha/occupation"));
+	const md_attribute_t* dens  = qm_test_attr(&t, STR_LIT("orbital/alpha/density"));
 	ASSERT_TRUE(coeff != NULL && occup != NULL && dens != NULL);
 
 	// {M,A} coefficients, {M} occupations, {A,A} density - the three have to agree on M and A or the
@@ -343,7 +343,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	}
 
 	// The occupations account for every alpha electron the file says the calculation had.
-	EXPECT_NEAR(vlx_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), -1.0), occ_sum, 1.0e-9);
+	EXPECT_NEAR(qm_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), -1.0), occ_sum, 1.0e-9);
 
 	double max_diff = 0.0, max_asym = 0.0, magnitude = 0.0;
 	for (size_t i = 0; i < num_ao; ++i) {
@@ -362,7 +362,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	// Guards both against the all zeros case, which every difference above would also satisfy.
 	EXPECT_TRUE(magnitude > 1.0e-8);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // The combined spin densities, which are derivations over derivations: alpha and beta are each
@@ -376,9 +376,9 @@ UTEST(vlx, combined_spin_densities_h2o) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
 
-	EXPECT_TRUE(str_eq(vlx_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
+	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
 
-	const md_attribute_t* alpha = vlx_test_attr(&t, STR_LIT("orbital/alpha/density"));
+	const md_attribute_t* alpha = qm_test_attr(&t, STR_LIT("orbital/alpha/density"));
 	ASSERT_TRUE(alpha != NULL);
 	ASSERT_EQ(alpha->format.rank, 2u);
 	const size_t num_ao = alpha->format.shape[0];
@@ -393,7 +393,7 @@ UTEST(vlx, combined_spin_densities_h2o) {
 
 	double* mat[4] = {0};
 	for (int i = 0; i < 4; ++i) {
-		const md_attribute_t* a = vlx_test_attr(&t, paths[i]);
+		const md_attribute_t* a = qm_test_attr(&t, paths[i]);
 		ASSERT_TRUE(a != NULL);
 		ASSERT_EQ(a->format.rank, 2u);
 		EXPECT_EQ(a->format.shape[0], (uint32_t)num_ao);
@@ -404,7 +404,7 @@ UTEST(vlx, combined_spin_densities_h2o) {
 	}
 
 	// Restricted: beta is a second NAME for alpha, not a second reconstruction.
-	const md_attribute_t* beta = vlx_test_attr(&t, STR_LIT("orbital/beta/density"));
+	const md_attribute_t* beta = qm_test_attr(&t, STR_LIT("orbital/beta/density"));
 	EXPECT_EQ(beta->storage, MD_ATTRIBUTE_STORAGE_ALIAS);
 	EXPECT_TRUE(md_attribute_same_data(beta, alpha));
 
@@ -423,7 +423,7 @@ UTEST(vlx, combined_spin_densities_h2o) {
 	// all three and is exactly what a declining provider used to produce.
 	EXPECT_TRUE(magnitude > 1.0e-8);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // The transition densities: attachment, detachment and their difference. There is nothing to
@@ -437,7 +437,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, file, MEGABYTES(64)));
 
-	const size_t num_states = vlx_test_count(&t, STR_LIT("vlx/rsp/oscillator_strength"));
+	const size_t num_states = qm_test_count(&t, STR_LIT("vlx/rsp/oscillator_strength"));
 	ASSERT_TRUE(num_states > 0);
 
 	str_t paths[3] = {
@@ -448,7 +448,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 
 	const md_attribute_t* attr[3] = {0};
 	for (int i = 0; i < 3; ++i) {
-		attr[i] = vlx_test_attr(&t, paths[i]);
+		attr[i] = qm_test_attr(&t, paths[i]);
 		ASSERT_TRUE(attr[i] != NULL);
 
 		// {S,A,A}: state outermost, then the AO x AO matrix. Square is load bearing downstream -
@@ -468,7 +468,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 
 	// The AO axis is the one the coefficients and the overlap live on; if these disagreed the
 	// matrices would be reconstructed against a basis they do not belong to.
-	const md_attribute_t* coeff = vlx_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* coeff = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
 	ASSERT_TRUE(coeff != NULL);
 	EXPECT_EQ(coeff->format.shape[1], (uint32_t)num_ao);
 
@@ -539,12 +539,49 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 	EXPECT_EQ(md_attribute_slice_count(attr[0], &past_end), 0u);
 	EXPECT_EQ(md_attribute_extract_slice_f64(mat[0], plane, attr[0], &past_end, md_unit_none()), 0u);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }
 
 // Two files on purpose: h2o is one excited state in a small basis, amide is 110 atomic orbitals -
 // the size the "provider wrote 0 of 12100" failure was reported at, and the one where a per state
 // reconstruction is expensive enough that the slice has to mean what it says.
+// basis/overlap and the coefficients beside it have to describe ONE basis, and these are the two
+// numbers that say whether they do.
+//
+// A REGRESSION TEST WITH A DATE ON IT. Until 2026-09-15 the published overlap was the file's own
+// spherical S pushed through md_gto_sph_to_cart_matrix, which computes T^T S T. That is the right
+// transform for a DENSITY, which is built from coefficients, and the wrong one for an OVERLAP,
+// which is built from the basis functions themselves. Nothing asserted either number, so nothing
+// noticed: on this file the orthonormality below was 4.1e+02 and the electron count 10.72 for a ten
+// electron molecule. Both look like data. It is integrated from the published basis now - see
+// md_qm_publish_overlap, which also says why no other conversion would have worked.
+UTEST(vlx, overlap_describes_the_same_basis_as_the_coefficients) {
+	const char* files[] = {
+		MD_UNITTEST_DATA_DIR "/vlx/h2o.h5",
+		MD_UNITTEST_DATA_DIR "/vlx/mol.h5",
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+		vlx_test_t t = {0};
+		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[i]), MEGABYTES(256)));
+
+		// The molecular orbitals are orthonormal against it, or the two disagree about the basis.
+		EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+
+		// ...and tr(D S) is the electron count the file itself states. This is the assertion the
+		// occupation convention shows up in, which orthonormality is completely blind to.
+		const double alpha = qm_test_scalar(&t, STR_LIT("vlx/electron_count/alpha"), -1.0);
+		const double beta  = qm_test_scalar(&t, STR_LIT("vlx/electron_count/beta"),  -1.0);
+		ASSERT_TRUE(alpha > 0.0);
+		ASSERT_TRUE(beta  > 0.0);
+
+		EXPECT_NEAR(alpha,        qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-4);
+		EXPECT_NEAR(alpha + beta, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-4);
+		EXPECT_NEAR(0.0,          qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-9);
+
+		qm_test_free(&t);
+	}
+}
+
 UTEST(vlx, transition_density_attributes_h2o) {
 	check_transition_density_attributes(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"));
 }
@@ -561,10 +598,10 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
 
-	const md_attribute_t* lambda   = vlx_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
-	const md_attribute_t* particle = vlx_test_attr(&t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
-	const md_attribute_t* hole     = vlx_test_attr(&t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
-	const md_attribute_t* coeff    = vlx_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* lambda   = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
+	const md_attribute_t* particle = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
+	const md_attribute_t* hole     = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
+	const md_attribute_t* coeff    = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
 	ASSERT_TRUE(lambda != NULL && particle != NULL && hole != NULL && coeff != NULL);
 
 	// {S,Lmax,A} against the weights' {S,Lmax} and the MO coefficients' {M,A}.
@@ -591,5 +628,5 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 	}
 	EXPECT_TRUE(norm > 1.0e-8);
 
-	vlx_test_free(&t);
+	qm_test_free(&t);
 }

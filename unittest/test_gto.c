@@ -56,17 +56,17 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
     *grid_data = vol_data;
 
     md_gto_basis_t basis = {0};
-    vlx_test_basis(&basis, &t);
+    qm_test_basis(&basis, &t);
 
     const size_t num_ao = md_gto_basis_num_ao(&basis);
     double* mo_coeffs = md_temp_alloc_array(temp, double, num_ao);
-    vlx_test_row(mo_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), 120);
+    qm_test_row(mo_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), 120);
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = md_alloc(arena, sizeof(md_gto_t) * (*num_gtos));
     *num_gtos = md_gto_expand_with_ao_coeffs(*gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
 
-    vlx_test_free(&t);
+    qm_test_free(&t);
     md_temp_end(temp);
 }
 
@@ -367,19 +367,19 @@ UTEST(gto, h2o_lumo_cpu) {
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
 
     md_gto_basis_t basis = {0};
-    ASSERT_TRUE(vlx_test_basis(&basis, &t));
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
     const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(vlx_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_cpu(atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);  
 
-    vlx_test_free(&t);
+    qm_test_free(&t);
     md_temp_end(temp);
 }
 
@@ -557,19 +557,19 @@ UTEST(gto, h2o_lumo_gpu) {
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
 
     md_gto_basis_t basis = {0};
-    ASSERT_TRUE(vlx_test_basis(&basis, &t));
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
     const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(vlx_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_gpu(device, atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);
 
-    vlx_test_free(&t);
+    qm_test_free(&t);
     md_temp_end(temp);
     md_gpu_device_destroy(device);
 }

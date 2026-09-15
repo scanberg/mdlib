@@ -688,64 +688,6 @@ static bool trexio_ao_permutation(uint32_t* dst, const trexio_t* trexio) {
 // Publishing
 // ---------------------------------------------------------------------------
 
-static void trexio_publish_str(md_system_t* sys, str_t path, str_t label, str_t value) {
-    if (str_empty(value)) {
-        return;
-    }
-    md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 },
-    };
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = md_unit_none(), .label = label,
-        .data = &value, .byte_size = sizeof(str_t),
-    });
-}
-
-static void trexio_publish_scalar(md_system_t* sys, str_t path, str_t label, md_unit_t unit, double value) {
-    md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 0 };
-    md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = unit, .label = label,
-        .data = &value, .byte_size = sizeof(double),
-    });
-}
-
-static md_attribute_id_t trexio_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
-    if (!values || count == 0) {
-        return MD_ATTRIBUTE_INVALID;
-    }
-    md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-    };
-    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = unit, .label = label,
-        .data = values, .byte_size = count * sizeof(double),
-    });
-}
-
-static md_attribute_id_t trexio_publish_strings(md_system_t* sys, str_t path, str_t label, const str_t* values, size_t count) {
-    if (!values || count == 0) {
-        return MD_ATTRIBUTE_INVALID;
-    }
-    md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-    };
-    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = path, .format = format, .unit = md_unit_none(), .label = label,
-        .data = values, .byte_size = count * sizeof(str_t),
-    });
-}
-
-static void trexio_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
-    if (target == MD_ATTRIBUTE_INVALID) {
-        return;
-    }
-    const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
-    if (existing) {
-        md_attributes_remove(&sys->attributes, existing->id);
-    }
-    md_attributes_alias(&sys->attributes, target, path, (str_t){0}, (str_t){0});
-}
-
 static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md_allocator_i* temp) {
     if (trexio->num_mo == 0 || !trexio->mo_coefficient) {
         return true;
@@ -776,15 +718,10 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
     const bool restricted = !unrestricted && max_occupation > 1.0;
 
     // The file's own numbers, unaltered, beside the per channel split below.
-    trexio_publish_series(sys, STR_LIT("trexio/mo/occupation"), STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
+    md_qm_publish_series(sys, STR_LIT("trexio/mo/occupation"), STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
     if (trexio->mo_spin) {
-        md_attribute_format_t spin_format = {
-            .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)trexio->num_mo },
-        };
-        md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-            .path = STR_LIT("trexio/mo/spin"), .format = spin_format, .unit = md_unit_none(), .label = STR_LIT("Spin"),
-            .data = trexio->mo_spin, .byte_size = trexio->num_mo * sizeof(int64_t),
-        });
+        md_qm_publish_column(sys, STR_LIT("trexio/mo/spin"), STR_LIT("Spin"), md_unit_none(),
+                             MD_ATTRIBUTE_TYPE_I64, trexio->mo_spin, sizeof(int64_t), trexio->num_mo);
     }
 
     md_gto_basis_t cart_basis = {0};
@@ -802,10 +739,10 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
         if (beta && !unrestricted) {
             // One set of orbitals under two names: no copy, and the densities then come out as
             // twice alpha and zero without a special case anywhere.
-            trexio_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
-            trexio_alias(sys, alpha_occ_id,   STR_LIT("orbital/beta/occupation"));
-            trexio_alias(sys, alpha_ener_id,  STR_LIT("orbital/beta/energy"));
-            trexio_alias(sys, alpha_sym_id,   STR_LIT("orbital/beta/symmetry"));
+            md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
+            md_qm_alias(sys, alpha_occ_id,   STR_LIT("orbital/beta/occupation"));
+            md_qm_alias(sys, alpha_ener_id,  STR_LIT("orbital/beta/energy"));
+            md_qm_alias(sys, alpha_sym_id,   STR_LIT("orbital/beta/symmetry"));
             break;
         }
 
@@ -846,11 +783,9 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
             }
             if (trexio->cartesian) {
                 MEMCPY(coeff + m * num_cart, mdlib_ao, sizeof(double) * num_cart);
-            } else {
-                if (md_gto_sph_to_cart_vector(coeff + m * num_cart, mdlib_ao, &cart_basis) != num_cart) {
-                    MD_LOG_ERROR("TREXIO: could not expand orbital %zu into the Cartesian basis", i);
-                    return false;
-                }
+            } else if (md_qm_sph_to_cart_coefficients(coeff + m * num_cart, mdlib_ao, 1, &cart_basis) != 1) {
+                MD_LOG_ERROR("TREXIO: could not expand orbital %zu into the Cartesian basis", i);
+                return false;
             }
             m += 1;
         }
@@ -862,19 +797,13 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
 
         // Only when the file actually stated them: an absent path is how a consumer learns a block
         // is missing, and a column of zeros would read as a legitimate set of orbital energies.
-        md_attribute_id_t ener_id = trexio->mo_energy ? trexio_publish_series(sys, energy_path, STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
-        md_attribute_id_t occ_id  = trexio_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
-        md_attribute_id_t sym_id  = have_symmetry ? trexio_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t ener_id = trexio->mo_energy ? md_qm_publish_series(sys, energy_path, STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
+        md_attribute_id_t sym_id  = have_symmetry ? md_qm_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
 
-        md_attribute_format_t coeff_format = {
-            .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-            .shape = { (uint32_t)count, (uint32_t)num_cart },
-        };
-        md_attribute_id_t coeff_id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-            .path = coeff_path, .format = coeff_format, .unit = md_unit_none(),
-            .label = beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
-            .data = coeff, .byte_size = count * num_cart * sizeof(double),
-        });
+        md_attribute_id_t coeff_id = md_qm_publish_matrix(sys, coeff_path,
+            beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
+            md_unit_none(), coeff, count, num_cart);
 
         if (!beta) {
             alpha_coeff_id = coeff_id;
@@ -936,24 +865,24 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
         return false;
     }
 
-    trexio_publish_str(sys, STR_LIT("trexio/metadata/code"),            STR_LIT("Code"),            trexio->code);
-    trexio_publish_str(sys, STR_LIT("trexio/metadata/package_version"), STR_LIT("Package Version"), trexio->package_version);
-    trexio_publish_str(sys, STR_LIT("trexio/basis_type"),               STR_LIT("Basis Type"),      trexio->basis_type);
-    trexio_publish_str(sys, STR_LIT("trexio/mo_type"),                  STR_LIT("MO Type"),         trexio->mo_type);
+    md_qm_publish_str(sys, STR_LIT("trexio/metadata/code"),            STR_LIT("Code"),            trexio->code);
+    md_qm_publish_str(sys, STR_LIT("trexio/metadata/package_version"), STR_LIT("Package Version"), trexio->package_version);
+    md_qm_publish_str(sys, STR_LIT("trexio/basis_type"),               STR_LIT("Basis Type"),      trexio->basis_type);
+    md_qm_publish_str(sys, STR_LIT("trexio/mo_type"),                  STR_LIT("MO Type"),         trexio->mo_type);
 
     if (trexio->has_electron_count) {
-        trexio_publish_scalar(sys, STR_LIT("trexio/electron_count/total"), STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
-        trexio_publish_scalar(sys, STR_LIT("trexio/electron_count/up"),    STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
-        trexio_publish_scalar(sys, STR_LIT("trexio/electron_count/down"),  STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
+        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/total"), STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
+        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/up"),    STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
+        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/down"),  STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
     }
     if (trexio->has_nuclear_repulsion) {
-        trexio_publish_scalar(sys, STR_LIT("trexio/nuclear_repulsion_energy"), STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
+        md_qm_publish_scalar(sys, STR_LIT("trexio/nuclear_repulsion_energy"), STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
     }
 
     md_qm_publish_atoms(sys, trexio->atomic_number, trexio->coord, trexio->num_atoms);
 
     if (trexio->num_shells > 0) {
-        trexio_publish_str(sys, STR_LIT("trexio/ao_convention"), STR_LIT("AO Convention"),
+        md_qm_publish_str(sys, STR_LIT("trexio/ao_convention"), STR_LIT("AO Convention"),
                            trexio->cartesian ? STR_LIT("cartesian") : STR_LIT("spherical"));
 
         md_gto_basis_t basis = {0};
