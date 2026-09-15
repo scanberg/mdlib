@@ -3530,30 +3530,35 @@ static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double
 		}
 
 		if (out_coefficients) {
-			const double* small = small_vectors + pair_idx * small_dim;
-			double* large = large_vectors + pair_idx * large_dim;
+			// NOT 'small' and 'large': rpcndr.h, which windows.h drags in, does '#define small char',
+			// so a variable by that name preprocesses into a type keyword and every use of it is a
+			// syntax error. It only shows up in builds whose include chain reaches that header - the
+			// Windows arm64 cross build does, the x64 one did not - so it reads as an architecture
+			// problem and is not one.
+			const double* small_vec = small_vectors + pair_idx * small_dim;
+			double* large_vec = large_vectors + pair_idx * large_dim;
 
 			if (use_left_gram) {
 				for (size_t a = 0; a < nvir; ++a) {
 					double value = 0.0;
 					for (size_t i = 0; i < nocc; ++i) {
-						value += transition[i * nvir + a] * small[i];
+						value += transition[i * nvir + a] * small_vec[i];
 					}
-					large[a] = value / sigma;
+					large_vec[a] = value / sigma;
 				}
 			} else {
 				for (size_t i = 0; i < nocc; ++i) {
 					double value = 0.0;
 					for (size_t a = 0; a < nvir; ++a) {
-						value += transition[i * nvir + a] * small[a];
+						value += transition[i * nvir + a] * small_vec[a];
 					}
-					large[i] = value / sigma;
+					large_vec[i] = value / sigma;
 				}
 			}
-			vlx_normalize(large, large_dim);
+			vlx_normalize(large_vec, large_dim);
 
-			const double* u = use_left_gram ? small : large;
-			const double* v = use_left_gram ? large : small;
+			const double* u = use_left_gram ? small_vec : large_vec;
+			const double* v = use_left_gram ? large_vec : small_vec;
 			double* out_coeff = out_coefficients + pair_idx * num_ao;
 
 			if (type == VLX_NTO_PARTICLE) {
