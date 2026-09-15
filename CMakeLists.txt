@@ -34,9 +34,12 @@ option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
+option(MD_ENABLE_TREXIO "Enable TREXIO Support" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
 
-if (MD_ENABLE_VLX)
+# TREXIO's HDF5 back end is read with HDF5 directly, so it needs the same dependency the
+# VeloxChem reader does and no new one - see md_trexio.h.
+if (MD_ENABLE_VLX OR MD_ENABLE_TREXIO)
   set(MD_ENABLE_HDF5 TRUE)
 endif()
 
@@ -135,10 +138,14 @@ set(SRC_FILES
   src/md_lammps.h
   src/md_mmcif.c
   src/md_mmcif.h
+  src/md_molden.c
+  src/md_molden.h
   src/md_system.c
   src/md_system.h
   src/md_pdb.c
   src/md_pdb.h
+  src/md_qm.c
+  src/md_qm.h
   src/md_pot.c
   src/md_pot.h
   src/md_script.c
@@ -270,6 +277,11 @@ if (MD_ENABLE_VLX)
     set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
   endif()
   list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
+endif()
+
+if (MD_ENABLE_TREXIO)
+  list(APPEND SRC_FILES src/md_trexio.c src/md_trexio.h)
+  list(APPEND MD_DEFINES MD_TREXIO)
 endif()
 
 if (MD_ENABLE_HDF5)
@@ -518,5 +530,6 @@ if (has_parent)
     set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} PARENT_SCOPE)
     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
     set(MD_ENABLE_VLX ${MD_ENABLE_VLX} PARENT_SCOPE)
+    set(MD_ENABLE_TREXIO ${MD_ENABLE_TREXIO} PARENT_SCOPE)
     set(MD_ENABLE_GPU ${MD_ENABLE_GPU} PARENT_SCOPE)
 endif()
