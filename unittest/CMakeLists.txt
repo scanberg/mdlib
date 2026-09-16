@@ -14,10 +14,12 @@ set (SRC_FILES
     test_array.c
     test_atomic.c
     test_bitop.c
+    test_grid.c
     test_bitfield.c
     test_infer_atomic_number.c
     test_str.c
     test_hash.c
+    test_handle.c
     test_edr.c
     test_cube.c
     test_intrinsics.c

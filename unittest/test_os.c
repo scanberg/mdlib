@@ -225,16 +225,16 @@ UTEST(os, semaphore) {
 // The three converters are one scale expressed three ways, so they are checked against each
 // other and against a known wall-clock duration. The ratios alone would not catch a factor
 // applied to all three, and the duration alone would not catch one of them drifting from the
-// others - which is exactly how md_time_as_nanoseconds returned microseconds on windows.
+// others - which is exactly how md_tick_to_nanoseconds returned microseconds on windows.
 UTEST(os, time_converters_agree) {
-    const md_timestamp_t t0 = md_time_now();
+    const md_tick_t t0 = md_tick_now();
     md_thread_sleep(50);
-    const md_timestamp_t dt = md_time_now() - t0;
+    const md_tick_t dt = md_tick_now() - t0;
     ASSERT_GT(dt, 0);
 
-    const double ns = md_time_as_nanoseconds(dt);
-    const double ms = md_time_as_milliseconds(dt);
-    const double s  = md_time_as_seconds(dt);
+    const double ns = md_tick_to_nanoseconds(dt);
+    const double ms = md_tick_to_milliseconds(dt);
+    const double s  = md_tick_to_seconds(dt);
 
     // Same quantity, different units. 1e-9 relative slack is far tighter than a unit slip.
     EXPECT_NEAR(ns, ms * 1.0e6, ns * 1.0e-9);

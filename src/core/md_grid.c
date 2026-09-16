@@ -62,5 +62,5 @@ mat4_t md_grid_world_to_index(const md_grid_t* grid) {
 }
 
 #ifdef __cplusplus
-extern "C" {
+}
 #endif

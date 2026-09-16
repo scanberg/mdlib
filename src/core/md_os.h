@@ -15,11 +15,16 @@
 
 struct  md_allocator_i;
 
-// ### TIME ###
-// This represents a os specific time stamp with the highest precision available (usually nanoseconds)
-// It is possible to subtract or perform simple arithmetic directly on the timestamp then
-// Extract seconds or milliseconds from it.
-typedef int64_t md_timestamp_t;
+// ### TICKS ###
+// A reading of the platform's monotonic high-resolution counter, in ticks whose rate is
+// machine-defined: nanoseconds on unix, QueryPerformanceCounter ticks on windows. Deliberately
+// not called a timestamp - it is not anchored to any epoch and cannot be rendered as a date,
+// so an individual reading carries no meaning on its own. Subtract two of them and convert the
+// difference with md_tick_to_*; those are the only calls that turn ticks into time.
+//
+// Plain arithmetic on ticks is intended. Do not assume the rate: a delay in milliseconds is not
+// a number of ticks and adding one to the other is a bug, however plausible it reads.
+typedef int64_t md_tick_t;
 
 // ### THREAD ###
 typedef void (*md_thread_exit) (void *data);
@@ -139,12 +144,13 @@ bool md_path_is_absolute(str_t path);
 bool md_path_is_valid(str_t path);
 bool md_path_is_directory(str_t path);
 
-// ### TIME ###
-md_timestamp_t md_time_now(void);
+// ### TICKS ###
+md_tick_t md_tick_now(void);
 
-double  md_time_as_nanoseconds(md_timestamp_t t);
-double  md_time_as_milliseconds(md_timestamp_t t);
-double  md_time_as_seconds(md_timestamp_t t);
+// Each takes a difference between two readings, not a single reading.
+double  md_tick_to_nanoseconds(md_tick_t ticks);
+double  md_tick_to_milliseconds(md_tick_t ticks);
+double  md_tick_to_seconds(md_tick_t ticks);
 
 // ### MEMORY ###
 // This exposes system calls to the OS virtual memory allocator.

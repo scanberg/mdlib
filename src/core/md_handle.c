@@ -13,7 +13,12 @@ void md_handle_pool_init(md_handle_pool_t* pool, int count, md_allocator_i* allo
 	pool->queue_top = 0;
 	size_t gen_counters_size = sizeof(uint32_t) * (size_t)pool->size;
 	pool->gen_counters = (uint32_t*)md_alloc(alloc, gen_counters_size);
-	MEMSET(pool->gen_counters, 0, sizeof(gen_counters_size));
+	// gen_counters_size, not sizeof(gen_counters_size): the latter is sizeof(size_t), so only the
+	// first two counters were cleared and every slot above them started from whatever the
+	// allocator happened to hand over. A generation drawn from uninitialised memory still makes
+	// a unique-looking id, which is why this survived - but it defeats the one thing the
+	// generation is for, recognising a handle whose slot has since been reused.
+	MEMSET(pool->gen_counters, 0, gen_counters_size);
 	size_t free_queue_size = sizeof(int) * (size_t)count;
 	pool->free_queue = (int*)md_alloc(alloc, free_queue_size);
 	MEMSET(pool->free_queue, 0, free_queue_size);

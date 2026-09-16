@@ -120,7 +120,7 @@ static void set_console_text_color(console_color_t color, bool intense) {
 }
 
 static uint32_t prev_hash = 0;
-static md_timestamp_t prev_time = 0;
+static md_tick_t prev_time = 0;
 
 // http://www.cse.yorku.ca/~oz/hash.html
 uint32_t djb2_hash(const char *str) {
@@ -136,10 +136,10 @@ static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
 
     // Prevent spamming the logger with the same message by comparing its hash
-    const md_timestamp_t t = md_time_now();
+    const md_tick_t t = md_tick_now();
     const uint32_t hash = djb2_hash(msg);
 
-    if (md_time_as_seconds(t - prev_time) < 1.0 && hash == prev_hash) {
+    if (md_tick_to_seconds(t - prev_time) < 1.0 && hash == prev_hash) {
         return;
     }
     prev_hash = hash;

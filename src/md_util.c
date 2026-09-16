@@ -3316,7 +3316,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     }
 
 
-    md_timestamp_t t0 = md_time_current();
+    md_tick_t t0 = md_tick_now();
 
     // 7
     // Patterns of functional groups to look for as graphs
@@ -3449,8 +3449,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         md_temp_end(temp);
     }
 
-    md_timestamp_t t1 = md_time_current();
-    printf("Time for functional group perception: %.3f ms\n", md_time_as_milliseconds(t1-t0));
+    md_tick_t t1 = md_tick_now();
+    printf("Time for functional group perception: %.3f ms\n", md_tick_to_milliseconds(t1-t0));
 
     // 8. Aromatic Ring Perception
     if (rings) {
@@ -3495,7 +3495,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             false, false, false,
         };
 
-        t0 = md_time_current();
+        t0 = md_tick_now();
         size_t num_rings = md_index_data_num_ranges(*rings);
         for (size_t ring_idx = 0; ring_idx < num_rings; ++ring_idx) {
             md_atom_idx_t* atom_beg = md_index_range_beg(*rings, ring_idx);
@@ -3639,8 +3639,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
         next_ring:;
         }
-        t1 = md_time_current();
-        printf("Time for aromatic ring perception: %.3f ms\n", md_time_as_milliseconds(t1-t0));
+        t1 = md_tick_now();
+        printf("Time for aromatic ring perception: %.3f ms\n", md_tick_to_milliseconds(t1-t0));
     }
 
     for (size_t i = 0; i < atom->count; ++i) {

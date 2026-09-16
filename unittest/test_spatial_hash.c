@@ -653,31 +653,31 @@ UTEST(spatial_hash, n2) {
     md_unitcell_G_extract_double(G, &cell);
     md_unitcell_I_extract_double(I, &cell);
 
-    md_timestamp_t start, end;
+    md_tick_t start, end;
     uint32_t count = 0;
 
     // Spatial acc implementation
-    start = md_time_now();
+    start = md_tick_now();
     md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
     md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
-    end = md_time_now();
+    end = md_tick_now();
     size_t sa_count = count;
-    //end = md_time_current();
-    //printf("Spatial acc cell neighborhood: %f ms\n", md_time_as_milliseconds(end - start));
+    //end = md_tick_now();
+    //printf("Spatial acc cell neighborhood: %f ms\n", md_tick_to_milliseconds(end - start));
     EXPECT_NEAR(expected_count, sa_count, 5);
     if (sa_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, sa_count);
     }
 
-    start = md_time_now();
+    start = md_tick_now();
     count = 0;
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, 5.0, spatial_acc_neighbor_callback, &count, 0);
-	end = md_time_now();
+	end = md_tick_now();
     sa_count = count;
-	//printf("Spatial acc external query: %f ms\n", md_time_as_milliseconds(end - start));
+	//printf("Spatial acc external query: %f ms\n", md_tick_to_milliseconds(end - start));
 	size_t ext_expected_count = expected_count * 2 + sys.atom.count;
 	if (sa_count != ext_expected_count) {
 		printf("Count mismatch: expected %zu, got %zu\n", ext_expected_count, sa_count);
@@ -686,10 +686,10 @@ UTEST(spatial_hash, n2) {
 #if 0
     // This is so slow that we don't want to run it by default, but it can be useful for validating the reference implementation
     // Brute force
-    start = md_time_current();
+    start = md_tick_now();
     size_t bf_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, 5.0, G, I, NULL, NULL);
-    end = md_time_current();
-    printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
+    end = md_tick_now();
+    printf("Brute force: %f ms\n", md_tick_to_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);
     if (bf_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, bf_count);

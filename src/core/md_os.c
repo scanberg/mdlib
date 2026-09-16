@@ -1537,9 +1537,9 @@ done:
     return result;
 }
 
-// ### TIME ###
+// ### TICKS ###
 
-md_timestamp_t md_time_now(void) {
+md_tick_t md_tick_now(void) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -1553,40 +1553,40 @@ md_timestamp_t md_time_now(void) {
 #endif
 }
 
-double md_time_as_nanoseconds(md_timestamp_t t) {
+double md_tick_to_nanoseconds(md_tick_t ticks) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    // 1E9, not 1E6: t/frequency is a count of seconds, and this returns nanoseconds. With
+    // 1E9, not 1E6: ticks/frequency is a count of seconds, and this returns nanoseconds. With
     // 1E6 it returned microseconds - a thousandfold error that went unnoticed because the
     // function had no callers and nothing compared it against its two siblings.
-    return (t * 1E9) / (double)frequency.QuadPart;
+    return (ticks * 1E9) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return (double)t;
+    return (double)ticks;
 #else
     ASSERT(false);
 #endif
 }
 
-double md_time_as_milliseconds(md_timestamp_t t) {
+double md_tick_to_milliseconds(md_tick_t ticks) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (t * 1E3) / (double)frequency.QuadPart;
+    return (ticks * 1E3) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return t * 1.0e-6;
+    return ticks * 1.0e-6;
 #else
     ASSERT(false);
 #endif
 }
 
-double md_time_as_seconds(md_timestamp_t t) {
+double md_tick_to_seconds(md_tick_t ticks) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (double)(t) / (double)frequency.QuadPart;
+    return (double)(ticks) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return t * 1.0e-9;
+    return ticks * 1.0e-9;
 #else
     ASSERT(false);
 #endif
