@@ -222,6 +222,31 @@ UTEST(os, semaphore) {
     EXPECT_TRUE(md_semaphore_destroy(&sema));
 }
 
+// The three converters are one scale expressed three ways, so they are checked against each
+// other and against a known wall-clock duration. The ratios alone would not catch a factor
+// applied to all three, and the duration alone would not catch one of them drifting from the
+// others - which is exactly how md_time_as_nanoseconds returned microseconds on windows.
+UTEST(os, time_converters_agree) {
+    const md_timestamp_t t0 = md_time_now();
+    md_thread_sleep(50);
+    const md_timestamp_t dt = md_time_now() - t0;
+    ASSERT_GT(dt, 0);
+
+    const double ns = md_time_as_nanoseconds(dt);
+    const double ms = md_time_as_milliseconds(dt);
+    const double s  = md_time_as_seconds(dt);
+
+    // Same quantity, different units. 1e-9 relative slack is far tighter than a unit slip.
+    EXPECT_NEAR(ns, ms * 1.0e6, ns * 1.0e-9);
+    EXPECT_NEAR(ms, s  * 1.0e3, ms * 1.0e-9);
+
+    // And the scale itself is right. The band is wide because a sleep only guarantees a lower
+    // bound and a loaded machine can overshoot badly; it is still a thousand times tighter
+    // than the error it exists to catch.
+    EXPECT_GE(ms, 25.0);
+    EXPECT_LT(ms, 5000.0);
+}
+
 UTEST(os, path_validity) {
     const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
     const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");

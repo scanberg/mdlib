@@ -1557,7 +1557,10 @@ double md_time_as_nanoseconds(md_timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (t * 1E6) / (double)frequency.QuadPart;
+    // 1E9, not 1E6: t/frequency is a count of seconds, and this returns nanoseconds. With
+    // 1E6 it returned microseconds - a thousandfold error that went unnoticed because the
+    // function had no callers and nothing compared it against its two siblings.
+    return (t * 1E9) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return (double)t;
 #else
