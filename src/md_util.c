@@ -1135,7 +1135,9 @@ static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t
         while (md_bond_iter_has_next(&it)) {
             uint32_t bond_idx = md_bond_iter_bond_index(&it);
             uint32_t atom_idx = md_bond_iter_atom_index(&it);
-            uint32_t flags    = md_bond_iter_bond_flags(&it);
+            // Only the chemical byte: the edge packs it into bits 24-31, directly below the bond index, and
+            // the origin bits (inferred, user, topology) would land in the index and say nothing about the match.
+            uint32_t flags    = md_bond_iter_bond_flags(&it) & 0xFF;
             uint32_t* local_idx = md_hashmap_get(&global_to_local, atom_idx);
             if (local_idx) {
                 // Only commit the edge if it is referring to a local index within the graph
@@ -3734,6 +3736,33 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
     }
 }
 
+// Atom flags including the flags of the atom's type. Loaders differ in whether per atom flags are
+// populated from the type (the predefined coarse grained types carry BACKBONE on the type).
+static inline md_flags_t atom_flags_with_type(const md_system_t* sys, size_t atom_idx) {
+    md_flags_t flags = md_atom_flags(&sys->atom, atom_idx);
+    if (sys->atom.type_idx && atom_idx < sys->atom.count) {
+        flags |= md_atom_type_flags(&sys->atom.type, sys->atom.type_idx[atom_idx]);
+    }
+    return flags;
+}
+
+static bool system_is_coarse_grained(const md_system_t* sys) {
+    for (size_t i = 0; i < sys->atom.type.count; ++i) {
+        if (md_atom_type_flags(&sys->atom.type, i) & MD_FLAG_COARSE_GRAINED) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int compare_atom_pair(const void* a, const void* b) {
+    const md_atom_pair_t* pa = (const md_atom_pair_t*)a;
+    const md_atom_pair_t* pb = (const md_atom_pair_t*)b;
+    if (pa->idx[0] != pb->idx[0]) return pa->idx[0] < pb->idx[0] ? -1 : 1;
+    if (pa->idx[1] != pb->idx[1]) return pa->idx[1] < pb->idx[1] ? -1 : 1;
+    return 0;
+}
+
 static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const float* x, const float* y, const float* z, const md_unitcell_t* cell, md_array(bond_pair_t)* candidates, md_allocator_i* alloc) {
     vec3_t d = vec3_set(
         x[atom_i] - x[atom_j],
@@ -3761,20 +3790,15 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
-    // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
+    // Inference only replaces what inference produced. Every bond without MD_BOND_FLAG_INFERRED (user defined,
+    // topology, or read from the file) is kept, wherever it sits in the arrays, and put back afterwards.
     md_array(md_atom_pair_t)  bond_pairs = 0;
     md_array(md_bond_flags_t) bond_flags = 0;
 
-    int64_t num_bonds = (int64_t)md_array_size(bond->pairs);
-    if (num_bonds > 0) {
-        // User defined bonds are stored at the end of the arrays, so we can iterate backwards until we find the first non user defined bond
-        for (int64_t i = num_bonds - 1; i >= 0; --i) {
-            if (bond->flags[i] & MD_BOND_FLAG_USER_DEFINED) {
-                md_array_push(bond_pairs, bond->pairs[i], temp_arena);
-                md_array_push(bond_flags, bond->flags[i], temp_arena);
-            } else {
-                break;
-            }
+    for (size_t i = 0; i < bond->count; ++i) {
+        if (!(bond->flags[i] & MD_BOND_FLAG_INFERRED)) {
+            md_array_push(bond_pairs, bond->pairs[i], temp_arena);
+            md_array_push(bond_flags, bond->flags[i], temp_arena);
         }
     }
 
@@ -3800,45 +3824,34 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     md_array_ensure(candidates, num_atoms, temp_arena);
 
     if (is_coarse_grained) {
-		// In coarse-grained systems, use a simple distance cutoff and only check the backbone atoms in component sequence
+        // In coarse-grained systems, use a simple distance cutoff: every bead pair within an amino acid component,
+        // and the backbone beads of consecutive amino acid components.
+        //
+        // @NOTE: Two bugs lived here. The component loop started at 1, so the first component never got its
+        // internal bonds, and the inner loop started at beg + 1 rather than i + 1, which tested every bead
+        // against itself (distance 0, always under the cutoff, so a self bond) and every other pair twice.
         int bb_prev = -1;
-		md_flags_t comp_i_flags = md_component_flags(&sys->component, 0);
-        if ((comp_i_flags & MD_FLAG_AMINO_ACID)) {
-			// Get the backbone atom index of the first component
-			md_urange_t atom_range = md_component_atom_range(&sys->component, 0);
-			for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-				md_flags_t atom_flags = md_atom_flags(&sys->atom, i);
-				if (atom_flags & MD_FLAG_BACKBONE) {
-					bb_prev = (int)i;
-                    break;
-				}
-            }
-        }
-        // Test consecutive components
-        for (size_t ci = 1; ci < sys->component.count; ++ci) {
-			int bb_i = -1;
-			md_flags_t comp_j_flags = md_component_flags(&sys->component, ci);
-            if ((comp_j_flags & MD_FLAG_AMINO_ACID)) {
-			    // Get the backbone atom index of the first component
-			    md_urange_t atom_range = md_component_atom_range(&sys->component, ci);
-			    for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-				    md_flags_t atom_i_flags = md_atom_flags(&sys->atom, i);
-				    if (atom_i_flags & MD_FLAG_BACKBONE) {
-					    bb_i = (int)i;
+        for (size_t ci = 0; ci < sys->component.count; ++ci) {
+            int bb_i = -1;
+            md_flags_t comp_flags = md_component_flags(&sys->component, ci);
+            if (comp_flags & MD_FLAG_AMINO_ACID) {
+                md_urange_t atom_range = md_component_atom_range(&sys->component, ci);
+                for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
+                    if (atom_flags_with_type(sys, i) & MD_FLAG_BACKBONE) {
+                        bb_i = (int)i;
                         break;
-				    }
+                    }
                 }
-                // Test internal components
-                for (size_t i = atom_range.beg; i + 1 < atom_range.end; ++i) {
-                    for (size_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
+                for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
+                    for (size_t j = i + 1; j < atom_range.end; ++j) {
                         test_bb_pair((int)i, (int)j, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
                     }
-				}
+                }
             }
             if (bb_prev >= 0 && bb_i >= 0) {
-				test_bb_pair(bb_prev, bb_i, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
-			}
-			bb_prev = bb_i;
+                test_bb_pair(bb_prev, bb_i, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
+            }
+            bb_prev = bb_i;
         }
 
         size_t num_candidates = md_array_size(candidates);
@@ -3851,7 +3864,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 candidates[i].atom_j,
             };
             md_array_push_no_grow(bond->pairs, pair);
-            md_array_push_no_grow(bond->flags, MD_BOND_FLAG_COVALENT);
+            md_array_push_no_grow(bond->flags, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_INFERRED);
             bond->count += 1;
         }
 	} else {
@@ -3960,7 +3973,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 }
                 const float d_cov = factor * sum_r;
                 if (d < d_cov) {
-                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT, temp_arena);
+                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_INFERRED, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
                 }
             } else if (mi ^ mj) { // XOR here (either is metal, but not both)
@@ -3968,7 +3981,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 int non_metal_e = mi ? ej : ei;
                 bool is_water = (comp_flags_i & MD_FLAG_WATER) || (comp_flags_j & MD_FLAG_WATER);
                 if (is_metal_donor(non_metal_e) && !is_water && d < d_coord) {
-                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE, temp_arena);
+                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_INFERRED, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
                     // Potentially strong / partially covalent if d < ~1.2
                     // Coordination bond (@TODO validate by geometrical matching)
@@ -3978,7 +3991,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 const float d_met = k_metal * sum_r;
                 if (is_transition_metal(ei) && is_transition_metal(ej)) {
                     if (d < d_met) {
-                        md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL, temp_arena);
+                        md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_INFERRED, temp_arena);
                         md_array_push(temp_bond_dist, d, temp_arena);
                     }
 				}
@@ -4051,15 +4064,56 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         }
     }
 
-    // Add back user defined bonds
-    if (md_array_size(bond_pairs) > 0) {
-        for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
-            md_array_push(bond->pairs, bond_pairs[i], alloc);
-            md_array_push(bond->flags, bond_flags[i], alloc);
+    // Reconcile the fresh inferred bonds with the kept ones:
+    // - an inferred bond naming a pair that is already kept is a duplicate, the kept one wins
+    // - where a topology (md_itp) defines the connectivity it is authoritative, so inferred bonds between two
+    //   atoms it covers are dropped, or re-inferring would add the distance guesses back on top of it
+    {
+        const size_t num_saved = md_array_size(bond_pairs);
+        if (num_saved > 0 && bond->count > 0) {
+            const size_t num_atoms = state->num_atoms;
+            uint64_t* covered = make_bitfield(num_atoms, temp_arena);
+
+            md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
+            for (size_t i = 0; i < num_saved; ++i) {
+                md_atom_pair_t pair = bond_pairs[i];
+                if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
+                saved_sorted[i] = pair;
+                if (bond_flags[i] & MD_BOND_FLAG_TOPOLOGY) {
+                    for (int k = 0; k < 2; ++k) {
+                        if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
+                    }
+                }
+            }
+            qsort(saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair);
+
+            size_t w = 0;
+            for (size_t i = 0; i < bond->count; ++i) {
+                const md_atom_pair_t pair = bond->pairs[i];
+                if (bitfield_test_bit(covered, pair.idx[0]) && bitfield_test_bit(covered, pair.idx[1])) continue;
+                md_atom_pair_t key = pair;
+                if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
+                if (bsearch(&key, saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
+                bond->pairs[w] = pair;
+                bond->flags[w] = bond->flags[i];
+                w += 1;
+            }
+            bond->count = w;
+            md_array_shrink(bond->pairs, w);
+            md_array_shrink(bond->flags, w);
         }
     }
-    
+
 done:
+    // Add back the kept bonds, after the inferred ones and in their original order. Also on the early exit above:
+    // missing coordinates mean nothing could be inferred, not that the kept bonds stop existing.
+    // @NOTE: bond->count used to be left out here, so the re-added bonds sat past the end of the valid range.
+    for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
+        md_array_push(bond->pairs, bond_pairs[i], alloc);
+        md_array_push(bond->flags, bond_flags[i], alloc);
+        bond->count += 1;
+    }
+
     md_temp_end(temp_scope);
 }
 
@@ -5175,6 +5229,118 @@ static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred
     return last;
 }
 
+static int32_t uf_find(int32_t* parent, int32_t x) {
+    while (parent[x] != x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    return x;
+}
+
+// Returns true if a and b were in different sets
+static bool uf_union(int32_t* parent, int32_t a, int32_t b) {
+    a = uf_find(parent, a);
+    b = uf_find(parent, b);
+    if (a == b) return false;
+    if (a < b) parent[b] = a; else parent[a] = b;
+    return true;
+}
+
+// Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
+//
+// md_structure_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
+// of it, not to be bonded to it. Coarse grained systems frequently have no bonds (md_util_system_infer skips
+// bond inference for them) or have a distance guess that misses stretched ones. So the missing links are
+// synthesized from the component hierarchy instead, WITHOUT looking at coordinates:
+//   - within a component, every bead hangs off the component's anchor (its backbone bead, else its first bead)
+//   - the anchors of consecutive polymer components (amino acid or nucleotide, same kind, consecutive sequence
+//     ids, same instance when instances are known) are linked along the chain
+// A link is only emitted between atoms that are not already connected, by bonds or by an earlier link, so a
+// fully bonded system gets none and the result stays a forest over bonds + links.
+//
+// Deliberately NOT done: distance based linking. In a dense coarse grained membrane or solvent that percolates
+// into one box spanning structure, and unwrapping that is meaningless. Non polymer components (lipids, sterols)
+// are not chained together either - an instance may hold hundreds of them in file order, not spatial order.
+//
+// The links are returned as pairs and never written to sys->bond: they are not bonds, must not be drawn and
+// must not feed ring detection.
+static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sys, md_allocator_i* alloc) {
+    md_array(md_atom_pair_t) links = 0;
+
+    const size_t atom_count = md_system_atom_count(sys);
+    const size_t comp_count = sys->component.count;
+    if (atom_count == 0 || comp_count == 0) {
+        return links;
+    }
+
+    int32_t* set = md_alloc(alloc, sizeof(int32_t) * atom_count);
+    for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
+
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        const md_atom_pair_t pair = sys->bond.pairs[i];
+        if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
+            uf_union(set, pair.idx[0], pair.idx[1]);
+        }
+    }
+
+    // Instance of each component, -1 when instances are unknown (they are normally inferred after structures)
+    int32_t* comp_inst = md_alloc(alloc, sizeof(int32_t) * comp_count);
+    for (size_t i = 0; i < comp_count; ++i) comp_inst[i] = -1;
+    for (size_t inst = 0; inst < sys->instance.count; ++inst) {
+        md_urange_t range = md_instance_component_range(&sys->instance, inst);
+        for (uint32_t ci = range.beg; ci < range.end && ci < comp_count; ++ci) {
+            comp_inst[ci] = (int32_t)inst;
+        }
+    }
+
+    const md_flags_t polymer_mask = MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE;
+
+    int32_t    prev_anchor = -1;
+    size_t     prev_comp   = 0;
+    md_flags_t prev_kind   = 0;
+
+    for (size_t ci = 0; ci < comp_count; ++ci) {
+        md_urange_t range = md_component_atom_range(&sys->component, ci);
+        if (range.end > atom_count) range.end = (uint32_t)atom_count;
+        if (range.beg >= range.end) {
+            prev_anchor = -1;
+            continue;
+        }
+
+        int32_t anchor = (int32_t)range.beg;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (atom_flags_with_type(sys, i) & MD_FLAG_BACKBONE) {
+                anchor = (int32_t)i;
+                break;
+            }
+        }
+
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if ((int32_t)i != anchor && uf_union(set, anchor, (int32_t)i)) {
+                md_atom_pair_t pair = {{ anchor, (int32_t)i }};
+                md_array_push(links, pair, alloc);
+            }
+        }
+
+        const md_flags_t kind = md_component_flags(&sys->component, ci) & polymer_mask;
+        if (kind && prev_anchor >= 0 && prev_comp + 1 == ci && prev_kind == kind &&
+            comp_inst[prev_comp] == comp_inst[ci] &&
+            (!sys->component.seq_id || md_component_seq_id(&sys->component, ci) == md_component_seq_id(&sys->component, prev_comp) + 1))
+        {
+            if (uf_union(set, prev_anchor, anchor)) {
+                md_atom_pair_t pair = {{ prev_anchor, anchor }};
+                md_array_push(links, pair, alloc);
+            }
+        }
+
+        prev_anchor = kind ? anchor : -1;
+        prev_comp   = ci;
+        prev_kind   = kind;
+    }
+
+    return links;
+}
+
 bool md_util_system_infer_structures(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);
@@ -5213,6 +5379,25 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     fifo_t atom_queue   = fifo_create(1024, temp_arena);
     fifo_t parent_queue = fifo_create(1024, temp_arena);
 
+    // The traversal runs over bonds, plus hierarchy links for coarse grained systems where bonds leave beads
+    // disconnected (see synthesize_hierarchy_links). The links only shape the forest; sys->bond is untouched.
+    const md_bond_data_t* graph = &sys->bond;
+    md_bond_data_t link_graph = {0};
+    if (system_is_coarse_grained(sys)) {
+        md_array(md_atom_pair_t) links = synthesize_hierarchy_links(sys, temp_arena);
+        const size_t num_links = md_array_size(links);
+        if (num_links > 0) {
+            link_graph.count = sys->bond.count + num_links;
+            md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
+            if (sys->bond.count) {
+                MEMCPY(link_graph.pairs, sys->bond.pairs, sizeof(md_atom_pair_t) * sys->bond.count);
+            }
+            MEMCPY(link_graph.pairs + sys->bond.count, links, sizeof(md_atom_pair_t) * num_links);
+            md_bond_build_connectivity(&link_graph, atom_count, temp_arena);
+            graph = &link_graph;
+        }
+    }
+
     // Sentinel start offset
     md_array_push(sys->structure.offset, 0, alloc);
 
@@ -5223,7 +5408,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         // from it. This is the sweep that claims the atoms in 'visited'; the atom list it produces is
         // what lets the following sweeps clear their bits without touching the rest of the system.
         size_t component_size = 0;
-        const int far_a = bfs_traverse(component, &component_size, NULL, visited, &atom_queue, &sys->bond, i);
+        const int far_a = bfs_traverse(component, &component_size, NULL, visited, &atom_queue, graph, i);
 
         // Locate the graph center: the atom whose greatest distance to any other atom in the
         // component is smallest. Standard double sweep - the midpoint of a longest path. Exact for
@@ -5233,7 +5418,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         if (component_size > 2) {
             // Sweep 2: from far_a, find the opposite end of the path and the chain leading back
             for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
-            const int far_b = bfs_traverse(NULL, NULL, pred, sweep_visited, &atom_queue, &sys->bond, far_a);
+            const int far_b = bfs_traverse(NULL, NULL, pred, sweep_visited, &atom_queue, graph, far_a);
 
             int length = 0;
             for (int a = far_b; a != pred[a]; a = pred[a]) length += 1;
@@ -5261,7 +5446,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
             md_array_push(sys->structure.atom_idx, cur, alloc);
             md_array_push(sys->structure.parent_idx, parent_idx, alloc);
 
-            md_bond_iter_t it = md_bond_iter(&sys->bond, cur);
+            md_bond_iter_t it = md_bond_iter(graph, cur);
             while (md_bond_iter_has_next(&it)) {
                 const int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
@@ -9551,7 +9736,8 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
-        if (sys->bond.count) {
+        // Coarse grained systems get a hierarchy even without bonds, see synthesize_hierarchy_links
+        if (sys->bond.count || cg) {
             md_util_system_infer_structures(sys);
             md_util_system_infer_rings(sys);
         }

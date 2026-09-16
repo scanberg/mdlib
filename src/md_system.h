@@ -652,7 +652,7 @@ typedef struct md_system_t {
     md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
-    md_structure_data_t         structure;          // Isolated structures connected by persistent bonds
+    md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
 
     md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
     

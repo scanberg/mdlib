@@ -101,7 +101,10 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const struc
 void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const float* in_x, const float* in_y, const float* in_z,
                                  const md_unitcell_t* unitcell, double max_dist, double min_angle);
 
-// Identify isolated structures by covalent bonds
+// Identify isolated structures by covalent bonds.
+// For coarse grained systems (any atom type flagged MD_FLAG_COARSE_GRAINED), beads the bonds leave disconnected are
+// joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
+// anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
 
 // Identify atom types within the system

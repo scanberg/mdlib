@@ -421,6 +421,298 @@ UTEST(util, structure_hierarchy) {
     }
 }
 
+// Appends a component of coarse grained beads. The first bead of an amino acid component is its BB bead.
+static void cg_add_component(md_system_t* sys, const char* comp_name, int seq_id, md_flags_t comp_flags, const char* atom_names[], size_t num_atoms, md_allocator_i* alloc) {
+    if (sys->atom.type.count == 0) {
+        // Type 0 is the "not found" sentinel
+        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
+    }
+    if (sys->component.count == 0) {
+        md_array_push(sys->component.atom_offset, 0, alloc);
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        md_flags_t flags = MD_FLAG_COARSE_GRAINED;
+        if ((comp_flags & MD_FLAG_AMINO_ACID) && strcmp(atom_names[i], "BB") == 0) {
+            flags |= MD_FLAG_BACKBONE;
+        }
+        md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, str_from_cstr(atom_names[i]), 0, 50.0f, 2.35f, 0xFFFFFFFF, flags, alloc);
+        md_array_push(sys->atom.type_idx, type, alloc);
+        md_array_push(sys->atom.flags, MD_FLAG_NONE, alloc);  // Flags only on the type, as the predefined CG types do
+        sys->atom.count += 1;
+    }
+    md_array_push(sys->component.name, make_label(str_from_cstr(comp_name)), alloc);
+    md_array_push(sys->component.seq_id, seq_id, alloc);
+    md_array_push(sys->component.flags, comp_flags, alloc);
+    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
+    sys->component.count += 1;
+}
+
+static void check_structure_invariants(int* utest_result, const md_system_t* sys) {
+    size_t total = 0;
+    for (size_t s = 0; s < md_structure_count(&sys->structure); ++s) {
+        md_structure_t structure = {0};
+        md_structure_extract(&structure, &sys->structure, s);
+        total += structure.count;
+        EXPECT_EQ(structure.parent_idx[0], structure.atom_idx[0]);
+        for (size_t k = 0; k < structure.count; ++k) {
+            const int32_t atom   = structure.atom_idx[k];
+            const int32_t parent = structure.parent_idx[k];
+            EXPECT_EQ(md_structure_atom_slot(&sys->structure, atom), (int32_t)(sys->structure.offset[s] + k));
+            if (k > 0) {
+                EXPECT_NE(parent, atom);
+                EXPECT_LT(md_structure_atom_slot(&sys->structure, parent), md_structure_atom_slot(&sys->structure, atom));
+            }
+        }
+    }
+    EXPECT_EQ(total, sys->atom.count);
+}
+
+// Coarse grained systems frequently carry no bonds. The structure hierarchy must then come from the
+// component hierarchy: beads hang off their component's anchor, consecutive polymer components are
+// chained, non polymer components stay separate, and nothing is written to sys->bond.
+UTEST(util, structure_hierarchy_coarse_grained_without_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {0};
+    sys.alloc = alloc;
+
+    const char* ala[] = {"BB"};
+    const char* lys[] = {"BB", "SC1", "SC2"};
+    const char* phe[] = {"BB", "SC1", "SC2", "SC3"};
+    const char* popc[] = {"NC3", "PO4", "GL1", "GL2", "C1A", "C1B"};
+    const char* w[] = {"W"};
+
+    cg_add_component(&sys, "LYS", 1, MD_FLAG_AMINO_ACID, lys, 3, alloc); // atoms 0-2
+    cg_add_component(&sys, "ALA", 2, MD_FLAG_AMINO_ACID, ala, 1, alloc); // atom  3
+    cg_add_component(&sys, "PHE", 3, MD_FLAG_AMINO_ACID, phe, 4, alloc); // atoms 4-7
+    cg_add_component(&sys, "ALA", 7, MD_FLAG_AMINO_ACID, ala, 1, alloc); // atom  8, sequence gap: new chain
+    cg_add_component(&sys, "ALA", 8, MD_FLAG_AMINO_ACID, ala, 1, alloc); // atom  9
+    cg_add_component(&sys, "POPC", 9, 0, popc, 6, alloc);                // atoms 10-15
+    cg_add_component(&sys, "POPC", 10, 0, popc, 6, alloc);               // atoms 16-21, must not join the previous lipid
+    cg_add_component(&sys, "W", 11, MD_FLAG_WATER, w, 1, alloc);         // atom  22
+
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    EXPECT_EQ(sys.bond.count, 0u);
+
+    ASSERT_EQ(md_structure_count(&sys.structure), 5u);
+    check_structure_invariants(utest_result, &sys);
+
+    // The first chain is a path of three anchors, so the middle one is the root
+    EXPECT_EQ(sys.structure.offset[1] - sys.structure.offset[0], 8u);
+    EXPECT_EQ(sys.structure.atom_idx[0], 3);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 0), 3);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 1), 0);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 2), 0);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 4), 3);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 7), 4);
+
+    // Second chain, broken off by the sequence gap
+    EXPECT_EQ(sys.structure.offset[2] - sys.structure.offset[1], 2u);
+
+    // Each lipid on its own, rooted at its first bead, and the water bead alone
+    EXPECT_EQ(sys.structure.offset[3] - sys.structure.offset[2], 6u);
+    EXPECT_EQ(sys.structure.offset[4] - sys.structure.offset[3], 6u);
+    EXPECT_EQ(sys.structure.offset[5] - sys.structure.offset[4], 1u);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 15), 10);
+    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 21), 16);
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Where bonds exist they are used, and links only fill in what they leave disconnected. A system that is
+// not coarse grained gets no links at all.
+UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    {
+        md_system_t sys = {0};
+        sys.alloc = alloc;
+        const char* lys[] = {"BB", "SC1", "SC2"};
+        cg_add_component(&sys, "LYS", 1, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+        cg_add_component(&sys, "LYS", 2, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+
+        // SC1-SC2 bonded within each residue, nothing else
+        md_atom_pair_t p0 = {{1, 2}};
+        md_atom_pair_t p1 = {{4, 5}};
+        md_array_push(sys.bond.pairs, p0, alloc);
+        md_array_push(sys.bond.pairs, p1, alloc);
+        sys.bond.count = 2;
+        md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        EXPECT_EQ(sys.bond.count, 2u);
+        ASSERT_EQ(md_structure_count(&sys.structure), 1u);
+        check_structure_invariants(utest_result, &sys);
+
+        // SC2 is reached through its bond to SC1, not through a redundant link to BB
+        EXPECT_EQ(md_structure_atom_parent(&sys.structure, 2), 1);
+        EXPECT_EQ(md_structure_atom_parent(&sys.structure, 5), 4);
+    }
+
+    {
+        md_system_t sys = {0};
+        sys.alloc = alloc;
+        const char* lys[] = {"BB", "SC1", "SC2"};
+        cg_add_component(&sys, "LYS", 1, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+        cg_add_component(&sys, "LYS", 2, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+        for (size_t i = 0; i < sys.atom.type.count; ++i) {
+            sys.atom.type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
+        }
+
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        EXPECT_EQ(md_structure_count(&sys.structure), 6u);
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// A bondless coarse grained chain wrapped into a small box must come out whole. The BB beads sit 3.8A
+// apart along x in a 10A box and each carries a side chain bead 3A up in y, across the cell boundary.
+UTEST(util, unwrap_structure_coarse_grained_without_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {0};
+    sys.alloc = alloc;
+    const char* res[] = {"BB", "SC1"};
+    enum { N = 7 };
+    for (int i = 0; i < N; ++i) {
+        cg_add_component(&sys, "LEU", i + 1, MD_FLAG_AMINO_ACID, res, 2, alloc);
+    }
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    ASSERT_EQ(md_structure_count(&sys.structure), 1u);
+
+    float x[2 * N], y[2 * N], z[2 * N];
+    for (int i = 0; i < N; ++i) {
+        x[2 * i]     = fmodf(1.0f + 3.8f * i, 10.0f);
+        y[2 * i]     = 8.5f;
+        z[2 * i]     = 5.0f;
+        x[2 * i + 1] = x[2 * i];
+        y[2 * i + 1] = fmodf(8.5f + 3.0f, 10.0f); // 3A up, wrapped to the bottom of the cell
+        z[2 * i + 1] = 5.0f;
+    }
+    md_system_state_t state = { .num_atoms = 2 * N, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
+
+    md_util_unwrap_system(&state, &sys);
+
+    for (int i = 0; i + 1 < N; ++i) {
+        EXPECT_NEAR(x[2 * (i + 1)] - x[2 * i], 3.8f, 1.0e-4f);
+    }
+    for (int i = 0; i < N; ++i) {
+        EXPECT_NEAR(x[2 * i + 1] - x[2 * i], 0.0f, 1.0e-4f);
+        EXPECT_NEAR(y[2 * i + 1] - y[2 * i], 3.0f, 1.0e-4f);
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// The coarse grained branch of covalent bond inference used to skip the first component, test every bead
+// against itself (always under the cutoff, so a self bond) and emit every other pair twice.
+UTEST(util, infer_bonds_coarse_grained) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {0};
+    sys.alloc = alloc;
+    const char* lys[] = {"BB", "SC1", "SC2"};
+    cg_add_component(&sys, "LYS", 1, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+    cg_add_component(&sys, "LYS", 2, MD_FLAG_AMINO_ACID, lys, 3, alloc);
+
+    // BB beads 3.8A apart, side chain beads 3A above their BB and 3A from each other
+    float x[] = {0, 0, 0,   3.8f, 3.8f, 3.8f};
+    float y[] = {0, 3, 6,   0,    3,    6};
+    float z[] = {0, 0, 0,   0,    0,    0};
+    md_system_state_t state = { .num_atoms = 6, .x = x, .y = y, .z = z };
+
+    md_bond_data_t bond = {0};
+    md_util_infer_covalent_bonds(&bond, &state, &sys, alloc);
+
+    // (0,1) (1,2) (3,4) (4,5) within residues, (0,3) between backbones. 0-2 is 6A, over the cutoff.
+    EXPECT_EQ(bond.count, 5u);
+    bool has[6][6] = {0};
+    for (size_t i = 0; i < bond.count; ++i) {
+        const int a = bond.pairs[i].idx[0];
+        const int b = bond.pairs[i].idx[1];
+        EXPECT_NE(a, b);
+        EXPECT_FALSE(has[a][b] || has[b][a]);
+        has[a][b] = true;
+    }
+    EXPECT_TRUE(has[0][1] && has[1][2] && has[3][4] && has[4][5] && has[0][3]);
+    for (size_t i = 0; i < bond.count; ++i) {
+        EXPECT_EQ((int)bond.flags[i], (int)(MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_INFERRED));
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Bond inference marks what it produces as MD_BOND_FLAG_INFERRED, and re-inference replaces only those. A bond
+// without the flag (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
+// is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.
+UTEST(util, infer_bonds_replaces_only_inferred) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    // Four carbons 1.5A apart along x: inference finds 0-1, 1-2, 2-3
+    md_system_t sys = { .alloc = alloc };
+    md_atom_type_find_or_add(&sys.atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
+    md_atom_type_idx_t c = md_atom_type_find_or_add(&sys.atom.type, STR_LIT("C"), 6, 12.011f, 0.76f, 0, 0, alloc);
+    for (int i = 0; i < 5; ++i) {
+        md_array_push(sys.atom.type_idx, c, alloc);
+        md_array_push(sys.atom.flags, MD_FLAG_NONE, alloc);
+        sys.atom.count += 1;
+    }
+    float x[] = {0.0f, 1.5f, 3.0f, 4.5f, 20.0f};
+    float y[] = {0, 0, 0, 0, 0};
+    float z[] = {0, 0, 0, 0, 0};
+    md_system_state_t state = { .num_atoms = 5, .x = x, .y = y, .z = z };
+
+    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc);
+    ASSERT_EQ(sys.bond.count, 3u);
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        EXPECT_TRUE(sys.bond.flags[i] & MD_BOND_FLAG_INFERRED);
+    }
+
+    // Kept bonds placed FIRST, so nothing may rely on them trailing: a file bond duplicating an inferred pair,
+    // a file bond inference would never find, a user bond and a topology bond.
+    md_bond_flags_t* flags = 0;
+    md_atom_pair_t*  pairs = 0;
+    const md_atom_pair_t kept_pairs[] = {{{1, 2}}, {{3, 4}}, {{0, 4}}, {{2, 4}}};
+    const md_bond_flags_t kept_flags[] = {MD_BOND_FLAG_COVALENT, MD_BOND_FLAG_COVALENT, MD_BOND_FLAG_USER_DEFINED, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_TOPOLOGY};
+    for (size_t i = 0; i < 4; ++i) {
+        md_array_push(pairs, kept_pairs[i], alloc);
+        md_array_push(flags, kept_flags[i], alloc);
+    }
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        md_array_push(pairs, sys.bond.pairs[i], alloc);
+        md_array_push(flags, sys.bond.flags[i], alloc);
+    }
+    md_bond_data_clear(&sys.bond);
+    for (size_t i = 0; i < md_array_size(pairs); ++i) {
+        md_array_push(sys.bond.pairs, pairs[i], alloc);
+        md_array_push(sys.bond.flags, flags[i], alloc);
+    }
+    sys.bond.count = md_array_size(pairs);
+
+    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc);
+
+    // Inferred 0-1 and 2-3 (1-2 is already kept), then the four kept bonds in their original order
+    ASSERT_EQ(sys.bond.count, 6u);
+    size_t num_inferred = 0;
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (sys.bond.flags[i] & MD_BOND_FLAG_INFERRED) num_inferred += 1;
+    }
+    EXPECT_EQ(num_inferred, 2u);
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(sys.bond.pairs[2 + i].idx[0], kept_pairs[i].idx[0]);
+        EXPECT_EQ(sys.bond.pairs[2 + i].idx[1], kept_pairs[i].idx[1]);
+        EXPECT_EQ((int)sys.bond.flags[2 + i], (int)kept_flags[i]);
+    }
+
+    // No coordinates: nothing is inferred, the kept bonds are still there
+    md_system_state_t empty = { .num_atoms = 5 };
+    md_util_infer_covalent_bonds(&sys.bond, &empty, &sys, alloc);
+    EXPECT_EQ(sys.bond.count, 4u);
+
+    md_vm_arena_destroy(alloc);
+}
+
 // A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
 // itself twice. md_util_unwrap_structure must recover a straight line.
 //

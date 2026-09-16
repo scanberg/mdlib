@@ -132,6 +132,8 @@ set(SRC_FILES
   src/md_gro.h
   src/md_gto.c
   src/md_gto.h
+  src/md_itp.c
+  src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
   src/md_lammps.c

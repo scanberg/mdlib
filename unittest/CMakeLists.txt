@@ -29,6 +29,7 @@ set (SRC_FILES
     test_pdb.c
     test_attributes.c
     test_gro.c
+    test_itp.c
     test_trr.c
     test_mmcif.c
     test_util.c

@@ -86,7 +86,8 @@ typedef enum {
 
 ENUM_FLAGS(md_flags_t)
 
-// In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
+// Bond flags. The low byte describes the bond chemically (order, aromatic, coordinate, metal); the bits above it
+// record where the bond came from. Only the low byte is part of a bond's identity when comparing structures.
 typedef enum {
 	MD_BOND_FLAG_NONE           = 0,
     MD_BOND_FLAG_COVALENT       = 0x1,
@@ -96,7 +97,12 @@ typedef enum {
     MD_BOND_FLAG_AROMATIC       = 0x10,
     MD_BOND_FLAG_COORDINATE     = 0x20, // Coordinate / Dative
     MD_BOND_FLAG_METAL          = 0x40, // Involves a metal atom
-	MD_BOND_FLAG_USER_DEFINED   = 0x80, // User defined bond
+
+    MD_BOND_FLAG_INFERRED       = 0x100, // Inferred from the structure, not explicitly defined in the topology
+	MD_BOND_FLAG_USER_DEFINED   = 0x200, // User defined bond
+    MD_BOND_FLAG_TOPOLOGY       = 0x400, // Defined by a force field topology, not inferred
+
+    MD_BOND_FLAG_ORIGIN_MASK    = MD_BOND_FLAG_INFERRED | MD_BOND_FLAG_USER_DEFINED | MD_BOND_FLAG_TOPOLOGY,
 } md_bond_flags_t;
 
 ENUM_FLAGS(md_bond_flags_t)
