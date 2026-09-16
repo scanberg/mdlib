@@ -130,6 +130,9 @@
 #if defined(__ARM_FEATURE_CRYPTO) && __ARM_FEATURE_CRYPTO
 #  define SIMDE_ARCH_ARM_CRYPTO
 #endif
+#if defined(__ARM_FEATURE_CRC32) && __ARM_FEATURE_CRC32
+#  define SIMDE_ARCH_ARM_CRC32
+#endif
 #if defined(__ARM_FEATURE_DOTPROD) && __ARM_FEATURE_DOTPROD
 #  define SIMDE_ARCH_ARM_DOTPROD
 #endif
@@ -163,8 +166,14 @@
 #if defined(__ARM_FEATURE_SVE) && __ARM_FEATURE_SVE
 #  define SIMDE_ARCH_ARM_SVE
 #endif
+#if defined(__ARM_FEATURE_SVE2) && __ARM_FEATURE_SVE2
+#  define SIMDE_ARCH_ARM_SVE2
+#endif
 #if defined(__ARM_FEATURE_QRDMX) && __ARM_FEATURE_QRDMX
 #  define SIMDE_ARCH_ARM_QRDMX
+#endif
+#if defined(__ARM_FEATURE_SVE2_BITPERM) && __ARM_FEATURE_SVE2_BITPERM
+#  define SIMDE_ARCH_ARM_SVE2_BITPERM
 #endif
 
 /* Blackfin
@@ -384,6 +393,12 @@
 #  if defined(__AES__)
 #    define SIMDE_ARCH_X86_AES 1
 #  endif
+#  if defined(__BMI__)
+#    define SIMDE_ARCH_X86_BMI1 1
+#  endif
+#  if defined(__BMI2__)
+#    define SIMDE_ARCH_X86_BMI2 1
+#  endif
 #endif
 
 /* Itanium
@@ -538,7 +553,7 @@
 #if defined(__riscv_zve64d)
 #  define SIMDE_ARCH_RISCV_ZVE64D 1
 #endif
-#if defined(__riscv_v)
+#if defined(__riscv_v) || (defined(__riscv_zve64d) && defined(__riscv_zvl128b))
 #  define SIMDE_ARCH_RISCV_V 1
 #endif
 #if defined(__riscv_zvfh)
