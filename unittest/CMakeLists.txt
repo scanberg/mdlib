@@ -157,6 +157,24 @@ function(discover_tests TARGET)
   )
 endfunction()
 
+# The basis sets have to sit beside the executable, because MD_VLX_BASIS_FOLDER is resolved
+# against it - the same arrangement a consuming application uses, so the tests exercise the
+# lookup as it actually ships rather than a path that only exists in this source tree.
+#
+# Only when mdlib owns the bin directory. Embedded in a parent project the parent puts them
+# there for its own executable, and md_unittest sits in the same directory; copying again
+# from here would declare the same output files twice.
+if (MD_ENABLE_VLX AND NOT MD_HAS_PARENT)
+    set(MD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+    get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if (_is_multi_config)
+        set(MD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
+    endif()
+    create_copy_resource_dir_target(md_unittest_copy_basis
+        "${CMAKE_CURRENT_SOURCE_DIR}/../ext/veloxchem/basis" "${MD_BIN_DIR}/basis")
+    add_dependencies(md_unittest md_unittest_copy_basis)
+endif()
+
 discover_tests(md_unittest
   PROPERTIES
     LABELS "unit"

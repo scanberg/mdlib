@@ -273,8 +273,14 @@ endif()
 
 if (MD_ENABLE_VLX)
   list(APPEND SRC_FILES src/md_vlx.c src/md_vlx.h)
+  # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
+  # before this value. An absolute path here - which is what this defaulted to - produced
+  # "<exe_dir>/<abs_source_path>/<ident>", a path that cannot exist, so every basis lookup
+  # failed and silently fell back to searching beside the data file. A consumer that sets
+  # nothing should get a binary that can be moved, so that is the default; putting the basis
+  # sets next to the executable is the build's job.
   if(NOT DEFINED MD_VLX_BASIS_FOLDER)
-    set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
+    set(MD_VLX_BASIS_FOLDER "basis")
   endif()
   list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
 endif()
@@ -426,6 +432,10 @@ elseif ((COMPILER_TYPE STREQUAL "MSVC"))
 endif()
 
 set(MD_FLAGS ${MD_FLAGS} ${MD_FLAGS_AVX})
+
+# Whether mdlib owns the runtime output directory. Embedded in a parent project it does not, and
+# the parent is the one that places resources beside the executables.
+get_directory_property(MD_HAS_PARENT PARENT_DIRECTORY)
 
 if (MD_UNITTEST)
   enable_testing()
