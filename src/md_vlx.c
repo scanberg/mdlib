@@ -3199,6 +3199,13 @@ static void vlx_symmetrize_square(double* mat, size_t dim) {
 	}
 }
 
+// D_ao = C^T P C over the MO block [mo_offset, mo_offset + mo_count), with C stored row per MO.
+//
+// Both contractions are accumulated into their destination rather than summed into a scalar, so
+// every innermost loop walks one ROW of C, of the work matrix and of the output - all contiguous.
+// Written as inner products instead, the innermost loop strides down a column of C by num_ao
+// doubles and misses cache on essentially every step; at 1600 atomic orbitals that alone cost an
+// order of magnitude more than the arithmetic.
 static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_density, const double* coeff, size_t mo_offset, size_t mo_count, size_t num_ao) {
 	ASSERT(out_ao);
 	ASSERT(mo_density);
@@ -3206,24 +3213,97 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 
 	md_temp_scope_t temp = md_temp_begin();
 	double* work = md_temp_alloc_array(temp, double, mo_count * num_ao);
+	MEMSET(work, 0, sizeof(double) * mo_count * num_ao);
 
+	// work = P C
 	for (size_t i = 0; i < mo_count; ++i) {
-		for (size_t ao = 0; ao < num_ao; ++ao) {
-			double sum = 0.0;
-			for (size_t j = 0; j < mo_count; ++j) {
-				sum += mo_density[i * mo_count + j] * coeff[(mo_offset + j) * num_ao + ao];
+		double* work_row = work + i * num_ao;
+		for (size_t j = 0; j < mo_count; ++j) {
+			const double p = mo_density[i * mo_count + j];
+			if (p == 0.0) {
+				continue;
 			}
-			work[i * num_ao + ao] = sum;
+			const double* coeff_row = coeff + (mo_offset + j) * num_ao;
+			for (size_t ao = 0; ao < num_ao; ++ao) {
+				work_row[ao] += p * coeff_row[ao];
+			}
+		}
+	}
+
+	// out = C^T work
+	MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
+	for (size_t i = 0; i < mo_count; ++i) {
+		const double* coeff_row = coeff + (mo_offset + i) * num_ao;
+		const double* work_row  = work + i * num_ao;
+		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
+			const double c = coeff_row[ao_i];
+			if (c == 0.0) {
+				continue;
+			}
+			double* out_row = out_ao + ao_i * num_ao;
+			for (size_t ao_j = 0; ao_j < num_ao; ++ao_j) {
+				out_row[ao_j] += c * work_row[ao_j];
+			}
+		}
+	}
+
+	md_temp_end(temp);
+}
+
+// The attachment density in the AO basis, WITHOUT ever forming its virtual x virtual MO block.
+//
+// With t the (occupied x virtual) amplitudes, the attachment density is C_v^T (t^T t) C_v, which
+// factorises as B^T B with B = t C_v - one (occupied x atomic orbital) matrix. That turns
+// nvir^2 * nao + nao^2 * nvir arithmetic into nocc * nvir * nao + nocc * nao^2, and nocc is the
+// small dimension: at 1600 atomic orbitals with 100 occupied it is two orders of magnitude less
+// work, and it is the same matrix, not an approximation of it.
+//
+// B^T B is symmetric by construction, so only the upper triangle is accumulated and then mirrored.
+static void vlx_build_attachment_density_ao(double* out_ao, const double* amp, size_t nocc, size_t nvir,
+	const double* coeff, size_t num_ao)
+{
+	ASSERT(out_ao);
+	ASSERT(amp);
+	ASSERT(coeff);
+
+	md_temp_scope_t temp = md_temp_begin();
+
+	// B = t C_v, one row per occupied orbital.
+	double* B = md_temp_alloc_array(temp, double, nocc * num_ao);
+	MEMSET(B, 0, sizeof(double) * nocc * num_ao);
+
+	for (size_t i = 0; i < nocc; ++i) {
+		double* b_row = B + i * num_ao;
+		for (size_t a = 0; a < nvir; ++a) {
+			const double t = amp[i * nvir + a];
+			if (t == 0.0) {
+				continue;
+			}
+			const double* coeff_row = coeff + (nocc + a) * num_ao;
+			for (size_t ao = 0; ao < num_ao; ++ao) {
+				b_row[ao] += t * coeff_row[ao];
+			}
+		}
+	}
+
+	MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
+	for (size_t i = 0; i < nocc; ++i) {
+		const double* b_row = B + i * num_ao;
+		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
+			const double b = b_row[ao_i];
+			if (b == 0.0) {
+				continue;
+			}
+			double* out_row = out_ao + ao_i * num_ao;
+			for (size_t ao_j = ao_i; ao_j < num_ao; ++ao_j) {
+				out_row[ao_j] += b * b_row[ao_j];
+			}
 		}
 	}
 
 	for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
-		for (size_t ao_j = 0; ao_j < num_ao; ++ao_j) {
-			double sum = 0.0;
-			for (size_t i = 0; i < mo_count; ++i) {
-				sum += coeff[(mo_offset + i) * num_ao + ao_i] * work[i * num_ao + ao_j];
-			}
-			out_ao[ao_i * num_ao + ao_j] = sum;
+		for (size_t ao_j = ao_i + 1; ao_j < num_ao; ++ao_j) {
+			out_ao[ao_j * num_ao + ao_i] = out_ao[ao_i * num_ao + ao_j];
 		}
 	}
 
@@ -3257,61 +3337,48 @@ static bool vlx_build_transition_density_matrix(double* out_matrix, const double
 	}
 
 	md_temp_scope_t temp = md_temp_begin();
-	double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
-	double* attach_mo = md_temp_alloc_array(temp, double, nvir * nvir);
-	double* detach_ao = NULL;
-	MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
-	MEMSET(attach_mo, 0, sizeof(double) * nvir * nvir);
 
-	for (size_t i = 0; i < nocc; ++i) {
-		for (size_t j = i; j < nocc; ++j) {
-			double value = 0.0;
-			for (size_t a = 0; a < nvir; ++a) {
-				const size_t ia = i * nvir + a;
-				const size_t ja = j * nvir + a;
-                const double z_i = solution_vector[ia];
-                const double z_j = solution_vector[ja];
-                const double y_i = has_y ? solution_vector[amp_count + ia] : 0.0;
-                const double y_j = has_y ? solution_vector[amp_count + ja] : 0.0;
-				const double t_i = z_i - y_i;
-				const double t_j = z_j - y_j;
-				value += t_i * t_j;
-			}
-			detach_mo[i * nocc + j] = value;
-			detach_mo[j * nocc + i] = value;
+	// t = X - Y, formed once. It was previously reassembled inside both accumulation loops, which
+	// put a branch on has_y in the innermost loop of the whole reconstruction.
+	double* amp = md_temp_alloc_array(temp, double, amp_count);
+	if (has_y) {
+		for (size_t k = 0; k < amp_count; ++k) {
+			amp[k] = solution_vector[k] - solution_vector[amp_count + k];
 		}
-	}
-
-	for (size_t a = 0; a < nvir; ++a) {
-		for (size_t b = a; b < nvir; ++b) {
-			double value = 0.0;
-			for (size_t i = 0; i < nocc; ++i) {
-				const size_t ia = i * nvir + a;
-				const size_t ib = i * nvir + b;
-                const double z_i = solution_vector[ia];
-                const double z_j = solution_vector[ib];
-                const double y_i = has_y ? solution_vector[amp_count + ia] : 0.0;
-                const double y_j = has_y ? solution_vector[amp_count + ib] : 0.0;
-				const double t_a = z_i - y_i;
-				const double t_b = z_j - y_j;
-				value += t_a * t_b;
-			}
-			attach_mo[a * nvir + b] = value;
-			attach_mo[b * nvir + a] = value;
-		}
-	}
-
-	if (type == VLX_TRANSITION_DETACHMENT) {
-		vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff, 0, nocc, num_ao);
 	} else {
-		vlx_transform_mo_density_to_ao(out_matrix, attach_mo, coeff, nocc, nvir, num_ao);
-		if (type == VLX_TRANSITION_DIFFERENCE) {
-			detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
+		MEMCPY(amp, solution_vector, sizeof(double) * amp_count);
+	}
+
+	// The detachment density keeps the MO space route: its block is occupied x occupied, which is
+	// the small dimension, and factorising it the way the attachment density is factorised below
+	// would contract over the virtual index instead and cost more, not less.
+	if (type == VLX_TRANSITION_DETACHMENT || type == VLX_TRANSITION_DIFFERENCE) {
+		double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
+		MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
+
+		for (size_t i = 0; i < nocc; ++i) {
+			for (size_t j = i; j < nocc; ++j) {
+				double value = 0.0;
+				for (size_t a = 0; a < nvir; ++a) {
+					value += amp[i * nvir + a] * amp[j * nvir + a];
+				}
+				detach_mo[i * nocc + j] = value;
+				detach_mo[j * nocc + i] = value;
+			}
+		}
+
+		if (type == VLX_TRANSITION_DETACHMENT) {
+			vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff, 0, nocc, num_ao);
+		} else {
+			double* detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
 			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff, 0, nocc, num_ao);
+			vlx_build_attachment_density_ao(out_matrix, amp, nocc, nvir, coeff, num_ao);
 			for (size_t i = 0; i < num_ao * num_ao; ++i) {
 				out_matrix[i] -= detach_ao[i];
 			}
 		}
+	} else {
+		vlx_build_attachment_density_ao(out_matrix, amp, nocc, nvir, coeff, num_ao);
 	}
 
 	vlx_symmetrize_square(out_matrix, num_ao);
@@ -4299,6 +4366,14 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	if (nocc == 0 || nvir == 0 || num_ao == 0 || num_states == 0) {
 		MD_LOG_ERROR("'" STR_FMT "': %zu occupied, %zu virtual, %zu atomic orbitals, %zu states - none of these may be zero",
 			STR_ARG(attr->path), nocc, nvir, num_ao, num_states);
+		return 0;
+	}
+
+	// The reconstruction reads coefficient rows 0 .. nocc + nvir, which are counts published
+	// separately from the matrix: a file where they exceed its rows is a read past its end.
+	if (nocc + nvir > num_mo) {
+		MD_LOG_ERROR("'" STR_FMT "': %zu occupied + %zu virtual orbitals, but '" STR_FMT "' holds %zu",
+			STR_ARG(attr->path), nocc, nvir, STR_ARG(coeff->path), num_mo);
 		return 0;
 	}
 
