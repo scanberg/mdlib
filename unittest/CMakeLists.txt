@@ -22,6 +22,7 @@ set (SRC_FILES
     test_handle.c
     test_edr.c
     test_cube.c
+    test_fifo.c
     test_intrinsics.c
     test_simd.c
     test_vec_math.c

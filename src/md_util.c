@@ -18,6 +18,7 @@
 #include <core/md_str_builder.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
+#include <core/md_fifo.h>
 
 #include <math.h>
 #include <string.h>
@@ -820,73 +821,6 @@ void radix_sort_indices_uint32(const uint32_t* keys,    // array of keys (e.g., 
     if (src != indices) {
         MEMCPY(indices, src, count * sizeof(uint32_t));
     }
-}
-
-typedef struct fifo_t {
-    int* data;
-    uint32_t head;
-    uint32_t tail;
-    uint32_t size;
-    uint32_t capacity;
-    md_allocator_i* alloc;
-} fifo_t;
-
-static inline bool fifo_empty(fifo_t* fifo) { return fifo->size == 0; }
-static inline bool fifo_full(fifo_t* fifo)  { return fifo->size == fifo->capacity; }
-
-static inline fifo_t fifo_create(size_t capacity, md_allocator_i* alloc) {
-    ASSERT(alloc);
-    capacity = next_power_of_two64(MAX(16, capacity));
-    fifo_t fifo = {
-        .data = md_alloc(alloc, sizeof(int) * capacity),
-        .head = 0,
-        .tail = 0,
-        .size = 0,
-        .capacity = (uint32_t)capacity,
-        .alloc = alloc,
-    };
-#if DEBUG
-    // Clear memory to make debugging easier
-    MEMSET(fifo.data, 0, sizeof(int) * fifo.capacity);
-#endif
-    return fifo;
-}
-
-static inline void fifo_free(fifo_t* fifo) {
-    ASSERT(fifo);
-    md_free(fifo->alloc, fifo->data, sizeof(int) * fifo->capacity);
-    MEMSET(fifo, 0, sizeof(fifo_t));
-}
-
-static inline void fifo_clear(fifo_t* fifo) {
-    fifo->head = 0;
-    fifo->tail = 0;
-    fifo->size = 0;
-#if DEBUG
-    // Clear memory to make debugging easier
-    MEMSET(fifo->data, 0, sizeof(int) * fifo->capacity);
-#endif
-}
-
-static inline void fifo_push(fifo_t* fifo, int value) {
-    ASSERT(fifo);
-    ASSERT(fifo->data);
-    if (fifo_full(fifo)) {
-        uint32_t new_capacity = next_power_of_two32(fifo->capacity * 2);
-        fifo->data = md_realloc(fifo->alloc, fifo->data, sizeof(int) * fifo->capacity, sizeof(int) * new_capacity);
-        fifo->capacity = new_capacity;
-    }
-    fifo->data[fifo->head] = value;
-    fifo->head = (fifo->head + 1) & (fifo->capacity - 1);
-    fifo->size += 1;
-}
-
-static inline int fifo_pop(fifo_t* fifo) {
-    ASSERT(!fifo_empty(fifo));
-    int val = fifo->data[fifo->tail];
-    fifo->tail = (fifo->tail + 1) & (fifo->capacity - 1);
-    fifo->size -= 1;
-    return val;
 }
 
 static md_array(uint64_t) make_bitfield(size_t num_bits, md_allocator_i* alloc) {
@@ -3091,11 +3025,11 @@ static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp
     md_temp_scope_t temp = md_temp_begin_in(temp_arena);
 
     int* depth = md_temp_alloc_array(temp, int, graph->vertex_count);
-    fifo_t fifo = fifo_create(32, temp_arena);
+    md_fifo_t fifo = md_fifo_create(32, temp_arena);
 
-    fifo_push(&fifo, start_idx);
-    while (!fifo_empty(&fifo)) {
-        int idx = fifo_pop(&fifo);
+    md_fifo_push(&fifo, start_idx);
+    while (!md_fifo_empty(&fifo)) {
+        int idx = md_fifo_pop(&fifo);
         int d = depth[idx] + 1;
         graph_edge_iter_t it = graph_edge_iter(graph, idx);
         while (graph_edge_iter_has_next(it)) {
@@ -3103,7 +3037,7 @@ static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp
             // @NOTE: We do not care about the minimum depth, for each node
             if (other_idx != start_idx && depth[other_idx] == 0) {
                 depth[other_idx] = d;
-                fifo_push(&fifo, other_idx);
+                md_fifo_push(&fifo, other_idx);
             }
             graph_edge_iter_next(&it);
         }
@@ -5060,7 +4994,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     MEMSET(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
     // The capacity is arbitrary here, but will be resized if needed.
-    fifo_t queue = fifo_create(64, temp_arena);
+    md_fifo_t queue = md_fifo_create(64, temp_arena);
 
     md_hashset_t ring_set = {.allocator = temp_arena};
     
@@ -5078,10 +5012,10 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         pred [atom_idx] = -1;
         mark [atom_idx] = current_mark++;
 
-        fifo_clear(&queue);
-        fifo_push(&queue, atom_idx);
-        while (!fifo_empty(&queue)) {
-            int idx = fifo_pop(&queue);
+        md_fifo_clear(&queue);
+        md_fifo_push(&queue, atom_idx);
+        while (!md_fifo_empty(&queue)) {
+            int idx = md_fifo_pop(&queue);
 
             md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
             while (md_bond_iter_has_next(&it)) {
@@ -5171,7 +5105,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
                     depth[next] = d;
                     pred[next]  = idx;
                     mark[next]  = current_mark;
-                    fifo_push(&queue, next);
+                    md_fifo_push(&queue, next);
                 }
             }
         }
@@ -5196,18 +5130,18 @@ bool md_util_system_infer_rings(md_system_t* sys) {
 //
 // Returns the last atom popped from the queue. BFS pops in non decreasing distance order, so that
 // atom is at maximum edge distance from the seed - which is what the double sweep below needs.
-static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred, uint64_t* visited, fifo_t* queue, const md_bond_data_t* bond, int seed) {
-    fifo_clear(queue);
+static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred, uint64_t* visited, md_fifo_t* queue, const md_bond_data_t* bond, int seed) {
+    md_fifo_clear(queue);
 
     bitfield_set_bit(visited, seed);
     if (out_pred) out_pred[seed] = seed;
-    fifo_push(queue, seed);
+    md_fifo_push(queue, seed);
 
     size_t count = 0;
     int last = seed;
 
-    while (!fifo_empty(queue)) {
-        const int cur = fifo_pop(queue);
+    while (!md_fifo_empty(queue)) {
+        const int cur = md_fifo_pop(queue);
         last = cur;
         if (out_atoms) out_atoms[count] = cur;
         count += 1;
@@ -5221,7 +5155,7 @@ static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred
 
             bitfield_set_bit(visited, next);
             if (out_pred) out_pred[next] = cur;
-            fifo_push(queue, next);
+            md_fifo_push(queue, next);
         }
     }
 
@@ -5370,14 +5304,14 @@ bool md_util_system_infer_structures(md_system_t* sys) {
 
     // Atoms of the component currently being processed, and the predecessor of each atom as recorded
     // by the second sweep. Only the entries belonging to the current component are meaningful.
-    int32_t* component = md_temp_alloc_array(temp, int32_t, atom_count);
-    int32_t* pred      = md_temp_alloc_array(temp, int32_t, atom_count);
+    int32_t* component = md_temp_alloc_zero_array(temp, int32_t, atom_count);
+    int32_t* pred      = md_temp_alloc_zero_array(temp, int32_t, atom_count);
 
     // Parallel queues:
     // - atom_queue   : global atom index to visit
     // - parent_queue : global index of the atom it was reached from (the root is its own parent)
-    fifo_t atom_queue   = fifo_create(1024, temp_arena);
-    fifo_t parent_queue = fifo_create(1024, temp_arena);
+    md_fifo_t atom_queue   = md_fifo_create(1024, temp_arena);
+    md_fifo_t parent_queue = md_fifo_create(1024, temp_arena);
 
     // The traversal runs over bonds, plus hierarchy links for coarse grained systems where bonds leave beads
     // disconnected (see synthesize_hierarchy_links). The links only shape the forest; sys->bond is untouched.
@@ -5431,16 +5365,16 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         // slot(parent) < slot(child) invariant md_structure_data_t documents.
         for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
 
-        fifo_clear(&atom_queue);
-        fifo_clear(&parent_queue);
+        md_fifo_clear(&atom_queue);
+        md_fifo_clear(&parent_queue);
 
         bitfield_set_bit(sweep_visited, root);
-        fifo_push(&atom_queue, root);
-        fifo_push(&parent_queue, root);   // the root is its own parent
+        md_fifo_push(&atom_queue, root);
+        md_fifo_push(&parent_queue, root);   // the root is its own parent
 
-        while (!fifo_empty(&atom_queue)) {
-            const int cur        = fifo_pop(&atom_queue);
-            const int parent_idx = fifo_pop(&parent_queue);
+        while (!md_fifo_empty(&atom_queue)) {
+            const int cur        = md_fifo_pop(&atom_queue);
+            const int parent_idx = md_fifo_pop(&parent_queue);
 
             sys->structure.atom_slot[cur] = (int32_t)md_array_size(sys->structure.atom_idx);
             md_array_push(sys->structure.atom_idx, cur, alloc);
@@ -5454,8 +5388,8 @@ bool md_util_system_infer_structures(md_system_t* sys) {
                 if (bitfield_test_bit(sweep_visited, next)) continue;
 
                 bitfield_set_bit(sweep_visited, next);
-                fifo_push(&atom_queue, next);
-                fifo_push(&parent_queue, cur);
+                md_fifo_push(&atom_queue, next);
+                md_fifo_push(&parent_queue, cur);
             }
         }
 
@@ -5836,7 +5770,7 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     const size_t num_indices = md_bitfield_iter_extract_indices(indices, mask_size, md_bitfield_iter_create(mask));
     ASSERT(num_indices == mask_size);
 
-    fifo_t queue = fifo_create(64, temp_alloc);
+    md_fifo_t queue = md_fifo_create(64, temp_alloc);
 
     uint8_t* depth = md_temp_alloc_array(temp_scope, uint8_t, sys->atom.count);
 
@@ -5851,11 +5785,11 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     for (size_t j = 0; j < num_indices; ++j) {
         int i = indices[j];
 
-        fifo_clear(&queue);
-        fifo_push(&queue, i);
+        md_fifo_clear(&queue);
+        md_fifo_push(&queue, i);
         
-        while (!fifo_empty(&queue)) {
-            int idx = fifo_pop(&queue);
+        while (!md_fifo_empty(&queue)) {
+            int idx = md_fifo_pop(&queue);
             md_bitfield_set_bit(mask, idx);
 
             md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
@@ -5872,7 +5806,7 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
                 if (dn == 0 || dc < dn) {
                     depth[next] = dc;
                     if (dc <= extent) {
-                        fifo_push(&queue, next);
+                        md_fifo_push(&queue, next);
                     }
                 }
             }
