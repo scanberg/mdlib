@@ -1,4 +1,5 @@
 #include <md_trr.h>
+#include <md_xdr.h>
 #include <md_system.h>
 
 #include <md_util.h>
@@ -48,122 +49,6 @@ typedef struct trr_reader_t {
     md_array(uint8_t) frame_data;
     md_allocator_i* arena;
 } trr_reader_t;
-
-// =====================================================================
-// Internal helpers: big-endian primitive extraction
-// TRR files use the XDR encoding which is big-endian.
-// =====================================================================
-
-static inline bool trr_read_int32(int32_t* out, md_file_t f) {
-    uint32_t raw;
-    if (md_file_read(f, &raw, sizeof(raw)) != sizeof(raw)) return false;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP32(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(int32_t));
-    return true;
-}
-
-static inline bool trr_read_float(float* out, md_file_t f) {
-    uint32_t raw;
-    if (md_file_read(f, &raw, sizeof(raw)) != sizeof(raw)) return false;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP32(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(float));
-    return true;
-}
-
-static inline bool trr_read_double(double* out, md_file_t f) {
-    uint64_t raw;
-    if (md_file_read(f, &raw, sizeof(raw)) != sizeof(raw)) return false;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP64(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(double));
-    return true;
-}
-
-// XDR string on disk: uint32 char-count (big-endian), then `count` bytes,
-// padded up to the next 4-byte boundary. Returns false on error.
-static inline bool trr_read_string(char* buf, int maxlen, md_file_t f) {
-    int32_t len;
-    if (!trr_read_int32(&len, f)) return false;
-    if (len <= 0 || len > maxlen) return false;
-    if (md_file_read(f, buf, (size_t)len) != (size_t)len) return false;
-    // consume padding bytes
-    int pad = (4 - (len & 3)) & 3;
-    if (pad > 0) {
-        char tmp[3];
-        if (md_file_read(f, tmp, (size_t)pad) != (size_t)pad) return false;
-    }
-    return true;
-}
-
-// =====================================================================
-// Buffer-cursor helpers for in-memory decoding (replaces xdrfile_mem).
-// =====================================================================
-
-typedef struct trr_buf_t {
-    const uint8_t* data;
-    size_t         size;
-    size_t         pos;
-} trr_buf_t;
-
-static inline bool buf_read_int32(int32_t* out, trr_buf_t* b) {
-    if (b->pos + 4 > b->size) return false;
-    uint32_t raw;
-    MEMCPY(&raw, b->data + b->pos, 4);
-    b->pos += 4;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP32(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(int32_t));
-    return true;
-}
-
-static inline bool buf_read_float(float* out, trr_buf_t* b) {
-    if (b->pos + 4 > b->size) return false;
-    uint32_t raw;
-    MEMCPY(&raw, b->data + b->pos, 4);
-    b->pos += 4;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP32(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(float));
-    return true;
-}
-
-static inline bool buf_read_double(double* out, trr_buf_t* b) {
-    if (b->pos + 8 > b->size) return false;
-    uint64_t raw;
-    MEMCPY(&raw, b->data + b->pos, 8);
-    b->pos += 8;
-#if __LITTLE_ENDIAN__
-    raw = BSWAP64(raw);
-#endif
-    MEMCPY(out, &raw, sizeof(double));
-    return true;
-}
-
-static inline bool buf_read_string(char* buf, int maxlen, trr_buf_t* b) {
-    int32_t len;
-    if (!buf_read_int32(&len, b)) return false;
-    if (len <= 0 || len > maxlen) return false;
-    if (b->pos + (size_t)len > b->size) return false;
-    MEMCPY(buf, b->data + b->pos, (size_t)len);
-    b->pos += (size_t)len;
-    int pad = (4 - (len & 3)) & 3;
-    if (b->pos + (size_t)pad > b->size) return false;
-    b->pos += (size_t)pad;
-    return true;
-}
-
-static inline bool buf_skip(trr_buf_t* b, size_t count) {
-    if (b->pos + count > b->size) return false;
-    b->pos += count;
-    return true;
-}
 
 // Taken from xdrfile_trr.c
 typedef struct trr_header_t {
@@ -222,14 +107,18 @@ static int calc_framebytes(const trr_header_t* sh) {
         sh->sym_size + sh->x_size + sh->v_size + sh->f_size;
 }
 
-static bool trr_read_frame_header(md_file_t xd, trr_header_t* sh) {
+// Largest possible frame header: magic, the version string (length, then XDR string of 12
+// characters), 13 ints, and time and lambda as doubles
+#define TRR_MAX_HEADER_SIZE (4 + 4 + 4 + 12 + 13 * 4 + 2 * 8)
+
+static bool trr_read_frame_header_buf(md_xdr_t* xdr, trr_header_t* sh) {
+    ASSERT(xdr);
     ASSERT(sh);
 
     const char version[] = "GMX_trn_file";
-    char buf[128];
     int32_t magic, slen, nflsz;
 
-    if (!trr_read_int32(&magic, xd)) {
+    if (!md_xdr_read_i32(xdr, &magic)) {
         MD_LOG_ERROR("TRR: Failed to read header magic number");
         return false;
     }
@@ -238,25 +127,21 @@ static bool trr_read_frame_header(md_file_t xd, trr_header_t* sh) {
         return false;
     }
 
-    if (!trr_read_int32(&slen, xd)) {
-        MD_LOG_ERROR("TRR: Failed to read header version string length");
+    // The length including the terminating zero, then the string as XDR (without it)
+    str_t str;
+    if (!md_xdr_read_i32(xdr, &slen) || !md_xdr_read_string(xdr, &str, 128)) {
+        MD_LOG_ERROR("TRR: Failed to read header version string");
         return false;
     }
     if (slen != (int32_t)sizeof(version)) {
         MD_LOG_ERROR("TRR: Incorrect version string length");
         return false;
     }
-    if (!trr_read_string(buf, (int)sizeof(buf), xd)) {
-        MD_LOG_ERROR("TRR: Failed to read header version string");
-        return false;
-    }
 
-    int32_t fields[11];
-    for (int i = 0; i < 11; ++i) {
-        if (!trr_read_int32(&fields[i], xd)) {
-            MD_LOG_ERROR("TRR: Failed to read header fields");
-            return false;
-        }
+    int32_t fields[13];
+    if (!md_xdr_read_i32_array(xdr, fields, 13)) {
+        MD_LOG_ERROR("TRR: Failed to read header fields");
+        return false;
     }
     sh->ir_size   = fields[0];
     sh->e_size    = fields[1];
@@ -269,292 +154,100 @@ static bool trr_read_frame_header(md_file_t xd, trr_header_t* sh) {
     sh->v_size    = fields[8];
     sh->f_size    = fields[9];
     sh->natoms    = fields[10];
-
-    if (!n_float_size(sh, &nflsz)) {
-        return false;
-    }
-
-    sh->use_double = (nflsz == sizeof(double));
-
-    int32_t step, nre;
-    if (!trr_read_int32(&step, xd)) {
-        MD_LOG_ERROR("TRR: Failed to read header step");
-        return false;
-    }
-    sh->step = step;
-
-    if (!trr_read_int32(&nre, xd)) {
-        MD_LOG_ERROR("TRR: Failed to read header \"nre\"");
-        return false;
-    }
-    sh->nre = nre;
-
-    if (sh->use_double) {
-        if (!trr_read_double(&sh->t, xd)) {
-            MD_LOG_ERROR("TRR: Failed to read header t");
-            return false;
-        }
-        if (!trr_read_double(&sh->lambda, xd)) {
-            MD_LOG_ERROR("TRR: Failed to read header lambda");
-            return false;
-        }
-    } else {
-        float tf, lf;
-        if (!trr_read_float(&tf, xd)) {
-            MD_LOG_ERROR("TRR: Failed to read header t");
-            return false;
-        }
-        if (!trr_read_float(&lf, xd)) {
-            MD_LOG_ERROR("TRR: Failed to read header lambda");
-            return false;
-        }
-        sh->t = tf;
-        sh->lambda = lf;
-    }
-
-    return true;
-}
-
-static bool trr_read_frame_header_buf(trr_buf_t* buf, trr_header_t* sh) {
-    ASSERT(buf);
-    ASSERT(sh);
-
-    const char version[] = "GMX_trn_file";
-    char strbuf[128];
-    int32_t magic, slen, nflsz;
-
-    if (!buf_read_int32(&magic, buf)) {
-        MD_LOG_ERROR("TRR: Failed to read header magic number");
-        return false;
-    }
-    if (magic != TRR_MAGIC) {
-        MD_LOG_ERROR("TRR: Magic number did not match");
-        return false;
-    }
-
-    if (!buf_read_int32(&slen, buf)) {
-        MD_LOG_ERROR("TRR: Failed to read header version string length");
-        return false;
-    }
-    if (slen != (int32_t)sizeof(version)) {
-        MD_LOG_ERROR("TRR: Incorrect version string length");
-        return false;
-    }
-    if (!buf_read_string(strbuf, (int)sizeof(strbuf), buf)) {
-        MD_LOG_ERROR("TRR: Failed to read header version string");
-        return false;
-    }
-
-    int32_t fields[11];
-    for (int i = 0; i < 11; ++i) {
-        if (!buf_read_int32(&fields[i], buf)) {
-            MD_LOG_ERROR("TRR: Failed to read header fields");
-            return false;
-        }
-    }
-    sh->ir_size   = fields[0];
-    sh->e_size    = fields[1];
-    sh->box_size  = fields[2];
-    sh->vir_size  = fields[3];
-    sh->pres_size = fields[4];
-    sh->top_size  = fields[5];
-    sh->sym_size  = fields[6];
-    sh->x_size    = fields[7];
-    sh->v_size    = fields[8];
-    sh->f_size    = fields[9];
-    sh->natoms    = fields[10];
+    sh->step      = fields[11];
+    sh->nre       = fields[12];
 
     if (!n_float_size(sh, &nflsz)) {
         return false;
     }
     sh->use_double = (nflsz == sizeof(double));
 
-    int32_t step, nre;
-    if (!buf_read_int32(&step, buf)) { MD_LOG_ERROR("TRR: Failed to read header step"); return false; }
-    if (!buf_read_int32(&nre,  buf)) { MD_LOG_ERROR("TRR: Failed to read header \"nre\""); return false; }
-    sh->step = step;
-    sh->nre  = nre;
-
     if (sh->use_double) {
-        if (!buf_read_double(&sh->t,      buf)) { MD_LOG_ERROR("TRR: Failed to read header t");      return false; }
-        if (!buf_read_double(&sh->lambda, buf)) { MD_LOG_ERROR("TRR: Failed to read header lambda"); return false; }
+        md_xdr_read_f64(xdr, &sh->t);
+        md_xdr_read_f64(xdr, &sh->lambda);
     } else {
         float tf, lf;
-        if (!buf_read_float(&tf, buf)) { MD_LOG_ERROR("TRR: Failed to read header t");      return false; }
-        if (!buf_read_float(&lf, buf)) { MD_LOG_ERROR("TRR: Failed to read header lambda"); return false; }
+        md_xdr_read_f32(xdr, &tf);
+        md_xdr_read_f32(xdr, &lf);
         sh->t      = tf;
         sh->lambda = lf;
     }
+    if (!md_xdr_ok(xdr)) {
+        MD_LOG_ERROR("TRR: Failed to read header time and lambda");
+        return false;
+    }
     return true;
 }
 
-static bool trr_read_frame_data(trr_buf_t* buf, const trr_header_t* sh, matrix box, float* x[3], float* v[3], float* f[3]) {
-    /* Double */
-    if (sh->use_double) {
-        if (sh->box_size != 0) {
-            double pvd[DIM * DIM];
-            for (int i = 0; i < DIM * DIM; ++i) {
-                if (!buf_read_double(&pvd[i], buf)) {
-                    MD_LOG_ERROR("TRR: Failed to read frame box");
-                    return false;
-                }
-            }
-            if (box) {
-                for (int i = 0; i < DIM; i++)
-                    for (int j = 0; j < DIM; j++)
-                        box[i][j] = (float)pvd[i * DIM + j];
-            }
-        }
+// Reads the frame header at the current file position and leaves the file positioned right after it
+static bool trr_read_frame_header(md_file_t file, trr_header_t* sh) {
+    const int64_t beg = md_file_tell(file);
+    uint8_t buf[TRR_MAX_HEADER_SIZE];
+    const size_t bytes = md_file_read(file, buf, sizeof(buf));
 
-        if (sh->vir_size != 0) {
-            if (!buf_skip(buf, (size_t)sh->vir_size)) return false;
-        }
-        if (sh->pres_size != 0) {
-            if (!buf_skip(buf, (size_t)sh->pres_size)) return false;
-        }
-
-        if (sh->x_size != 0) {
-            if (x) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    double c[3];
-                    if (!buf_read_double(&c[0], buf) || !buf_read_double(&c[1], buf) || !buf_read_double(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
-                        return false;
-                    }
-                    x[0][i] = (float)(c[0] * 10);
-                    x[1][i] = (float)(c[1] * 10);
-                    x[2][i] = (float)(c[2] * 10);
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->x_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip coordinate section in frame");
-                    return false;
-                }
-            }
-        }
-        if (sh->v_size != 0) {
-            if (v) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    double c[3];
-                    if (!buf_read_double(&c[0], buf) || !buf_read_double(&c[1], buf) || !buf_read_double(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
-                        return false;
-                    }
-                    v[0][i] = (float)(c[0] * 10);
-                    v[1][i] = (float)(c[1] * 10);
-                    v[2][i] = (float)(c[2] * 10);
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->v_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip velocity section in frame");
-                    return false;
-                }
-            }
-        }
-        if (sh->f_size != 0) {
-            if (f) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    double c[3];
-                    if (!buf_read_double(&c[0], buf) || !buf_read_double(&c[1], buf) || !buf_read_double(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read force entry in frame");
-                        return false;
-                    }
-                    f[0][i] = (float)c[0];
-                    f[1][i] = (float)c[1];
-                    f[2][i] = (float)c[2];
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->f_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip force section in frame");
-                    return false;
-                }
-            }
-        }
+    md_xdr_t xdr = md_xdr_init(buf, bytes);
+    if (!trr_read_frame_header_buf(&xdr, sh)) {
+        return false;
     }
-    else
-    /* Float */
-    {
-        if (sh->box_size != 0) {
-            float pvf[DIM * DIM];
-            for (int i = 0; i < DIM * DIM; ++i) {
-                if (!buf_read_float(&pvf[i], buf)) {
-                    MD_LOG_ERROR("TRR: Failed to read frame box");
-                    return false;
-                }
-            }
-            if (box) {
-                for (int i = 0; i < DIM; i++)
-                    for (int j = 0; j < DIM; j++)
-                        box[i][j] = pvf[i * DIM + j];
-            }
-        }
+    return md_file_seek(file, beg + (int64_t)xdr.pos, MD_FILE_BEG);
+}
 
-        if (sh->vir_size != 0) {
-            if (!buf_skip(buf, (size_t)sh->vir_size)) return false;
+// Reads one per atom section (natoms 3-vectors) into planar arrays, scaled; skips it if dst is NULL
+static bool trr_read_vec_section(md_xdr_t* xdr, const trr_header_t* sh, int section_size, float* dst[3], float scale, const char* what) {
+    if (section_size == 0) {
+        return true;
+    }
+    if (!dst) {
+        if (!md_xdr_skip(xdr, (size_t)section_size)) {
+            MD_LOG_ERROR("TRR: Failed to skip %s section in frame", what);
+            return false;
         }
-        if (sh->pres_size != 0) {
-            if (!buf_skip(buf, (size_t)sh->pres_size)) return false;
-        }
-
-        if (sh->x_size != 0) {
-            if (x) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    float c[3];
-                    if (!buf_read_float(&c[0], buf) || !buf_read_float(&c[1], buf) || !buf_read_float(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
-                        return false;
-                    }
-                    x[0][i] = c[0] * 10;
-                    x[1][i] = c[1] * 10;
-                    x[2][i] = c[2] * 10;
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->x_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip coordinate section in frame");
-                    return false;
-                }
-            }
-        }
-        if (sh->v_size != 0) {
-            if (v) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    float c[3];
-                    if (!buf_read_float(&c[0], buf) || !buf_read_float(&c[1], buf) || !buf_read_float(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
-                        return false;
-                    }
-                    v[0][i] = c[0] * 10;
-                    v[1][i] = c[1] * 10;
-                    v[2][i] = c[2] * 10;
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->v_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip velocity section in frame");
-                    return false;
-                }
-            }
-        }
-        if (sh->f_size != 0) {
-            if (f) {
-                for (int i = 0; i < sh->natoms; ++i) {
-                    float c[3];
-                    if (!buf_read_float(&c[0], buf) || !buf_read_float(&c[1], buf) || !buf_read_float(&c[2], buf)) {
-                        MD_LOG_ERROR("TRR: Failed to read force entry in frame");
-                        return false;
-                    }
-                    f[0][i] = c[0];
-                    f[1][i] = c[1];
-                    f[2][i] = c[2];
-                }
-            } else {
-                if (!buf_skip(buf, (size_t)sh->f_size)) {
-                    MD_LOG_ERROR("TRR: Failed to skip force section in frame");
-                    return false;
-                }
-            }
+        return true;
+    }
+    const size_t elem = sh->use_double ? 8 : 4;
+    const uint8_t* p = md_xdr_take(xdr, (size_t)sh->natoms * 3 * elem);
+    if (!p) {
+        MD_LOG_ERROR("TRR: Failed to read %s section in frame", what);
+        return false;
+    }
+    for (int i = 0; i < sh->natoms; ++i, p += 3 * elem) {
+        for (int k = 0; k < 3; ++k) {
+            const double c = sh->use_double ? md_xdr_load_f64(p + k * 8) : md_xdr_load_f32(p + k * 4);
+            dst[k][i] = (float)(c * scale);
         }
     }
     return true;
+}
+
+static bool trr_read_frame_data(md_xdr_t* xdr, const trr_header_t* sh, matrix box, float* x[3], float* v[3], float* f[3]) {
+    if (sh->box_size != 0) {
+        double pv[DIM * DIM];
+        if (sh->use_double) {
+            md_xdr_read_f64_array(xdr, pv, DIM * DIM);
+        } else {
+            float pvf[DIM * DIM];
+            md_xdr_read_f32_array(xdr, pvf, DIM * DIM);
+            for (int i = 0; i < DIM * DIM; ++i) pv[i] = pvf[i];
+        }
+        if (!md_xdr_ok(xdr)) {
+            MD_LOG_ERROR("TRR: Failed to read frame box");
+            return false;
+        }
+        if (box) {
+            for (int i = 0; i < DIM; i++)
+                for (int j = 0; j < DIM; j++)
+                    box[i][j] = (float)pv[i * DIM + j];
+        }
+    }
+
+    if (!md_xdr_skip(xdr, (size_t)sh->vir_size) || !md_xdr_skip(xdr, (size_t)sh->pres_size)) {
+        return false;
+    }
+
+    // Coordinates and velocities nm -> Ångström, forces as stored
+    return trr_read_vec_section(xdr, sh, sh->x_size, x, 10.0f, "coordinate")
+        && trr_read_vec_section(xdr, sh, sh->v_size, v, 10.0f, "velocity")
+        && trr_read_vec_section(xdr, sh, sh->f_size, f, 1.0f,  "force");
 }
 
 static int64_t trr_read_frame_offsets_and_times(md_file_t xd, md_array(int64_t)* offsets, md_array(double)* times, md_allocator_i* alloc) {
@@ -687,7 +380,7 @@ static bool trr_decode_frame_data(const trr_t* trr, const void* frame_data_ptr, 
         return false;
     }
 
-    trr_buf_t buf = { (const uint8_t*)frame_data_ptr, frame_data_size, 0 };
+    md_xdr_t buf = md_xdr_init(frame_data_ptr, frame_data_size);
 
     // Get header
     trr_header_t sh;

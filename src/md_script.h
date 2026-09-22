@@ -62,45 +62,6 @@ typedef struct md_script_ir_t md_script_ir_t;
 // Opaque object for evaluation result
 typedef struct md_script_eval_t md_script_eval_t;
 
-typedef struct md_script_aggregate_t {
-    size_t  num_values;
-    float*  population_mean;
-    float*  population_var;
-    vec2_t* population_ext; // min and max
-    //float*  population_min;
-    //float*  population_max;
-} md_script_aggregate_t;
-
-typedef struct md_script_property_data_t {
-    int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
-
-    size_t num_values; // Raw 1D length of values
-    float*  values;     // Raw linear access to values, check dim for the dimensions of the data
-    float*  weights;    // Optional, only applicable to distributions
-
-    md_script_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
-
-    float   min_value;      // min total value
-    float   max_value;      // max total value
-
-    float   min_range[2];   // min range in each dimension, [0] for temporal, [0]+[1] for distribution
-    float   max_range[2];   // max range in each dimension, [0] for temporal, [0]+[1] for distribution
-
-    md_unit_t unit[2];      // [0] is time/frame for temporal, x-value for distributions and 3D.
-                            // [1] is the unit of the data value
-
-    uint64_t fingerprint;   // Essentially a checksum of the data to compare against
-} md_script_property_data_t;
- 
-typedef struct md_script_property_t {
-    str_t ident;
-    
-    md_script_property_flags_t flags;
-    md_script_property_data_t  data;
-
-    const md_script_vis_payload_o* vis_payload; // For visualization of the property
-} md_script_property_t;
-
 typedef struct md_script_vis_vertex_t {
     vec3_t pos;
 	uint32_t color;
@@ -208,9 +169,6 @@ const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 size_t       md_script_ir_property_count(const md_script_ir_t* ir);
 const str_t* md_script_ir_property_names(const md_script_ir_t* ir);
 
-// Extract properties which has the supplied flags set.
-//size_t md_script_ir_property_id_filter_on_flags(str_t* out_names, size_t out_cap, const md_script_ir_t* ir, md_script_property_flags_t flags);
-
 // If the name does not exist, it will return 0
 md_script_property_flags_t      md_script_ir_property_flags(const md_script_ir_t* ir, str_t name);
 const md_script_vis_payload_o*  md_script_ir_property_vis_payload(const md_script_ir_t* ir, str_t name);
@@ -248,25 +206,28 @@ void md_script_eval_clear_data(md_script_eval_t* eval);
 // frame_(beg/end)  : range of frames [beg,end[ to evaluate 
 bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, uint32_t frame_beg, uint32_t frame_end);
 
-// Extract property data within in an evaluation
+// Number of properties held by the evaluation
 size_t md_script_eval_property_count(const md_script_eval_t* eval);
-const md_script_property_data_t* md_script_eval_property_data(const md_script_eval_t* eval, str_t name);
 
-// The properties as ATTRIBUTES, published under 'script/'. This is the same storage the structs
-// above point at, not a copy of it, and it is where this API is headed: everything a consumer
-// currently digs out of md_script_property_data_t is addressable here by path.
+// The evaluated properties, as ATTRIBUTES published under 'script/'. This is the only form the
+// results take: the evaluation writes straight into this table and keeps no other copy.
 //
 //   script/<ident>            the values. Temporal properties carry MD_ATTRIBUTE_FLAG_TEMPORAL and
 //                             are shaped {num_frames, population}; a distribution is {num_bins};
-//                             a volume is {x, y, z}.
-//   script/<ident>/mean       per frame summary over the population, when there is one
+//                             a volume is {x, y, z}. The unit is the unit of the values.
+//   script/<ident>/range      rank 0, 2 components (min, max). The range the script declared for
+//                             the property, or the observed one when it declared none. Temporal:
+//                             the range of the values. Distribution: the range of the bin axis.
+//   script/<ident>/mean       temporal with a population only: the per frame summary over it
 //   script/<ident>/variance
 //   script/<ident>/extent     2 components, (min, max)
 //   script/<ident>/weight     a distribution's per bin weight
-//   script/<ident>/bin        a distribution's bin coordinates
+//   script/<ident>/bin        a distribution's bin coordinates (virtual), in the bin axis unit
 //
-// Versions bump when an evaluation completes, so a consumer caching something derived from a
-// property compares md_attributes_version instead of md_script_property_data_t::fingerprint.
+// The table and the attributes in it are created with the evaluation and never added to or
+// removed, so attribute pointers stay valid for the lifetime of the evaluation. The data is written
+// in place while frames are evaluated; versions bump when md_script_eval_frame_range completes, so
+// a consumer caching something derived from a property compares md_attributes_version.
 const struct md_attributes_t* md_script_eval_attributes(const md_script_eval_t* eval);
 
 // Get the frames encoded as a bitfield of the completed frames

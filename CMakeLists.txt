@@ -159,6 +159,8 @@ set(SRC_FILES
   src/md_smiles.h
   src/md_topo.c
   src/md_topo.h
+  src/md_tpr.c
+  src/md_tpr.h
   src/md_trajectory.h
   src/md_trr.c
   src/md_trr.h
@@ -169,6 +171,7 @@ set(SRC_FILES
   src/md_vector_graphics.h
   src/md_xtc.c
   src/md_xtc.h
+  src/md_xdr.h
   src/md_xvg.c
   src/md_xvg.h
   src/md_xyz.c

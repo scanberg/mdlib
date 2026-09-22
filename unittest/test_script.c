@@ -1378,9 +1378,10 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         if (eval) {
-            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("lin")));
-            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("plan")));
-            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("iso")));
+            const md_attributes_t* attributes = md_script_eval_attributes(eval);
+            EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/lin")));
+            EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/plan")));
+            EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/iso")));
         }
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
         md_script_eval_free(eval);
@@ -1494,10 +1495,11 @@ UTEST_F(script, property_attributes) {
         EXPECT_EQ(num_frames, attr->format.shape[0]);
         EXPECT_EQ(1u, attr->format.shape[1]);
 
-        // The property struct is a view onto the attribute, not the other way around.
-        const md_script_property_data_t* prop = md_script_eval_property_data(eval, STR_LIT("d"));
-        ASSERT_TRUE(prop != NULL);
-        EXPECT_TRUE((const void*)prop->values == (const void*)attr->data);
+        const md_attribute_t* range = md_attributes_find(attributes, STR_LIT("script/d/range"));
+        ASSERT_TRUE(range != NULL);
+        EXPECT_EQ(0u, range->format.rank);
+        EXPECT_EQ(2u, range->format.components);
+        EXPECT_TRUE(md_unit_equal(attr->unit, range->unit));
 
         // Nothing to summarise over: there is no population axis worth the name.
         EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/d/mean")) == NULL);
@@ -1510,7 +1512,15 @@ UTEST_F(script, property_attributes) {
         float value = 0;
         md_attribute_slice_t slice = md_attribute_slice_1(num_frames / 2);
         EXPECT_EQ(1, md_attribute_extract_slice_f32(&value, 1, attr, &slice, md_unit_none()));
-        EXPECT_EQ(prop->values[num_frames / 2], value);
+        EXPECT_EQ(((const float*)attr->data)[num_frames / 2], value);
+
+        // The range covers every value that was evaluated.
+        float minmax[2] = {0, 0};
+        EXPECT_EQ(2, md_attribute_extract_f32(minmax, 2, range, md_unit_none()));
+        for (uint32_t i = 0; i < num_frames; ++i) {
+            const float v = ((const float*)attr->data)[i];
+            EXPECT_TRUE(minmax[0] <= v && v <= minmax[1]);
+        }
 
         md_script_eval_free(eval);
     }
@@ -1523,17 +1533,13 @@ UTEST_F(script, property_attributes) {
         ASSERT_NE(NULL, eval);
 
         const md_attributes_t* attributes = md_script_eval_attributes(eval);
-        const md_script_property_data_t* prop = md_script_eval_property_data(eval, STR_LIT("g"));
         ASSERT_TRUE(attributes != NULL);
-        ASSERT_TRUE(prop != NULL);
-        ASSERT_TRUE(prop->dim[1] > 1);
-        ASSERT_TRUE(prop->aggregate != NULL);
 
         const md_attribute_t* attr = md_attributes_find(attributes, STR_LIT("script/g"));
         ASSERT_TRUE(attr != NULL);
         EXPECT_EQ(2u, attr->format.rank);
         EXPECT_EQ(num_frames, attr->format.shape[0]);
-        EXPECT_EQ((uint32_t)prop->dim[1], attr->format.shape[1]);
+        ASSERT_TRUE(attr->format.shape[1] > 1);
 
         const md_attribute_t* mean = md_attributes_find(attributes, STR_LIT("script/g/mean"));
         const md_attribute_t* var  = md_attributes_find(attributes, STR_LIT("script/g/variance"));
@@ -1551,16 +1557,23 @@ UTEST_F(script, property_attributes) {
         EXPECT_EQ(1u, ext->format.rank);
         EXPECT_EQ(num_frames, ext->format.shape[0]);
 
-        EXPECT_TRUE((const void*)prop->aggregate->population_mean == (const void*)mean->data);
-        EXPECT_TRUE((const void*)prop->aggregate->population_var  == (const void*)var->data);
-        EXPECT_TRUE((const void*)prop->aggregate->population_ext  == (const void*)ext->data);
-
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         float minmax[2] = {0, 0};
         md_attribute_slice_t slice = md_attribute_slice_1(0);
         EXPECT_EQ(2, md_attribute_extract_slice_f32(minmax, 2, ext, &slice, md_unit_none()));
         EXPECT_TRUE(minmax[0] <= minmax[1]);
+
+        // The per frame summary agrees with the population it summarises.
+        const uint32_t pop = attr->format.shape[1];
+        const float* values = (const float*)attr->data;
+        float lo = FLT_MAX, hi = -FLT_MAX;
+        for (uint32_t k = 0; k < pop; ++k) {
+            lo = MIN(lo, values[k]);
+            hi = MAX(hi, values[k]);
+        }
+        EXPECT_EQ(lo, minmax[0]);
+        EXPECT_EQ(hi, minmax[1]);
 
         md_script_eval_free(eval);
     }
@@ -1573,19 +1586,21 @@ UTEST_F(script, property_attributes) {
         ASSERT_NE(NULL, eval);
 
         const md_attributes_t* attributes = md_script_eval_attributes(eval);
-        const md_script_property_data_t* prop = md_script_eval_property_data(eval, STR_LIT("h"));
         ASSERT_TRUE(attributes != NULL);
-        ASSERT_TRUE(prop != NULL);
-
-        const uint32_t num_bins = (uint32_t)prop->dim[2];
-        ASSERT_TRUE(num_bins > 1);
 
         const md_attribute_t* attr   = md_attributes_find(attributes, STR_LIT("script/h"));
         const md_attribute_t* weight = md_attributes_find(attributes, STR_LIT("script/h/weight"));
         const md_attribute_t* bin    = md_attributes_find(attributes, STR_LIT("script/h/bin"));
+        const md_attribute_t* range  = md_attributes_find(attributes, STR_LIT("script/h/range"));
         ASSERT_TRUE(attr   != NULL);
         ASSERT_TRUE(weight != NULL);
         ASSERT_TRUE(bin    != NULL);
+        ASSERT_TRUE(range  != NULL);
+
+        const uint32_t num_bins = attr->format.shape[0];
+        ASSERT_TRUE(num_bins > 1);
+        // The range is over the bin axis, so it is in the bins' unit rather than the values'.
+        EXPECT_TRUE(md_unit_equal(bin->unit, range->unit));
 
         // A distribution is not indexed by frame, so it carries no temporal claim.
         EXPECT_EQ(0, attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
@@ -1594,18 +1609,20 @@ UTEST_F(script, property_attributes) {
         EXPECT_EQ(num_bins, weight->format.shape[0]);
         EXPECT_EQ(num_bins, bin->format.shape[0]);
 
-        EXPECT_TRUE((const void*)prop->values  == (const void*)attr->data);
-        EXPECT_TRUE((const void*)prop->weights == (const void*)weight->data);
-        // The values and the weights are separate buffers now; they used to be one.
-        EXPECT_TRUE(prop->weights != prop->values + num_bins);
+        // The values and the weights are separate buffers; they used to be one.
+        EXPECT_TRUE(attr->data != weight->data);
 
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
         // The bin coordinates are computed from the range the evaluation settled on.
         md_array(float) coords = md_array_create(float, num_bins, alloc);
         EXPECT_EQ(num_bins, md_attribute_extract_f32(coords, num_bins, bin, md_unit_none()));
-        const float x_min = prop->min_range[0];
-        const float x_max = prop->max_range[0];
+        float x_range[2] = {0, 0};
+        EXPECT_EQ(2, md_attribute_extract_f32(x_range, 2, range, md_unit_none()));
+        const float x_min = x_range[0];
+        const float x_max = x_range[1];
+        EXPECT_NEAR(0.0f,  x_min, 1.0e-4f);
+        EXPECT_NEAR(20.0f, x_max, 1.0e-4f);
         const float x_scl = (x_max - x_min) / (float)num_bins;
         EXPECT_NEAR(x_min + 0.5f * x_scl, coords[0], 1.0e-4f);
         EXPECT_NEAR(x_max - 0.5f * x_scl, coords[num_bins - 1], 1.0e-4f);
@@ -1624,21 +1641,39 @@ UTEST_F(script, property_attributes) {
         ASSERT_NE(NULL, eval);
 
         const md_attributes_t* attributes = md_script_eval_attributes(eval);
-        const md_script_property_data_t* prop = md_script_eval_property_data(eval, STR_LIT("V"));
         ASSERT_TRUE(attributes != NULL);
-        ASSERT_TRUE(prop != NULL);
 
         const md_attribute_t* attr = md_attributes_find(attributes, STR_LIT("script/V"));
         ASSERT_TRUE(attr != NULL);
         EXPECT_EQ(3u, attr->format.rank);
-        EXPECT_EQ((uint32_t)prop->dim[1], attr->format.shape[0]);
-        EXPECT_EQ((uint32_t)prop->dim[2], attr->format.shape[1]);
-        EXPECT_EQ((uint32_t)prop->dim[3], attr->format.shape[2]);
+        EXPECT_TRUE(attr->format.shape[0] > 1);
+        EXPECT_EQ(attr->format.shape[0], attr->format.shape[1]);
+        EXPECT_EQ(attr->format.shape[0], attr->format.shape[2]);
         EXPECT_EQ(0, attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
-        EXPECT_TRUE((const void*)prop->values == (const void*)attr->data);
+        EXPECT_TRUE(attr->data != NULL);
+        // A volume has no range to speak of.
+        EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/V/range")) == NULL);
 
         md_script_eval_free(eval);
     }
+}
+
+UTEST_F(script, identifier_names) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("first = 1;\nsecond = 2;"), &utest_fixture->ala, NULL));
+
+    // Every identifier is listed under its own name
+    const size_t num_ident = md_script_ir_num_identifiers(ir);
+    const str_t* ident = md_script_ir_identifiers(ir);
+    bool found[2] = {false, false};
+    for (size_t i = 0; i < num_ident; ++i) {
+        if (str_eq(ident[i], STR_LIT("first")))  found[0] = true;
+        if (str_eq(ident[i], STR_LIT("second"))) found[1] = true;
+    }
+    EXPECT_TRUE(found[0]);
+    EXPECT_TRUE(found[1]);
+    md_script_ir_free(ir);
 }
 
 UTEST(script, stride_invalid_ranges) {
@@ -1676,13 +1711,19 @@ void func(void* user_data) {
     const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->sys->trajectory);
     if (md_script_eval_frame_range(data->eval, data->ir, data->sys, 0, num_frames)) {
         for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
-            const md_script_property_data_t* cur_data = md_script_eval_property_data(data->eval,     props[p_idx]);
-            const md_script_property_data_t* ref_data = md_script_eval_property_data(data->ref_eval, props[p_idx]);
-            ASSERT(cur_data->num_values == ref_data->num_values);
-            for (size_t i = 0; i < cur_data->num_values; ++i) {
-                if (cur_data->values[i] != ref_data->values[i]) {
+            char path[256];
+            snprintf(path, sizeof(path), "script/%.*s", (int)props[p_idx].len, props[p_idx].ptr);
+            const md_attribute_t* cur = md_attributes_find(md_script_eval_attributes(data->eval),     str_from_cstr(path));
+            const md_attribute_t* ref = md_attributes_find(md_script_eval_attributes(data->ref_eval), str_from_cstr(path));
+            ASSERT(cur && ref);
+            const size_t num_values = md_attribute_element_count(&cur->format);
+            ASSERT(num_values == md_attribute_element_count(&ref->format));
+            const float* cur_values = (const float*)cur->data;
+            const float* ref_values = (const float*)ref->data;
+            for (size_t i = 0; i < num_values; ++i) {
+                if (cur_values[i] != ref_values[i]) {
                     data->num_corrupt_values += 1;
-                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_data->values[i], cur_data->values[i]);
+                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_values[i], cur_values[i]);
                 }
             }
         }
@@ -1711,17 +1752,10 @@ UTEST_F(script, parallel_evaluation) {
     EXPECT_EQ(num_frames, md_script_eval_frame_count(ref_eval));
     ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, 0, (uint32_t)num_frames));
 
-    const md_script_property_data_t* data = md_script_eval_property_data(ref_eval, STR_LIT("p1"));
-    ASSERT_TRUE(data);
-    ASSERT_EQ(num_frames, data->num_values);
+    const md_attribute_t* p1 = md_attributes_find(md_script_eval_attributes(ref_eval), STR_LIT("script/p1"));
+    ASSERT_TRUE(p1);
+    ASSERT_EQ(num_frames, md_attribute_element_count(&p1->format));
 
-#if 0
-    printf("Ref Values:\n");
-    const md_script_property_t* ref_prop = md_script_eval_properties(ref_eval);
-    for (int64_t i = 0; i < ref_prop->data.num_values; ++i) {
-        printf("[%lli]: %g\n", i, ref_prop->data.values[i]);
-    }
-#endif
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {

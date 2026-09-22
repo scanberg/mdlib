@@ -1,4 +1,4 @@
-ï»¿#include <md_util.h>
+#include <md_util.h>
 
 #include <md_system.h>
 #include <md_smiles.h>
@@ -73,7 +73,7 @@ static const str_t element_names[] = {
 };
 
 // http://dx.doi.org/10.1039/b801115j
-// Covalent radii (in Ã… Ã—100) â€” Cordero et al., Dalton Trans., 2008, 2832â€“2838
+// Covalent radii (in Å ×100) — Cordero et al., Dalton Trans., 2008, 2832–2838
 static const uint8_t element_covalent_radii_u8[] = {
       0,  31,  28, 128,  96,  84,  76,  71,  66,  57,  58, 166, 141, 121, 111, 107, 105, 102, 106, 203, 176, 170, 160, 153,
     139, 139, 132, 126, 124, 132, 122, 122, 120, 119, 120, 120, 116, 220, 195, 190, 175, 164, 154, 147, 146, 142, 139, 145,
@@ -82,7 +82,7 @@ static const uint8_t element_covalent_radii_u8[] = {
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
-// Approximate ionic radii (Ã… Ã—100), mostly Shannon radii (CNâ‰ˆ6, common oxidation state)
+// Approximate ionic radii (Å ×100), mostly Shannon radii (CN˜6, common oxidation state)
 static const uint8_t element_ionic_radii_u8[] = {
     0,
     0,   0,  76,  45,  27,  16, 146, 140, 133,   0,
@@ -480,8 +480,8 @@ static const uint64_t element_alkaline_earth[2] = {
 };
 
 static const uint64_t element_covalent_mask[2] = {
-    0x003E0000001FC7E6ULL, // atomic numbers 1â€“63
-    0x0000000000000000ULL, // atomic numbers 64â€“127 (unused)
+    0x003E0000001FC7E6ULL, // atomic numbers 1–63
+    0x0000000000000000ULL, // atomic numbers 64–127 (unused)
 };
 #endif
 
@@ -5747,6 +5747,32 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
     }
 
     md_temp_end(temp);
+}
+
+void md_util_system_augment_atom_types(md_system_t* sys) {
+    if (!sys || !sys->atom.type_idx || sys->component.count == 0) {
+        return;
+    }
+
+    const size_t num_types = sys->atom.type.count;
+    for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
+        const str_t comp_name = md_component_name(&sys->component, comp_idx);
+        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+        md_flags_t comp_flags = 0;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const md_atom_type_idx_t t = sys->atom.type_idx[i];
+            // Only types without an element: an atom with one is not what these tables describe
+            if (t <= 0 || (size_t)t >= num_types || sys->atom.type.z[t] != 0) continue;
+
+            const atom_type_t* entry = find_predefined_atom_type(comp_name, md_atom_type_name(&sys->atom.type, t));
+            if (!entry) continue;
+
+            sys->atom.type.flags[t] |= entry->flags;
+            if (sys->atom.flags) sys->atom.flags[i] |= entry->flags;
+            comp_flags |= entry->flags;
+        }
+        sys->component.flags[comp_idx] |= comp_flags;
+    }
 }
 
 void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, size_t extent, const md_bitfield_t* viable_mask) {

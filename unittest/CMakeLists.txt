@@ -31,6 +31,7 @@ set (SRC_FILES
     test_attributes.c
     test_gro.c
     test_itp.c
+    test_tpr.c
     test_trr.c
     test_mmcif.c
     test_util.c

@@ -20,8 +20,8 @@
 *   - The mathematical functions abs, min, max, sin, cos, log, pow etc. needs to be overloaded to properly modify units.
 *   - The units are resolved during the static check phase, which is concepcually correct. But it is currently very cluncky and not very robust to deal with units in the underlying functions.
 *   
-*   PROPERTY DATA
-*   The property data is a bit of a mess in the API, this should be simplified towards the user. It is fine that we only expose a small fixed quantity of property Types and make their types more concrete.
+*   PROPERTIES
+*   Evaluated properties are published as attributes under 'script/' (see md_script_eval_attributes).
 *    
 **/
 
@@ -192,7 +192,6 @@ typedef enum flags_t {
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
     FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
-    //FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
     
     // Node flags
     FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
@@ -361,30 +360,28 @@ typedef struct table_t {
     md_array(md_array(double)) field_values;
 } table_t;
 
-void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, size_t count, md_allocator_i* alloc) {
+// Appends a field to the table and returns its storage, num_values long, for the caller to fill
+static double* table_push_field(table_t* table, str_t name, md_unit_t unit, size_t count, md_allocator_i* alloc) {
     (void)count;
     ASSERT(count == table->num_values);
+    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
     md_array_push(table->field_names, str_copy(name, alloc), alloc);
     md_array_push(table->field_units, unit, alloc);
-    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
-    MEMCPY(field_data, data, sizeof(double) * table->num_values);
     md_array_push(table->field_values, field_data, alloc);
     table->num_fields = md_array_size(table->field_names);
-    table->x_unit = md_unit_none();
+    return field_data;
 }
 
-void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, size_t count, md_allocator_i* alloc) {
-    (void)count;
-    ASSERT(count == table->num_values);
-    md_array_push(table->field_names, str_copy(name, alloc), alloc);
-    md_array_push(table->field_units, unit, alloc);
-    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
+static void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, size_t count, md_allocator_i* alloc) {
+    double* dst = table_push_field(table, name, unit, count, alloc);
+    MEMCPY(dst, data, sizeof(double) * table->num_values);
+}
+
+static void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, size_t count, md_allocator_i* alloc) {
+    double* dst = table_push_field(table, name, unit, count, alloc);
     for (size_t i = 0; i < table->num_values; ++i) {
-        field_data[i] = data[i];
+        dst[i] = data[i];
     }
-    md_array_push(table->field_values, field_data, alloc);
-    table->num_fields = md_array_size(table->field_names);
-    table->x_unit = md_unit_none();
 }
 
 struct ast_node_t {
@@ -466,6 +463,36 @@ struct md_script_ir_t {
     bool compile_success;
 };
 
+// One property of an evaluation.
+//
+// The attribute table OWNS every buffer a property writes, so this is not a second copy of
+// anything. It is the part of a property that is not data: the writable views the per frame loop
+// needs (resolved once here rather than looked up by path every frame), and the running state an
+// evaluation keeps while it accumulates - the observed extremes and the running mean counter.
+// Everything a consumer reads is in the table under script/<ident>; see md_script_eval_attributes.
+typedef struct eval_property_t {
+    str_t                      ident;
+    md_script_property_flags_t kind;        // exactly one of TEMPORAL, DISTRIBUTION or VOLUME
+
+    uint32_t count;         // values per frame (temporal), bins (distribution), voxels (volume)
+    size_t   num_values;    // floats behind values
+
+    float*  values;         // script/<ident>
+    float*  weights;        // script/<ident>/weight     distribution only
+    float*  mean;           // script/<ident>/mean       temporal with a population only
+    float*  var;            // script/<ident>/variance
+    vec2_t* ext;            // script/<ident>/extent
+    vec2_t* range;          // script/<ident>/range      temporal and distribution
+
+    float   min_value;      // observed over everything evaluated so far
+    float   max_value;
+
+    // Distributions and volumes are running means over the evaluated frames. Frame ranges are
+    // evaluated concurrently, so the accumulation is serialized per property.
+    uint32_t   accum_count;
+    md_mutex_t accum_mutex;
+} eval_property_t;
+
 struct md_script_eval_t {
     uint64_t magic;
     uint64_t ir_fingerprint;
@@ -477,14 +504,12 @@ struct md_script_eval_t {
     md_bitfield_t frame_mask;
     md_mutex_t    frame_lock;
 
-    md_array(str_t)                     property_names;
-    md_array(md_script_property_data_t) property_data;
+    // Sized once at creation and never grown: a published attribute may hold the address of the
+    // property it describes.
+    md_array(eval_property_t) props;
 
-    // The published form of the properties above. The table OWNS every buffer they point at, so
-    // this is not a second copy of anything - see the note above allocate_property_data.
-    md_attributes_t                     attributes;
-    md_array(volatile uint32_t)         property_dist_count;   // Counters property distributions
-    md_array(md_mutex_t)                property_dist_mutex;   // Protect the data when writing to it in a threaded context (Distributions)
+    // Where the properties live. Owns every buffer the entries above point at.
+    md_attributes_t           attributes;
 };
 
 struct parse_context_t {
@@ -498,10 +523,6 @@ struct parse_context_t {
 // ##########################
 // ###   CORE FUNCTIONS   ###
 // ##########################
-
-static uint64_t generate_fingerprint(void) {
-    return md_tick_now();
-}
 
 static int operator_precedence(ast_type_t type) {
     switch(type) {
@@ -856,15 +877,6 @@ static size_t type_info_element_stride_count(type_info_t ti) {
 		if (ti.dim[i] == 0) break;
 		stride *= ti.dim[i];
 	}
-    /*
-    if (ti.len_dim == 0) return 1;
-    ASSERT(ti.dim[0] >= 0);
-    size_t stride = ti.dim[0];
-    for (int32_t i = 1; i < ti.len_dim; ++i) {
-        ASSERT(ti.dim[i] >= 0);
-        stride *= ti.dim[i];
-    }
-    */
     return stride;
 }
 
@@ -1835,94 +1847,6 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
 
 #if DEBUG
 
-/*
-static void print_data_value(FILE* file, data_t data) {
-    if (is_variable_length(data.type)) return;
-
-    if (is_array(data.type)) {
-        int64_t len = data.type.dim[data.type.len_dim];
-        if (len == 1) {
-            data.type.dim[data.type.len_dim] = 0;
-            data.type.len_dim = MAX(0, data.type.len_dim-1);
-            len = data.type.dim[data.type.len_dim];
-        }
-        type_info_t type = type_info_element_type(data.type);
-        int64_t stride = type_info_element_byte_stride(data.type);
-
-        fprintf(file, "[");
-        for (int64_t i = 0; i < len; ++i) {
-            data_t new_data = {
-                .ptr = (char*)data.ptr + stride * i,
-                .size = data.size,
-                .type = type,
-                .unit = data.unit,
-            };
-            print_data_value(file, new_data);
-            if (i < len - 1) fprintf(file, ", ");
-        }
-        fprintf(file, "]");
-    } else {
-        if (data.ptr) {
-            switch(data.type.base_type) {
-            case TYPE_BITFIELD:
-                print_bitfield(file, (md_bitfield_t*)data.ptr);
-                break;
-            case TYPE_BOOL:
-                fprintf(file, "%s", *(bool*)data.ptr ? "true" : "false");
-                break;
-            case TYPE_INT:
-                fprintf(file, "%i", *(int*)data.ptr);
-                break;
-            case TYPE_FLOAT:
-                fprintf(file, "%.1f", *(float*)data.ptr);
-                break;
-            case TYPE_IRANGE:
-            {
-                irange_t rng = *(irange_t*)data.ptr;
-                if (rng.beg == INT32_MIN)
-                    fprintf(file, "int_min");
-                else
-                    fprintf(file, "%i", rng.beg);
-                if (rng.step > 1)
-                    fprintf(file, ":%i:", rng.step);
-                else
-                    fprintf(file, ":");
-                if (rng.end == INT32_MAX)
-                    fprintf(file, "int_max");
-                else
-                    fprintf(file, "%i", rng.end);
-                break;
-            }
-            case TYPE_FRANGE:
-            {
-                frange_t rng = *(frange_t*)data.ptr;
-                if (rng.beg == -FLT_MAX)
-                    fprintf(file, "-flt_max");
-                else
-                    fprintf(file, "%f", rng.beg);
-                fprintf(file, ":");
-                if (rng.end == FLT_MAX)
-                    fprintf(file, "flt_max");
-                else
-                    fprintf(file, "%f", rng.end);
-                break;
-            }
-            case TYPE_STRING:
-            {
-                str_t str = *(str_t*)data.ptr;
-                fprintf(file, ""STR_FMT"", (int)str.len, str.ptr);
-                break;
-            }
-            default:
-                ASSERT(false);
-            }
-        }
-        else {
-            fprintf(file, "NULL");
-        }
-    }
-}
-*/
 
 static void print_label(md_file_t  file, const ast_node_t* node) {
     char buf[1024];
@@ -2575,45 +2499,6 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
     return NULL;
 }
 
-/*
-static ast_node_t* parse_argument(parse_context_t* ctx) {
-    token_t next = tokenizer_peek_next(ctx->tokenizer);
-    switch (next.type) {
-    case TOKEN_NOT:
-        ctx->node = parse_logical(ctx);
-        fix_precedence(&ctx->node);
-        break;
-    case TOKEN_IDENT:
-        ctx->node = parse_identifier(ctx);
-        break;
-    case TOKEN_FLOAT:
-    case TOKEN_INT:
-    case TOKEN_STRING:
-    case ':':
-        ctx->node = parse_value(ctx);
-        break;
-    case '(':
-        ctx->node = parse_parentheses(ctx);
-        break;
-    case '{':
-        ctx->node = parse_array(ctx);
-        break;
-    case '-':
-        ctx->node = parse_arithmetic(ctx);
-        fix_precedence(&ctx->node);
-        break;
-    case TOKEN_UNDEF:
-        LOG_ERROR(ctx->ir, next, "Undefined marker!");
-        tokenizer_consume_next(ctx->tokenizer);
-        return NULL;
-    default:
-        LOG_ERROR(ctx->ir, next, "Unexpected marker value! '"STR_FMT"'",
-            next.str.len, next.str.ptr);
-        return NULL;
-    }
-    return ctx->node;
-}
-*/
 
 ast_node_t* parse_expression(parse_context_t* ctx) {
     token_t token = {0};
@@ -3671,17 +3556,6 @@ static bool deduce_type_dim_from_args(type_info_t* type, ast_node_t** args, size
             type->dim[0] = MAX(type->dim[0], args[i]->data.type.dim[0]);
         }
 
-        /*
-        if (dim > 1 && args[i]->data.type.dim[0] == 1) {
-            dim_shift_right
-        }
-        if (len > max_len) {
-            max_len = len;
-        }
-        if (len > 1 && len != max_len) {
-            return -2;
-        }
-        */
     }
 
     return true;
@@ -3889,8 +3763,6 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 node->data.type.dim[0] = query_result;
                 return true;
             } else {
-                //node-> flags |= FLAG_DYNAMIC_LENGTH;
-                //return true;
                 LOG_ERROR(ctx->ir, node->token, "Failed to determine length of procedure return type!");
                 return false;
             }
@@ -4561,11 +4433,6 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         if (node->proc->flags & FLAG_FLATTEN) {
             ctx->eval_flags |= EVAL_FLAG_FLATTEN;
         }
-        /*
-        else if (node->proc->flags & FLAG_NO_FLATTEN) {
-            ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
-        }
-        */
         
         // Perform new child check here since children may have changed due to conversions etc.
         // Also allow for any static evaluation to occur and for length to be determined etc.
@@ -4787,10 +4654,6 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
         LOG_ERROR(ctx->ir, node->token, "Missing arguments in array subscript");
         return false;
     }
-    //else if (num_elem > 2) {
-    //    LOG_ERROR(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
-    //    return false;
-    //}
 
     uint32_t eval_flags = ctx->eval_flags;
     ctx->eval_flags = ctx->eval_flags & ~(EVAL_FLAG_FLATTEN);
@@ -5469,7 +5332,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 
 static inline bool is_temporal_type(type_info_t ti) {
     const int ndim = dim_ndims(ti.dim);
-    return ((ti.dim[0] != -1) && (ti.base_type == TYPE_FLOAT) && (ndim == 1)) || (ndim == 2 && ti.dim[1] == 1);
+    return ti.base_type == TYPE_FLOAT && ti.dim[0] != -1 && (ndim == 1 || (ndim == 2 && ti.dim[1] == 1));
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
@@ -5578,24 +5441,30 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
 // ### PROPERTY ATTRIBUTES ###
 //
 // Every property an evaluation computes is published into the evaluation's own attribute table
-// under 'script/'. The TABLE owns the storage and md_script_property_data_t only points into it,
-// which is the whole point of doing it this way: nothing is copied, the two views cannot drift
-// apart, and the older struct can be removed later without a byte moving.
+// under 'script/', and the table is the ONLY storage there is: eval_property_t holds writable views
+// into it and nothing else of substance.
 //
 // The property kind picks the shape and nothing else needs to be said about it:
 //
 //   temporal      script/<ident>          {num_frames, population}   MD_ATTRIBUTE_FLAG_TEMPORAL
+//                 script/<ident>/range    rank 0, 2 components (min, max) of the values
 //                 script/<ident>/mean     {num_frames}               only when a population exists
 //                 script/<ident>/variance {num_frames}
 //                 script/<ident>/extent   {num_frames}, 2 components (min, max)
 //   distribution  script/<ident>          {num_bins}
 //                 script/<ident>/weight   {num_bins}
+//                 script/<ident>/range    rank 0, 2 components (min, max) of the bin axis
 //                 script/<ident>/bin      {num_bins}, virtual: the x coordinate of each bin
 //   volume        script/<ident>          {x, y, z}
 //
 // A distribution's bin coordinates are a SIBLING attribute rather than a pair of numbers hung off
 // the values, which is the same choice the coordinate axes elsewhere in the table make. A consumer
 // that can already plot one attribute against another then needs no special case for a histogram.
+//
+// 'range' is the range the script DECLARED for the property when it declared one, and what the
+// evaluation observed otherwise. For a temporal property that is the range of its values, which is
+// what a histogram of them is binned over; for a distribution it is the range its bins cover, in
+// the unit of /bin. Either way it is the domain a consumer bins or plots the property over.
 
 // A script identifier is one path segment. Nothing in the grammar produces a '/', but a stray one
 // would silently turn the leaf into a group, so it is folded rather than trusted.
@@ -5613,12 +5482,12 @@ static str_t script_attr_path(char* buf, size_t cap, str_t ident, const char* su
 // Reserves zeroed storage inside the table and hands back the writable view. A table that refuses
 // the attribute costs the published NAME and nothing else: the caller still gets a buffer, so a
 // rejected path can never break an evaluation.
-static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* alloc, str_t path, md_unit_t unit,
-                                  md_attribute_flags_t flags, uint32_t components, uint32_t rank,
-                                  const uint32_t shape[], size_t num_floats)
+static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* alloc, str_t ident, const char* suffix, md_unit_t unit,
+                                  md_attribute_flags_t flags, uint32_t components, uint32_t rank, const uint32_t shape[])
 {
+    char buf[512];
     md_attribute_desc_t desc = {
-        .path   = path,
+        .path   = script_attr_path(buf, sizeof(buf), ident, suffix),
         .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = components, .rank = rank },
         .flags  = flags,
         .unit   = unit,
@@ -5630,19 +5499,20 @@ static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* a
     md_attribute_id_t id = md_attributes_replace(attributes, &desc);
     float* ptr = id ? (float*)md_attributes_data(attributes, id, MD_ATTRIBUTE_TYPE_F32) : NULL;
     if (!ptr) {
-        MD_LOG_DEBUG("Script eval: could not publish attribute '"STR_FMT"', falling back to plain storage", STR_ARG(path));
-        ptr = md_alloc(alloc, num_floats * sizeof(float));
-        MEMSET(ptr, 0, num_floats * sizeof(float));
+        MD_LOG_DEBUG("Script eval: could not publish attribute '"STR_FMT"', falling back to plain storage", STR_ARG(desc.path));
+        const size_t bytes = md_attribute_element_count(&desc.format) * sizeof(float);
+        ptr = md_alloc(alloc, bytes);
+        MEMSET(ptr, 0, bytes);
     }
     return ptr;
 }
 
-// The bin coordinates of a distribution are its x-range cut into equal bins, and that range is not
+// The bin coordinates of a distribution are its range cut into equal bins, and that range is not
 // known until frames have been evaluated - it may be widened by the data itself. Computing them on
 // demand keeps them correct without anyone having to remember to rewrite them.
 static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
-    const md_script_property_data_t* data = (const md_script_property_data_t*)user_data;
-    if (!data || attr->format.rank != 1) {
+    const eval_property_t* prop = (const eval_property_t*)user_data;
+    if (!prop || !prop->range || attr->format.rank != 1) {
         return 0;
     }
 
@@ -5657,8 +5527,8 @@ static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute
         count = cap;
     }
 
-    const double x_min = data->min_range[0];
-    const double x_max = data->max_range[0];
+    const double x_min = prop->range->x;
+    const double x_max = prop->range->y;
     const double x_scl = num_bins ? (x_max - x_min) / (double)num_bins : 0.0;
 
     float* out = (float*)dst;
@@ -5668,15 +5538,21 @@ static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute
     return count;
 }
 
-// data->unit must already be set: the attributes carry it and it is not patchable afterwards.
-static void allocate_property_data(md_script_property_data_t* data, md_attributes_t* attributes, str_t ident, md_script_property_flags_t flags, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
-    ASSERT(data);
+// Publishes the attributes of one property and points prop at them.
+// unit[0] is the coordinate unit (a distribution's bin axis), unit[1] the unit of the values.
+static void init_property(eval_property_t* prop, md_attributes_t* attributes, str_t ident, md_script_property_flags_t kind,
+                          type_info_t type, const md_unit_t unit[2], size_t num_frames, md_allocator_i* alloc) {
+    ASSERT(prop);
     ASSERT(attributes);
     ASSERT(alloc);
 
+    MEMSET(prop, 0, sizeof(eval_property_t));
+    prop->ident = ident;
+    prop->kind  = kind;
+    md_mutex_init(&prop->accum_mutex);
+
     // @NOTE: We need to 'normalize' the dimensionality of the types in a consistent way, since the properties will be exposed
     // Therefore we make sure all types encode the array length in the first dimension, even if its a scalar, i.e. [1]
-    // This simplifies extraction later on.
 
     // Step 1: Prune trailing ones
     for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
@@ -5685,84 +5561,57 @@ static void allocate_property_data(md_script_property_data_t* data, md_attribute
         }
     }
 
+    const md_unit_t coord_unit = unit[0];
+    const md_unit_t value_unit = unit[1];
+
     // @NOTE: At this stage, the flags should only contain the property type
-    switch (flags) {
-        case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL:
+    switch (kind) {
+        case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL: {
             // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
             if (dim_ndims(type.dim) < 2) {
-				dim_shift_right(type.dim);
-			}
-            data->dim[0] = (int32_t)num_frames;
-            data->dim[1] = type.dim[1];
-            break;
-        case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION:
-            if (dim_ndims(type.dim) < 3) {
                 dim_shift_right(type.dim);
             }
-            MEMCPY(data->dim, type.dim, sizeof(type.dim));
-            // @NOTE: Multidimensional distributions are not supported yet
-            ASSERT(data->dim[0] == 1);
-            break;
-        case MD_SCRIPT_PROPERTY_FLAG_VOLUME:
-            if (dim_ndims(type.dim) < 4) {
-            	dim_shift_right(type.dim);
-            }
-            MEMCPY(data->dim, type.dim, sizeof(type.dim));
-            // @NOTE: Multidimensional volumes are not supported yet
-            ASSERT(data->dim[0] == 1);
-            break;
-        default:
-            ASSERT(false);
-            break;
-    }
-
-    char path[512];
-    const md_unit_t value_unit = data->unit[1];
-    const md_unit_t coord_unit = data->unit[0];
-
-    switch (flags) {
-        case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL: {
-            const uint32_t shape[2] = { (uint32_t)data->dim[0], (uint32_t)data->dim[1] };
-            data->num_values = (size_t)shape[0] * (size_t)shape[1];
-            data->values = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
-                                               value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 2, shape, data->num_values);
+            const uint32_t shape[2] = { (uint32_t)num_frames, (uint32_t)type.dim[1] };
+            prop->count      = shape[1];
+            prop->num_values = (size_t)shape[0] * (size_t)shape[1];
+            prop->values = script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 2, shape);
+            prop->range  = (vec2_t*)script_attr_storage(attributes, alloc, ident, "/range", value_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
 
             if (shape[1] > 1) {
                 // The population has more than one member, so the per frame summary over it is a
                 // quantity in its own right and gets published as one.
                 const uint32_t frames[1] = { shape[0] };
-                data->aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
-                MEMSET(data->aggregate, 0, sizeof(md_script_aggregate_t));
-                data->aggregate->num_values = num_frames;
-
-                data->aggregate->population_mean = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/mean"),
-                                                                       value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames, num_frames);
-                data->aggregate->population_var  = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/variance"),
-                                                                       md_unit_mul(value_unit, value_unit), MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames, num_frames);
+                prop->mean = script_attr_storage(attributes, alloc, ident, "/mean", value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames);
+                prop->var  = script_attr_storage(attributes, alloc, ident, "/variance", md_unit_mul(value_unit, value_unit), MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames);
                 // min and max are two COMPONENTS of one value, not two positions along an axis:
-                // they are not interchangeable and nothing indexes between them. That is also
-                // exactly the vec2_t the aggregate already stores.
-                data->aggregate->population_ext  = (vec2_t*)script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/extent"),
-                                                                       value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames, num_frames * 2);
+                // they are not interchangeable and nothing indexes between them.
+                prop->ext  = (vec2_t*)script_attr_storage(attributes, alloc, ident, "/extent", value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames);
             }
             break;
         }
         case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
-            const uint32_t bins[1] = { (uint32_t)data->dim[2] };
-            data->num_values = bins[0];
-            data->values  = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
-                                                value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins, bins[0]);
-            data->weights = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, "/weight"),
-                                                md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins, bins[0]);
+            // The evaluated type is [1][2][num_bins]: the values followed by their weights.
+            if (dim_ndims(type.dim) < 3) {
+                dim_shift_right(type.dim);
+            }
+            // @NOTE: Multidimensional distributions are not supported yet
+            ASSERT(type.dim[0] == 1);
+            const uint32_t bins[1] = { (uint32_t)type.dim[2] };
+            prop->count      = bins[0];
+            prop->num_values = bins[0];
+            prop->values  = script_attr_storage(attributes, alloc, ident, NULL,      value_unit,    MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins);
+            prop->weights = script_attr_storage(attributes, alloc, ident, "/weight", md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins);
+            prop->range   = (vec2_t*)script_attr_storage(attributes, alloc, ident, "/range", coord_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
             for (uint32_t i = 0; i < bins[0]; ++i) {
-                data->weights[i] = 1.0f;
+                prop->weights[i] = 1.0f;
             }
 
+            char path[512];
             md_attribute_virtual_t virt = {
                 .provider  = script_bin_coord_provide,
-                // Borrowed: the property data lives in the same arena as the table and outlives it
-                // by construction, so there is nothing here for the table to release.
-                .user_data = data,
+                // Borrowed: the property lives in the same arena as the table and outlives it by
+                // construction, so there is nothing here for the table to release.
+                .user_data = prop,
                 .user_data_size = 0,
             };
             md_attribute_desc_t desc = {
@@ -5775,10 +5624,15 @@ static void allocate_property_data(md_script_property_data_t* data, md_attribute
             break;
         }
         case MD_SCRIPT_PROPERTY_FLAG_VOLUME: {
-            const uint32_t shape[3] = { (uint32_t)data->dim[1], (uint32_t)data->dim[2], (uint32_t)data->dim[3] };
-            data->num_values = (size_t)shape[0] * (size_t)shape[1] * (size_t)shape[2];
-            data->values = script_attr_storage(attributes, alloc, script_attr_path(path, sizeof(path), ident, NULL),
-                                               value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 3, shape, data->num_values);
+            if (dim_ndims(type.dim) < 4) {
+                dim_shift_right(type.dim);
+            }
+            // @NOTE: Multidimensional volumes are not supported yet
+            ASSERT(type.dim[0] == 1);
+            const uint32_t shape[3] = { (uint32_t)type.dim[1], (uint32_t)type.dim[2], (uint32_t)type.dim[3] };
+            prop->num_values = (size_t)shape[0] * (size_t)shape[1] * (size_t)shape[2];
+            prop->count      = (uint32_t)prop->num_values;
+            prop->values = script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 3, shape);
             break;
         }
         default:
@@ -5787,91 +5641,48 @@ static void allocate_property_data(md_script_property_data_t* data, md_attribute
     }
 }
 
+// Two passes rather than a running sum of squares, which cancels badly in single precision.
 static void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_mean, float* out_var, const float* data, size_t count) {
-    ASSERT(out_min);
-    ASSERT(out_max);
-    ASSERT(out_mean);
-    ASSERT(out_var);
-    ASSERT(data);
+    ASSERT(out_min && out_max && out_mean && out_var);
+    ASSERT(data && count > 0);
 
-    const float N = (float)count;
     float min = FLT_MAX;
     float max = -FLT_MAX;
-    float s1 = 0;
-    float s2 = 0;
-    size_t i = 0;
-
-    for (i = 0; i < count; ++i) {
-        s1 += data[i];
+    float sum = 0;
+    for (size_t i = 0; i < count; ++i) {
+        sum += data[i];
         min = MIN(min, data[i]);
         max = MAX(max, data[i]);
     }
+    const float mean = sum / (float)count;
 
-    s1 = s1 / N;
-
-    for (i = 0; i < count; ++i) {
-        s2 += (data[i] - s1) * (data[i] - s1);
-    }
-    s2 = s2 / N;
-
-    *out_min = min;
-    *out_max = max;
-    *out_mean = s1;
-    *out_var = s2;
-
-    /*
-    if (count > md_simd_width) {
-        md_256 vmin = md_mm256_set1_ps(FLT_MAX);
-        md_256 vmax = md_mm256_set1_ps(-FLT_MAX);
-        md_256 v1 = md_simd_zero_f32();
-        md_256 v2 = md_simd_zero_f32();
-
-        const int simd_count = (count / md_simd_width) * md_simd_width;
-        for (; i < simd_count; i += md_simd_width) {
-            md_256 val = md_mm256_loadu_ps(data + i);
-            vmin = md_simd_min_f32(vmin, val);
-            vmax = md_simd_min_f32(vmax, val);
-            v1 = md_mm256_add_ps_f32(v1, val);
-            v2 = md_mm256_add_ps_f32(v2, md_mm256_mul_ps_f32(val, val));
-        }
-
-        s1 = md_simd_hadd_f32(v1);
-        s2 = md_simd_hadd_f32(v2);
-        min = md_simd_reduce_min_f32(vmin);
-        max = md_simd_reduce_max_f32(vmax);
-    }
-
-    for (; i < count; ++i) {
-        float val = data[i];
-        min = MIN(min, val);
-        max = MAX(max, val);
-        s1 += val;
-        s2 += val * val;
+    float var = 0;
+    for (size_t i = 0; i < count; ++i) {
+        var += (data[i] - mean) * (data[i] - mean);
     }
 
     *out_min  = min;
     *out_max  = max;
-    *out_mean = s1 / N;
-    *out_var  = fabsf((N * s2) - (s1 * s1)) / (N*N);
-    * */
+    *out_mean = mean;
+    *out_var  = var / (float)count;
 }
 
-static void clear_property_data(md_script_property_data_t* data) {
-    // @NOTE: weights are not cleared. They are a separate buffer now and are overwritten wholesale
-    // by the first evaluated frame; zeroing them would only replace their 1.0 default with a value
-    // that means something different.
-    MEMSET(data->values, 0, data->num_values * sizeof(float));
-    if (data->aggregate) {
-        MEMSET(data->aggregate->population_mean, 0, data->aggregate->num_values * sizeof(float));
-        MEMSET(data->aggregate->population_var,  0, data->aggregate->num_values * sizeof(float));
-        MEMSET(data->aggregate->population_ext,  0, data->aggregate->num_values * sizeof(vec2_t));
-        /*
-        MEMSET(data->aggregate->population_min,  0, data->aggregate->num_values * sizeof(float));
-        MEMSET(data->aggregate->population_max,  0, data->aggregate->num_values * sizeof(float));
-        */
+static void clear_property(eval_property_t* prop) {
+    // @NOTE: weights are not cleared. They are overwritten wholesale by the first evaluated frame;
+    // zeroing them would only replace their 1.0 default with a value that means something different.
+    MEMSET(prop->values, 0, prop->num_values * sizeof(float));
+    if (prop->mean) {
+        const size_t num_frames = prop->num_values / prop->count;
+        MEMSET(prop->mean, 0, num_frames * sizeof(float));
+        MEMSET(prop->var,  0, num_frames * sizeof(float));
+        MEMSET(prop->ext,  0, num_frames * sizeof(vec2_t));
     }
-    data->min_value = +FLT_MAX;
-    data->max_value = -FLT_MAX;
+    if (prop->range) {
+        *prop->range = (vec2_t){0, 0};
+    }
+    prop->min_value = +FLT_MAX;
+    prop->max_value = -FLT_MAX;
+    prop->accum_count = 0;
 }
 
 static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
@@ -5880,7 +5691,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
     ASSERT(ir);
 
     // No properties to evaluate!
-    if (!eval->property_data) return true;
+    if (md_array_size(eval->props) == 0) return true;
     
     const size_t num_expr = md_array_size(ir->eval_targets);
     ast_node_t** const expr = ir->eval_targets;
@@ -5973,17 +5784,16 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
             }
         }
 
-        size_t num_props = md_array_size(eval->property_data);
+        const size_t num_props = md_array_size(eval->props);
         for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
-            ASSERT(str_eq(eval->property_names[p_idx], ir->property_names[p_idx]));
+            eval_property_t* prop = &eval->props[p_idx];
+            ASSERT(str_eq(prop->ident, ir->property_names[p_idx]));
+            ASSERT(prop->values);
 
-            str_t p_name = eval->property_names[p_idx];
-            md_script_property_flags_t p_flags = ir->property_flags[p_idx];
-            md_script_property_data_t* p_data = &eval->property_data[p_idx];
             // Find data matching property identifier
-            const identifier_t* ident = find_dynamic_identifier(p_name, &ctx);
-            if (!ident) {
-                MD_LOG_ERROR("Not good!");
+            const identifier_t* ident = find_dynamic_identifier(prop->ident, &ctx);
+            if (!ident || !ident->data) {
+                MD_LOG_ERROR("Script eval: no evaluated data for property '"STR_FMT"'", STR_ARG(prop->ident));
                 result = false;
                 goto done;
             }
@@ -5991,99 +5801,86 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
             const frange_t value_range = ident->data->value_range;
             const float* values = (const float*)ident->data->ptr;
 
-            if (p_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                ASSERT(ident->data);
-                ASSERT(p_data->values);
+            switch (prop->kind) {
+            case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL: {
+                const uint32_t size = (uint32_t)ident->data->type.dim[0];
+                ASSERT(size == prop->count);
+                MEMCPY(prop->values + (size_t)f_idx * size, values, size * sizeof(float));
 
-                const int32_t size = ident->data->type.dim[0];
-                MEMCPY(p_data->values + f_idx * size, values, size * sizeof(float));
-
-                // Determine min max values
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
-                p_data->min_value = MIN(p_data->min_value, min);
-                p_data->max_value = MAX(p_data->max_value, max);
 
-                if (p_data->aggregate) {
-                    p_data->aggregate->population_mean[f_idx] = mean;
-                    p_data->aggregate->population_var [f_idx] = var;
-                    p_data->aggregate->population_ext [f_idx] = (vec2_t){min, max};
-                    /*
-                    p_data->aggregate->population_min [f_idx] = min;
-                    p_data->aggregate->population_max [f_idx] = max;
-                    */
+                if (prop->mean) {
+                    prop->mean[f_idx] = mean;
+                    prop->var [f_idx] = var;
+                    prop->ext [f_idx] = (vec2_t){min, max};
                 }
 
-                // Update range if not explicitly set
-                p_data->min_range[0] = (value_range.beg == -FLT_MAX) ? p_data->min_value : value_range.beg;
-                p_data->max_range[0] = (value_range.end == +FLT_MAX) ? p_data->max_value : value_range.end;
+                // Frame ranges are evaluated concurrently, and the extremes are shared by all of them
+                md_mutex_lock(&prop->accum_mutex);
+                prop->min_value = MIN(prop->min_value, min);
+                prop->max_value = MAX(prop->max_value, max);
+                prop->range->x = (value_range.beg == -FLT_MAX) ? prop->min_value : value_range.beg;
+                prop->range->y = (value_range.end == +FLT_MAX) ? prop->max_value : value_range.end;
+                md_mutex_unlock(&prop->accum_mutex);
+                break;
             }
-            else if (p_flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                // Accumulate values
-                ASSERT(p_data->values);
-
-                size_t num_bins = p_data->dim[2];
+            case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
+                const size_t num_bins = prop->count;
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, num_bins);
 
-                // ATOMIC WRITE
-                md_mutex_lock(&eval->property_dist_mutex[p_idx]);
+                md_mutex_lock(&prop->accum_mutex);
                 {
                     // Cumulative moving average
-                    const uint32_t count = eval->property_dist_count[p_idx]++;
+                    const uint32_t count = prop->accum_count++;
                     const md_256 N   = md_mm256_set1_ps((float)(count));
                     const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
-                    // @NOTE: This used to run to ALIGN_TO(num_bins, 8) and relied on the weights
-                    // sitting directly behind the bins to absorb the overrun. They are separate
-                    // attributes now, so the tail is done scalar.
                     const size_t simd_end = num_bins & ~(size_t)7;
                     for (size_t i = 0; i < simd_end; i += 8) {
-                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(p_data->values + i), N);
+                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->values + i), N);
                         md_256 new_val = md_mm256_loadu_ps(values + i);
-                        md_mm256_storeu_ps(p_data->values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
+                        md_mm256_storeu_ps(prop->values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
                     }
                     const float n_scl = 1.0f / (float)(count + 1);
                     for (size_t i = simd_end; i < num_bins; ++i) {
-                        p_data->values[i] = (values[i] + p_data->values[i] * (float)count) * n_scl;
+                        prop->values[i] = (values[i] + prop->values[i] * (float)count) * n_scl;
                     }
 
-                    // Copy weights
-                    MEMCPY(p_data->weights, values + num_bins, num_bins * sizeof(float));
-                    
-                    // Determine min max values
-                    p_data->min_value = MIN(p_data->min_value, min);
-                    p_data->max_value = MAX(p_data->max_value, max);
+                    // The evaluated weights sit directly behind the values
+                    MEMCPY(prop->weights, values + num_bins, num_bins * sizeof(float));
 
-                    // Update range if not explicitly set
-                    p_data->min_range[0] = (value_range.beg == -FLT_MAX) ? p_data->min_value : value_range.beg;
-                    p_data->max_range[0] = (value_range.end == +FLT_MAX) ? p_data->max_value : value_range.end;
+                    prop->min_value = MIN(prop->min_value, min);
+                    prop->max_value = MAX(prop->max_value, max);
+                    prop->range->x = (value_range.beg == -FLT_MAX) ? prop->min_value : value_range.beg;
+                    prop->range->y = (value_range.end == +FLT_MAX) ? prop->max_value : value_range.end;
                 }
-                md_mutex_unlock(&eval->property_dist_mutex[p_idx]);
+                md_mutex_unlock(&prop->accum_mutex);
+                break;
             }
-            else if (p_flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
-                // Accumulate values
-                ASSERT(p_data->values);
-                ASSERT(p_data->num_values % 8 == 0); // This should always be the case if we nice powers of 2 for our volumes
-                
-                // ATOMIC WRITE
-                md_mutex_lock(&eval->property_dist_mutex[p_idx]);
+            case MD_SCRIPT_PROPERTY_FLAG_VOLUME: {
+                ASSERT(prop->num_values % 8 == 0); // This should always be the case if we nice powers of 2 for our volumes
+
+                md_mutex_lock(&prop->accum_mutex);
                 {
                     // Cumulative moving average
-                    const uint32_t count = eval->property_dist_count[p_idx]++;
+                    const uint32_t count = prop->accum_count++;
                     const md_256 N = md_mm256_set1_ps((float)(count));
                     const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
-                    for (size_t i = 0; i < p_data->num_values; i += 8) {
-                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(p_data->values + i), N);
+                    for (size_t i = 0; i < prop->num_values; i += 8) {
+                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->values + i), N);
                         md_256 new_val = md_mm256_loadu_ps(values + i);
-                        md_mm256_storeu_ps(p_data->values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
+                        md_mm256_storeu_ps(prop->values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
                     }
                 }
-                md_mutex_unlock(&eval->property_dist_mutex[p_idx]);
+                md_mutex_unlock(&prop->accum_mutex);
+                break;
             }
-            else {
+            default:
                 ASSERT(false);
+                break;
             }
         }
 
@@ -6148,7 +5945,6 @@ static bool add_ir_ctx(md_script_ir_t* ir, const md_script_ir_t* ctx_ir) {
     // we want to extract identifiers and subexpressions to be used so we can reference it.
     // @TODO: Check for collisions of identifiers here
     md_array_push_array(ir->identifiers,  ctx_ir->identifiers,  md_array_size(ctx_ir->identifiers),  ir->arena);
-    //md_array_push_array(ir->eval_targets, ctx_ir->eval_targets, md_array_size(ctx_ir->eval_targets), ir->arena);
     ir->flags |= ctx_ir->flags;
 
     return true;
@@ -6217,18 +6013,6 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         md_strb_push_str(&sb, STR_LIT(" [d]"));
     }
 
-#if 0
-    if (node->data.size) {
-        if (node->data.size / MEGABYTES(1)) {
-            md_strb_fmt(&sb, " [%.2fMB]", (double)node->data.size / (double)MEGABYTES(1));
-        } else if (node->data.size / KILOBYTES(1)) {
-            md_strb_fmt(&sb, " [%.2fKB]", (double)node->data.size / (double)KILOBYTES(1));
-        } else {
-            md_strb_fmt(&sb, " [%iB]", (int)node->data.size);
-        }
-    }
-#endif
-
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
@@ -6276,23 +6060,19 @@ static bool extract_vis_tokens(md_script_ir_t* ir) {
 static bool extract_identifiers(md_script_ir_t* ir) {
     const size_t num_ident = md_array_size(ir->identifiers);
     for (size_t i = 0; i < num_ident; ++i) {
-        md_array_push(ir->identifier_names, ir->identifiers->name, ir->arena);
+        md_array_push(ir->identifier_names, ir->identifiers[i].name, ir->arena);
     }
     return true;
 }
 
 static bool create_property(md_script_ir_t* ir, str_t ident, const ast_node_t* node) {
-    md_script_property_flags_t flags = 0;
-
-    if (is_temporal_type(node->data.type)) {
-        flags |= MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
-    }
-    else if (is_distribution_type(node->data.type)) {
-        flags |= MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
-    }
-    else if (is_volume_type(node->data.type)) {
-        flags |= MD_SCRIPT_PROPERTY_FLAG_VOLUME;
-    }
+    const type_info_t type = node->data.type;
+    const md_script_property_flags_t flags =
+        is_temporal_type(type)     ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
+        is_distribution_type(type) ? MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION :
+        is_volume_type(type)       ? MD_SCRIPT_PROPERTY_FLAG_VOLUME :
+                                     MD_SCRIPT_PROPERTY_FLAG_NONE;
+    ASSERT(flags != MD_SCRIPT_PROPERTY_FLAG_NONE);
 
     md_array_push(ir->property_names, ident, ir->arena);
     md_array_push(ir->property_flags, flags, ir->arena);
@@ -6369,22 +6149,12 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
 
     md_temp_end(temp_scope);
 
-#if DEBUG
-    //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
-#endif
-
     uint64_t hash = 0;
     const size_t num_expr = md_array_size(ir->type_checked_expressions);
     for (size_t i = 0; i < num_expr; ++i) {
         hash = hash_node(ir->type_checked_expressions[i], hash);
-#if DEBUG
-        //md_logf(MD_LOG_TYPE_DEBUG, "%llu", hash);
-#endif
     }
     ir->fingerprint = hash;
-#if DEBUG
-    //md_log(MD_LOG_TYPE_DEBUG, "---");
-#endif
 
     return ir->compile_success;
 }
@@ -6561,52 +6331,26 @@ const str_t* md_script_ir_property_names(const md_script_ir_t* ir) {
     return ir->property_names;
 }
 
-/*
-size_t md_script_ir_property_id_filter_on_flags(md_script_property_id_t* out_ids, size_t out_cap, const md_script_ir_t* ir, md_script_property_flags_t flags) {
-    if (!validate_ir(ir)) {
-        return 0;
-    }
-
-    size_t count = 0;
-    ASSERT(md_array_size(ir->property_ids) == md_array_size(ir->property_infos));
-    for (size_t i = 0; i < md_array_size(ir->property_ids); ++i) {
-        if (count == out_cap) return count;
-        if (ir->property_infos[i].flags & flags) {
-            out_ids[count++] = ir->property_ids[i];
+// Index of the named property, -1 if there is none
+static int ir_property_index(const md_script_ir_t* ir, str_t name) {
+    if (validate_ir(ir)) {
+        for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
+            if (str_eq(ir->property_names[i], name)) {
+                return (int)i;
+            }
         }
     }
-    return count;
+    return -1;
 }
-*/
 
 md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, str_t name) {
-    if (!validate_ir(ir)) {
-        return 0;
-    }
-
-    ASSERT(md_array_size(ir->property_names) == md_array_size(ir->property_flags));
-    for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
-        if (str_eq(ir->property_names[i], name)) {
-            return ir->property_flags[i];
-        }
-    }
-
-    return MD_SCRIPT_PROPERTY_FLAG_NONE;
+    const int idx = ir_property_index(ir, name);
+    return idx < 0 ? MD_SCRIPT_PROPERTY_FLAG_NONE : ir->property_flags[idx];
 }
 
 const md_script_vis_payload_o* md_script_ir_property_vis_payload(const md_script_ir_t* ir, str_t name) {
-    if (!validate_ir(ir)) {
-        return 0;
-    }
-
-    ASSERT(md_array_size(ir->property_names) == md_array_size(ir->property_nodes));
-    for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
-        if (str_eq(ir->property_names[i], name)) {
-            return (const md_script_vis_payload_o*)ir->property_nodes[i];
-        }
-    }
-
-    return NULL;
+    const int idx = ir_property_index(ir, name);
+    return idx < 0 ? NULL : (const md_script_vis_payload_o*)ir->property_nodes[idx];
 }
 
 str_t md_script_payload_ident(const md_script_vis_payload_o* payload) {
@@ -6669,29 +6413,15 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     eval->attributes.num_frames = (uint32_t)num_frames;
 
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
-    // of the property data it describes, and a growing array would move it out from under one.
-    size_t num_props = md_array_size(ir->property_names);
-    md_array_resize(eval->property_names, num_props, eval->arena);
-    md_array_resize(eval->property_data,  num_props, eval->arena);
-    MEMSET(eval->property_data, 0, num_props * sizeof(md_script_property_data_t));
+    // of the property it describes, and a growing array would move it out from under one.
+    const size_t num_props = md_array_size(ir->property_names);
+    md_array_resize(eval->props, num_props, eval->arena);
 
     for (size_t i = 0; i < num_props; ++i) {
-        eval->property_names[i] = ir->property_names[i];
-        md_script_property_data_t* data = &eval->property_data[i];
+        eval_property_t* prop = &eval->props[i];
         const ast_node_t* node = ir->property_nodes[i];
-        // Units first: the attributes carry them and are not patchable after the fact.
-        data->unit[0] = node->data.unit[0];
-        data->unit[1] = node->data.unit[1];
-        allocate_property_data(data, &eval->attributes, ir->property_names[i], ir->property_flags[i], node->data.type, num_frames, eval->arena);
-    }
-    
-    md_array_resize(eval->property_dist_count, num_props, eval->arena);
-    md_array_resize(eval->property_dist_mutex, num_props, eval->arena);
-        
-    for (size_t i = 0; i < num_props; ++i) {
-        clear_property_data(&eval->property_data[i]);
-        eval->property_dist_count[i] = 0;
-        md_mutex_init(&eval->property_dist_mutex[i]);
+        init_property(prop, &eval->attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
+        clear_property(prop);
     }
 
     md_mutex_init(&eval->frame_lock);
@@ -6703,9 +6433,8 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
     ASSERT(eval);
     ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
     md_bitfield_clear(&eval->frame_mask);
-    for (size_t i = 0; i < md_array_size(eval->property_data); ++i) {
-        clear_property_data(&eval->property_data[i]);
-        eval->property_dist_count[i] = 0;
+    for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+        clear_property(&eval->props[i]);
     }
     eval->interrupt = false;
 }
@@ -6732,17 +6461,12 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
 
-    if (md_array_size(eval->property_data) == 0) {
+    if (md_array_size(eval->props) == 0) {
         MD_LOG_INFO("Script eval: No properties present, nothing to evaluate");
         return false;
     }
     
     bool result = eval_properties(eval, sys, ir, frame_beg, frame_end);
-
-    const uint64_t fingerprint = generate_fingerprint();
-    for (size_t i = 0; i < md_array_size(eval->property_data); ++i) {
-        eval->property_data[i].fingerprint = fingerprint;
-    }
 
     // The buffers were written through md_attributes_data, which deliberately does not bump a
     // version. This is the producer saying it is done.
@@ -6769,8 +6493,8 @@ uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval) {
 
 void md_script_eval_free(md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        for (size_t i = 0; i < md_array_size(eval->property_dist_mutex); ++i) {
-            md_mutex_destroy(&eval->property_dist_mutex[i]);
+        for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+            md_mutex_destroy(&eval->props[i].accum_mutex);
         }
         md_mutex_destroy(&eval->frame_lock);
         md_arena_allocator_destroy(eval->arena);
@@ -6779,20 +6503,9 @@ void md_script_eval_free(md_script_eval_t* eval) {
 
 size_t md_script_eval_property_count(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        return md_array_size(eval->property_names);
+        return md_array_size(eval->props);
     }
     return 0;
-}
-
-const md_script_property_data_t* md_script_eval_property_data(const md_script_eval_t* eval, str_t name) {
-    if (validate_eval(eval)) {
-        for (size_t i = 0; i < md_array_size(eval->property_names); ++i) {
-            if (str_eq(eval->property_names[i], name)) {
-                return &eval->property_data[i];
-            }
-        }
-    }
-    return NULL;
 }
 
 size_t md_script_eval_frame_count(const md_script_eval_t* eval) {
@@ -6893,6 +6606,55 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
 }
 #endif
 
+// The front half shared by md_filter and md_filter_evaluate: parse expr and type check it in ctx.
+// Returns the checked node, with a dynamic length already resolved, or NULL if it did not compile.
+// Whatever went wrong is recorded in ir->errors.
+static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t expr, const md_script_ir_t* ctx_ir) {
+    ir->str = str_copy(expr, ir->arena);
+    if (ctx_ir) {
+        add_ir_ctx(ir, ctx_ir);
+    }
+    ir->stage = "Filter evaluate";
+    ir->record_log = true;
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    parse_context_t parse_ctx = {
+        .ir = ir,
+        .tokenizer = &tokenizer,
+        .temp_alloc = ctx->temp_alloc,
+    };
+
+    ast_node_t* node = prune_expressions(parse_expression(&parse_ctx));
+    if (!node || !static_check_node(node, ctx)) {
+        return NULL;
+    }
+    if (node->data.type.base_type == TYPE_BITFIELD && type_info_array_len(node->data.type) == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
+        finalize_type(&node->data.type, node, ctx);
+    }
+    return node;
+}
+
+static void filter_report(char* err_buf, size_t err_cap, const char* msg) {
+    if (err_buf && err_cap) {
+        snprintf(err_buf, err_cap, "%s\n", msg);
+    } else {
+        MD_LOG_DEBUG("md_filter: %s", msg);
+    }
+}
+
+// Compile errors take precedence over whatever filter_report put there: they are the cause.
+static void filter_write_errors(char* err_buf, size_t err_cap, const md_script_ir_t* ir) {
+    if (!err_buf || !err_cap) {
+        return;
+    }
+    size_t len = 0;
+    for (size_t i = 0; i < md_array_size(ir->errors) && len + 1 < err_cap; ++i) {
+        const int n = snprintf(err_buf + len, err_cap - len, STR_FMT"\n", STR_ARG(ir->errors[i].text));
+        if (n < 0) break;
+        len += (size_t)n;
+    }
+}
+
 bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_system_t* sys, const md_system_state_t* state, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
     ASSERT(sys);
@@ -6904,87 +6666,49 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = str_copy(expr, ir->arena);
-
-    if (ctx_ir) {
-        add_ir_ctx(ir, ctx_ir);
-    }
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-
-    parse_context_t parse_ctx = {
+    eval_context_t ctx = {
         .ir = ir,
-        .tokenizer = &tokenizer,
-        .node = 0,
+        .sys = sys,
         .temp_alloc = temp_alloc,
+        .alloc = temp_alloc,
+        .cur_state = state,
+        .ref_state = &sys->reference,
+        .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
     };
 
-    ir->stage = "Filter evaluate";
-    ir->record_log = true;
-
-    ast_node_t* node = parse_expression(&parse_ctx);
-    node = prune_expressions(node);
+    ast_node_t* node = filter_compile(ir, &ctx, expr, ctx_ir);
     if (node) {
-        eval_context_t ctx = {
-            .ir = ir,
-            .sys = sys,
-            .temp_alloc = temp_alloc,
-            .alloc = temp_alloc,
-            .cur_state = state,
-            .ref_state = &sys->reference,
-            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
-        };
+        if (node->data.type.base_type == TYPE_BITFIELD) {
+            data_t data = {0};
+            allocate_data(&data, node->data.type, temp_alloc);
 
-        if (static_check_node(node, &ctx)) {
-            if (node->data.type.base_type == TYPE_BITFIELD) {               
-                if (type_info_array_len(node->data.type) == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
-                    finalize_type(&node->data.type, node, &ctx);
-                }
-
-                data_t data = {0};
-                allocate_data(&data, node->data.type, temp_alloc);
-
-                if (evaluate_node(&data, node, &ctx)) {
-                    const int64_t len = type_info_array_len(data.type);
-                    const md_bitfield_t* bf_arr = data.ptr;
-                    if (bf_arr) {
-                        for (int64_t i = 0; i < len; ++i) {
-                            md_bitfield_t bf = {0};
-                            md_bitfield_init(&bf, alloc);
-                            md_bitfield_copy(&bf, &bf_arr[i]);
-                            md_array_push(*bitfields, bf, alloc);
-                        }
+            if (evaluate_node(&data, node, &ctx)) {
+                const int64_t len = type_info_array_len(data.type);
+                const md_bitfield_t* bf_arr = data.ptr;
+                if (bf_arr) {
+                    for (int64_t i = 0; i < len; ++i) {
+                        md_bitfield_t bf = {0};
+                        md_bitfield_init(&bf, alloc);
+                        md_bitfield_copy(&bf, &bf_arr[i]);
+                        md_array_push(*bitfields, bf, alloc);
                     }
-                    if (is_dynamic) *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
-                    success = true;
                 }
+                if (is_dynamic) *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                success = true;
             }
-            if (!success) {
-                if (err_buf) {
-                    snprintf(err_buf, err_cap, "Expression did not evaluate to a bitfield\n");
-                } else {
-                    MD_LOG_ERROR("md_filter: Expression did not evaluate to a valid bitfield\n");
-                }
-            }
+        }
+        if (!success) {
+            filter_report(err_buf, err_cap, "Expression did not evaluate to a bitfield");
         }
     }
 
-    if (err_buf) {
-        size_t len = 0;
-        for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
-            size_t space_left = err_cap - MIN(len, err_cap);
-            if (!space_left) break;
-            len += snprintf(err_buf + len, space_left, ""STR_FMT"", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
-        }
-    }
+    filter_write_errors(err_buf, err_cap, ir);
 
     md_temp_end(temp_scope);
     return success;
 }
 
 bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const md_system_state_t* state, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
-    ASSERT(sys);
-
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {
         MD_LOG_ERROR("md_filter: Passed in bitfield was NULL or not valid.");
         return false;
@@ -7003,7 +6727,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
     md_bitfield_clear(dst_bf);
 
     if (str_empty(expr)) {
-        if (err_buf) snprintf(err_buf, err_cap, "Expression is empty\n");
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "Expression is empty\n");
         return false;
     }
 
@@ -7013,93 +6737,48 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = str_copy(expr, ir->arena);
-
-    if (ctx_ir) {
-        add_ir_ctx(ir, ctx_ir);
-    }
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-
-    parse_context_t parse_ctx = {
+    eval_context_t ctx = {
         .ir = ir,
-        .tokenizer = &tokenizer,
-        .node = 0,
+        .sys = sys,
         .temp_alloc = temp_alloc,
+        .alloc = temp_alloc,
+        .cur_state = state,
+        .ref_state = &sys->reference,
+        .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
     };
 
-    ir->stage = "Filter evaluate";
-    ir->record_log = true;
-
-    ast_node_t* node = parse_expression(&parse_ctx);
-    node = prune_expressions(node);
+    ast_node_t* node = filter_compile(ir, &ctx, expr, ctx_ir);
     if (node) {
-        eval_context_t ctx = {
-            .ir = ir,
-            .sys = sys,
-            .temp_alloc = temp_alloc,
-            .alloc = temp_alloc,
-            .cur_state = state,
-            .ref_state = &sys->reference,
-            .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
-        };
-
-        if (static_check_node(node, &ctx)) {
-            if (node->data.type.base_type == TYPE_BITFIELD) {
-                int len = (int)type_info_array_len(node->data.type);
-                if (len == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
-                    finalize_type(&node->data.type, node, &ctx);
-                    len = (int)type_info_array_len(node->data.type);
+        const int len = node->data.type.base_type == TYPE_BITFIELD ? (int)type_info_array_len(node->data.type) : 0;
+        if (len == 1) {
+            // A single bitfield is evaluated straight into the destination
+            data_t data = {
+                .type = node->data.type,
+                .ptr  = dst_bf,
+                .size = sizeof(md_bitfield_t),
+            };
+            success = evaluate_node(&data, node, &ctx);
+        } else if (len > 1) {
+            data_t data = {0};
+            allocate_data(&data, node->data.type, temp_alloc);
+            success = evaluate_node(&data, node, &ctx);
+            if (success) {
+                const md_bitfield_t* src_bf = (const md_bitfield_t*)data.ptr;
+                for (int i = 0; i < len; ++i) {
+                    md_bitfield_or_inplace(dst_bf, &src_bf[i]);
                 }
-                
-                if (len == 1) {
-                    data_t data = {0};
-                    data.type = node->data.type;
-                    data.ptr = dst_bf;
-                    data.size = sizeof(md_bitfield_t);
-
-                    if (evaluate_node(&data, node, &ctx)) {
-                        success = true;
-                        if (is_dynamic) {
-                            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
-                        }
-                    }
-                } else if (len > 1) {
-                    data_t data = {0};
-                    allocate_data(&data, node->data.type, temp_alloc);
-                    
-                    if (evaluate_node(&data, node, &ctx)) {
-                        success = true;
-                        if (is_dynamic) {
-                            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
-                        }
-                    }
-
-                    if (success) {
-                        const md_bitfield_t* src_bf = (const md_bitfield_t*)data.ptr;
-                        for (int i = 0; i < len; ++i) {
-                            md_bitfield_or_inplace(dst_bf, &src_bf[i]);
-                        }
-                    }
-                }
-                else {
-                    MD_LOG_DEBUG("md_filter: Expression did not evaluate to a valid bitfield\n");
-                    snprintf(err_buf, err_cap, "Expression did not evaluate to a valid bitfield\n");
-                }
-            } else {
-                MD_LOG_DEBUG("md_filter: Expression did not evaluate to a valid bitfield\n");
-                snprintf(err_buf, err_cap, "Expression did not evaluate to a bitfield\n");
             }
+        } else {
+            filter_report(err_buf, err_cap, node->data.type.base_type == TYPE_BITFIELD ?
+                "Expression did not evaluate to a valid bitfield" : "Expression did not evaluate to a bitfield");
+        }
+
+        if (success && is_dynamic) {
+            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
         }
     }
 
-    if (err_buf) {
-        size_t len = 0;
-        for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
-            int space_left = MAX(0, (int)(err_cap - len));
-            if (space_left) len += snprintf(err_buf + len, (size_t)space_left, ""STR_FMT"\n", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
-        }
-    }
+    filter_write_errors(err_buf, err_cap, ir);
 
     md_temp_end(temp_scope);
     return success;
@@ -7195,14 +6874,6 @@ static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
         do_vis_eval(node, ctx);
     }
 
-    /*
-    // Recurse and add children
-    const int64_t num_children = md_array_size(node->children);
-    for (int64_t i = 0; i < num_children; ++i) {
-        if (node->type == AST_ASSIGNMENT && i == 0) continue;   // Skip LHS in assignment
-        visualize_node(node->children[i], ctx);
-    }
-    */
 }
 
 bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payload_o* payload, int subidx, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {

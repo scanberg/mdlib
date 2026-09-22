@@ -6,6 +6,7 @@
 #include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
+#include <core/md_array.h>
 
 #define NM_TO_ANGSTROM 10.0f
 
@@ -28,6 +29,11 @@ UTEST(gro, parse_small) {
     md_system_reset(&sys);
 
     EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path));
+    // A format without force field types still keeps the column aligned, with empty entries
+    EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
+    for (size_t t = 0; t < sys.atom.type.count; ++t) {
+        EXPECT_TRUE(str_empty(md_atom_type_ff_type(&sys.atom.type, t)));
+    }
     for (int64_t i = 0; i < sys.atom.count; ++i) {
         EXPECT_EQ(sys_state.x[i], gro_data.atom_data[i].x * NM_TO_ANGSTROM);
         EXPECT_EQ(sys_state.y[i], gro_data.atom_data[i].y * NM_TO_ANGSTROM);

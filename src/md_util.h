@@ -110,6 +110,13 @@ bool md_util_system_infer_structures(md_system_t* sys);
 // Identify atom types within the system
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
 
+// Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
+// for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
+// parameters of every bead). Only types without an element (z == 0) are considered. The table's
+// flags (coarse grained, backbone, side chain, amino acid) are added to the type, the atoms and their
+// component. Mass and radius are left alone: they are the loader's.
+void md_util_system_augment_atom_types(md_system_t* sys);
+
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 // Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
 // bonds) from the supplied state, and records that state as sys->reference.

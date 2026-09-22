@@ -4,11 +4,12 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
+#include <md_xdr.h>
 
 #include <string.h>
 #include <stdio.h>
 
-#include <xdrfile.h>
 
 #define ENX_STRING_MAGIC -55555
 #define ENX_HEADER_MAGIC -7777777
@@ -88,9 +89,10 @@ typedef struct md_enxframe_t {
 } md_enxframe_t;
 
 typedef struct {
-	XDRFILE* xdr;
+	md_xdr_t xdr;			// Over the whole file, which is read into memory up front
+	void*    data;
+	size_t   data_size;
 	bool double_precision; // Are we reading double precision reals?
-	int64_t xdr_file_size;
 
 	struct {
 		bool			old_file_open;		/* Is this an open old file? */
@@ -103,33 +105,24 @@ typedef struct {
 	} old;
 } edr_fp_t;
 
-static int xdrfile_read_int64(int64_t* ptr, int ndata, XDRFILE* xfp) {
-	STATIC_ASSERT(2 * sizeof(int) >= 8, "XDR handling assumes that an int64_t can be stored in two ints");
-
-	int imaj = 0;
-	int imin = 0;
-
-	int i = 0;
-	while (i < ndata) {
-		if (!(xdrfile_read_int(&imaj, 1, xfp) && xdrfile_read_int(&imin, 1, xfp))) {
-			return 0;
-		}
-		ptr[i] = (((uint64_t)(imaj) << 32) | ((uint64_t)(imin) & 0xFFFFFFFF));
-		i += 1;
-	}
-
-	return 1;
+static bool read_int(int* ptr, edr_fp_t* fp) {
+	int32_t v;
+	const bool ok = md_xdr_read_i32(&fp->xdr, &v);
+	*ptr = v;
+	return ok;
 }
 
 static bool read_real(double* ptr, int ndata, edr_fp_t* fp) {
-	if (fp->double_precision) {
-		return xdrfile_read_double(ptr, ndata, fp->xdr);
-	} else {
-		float flt = 0;
-		int res = xdrfile_read_float(&flt, ndata, fp->xdr);
-		*ptr = flt;
-		return res;
+	for (int i = 0; i < ndata; ++i) {
+		if (fp->double_precision) {
+			if (!md_xdr_read_f64(&fp->xdr, &ptr[i])) return false;
+		} else {
+			float flt;
+			if (!md_xdr_read_f32(&fp->xdr, &flt)) return false;
+			ptr[i] = flt;
+		}
 	}
+	return true;
 }
 
 static void resize_data_subblock(md_enxsubblock_t* subblock, size_t new_size, md_allocator_i* alloc) {
@@ -191,14 +184,14 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 
 	if (first_real_to_check > -1e10) {
 		file_version = 1;
-		if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
+		if (!read_int(&dum, fp)) {
 			MD_LOG_ERROR("Failed to read header step");
 			return false;
 		}
 		t = first_real_to_check;
 		step = dum;
 	} else {
-		if (!xdrfile_read_int(&magic, 1, fp->xdr)) {
+		if (!read_int(&magic, fp)) {
 			MD_LOG_ERROR("Failed to read header magic");
 			return false;
 		}
@@ -206,7 +199,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			MD_LOG_ERROR("Magic number mismatch in header, invalid edr file");
 			return false;
 		}
-		if (!xdrfile_read_int(&file_version, 1, fp->xdr)) {
+		if (!read_int(&file_version, fp)) {
 			MD_LOG_ERROR("Falied to read header file version");
 			return false;
 		}
@@ -214,20 +207,20 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			MD_LOG_ERROR("Unsuported edr file version");
 			return false;
 		}
-		if (!xdrfile_read_double(&t, 1, fp->xdr)) {
+		if (!md_xdr_read_f64(&fp->xdr, &t)) {
 			MD_LOG_ERROR("Falied to read time");
 			return false;
 		}
-		if (!xdrfile_read_int64(&step, 1, fp->xdr)) {
+		if (!md_xdr_read_i64(&fp->xdr, &step)) {
 			MD_LOG_ERROR("Falied to read step");
 			return false;
 		}
-		if (!xdrfile_read_int(&nsum, 1, fp->xdr)) {
+		if (!read_int(&nsum, fp)) {
 			MD_LOG_ERROR("Falied to read nsum");
 			return false;
 		}
 		if (file_version >= 3) {
-			if (!xdrfile_read_int64(&nsteps, 1, fp->xdr)) {
+			if (!md_xdr_read_i64(&fp->xdr, &nsteps)) {
 				MD_LOG_ERROR("Falied to read nsteps");
 				return false;
 			}
@@ -235,7 +228,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			nsteps = MAX(1, nsum);
 		}
 		if (file_version >= 5) {
-			if (!xdrfile_read_double(&dt, 1, fp->xdr)) {
+			if (!md_xdr_read_f64(&fp->xdr, &dt)) {
 				MD_LOG_ERROR("Falied to read dt");
 				return false;
 			}
@@ -243,25 +236,25 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			dt = 0;
 		}
 	}
-	if (!xdrfile_read_int(&nre, 1, fp->xdr)) {
+	if (!read_int(&nre, fp)) {
 		MD_LOG_ERROR("Falied to read nre");
 		return false;
 	}
 	if (file_version < 4) {
-		if (!xdrfile_read_int(&ndisre, 1, fp->xdr)) {
+		if (!read_int(&ndisre, fp)) {
 			MD_LOG_ERROR("Falied to read ndisre");
 			return false;
 		}
 	}
 	else {
 		// Reserved for possible future use
-		if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
+		if (!read_int(&dum, fp)) {
 			MD_LOG_ERROR("Falied to read data");
 			return false;
 		}
 	}
 
-	if (!xdrfile_read_int(&nblock, 1, fp->xdr)) {
+	if (!read_int(&nblock, fp)) {
 		MD_LOG_ERROR("Falied to read nblock");
 		return false;
 	}
@@ -324,7 +317,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 		if (file_version < 4) {
 			// blocks in old version files always have 1 subblock that consists of reals.
 			int nrint;
-			if (!xdrfile_read_int(&nrint, 1, fp->xdr)) {
+			if (!read_int(&nrint, fp)) {
 				return false;
 			}
 			if (frame) {
@@ -336,10 +329,10 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			}
 		} else {
 			int id, nsub;
-			if (!xdrfile_read_int(&id, 1, fp->xdr)) {
+			if (!read_int(&id, fp)) {
 				return false;
 			}
-			if (!xdrfile_read_int(&nsub, 1, fp->xdr)) {
+			if (!read_int(&nsub, fp)) {
 				return false;
 			}
 
@@ -351,10 +344,10 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 
 			for (int i = 0; i < nsub; ++i) {
 				int typenr, nr;
-				if (!xdrfile_read_int(&typenr, 1, fp->xdr)) {
+				if (!read_int(&typenr, fp)) {
 					return false;
 				}
-				if (!xdrfile_read_int(&nr, 1, fp->xdr)) {
+				if (!read_int(&nr, fp)) {
 					return false;
 				}
 				if (typenr < 0 || typenr >= MD_ENX_DATATYPE_COUNT) {
@@ -379,7 +372,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 	}
 
 	int e_size;
-	if (!xdrfile_read_int(&e_size, 1, fp->xdr)) {
+	if (!read_int(&e_size, fp)) {
 		return false;
 	}
 
@@ -388,10 +381,10 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 	}
 
 	// Reserved for future use
-	if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
+	if (!read_int(&dum, fp)) {
 		return false;
 	}
-	if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
+	if (!read_int(&dum, fp)) {
 		return false;
 	}
 
@@ -546,28 +539,36 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 			switch (sub->type)
 			{
 			case MD_ENX_DATATYPE_FLOAT:
-				ok = ok && (sub->nr == xdrfile_read_float(sub->value.fval, sub->nr, fp->xdr));
+				ok = ok && md_xdr_read_f32_array(&fp->xdr, sub->value.fval, (size_t)sub->nr);
 				break;
 			case MD_ENX_DATATYPE_DOUBLE:
-				ok = ok && (sub->nr == xdrfile_read_double(sub->value.dval, sub->nr, fp->xdr));
+				ok = ok && md_xdr_read_f64_array(&fp->xdr, sub->value.dval, (size_t)sub->nr);
 				break;
 			case MD_ENX_DATATYPE_INT32:
-				ok = ok && (sub->nr == xdrfile_read_int(sub->value.ival, sub->nr, fp->xdr));
+				ok = ok && md_xdr_read_i32_array(&fp->xdr, sub->value.ival, (size_t)sub->nr);
 				break;
 			case MD_ENX_DATATYPE_INT64:
-				ok = ok && (sub->nr == xdrfile_read_int64(sub->value.lval, sub->nr, fp->xdr));
+				for (int j = 0; j < sub->nr && ok; ++j) {
+					ok = md_xdr_read_i64(&fp->xdr, &sub->value.lval[j]);
+				}
 				break;
 			case MD_ENX_DATATYPE_CHAR:
-				ok = ok && (sub->nr == xdrfile_read_uchar(sub->value.cval, sub->nr, fp->xdr));
+				// XDR u_char: one per 4 bytes
+				for (int j = 0; j < sub->nr && ok; ++j) {
+					uint32_t c;
+					ok = md_xdr_read_u32(&fp->xdr, &c);
+					sub->value.cval[j] = (unsigned char)c;
+				}
 				break;
 			case MD_ENX_DATATYPE_STRING:
-				for (int j = 0; j < (int)md_array_size(sub->value.sval); ++j) {
-					size_t len = xdrfile_read_string(buf, (int)sizeof(buf), fp->xdr);
-					if (len > 0) {
-						sub->value.sval[j] = md_alloc(alloc, (int64_t)len);
-						strncpy(sub->value.sval[j], buf, len);
+				for (int j = 0; j < (int)md_array_size(sub->value.sval) && ok; ++j) {
+					str_t str;
+					ok = md_xdr_read_string(&fp->xdr, &str, sizeof(buf) - 1);
+					if (ok) {
+						sub->value.sval[j] = md_alloc(alloc, str.len + 1);
+						MEMCPY(sub->value.sval[j], str.ptr, str.len);
+						sub->value.sval[j][str.len] = '\0';
 					}
-					ok = ok && (len != 0);
 				}
 				break;
 			default:
@@ -595,7 +596,7 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 	bool result = false;
 
 	int magic;
-	if (!xdrfile_read_int(&magic, 1, fp->xdr)) {
+	if (!read_int(&magic, fp)) {
 		MD_LOG_ERROR("Failed to read magic from edr file");
 		goto done;
 	}
@@ -613,12 +614,12 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 			goto done;
 		}
 		*file_version = ENX_VERSION;
-		xdrfile_read_int(file_version, 1, fp->xdr);
+		read_int(file_version, fp);
 		if (*file_version > ENX_VERSION) {
 			MD_LOG_ERROR("Failed to open edr file: unsupported file version in edr file");
 			goto done;
 		}
-		xdrfile_read_int(&nre, 1, fp->xdr);
+		read_int(&nre, fp);
 	}
 
 	if (frame) {
@@ -626,34 +627,27 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 	}
 
 	for (int i = 0; i < nre; ++i) {
-		char buf[1024];
-		size_t len;
-
-		len = xdrfile_read_string(buf, sizeof(buf), fp->xdr);
-		if (!len) {
+		// A string ends at its first zero, whatever length the file gives it
+		str_t name, unit;
+		if (!md_xdr_read_string(&fp->xdr, &name, 1023)) {
 			MD_LOG_ERROR("Failed to read expected number of strings within edr file");
 			goto done;
 		}
-
-		if (frame) {
-			str_t name = str_copy((str_t){buf, (int64_t)len-1}, alloc);
-			md_array_push(frame->e_names, name, alloc);
-		}
+		name = str_from_cstrn(name.ptr, name.len);
 
 		if (*file_version > 1) {
-			len = xdrfile_read_string(buf, sizeof(buf), fp->xdr);
-			if (!len) {
+			if (!md_xdr_read_string(&fp->xdr, &unit, 1023)) {
 				MD_LOG_ERROR("Failed to read expected number of strings within edr file");
 				goto done;
 			}
+			unit = str_from_cstrn(unit.ptr, unit.len);
 		} else {
-			strncpy(buf, "kJ/mol", 7);
-			len = 6;
+			unit = STR_LIT("kJ/mol");
 		}
 
 		if (frame) {
-			str_t unit = str_copy((str_t){buf, (int64_t)len-1}, alloc);
-			md_array_push(frame->e_units, unit, alloc);
+			md_array_push(frame->e_names, str_copy(name, alloc), alloc);
+			md_array_push(frame->e_units, str_copy(unit, alloc), alloc);
 		}
 	}
 
@@ -668,10 +662,24 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	str_t path = str_copy(filename, arena);
 	bool result = false;
 
-	fp->xdr = xdrfile_open(path.ptr, "r");
-	if (!fp->xdr) {
-		MD_LOG_ERROR("Failed to open file '%.*s'", (int)path.len, path.ptr);
-		return false;
+	{
+		md_file_t file = {0};
+		if (!md_file_open(&file, filename, MD_FILE_READ)) {
+			MD_LOG_ERROR("Failed to open file '%.*s'", (int)path.len, path.ptr);
+			md_temp_end(temp_scope);
+			return false;
+		}
+		const int64_t size = md_file_size(file);
+		fp->data = size > 0 ? md_alloc(md_get_heap_allocator(), (size_t)size) : NULL;
+		fp->data_size = fp->data ? (size_t)size : 0;
+		const bool read_ok = fp->data && md_file_read(file, fp->data, fp->data_size) == fp->data_size;
+		md_file_close(&file);
+		if (!read_ok) {
+			MD_LOG_ERROR("Failed to read file '%.*s'", (int)path.len, path.ptr);
+			md_temp_end(temp_scope);
+			return false;
+		}
+		fp->xdr = md_xdr_init(fp->data, fp->data_size);
 	}
 
 	bool wrong_precision = false;
@@ -684,7 +692,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	{
 		md_logf(MD_LOG_TYPE_INFO, "Opened '%.*s' as single precision energy file", (int)path.len, path.ptr);
 	} else {
-		xdr_seek(fp->xdr, 0, SEEK_SET);
+		fp->xdr = md_xdr_init(fp->data, fp->data_size);
 		frame = (md_enxframe_t){0};
 		fp->double_precision = true;
 
@@ -703,9 +711,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		md_array_resize(fp->old.ener_prev, (size_t)frame.nre, md_get_heap_allocator());
 	}
 
-	xdr_seek(fp->xdr, 0, SEEK_END);
-	fp->xdr_file_size = xdr_tell(fp->xdr);
-	xdr_seek(fp->xdr, 0, SEEK_SET);
+	fp->xdr = md_xdr_init(fp->data, fp->data_size);
 	result = true;
 done:
     md_temp_end(temp_scope);
@@ -713,8 +719,9 @@ done:
 }
 
 static void edr_file_close(edr_fp_t* fp) {
-	if (fp->xdr) {
-		xdrfile_close(fp->xdr);
+	if (fp->data) {
+		md_free(md_get_heap_allocator(), fp->data, fp->data_size);
+		fp->data = NULL;
 	}
 	if (fp->old.step_prev) {
 		md_array_free(fp->old.ener_prev, md_get_heap_allocator());
@@ -780,8 +787,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 			energies->num_frames += 1;
 		}
 
-		int64_t pos = xdr_tell(fp.xdr);
-		if (pos == fp.xdr_file_size) {
+		if (md_xdr_remaining(&fp.xdr) == 0) {
 			break;
 		}
 	}

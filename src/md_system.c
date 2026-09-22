@@ -23,6 +23,10 @@ void md_system_free(md_system_t* sys) {
 
     // ATOM TYPE
     md_array_free(sys->atom.type.name, alloc);
+    for (size_t i = 0; i < md_array_size(sys->atom.type.ff_type); ++i) {
+        if (sys->atom.type.ff_type[i].ptr) str_free(sys->atom.type.ff_type[i], alloc);
+    }
+    md_array_free(sys->atom.type.ff_type, alloc);
     md_array_free(sys->atom.type.z, alloc);
     md_array_free(sys->atom.type.mass, alloc);
     md_array_free(sys->atom.type.radius, alloc);

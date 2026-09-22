@@ -13,6 +13,11 @@ typedef struct md_atom_type_data_t {
     size_t count;
 
     md_label_t*     name;
+    // The force field's own name for the type ('opls_135', 'CT', or a Martini bead type such as
+    // 'Q5'), when the source has one; empty otherwise. It is what separates two types with the same
+    // name that are different particles - a Martini SC1 is a different bead in every residue - and
+    // it is too long for a label, so these are owned strings.
+    str_t*          ff_type;
     md_atomic_number_t* z;
     float*          mass;
     float*          radius;
@@ -995,6 +1000,28 @@ static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* at
     return type_idx;
 }
 
+// Adds a type unconditionally, for a loader that decides itself which particles share a type.
+// ff_type may be empty.
+static inline md_atom_type_idx_t md_atom_type_add(md_atom_type_data_t* atom_type, str_t name, str_t ff_type, md_atomic_number_t z, float mass, float radius, uint32_t color, md_flags_t flags, struct md_allocator_i* alloc) {
+    ASSERT(atom_type);
+    ASSERT(alloc);
+
+    md_array_push(atom_type->name, make_label(name), alloc);
+    str_t ff_copy = {0};
+    if (!str_empty(ff_type)) {
+        ff_copy = str_copy(ff_type, alloc);
+    }
+    md_array_push(atom_type->ff_type, ff_copy, alloc);
+    md_array_push(atom_type->z, z, alloc);
+    md_array_push(atom_type->mass, mass, alloc);
+    md_array_push(atom_type->radius, radius, alloc);
+    md_array_push(atom_type->color, color, alloc);
+    md_array_push(atom_type->flags, flags, alloc);
+    atom_type->count++;
+
+    return (md_atom_type_idx_t)(atom_type->count - 1);
+}
+
 static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_flags_t flags, struct md_allocator_i* alloc) {
     ASSERT(atom_type);
     ASSERT(alloc);
@@ -1005,16 +1032,8 @@ static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* a
         return type_idx;
     }
     
-    // Add new atom type
-    md_array_push(atom_type->name, make_label(name), alloc);
-    md_array_push(atom_type->z, z, alloc);
-    md_array_push(atom_type->mass, mass, alloc);
-    md_array_push(atom_type->radius, radius, alloc);
-    md_array_push(atom_type->color, color, alloc);
-    md_array_push(atom_type->flags, flags, alloc);
-    atom_type->count++;
-    
-    return (md_atom_type_idx_t)(atom_type->count - 1);
+    const str_t no_ff_type = {0};
+    return md_atom_type_add(atom_type, name, no_ff_type, z, mass, radius, color, flags, alloc);
 }
 
 static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_data_t* type_data, size_t type_idx) {
@@ -1061,6 +1080,15 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return LBL_TO_STR(type_data->name[type_idx]);
+    }
+    return STR_LIT("");
+}
+
+// Empty when the source had no force field type for it
+static inline str_t md_atom_type_ff_type(const md_atom_type_data_t* type_data, size_t type_idx) {
+    ASSERT(type_data);
+    if (type_data->ff_type && type_idx < type_data->count) {
+        return type_data->ff_type[type_idx];
     }
     return STR_LIT("");
 }

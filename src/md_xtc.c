@@ -1,4 +1,5 @@
 #include <md_xtc.h>
+#include <md_xdr.h>
 
 #include <md_system.h>
 #include <md_trajectory.h>
@@ -394,41 +395,19 @@ static FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, 
     return v4i_load(v);
 }
 
-static inline void extract_int32(int32_t* out, size_t count, const uint8_t* ptr) {
-	MEMCPY(out, ptr, sizeof(int32_t) * count);
-#if __LITTLE_ENDIAN__
-	for (size_t i = 0; i < count; ++i) {
-		out[i] = BSWAP32(out[i]);
-	}
-#endif
-}
-
-static inline void extract_float(float* out, size_t count, const uint8_t* ptr) {
-    for (size_t i = 0; i < count; ++i) {
-        int32_t ival;
-        MEMCPY(&ival, ptr + i * sizeof(int32_t), sizeof(int32_t));
-#if __LITTLE_ENDIAN__
-        ival = BSWAP32(ival);
-#endif
-        float fval;
-        MEMCPY(&fval, &ival, sizeof(float));
-        out[i] = fval;
-    }
-}
-
 static inline bool decode_header(const uint8_t* frame_ptr, md_xtc_header_t* out_header) {
     // Extract header
     int magic;
-    extract_int32(&magic,  1, frame_ptr);
+    magic = md_xdr_load_i32(frame_ptr);
     if (magic != XTC_MAGIC) {
         MD_LOG_ERROR("XTC: Magic number did not match");
         return false;
 	}
 
-    extract_int32(&out_header->natoms, 1, frame_ptr + 4);
-    extract_int32(&out_header->step,   1, frame_ptr + 8);
-	extract_float(&out_header->time,   1, frame_ptr + 12);
-	extract_float((float*)out_header->box, 9, frame_ptr + 16);
+    out_header->natoms = md_xdr_load_i32(frame_ptr + 4);
+    out_header->step = md_xdr_load_i32(frame_ptr + 8);
+	out_header->time = md_xdr_load_f32(frame_ptr + 12);
+	md_xdr_load_f32_array((float*)out_header->box, frame_ptr + 16, 9);
 
     return true;
 }
@@ -506,14 +485,12 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* fra
             return 0;
         }
 
-        if (!md_file_read(xdr, &framebytes, sizeof(int32_t))) {
+        uint8_t framebytes_raw[4];
+        if (md_file_read(xdr, framebytes_raw, sizeof(framebytes_raw)) != sizeof(framebytes_raw)) {
             MD_LOG_ERROR("XTC: Failed to read framebytes");
             return 0;
         }
-#if __LITTLE_ENDIAN__
-        framebytes = BSWAP32(framebytes);
-#endif
-        framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+        framebytes = (int)md_xdr_padded_size((size_t)md_xdr_load_u32(framebytes_raw)); /* Rounding to the next 32-bit boundary */
 
         /* Skip `framebytes` */
         if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
@@ -542,14 +519,11 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* fra
             }
 
             /* Read how much to skip */
-            if (!md_file_read(xdr, &framebytes, sizeof(int32_t))) {
+            if (md_file_read(xdr, framebytes_raw, sizeof(framebytes_raw)) != sizeof(framebytes_raw)) {
                 MD_LOG_ERROR("XTC: Failed to read framebytes");
                 goto done;
             }
-#if __LITTLE_ENDIAN__
-            framebytes = BSWAP32(framebytes);
-#endif
-            framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+            framebytes = (int)md_xdr_padded_size((size_t)md_xdr_load_u32(framebytes_raw)); /* Rounding to the next 32-bit boundary */
 
             /* Skip `framebytes` to next header */
             if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
@@ -590,7 +564,7 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
     }
 
     int natoms;
-	extract_int32(&natoms, 1, frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
+	natoms = md_xdr_load_i32(frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
 
     if (natoms != (int)num_atoms) {
         MD_LOG_ERROR("XTC: Number of atoms in frame header does not match expected number of atoms");
@@ -600,16 +574,16 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
     size_t offset = XTC_SMALL_HEADER_SIZE;
     if (natoms <= 9) {
 		// No compression for 9 atoms or less, just read the coordinates directly
-		extract_float(out_coords, (size_t)natoms * 3, frame_ptr + offset);
+		md_xdr_load_f32_array(out_coords, frame_ptr + offset, (size_t)natoms * 3);
         return true;
     }
 
     float precision;
     int32_t minint[3], maxint[3], smallidx;
-	extract_float(&precision, 1, frame_ptr + offset); offset += 4;
-	extract_int32(minint,     3, frame_ptr + offset); offset += 12;
-	extract_int32(maxint,     3, frame_ptr + offset); offset += 12;
-	extract_int32(&smallidx,  1, frame_ptr + offset); offset += 4;
+	precision = md_xdr_load_f32(frame_ptr + offset); offset += 4;
+	md_xdr_load_i32_array(minint, frame_ptr + offset, 3); offset += 12;
+	md_xdr_load_i32_array(maxint, frame_ptr + offset, 3); offset += 12;
+	smallidx = md_xdr_load_i32(frame_ptr + offset); offset += 4;
 
     uint32_t sizeint[3] = {
         (uint32_t)(maxint[0] - minint[0] + 1),
@@ -649,7 +623,7 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
 
     /* length in bytes */
     int32_t num_bytes = 0;
-    extract_int32(&num_bytes, 1, frame_ptr + offset); offset += 4;
+    num_bytes = md_xdr_load_i32(frame_ptr + offset); offset += 4;
     (void)num_bytes;
 
     const uint8_t* stream = frame_ptr + offset;
@@ -773,7 +747,7 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
     }
 
     int natoms;
-    extract_int32(&natoms, 1, frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
+    natoms = md_xdr_load_i32(frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
 
     if (natoms != (int)num_atoms) {
         MD_LOG_ERROR("XTC: Number of atoms in frame header does not match expected number of atoms");
@@ -784,7 +758,7 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
     if (natoms <= 9) {
         for (int i = 0; i < natoms; ++i) {
             float coord[3];
-            extract_float(coord, 3, frame_ptr + offset + (size_t)i * XTC_SMALL_COORDS_SIZE);
+            md_xdr_load_f32_array(coord, frame_ptr + offset + (size_t)i * XTC_SMALL_COORDS_SIZE, 3);
             out_x[i] = coord[0] * scale;
             out_y[i] = coord[1] * scale;
             out_z[i] = coord[2] * scale;
@@ -794,10 +768,10 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
 
     float precision;
     int32_t minint[3], maxint[3], smallidx;
-    extract_float(&precision, 1, frame_ptr + offset); offset += 4;
-    extract_int32(minint,     3, frame_ptr + offset); offset += 12;
-    extract_int32(maxint,     3, frame_ptr + offset); offset += 12;
-    extract_int32(&smallidx,  1, frame_ptr + offset); offset += 4;
+    precision = md_xdr_load_f32(frame_ptr + offset); offset += 4;
+    md_xdr_load_i32_array(minint, frame_ptr + offset, 3); offset += 12;
+    md_xdr_load_i32_array(maxint, frame_ptr + offset, 3); offset += 12;
+    smallidx = md_xdr_load_i32(frame_ptr + offset); offset += 4;
 
     uint32_t sizeint[3] = {
         (uint32_t)(maxint[0] - minint[0] + 1),
@@ -836,7 +810,7 @@ static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t
     init_unpack_bit_data(&sml_unpack.bit, smallidx);
 
     int32_t num_bytes = 0;
-    extract_int32(&num_bytes, 1, frame_ptr + offset); offset += 4;
+    num_bytes = md_xdr_load_i32(frame_ptr + offset); offset += 4;
     (void)num_bytes;
 
     const uint8_t* stream = frame_ptr + offset;
