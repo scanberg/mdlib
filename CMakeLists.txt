@@ -78,6 +78,8 @@ set(CORE_FILES
   src/core/md_compiler.h
   src/core/md_fifo.c
   src/core/md_fifo.h
+  src/core/md_fft.c
+  src/core/md_fft.h
   src/core/md_gl_util.c
   src/core/md_gl_util.h
   src/core/md_gpu.h
@@ -126,6 +128,8 @@ set(SRC_FILES
   src/md_filter.h
   src/md_flow.c
   src/md_flow.h
+  src/md_gisaxs.c
+  src/md_gisaxs.h
   src/md_gfx.c
   src/md_gfx.h
   src/md_gl.c
@@ -478,6 +482,7 @@ target_include_directories(mdlib
   ext/dcd/
   ext/xtc/
   ext/svd3/
+  ext/pffft/
   ext/stb/
   ext/libdivide/
   ext/hy36/
