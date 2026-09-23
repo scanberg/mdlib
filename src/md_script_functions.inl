@@ -729,6 +729,43 @@ static procedure_t procedures[] = {
 
 };
 
+// Parameter names, declared per procedure NAME and shared by all of its overloads (see NAMED ARGUMENTS in
+// md_script.c). A procedure without an entry here accepts positional arguments only. Declaring names does not
+// change positional calls, so a procedure can be given names without breaking existing scripts, provided the
+// names are listed in the order its arguments are already taken.
+//
+// Rules, checked by the unittest 'script.named_args_signature_table':
+//   - A name means the same position in every overload of the procedure.
+//   - Every parameter which some overload does not take is PARAM_OPTIONAL.
+//   - Required parameters come first; PARAM_DEFAULT never follows PARAM_OPTIONAL.
+//   - Procedures with FLAG_SYMMETRIC_ARGS get no entry: swapping arguments given by name has no meaning.
+//   - Names cannot be keywords of the language (in, of, out, and, or, xor, not).
+#define REQ(name) {CSTR(name), PARAM_REQUIRED}
+#define OPT(name) {CSTR(name), PARAM_OPTIONAL}
+
+static const proc_sig_t signatures[] = {
+    {CSTR("distance"),      2, {REQ("a"), REQ("b")}},
+    {CSTR("distance_min"),  2, {REQ("a"), REQ("b")}},
+    {CSTR("distance_max"),  2, {REQ("a"), REQ("b")}},
+    {CSTR("distance_pair"), 2, {REQ("a"), REQ("b")}},
+    {CSTR("angle"),         3, {REQ("a"), REQ("b"), REQ("c")}},
+    {CSTR("dihedral"),      4, {REQ("a"), REQ("b"), REQ("c"), REQ("d")}},
+
+    // within(radius) takes its centre from the context ('within(3) in x'), within(radius, around) explicitly
+    {CSTR("within"),        2, {REQ("radius"), OPT("around")}},
+    {CSTR("within_xyz"),    3, {REQ("x"), REQ("y"), REQ("z")}},
+
+    {CSTR("rdf"),           3, {REQ("a"), REQ("b"), REQ("cutoff")}},
+    // The structures are superimposed onto the first, the density of target is accumulated around them within extent
+    {CSTR("sdf"),           3, {REQ("structures"), REQ("target"), REQ("extent")}},
+
+    {CSTR("count"),         2, {REQ("sel"), OPT("unit")}},
+    {CSTR("split"),         2, {REQ("sel"), REQ("parts")}},
+    {CSTR("contact_count"), 3, {REQ("a"), REQ("b"), REQ("cutoff")}},
+};
+
+#undef REQ
+#undef OPT
 #undef CSTR
 
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {

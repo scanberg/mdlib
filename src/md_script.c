@@ -349,6 +349,34 @@ struct procedure_t {
     flags_t flags;
 };
 
+// ### NAMED ARGUMENTS ###
+// A procedure may declare names for its parameters, which lets a call supply arguments by name as well as by
+// position, as in Python: 'rdf(a, b, cutoff=12)'. Names are declared once per procedure NAME (the 'signatures'
+// table in md_script_functions.inl) and mean the same position in every overload of that name. That is what
+// allows the arguments of a call to be bound into positional order BEFORE overload resolution, so that
+// everything after binding (matching, implicit conversions, evaluation and the C procedures themselves) only
+// ever sees positional arguments. A procedure without a signature accepts positional arguments only.
+
+typedef enum param_flags_t {
+    PARAM_REQUIRED  = 0,
+    PARAM_OPTIONAL  = 1,    // May be omitted as long as no later parameter is given; the call then binds to an overload taking fewer arguments
+    PARAM_DEFAULT   = 2,    // If omitted, a constant holding 'def' (of type 'def_type') is supplied in its place
+    PARAM_KW_ONLY   = 4,    // Can only be supplied by name
+} param_flags_t;
+
+typedef struct param_sig_t {
+    str_t       name;
+    uint32_t    flags;
+    type_info_t def_type;   // PARAM_DEFAULT only, must be a scalar type
+    value_t     def;        // PARAM_DEFAULT only
+} param_sig_t;
+
+typedef struct proc_sig_t {
+    str_t       proc;       // Procedure name, shared by all of its overloads
+    size_t      num_params;
+    param_sig_t param[MAX_SUPPORTED_PROC_ARGS];
+} proc_sig_t;
+
 typedef struct table_t {
     str_t name;
     size_t num_fields;
@@ -384,6 +412,12 @@ static void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const
     }
 }
 
+// An argument of a procedure call as written in the source
+typedef struct named_arg_t {
+    str_t   name;   // Empty for a positional argument
+    token_t token;  // Spans 'name=value' for a named argument
+} named_arg_t;
+
 struct ast_node_t {
     // @TODO, @PERF: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast by.
 
@@ -415,6 +449,11 @@ struct ast_node_t {
     size_t              num_contexts;   // Number of arguments for procedure calls
     type_info_t*        lhs_context_types; // For static type checking
     const md_bitfield_t* contexts;  // Since contexts have to be statically known at compile time, we store a reference to it.
+
+    // NAMED ARGUMENTS (procedure calls only)
+    // Set by the parser when at least one argument was given by name, parallel to 'children'. Consumed by the
+    // static check, which binds the arguments into positional order and clears it.
+    md_array(named_arg_t) named_args;
 };
 
 typedef struct tokenizer_t {
@@ -2005,20 +2044,65 @@ static void expand_node_token_range_with_children(ast_node_t* node) {
 
 static ast_node_t* parse_expression(parse_context_t* ctx);
 
-static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t* ctx, token_type_t token_type) {
+// True if the next two tokens are 'identifier =', i.e. a named argument. Consumes nothing.
+// '==' is a token of its own (TOKEN_EQ), so a comparison is never mistaken for one.
+static bool tokenizer_next_is_named_argument(const tokenizer_t* tokenizer) {
+    tokenizer_t peek = *tokenizer;
+    if (tokenizer_consume_next(&peek).type != TOKEN_IDENT) return false;
+    return tokenizer_peek_next(&peek).type == '=';
+}
+
+// out_named is optional. It is only supplied for the argument list of a procedure call, which is the one place
+// where named arguments are valid. When supplied, it receives one entry per argument (parallel to the result) if
+// any argument was named, and NULL otherwise.
+static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t* ctx, token_type_t token_type, md_array(named_arg_t)* out_named) {
     ast_node_t** args = 0;
+    md_array(named_arg_t) named = 0;
+    bool any_named = false;
     token_t next = {0};
+
+    if (out_named) *out_named = NULL;
+
     while (next = tokenizer_peek_next(ctx->tokenizer), next.type != TOKEN_END) {
         if (next.type == token_type) goto done;
         if (next.type == ',') {
             LOG_ERROR(ctx->ir, next, "Empty argument in argument list");
             return NULL;
         }
+
+        named_arg_t arg_name = {0};
+        // The name has to be recognized before the expression is parsed: a name which happens to match a
+        // procedure (e.g. 'count') would otherwise be parsed as a call to it.
+        if (tokenizer_next_is_named_argument(ctx->tokenizer)) {
+            token_t name_tok = tokenizer_consume_next(ctx->tokenizer);
+            tokenizer_consume_next(ctx->tokenizer); // '='
+            if (!out_named) {
+                LOG_ERROR(ctx->ir, name_tok, "Named arguments ('"STR_FMT"=') are only valid in procedure calls", STR_ARG(name_tok.str));
+                return NULL;
+            }
+            for (size_t i = 0; i < md_array_size(named); ++i) {
+                if (str_eq(named[i].name, name_tok.str)) {
+                    LOG_ERROR(ctx->ir, name_tok, "The argument '"STR_FMT"' is given more than once", STR_ARG(name_tok.str));
+                    return NULL;
+                }
+            }
+            arg_name.name  = name_tok.str;
+            arg_name.token = name_tok;
+            any_named = true;
+        } else if (any_named) {
+            LOG_ERROR(ctx->ir, next, "A positional argument cannot follow a named argument");
+            return NULL;
+        }
+
         ctx->node = 0;
         ast_node_t* arg = parse_expression(ctx);
         next = tokenizer_peek_next(ctx->tokenizer);
         if (arg && (next.type == ',' || next.type == token_type)) {
             md_array_push(args, arg, ctx->temp_alloc);
+            if (!str_empty(arg_name.name)) {
+                arg_name.token = concat_tokens(arg_name.token, arg->token);
+            }
+            md_array_push(named, arg_name, ctx->temp_alloc);
             if (next.type == ',')
                 tokenizer_consume_next(ctx->tokenizer);
             else // (next.type == token_type)
@@ -2029,6 +2113,9 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
         }
     }
 done:
+    if (out_named && any_named) {
+        *out_named = named;
+    }
     return args;
 }
 
@@ -2040,7 +2127,8 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
     if (next.type == '(') {
         tokenizer_consume_next(ctx->tokenizer); // '('
 
-        ast_node_t **args = parse_comma_separated_arguments_until_token(ctx, ')');
+        md_array(named_arg_t) named = 0;
+        ast_node_t **args = parse_comma_separated_arguments_until_token(ctx, ')', &named);
         next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ')')) {
             node = create_node(ctx->ir, AST_PROC_CALL, token);
@@ -2048,6 +2136,10 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
             const size_t num_args = md_array_size(args);
             if (num_args) {
                 md_array_push_array(node->children, args, num_args, ctx->ir->arena);
+            }
+            if (named) {
+                ASSERT(md_array_size(named) == num_args);
+                md_array_push_array(node->named_args, named, num_args, ctx->ir->arena);
             }
             // Expand proc call to contain entire argument list ')'
             node->token = concat_tokens(node->token, next);
@@ -2060,6 +2152,18 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
     }
 
     return node;
+}
+
+// import, flatten and transpose are parsed as procedure calls but become nodes of their own, which are never
+// bound against a signature. Named arguments would silently be ignored there, so they are rejected up front.
+static bool reject_named_arguments(parse_context_t* ctx, const ast_node_t* node) {
+    for (size_t i = 0; i < md_array_size(node->named_args); ++i) {
+        if (!str_empty(node->named_args[i].name)) {
+            LOG_ERROR(ctx->ir, node->named_args[i].token, "'"STR_FMT"' does not accept named arguments", STR_ARG(node->ident));
+            return false;
+        }
+    }
+    return true;
 }
 
 ast_node_t* parse_identifier(parse_context_t* ctx) {
@@ -2078,16 +2182,19 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     if (str_eq(ident, STR_LIT("import"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
+            if (!reject_named_arguments(ctx, node)) return NULL;
             node->type = AST_TABLE;
         }
     } else if (str_eq(ident, STR_LIT("flatten"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
+            if (!reject_named_arguments(ctx, node)) return NULL;
             node->type = AST_FLATTEN;
         }
     } else if (str_eq(ident, STR_LIT("transpose"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
+            if (!reject_named_arguments(ctx, node)) return NULL;
             node->type = AST_TRANSPOSE;
         }
     } else if (is_identifier_procedure(ident)) {
@@ -2380,7 +2487,7 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
         // We need to consume the node and turn it into a subscript
         // Put the original node as the first child, and insert whatever arguments we have as the following children.
 
-        ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, ']');
+        ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, ']', NULL);
         token_t next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ']')) {
             const size_t num_elements = md_array_size(elements);
@@ -2417,7 +2524,7 @@ ast_node_t* parse_array(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == '{');
 
-    ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, '}');
+    ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, '}', NULL);
     token_t next = tokenizer_consume_next(ctx->tokenizer);
     if (expect_token_type(ctx->ir, next, '}')) {
         const size_t num_elements = md_array_size(elements);
@@ -4380,6 +4487,118 @@ static bool static_check_transpose(ast_node_t* node, eval_context_t* ctx) {
     }
 }
 
+static const proc_sig_t* find_proc_signature(str_t name) {
+    for (size_t i = 0; i < ARRAY_SIZE(signatures); ++i) {
+        if (str_eq(signatures[i].proc, name)) {
+            return &signatures[i];
+        }
+    }
+    return NULL;
+}
+
+static int find_param_index(const proc_sig_t* sig, str_t name) {
+    for (size_t i = 0; i < sig->num_params; ++i) {
+        if (str_eq(sig->param[i].name, name)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static ast_node_t* create_default_argument_node(md_script_ir_t* ir, const param_sig_t* param, token_t token) {
+    ASSERT(param->flags & PARAM_DEFAULT);
+    ASSERT(param->def_type.base_type != TYPE_UNDEFINED && is_scalar(param->def_type));
+    ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, token);
+    node->data.type = param->def_type;
+    node->value     = param->def;
+    return node;
+}
+
+// Rearranges the arguments of a procedure call into the positional order declared by sig, supplying defaults
+// for omitted parameters, and clears node->named_args. Performed before overload resolution, which therefore
+// only ever sees positional arguments. Idempotent: binding an already bound call leaves it as it is.
+static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_PROC_CALL);
+    ASSERT(sig);
+
+    const size_t num_args = md_array_size(node->children);
+    const named_arg_t* named = node->named_args;
+    ASSERT(!named || md_array_size(named) == num_args);
+    node->named_args = NULL;
+
+    ast_node_t* bound[MAX_SUPPORTED_PROC_ARGS] = {0};
+    ASSERT(sig->num_params <= MAX_SUPPORTED_PROC_ARGS);
+
+    for (size_t i = 0; i < num_args; ++i) {
+        size_t p = 0;
+        if (!named || str_empty(named[i].name)) {
+            // The parser guarantees that positional arguments precede named ones, so the position is the index
+            p = i;
+            if (p >= sig->num_params) {
+                LOG_ERROR(ctx->ir, node->children[i]->token, "Too many arguments, '"STR_FMT"' takes at most %i", STR_ARG(sig->proc), (int)sig->num_params);
+                return false;
+            }
+            if (sig->param[p].flags & PARAM_KW_ONLY) {
+                LOG_ERROR(ctx->ir, node->children[i]->token, "The argument '"STR_FMT"' of '"STR_FMT"' can only be given by name", STR_ARG(sig->param[p].name), STR_ARG(sig->proc));
+                return false;
+            }
+        } else {
+            const int idx = find_param_index(sig, named[i].name);
+            if (idx < 0) {
+                md_strb_t sb = md_strb_create(ctx->temp_alloc);
+                md_strb_fmt(&sb, "'"STR_FMT"' has no parameter named '"STR_FMT"', valid names are: ", STR_ARG(sig->proc), STR_ARG(named[i].name));
+                for (size_t j = 0; j < sig->num_params; ++j) {
+                    md_strb_push_str(&sb, sig->param[j].name);
+                    if (j + 1 < sig->num_params) {
+                        md_strb_push_str(&sb, STR_LIT(", "));
+                    }
+                }
+                LOG_ERROR_STR(ctx->ir, named[i].token, md_strb_to_str(sb));
+                return false;
+            }
+            p = (size_t)idx;
+            if (bound[p]) {
+                // Duplicate names are rejected by the parser, so the earlier binding was positional
+                LOG_ERROR(ctx->ir, named[i].token, "The argument '"STR_FMT"' is already given by position", STR_ARG(named[i].name));
+                return false;
+            }
+        }
+        bound[p] = node->children[i];
+    }
+
+    for (size_t p = 0; p < sig->num_params; ++p) {
+        if (!bound[p] && (sig->param[p].flags & PARAM_DEFAULT)) {
+            bound[p] = create_default_argument_node(ctx->ir, &sig->param[p], node->token);
+        }
+    }
+
+    // The bound arguments must be contiguous: anything after the last one is left to an overload taking fewer arguments
+    size_t count = 0;
+    for (size_t p = 0; p < sig->num_params; ++p) {
+        if (bound[p]) count = p + 1;
+    }
+    for (size_t p = 0; p < sig->num_params; ++p) {
+        if (bound[p]) continue;
+        const param_sig_t* param = &sig->param[p];
+        if (!(param->flags & PARAM_OPTIONAL)) {
+            LOG_ERROR(ctx->ir, node->token, "Missing argument '"STR_FMT"' in call to '"STR_FMT"'", STR_ARG(param->name), STR_ARG(sig->proc));
+            return false;
+        }
+        if (p < count) {
+            LOG_ERROR(ctx->ir, node->token, "The argument '"STR_FMT"' of '"STR_FMT"' cannot be omitted when a later argument is given", STR_ARG(param->name), STR_ARG(sig->proc));
+            return false;
+        }
+    }
+
+    if (named || count != num_args) {
+        md_array(ast_node_t*) children = 0;
+        md_array_push_array(children, bound, count, ctx->ir->arena);
+        node->children = children;
+    }
+
+    return true;
+}
+
 static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_PROC_CALL);
     uint32_t backup_flags = ctx->eval_flags;
@@ -4387,6 +4606,24 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     bool result = true;
     // @NOTE: We do not want to overwrite the procedure if already assigned, as it might have been assigned as an operator (which is a proc call)
     if (!node->proc) {
+        // Bind the arguments into positional order before the procedure is resolved.
+        // This runs for positional calls as well, since those may leave parameters to their defaults.
+        const proc_sig_t* sig = find_proc_signature(node->ident);
+        if (sig) {
+            if (!bind_arguments(node, sig, ctx)) {
+                return false;
+            }
+        } else if (node->named_args) {
+            for (size_t i = 0; i < md_array_size(node->named_args); ++i) {
+                if (!str_empty(node->named_args[i].name)) {
+                    LOG_ERROR(ctx->ir, node->named_args[i].token, "'"STR_FMT"' does not accept named arguments", STR_ARG(node->ident));
+                    break;
+                }
+            }
+            node->named_args = NULL;
+            return false;
+        }
+
         // No point in letting expressions statically evaluate and store its data within the tree at this point
         // Conversions and other stuff may occur later
         uint32_t flags = ctx->eval_flags;

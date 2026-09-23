@@ -1860,3 +1860,336 @@ UTEST_F(script, visualize) {
 
     md_arena_allocator_destroy(alloc);
 }
+
+// ### NAMED ARGUMENTS ###
+
+UTEST(script, named_args_signature_table) {
+    static const str_t keywords[] = {
+        STR_LIT("in"), STR_LIT("of"), STR_LIT("out"), STR_LIT("and"), STR_LIT("or"), STR_LIT("xor"), STR_LIT("not"),
+    };
+
+    for (size_t s = 0; s < ARRAY_SIZE(signatures); ++s) {
+        const proc_sig_t* sig = &signatures[s];
+        char msg[256];
+        snprintf(msg, sizeof(msg), "signature of '%.*s'", STR_ARG(sig->proc));
+
+        EXPECT_TRUE_MSG(sig->num_params > 0 && sig->num_params <= MAX_SUPPORTED_PROC_ARGS, msg);
+
+        // One signature per procedure name
+        for (size_t t = s + 1; t < ARRAY_SIZE(signatures); ++t) {
+            EXPECT_FALSE_MSG(str_eq(sig->proc, signatures[t].proc), msg);
+        }
+
+        bool seen_non_required = false;
+        bool seen_optional = false;
+        for (size_t p = 0; p < sig->num_params; ++p) {
+            const param_sig_t* param = &sig->param[p];
+            snprintf(msg, sizeof(msg), "parameter '%.*s' of '%.*s'", STR_ARG(param->name), STR_ARG(sig->proc));
+
+            EXPECT_TRUE_MSG(md_script_identifier_name_valid(param->name), msg);
+            for (size_t k = 0; k < ARRAY_SIZE(keywords); ++k) {
+                EXPECT_FALSE_MSG(str_eq(param->name, keywords[k]), msg);
+            }
+            for (size_t q = p + 1; q < sig->num_params; ++q) {
+                EXPECT_FALSE_MSG(str_eq(param->name, sig->param[q].name), msg);
+            }
+
+            const bool required = (param->flags & (PARAM_OPTIONAL | PARAM_DEFAULT)) == 0;
+            EXPECT_FALSE_MSG(required && seen_non_required, msg);              // required parameters come first
+            EXPECT_FALSE_MSG((param->flags & PARAM_DEFAULT) && seen_optional, msg);  // no default after optional
+            EXPECT_FALSE_MSG((param->flags & PARAM_OPTIONAL) && (param->flags & PARAM_DEFAULT), msg);
+            if (param->flags & PARAM_DEFAULT) {
+                EXPECT_TRUE_MSG(param->def_type.base_type != TYPE_UNDEFINED && is_scalar(param->def_type), msg);
+            }
+            seen_non_required |= !required;
+            seen_optional     |= (param->flags & PARAM_OPTIONAL) != 0;
+        }
+
+        // Every overload fits the signature
+        size_t num_overloads = 0;
+        size_t min_arity = SIZE_MAX;
+        for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+            const procedure_t* proc = &procedures[i];
+            if (!str_eq(proc->name, sig->proc)) continue;
+            num_overloads += 1;
+            min_arity = MIN(min_arity, proc->num_args);
+
+            snprintf(msg, sizeof(msg), "overload of '%.*s' taking %i arguments", STR_ARG(sig->proc), (int)proc->num_args);
+            EXPECT_FALSE_MSG(proc->flags & FLAG_SYMMETRIC_ARGS, msg);
+            EXPECT_LE_MSG(proc->num_args, sig->num_params, msg);
+            // Anything an overload does not take must be possible to leave out
+            for (size_t p = proc->num_args; p < sig->num_params; ++p) {
+                EXPECT_TRUE_MSG(sig->param[p].flags & PARAM_OPTIONAL, msg);
+            }
+        }
+        snprintf(msg, sizeof(msg), "procedure '%.*s' of signature", STR_ARG(sig->proc));
+        EXPECT_GT_MSG(num_overloads, (size_t)0, msg);
+
+        // An optional parameter is only meaningful if some overload can be reached without it
+        for (size_t p = 0; p < sig->num_params; ++p) {
+            if (sig->param[p].flags & PARAM_OPTIONAL) {
+                snprintf(msg, sizeof(msg), "optional parameter '%.*s' of '%.*s'", STR_ARG(sig->param[p].name), STR_ARG(sig->proc));
+                EXPECT_LE_MSG(min_arity, p, msg);
+            }
+        }
+    }
+}
+
+static bool named_args_same_data(const data_t* x, const data_t* y, md_allocator_i* alloc) {
+    if (!type_info_equal(x->type, y->type)) return false;
+    if (x->type.base_type == TYPE_BITFIELD) {
+        const int64_t len = type_info_array_len(x->type);
+        const md_bitfield_t* bx = (const md_bitfield_t*)x->ptr;
+        const md_bitfield_t* by = (const md_bitfield_t*)y->ptr;
+        for (int64_t i = 0; i < len; ++i) {
+            const size_t pop = md_bitfield_popcount(&bx[i]);
+            if (pop != md_bitfield_popcount(&by[i])) return false;
+            md_bitfield_t both = md_bitfield_create(alloc);
+            md_bitfield_and(&both, &bx[i], &by[i]);
+            if (md_bitfield_popcount(&both) != pop) return false;
+        }
+        return true;
+    }
+    return x->size == y->size && memcmp(x->ptr, y->ptr, x->size) == 0;
+}
+
+// Evaluates a positional reference call and a variant of it with named arguments and requires identical results
+static bool named_args_equivalent(const char* positional, const char* named, md_system_t* sys, md_allocator_i* alloc) {
+    data_t a = {0};
+    data_t b = {0};
+    if (!eval_expression(&a, str_from_cstr(positional), sys, alloc)) {
+        printf("Failed to evaluate '%s'\n", positional);
+        return false;
+    }
+    if (!eval_expression(&b, str_from_cstr(named), sys, alloc)) {
+        printf("Failed to evaluate '%s'\n", named);
+        return false;
+    }
+    if (!named_args_same_data(&a, &b, alloc)) {
+        printf("Results differ between '%s' and '%s'\n", positional, named);
+        return false;
+    }
+    return true;
+}
+
+UTEST_F(script, named_args_equivalence) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+
+    static const char* cases[][2] = {
+        {"distance(1, 10)",                         "distance(a=1, b=10)"},
+        {"distance(1, 10)",                         "distance(b=10, a=1)"},
+        {"distance(1, 10)",                         "distance(1, b=10)"},
+        {"distance(com(residue(1)), com(residue(3)))", "distance(b=com(residue(3)), a=com(residue(1)))"},
+        {"distance_min(residue(1), residue(3))",    "distance_min(b=residue(3), a=residue(1))"},
+        {"distance_max(residue(1), residue(3))",    "distance_max(b=residue(3), a=residue(1))"},
+        // Order matters here: the result is laid out [a][b]
+        {"distance_pair(1:2, 4:6)",                 "distance_pair(b=4:6, a=1:2)"},
+        {"angle(1, 2, 3)",                          "angle(c=3, a=1, b=2)"},
+        {"dihedral(1, 2, 3, 4)",                    "dihedral(1, 2, d=4, c=3)"},
+        {"within(4.0, residue(1))",                 "within(around=residue(1), radius=4.0)"},
+        {"within(2.0:4.0, residue(1))",             "within(radius=2.0:4.0, around=residue(1))"},
+        {"within(4.0) in residue(1)",               "within(radius=4.0) in residue(1)"},
+        {"within_xyz(0:10, 0:12, 0:14)",            "within_xyz(z=0:14, y=0:12, x=0:10)"},
+        {"count(protein)",                          "count(sel=protein)"},
+        {"count(protein, 'residue')",               "count(unit='residue', sel=protein)"},
+        {"split(protein, 3)",                       "split(parts=3, sel=protein)"},
+        {"rdf(element('C'), element('H'), 10.0)",   "rdf(element('C'), element('H'), cutoff=10.0)"},
+        {"contact_count(residue(:), residue(:), 3.0)", "contact_count(b=residue(:), a=residue(:), cutoff=3.0)"},
+        // Named calls nested in arrays and as arguments of other calls
+        {"{distance(1, 10), distance(2, 10)}",      "{distance(a=1, b=10), distance(b=10, a=2)}"},
+        {"count(within(4.0, residue(1)))",          "count(sel=within(around=residue(1), radius=4.0))"},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        EXPECT_TRUE(named_args_equivalent(cases[i][0], cases[i][1], sys, alloc));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, named_args_compile) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* sys = &utest_fixture->ala;
+
+    // The default script of viamd, and the same script with its arguments given by name in a different order.
+    // Binding happens before anything else looks at the calls, so the two must compile to the same thing.
+    str_t positional = STR_LIT(
+        "s1 = resname(\"ALA\")[2:8];\n"
+        "d1 = distance(10,30);\n"
+        "a1 = angle(2,1,3) in resname(\"ALA\");\n"
+        "r = rdf(element('C'), element('H'), 10.0);\n"
+        "v = sdf(s1, element('H'), 10.0);\n"
+        "{lin,plan,iso} = shape_weights(all);\n");
+    str_t named = STR_LIT(
+        "s1 = resname(\"ALA\")[2:8];\n"
+        "d1 = distance(b=30, a=10);\n"
+        "a1 = angle(c=3, a=2, b=1) in resname(\"ALA\");\n"
+        "r = rdf(element('C'), element('H'), cutoff=10.0);\n"
+        "v = sdf(target=element('H'), structures=s1, extent=10.0);\n"
+        "{lin,plan,iso} = shape_weights(all);\n");
+
+    md_script_ir_t* ir_pos = md_script_ir_create(alloc);
+    md_script_ir_t* ir_named = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir_pos, positional, sys, NULL));
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir_named, named, sys, NULL));
+    EXPECT_EQ(md_script_ir_fingerprint(ir_pos), md_script_ir_fingerprint(ir_named));
+
+    // Whitespace around '=' and names which are also identifiers in the script
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "a = residue(1);\n"
+        "b = residue(3);\n"
+        "d = distance_min( b = b , a = a );\n"), sys, NULL));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+static bool named_args_compile_fails_with(md_script_ir_t* ir, md_system_t* sys, const char* src, const char* expected) {
+    md_script_ir_clear(ir);
+    if (md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL)) {
+        printf("Expected compilation of '%s' to fail\n", src);
+        return false;
+    }
+    const size_t num_errors = md_script_ir_num_errors(ir);
+    const md_log_token_t* errors = md_script_ir_errors(ir);
+    for (size_t i = 0; i < num_errors; ++i) {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%.*s", STR_ARG(errors[i].text));
+        if (strstr(buf, expected)) return true;
+    }
+    printf("Compilation of '%s' failed, but without the expected error '%s'. Got:\n", src, expected);
+    for (size_t i = 0; i < num_errors; ++i) {
+        printf("  %.*s\n", STR_ARG(errors[i].text));
+    }
+    return false;
+}
+
+UTEST_F(script, named_args_errors) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* sys = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(a=1, c=2);",         "has no parameter named 'c'"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(a=1, a=2);",         "given more than once"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(a=1, 2);",           "positional argument cannot follow"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(1, a=2);",           "already given by position"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(a=1);",              "Missing argument 'b'"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(1);",                "Missing argument 'b'"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = distance(1, 2, 3, b=4);",     "Too many arguments"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = within(around=residue(1));",  "Missing argument 'radius'"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = sqrt(x=2.0);",                "does not accept named arguments"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = flatten(a=residue(1:2));",    "does not accept named arguments"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = {a=1, 2};",                   "only valid in procedure calls"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = residue(1:3)[a=1];",          "only valid in procedure calls"));
+    // A name that parses fine but binds to an argument of the wrong type still goes through overload resolution
+    EXPECT_TRUE(named_args_compile_fails_with(ir, sys, "x = split(sel=protein, parts='three');", "Could not find matching procedure"));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+static ast_node_t* named_args_parse_only(md_script_ir_t* ir, const char* expr, md_allocator_i* alloc) {
+    ir->str = str_copy(str_from_cstr(expr), ir->arena);
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    return prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = alloc }));
+}
+
+// The binder on its own, against signatures which exercise what the procedures ported so far do not:
+// defaults, keyword only parameters, omitted optional parameters and parameter names shadowing procedures.
+UTEST_F(script, named_args_binding) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_script_ir_t* ir = create_ir(alloc);
+    eval_context_t ctx = {
+        .ir = ir,
+        .sys = &utest_fixture->ala,
+        .temp_alloc = alloc,
+        .alloc = alloc,
+    };
+
+    const proc_sig_t sig_default = {
+        .proc = STR_LIT("angle"), .num_params = 3,
+        .param = {
+            {STR_LIT("a"), PARAM_REQUIRED},
+            {STR_LIT("b"), PARAM_REQUIRED},
+            {STR_LIT("c"), PARAM_DEFAULT, .def_type = TI_INT, .def = {._int = 7}},
+        },
+    };
+    const proc_sig_t sig_optional = {
+        .proc = STR_LIT("angle"), .num_params = 3,
+        .param = {
+            {STR_LIT("a"), PARAM_REQUIRED},
+            {STR_LIT("b"), PARAM_OPTIONAL},
+            {STR_LIT("c"), PARAM_OPTIONAL},
+        },
+    };
+    const proc_sig_t sig_kw_only = {
+        .proc = STR_LIT("angle"), .num_params = 3,
+        .param = {
+            {STR_LIT("a"), PARAM_REQUIRED},
+            {STR_LIT("b"), PARAM_REQUIRED},
+            {STR_LIT("c"), PARAM_KW_ONLY},
+        },
+    };
+    const proc_sig_t sig_shadow = {
+        .proc = STR_LIT("angle"), .num_params = 3,
+        .param = {
+            {STR_LIT("count"),   PARAM_REQUIRED},
+            {STR_LIT("residue"), PARAM_REQUIRED},
+            {STR_LIT("c"),       PARAM_REQUIRED},
+        },
+    };
+
+    ast_node_t* node = 0;
+
+    // Default supplied for a positional call
+    node = named_args_parse_only(ir, "angle(1, 2)", alloc);
+    ASSERT_TRUE(node && node->type == AST_PROC_CALL);
+    ASSERT_TRUE(bind_arguments(node, &sig_default, &ctx));
+    ASSERT_EQ(md_array_size(node->children), (size_t)3);
+    EXPECT_EQ(node->children[2]->type, AST_CONSTANT_VALUE);
+    EXPECT_EQ(node->children[2]->value._int, 7);
+
+    // Default overridden by name, arguments reordered
+    node = named_args_parse_only(ir, "angle(c=3, b=2, a=1)", alloc);
+    ASSERT_TRUE(node);
+    ASSERT_TRUE(node->named_args);
+    ASSERT_TRUE(bind_arguments(node, &sig_default, &ctx));
+    EXPECT_FALSE(node->named_args);
+    ASSERT_EQ(md_array_size(node->children), (size_t)3);
+    EXPECT_EQ(node->children[0]->value._int, 1);
+    EXPECT_EQ(node->children[1]->value._int, 2);
+    EXPECT_EQ(node->children[2]->value._int, 3);
+
+    // Binding is idempotent
+    ASSERT_TRUE(bind_arguments(node, &sig_default, &ctx));
+    ASSERT_EQ(md_array_size(node->children), (size_t)3);
+    EXPECT_EQ(node->children[2]->value._int, 3);
+
+    // Trailing optional parameters may be left out, but not ones before a given argument
+    node = named_args_parse_only(ir, "angle(a=1)", alloc);
+    ASSERT_TRUE(bind_arguments(node, &sig_optional, &ctx));
+    EXPECT_EQ(md_array_size(node->children), (size_t)1);
+    node = named_args_parse_only(ir, "angle(1, c=3)", alloc);
+    EXPECT_FALSE(bind_arguments(node, &sig_optional, &ctx));
+
+    // Keyword only
+    node = named_args_parse_only(ir, "angle(1, 2, 3)", alloc);
+    EXPECT_FALSE(bind_arguments(node, &sig_kw_only, &ctx));
+    node = named_args_parse_only(ir, "angle(1, 2, c=3)", alloc);
+    EXPECT_TRUE(bind_arguments(node, &sig_kw_only, &ctx));
+
+    // Parameter names which are also procedure names are recognised as names, not parsed as calls
+    node = named_args_parse_only(ir, "angle(residue=2, c=3, count=1)", alloc);
+    ASSERT_TRUE(node);
+    ASSERT_TRUE(bind_arguments(node, &sig_shadow, &ctx));
+    ASSERT_EQ(md_array_size(node->children), (size_t)3);
+    EXPECT_EQ(node->children[0]->value._int, 1);
+    EXPECT_EQ(node->children[1]->value._int, 2);
+    EXPECT_EQ(node->children[2]->value._int, 3);
+
+    // '==' is a comparison, not a named argument
+    node = named_args_parse_only(ir, "count(x == 1)", alloc);
+    EXPECT_TRUE(node == NULL || node->named_args == NULL);
+
+    md_arena_allocator_destroy(alloc);
+}
