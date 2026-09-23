@@ -5798,7 +5798,10 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
 
     md_fifo_t queue = md_fifo_create(64, temp_alloc);
 
+    // Zero means 'not reached'. Temp memory is not cleared, so this has to be, or the walk depends on what the
+    // allocator handed out last: fresh pages happen to be zero, reused ones are not.
     uint8_t* depth = md_temp_alloc_array(temp_scope, uint8_t, sys->atom.count);
+    MEMSET(depth, 0, sys->atom.count * sizeof(uint8_t));
 
     {
         md_bitfield_iter_t it = md_bitfield_iter_create(mask);

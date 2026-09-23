@@ -2209,3 +2209,32 @@ UTEST(util, entity_instance) {
 
     md_temp_end(temp_scope);
 }
+
+// The walk keeps a per atom depth in temp memory, where zero means 'not reached'. Temp memory is not cleared on
+// allocation, so a walk which followed some other use of temp memory used to see stale depths and stop early.
+UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
+    const md_system_t* sys = &utest_fixture->mol_ala;
+    md_bitfield_t mask = md_bitfield_create(utest_fixture->alloc);
+    md_bitfield_t ref  = md_bitfield_create(utest_fixture->alloc);
+
+    // Stale depths of 1 make every neighbour look as if it had already been reached at a lower depth
+    const size_t junk_size = MEGABYTES(1);
+    {
+        md_temp_scope_t temp = md_temp_begin();
+        memset(md_temp_alloc(temp, junk_size), 1, junk_size);
+        md_temp_end(temp);
+    }
+    md_bitfield_set_bit(&mask, 0);
+    md_util_mask_grow_by_bonds(&mask, sys, 3, NULL);
+
+    {
+        md_temp_scope_t temp = md_temp_begin();
+        memset(md_temp_alloc(temp, junk_size), 0, junk_size);
+        md_temp_end(temp);
+    }
+    md_bitfield_set_bit(&ref, 0);
+    md_util_mask_grow_by_bonds(&ref, sys, 3, NULL);
+
+    EXPECT_GT(md_bitfield_popcount(&ref), (size_t)1);
+    EXPECT_EQ(md_bitfield_popcount(&ref), md_bitfield_popcount(&mask));
+}
