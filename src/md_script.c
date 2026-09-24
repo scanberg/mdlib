@@ -2344,6 +2344,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
         }
         node = create_node(ctx->ir, type, token);
         ast_node_t* args[2] = {lhs, rhs};
+    ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
         md_array_push_array(node->children, args, 2, ctx->ir->arena);
     }
    
@@ -5257,6 +5258,11 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             return false;
                         }
 
+                    // If the right hand side was evaluated at compile time, the identifier refers to its i-th element.
+                    // Without this, a constant identifier would be read through a null pointer.
+                    if (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) {
+                        ident->data->ptr = (uint8_t*)rhs->data.ptr + (size_t)i * stride;
+                    }
                         type_info_t local_type = lhs->data.type;
 
                         if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
