@@ -526,6 +526,31 @@ static const uint64_t avx_compress_lut[256] = {
 
 #define MD_LOAD_STRIDED_128(ptr, offset, stride) simde_mm_loadu_ps((const float*)((const char*)ptr + offset * stride_in_bytes))
 
+// Four packed xyz triplets - twelve contiguous floats, x0 y0 z0 x1 y1 ... z3 - split into x, y and z.
+// It reads exactly the twelve floats, so the last four atoms of an array are as safe to load as any
+// others. The strided variant below reads 16 bytes per atom and so needs the array padded past its
+// end.
+//
+// On NEON this is one instruction, a de-interleaving load. The x86 path below - three loads and
+// five shuffles - is native on x86 and what simde would otherwise translate everywhere else.
+MD_SIMD_INLINE void md_mm_load_xyz_packed_ps(md_128* out_x, md_128* out_y, md_128* out_z, const float* in_xyz) {
+#if defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    const float32x4x3_t v = vld3q_f32(in_xyz);
+    *out_x = simde__m128_from_neon_f32(v.val[0]);
+    *out_y = simde__m128_from_neon_f32(v.val[1]);
+    *out_z = simde__m128_from_neon_f32(v.val[2]);
+#else
+    const md_128 v0 = simde_mm_loadu_ps(in_xyz + 0);  // x0 y0 z0 x1
+    const md_128 v1 = simde_mm_loadu_ps(in_xyz + 4);  // y1 z1 x2 y2
+    const md_128 v2 = simde_mm_loadu_ps(in_xyz + 8);  // z2 x3 y3 z3
+    const md_128 t0 = simde_mm_shuffle_ps(v1, v2, SIMDE_MM_SHUFFLE(2, 1, 3, 2));  // x2 y2 x3 y3
+    const md_128 t1 = simde_mm_shuffle_ps(v0, v1, SIMDE_MM_SHUFFLE(1, 0, 2, 1));  // y0 z0 y1 z1
+    *out_x = simde_mm_shuffle_ps(v0, t0, SIMDE_MM_SHUFFLE(2, 0, 3, 0));           // x0 x1 x2 x3
+    *out_y = simde_mm_shuffle_ps(t1, t0, SIMDE_MM_SHUFFLE(3, 1, 2, 0));           // y0 y1 y2 y3
+    *out_z = simde_mm_shuffle_ps(t1, v2, SIMDE_MM_SHUFFLE(3, 0, 3, 1));           // z0 z1 z2 z3
+#endif
+}
+
 MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* out_z, const float* in_xyz, size_t stride_in_bytes) {
     md_128  r0, r1, r2, r3;
     md_128  t0, t1, t2, t3;
