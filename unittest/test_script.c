@@ -17,6 +17,8 @@
 #include <md_gro.h>
 #include <md_pdb.h>
 
+// Test only instrumentation of the evaluator, see test_hook_proc_eval
+#define MD_SCRIPT_TEST_HOOKS
 #include <md_script.c>
 
 // Create molecule for evaulation
@@ -1864,7 +1866,7 @@ UTEST_F(script, visualize) {
 // ### NAMED ARGUMENTS ###
 
 UTEST(script, named_args_signature_table) {
-    static const str_t keywords[] = {
+    const str_t keywords[] = {
         STR_LIT("in"), STR_LIT("of"), STR_LIT("out"), STR_LIT("and"), STR_LIT("or"), STR_LIT("xor"), STR_LIT("not"),
     };
 
@@ -1880,7 +1882,7 @@ UTEST(script, named_args_signature_table) {
             EXPECT_FALSE_MSG(str_eq(sig->proc, signatures[t].proc), msg);
         }
 
-        bool seen_non_required = false;
+        bool seen_omittable = false;     // A positional parameter which can be left out
         bool seen_optional = false;
         for (size_t p = 0; p < sig->num_params; ++p) {
             const param_sig_t* param = &sig->param[p];
@@ -1894,15 +1896,19 @@ UTEST(script, named_args_signature_table) {
                 EXPECT_FALSE_MSG(str_eq(param->name, sig->param[q].name), msg);
             }
 
-            const bool required = (param->flags & (PARAM_OPTIONAL | PARAM_DEFAULT)) == 0;
-            EXPECT_FALSE_MSG(required && seen_non_required, msg);              // required parameters come first
-            EXPECT_FALSE_MSG((param->flags & PARAM_DEFAULT) && seen_optional, msg);  // no default after optional
-            EXPECT_FALSE_MSG((param->flags & PARAM_OPTIONAL) && (param->flags & PARAM_DEFAULT), msg);
+            const uint32_t omit = param->flags & (PARAM_OPTIONAL | PARAM_DEFAULT | PARAM_NULLABLE);
+            const bool kw_only = param->flags & PARAM_KW_ONLY;
+            // At most one way of being left out
+            EXPECT_TRUE_MSG(omit == 0 || omit == PARAM_OPTIONAL || omit == PARAM_DEFAULT || omit == PARAM_NULLABLE, msg);
+            // As in Python: a positional parameter which has to be given does not follow one which can be left out
+            EXPECT_FALSE_MSG(!omit && !kw_only && seen_omittable, msg);
+            // Optional parameters are trailing: leaving them out selects an overload taking fewer arguments
+            EXPECT_FALSE_MSG(seen_optional && !(param->flags & PARAM_OPTIONAL), msg);
             if (param->flags & PARAM_DEFAULT) {
                 EXPECT_TRUE_MSG(param->def_type.base_type != TYPE_UNDEFINED && is_scalar(param->def_type), msg);
             }
-            seen_non_required |= !required;
-            seen_optional     |= (param->flags & PARAM_OPTIONAL) != 0;
+            seen_omittable |= omit && !kw_only;
+            seen_optional  |= (param->flags & PARAM_OPTIONAL) != 0;
         }
 
         // Every overload fits the signature
@@ -1920,6 +1926,12 @@ UTEST(script, named_args_signature_table) {
             // Anything an overload does not take must be possible to leave out
             for (size_t p = proc->num_args; p < sig->num_params; ++p) {
                 EXPECT_TRUE_MSG(sig->param[p].flags & PARAM_OPTIONAL, msg);
+            }
+            // A nullable parameter is passed as absent, so every overload takes it
+            for (size_t p = 0; p < sig->num_params; ++p) {
+                if (sig->param[p].flags & PARAM_NULLABLE) {
+                    EXPECT_LT_MSG(p, proc->num_args, msg);
+                }
             }
         }
         snprintf(msg, sizeof(msg), "procedure '%.*s' of signature", STR_ARG(sig->proc));
@@ -2191,5 +2203,959 @@ UTEST_F(script, named_args_binding) {
     node = named_args_parse_only(ir, "count(x == 1)", alloc);
     EXPECT_TRUE(node == NULL || node->named_args == NULL);
 
+    md_arena_allocator_destroy(alloc);
+}
+
+// ### IDENTIFIER MEMOIZATION ###
+// A dynamic identifier is evaluated once per frame; references to it reuse that value.
+
+// Evaluates src over the whole trajectory and returns the number of times proc_ptr was evaluated
+static size_t memo_count_evaluations(md_script_eval_t** out_eval, str_t src, int (*proc_ptr)(data_t*, data_t[], eval_context_t*), md_system_t* sys, md_allocator_i* alloc) {
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    if (!md_script_ir_compile_from_source(ir, src, sys, NULL)) {
+        printf("Failed to compile '%.*s'\n", STR_ARG(src));
+        return SIZE_MAX;
+    }
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+
+    test_hook_proc_eval.proc_ptr = proc_ptr;
+    test_hook_proc_eval.count = 0;
+    const bool ok = md_script_eval_frame_range(eval, ir, sys, 0, (uint32_t)num_frames);
+    const size_t count = test_hook_proc_eval.count;
+    test_hook_proc_eval.proc_ptr = NULL;
+    test_hook_proc_eval.count = 0;
+
+    if (!ok) {
+        printf("Failed to evaluate '%.*s'\n", STR_ARG(src));
+        return SIZE_MAX;
+    }
+    if (out_eval) *out_eval = eval;
+    return count;
+}
+
+// Requires the temporal property 'name' to hold the same values in both evaluations
+static bool memo_same_property(const md_script_eval_t* a, const md_script_eval_t* b, str_t name_a, str_t name_b) {
+    const md_attribute_t* pa = md_attributes_find(md_script_eval_attributes(a), name_a);
+    const md_attribute_t* pb = md_attributes_find(md_script_eval_attributes(b), name_b);
+    if (!pa || !pb) {
+        printf("Missing property '%.*s' or '%.*s'\n", STR_ARG(name_a), STR_ARG(name_b));
+        return false;
+    }
+    const size_t na = md_attribute_element_count(&pa->format);
+    const size_t nb = md_attribute_element_count(&pb->format);
+    if (na != nb || na == 0) {
+        printf("Property sizes differ: %zu vs %zu\n", na, nb);
+        return false;
+    }
+    const float* va = (const float*)pa->data;
+    const float* vb = (const float*)pb->data;
+    for (size_t i = 0; i < na; ++i) {
+        if (va[i] != vb[i]) {
+            printf("Property values differ at %zu: %g vs %g\n", i, va[i], vb[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+UTEST_F(script, identifier_memoization) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+    ASSERT_GT(num_frames, (size_t)1);
+
+    // Referenced three times, directly and through other identifiers: evaluated once per frame
+    {
+        md_script_eval_t* memo = 0;
+        md_script_eval_t* inline_eval = 0;
+        EXPECT_EQ(num_frames, memo_count_evaluations(&memo, STR_LIT(
+            "d = distance(1, 10);"
+            "e = d * 2;"
+            "f = d + e;"), _distance, sys, alloc));
+
+        // Same values as spelling the expressions out
+        EXPECT_EQ(4 * num_frames, memo_count_evaluations(&inline_eval, STR_LIT(
+            "d = distance(1, 10);"
+            "e = distance(1, 10) * 2;"
+            "f = distance(1, 10) + distance(1, 10) * 2;"), _distance, sys, alloc));
+        ASSERT_TRUE(memo && inline_eval);
+        EXPECT_TRUE(memo_same_property(memo, inline_eval, STR_LIT("script/e"), STR_LIT("script/e")));
+        EXPECT_TRUE(memo_same_property(memo, inline_eval, STR_LIT("script/f"), STR_LIT("script/f")));
+    }
+
+    // Variable length: the length of r is only known per frame. Neither sizing nor evaluating the
+    // references may run the spatial query again.
+    {
+        md_script_eval_t* memo = 0;
+        md_script_eval_t* inline_eval = 0;
+        EXPECT_EQ(num_frames, memo_count_evaluations(&memo, STR_LIT(
+            "s = within(3.0, residue(1));"
+            "r = residue(s);"
+            "n = count(r);"
+            "m = count(r, 'residue') + count(s);"), _within_expl_flt, sys, alloc));
+
+        memo_count_evaluations(&inline_eval, STR_LIT(
+            "n = count(residue(within(3.0, residue(1))));"
+            "m = count(residue(within(3.0, residue(1))), 'residue') + count(within(3.0, residue(1)));"), _within_expl_flt, sys, alloc);
+        ASSERT_TRUE(memo && inline_eval);
+        EXPECT_TRUE(memo_same_property(memo, inline_eval, STR_LIT("script/n"), STR_LIT("script/n")));
+        EXPECT_TRUE(memo_same_property(memo, inline_eval, STR_LIT("script/m"), STR_LIT("script/m")));
+    }
+
+    // Destructured identifiers are reused as well
+    {
+        EXPECT_EQ(num_frames, memo_count_evaluations(NULL, STR_LIT(
+            "{x, y, z} = com(residue(1));"
+            "a = x + y + z;"
+            "b = x * y;"), _com, sys, alloc));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// Referenced within a context, the expression is evaluated per context and must not be replaced by the
+// value computed outside of it.
+UTEST_F(script, identifier_memoization_context) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    const bool compiled = md_script_ir_compile_from_source(ir, STR_LIT(
+        "d = distance(1, 2);"
+        "x = d in residue(1:3);"), sys, NULL);
+
+    if (compiled) {
+        md_script_eval_t* memo = 0;
+        md_script_eval_t* inline_eval = 0;
+        memo_count_evaluations(&memo, STR_LIT(
+            "d = distance(1, 2);"
+            "x = d in residue(1:3);"), _distance, sys, alloc);
+        memo_count_evaluations(&inline_eval, STR_LIT(
+            "d = distance(1, 2);"
+            "x = distance(1, 2) in residue(1:3);"), _distance, sys, alloc);
+        ASSERT_TRUE(memo && inline_eval);
+        EXPECT_TRUE(memo_same_property(memo, inline_eval, STR_LIT("script/x"), STR_LIT("script/x")));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+
+// Identifiers declared by destructuring used to be evaluated by evaluating the whole expression into the
+// storage of a single element, which asserted. Now they are memoized, and where that cannot apply (within a
+// context) the element is extracted from an evaluation of the whole expression.
+UTEST_F(script, identifier_destructured_reference) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+
+    static const char* srcs[] = {
+        "{x, y, z} = com(residue(1)); a = x * 2;",
+        "{x, y, z} = coord(1); a = x + y + z;",
+        "{x, y, z} = com(residue(1)); a = x in residue(1:3);",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(srcs); ++i) {
+        md_script_ir_t* ir = md_script_ir_create(alloc);
+        EXPECT_TRUE_MSG(md_script_ir_compile_from_source(ir, str_from_cstr(srcs[i]), sys, NULL), srcs[i]);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        EXPECT_TRUE_MSG(md_script_eval_frame_range(eval, ir, sys, 0, (uint32_t)num_frames), srcs[i]);
+    }
+
+    // The value of a destructured identifier is its element of the expression
+    {
+        md_script_eval_t* a = 0;
+        md_script_eval_t* b = 0;
+        memo_count_evaluations(&a, STR_LIT("{x, y, z} = com(residue(1)); v = y * 2;"), NULL, sys, alloc);
+        memo_count_evaluations(&b, STR_LIT("c = com(residue(1)); v = c[2] * 2;"), NULL, sys, alloc);
+        ASSERT_TRUE(a && b);
+        EXPECT_TRUE(memo_same_property(a, b, STR_LIT("script/v"), STR_LIT("script/v")));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+
+// ### VARIABLE LENGTH EVALUATION ###
+// A value whose length is only known per frame is evaluated once: its arguments are evaluated a single time
+// and the length follows from them. This used to take one evaluation to find the length and another to fill
+// in the result, doubling the work for every level of nesting.
+
+UTEST_F(script, variable_length_single_evaluation) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+
+    // Each level of residue() has a length which depends on the frame
+    md_script_eval_t* e1 = 0;
+    md_script_eval_t* e2 = 0;
+    md_script_eval_t* e3 = 0;
+    EXPECT_EQ(num_frames, memo_count_evaluations(&e1, STR_LIT("n = count(residue(within(3.0, residue(1))));"), _within_expl_flt, sys, alloc));
+    EXPECT_EQ(num_frames, memo_count_evaluations(&e2, STR_LIT("n = count(residue(residue(within(3.0, residue(1)))));"), _within_expl_flt, sys, alloc));
+    EXPECT_EQ(num_frames, memo_count_evaluations(&e3, STR_LIT("n = count(residue(residue(residue(within(3.0, residue(1))))));"), _within_expl_flt, sys, alloc));
+    ASSERT_TRUE(e1 && e2 && e3);
+    // residue() of whole residues is the same residues
+    EXPECT_TRUE(memo_same_property(e1, e2, STR_LIT("script/n"), STR_LIT("script/n")));
+    EXPECT_TRUE(memo_same_property(e1, e3, STR_LIT("script/n"), STR_LIT("script/n")));
+
+    // The atoms of the residues within 3 Å, counted two ways
+    md_script_eval_t* by_residue = 0;
+    md_script_eval_t* by_atom = 0;
+    memo_count_evaluations(&by_residue, STR_LIT("n = count(residue(within(3.0, residue(1))));"), NULL, sys, alloc);
+    memo_count_evaluations(&by_atom, STR_LIT("n = count(within(3.0, residue(1)) , 'residue');"), NULL, sys, alloc);
+    ASSERT_TRUE(by_residue && by_atom);
+    {
+        const md_attribute_t* a = md_attributes_find(md_script_eval_attributes(by_atom), STR_LIT("script/n"));
+        const md_attribute_t* r = md_attributes_find(md_script_eval_attributes(e1), STR_LIT("script/n"));
+        ASSERT_TRUE(a && r);
+        // count(x) counts atoms: the atoms of the residues is at least the number of residues
+        const float* av = (const float*)a->data;
+        const float* rv = (const float*)r->data;
+        for (size_t i = 0; i < num_frames; ++i) {
+            EXPECT_GE(rv[i], av[i]);
+            EXPECT_GT(av[i], 0.0f);
+        }
+    }
+
+    // A length deduced from an argument whose length is only known per frame
+    {
+        md_script_eval_t* a = 0;
+        md_script_eval_t* b = 0;
+        EXPECT_EQ(num_frames, memo_count_evaluations(&a, STR_LIT("m = max(coord_x(within(3.0, residue(1))) * 2);"), _within_expl_flt, sys, alloc));
+        memo_count_evaluations(&b, STR_LIT("m = max(coord_x(within(3.0, residue(1)))) * 2;"), NULL, sys, alloc);
+        ASSERT_TRUE(a && b);
+        EXPECT_TRUE(memo_same_property(a, b, STR_LIT("script/m"), STR_LIT("script/m")));
+    }
+
+    // Arguments whose lengths are only known per frame, and which must match
+    {
+        md_script_eval_t* a = 0;
+        md_script_eval_t* b = 0;
+        memo_count_evaluations(&a, STR_LIT("s = within(3.0, residue(1)); m = max(coord_x(s) + coord_y(s));"), NULL, sys, alloc);
+        memo_count_evaluations(&b, STR_LIT("m = max(coord_x(within(3.0, residue(1))) + coord_y(within(3.0, residue(1))));"), NULL, sys, alloc);
+        ASSERT_TRUE(a && b);
+        EXPECT_TRUE(memo_same_property(a, b, STR_LIT("script/m"), STR_LIT("script/m")));
+
+        // Different lengths are an evaluation error, not a read past the end of the shorter one
+        md_script_ir_t* ir = md_script_ir_create(alloc);
+        ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("m = max(coord_x(within(3.0, residue(1))) + coord_x(within(8.0, residue(1))));"), sys, NULL));
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        EXPECT_FALSE(md_script_eval_frame_range(eval, ir, sys, 0, (uint32_t)num_frames));
+    }
+
+    // Through a declared identifier whose length is only known per frame
+    {
+        md_script_eval_t* a = 0;
+        EXPECT_EQ(num_frames, memo_count_evaluations(&a, STR_LIT(
+            "r = residue(within(3.0, residue(1)));"
+            "n = count(residue(r));"), _within_expl_flt, sys, alloc));
+        ASSERT_TRUE(a);
+        EXPECT_TRUE(memo_same_property(a, e1, STR_LIT("script/n"), STR_LIT("script/n")));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+
+// ### CONTACTS ###
+
+#include <md_contact.h>
+
+static bool contacts_compile_fails_with(md_system_t* sys, md_allocator_i* alloc, const char* src, const char* expected) {
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    return named_args_compile_fails_with(ir, sys, src, expected);
+}
+
+UTEST_F(script, contacts_compile) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* sys = &utest_fixture->ala;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "c = contacts(residue(:), cutoff=4.5);"
+        "n = count(c);"
+        "na = count(c, 'atom');"
+        "d = degree(c);"
+        "c2 = contacts(residue(1:5), residue(6:15), cutoff=4.0, exclude_bonds=0);"
+        "n2 = count(c2);"
+        "c3 = contacts(chunks(residue(:), 5), cutoff=5, min_separation=3, parent=residue(:), exclude_within=chain(:));"
+        "d3 = degree(c3);"), sys, NULL));
+
+    // d is a temporal property with one value per residue
+    EXPECT_EQ(md_script_ir_property_flags(ir, STR_LIT("d")), MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
+
+    // The cutoff has to be named: after b, which may be left out, positions are ambiguous
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "c = contacts(residue(:), residue(:), 4.5);", "can only be given by name"));
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "c = contacts(residue(:));", "Missing argument 'cutoff'"));
+    // Groups which change from frame to frame have no fixed pairs to speak of
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "c = contacts(residue(within(3.0, residue(1))), cutoff=4.0);", "cannot depend on the frame"));
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "c = contacts(residue(:), cutoff=0);", "has to be positive"));
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "c = contacts(residue(:), cutoff=4.0); n = count(c, 'bead');", "'group'"));
+    EXPECT_TRUE(contacts_compile_fails_with(sys, alloc, "s = chunks(residue(:), 0);", "has to be positive"));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// The same groups for md_contact, built without the script: one per residue
+static md_bitfield_t* contacts_residue_groups(size_t* out_num, const md_system_t* sys, md_allocator_i* alloc) {
+    md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * sys->component.count);
+    for (size_t c = 0; c < sys->component.count; ++c) {
+        const md_urange_t range = md_system_component_atom_range(sys, c);
+        groups[c] = md_bitfield_create(alloc);
+        md_bitfield_set_range(&groups[c], range.beg, range.end);
+    }
+    *out_num = sys->component.count;
+    return groups;
+}
+
+// Per frame, what the script publishes against md_contact on the same frame
+UTEST_F(script, contacts_matches_kernel) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+
+    md_script_eval_t* eval = 0;
+    // Evaluated once per frame, although four properties refer to it
+    EXPECT_EQ(num_frames, memo_count_evaluations(&eval, STR_LIT(
+        "c = contacts(residue(:), cutoff=6.0, min_separation=2);"
+        "n = count(c);"
+        "g = count(c, 'group');"
+        "na = count(c, 'atom');"
+        "d = degree(c);"), _contacts, sys, alloc));
+    ASSERT_TRUE(eval);
+
+    const md_attributes_t* attr = md_script_eval_attributes(eval);
+    const md_attribute_t* n  = md_attributes_find(attr, STR_LIT("script/n"));
+    const md_attribute_t* g  = md_attributes_find(attr, STR_LIT("script/g"));
+    const md_attribute_t* na = md_attributes_find(attr, STR_LIT("script/na"));
+    const md_attribute_t* d  = md_attributes_find(attr, STR_LIT("script/d"));
+    ASSERT_TRUE(n && g && na && d);
+
+    size_t num = 0;
+    md_bitfield_t* res = contacts_residue_groups(&num, sys, alloc);
+    ASSERT_EQ(md_attribute_element_count(&d->format), num_frames * num);
+
+    md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 6.0, .exclude_bonds = 3, .min_separation = 2 };
+    md_contact_query_t q;
+    ASSERT_TRUE(md_contact_query_init(&q, &desc, sys, alloc));
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_system_state_init(&state, sys->atom.count));
+
+    float* deg = md_alloc(alloc, sizeof(float) * num);
+    size_t total = 0;
+    for (size_t f = 0; f < num_frames; ++f) {
+        ASSERT_TRUE(md_trajectory_load_frame(sys->trajectory, f, &state));
+        md_contact_set_t set;
+        ASSERT_TRUE(md_contact_query_eval(&set, &q, &state, alloc));
+        size_t atom_pairs = 0;
+        memset(deg, 0, sizeof(float) * num);
+        for (size_t k = 0; k < set.count; ++k) {
+            atom_pairs += set.atom_pairs[k];
+            deg[set.i[k]] += 1;
+            deg[set.j[k]] += 1;
+        }
+        EXPECT_EQ((float)set.count, ((const float*)n->data)[f]);
+        EXPECT_EQ((float)set.count, ((const float*)g->data)[f]);
+        EXPECT_EQ((float)atom_pairs, ((const float*)na->data)[f]);
+        for (size_t r = 0; r < num; ++r) {
+            EXPECT_EQ(deg[r], ((const float*)d->data)[f * num + r]);
+        }
+        total += set.count;
+        md_contact_set_free(&set);
+    }
+    EXPECT_GT(total, (size_t)0);
+    md_contact_query_free(&q);
+    md_arena_allocator_destroy(alloc);
+}
+
+// chunks: consecutive runs of the given size, per element, in index order
+UTEST_F(script, chunks) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* sys = &utest_fixture->ala;
+
+    // The evaluation's transient allocator is a temp arena, as in every evaluation
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    data_t data = {0};
+    md_script_ir_t* ir = create_ir(alloc);
+    ast_node_t* node = parse_and_type_check_expression(STR_LIT("chunks(residue(:), 7)"), ir, sys, temp_alloc);
+    ASSERT_TRUE(node);
+    eval_context_t ctx = { .ir = ir, .sys = sys, .temp_alloc = temp_alloc, .alloc = temp_alloc, .cur_state = &sys->reference, .ref_state = &sys->reference };
+    ASSERT_TRUE(evaluate_node_alloc(&data, node, &ctx, temp_alloc));
+    const md_bitfield_t* chunk = (const md_bitfield_t*)data.ptr;
+    const size_t num_chunks = element_count(data);
+
+    size_t expected = 0;
+    for (size_t c = 0; c < sys->component.count; ++c) {
+        const md_urange_t range = md_system_component_atom_range(sys, c);
+        for (uint32_t beg = range.beg; beg < range.end; beg += 7) {
+            const uint32_t end = MIN(beg + 7, range.end);
+            ASSERT_LT(expected, num_chunks);
+            EXPECT_EQ((size_t)(end - beg), md_bitfield_popcount(&chunk[expected]));
+            EXPECT_EQ((size_t)(end - beg), md_bitfield_popcount_range(&chunk[expected], beg, end));
+            expected += 1;
+        }
+    }
+    EXPECT_EQ(expected, num_chunks);
+    md_temp_end(temp);
+    md_arena_allocator_destroy(alloc);
+}
+
+// parent and exclude_within against md_contact given the same parents and labels, derived here without the script
+UTEST_F(script, contacts_parent_and_exclude_within) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+
+    size_t num_res = 0;
+    md_bitfield_t* res = contacts_residue_groups(&num_res, sys, alloc);
+
+    // Chunks of 5 particles per residue, and for each the residue it is part of
+    md_array(md_bitfield_t) chunk = 0;
+    md_array(uint32_t) parent = 0;
+    uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * sys->atom.count);
+    for (size_t c = 0; c < num_res; ++c) {
+        const md_urange_t range = md_system_component_atom_range(sys, c);
+        for (uint32_t k = range.beg; k < range.end; ++k) label[k] = (uint32_t)c;
+        for (uint32_t beg = range.beg; beg < range.end; beg += 5) {
+            md_bitfield_t bf = md_bitfield_create(alloc);
+            md_bitfield_set_range(&bf, beg, MIN(beg + 5, range.end));
+            md_array_push(chunk, bf, alloc);
+            md_array_push(parent, (uint32_t)c, alloc);
+        }
+    }
+    const size_t num_chunks = md_array_size(chunk);
+
+    struct { const char* src; md_contact_desc_t desc; } cases[] = {
+        { "c = contacts(chunks(residue(:), 5), cutoff=5.0, min_separation=3, parent=residue(:));",
+          { .group_a = chunk, .num_a = num_chunks, .cutoff = 5.0, .exclude_bonds = 3, .min_separation = 3, .group_parent = parent } },
+        { "c = contacts(chunks(residue(:), 5), cutoff=5.0, exclude_within=residue(:));",
+          { .group_a = chunk, .num_a = num_chunks, .cutoff = 5.0, .exclude_bonds = 3, .particle_label = label } },
+    };
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_script_ir_t* ir = create_ir(alloc);
+        ast_node_t* node = parse_and_type_check_expression(str_from_cstr(cases[i].src), ir, sys, temp_alloc);
+        ASSERT_TRUE(node);
+        eval_context_t ctx = { .ir = ir, .sys = sys, .temp_alloc = temp_alloc, .alloc = temp_alloc, .cur_state = &sys->reference, .ref_state = &sys->reference };
+        data_t data = {0};
+        ASSERT_TRUE(evaluate_node_alloc(&data, node, &ctx, temp_alloc));
+        const md_contact_set_t* got = (const md_contact_set_t*)data.ptr;
+
+        md_contact_set_t want;
+        ASSERT_TRUE(md_contact_compute(&want, &cases[i].desc, sys, &sys->reference, alloc));
+        EXPECT_GT(want.count, (size_t)0);
+        ASSERT_EQ(want.count, got->count);
+        for (size_t k = 0; k < want.count; ++k) {
+            EXPECT_EQ(want.i[k], got->i[k]);
+            EXPECT_EQ(want.j[k], got->j[k]);
+            EXPECT_EQ(want.atom_pairs[k], got->atom_pairs[k]);
+        }
+        // Nothing within one residue
+        if (cases[i].desc.particle_label) {
+            for (size_t k = 0; k < got->count; ++k) {
+                EXPECT_NE(parent[got->i[k]], parent[got->j[k]]);
+            }
+        }
+    }
+    md_temp_end(temp);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Neither compiling nor visualizing searches for contacts: in a large system either would stall the application.
+// Only the evaluation of frames does.
+UTEST_F(script, contacts_no_search_outside_evaluation) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* sys = &utest_fixture->ala;
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+
+    test_hook_contact_searches = 0;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "c = contacts(residue(:), cutoff=6.0);"
+        "d = degree(c);"
+        "n = count(c, 'atom');"), sys, NULL));
+    EXPECT_EQ((size_t)0, test_hook_contact_searches);
+    // The shape was still known: one value per residue
+    EXPECT_EQ(md_script_ir_property_flags(ir, STR_LIT("d")), MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
+
+    // Hovering the expressions
+    const str_t names[] = { STR_LIT("c"), STR_LIT("d"), STR_LIT("n") };
+    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+        identifier_t* ident = get_identifier(ir, names[i]);
+        ASSERT_TRUE(ident);
+        md_script_vis_t vis = {0};
+        md_script_vis_init(&vis, alloc);
+        md_script_vis_ctx_t vctx = { .ir = ir, .sys = sys, .state = &sys->reference };
+        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)ident->node, -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        // What is shown are the groups
+        EXPECT_EQ(sys->atom.count, md_bitfield_popcount(&vis.atom_mask));
+        md_script_vis_free(&vis);
+    }
+    EXPECT_EQ((size_t)0, test_hook_contact_searches);
+
+    // Evaluating the trajectory searches once per frame
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, sys, 0, (uint32_t)num_frames));
+    EXPECT_EQ(num_frames, test_hook_contact_searches);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+
+// ### CONTACTS: THE SCRIPT AGAINST THE KERNEL ###
+// The cases of test_contact.c, written as scripts. Each case states its groups twice: in C, exactly as the kernel
+// test does, and as script. The script's groups are first checked to be the same groups, so both ask the same
+// question. The contact set the script produces is then held to md_contact_compute given the kernel description
+// (bit for bit), and to the brute force reference of the kernel tests (contact_reference.h). The script is
+// evaluated the way a frame evaluation does it: compiled once, the contacts found through the query prepared for
+// the call site. Criteria the script does not expose (radii, type pairs) and the particle pair layer have no
+// counterpart here.
+
+#include "contact_reference.h"
+
+// One group per component whose flags intersect the mask (or every component if the mask is 0), as test_contact.c
+static md_bitfield_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, md_flags_t mask, md_allocator_i* alloc) {
+    md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * MAX(sys->component.count, 1));
+    size_t n = 0;
+    for (size_t c = 0; c < sys->component.count; ++c) {
+        if (mask && !(md_system_component_flags(sys, c) & mask)) continue;
+        const md_urange_t range = md_system_component_atom_range(sys, c);
+        groups[n] = md_bitfield_create(alloc);
+        md_bitfield_set_range(&groups[n], range.beg, range.end);
+        ++n;
+    }
+    *out_count = n;
+    return groups;
+}
+
+static bool mirror_bitfield_equal(const md_bitfield_t* a, const md_bitfield_t* b, md_allocator_i* alloc) {
+    const size_t pa = md_bitfield_popcount(a);
+    if (pa != md_bitfield_popcount(b)) return false;
+    md_bitfield_t both = md_bitfield_create(alloc);
+    md_bitfield_and(&both, a, b);
+    return md_bitfield_popcount(&both) == pa;
+}
+
+// The value of an identifier of a compiled script, evaluated on a state as the evaluation of a frame does it
+static bool mirror_eval(data_t* out, md_script_ir_t* ir, const char* name, md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    identifier_t* ident = get_identifier(ir, str_from_cstr(name));
+    if (!ident || !ident->node) {
+        printf("  no identifier '%s'\n", name);
+        return false;
+    }
+    eval_context_t ctx = { .ir = ir, .sys = sys, .temp_alloc = alloc, .alloc = alloc, .cur_state = state, .ref_state = &sys->reference };
+    return evaluate_node_alloc(out, ident->node, &ctx, alloc);
+}
+
+static bool mirror_same_groups(const data_t* d, const md_bitfield_t* groups, size_t num, const char* name, md_allocator_i* alloc) {
+    if (d->type.base_type != TYPE_BITFIELD) {
+        printf("  '%s' is not a selection\n", name);
+        return false;
+    }
+    const size_t n = element_count(*d);
+    if (n != num) {
+        printf("  '%s' has %zu groups, the kernel case %zu\n", name, n, num);
+        return false;
+    }
+    const md_bitfield_t* bf = as_bitfield(*d);
+    for (size_t k = 0; k < n; ++k) {
+        if (!mirror_bitfield_equal(&bf[k], &groups[k], alloc)) {
+            printf("  group %zu of '%s' differs from the kernel case (%zu vs %zu particles)\n", k, name, md_bitfield_popcount(&bf[k]), md_bitfield_popcount(&groups[k]));
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool mirror_same_sets(const md_contact_set_t* s, const md_contact_set_t* k) {
+    if (s->count != k->count || s->num_a != k->num_a || s->num_b != k->num_b || s->flags != k->flags) {
+        printf("  script: %zu pairs of %u x %u groups (flags %u), kernel: %zu pairs of %u x %u groups (flags %u)\n",
+            s->count, s->num_a, s->num_b, s->flags, k->count, k->num_a, k->num_b, k->flags);
+        return false;
+    }
+    for (size_t x = 0; x < s->count; ++x) {
+        if (s->i[x] != k->i[x] || s->j[x] != k->j[x] || s->atom_pairs[x] != k->atom_pairs[x] || s->d_min[x] != k->d_min[x]) {
+            printf("  pair %zu: script (%u, %u) %u pairs d_min %f, kernel (%u, %u) %u pairs d_min %f\n", x,
+                s->i[x], s->j[x], s->atom_pairs[x], s->d_min[x], k->i[x], k->j[x], k->atom_pairs[x], k->d_min[x]);
+            return false;
+        }
+    }
+    return true;
+}
+
+// src declares the groups as 'ga' (and 'gb' if desc has a B set) and the contacts as 'c'. The groups of desc are
+// those of the kernel case. On success the script's set is returned in out, if given.
+static bool mirror_check(md_system_t* sys, const char* src, const md_contact_desc_t* desc, bool expect_contacts, md_contact_set_t* out, md_allocator_i* alloc) {
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    if (!md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL)) {
+        printf("  failed to compile '%s'\n", src);
+        for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+            printf("  " STR_FMT "\n", STR_ARG(md_script_ir_errors(ir)[i].text));
+        }
+        return false;
+    }
+    const md_system_state_t* state = &sys->reference;
+
+    data_t ga = {0}, gb = {0}, c = {0};
+    if (!mirror_eval(&ga, ir, "ga", sys, state, alloc) || !mirror_same_groups(&ga, desc->group_a, desc->num_a, "ga", alloc)) return false;
+    if (desc->group_b) {
+        if (!mirror_eval(&gb, ir, "gb", sys, state, alloc) || !mirror_same_groups(&gb, desc->group_b, desc->num_b, "gb", alloc)) return false;
+    }
+
+    test_hook_contact_local_prepares = 0;
+    if (!mirror_eval(&c, ir, "c", sys, state, alloc) || c.type.base_type != TYPE_CONTACT) {
+        printf("  failed to evaluate the contacts of '%s'\n", src);
+        return false;
+    }
+    if (test_hook_contact_local_prepares != 0) {
+        printf("  the contacts were not found through the query prepared for the call site\n");
+        return false;
+    }
+    const md_contact_set_t* set = (const md_contact_set_t*)c.ptr;
+
+    md_contact_set_t kernel = {0};
+    if (!md_contact_compute(&kernel, desc, sys, state, alloc)) {
+        printf("  md_contact_compute failed\n");
+        return false;
+    }
+    bool ok = mirror_same_sets(set, &kernel);
+
+    md_array(ref_pair_t) ref = ref_contacts(desc, sys, state, alloc);
+    ok = same_contacts(set, ref, md_array_size(ref)) && ok;
+    if (expect_contacts && set->count == 0) {
+        printf("  no contacts, the case is vacuous\n");
+        ok = false;
+    }
+    if (out) *out = *set;
+    return ok;
+}
+
+// "atom(b:e)" of the particles of components [beg, end), one based and inclusive
+static int mirror_atom_range(char* buf, size_t cap, const md_system_t* sys, size_t beg, size_t end) {
+    const uint32_t a = md_system_component_atom_range(sys, beg).beg;
+    const uint32_t b = md_system_component_atom_range(sys, end - 1).end;
+    return snprintf(buf, cap, "atom(%u:%u)", a + 1, b);
+}
+
+UTEST_F(script, contacts_mirror_self_distance) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+    size_t num = 0;
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    ASSERT_GT(num, (size_t)10);
+    md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 3.5 };
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(:); c = contacts(ga, cutoff=3.5, exclude_bonds=0);", &desc, true, NULL, alloc));
+    // Written inline, as one would
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(:); c = contacts(residue(:), cutoff=3.5, exclude_bonds=0);", &desc, true, NULL, alloc));
+    md_temp_end(temp);
+}
+
+UTEST_F(script, contacts_mirror_between_sets) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+    size_t num = 0;
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    ASSERT_GT(num, (size_t)10);
+
+    // Overlapping sets: the first two thirds of the residues against the last two thirds
+    const size_t third = num / 3;
+    md_contact_desc_t desc = { .group_a = res, .num_a = num - third, .group_b = res + third, .num_b = num - third, .cutoff = 4.0 };
+    char src[512];
+    snprintf(src, sizeof(src), "ga = residue(1:%zu); gb = residue(%zu:%zu); c = contacts(ga, gb, cutoff=4.0, exclude_bonds=0);", num - third, third + 1, num);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, NULL, alloc));
+
+    // Protein against everything
+    size_t num_prot = 0;
+    md_bitfield_t* prot = mirror_residue_groups(&num_prot, sys, MD_FLAG_AMINO_ACID, alloc);
+    ASSERT_GT(num_prot, (size_t)0);
+    desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); gb = residue(:); c = contacts(ga, gb, cutoff=3.0, exclude_bonds=0);", &desc, true, NULL, alloc));
+    md_temp_end(temp);
+}
+
+UTEST_F(script, contacts_mirror_bond_exclusion_and_separation) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+    size_t num = 0;
+    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    ASSERT_GT(num, (size_t)3);
+
+    // Three bonds is the default of the script
+    md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
+    md_contact_set_t with = {0};
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); c = contacts(ga, cutoff=4.5);", &desc, true, &with, alloc));
+
+    // Neighbouring residues are always in contact, the separation leaves the ones further along the chain
+    desc.cutoff = 6.0;
+    desc.min_separation = 2;
+    md_contact_set_t sep = {0};
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); c = contacts(ga, cutoff=6.0, min_separation=2);", &desc, true, &sep, alloc));
+    for (size_t k = 0; k < sep.count; ++k) {
+        EXPECT_GE(sep.j[k] - sep.i[k], 2u);
+    }
+
+    // Exclusion removes atom pairs across the peptide bonds, and never adds any
+    desc.cutoff = 4.5;
+    desc.min_separation = 0;
+    desc.exclude_bonds = 0;
+    md_contact_set_t without = {0};
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); c = contacts(ga, cutoff=4.5, exclude_bonds=0);", &desc, true, &without, alloc));
+    size_t sum_with = 0, sum_without = 0;
+    for (size_t k = 0; k < with.count; ++k) sum_with += with.atom_pairs[k];
+    for (size_t k = 0; k < without.count; ++k) sum_without += without.atom_pairs[k];
+    EXPECT_LT(sum_with, sum_without);
+    EXPECT_LE(with.count, without.count);
+    md_temp_end(temp);
+}
+
+UTEST_F(script, contacts_mirror_triclinic) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->npt;
+    size_t num_all = 0;
+    md_bitfield_t* all = mirror_residue_groups(&num_all, sys, 0, alloc);
+    ASSERT_GT(num_all, (size_t)10);
+    // Every third residue: still spread over the whole cell, at a ninth of the cost of the reference
+    md_bitfield_t* res = md_alloc(alloc, sizeof(md_bitfield_t) * num_all);
+    size_t num = 0;
+    for (size_t k = 0; k < num_all; k += 3) res[num++] = all[k];
+
+    char src[512];
+    md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 5.0 };
+    snprintf(src, sizeof(src), "ga = residue(1:3:%zu); c = contacts(ga, cutoff=5.0, exclude_bonds=0);", num_all);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, NULL, alloc));
+
+    const size_t split = num / 3;
+    desc = (md_contact_desc_t){ .group_a = res, .num_a = split, .group_b = res + split, .num_b = num - split, .cutoff = 6.0 };
+    snprintf(src, sizeof(src), "ga = residue(1:3:%zu); gb = residue(%zu:3:%zu); c = contacts(ga, gb, cutoff=6.0, exclude_bonds=0);",
+        1 + 3 * (split - 1), 1 + 3 * split, num_all);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, NULL, alloc));
+    md_temp_end(temp);
+}
+
+// Groups sharing atoms, and atoms belonging to no group
+UTEST_F(script, contacts_mirror_overlapping_groups) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+    size_t num = 0;
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    ASSERT_GT(num, (size_t)6);
+    // The amino acids are the leading components, so their indices are those of the components
+    for (size_t k = 0; k < num; ++k) ASSERT_TRUE(md_system_component_flags(sys, k) & MD_FLAG_AMINO_ACID);
+
+    // Windows of three consecutive residues, each overlapping the next by two. In the script: an array of selections
+    const size_t num_win = num - 2;
+    md_bitfield_t* win = md_alloc(alloc, sizeof(md_bitfield_t) * num_win);
+    char windows[4096];
+    size_t len = snprintf(windows, sizeof(windows), "{");
+    for (size_t w = 0; w < num_win; ++w) {
+        win[w] = md_bitfield_create(alloc);
+        md_bitfield_or(&win[w], &res[w], &res[w + 1]);
+        md_bitfield_or_inplace(&win[w], &res[w + 2]);
+        if (w) len += snprintf(windows + len, sizeof(windows) - len, ", ");
+        len += mirror_atom_range(windows + len, sizeof(windows) - len, sys, w, w + 3);
+    }
+    len += snprintf(windows + len, sizeof(windows) - len, "}");
+    ASSERT_LT(len, sizeof(windows));
+
+    char src[8192];
+    md_contact_desc_t desc = { .group_a = win, .num_a = num_win, .cutoff = 4.0, .exclude_bonds = 3 };
+    snprintf(src, sizeof(src), "ga = %s; c = contacts(ga, cutoff=4.0);", windows);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, NULL, alloc));
+
+    desc = (md_contact_desc_t){ .group_a = win, .num_a = num_win, .group_b = res, .num_b = num, .cutoff = 4.0 };
+    snprintf(src, sizeof(src), "ga = %s; gb = residue(protein); c = contacts(ga, gb, cutoff=4.0, exclude_bonds=0);", windows);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, NULL, alloc));
+    md_temp_end(temp);
+}
+
+// With a parent per group, only groups of the same parent are neighbours
+UTEST_F(script, contacts_mirror_min_separation_parent) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+    size_t num = 0;
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    ASSERT_GT(num, (size_t)8);
+    for (size_t k = 0; k < num; ++k) ASSERT_TRUE(md_system_component_flags(sys, k) & MD_FLAG_AMINO_ACID);
+
+    // Two 'chains': residues [0, 7) and [7, num). In the script the parents are selections
+    uint32_t* parent = md_alloc(alloc, sizeof(uint32_t) * num);
+    for (size_t k = 0; k < num; ++k) parent[k] = k < 7 ? 0 : 1;
+    char first[64], second[64], src[512];
+    mirror_atom_range(first, sizeof(first), sys, 0, 7);
+    mirror_atom_range(second, sizeof(second), sys, 7, num);
+
+    md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3, .group_parent = parent };
+    md_contact_set_t with_parent = {0}, without_parent = {0};
+    snprintf(src, sizeof(src), "ga = residue(protein); c = contacts(ga, cutoff=4.5, min_separation=3, parent={%s, %s});", first, second);
+    EXPECT_TRUE(mirror_check(sys, src, &desc, true, &with_parent, alloc));
+
+    // Without parents the chain is one: this frame happens to have no contacts three residues apart
+    desc.group_parent = NULL;
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); c = contacts(ga, cutoff=4.5, min_separation=3);", &desc, false, &without_parent, alloc));
+
+    // Residues 6 and 7 are consecutive, so in contact, but belong to different parents
+    bool found_with = false, found_without = false;
+    for (size_t k = 0; k < with_parent.count; ++k)    found_with    |= (with_parent.i[k] == 6 && with_parent.j[k] == 7);
+    for (size_t k = 0; k < without_parent.count; ++k) found_without |= (without_parent.i[k] == 6 && without_parent.j[k] == 7);
+    EXPECT_TRUE(found_with);
+    EXPECT_FALSE(found_without);
+    md_temp_end(temp);
+}
+
+UTEST_F(script, contacts_mirror_empty) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    md_system_t* sys = &utest_fixture->ala;
+
+    // Groups too far apart
+    md_bitfield_t g[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
+    md_bitfield_set_bit(&g[0], 0);
+    md_bitfield_set_bit(&g[1], 1);
+    md_contact_desc_t desc = { .group_a = g, .num_a = 2, .cutoff = 0.01 };
+    md_contact_set_t set = {0};
+    EXPECT_TRUE(mirror_check(sys, "ga = {atom(1), atom(2)}; c = contacts(ga, cutoff=0.01, exclude_bonds=0);", &desc, false, &set, alloc));
+    EXPECT_EQ(set.count, (size_t)0);
+
+    // An empty B is an empty set: no contacts. Not the contacts within A, which is what no B means
+    size_t num = 0;
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    static const md_bitfield_t no_groups = {0};
+    desc = (md_contact_desc_t){ .group_a = res, .num_a = num, .group_b = &no_groups, .num_b = 0, .cutoff = 5.0 };
+    EXPECT_TRUE(mirror_check(sys, "ga = residue(:); gb = residue(atom(1) and not atom(1)); c = contacts(ga, gb, cutoff=5.0);", &desc, false, &set, alloc));
+    EXPECT_EQ(set.count, (size_t)0);
+    EXPECT_EQ(set.num_b, 0u);
+    EXPECT_EQ(set.flags, (uint32_t)MD_CONTACT_FLAG_NONE);
+    md_temp_end(temp);
+}
+
+// A plain selection is one group. Legal, but it is the likeliest mistake, and one which looks like a broken
+// procedure: a single group has no contacts with itself, and two single groups are in contact or not.
+UTEST_F(script, contacts_single_group_warnings) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* sys = &utest_fixture->ala;
+    const struct { const char* src; const char* warning; } cases[] = {
+        { "c = contacts(all, cutoff=5.0);", "never in contact with itself" },
+        { "c = contacts(residue(1), residue(5), cutoff=6.0);", "0 or 1" },
+        { "c = contacts(residue(:), cutoff=6.0);", NULL },
+        { "c = contacts(residue(1:3), residue(5), cutoff=6.0);", NULL },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_script_ir_t* ir = md_script_ir_create(alloc);
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(cases[i].src), sys, NULL));
+        const size_t num = md_script_ir_num_warnings(ir);
+        const md_log_token_t* warnings = md_script_ir_warnings(ir);
+        bool found = false;
+        for (size_t w = 0; w < num; ++w) {
+            if (cases[i].warning && str_find_str(NULL, warnings[w].text, str_from_cstr(cases[i].warning))) found = true;
+        }
+        if (cases[i].warning) {
+            EXPECT_TRUE(found);
+        } else {
+            EXPECT_EQ((size_t)0, num);
+        }
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+// The whole path of an application: compiled once, evaluated over the trajectory by several threads at once, the
+// properties read afterwards. Every frame against the kernel query on the same frame, and the kernel against the
+// reference.
+typedef struct mirror_job_t {
+    md_script_eval_t* eval;
+    md_script_ir_t* ir;
+    md_system_t* sys;
+    uint32_t beg, end;
+    bool ok;
+} mirror_job_t;
+
+static void mirror_job(void* data) {
+    mirror_job_t* job = (mirror_job_t*)data;
+    job->ok = md_script_eval_frame_range(job->eval, job->ir, job->sys, job->beg, job->end);
+}
+
+UTEST_F(script, contacts_mirror_query_over_trajectory) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* sys = &utest_fixture->ala;
+    ASSERT_TRUE(sys->trajectory);
+    const size_t num_frames = md_trajectory_num_frames(sys->trajectory);
+    ASSERT_GT(num_frames, (size_t)3);
+
+    size_t num = 0;
+    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "c = contacts(residue(protein), cutoff=4.5, min_separation=3);"
+        "n = count(c);"
+        "na = count(c, 'atom');"
+        "d = degree(c);"), sys, NULL));
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(eval);
+
+    // Four ranges at once, as a pool of workers would
+    test_hook_contact_local_prepares = 0;
+    enum { NUM_JOBS = 4 };
+    mirror_job_t jobs[NUM_JOBS];
+    md_thread_t* threads[NUM_JOBS];
+    for (uint32_t t = 0; t < NUM_JOBS; ++t) {
+        jobs[t] = (mirror_job_t){ eval, ir, sys, (uint32_t)(num_frames * t / NUM_JOBS), (uint32_t)(num_frames * (t + 1) / NUM_JOBS), false };
+        threads[t] = md_thread_create(mirror_job, &jobs[t]);
+        ASSERT_TRUE(threads[t]);
+    }
+    for (uint32_t t = 0; t < NUM_JOBS; ++t) {
+        md_thread_join(threads[t]);
+        EXPECT_TRUE(jobs[t].ok);
+    }
+    EXPECT_EQ((size_t)0, test_hook_contact_local_prepares);
+
+    const md_attributes_t* attr = md_script_eval_attributes(eval);
+    const md_attribute_t* n  = md_attributes_find(attr, STR_LIT("script/n"));
+    const md_attribute_t* na = md_attributes_find(attr, STR_LIT("script/na"));
+    const md_attribute_t* d  = md_attributes_find(attr, STR_LIT("script/d"));
+    ASSERT_TRUE(n && na && d);
+    ASSERT_EQ(md_attribute_element_count(&d->format), num_frames * num);
+
+    md_contact_query_t q;
+    ASSERT_TRUE(md_contact_query_init(&q, &desc, sys, alloc));
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_system_state_init(&state, sys->atom.count));
+    float* deg = md_alloc(alloc, sizeof(float) * num);
+
+    size_t frames_differing = 0;
+    for (size_t f = 0; f < num_frames; ++f) {
+        ASSERT_TRUE(md_trajectory_load_frame(sys->trajectory, f, &state));
+        md_contact_set_t set;
+        ASSERT_TRUE(md_contact_query_eval(&set, &q, &state, alloc));
+        md_array(ref_pair_t) ref = ref_contacts(&desc, sys, &state, alloc);
+        EXPECT_TRUE(same_contacts(&set, ref, md_array_size(ref)));
+
+        size_t atom_pairs = 0;
+        memset(deg, 0, sizeof(float) * num);
+        for (size_t k = 0; k < set.count; ++k) {
+            atom_pairs += set.atom_pairs[k];
+            deg[set.i[k]] += 1;
+            deg[set.j[k]] += 1;
+        }
+        EXPECT_EQ((float)set.count, ((const float*)n->data)[f]);
+        EXPECT_EQ((float)atom_pairs, ((const float*)na->data)[f]);
+        for (size_t r = 0; r < num; ++r) {
+            EXPECT_EQ(deg[r], ((const float*)d->data)[f * num + r]);
+        }
+        if (f && ((const float*)n->data)[f] != ((const float*)n->data)[f - 1]) frames_differing += 1;
+        md_contact_set_free(&set);
+    }
+    // The contacts do change over the trajectory
+    EXPECT_GT(frames_differing, (size_t)0);
+
+    md_contact_query_free(&q);
     md_arena_allocator_destroy(alloc);
 }

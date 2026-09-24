@@ -26,8 +26,14 @@
 //   header   'VERSION ...' string, precision (4 or 8), tpx version and generation, atom count,
 //            flags saying which of box / topology / coordinates / velocities / forces /
 //            simulation parameters follow, and, since tpx 119, the byte size of the body.
-//   body     box, topology, x, v, f, then the simulation parameters, which are skipped. Only their
-//            first two fields are read: the periodic boundary type.
+//   body     box, topology, x, v, f, then the simulation parameters. Of those only the first part is
+//            read: the periodic boundary type and the fields up to and including the non-bonded
+//            interactions (cut-offs, modifiers, dielectric constants, Ewald tolerances).
+//
+// The simulation parameters are not meant to be read by anything but GROMACS itself: every tpx version
+// may add or remove fields, and unlike the topology no generation number promises anything about them.
+// So they are read only for versions whose layout is known here (up to TPX_VERSION_IR_MAX), following
+// the conditions of GROMACS' do_inputrec field by field.
 //
 // Before tpx 119 the body is XDR encoded like the header. From 119 on it is written by GROMACS'
 // in-memory serializer instead: still big endian, but every value takes its native size (a bool or
@@ -40,12 +46,14 @@ enum {
     tpxv_Pre96Version53 = 53,
     tpxv_Pre96Version56 = 56,
     tpxv_Pre96Version57 = 57,                   // Oldest version GROMACS can not read
+    tpxv_Pre96Version59 = 59,
     tpxv_Pre96Version60 = 60,
     tpxv_Pre96Version61 = 61,
     tpxv_Pre96Version62 = 62,
     tpxv_Pre96Version63 = 63,
     tpxv_Pre96Version65 = 65,
     tpxv_Pre96Version66 = 66,
+    tpxv_Pre96Version67 = 67,
     tpxv_Pre96Version68 = 68,
     tpxv_Pre96Version69 = 69,
     tpxv_Pre96Version70 = 70,
@@ -58,19 +66,33 @@ enum {
     tpxv_Pre96Version82 = 82,
     tpxv_Pre96Version90 = 90,
     tpxv_Pre96Version93 = 93,
+    tpxv_Pre96Version94 = 94,
     tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials = 98,
+    tpxv_RemoveObsoleteParameters1 = 100,
     tpxv_IntermolecularBondeds = 103,
+    tpxv_RemoveTwinRange = 108,
     tpxv_RemoveImplicitSolvation = 113,
     tpxv_GenericInternalParameters = 117,
     tpxv_VSite2FD = 118,
     tpxv_AddSizeField = 119,
     tpxv_StoreNonBondedInteractionExclusionGroup = 120,
     tpxv_VSite1 = 121,
+    tpxv_MTS = 122,
     tpxv_RemoveTholeRfac = 127,
     tpxv_RemoveAtomtypes = 128,
+    tpxv_EnsembleTemperature = 129,
+    tpxv_MassRepartitioning = 131,
+    tpxv_VerletBufferPressureTol = 133,
     tpxv_HandleMartiniBondedBStateParametersProperly = 134,
     tpxv_NNPotIFuncType = 137,
+    tpxv_AwhHistogramTolerance = 138,           // GROMACS 2026
+    tpxv_OutputControlInKeyValueTree = 139,
+    tpxv_CmapBState = 140,
 };
+
+// The newest version whose simulation parameters can be read: the leading part of do_inputrec is known
+// up to here. Checked against GROMACS 2026.1 and the development branch after it.
+#define TPX_VERSION_IR_MAX tpxv_CmapBState
 
 // tpx topology generations. The topology of a file is readable when its generation is known, even
 // if the file version itself is newer than anything listed above.
@@ -626,11 +648,59 @@ static void rd_moltype(tpr_reader_t* r, md_tpr_moltype_t* mt, const tpr_symtab_t
     const size_t num_cg = rd_count(r);
     skip_ints(r, num_cg + 1);
 
-    // Exclusions: a list of lists
+    // Exclusions: a list of lists, one list per atom, each including the atom itself
     const size_t num_lists = rd_count(r);
     const size_t num_elem  = rd_count(r);
-    skip_ints(r, num_lists + 1);
-    skip_ints(r, num_elem);
+    if (!rd_ok(r) || num_lists > num_atoms || num_elem > md_xdr_remaining(&r->xdr) / 4) {
+        rd_fail(r);
+        return;
+    }
+    const uint8_t* ranges = md_xdr_take(&r->xdr, (num_lists + 1) * 4);
+    const uint8_t* elems  = md_xdr_take(&r->xdr, num_elem * 4);
+    if (!ranges || (num_elem && !elems)) {
+        rd_fail(r);
+        return;
+    }
+    if (num_elem > 0 && num_atoms) {
+        uint32_t* off  = md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
+        uint32_t* excl = md_alloc(alloc, sizeof(uint32_t) * num_elem);
+        uint32_t n = 0;
+        off[0] = 0;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            if (i < num_lists) {
+                const int32_t beg = md_xdr_load_i32(ranges + i * 4);
+                const int32_t end = md_xdr_load_i32(ranges + (i + 1) * 4);
+                if (beg < 0 || end < beg || (size_t)end > num_elem) {
+                    rd_fail(r);
+                    break;
+                }
+                const uint32_t row = n;
+                for (int32_t k = beg; k < end; ++k) {
+                    const int32_t j = md_xdr_load_i32(elems + (size_t)k * 4);
+                    if (j < 0 || (size_t)j >= num_atoms) {
+                        rd_fail(r);
+                        break;
+                    }
+                    if ((size_t)j == i) continue;
+                    // Insertion into the sorted row, which is short
+                    uint32_t y = n++;
+                    while (y > row && excl[y - 1] > (uint32_t)j) {
+                        excl[y] = excl[y - 1];
+                        --y;
+                    }
+                    excl[y] = (uint32_t)j;
+                }
+            }
+            off[i + 1] = n;
+        }
+        if (rd_ok(r) && n > 0) {
+            mt->excl_offset = off;
+            mt->excl = excl;
+        } else {
+            md_free(alloc, off, sizeof(uint32_t) * (num_atoms + 1));
+            md_free(alloc, excl, sizeof(uint32_t) * num_elem);
+        }
+    }
 }
 
 static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
@@ -670,9 +740,8 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
     data->name = rd_symstr(r, &symtab);
 
     // ## Force field parameters
-    // Skipped, except for the Lennard-Jones parameters of each non-bonded type with itself. grompp
-    // writes the non-bonded interactions first, as a num_nb_types x num_nb_types matrix, so those are
-    // the diagonal of the first num_nb_types^2 entries.
+    // Skipped, except for the Lennard-Jones parameters of the non-bonded types. grompp writes the
+    // non-bonded interactions first, as the full num_nb_types x num_nb_types table of type pairs.
     {
         const size_t num_nb_types = rd_count(r);
         const size_t num_types = rd_count(r);
@@ -684,17 +753,24 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         for (size_t i = 0; i < num_types; ++i) {
             functype[i] = rd_int(r);
         }
+        data->repulsion_power = 12.0;
         if (r->version >= tpxv_Pre96Version66) {
-            md_xdr_skip(&r->xdr, 8);                // reppow, always a double
+            md_xdr_read_f64(&r->xdr, &data->repulsion_power);   // Always a double
         }
-        skip_reals(r, 1);                           // fudgeQQ
+        data->fudge_qq = (float)rd_real(r);
         if (!rd_ok(r) || num_nb_types > num_types) {
             rd_fail(r);
             return;
         }
-        data->lj = md_array_create(md_tpr_lj_t, num_nb_types, alloc);
+        const size_t num_pairs = num_nb_types * num_nb_types;
+        if (num_pairs > num_types) {
+            rd_fail(r);
+            return;
+        }
+        data->lj = md_array_create(md_tpr_lj_t, num_pairs, alloc);
         data->num_nb_types = num_nb_types;
-        if (num_nb_types) MEMSET(data->lj, 0, num_nb_types * sizeof(md_tpr_lj_t));
+        if (num_pairs) MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+        bool all_lj = num_pairs > 0;
 
         for (size_t i = 0; i < num_types && rd_ok(r); ++i) {
             // The type numbers in the file are those of the version that wrote it
@@ -704,13 +780,21 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
                     ftype += 1;
                 }
             }
-            if (ftype == F_LJ && i < num_nb_types * num_nb_types && i % (num_nb_types + 1) == 0) {
-                md_tpr_lj_t* lj = &data->lj[i / (num_nb_types + 1)];
-                lj->c6  = (float)rd_real(r);
-                lj->c12 = (float)rd_real(r);
-            } else {
-                skip_iparams(r, ftype);
+            if (i < num_pairs) {
+                if (ftype == F_LJ) {
+                    md_tpr_lj_t* lj = &data->lj[i];
+                    lj->c6  = (float)rd_real(r);
+                    lj->c12 = (float)rd_real(r);
+                    continue;
+                }
+                all_lj = false;
             }
+            skip_iparams(r, ftype);
+        }
+        data->nb_is_lj = all_lj;
+        if (!all_lj && num_pairs) {
+            // A table of mixed or other forms is not Lennard-Jones: leave nothing half filled in
+            MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         }
     }
 
@@ -818,6 +902,182 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         }
         skip_ints(r, (size_t)count);
     }
+}
+
+// ### SIMULATION PARAMETERS ###
+
+// The leading part of GROMACS' do_inputrec, up to the non-bonded interactions and the Ewald parameters,
+// which is all that is kept. Field by field in GROMACS' order, under GROMACS' version conditions.
+static void rd_ir_nonbonded(tpr_reader_t* r, md_tpr_nonbonded_t* nb) {
+    const int v = r->version;
+
+    rd_int(r);                                      // Integrator
+    if (v >= tpxv_Pre96Version62) {
+        rd_int64(r);                                // nsteps
+        rd_int64(r);                                // init_step
+    } else {
+        rd_int(r);
+        rd_int(r);
+    }
+    rd_int(r);                                      // simulation_part
+
+    if (v >= tpxv_MTS) {
+        // Multiple time stepping: the levels are only counted when it is used, and none are then written
+        // otherwise (a reading t_inputrec starts without levels)
+        const bool use_mts = rd_bool(r);
+        const size_t num_levels = use_mts ? rd_count(r) : 0;
+        if (num_levels > 16) {
+            rd_fail(r);
+            return;
+        }
+        skip_ints(r, 2 * num_levels);               // Force groups and step factor per level
+    }
+    if (v >= tpxv_MassRepartitioning) {
+        rd_real(r);                                 // Mass repartition factor
+    }
+    if (v >= tpxv_EnsembleTemperature) {
+        rd_int(r);                                  // Ensemble temperature setting
+        rd_real(r);                                 // Ensemble temperature
+    }
+    if (v >= tpxv_Pre96Version67 && v < tpxv_OutputControlInKeyValueTree) {
+        rd_int(r);                                  // nstcalcenergy
+    }
+
+    int32_t scheme = MD_TPR_CUTOFF_SCHEME_GROUP;
+    if (v >= tpxv_Pre96Version81) {
+        scheme = rd_int(r);
+        if (v < tpxv_Pre96Version94) {
+            // The order of the two was inverted
+            scheme = (scheme == 0) ? MD_TPR_CUTOFF_SCHEME_GROUP : MD_TPR_CUTOFF_SCHEME_VERLET;
+        }
+    }
+    rd_int(r);                                      // Once ns_type
+    rd_int(r);                                      // nstlist
+    rd_int(r);                                      // Once ndelta
+    rd_real(r);                                     // rtpi
+    rd_int(r);                                      // nstcomm
+    rd_int(r);                                      // comm_mode
+    if (v < tpxv_RemoveObsoleteParameters1) {
+        rd_int(r);                                  // nstcheckpoint
+    }
+    rd_int(r);                                      // nstcgsteep
+    rd_int(r);                                      // nbfgscorr
+    if (v < tpxv_OutputControlInKeyValueTree) {
+        skip_ints(r, 6);                            // nstlog, nstxout, nstvout, nstfout, nstenergy, nstxout_compressed
+    }
+    if (v >= tpxv_Pre96Version59) {
+        md_xdr_skip(&r->xdr, 16);                   // init_t and delta_t, doubles
+    } else {
+        skip_reals(r, 2);
+    }
+    if (v < tpxv_OutputControlInKeyValueTree) {
+        rd_real(r);                                 // x_compression_precision
+    }
+    if (v >= tpxv_Pre96Version81) {
+        rd_real(r);                                 // verletbuf_tol
+    }
+    if (v >= tpxv_VerletBufferPressureTol) {
+        rd_real(r);                                 // Verlet buffer pressure tolerance
+    }
+    const float rlist = (float)rd_real(r);
+    if (v >= tpxv_Pre96Version67 && v < tpxv_RemoveTwinRange) {
+        rd_real(r);                                 // rlistlong
+    }
+    if (v >= tpxv_Pre96Version82 && v != tpxv_Pre96Version90) {
+        rd_int(r);                                  // nstcalclr
+    }
+
+    const int32_t coulomb_type = rd_int(r);
+    int32_t coulomb_modifier;
+    if (v >= tpxv_Pre96Version81) {
+        coulomb_modifier = rd_int(r);
+    } else {
+        coulomb_modifier = (scheme == MD_TPR_CUTOFF_SCHEME_VERLET) ? MD_TPR_MODIFIER_POT_SHIFT : MD_TPR_MODIFIER_NONE;
+    }
+    const float rcoulomb_switch = (float)rd_real(r);
+    const float rcoulomb = (float)rd_real(r);
+
+    const int32_t vdw_type = rd_int(r);
+    int32_t vdw_modifier;
+    if (v >= tpxv_Pre96Version81) {
+        vdw_modifier = rd_int(r);
+    } else {
+        vdw_modifier = (scheme == MD_TPR_CUTOFF_SCHEME_VERLET) ? MD_TPR_MODIFIER_POT_SHIFT : MD_TPR_MODIFIER_NONE;
+    }
+    const float rvdw_switch = (float)rd_real(r);
+    const float rvdw = (float)rd_real(r);
+    const int32_t disp_corr = rd_int(r);
+    const float epsilon_r = (float)rd_real(r);
+    const float epsilon_rf = (float)rd_real(r);
+    rd_real(r);                                     // Table extension
+
+    if (v < tpxv_RemoveImplicitSolvation) {
+        rd_int(r);
+        rd_int(r);
+        rd_real(r);
+        rd_real(r);
+        rd_int(r);
+        skip_reals(r, 4);
+        if (v >= tpxv_Pre96Version60) {
+            rd_real(r);
+            rd_int(r);
+        }
+        rd_real(r);
+    }
+    if (v >= tpxv_Pre96Version81) {
+        rd_real(r);                                 // Fourier spacing
+    }
+    skip_ints(r, 4);                                // nkx, nky, nkz, pme_order
+    const float ewald_rtol = (float)rd_real(r);
+    float ewald_rtol_lj = ewald_rtol;
+    if (v >= tpxv_Pre96Version93) {
+        ewald_rtol_lj = (float)rd_real(r);
+    }
+    rd_int(r);                                      // Ewald geometry
+    rd_real(r);                                     // Surface dielectric constant
+    if (v < tpxv_RemoveObsoleteParameters1) {
+        rd_bool(r);                                 // bOptFFT
+    }
+    int32_t ljpme_comb_rule = 0;
+    if (v >= tpxv_Pre96Version93) {
+        ljpme_comb_rule = rd_int(r);
+    }
+
+    // Whatever went wrong, what is read is only kept when all of it makes sense
+    const bool sane = rd_ok(r) &&
+        coulomb_type >= 0 && coulomb_type <= MD_TPR_COULOMB_FMM &&
+        vdw_type >= 0 && vdw_type <= MD_TPR_VDW_PME &&
+        coulomb_modifier >= 0 && coulomb_modifier <= MD_TPR_MODIFIER_FORCE_SWITCH &&
+        vdw_modifier >= 0 && vdw_modifier <= MD_TPR_MODIFIER_FORCE_SWITCH &&
+        disp_corr >= 0 && disp_corr <= MD_TPR_DISP_CORR_ALL_ENER &&
+        (scheme == MD_TPR_CUTOFF_SCHEME_VERLET || scheme == MD_TPR_CUTOFF_SCHEME_GROUP) &&
+        rvdw >= 0.0f && rvdw < 1000.0f && rcoulomb >= 0.0f && rcoulomb < 1000.0f &&
+        rvdw_switch >= 0.0f && rvdw_switch <= rvdw + 1.0e-6f && rcoulomb_switch >= 0.0f &&
+        epsilon_r >= 0.0f && epsilon_rf >= 0.0f && (ljpme_comb_rule == 0 || ljpme_comb_rule == 1);
+    if (!sane) {
+        MD_LOG_INFO("TPR: The non-bonded settings of the simulation parameters could not be read (tpx version %d)", v);
+        return;
+    }
+
+    *nb = (md_tpr_nonbonded_t){
+        .valid = true,
+        .cutoff_scheme = scheme,
+        .rlist = rlist,
+        .vdw_type = vdw_type,
+        .vdw_modifier = vdw_modifier,
+        .rvdw_switch = rvdw_switch,
+        .rvdw = rvdw,
+        .coulomb_type = coulomb_type,
+        .coulomb_modifier = coulomb_modifier,
+        .rcoulomb_switch = rcoulomb_switch,
+        .rcoulomb = rcoulomb,
+        .epsilon_r = epsilon_r,
+        .epsilon_rf = epsilon_rf,
+        .disp_corr = disp_corr,
+        .ewald_rtol = ewald_rtol,
+        .ewald_rtol_lj = ewald_rtol_lj,
+        .ljpme_comb_rule = ljpme_comb_rule,
+    };
 }
 
 // ### FILE ###
@@ -964,12 +1224,20 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
         goto done;
     }
 
-    // The simulation parameters start with the periodic boundary type. It is nice to have, not
-    // needed, so a file that ends here is still fine.
+    // The simulation parameters start with the periodic boundary type. They are nice to have, not
+    // needed, so a file that ends here or cannot be read further is still fine: what is read of them
+    // is read from a copy of the cursor, and only kept when complete.
     if (has_ir && version >= tpxv_Pre96Version53) {
-        const int32_t pbc = rd_int(&body);
-        if (rd_ok(&body) && pbc >= MD_TPR_PBC_XYZ && pbc <= MD_TPR_PBC_UNSET) {
+        tpr_reader_t ir = body;
+        const int32_t pbc = rd_int(&ir);
+        if (rd_ok(&ir) && pbc >= MD_TPR_PBC_XYZ && pbc <= MD_TPR_PBC_UNSET) {
             data->pbc = pbc;
+        }
+        rd_bool(&ir);                               // Periodic molecules
+        if (version <= TPX_VERSION_IR_MAX) {
+            rd_ir_nonbonded(&ir, &data->nonbonded);
+        } else {
+            MD_LOG_INFO("TPR: The simulation parameters of tpx version %d are newer than this reader knows (%d), the non-bonded settings are not read", version, TPX_VERSION_IR_MAX);
         }
     }
 
@@ -1019,6 +1287,11 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
         md_array_free(data->moltypes[i].atoms, alloc);
         md_array_free(data->moltypes[i].residues, alloc);
         md_array_free(data->moltypes[i].bonds, alloc);
+        const md_tpr_moltype_t* mt = &data->moltypes[i];
+        if (mt->excl_offset) {
+            md_free(alloc, mt->excl, sizeof(uint32_t) * MAX(mt->excl_offset[mt->num_atoms], 1));
+            md_free(alloc, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
+        }
     }
     md_array_free(data->moltypes, alloc);
     md_array_free(data->molblocks, alloc);
@@ -1031,6 +1304,35 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     }
     MEMSET(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
+}
+
+bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom_b) {
+    if (!data || atom_a >= data->num_atoms || atom_b >= data->num_atoms) return false;
+    if (atom_a == atom_b) return true;
+    // The molecule of atom_a
+    size_t offset = 0;
+    for (size_t b = 0; b < data->num_molblocks; ++b) {
+        const md_tpr_molblock_t* mb = &data->molblocks[b];
+        const md_tpr_moltype_t* mt = &data->moltypes[mb->moltype];
+        const size_t block_atoms = (size_t)mb->nmol * mt->num_atoms;
+        if (atom_a < offset + block_atoms) {
+            if (!mt->excl_offset || mt->num_atoms == 0) return false;
+            const size_t mol_beg = offset + (atom_a - offset) / mt->num_atoms * mt->num_atoms;
+            if (atom_b < mol_beg || atom_b >= mol_beg + mt->num_atoms) return false;
+            const uint32_t la = (uint32_t)(atom_a - mol_beg);
+            const uint32_t lb = (uint32_t)(atom_b - mol_beg);
+            uint32_t lo = mt->excl_offset[la];
+            uint32_t hi = mt->excl_offset[la + 1];
+            while (lo < hi) {
+                const uint32_t mid = (lo + hi) / 2;
+                if (mt->excl[mid] == lb) return true;
+                if (mt->excl[mid] < lb) lo = mid + 1; else hi = mid;
+            }
+            return false;
+        }
+        offset += block_atoms;
+    }
+    return false;
 }
 
 // ### SYSTEM ###
@@ -1132,7 +1434,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                 radius = md_atomic_number_vdw_radius(z);
                 color  = md_atomic_number_cpk_color(z);
             } else {
-                const float lj_radius = (atom->type_idx < data->num_nb_types) ? md_tpr_lj_vdw_radius(data->lj[atom->type_idx]) : 0.0f;
+                const float lj_radius = md_tpr_lj_vdw_radius(md_tpr_lj_pair(data, atom->type_idx, atom->type_idx));
                 radius = lj_radius > 0.0f ? lj_radius : md_atomic_number_vdw_radius(0);
                 // A virtual site without Lennard-Jones is a charge site (TIP4P's M), not a bead
                 if (atom->ptype != MD_TPR_PTYPE_VSITE || lj_radius > 0.0f) {

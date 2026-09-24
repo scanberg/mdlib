@@ -46,6 +46,8 @@
 #define TI_BITFIELD     {TYPE_BITFIELD, {1}}
 #define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}}
 
+#define TI_CONTACT        {TYPE_CONTACT, {1}}
+
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
 
@@ -401,6 +403,11 @@ static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield
 
 // Misc
 static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> int
+static int _contacts(data_t*, data_t[], eval_context_t*);        // (a, b, cutoff, exclude_bonds, min_separation, parent, exclude_within) -> contact
+static int _count_contact(data_t*, data_t[], eval_context_t*);   // (contact) -> float
+static int _count_contact_unit(data_t*, data_t[], eval_context_t*); // (contact, str) -> float
+static int _degree_contact(data_t*, data_t[], eval_context_t*);  // (contact) -> float[num_a]
+static int _chunks(data_t*, data_t[], eval_context_t*);          // (bitfield[], int) -> bitfield[]
 static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float
 
 // Geometric operations
@@ -704,6 +711,13 @@ static procedure_t procedures[] = {
 
     {CSTR("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
+    // Contacts between groups, see md_contact.h
+    {CSTR("contacts"),  TI_CONTACT,    7,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT, TI_INT, TI_INT, TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _contacts, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("count"),     TI_FLOAT,      1,   {TI_CONTACT},               _count_contact},
+    {CSTR("count"),     TI_FLOAT,      2,   {TI_CONTACT, TI_STRING},    _count_contact_unit, FLAG_STATIC_VALIDATION},
+    {CSTR("degree"),    TI_FLOAT_ARR,  1,   {TI_CONTACT},               _degree_contact, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("chunks"),    TI_BITFIELD_ARR, 2, {TI_BITFIELD_ARR, TI_INT},  _chunks, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+
     // --- GEOMETRICAL OPERATIONS ---
     {CSTR("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {CSTR("plane"),         TI_FLOAT4,      1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
@@ -736,12 +750,18 @@ static procedure_t procedures[] = {
 //
 // Rules, checked by the unittest 'script.named_args_signature_table':
 //   - A name means the same position in every overload of the procedure.
-//   - Every parameter which some overload does not take is PARAM_OPTIONAL.
-//   - Required parameters come first; PARAM_DEFAULT never follows PARAM_OPTIONAL.
+//   - Every parameter which some overload does not take is PARAM_OPTIONAL, and PARAM_OPTIONAL parameters are trailing.
+//   - Every overload takes a PARAM_NULLABLE parameter (it receives the absent argument).
+//   - As in Python, a parameter which can be given by position and has to be given does not follow one which can be
+//     left out: required parameters after a PARAM_DEFAULT or PARAM_NULLABLE one are PARAM_KW_ONLY.
 //   - Procedures with FLAG_SYMMETRIC_ARGS get no entry: swapping arguments given by name has no meaning.
 //   - Names cannot be keywords of the language (in, of, out, and, or, xor, not).
 #define REQ(name) {CSTR(name), PARAM_REQUIRED}
 #define OPT(name) {CSTR(name), PARAM_OPTIONAL}
+#define NUL(name) {CSTR(name), PARAM_NULLABLE}
+#define KW_REQ(name) {CSTR(name), PARAM_REQUIRED | PARAM_KW_ONLY}
+#define KW_NUL(name) {CSTR(name), PARAM_NULLABLE | PARAM_KW_ONLY}
+#define KW_INT(name, value) {CSTR(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_INT, {._int = (value)}}
 
 static const proc_sig_t signatures[] = {
     {CSTR("distance"),      2, {REQ("a"), REQ("b")}},
@@ -762,10 +782,19 @@ static const proc_sig_t signatures[] = {
     {CSTR("count"),         2, {REQ("sel"), OPT("unit")}},
     {CSTR("split"),         2, {REQ("sel"), REQ("parts")}},
     {CSTR("contact_count"), 3, {REQ("a"), REQ("b"), REQ("cutoff")}},
+
+    // contacts(a, b = none, *, cutoff, exclude_bonds = 3, min_separation = 0, parent = none, exclude_within = none)
+    {CSTR("contacts"),      7, {REQ("a"), NUL("b"), KW_REQ("cutoff"), KW_INT("exclude_bonds", 3), KW_INT("min_separation", 0), KW_NUL("parent"), KW_NUL("exclude_within")}},
+    {CSTR("degree"),        1, {REQ("c")}},
+    {CSTR("chunks"),        2, {REQ("sel"), REQ("size")}},
 };
 
 #undef REQ
 #undef OPT
+#undef NUL
+#undef KW_REQ
+#undef KW_NUL
+#undef KW_INT
 #undef CSTR
 
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
@@ -6248,3 +6277,297 @@ static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 }
 */
+
+// ### CONTACTS ###
+// contacts() is the script face of md_contact: a set of group pairs in contact per frame, an opaque value of
+// TYPE_CONTACT which the procedures below reduce. Its groups cannot depend on the frame, so everything which
+// depends on the topology is prepared once per call site, during the static check (contact_query_entry_t).
+
+// The element of arr which holds each particle. Particles in no element get a label of their own (num + index),
+// so they never share one. The first element holding a particle wins.
+static uint32_t* contacts_label_particles(const md_bitfield_t* arr, size_t num, uint32_t num_atoms, md_allocator_i* alloc) {
+    uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * MAX(num_atoms, 1));
+    for (uint32_t k = 0; k < num_atoms; ++k) label[k] = (uint32_t)num + k;
+    for (size_t e = num; e-- > 0;) {
+        md_bitfield_iter_t it = md_bitfield_iter_create(&arr[e]);
+        while (md_bitfield_iter_next(&it)) {
+            const uint64_t k = md_bitfield_iter_idx(&it);
+            if (k < num_atoms) label[k] = (uint32_t)e;
+        }
+    }
+    return label;
+}
+
+// Argument order: a, b, cutoff, exclude_bonds, min_separation, parent, exclude_within
+static bool contacts_prepare(md_contact_query_t* q, const data_t arg[], const eval_context_t* ctx, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    const uint32_t N = (uint32_t)ctx->sys->atom.count;
+
+    md_contact_desc_t desc = {
+        .group_a = as_bitfield(arg[0]),
+        .num_a   = element_count(arg[0]),
+        .cutoff  = as_float(arg[2]),
+        .exclude_bonds  = (uint32_t)as_int(arg[3]),
+        .min_separation = (uint32_t)as_int(arg[4]),
+    };
+    if (!is_absent_type(arg[1].type)) {
+        // An empty b is an empty set, which is not the same as no b: that would be the contacts within a
+        static const md_bitfield_t no_groups = {0};
+        desc.num_b   = element_count(arg[1]);
+        desc.group_b = desc.num_b ? as_bitfield(arg[1]) : &no_groups;
+    }
+    if (!is_absent_type(arg[5].type) && desc.num_a) {
+        // The parent of a group is the parent of its first particle
+        const uint32_t* label = contacts_label_particles(as_bitfield(arg[5]), element_count(arg[5]), N, temp_alloc);
+        uint32_t* parent = md_alloc(temp_alloc, sizeof(uint32_t) * desc.num_a);
+        for (size_t g = 0; g < desc.num_a; ++g) {
+            md_bitfield_iter_t it = md_bitfield_iter_create(&desc.group_a[g]);
+            parent[g] = (md_bitfield_iter_next(&it) && md_bitfield_iter_idx(&it) < N) ? label[md_bitfield_iter_idx(&it)] : UINT32_MAX - (uint32_t)g;
+        }
+        desc.group_parent = parent;
+    }
+    if (!is_absent_type(arg[6].type)) {
+        desc.particle_label = contacts_label_particles(as_bitfield(arg[6]), element_count(arg[6]), N, temp_alloc);
+    }
+
+    const bool result = md_contact_query_init(q, &desc, ctx->sys, alloc);
+    md_temp_end(temp);
+    return result;
+}
+
+static const md_contact_query_t* contacts_find_query(const eval_context_t* ctx) {
+    if (!ctx->op_node) return NULL;
+    for (size_t i = 0; i < md_array_size(ctx->ir->contact_queries); ++i) {
+        const contact_query_entry_t* e = &ctx->ir->contact_queries[i];
+        if (e->node == ctx->op_node && e->sys == ctx->sys) {
+            return &e->query;
+        }
+    }
+    return NULL;
+}
+
+static int _contacts(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+
+    if (!dst && !ctx->vis) {
+        // Static validation: everything a query is prepared from must be the same for every frame
+        static const char* names[] = { "a", "b", "cutoff", "exclude_bonds", "min_separation", "parent", "exclude_within" };
+        for (int i = 0; i < 7; ++i) {
+            if (!is_absent_type(arg[i].type) && (ctx->arg_flags[i] & FLAG_DYNAMIC)) {
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[i], "contacts: '%s' cannot depend on the frame, the groups and their parameters have to be fixed", names[i]);
+                return STATIC_VALIDATION_ERROR;
+            }
+        }
+        if (!(as_float(arg[2]) > 0.0f)) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "contacts: the cutoff has to be positive");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (as_int(arg[3]) < 0 || as_int(arg[4]) < 0) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "contacts: exclude_bonds and min_separation cannot be negative");
+            return STATIC_VALIDATION_ERROR;
+        }
+        // A plain selection is one group. Legal, but rarely what is meant, and the result looks broken
+        const size_t num_a = element_count(arg[0]);
+        const size_t num_b = is_absent_type(arg[1].type) ? 0 : element_count(arg[1]);
+        if (is_absent_type(arg[1].type) && num_a <= 1) {
+            LOG_WARNING(ctx->ir, ctx->arg_tokens[0], "contacts: 'a' is a single group, and a group is never in contact with itself, so there are no contacts. "
+                "Give the groups as an array, e.g. residue(...), or a second set as 'b'");
+        } else if (!is_absent_type(arg[1].type) && num_a == 1 && num_b == 1) {
+            LOG_WARNING(ctx->ir, ctx->op_token, "contacts: 'a' and 'b' are single groups, so at most one pair of groups is in contact and count(c) is 0 or 1. "
+                "count(c, 'atom') counts the particle pairs; groups are given as arrays, e.g. residue(...)");
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        // Prepare the call site, once
+        if (ctx->op_node && !contacts_find_query(ctx)) {
+            contact_query_entry_t entry = { .node = ctx->op_node, .sys = ctx->sys };
+            if (!contacts_prepare(&entry.query, arg, ctx, ctx->ir->arena)) {
+                LOG_ERROR(ctx->ir, ctx->op_token, "contacts: failed to prepare the query");
+                return STATIC_VALIDATION_ERROR;
+            }
+            md_array_push(ctx->ir->contact_queries, entry, ctx->ir->arena);
+        }
+        return 0;
+    }
+
+    const md_bitfield_t* A = as_bitfield(arg[0]);
+    const md_bitfield_t* B = is_absent_type(arg[1].type) ? A : as_bitfield(arg[1]);
+
+    if (!dst) {
+        // Visualization only. Finding the pairs means a neighbour search over every particle of the groups, which in a
+        // large system stalls whatever asked for a picture, so it is never done for one: the groups are shown instead.
+        for (size_t g = 0; g < element_count(arg[0]); ++g) visualize_atom_mask(&A[g], ctx);
+        if (B != A) {
+            for (size_t g = 0; g < element_count(arg[1]); ++g) visualize_atom_mask(&B[g], ctx);
+        }
+        return 0;
+    }
+
+    if (ctx->backchannel) {
+        // Evaluated within the static check, for a procedure which is asking about its argument (degree asks for the
+        // number of groups). The shape is known without searching, and a search here would stall the compilation.
+        md_contact_set_t* set = (md_contact_set_t*)dst->ptr;
+        MEMSET(set, 0, sizeof(md_contact_set_t));
+        set->num_a = (uint32_t)element_count(arg[0]);
+        set->num_b = is_absent_type(arg[1].type) ? set->num_a : (uint32_t)element_count(arg[1]);
+        set->flags = is_absent_type(arg[1].type) ? MD_CONTACT_FLAG_SELF : MD_CONTACT_FLAG_NONE;
+        return 0;
+    }
+
+    int result = 0;
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    const md_contact_query_t* q = contacts_find_query(ctx);
+    md_contact_query_t local = {0};
+    if (!q) {
+        // Not prepared by a static check of this call site, so for this call only
+#ifdef MD_SCRIPT_TEST_HOOKS
+        test_hook_contact_local_prepares += 1;
+#endif
+        if (!contacts_prepare(&local, arg, ctx, temp_alloc)) {
+            result = -1;
+            goto done;
+        }
+        q = &local;
+    }
+
+    // The pairs live for the evaluation
+    md_contact_set_t* set = (md_contact_set_t*)dst->ptr;
+#ifdef MD_SCRIPT_TEST_HOOKS
+    test_hook_contact_searches += 1;
+#endif
+    if (!md_contact_query_eval(set, q, ctx->cur_state, ctx->alloc)) {
+        result = -1;
+        goto done;
+    }
+
+    if (ctx->vis) {
+        // Computed anyway: show the groups actually in contact
+        for (size_t k = 0; k < set->count; ++k) {
+            visualize_atom_mask(&A[set->i[k]], ctx);
+            visualize_atom_mask(&B[set->j[k]], ctx);
+        }
+    }
+
+done:
+    md_temp_end(temp);
+    return result;
+}
+
+static inline const md_contact_set_t* as_contact_set(data_t arg) {
+    return (const md_contact_set_t*)arg.ptr;
+}
+
+// count(c): the number of group pairs in contact
+static int _count_contact(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    if (dst) {
+        const md_contact_set_t* set = as_contact_set(arg[0]);
+        as_float(*dst) = set ? (float)set->count : 0.0f;
+    }
+    return 0;
+}
+
+// count(c, unit): 'group' counts group pairs, 'atom' the particle pairs behind them
+static int _count_contact_unit(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    const str_t unit = as_string(arg[1]);
+    const bool atom  = str_eq(unit, STR_LIT("atom"));
+    const bool group = str_eq(unit, STR_LIT("group"));
+    if (!dst) {
+        if (!atom && !group) {
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "count: the unit of a contact set is 'group' (pairs of groups) or 'atom' (pairs of particles)");
+            return STATIC_VALIDATION_ERROR;
+        }
+        return 0;
+    }
+    const md_contact_set_t* set = as_contact_set(arg[0]);
+    double count = 0.0;
+    if (set) {
+        if (atom) {
+            for (size_t k = 0; k < set->count; ++k) count += set->atom_pairs[k];
+        } else {
+            count = (double)set->count;
+        }
+    }
+    as_float(*dst) = (float)count;
+    return 0;
+}
+
+// degree(c): per group of A, the number of groups it is in contact with
+static int _degree_contact(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    const md_contact_set_t* set = as_contact_set(arg[0]);
+    if (!dst) {
+        // The length is the number of groups of A, which is fixed
+        return set ? (int)set->num_a : 0;
+    }
+    float* out = as_float_arr(*dst);
+    const size_t len = element_count(*dst);
+    MEMSET(out, 0, len * sizeof(float));
+    if (set) {
+        const bool self = set->flags & MD_CONTACT_FLAG_SELF;
+        for (size_t k = 0; k < set->count; ++k) {
+            if (set->i[k] < len) out[set->i[k]] += 1.0f;
+            if (self && set->j[k] < len) out[set->j[k]] += 1.0f;
+        }
+    }
+    return 0;
+}
+
+// chunks(sel, size): each element of sel cut into consecutive runs of size particles, in index order. A last run
+// shorter than size is kept. Groups which the topology does not name: the slices of a fibril which is one residue.
+static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    const md_bitfield_t* src = as_bitfield(arg[0]);
+    const size_t num_src = element_count(arg[0]);
+    const int size = as_int(arg[1]);
+    if (size <= 0) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "chunks: the size has to be positive");
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    md_bitfield_t* dst_bf = dst ? as_bitfield(*dst) : NULL;
+    const size_t cap = dst ? element_count(*dst) : 0;
+    size_t count = 0;
+    md_array(int32_t) idx = 0;
+    for (size_t e = 0; e < num_src; ++e) {
+        md_bitfield_t tmp = {0};
+        const md_bitfield_t* bf = &src[e];
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp, temp_alloc);
+            md_bitfield_and(&tmp, bf, ctx->mol_ctx);
+            bf = &tmp;
+        }
+        const size_t pop = md_bitfield_popcount(bf);
+        if (!pop) continue;
+        if (!dst) {
+            count += DIV_UP(pop, (size_t)size);
+            continue;
+        }
+        md_array_resize(idx, pop, temp_alloc);
+        md_bitfield_iter_extract_indices(idx, pop, md_bitfield_iter_create(bf));
+        for (size_t k = 0; k < pop; ++k) {
+            // Beyond the capacity (a flattened evaluation), everything goes into the last one
+            const size_t c = MIN(count + k / (size_t)size, cap - 1);
+            md_bitfield_set_bit(&dst_bf[c], idx[k]);
+        }
+        count += DIV_UP(pop, (size_t)size);
+    }
+    md_temp_end(temp);
+
+    if (!dst) {
+        if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
+            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        return (int)count;
+    }
+    return 0;
+}
