@@ -7604,3 +7604,51 @@ bool md_script_identifier_name_valid(str_t ident) {
 
     return true;
 }
+
+#define NAME(cstr) {cstr"", sizeof(cstr)-1}
+
+// Keep in step with the tokenizer (tokenizer_get_next_from_buffer)
+static const str_t script_keywords[] = {
+    NAME("and"), NAME("or"), NAME("xor"), NAME("not"), NAME("in"), NAME("of"), NAME("out"),
+};
+
+// Procedures that the parser handles itself instead of looking them up in the procedure table
+static const str_t script_intrinsics[] = {
+    NAME("attr"), NAME("flatten"), NAME("transpose"),
+};
+
+#undef NAME
+
+size_t md_script_num_keywords(void) {
+    return ARRAY_SIZE(script_keywords);
+}
+
+const str_t* md_script_keywords(void) {
+    return script_keywords;
+}
+
+static bool procedure_name_before(size_t idx, str_t name) {
+    for (size_t i = 0; i < idx; ++i) {
+        if (str_eq(procedures[i].name, name)) return true;
+    }
+    return false;
+}
+
+size_t md_script_builtin_identifiers(str_t* out, size_t cap) {
+    size_t count = 0;
+    #define EMIT(name) do { if (out && count < cap) out[count] = (name); ++count; } while (0)
+
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        // Overloads share a name, list it once
+        if (!procedure_name_before(i, procedures[i].name)) EMIT(procedures[i].name);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(script_intrinsics); ++i) {
+        if (!procedure_name_before(ARRAY_SIZE(procedures), script_intrinsics[i])) EMIT(script_intrinsics[i]);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+        EMIT(constants[i].name);
+    }
+
+    #undef EMIT
+    return count;
+}

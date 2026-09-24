@@ -250,6 +250,16 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t str, const md_script_
 
 bool md_script_identifier_name_valid(str_t ident);
 
+// Reserved words of the language (and, or, xor, not, in, of, out)
+size_t       md_script_num_keywords(void);
+const str_t* md_script_keywords(void);
+
+// Names the language defines: every built-in procedure (once, however many overloads it has) and the predefined
+// constants. Meant for syntax highlighting and completion.
+// Writes up to cap names to out and returns how many there are, so md_script_builtin_identifiers(NULL, 0) gives the
+// size of the buffer to pass.
+size_t md_script_builtin_identifiers(str_t* out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

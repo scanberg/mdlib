@@ -3297,3 +3297,50 @@ UTEST_F(script, contacts_mirror_query_over_trajectory) {
     md_contact_query_free(&q);
     md_arena_allocator_destroy(alloc);
 }
+
+// The names that editors highlight: every keyword is one to the tokenizer, and the built-in identifiers are exactly
+// the procedures, the parser's own procedures and the constants, each once.
+UTEST(script, keywords_and_builtin_identifiers) {
+    const size_t num_keywords = md_script_num_keywords();
+    const str_t* keywords = md_script_keywords();
+    ASSERT_GT(num_keywords, (size_t)0);
+    char msg[128];
+    for (size_t i = 0; i < num_keywords; ++i) {
+        tokenizer_t tokenizer = tokenizer_init(keywords[i]);
+        const token_t token = tokenizer_consume_next(&tokenizer);
+        snprintf(msg, sizeof(msg), "keyword '%.*s'", STR_ARG(keywords[i]));
+        EXPECT_TRUE_MSG(token.type != TOKEN_IDENT && str_eq(token.str, keywords[i]), msg);
+    }
+
+    const size_t count = md_script_builtin_identifiers(NULL, 0);
+    ASSERT_GT(count, (size_t)0);
+    str_t names[512];
+    ASSERT_LE(count, ARRAY_SIZE(names));
+    EXPECT_EQ(md_script_builtin_identifiers(names, ARRAY_SIZE(names)), count);
+
+    // A smaller buffer gets the first names, and the same count
+    str_t few[4];
+    EXPECT_EQ(md_script_builtin_identifiers(few, ARRAY_SIZE(few)), count);
+    for (size_t i = 0; i < ARRAY_SIZE(few); ++i) EXPECT_TRUE(str_eq(few[i], names[i]));
+
+    bool has_attr = false, has_transpose = false, has_pi = false;
+    for (size_t i = 0; i < count; ++i) {
+        snprintf(msg, sizeof(msg), "builtin identifier '%.*s'", STR_ARG(names[i]));
+        EXPECT_TRUE_MSG(md_script_identifier_name_valid(names[i]), msg);
+        for (size_t j = i + 1; j < count; ++j) EXPECT_FALSE_MSG(str_eq(names[i], names[j]), msg);
+        for (size_t k = 0; k < num_keywords; ++k) EXPECT_FALSE_MSG(str_eq(names[i], keywords[k]), msg);
+        has_attr      |= str_eq(names[i], STR_LIT("attr"));
+        has_transpose |= str_eq(names[i], STR_LIT("transpose"));
+        has_pi        |= str_eq(names[i], STR_LIT("PI"));
+    }
+    EXPECT_TRUE(has_attr);
+    EXPECT_TRUE(has_transpose);
+    EXPECT_TRUE(has_pi);
+
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        bool found = false;
+        for (size_t j = 0; j < count && !found; ++j) found = str_eq(procedures[i].name, names[j]);
+        snprintf(msg, sizeof(msg), "procedure '%.*s'", STR_ARG(procedures[i].name));
+        EXPECT_TRUE_MSG(found, msg);
+    }
+}
