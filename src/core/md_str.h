@@ -169,7 +169,8 @@ bool str_extract_i64  (int64_t* val, str_t* in_out_str);
 bool str_extract_f32  (float*  val,  str_t* in_out_str);
 bool str_extract_f64  (double* val,  str_t* in_out_str);
 
-// Returns the offset where the item was found or -1 if nothing was found.
+// Return true if the item is found, and write its offset to loc (when loc is not NULL).
+// str_find_str finds nothing when the needle is empty or longer than the haystack.
 bool str_find_char (size_t* loc, str_t str, int c);
 bool str_rfind_char(size_t* loc, str_t str, int c);
 bool str_find_str  (size_t* loc, str_t haystack, str_t needle);
@@ -206,8 +207,9 @@ void replace_char(char* str, size_t len, char c, char replacement);
 void convert_to_lower(char* str, size_t len);
 void convert_to_upper(char* str, size_t len);
 
-// Copies the contents of a str_t into a char buffer and ensures zero termination
-// Returns the number of characters written (excluding the zero termination character)
+// Copies the contents of a str_t into a char buffer and ensures zero termination (also for an empty str_t, which
+// leaves an empty string). Truncates to fit in cap. Returns the number of characters written (excluding the zero
+// termination character)
 size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str);
 
 // Returns the Levenshtein edit distance between two strings

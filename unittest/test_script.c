@@ -2204,6 +2204,139 @@ UTEST_F(script, named_args_binding) {
     EXPECT_TRUE(node == NULL || node->named_args == NULL);
 
     md_arena_allocator_destroy(alloc);
+
+// ---------------------------------------------------------------------------------------------------------------
+// Regressions
+// ---------------------------------------------------------------------------------------------------------------
+
+static const float* eval_property_data(md_script_eval_t* eval, const char* name) {
+    char path[128];
+    snprintf(path, sizeof(path), "script/%s", name);
+    const md_attribute_t* attr = md_attributes_find(md_script_eval_attributes(eval), str_from_cstr(path));
+    return attr ? (const float*)attr->data : NULL;
+}
+
+// distance_max used to call the routine for the minimum distance.
+UTEST_F(script, distance_max_is_the_largest_distance) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(compiles(ir, "lo = distance_min(residue(1), residue(2)); hi = distance_max(residue(1), residue(2));", mol));
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(eval != NULL);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+
+    const float* lo = eval_property_data(eval, "lo");
+    const float* hi = eval_property_data(eval, "hi");
+    ASSERT_TRUE(lo && hi);
+    for (uint32_t i = 0; i < num_frames; ++i) {
+        EXPECT_TRUE(hi[i] > lo[i]);
+    }
+    md_script_eval_free(eval);
+}
+
+// A bit that is set in only one operand survives an xor, wherever it is, so the result cannot be limited to the
+// range that the two operands share.
+UTEST(script, xor_of_selections_covers_the_union_of_the_ranges) {
+    EXPECT_TRUE(test_selection("atom(1:5) xor atom(3:8)",     "1100011100000000"));
+    EXPECT_TRUE(test_selection("atom(1:3) xor atom(9:11)",    "1110000011100000"));
+    EXPECT_TRUE(test_selection("atom(1:8) xor atom(1:8)",     "0000000000000000"));
+    EXPECT_TRUE(test_selection("resname('SOL') xor all",      "0001111111111111"));
+}
+
+// contact_count started each element with the total of the previous ones.
+UTEST_F(script, contact_count_is_counted_per_element) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(compiles(ir,
+        "all4 = contact_count(residue(1:4), residue(5:8), 5.0);"
+        "c1 = contact_count(residue(1), residue(5:8), 5.0);"
+        "c2 = contact_count(residue(2), residue(5:8), 5.0);"
+        "c3 = contact_count(residue(3), residue(5:8), 5.0);"
+        "c4 = contact_count(residue(4), residue(5:8), 5.0);", mol));
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(eval != NULL);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+
+    const float* all4 = eval_property_data(eval, "all4");
+    const float* c[4] = {
+        eval_property_data(eval, "c1"), eval_property_data(eval, "c2"),
+        eval_property_data(eval, "c3"), eval_property_data(eval, "c4"),
+    };
+    ASSERT_TRUE(all4 && c[0] && c[1] && c[2] && c[3]);
+    for (uint32_t f = 0; f < num_frames; ++f) {
+        for (int k = 0; k < 4; ++k) {
+            EXPECT_EQ(c[k][f], all4[f * 4 + k]);
+        }
+    }
+    md_script_eval_free(eval);
+}
+
+// An identifier that unpacks a right hand side which is known at compile time used to hold a null pointer.
+UTEST_F(script, destructuring_a_constant) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    // Selections: the identifiers hold one residue each, and can be used in later statements
+    ASSERT_TRUE(compiles(ir, "{a, b} = residue(1:2); na = count(a); nb = count(b) + 0.0 * distance(1, 2);", mol));
+    {
+        md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
+        ASSERT_TRUE(eval != NULL);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        const float* nb = eval_property_data(eval, "nb");
+        ASSERT_TRUE(nb != NULL);
+        EXPECT_EQ(10.0f, nb[0]); // residue 2 of the peptide has ten atoms
+        md_script_eval_free(eval);
+    }
+
+    // Vectors
+    ASSERT_TRUE(compiles(ir, "{x, y} = vec2(1, 2); z = x + y + 0.0 * distance(1, 2);", mol));
+    {
+        md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
+        ASSERT_TRUE(eval != NULL);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        const float* z = eval_property_data(eval, "z");
+        ASSERT_TRUE(z != NULL);
+        EXPECT_EQ(3.0f, z[0]);
+        md_script_eval_free(eval);
+    }
+}
+
+// Comparisons used to be rejected in every form: the array overload came first and swallowed a scalar operand, and
+// a comparison could not be followed by an identifier.
+UTEST_F(script, comparison_operators_compile) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    const char* ok[] = {
+        "d = distance(1, 2); b = d < 2.0;",
+        "d = distance(1, 2); b = 2.0 > d;",
+        "d = distance(1, 2); e = distance(1, 3); b = d <= e; c = d >= e; f = d == e;",
+        "a = distance(1, 2) in residue(1:3); b = a < 1.01; c = 1.01 > a; d = a < a;",
+        "a = distance(1, 2) in residue(1:3); b = (a < 1.01) and not (a > 1.005); c = (a >= 1.0) xor (a <= 1.5);",
+        "d = distance(1, 2); b = (d < 2.0) and (d > 0.5);",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(ok); ++i) {
+        EXPECT_TRUE(compiles(ir, ok[i], mol));
+        if (md_script_ir_valid(ir)) {
+            md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+            ASSERT_TRUE(eval != NULL);
+            EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+            md_script_eval_free(eval);
+        }
+    }
+
+    // A comparison of arrays of different lengths is still an error
+    EXPECT_FALSE(compiles(ir, "a = distance(1, 2) in residue(1:3); b = distance(1, 2) in residue(1:4); c = a < b;", mol));
+}
 }
 
 // ### IDENTIFIER MEMOIZATION ###

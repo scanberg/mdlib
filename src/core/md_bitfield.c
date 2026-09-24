@@ -594,14 +594,9 @@ void md_bitfield_xor(md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bi
 
     ASSERT((dst != src_a && dst != src_b) && "dst is same as src_a or src_b, use inplace version instead!");
 
-    uint64_t beg_bit = MAX(src_a->beg_bit, src_b->beg_bit);
-    uint64_t end_bit = MIN(src_a->end_bit, src_b->end_bit);
-
-    if (end_bit <= beg_bit) {
-        // Ranges do not overlap
-        md_bitfield_clear(dst);
-        return;
-    }
+    // A bit set in only one of the operands survives an xor, so the result spans the union of the ranges (like 'or').
+    uint64_t beg_bit = MIN(src_a->beg_bit, src_b->beg_bit);
+    uint64_t end_bit = MAX(src_a->end_bit, src_b->end_bit);
 
     fit_to_range(dst, beg_bit, end_bit);
     if (dst->bits) {
@@ -615,16 +610,19 @@ void md_bitfield_xor_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
     ASSERT(md_bitfield_validate(a));
     ASSERT(md_bitfield_validate(b));
 
-    if (a == b) return;
-
-    uint64_t beg_bit = MAX(a->beg_bit, b->beg_bit);
-    uint64_t end_bit = MIN(a->end_bit, b->end_bit);
-
-    if (end_bit <= beg_bit) {
-        // Ranges do not overlap
+    if (a == b) {
+        // x ^ x = 0
         md_bitfield_clear(a);
         return;
     }
+    if (a->bits == 0) {
+        md_bitfield_copy(a, b);
+        return;
+    }
+
+    // Bits present in only one operand survive, so the result spans the union of the ranges (like 'or').
+    uint64_t beg_bit = MIN(a->beg_bit, b->beg_bit);
+    uint64_t end_bit = MAX(a->end_bit, b->end_bit);
 
     ensure_range(a, beg_bit, end_bit);
     if (a->bits) {

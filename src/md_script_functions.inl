@@ -249,6 +249,15 @@ BAKE_OP_S_S(_op_or_b_b,   ||, bool)
 BAKE_OP_S_S(_op_xor_b_b,   ^, bool)
 BAKE_OP_UNARY_S(_op_not_b, !, bool)
 
+// Element-wise logic on arrays of bool (for example the result of a comparison)
+BAKE_OP_UNARY_M(_op_not_barr, !, bool)
+BAKE_OP_M_S(_op_and_barr_b, &&, bool)
+BAKE_OP_M_S(_op_or_barr_b,  ||, bool)
+BAKE_OP_M_S(_op_xor_barr_b,  ^, bool)
+BAKE_OP_M_M(_op_and_barr_barr, &&, bool)
+BAKE_OP_M_M(_op_or_barr_barr,  ||, bool)
+BAKE_OP_M_M(_op_xor_barr_barr,  ^, bool)
+
 BAKE_OP_S_S(_op_add_i_i, +, int)
 BAKE_OP_S_S(_op_sub_i_i, -, int)
 BAKE_OP_S_S(_op_mul_i_i, *, int)
@@ -331,6 +340,14 @@ static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
 // Boolean operators
 static int _cmp_lt  (data_t*, data_t[], eval_context_t*); // -> bool
 static int _cmp_gt  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_le  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_ge  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_eq  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_lt_f_f(data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_gt_f_f(data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_le_f_f(data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_ge_f_f(data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_eq_f_f(data_t*, data_t[], eval_context_t*); // -> bool
 
 // Selectors
 // Atom level selectors
@@ -494,20 +511,47 @@ static procedure_t operators[] = {
     {CSTR("xor"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_xor_b_b},
     {CSTR("and"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_and_b_b},
 
+    // Element-wise logic on bool arrays
+    {CSTR("not"),    TI_BOOL_ARR,       1,  {TI_BOOL_ARR},                  _op_not_barr,       FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_or_barr_b,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_xor_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_and_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_or_barr_barr,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_xor_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_and_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+
     // BITFIELD NOT
     {CSTR("not"),    TI_BITFIELD,       1,  {TI_BITFIELD_ARR},                  _not,   FLAG_FLATTEN},
     {CSTR("and"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _and,   FLAG_FLATTEN},
     {CSTR("or"),     TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _or,    FLAG_FLATTEN},
     {CSTR("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _xor,   FLAG_FLATTEN},
 
-    // Boolean
-    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    // Comparison. The scalar overload comes first and the array/array overload last, so that a scalar operand is
+    // matched against the broadcasting overloads before it is treated as a length-one array.
+    {CSTR("<"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_lt_f_f},
+    {CSTR("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_gt_f_f},
+    {CSTR(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+
+    {CSTR("<="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_le_f_f},
+    {CSTR("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+
+    {CSTR(">="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_ge_f_f},
+    {CSTR(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+
+    {CSTR("=="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_eq_f_f},
+    {CSTR("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary add
     {CSTR("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
@@ -2935,6 +2979,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_array_ensure(a_indices, a_length, ctx->temp_alloc);
 			md_bitfield_iter_extract_indices(a_indices, a_length, md_bitfield_iter_create(bf));
 
+            data.count = 0; // Each element of a gets its own count
             md_bitfield_clear(&exclusion_bf);
             md_bitfield_and(&exclusion_bf, bf, bf_b); // Start with overlap
 			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->sys, path_length, NULL);
@@ -4035,7 +4080,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float dist = md_util_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
+        float dist = md_util_max_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -6171,83 +6216,57 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _cmp_lt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
-
-    const float* a = as_float_arr(arg[0]);
-    const float* b = as_float_arr(arg[1]);
-    int a_len = type_info_array_len(arg[0].type);
-    int b_len = type_info_array_len(arg[1].type);
-
-    int result = 0;
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
-        int out_len = type_info_array_len(dst->type);
-        bool* out = as_bool_arr(*dst);
-
-        if (a_len < b_len) {
-            ASSERT(a_len == 1);
-            for (int i = 0; i < out_len; ++i) {
-                out[i] = a[0] < b[i];
-            }
-        } else if (a_len > b_len) {
-            ASSERT(b_len == 1);
-            ASSERT(out_len == a_len);
-            for (int i = 0; i < out_len; ++i) {
-                out[i] = a[i] < b[0];
-            }
-        } else {
-            ASSERT(a_len == out_len && b_len == out_len);
-            for (int i = 0; i < a_len; ++i) {
-                out[i] = a[i] < b[i];
-            }
-        }
-    } else {
-        result = MAX(a_len, b_len);
+// Comparison of floats. A scalar is broadcast against an array, and two arrays of equal length are compared
+// element by element. The same implementation serves the array overloads, and when 'dst' is NULL it reports the
+// length of the result (the length of the longest argument) so that dynamic arguments can be validated.
+#define BAKE_CMP_ARR(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR)); \
+        ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR)); \
+        const float* a = as_float_arr(arg[0]); \
+        const float* b = as_float_arr(arg[1]); \
+        int a_len = type_info_array_len(arg[0].type); \
+        int b_len = type_info_array_len(arg[1].type); \
+        if (dst) { \
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR)); \
+            int out_len = type_info_array_len(dst->type); \
+            bool* out = as_bool_arr(*dst); \
+            if (a_len < b_len) { \
+                ASSERT(a_len == 1); \
+                for (int i = 0; i < out_len; ++i) out[i] = a[0] op b[i]; \
+            } else if (a_len > b_len) { \
+                ASSERT(b_len == 1); \
+                ASSERT(out_len == a_len); \
+                for (int i = 0; i < out_len; ++i) out[i] = a[i] op b[0]; \
+            } else { \
+                ASSERT(a_len == out_len && b_len == out_len); \
+                for (int i = 0; i < a_len; ++i) out[i] = a[i] op b[i]; \
+            } \
+            return 0; \
+        } \
+        return MAX(a_len, b_len); \
     }
-    return result;
-}
 
-static int _cmp_gt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
-
-    const float* a = as_float_arr(arg[0]);
-    const float* b = as_float_arr(arg[1]);
-    int a_len = type_info_array_len(arg[0].type);
-    int b_len = type_info_array_len(arg[1].type);
-
-    int result = 0;
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
-        int out_len = type_info_array_len(dst->type);
-        bool* out = as_bool_arr(*dst);
-
-        if (a_len < b_len) {
-            ASSERT(a_len == 1);
-            for (int i = 0; i < out_len; ++i) {
-                out[i] = a[0] > b[i];
-            }
-        } else if (a_len > b_len) {
-            ASSERT(b_len == 1);
-            ASSERT(out_len == a_len);
-            for (int i = 0; i < out_len; ++i) {
-                out[i] = a[i] > b[0];
-            }
-        } else {
-            ASSERT(a_len == out_len && b_len == out_len);
-            for (int i = 0; i < a_len; ++i) {
-                out[i] = a[i] > b[i];
-            }
-        }
-    } else {
-        result = MAX(a_len, b_len);
+#define BAKE_CMP_S_S(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        if (!dst) return 0; \
+        *((bool*)dst->ptr) = *((float*)arg[0].ptr) op *((float*)arg[1].ptr); \
+        return 0; \
     }
-    return result;
-}
+
+BAKE_CMP_ARR(_cmp_lt, <)
+BAKE_CMP_ARR(_cmp_gt, >)
+BAKE_CMP_ARR(_cmp_le, <=)
+BAKE_CMP_ARR(_cmp_ge, >=)
+BAKE_CMP_ARR(_cmp_eq, ==)
+
+BAKE_CMP_S_S(_cmp_lt_f_f, <)
+BAKE_CMP_S_S(_cmp_gt_f_f, >)
+BAKE_CMP_S_S(_cmp_le_f_f, <=)
+BAKE_CMP_S_S(_cmp_ge_f_f, >=)
+BAKE_CMP_S_S(_cmp_eq_f_f, ==)
 
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
