@@ -116,13 +116,12 @@ void md_gl_mol_destroy(md_gl_mol_t handle);
 
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
-void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
-void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
+// Packed xyz, the buffers' own layout. Setting positions keeps the current ones as the previous.
+void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const vec3_t* xyz);
+void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const vec3_t* xyz);
 void md_gl_mol_set_atom_radius  (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* radius,  uint32_t byte_stride);
 void md_gl_mol_set_atom_flags   (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
 
-// This is a simpler version which assumes packed xyz data (identical to the internal representation and therefore faster to copy)
-void md_gl_mol_set_atom_position_xyz(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* xyz);
 
 
 // Call this function after setting new atomic positions to update velocities

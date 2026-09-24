@@ -372,9 +372,11 @@ static inline void gl_buffer_clear(gl_buffer_t buf) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
-    if (x == NULL || y == NULL || z == NULL) {
-        MD_LOG_ERROR("One or more arguments are missing, must pass x, y and z for position.");
+// The buffers hold packed xyz, as the positions come: one upload, after the current positions are
+// kept as the previous ones (the renderer derives motion from the two).
+void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t count, const vec3_t* xyz) {
+    if (xyz == NULL) {
+        MD_LOG_ERROR("Missing argument: xyz");
         return;
     }
     molecule_t* mol = mol_lookup(handle.id);
@@ -400,52 +402,13 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 
-        byte_stride = MAX(sizeof(float), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
-        float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-        if (data) {
-            for (uint32_t i = offset; i < count; ++i) {
-                data[i * 3 + 0] = *(const float*)((const uint8_t*)x + byte_stride * i);
-                data[i * 3 + 1] = *(const float*)((const uint8_t*)y + byte_stride * i);
-                data[i * 3 + 2] = *(const float*)((const uint8_t*)z + byte_stride * i);
-            }
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-        } else {
-            MD_LOG_ERROR("Failed to map molecule position buffer");
-        }
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_POSITION], offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
     }
 }
 
-void md_gl_mol_set_atom_position_xyz(md_gl_mol_t handle, uint32_t offset, uint32_t count, const float* xyz) {
+void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t count, const vec3_t* xyz) {
     if (xyz == NULL) {
-        MD_LOG_ERROR("One or more arguments are missing, must pass xyz for position.");
-        return;
-    }
-    molecule_t* mol = mol_lookup(handle.id);
-    if (mol) {
-        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
-            MD_LOG_ERROR("Molecule position buffer missing");
-            return;
-        }
-        if (offset + count > mol->atom_count) {
-            MD_LOG_ERROR("Attempting to write out of bounds");
-            return;
-        }
-        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
-            MD_LOG_ERROR("Attempting to write out of bounds");
-            return;
-        }
-
-        uint32_t elem_size = sizeof(float) * 3;
-        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_POSITION], offset * elem_size, count * elem_size, xyz);
-    }
-}
-
-void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
-    if (x == NULL || y == NULL || z == NULL) {
-        MD_LOG_ERROR("One or more arguments are missing, must pass x, y and z for velocity.");
+        MD_LOG_ERROR("Missing argument: xyz");
         return;
     }
     molecule_t* mol = mol_lookup(handle.id);
@@ -458,21 +421,7 @@ void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t c
             MD_LOG_ERROR("Attempting to write out of bounds");
             return;
         }
-        byte_stride = MAX(sizeof(float), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
-        float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-        if (data) {
-            for (uint32_t i = offset; i < count; ++i) {
-                data[i * 3 + 0] = *(const float*)((const uint8_t*)x + byte_stride * i);
-                data[i * 3 + 1] = *(const float*)((const uint8_t*)y + byte_stride * i);
-                data[i * 3 + 2] = *(const float*)((const uint8_t*)z + byte_stride * i);
-            }
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-        } else {
-            MD_LOG_ERROR("Failed to map molecule position buffer");
-        }
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_VELOCITY], offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
     }
 }
 
@@ -928,7 +877,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
 
         // Seed with the reference configuration; callers push per frame positions afterwards.
         if (md_system_state_has_coords(&sys->reference)) {
-            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, sys->reference.x, sys->reference.y, sys->reference.z, 0);
+            md_gl_mol_set_atom_position(handle, 0, gl_mol->atom_count, sys->reference.xyz);
         }
         md_gl_mol_zero_velocity(handle);
 

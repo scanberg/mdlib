@@ -41,7 +41,7 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
     return res;
 }
 
-mat3_t mat3_covariance_matrix(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, vec3_t in_mean) {   
+mat3_t mat3_covariance_matrix(const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, vec3_t in_mean) {   
     // The covariance matrix is symmetric, so we only need to compute the upper triangular part
     double A[3][3] = {0};
     double w_sum = 0.0;
@@ -49,9 +49,9 @@ mat3_t mat3_covariance_matrix(const float* in_x, const float* in_y, const float*
     if (in_idx) {
         for (size_t i = 0; i < count; i++) {
             const int32_t idx = in_idx[i];
-            const float x = in_x[idx] - in_mean.x;
-            const float y = in_y[idx] - in_mean.y;
-            const float z = in_z[idx] - in_mean.z;
+            const float x = in_xyz[idx].x - in_mean.x;
+            const float y = in_xyz[idx].y - in_mean.y;
+            const float z = in_xyz[idx].z - in_mean.z;
             const float w = in_w ? in_w[idx] : 1.0f;
 
             A[0][0] += w * x * x;
@@ -67,9 +67,9 @@ mat3_t mat3_covariance_matrix(const float* in_x, const float* in_y, const float*
         }
     } else {
         for (size_t i = 0; i < count; i++) {
-            const float x = in_x[i] - in_mean.x;
-            const float y = in_y[i] - in_mean.y;
-            const float z = in_z[i] - in_mean.z;
+            const float x = in_xyz[i].x - in_mean.x;
+            const float y = in_xyz[i].y - in_mean.y;
+            const float z = in_xyz[i].z - in_mean.z;
             const float w = in_w ? in_w[i] : 1.0f;
 
             A[0][0] += w * x * x;
@@ -155,7 +155,7 @@ mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* in_idx,
     };
 }
 
-mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
+mat3_t mat3_cross_covariance_matrix(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
@@ -165,13 +165,13 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
         for (size_t i = 0; i < count; i++) {
             const int32_t i0 = in_idx[0][i];
             const int32_t i1 = in_idx[1][i];
-            const float px = in_x[0][i0] - com[0].x;
-            const float py = in_y[0][i0] - com[0].y;
-            const float pz = in_z[0][i0] - com[0].z;
+            const float px = in_xyz[0][i0].x - com[0].x;
+            const float py = in_xyz[0][i0].y - com[0].y;
+            const float pz = in_xyz[0][i0].z - com[0].z;
 
-            const float qx = in_x[1][i1] - com[1].x;
-            const float qy = in_y[1][i1] - com[1].y;
-            const float qz = in_z[1][i1] - com[1].z;
+            const float qx = in_xyz[1][i1].x - com[1].x;
+            const float qy = in_xyz[1][i1].y - com[1].y;
+            const float qz = in_xyz[1][i1].z - com[1].z;
 
             const float w = in_w ? (in_w[0][i0] + in_w[1][i1]) * 0.5f : 1.0f;
 
@@ -187,14 +187,44 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
             w_sum += w;
         }
     } else {
-        for (size_t i = 0; i < count; i++) {
-            const float px = in_x[0][i] - com[0].x;
-            const float py = in_y[0][i] - com[0].y;
-            const float pz = in_z[0][i] - com[0].z;
+        // A native vector of atoms of each set at a time, split into x, y and z: every entry pairs one axis of
+        // the first with one of the second. The weight goes on the first factor.
+        size_t i = 0;
+        md_xv acc[3][3];
+        for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) acc[r][c] = md_xv_setzero_ps();
+        md_xv acc_w = md_xv_setzero_ps();
+        const md_xv c0[3] = { md_xv_set1_ps(com[0].x), md_xv_set1_ps(com[0].y), md_xv_set1_ps(com[0].z) };
+        const md_xv c1[3] = { md_xv_set1_ps(com[1].x), md_xv_set1_ps(com[1].y), md_xv_set1_ps(com[1].z) };
+        for (; i + MD_XV_WIDTH <= count; i += MD_XV_WIDTH) {
+            md_xv p[3], q[3];
+            md_xv_load_xyz_packed_ps(&p[0], &p[1], &p[2], (const float*)(in_xyz[0] + i));
+            md_xv_load_xyz_packed_ps(&q[0], &q[1], &q[2], (const float*)(in_xyz[1] + i));
+            md_xv w = md_xv_set1_ps(1.0f);
+            if (in_w) {
+                w = md_xv_mul_ps(md_xv_add_ps(md_xv_loadu_ps(in_w[0] + i), md_xv_loadu_ps(in_w[1] + i)), md_xv_set1_ps(0.5f));
+            }
+            acc_w = md_xv_add_ps(acc_w, w);
+            for (int k = 0; k < 3; ++k) {
+                p[k] = md_xv_mul_ps(md_xv_sub_ps(p[k], c0[k]), w);
+                q[k] = md_xv_sub_ps(q[k], c1[k]);
+            }
+            for (int r = 0; r < 3; ++r) {
+                for (int c = 0; c < 3; ++c) {
+                    acc[r][c] = md_xv_fmadd_ps(p[r], q[c], acc[r][c]);
+                }
+            }
+        }
+        for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) A[r][c] += md_xv_reduce_add_ps(acc[r][c]);
+        w_sum += md_xv_reduce_add_ps(acc_w);
 
-            const float qx = in_x[1][i] - com[1].x;
-            const float qy = in_y[1][i] - com[1].y;
-            const float qz = in_z[1][i] - com[1].z;
+        for (; i < count; i++) {
+            const float px = in_xyz[0][i].x - com[0].x;
+            const float py = in_xyz[0][i].y - com[0].y;
+            const float pz = in_xyz[0][i].z - com[0].z;
+
+            const float qx = in_xyz[1][i].x - com[1].x;
+            const float qy = in_xyz[1][i].y - com[1].y;
+            const float qz = in_xyz[1][i].z - com[1].z;
 
             const float w = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f : 1.0f;
 
@@ -366,12 +396,12 @@ mat3_t mat3_orthonormalize(mat3_t M) {
     return M;
 }
 
-mat3_t mat3_optimal_rotation(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
+mat3_t mat3_optimal_rotation(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     if (count < 1) {
         return mat3_ident();
     }
 
-    const mat3_t cov_mat = mat3_cross_covariance_matrix(in_x, in_y, in_z, in_w, in_idx, count, com);
+    const mat3_t cov_mat = mat3_cross_covariance_matrix(in_xyz, in_w, in_idx, count, com);
     return mat3_extract_rotation(cov_mat);
 }
 
@@ -563,276 +593,131 @@ mat4_t mat4_frustum_inv(float l, float r, float b, float t, float n, float f) {
     return M;
 }
 
-void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, size_t count, vec3_t translation) {
+// Translation is the same for every atom, so packed coordinates need no split: 24 floats are eight
+// atoms, and the translation repeats with them every three floats.
+void vec3_batch_translate(vec3_t* out_xyz, const vec3_t* in_xyz, size_t count, vec3_t t) {
+    const float* src = (const float*)in_xyz;
+    float* dst = (float*)out_xyz;
+    enum { N = 24 / MD_XV_WIDTH };
+    float pattern[24];
+    for (int k = 0; k < 24; ++k) pattern[k] = t.elem[k % 3];
+    md_xv tv[N];
+    for (int j = 0; j < N; ++j) tv[j] = md_xv_loadu_ps(pattern + j * MD_XV_WIDTH);
+
     size_t i = 0;
-
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    if (simd_count > 0) {
-        md_256 t_x = md_mm256_set1_ps(translation.x);
-        md_256 t_y = md_mm256_set1_ps(translation.y);
-        md_256 t_z = md_mm256_set1_ps(translation.z);
-
-        for (; i < simd_count; i += 8) {
-            md_256 x = md_mm256_loadu_ps(in_out_x + i);
-            md_256 y = md_mm256_loadu_ps(in_out_y + i);
-            md_256 z = md_mm256_loadu_ps(in_out_z + i);
-
-            x = md_mm256_add_ps(x, t_x);
-            y = md_mm256_add_ps(y, t_y);
-            z = md_mm256_add_ps(z, t_z);
-
-            md_mm256_storeu_ps(in_out_x + i, x);
-            md_mm256_storeu_ps(in_out_y + i, y);
-            md_mm256_storeu_ps(in_out_z + i, z);
+    for (; i + 8 <= count; i += 8) {
+        for (int j = 0; j < N; ++j) {
+            const md_xv v = md_xv_loadu_ps(src + i * 3 + j * MD_XV_WIDTH);
+            md_xv_storeu_ps(dst + i * 3 + j * MD_XV_WIDTH, md_xv_add_ps(v, tv[j]));
         }
     }
-
     for (; i < count; i++) {
-        in_out_x[i] += translation.x;
-        in_out_y[i] += translation.y;
-        in_out_z[i] += translation.z;
+        out_xyz[i] = vec3_add(in_xyz[i], t);
     }
 }
 
-void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, vec3_t translation) {
+void vec3_batch_translate_inplace(vec3_t* in_out_xyz, size_t count, vec3_t translation) {
+    vec3_batch_translate(in_out_xyz, in_out_xyz, count, translation);
+}
+
+// A native vector of atoms at a time, split into x, y and z and packed again. In place is allowed:
+// each group is read before it is written.
+void mat3_batch_transform(vec3_t* out_xyz, const vec3_t* in_xyz, size_t count, mat3_t M) {
+    const md_xv m11 = md_xv_set1_ps(M.elem[0][0]);
+    const md_xv m12 = md_xv_set1_ps(M.elem[0][1]);
+    const md_xv m13 = md_xv_set1_ps(M.elem[0][2]);
+
+    const md_xv m21 = md_xv_set1_ps(M.elem[1][0]);
+    const md_xv m22 = md_xv_set1_ps(M.elem[1][1]);
+    const md_xv m23 = md_xv_set1_ps(M.elem[1][2]);
+
+    const md_xv m31 = md_xv_set1_ps(M.elem[2][0]);
+    const md_xv m32 = md_xv_set1_ps(M.elem[2][1]);
+    const md_xv m33 = md_xv_set1_ps(M.elem[2][2]);
+
     size_t i = 0;
+    for (; i + MD_XV_WIDTH <= count; i += MD_XV_WIDTH) {
+        md_xv x, y, z;
+        md_xv_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
 
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    if (simd_count > 0) {
-        md_256 t_x = md_mm256_set1_ps(translation.x);
-        md_256 t_y = md_mm256_set1_ps(translation.y);
-        md_256 t_z = md_mm256_set1_ps(translation.z);
+        md_xv rx = md_xv_mul_ps(m11, x);
+        md_xv ry = md_xv_mul_ps(m12, x);
+        md_xv rz = md_xv_mul_ps(m13, x);
 
-        for (; i < simd_count; i += 8) {
-            md_256 p_x = md_mm256_loadu_ps(in_x + i);
-            md_256 p_y = md_mm256_loadu_ps(in_y + i);
-            md_256 p_z = md_mm256_loadu_ps(in_z + i);
+        rx = md_xv_fmadd_ps(m21, y, rx);
+        ry = md_xv_fmadd_ps(m22, y, ry);
+        rz = md_xv_fmadd_ps(m23, y, rz);
 
-            p_x = md_mm256_add_ps(p_x, t_x);
-            p_y = md_mm256_add_ps(p_y, t_y);
-            p_z = md_mm256_add_ps(p_z, t_z);
+        rx = md_xv_fmadd_ps(m31, z, rx);
+        ry = md_xv_fmadd_ps(m32, z, ry);
+        rz = md_xv_fmadd_ps(m33, z, rz);
 
-            md_mm256_storeu_ps(out_x + i, p_x);
-            md_mm256_storeu_ps(out_y + i, p_y);
-            md_mm256_storeu_ps(out_z + i, p_z);
-        }
+        md_xv_store_xyz_packed_ps((float*)(out_xyz + i), rx, ry, rz);
     }
 
     for (; i < count; i++) {
-        out_x[i] += translation.x;
-        out_y[i] += translation.y;
-        out_z[i] += translation.z;
+        const vec3_t p = in_xyz[i];
+        out_xyz[i] = (vec3_t) {
+            p.x * M.elem[0][0] + p.y * M.elem[1][0] + p.z * M.elem[2][0],
+            p.x * M.elem[0][1] + p.y * M.elem[1][1] + p.z * M.elem[2][1],
+            p.x * M.elem[0][2] + p.y * M.elem[1][2] + p.z * M.elem[2][2],
+        };
     }
 }
 
-void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, size_t count, mat3_t M) {
-    const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
-    const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
-    const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
+void mat3_batch_transform_inplace(vec3_t* in_out_xyz, size_t count, mat3_t M) {
+    mat3_batch_transform(in_out_xyz, in_out_xyz, count, M);
+}
 
-    const md_256 m21 = md_mm256_set1_ps(M.elem[1][0]);
-    const md_256 m22 = md_mm256_set1_ps(M.elem[1][1]);
-    const md_256 m23 = md_mm256_set1_ps(M.elem[1][2]);
+void mat4_batch_transform(vec3_t* out_xyz, const vec3_t* in_xyz, float w_comp, size_t count, mat4_t M) {
+    const md_xv m11 = md_xv_set1_ps(M.elem[0][0]);
+    const md_xv m12 = md_xv_set1_ps(M.elem[0][1]);
+    const md_xv m13 = md_xv_set1_ps(M.elem[0][2]);
 
-    const md_256 m31 = md_mm256_set1_ps(M.elem[2][0]);
-    const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
-    const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
+    const md_xv m21 = md_xv_set1_ps(M.elem[1][0]);
+    const md_xv m22 = md_xv_set1_ps(M.elem[1][1]);
+    const md_xv m23 = md_xv_set1_ps(M.elem[1][2]);
+
+    const md_xv m31 = md_xv_set1_ps(M.elem[2][0]);
+    const md_xv m32 = md_xv_set1_ps(M.elem[2][1]);
+    const md_xv m33 = md_xv_set1_ps(M.elem[2][2]);
+
+    // The fourth row times w is the same for every atom
+    const md_xv w  = md_xv_set1_ps(w_comp);
+    const md_xv tx = md_xv_mul_ps(md_xv_set1_ps(M.elem[3][0]), w);
+    const md_xv ty = md_xv_mul_ps(md_xv_set1_ps(M.elem[3][1]), w);
+    const md_xv tz = md_xv_mul_ps(md_xv_set1_ps(M.elem[3][2]), w);
 
     size_t i = 0;
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        const md_256 x = md_mm256_loadu_ps(in_out_x + i);
-        const md_256 y = md_mm256_loadu_ps(in_out_y + i);
-        const md_256 z = md_mm256_loadu_ps(in_out_z + i);
+    for (; i + MD_XV_WIDTH <= count; i += MD_XV_WIDTH) {
+        md_xv x, y, z;
+        md_xv_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
 
-        md_256 rx = md_mm256_mul_ps(m11, x);
-        md_256 ry = md_mm256_mul_ps(m12, x);
-        md_256 rz = md_mm256_mul_ps(m13, x);
+        md_xv rx = md_xv_fmadd_ps(m11, x, tx);
+        md_xv ry = md_xv_fmadd_ps(m12, x, ty);
+        md_xv rz = md_xv_fmadd_ps(m13, x, tz);
 
-        rx = md_mm256_fmadd_ps(m21, y, rx);
-        ry = md_mm256_fmadd_ps(m22, y, ry);
-        rz = md_mm256_fmadd_ps(m23, y, rz);
+        rx = md_xv_fmadd_ps(m21, y, rx);
+        ry = md_xv_fmadd_ps(m22, y, ry);
+        rz = md_xv_fmadd_ps(m23, y, rz);
 
-        rx = md_mm256_fmadd_ps(m31, z, rx);
-        ry = md_mm256_fmadd_ps(m32, z, ry);
-        rz = md_mm256_fmadd_ps(m33, z, rz);
+        rx = md_xv_fmadd_ps(m31, z, rx);
+        ry = md_xv_fmadd_ps(m32, z, ry);
+        rz = md_xv_fmadd_ps(m33, z, rz);
 
-        md_mm256_storeu_ps(in_out_x + i, rx);
-        md_mm256_storeu_ps(in_out_y + i, ry);
-        md_mm256_storeu_ps(in_out_z + i, rz);
+        md_xv_store_xyz_packed_ps((float*)(out_xyz + i), rx, ry, rz);
     }
 
     for (; i < count; i++) {
-        const float x = in_out_x[i];
-        const float y = in_out_y[i];
-        const float z = in_out_z[i];
-
-        in_out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0];
-        in_out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1];
-        in_out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2];
+        const vec3_t p = in_xyz[i];
+        out_xyz[i] = (vec3_t) {
+            p.x * M.elem[0][0] + p.y * M.elem[1][0] + p.z * M.elem[2][0] + w_comp * M.elem[3][0],
+            p.x * M.elem[0][1] + p.y * M.elem[1][1] + p.z * M.elem[2][1] + w_comp * M.elem[3][1],
+            p.x * M.elem[0][2] + p.y * M.elem[1][2] + p.z * M.elem[2][2] + w_comp * M.elem[3][2],
+        };
     }
 }
 
-void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, mat3_t M) {
-    const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
-    const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
-    const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
-
-    const md_256 m21 = md_mm256_set1_ps(M.elem[1][0]);
-    const md_256 m22 = md_mm256_set1_ps(M.elem[1][1]);
-    const md_256 m23 = md_mm256_set1_ps(M.elem[1][2]);
-
-    const md_256 m31 = md_mm256_set1_ps(M.elem[2][0]);
-    const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
-    const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
-
-    size_t i = 0;
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        md_256 x = md_mm256_loadu_ps(in_x + i);
-        md_256 y = md_mm256_loadu_ps(in_y + i);
-        md_256 z = md_mm256_loadu_ps(in_z + i);
-
-        md_256 rx = md_mm256_mul_ps(m11, x);
-        md_256 ry = md_mm256_mul_ps(m12, x);
-        md_256 rz = md_mm256_mul_ps(m13, x);
-
-        rx = md_mm256_fmadd_ps(m21, y, rx);
-        ry = md_mm256_fmadd_ps(m22, y, ry);
-        rz = md_mm256_fmadd_ps(m23, y, rz);
-
-        rx = md_mm256_fmadd_ps(m31, z, rx);
-        ry = md_mm256_fmadd_ps(m32, z, ry);
-        rz = md_mm256_fmadd_ps(m33, z, rz);
-
-        md_mm256_storeu_ps(out_x + i, rx);
-        md_mm256_storeu_ps(out_y + i, ry);
-        md_mm256_storeu_ps(out_z + i, rz);
-    }
-
-    for (; i < count; i++) {
-        const float x = in_x[i];
-        const float y = in_y[i];
-        const float z = in_z[i];
-
-        out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0];
-        out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1];
-        out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2];
-    }
-}
-
-void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, size_t count, mat4_t M) {
-    const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
-    const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
-    const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
-
-    const md_256 m21 = md_mm256_set1_ps(M.elem[1][0]);
-    const md_256 m22 = md_mm256_set1_ps(M.elem[1][1]);
-    const md_256 m23 = md_mm256_set1_ps(M.elem[1][2]);
-
-    const md_256 m31 = md_mm256_set1_ps(M.elem[2][0]);
-    const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
-    const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
-
-    const md_256 m41 = md_mm256_set1_ps(M.elem[3][0]);
-    const md_256 m42 = md_mm256_set1_ps(M.elem[3][1]);
-    const md_256 m43 = md_mm256_set1_ps(M.elem[3][2]);
-
-    const md_256 w = md_mm256_set1_ps(w_comp);
-
-    size_t i = 0;
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        const md_256 x = md_mm256_loadu_ps(in_out_x + i);
-        const md_256 y = md_mm256_loadu_ps(in_out_y + i);
-        const md_256 z = md_mm256_loadu_ps(in_out_z + i);
-
-        md_256 rx = md_mm256_mul_ps(m11, x);
-        md_256 ry = md_mm256_mul_ps(m12, x);
-        md_256 rz = md_mm256_mul_ps(m13, x);
-
-        rx = md_mm256_fmadd_ps(m21, y, rx);
-        rx = md_mm256_fmadd_ps(m31, z, rx);
-        rx = md_mm256_fmadd_ps(m41, w, rx);
-
-        ry = md_mm256_fmadd_ps(m22, y, ry);
-        ry = md_mm256_fmadd_ps(m32, z, ry);
-        ry = md_mm256_fmadd_ps(m42, w, ry);
-
-        rz = md_mm256_fmadd_ps(m23, y, rz);
-        rz = md_mm256_fmadd_ps(m33, z, rz);
-        rz = md_mm256_fmadd_ps(m43, w, rz);
-
-        md_mm256_storeu_ps(in_out_x + i, rx);
-        md_mm256_storeu_ps(in_out_y + i, ry);
-        md_mm256_storeu_ps(in_out_z + i, rz);
-    }
-
-    for (; i < count; i++) {
-        const float x = in_out_x[i];
-        const float y = in_out_y[i];
-        const float z = in_out_z[i];
-
-        in_out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0] + w_comp * M.elem[3][0];
-        in_out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1] + w_comp * M.elem[3][1];
-        in_out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2] + w_comp * M.elem[3][2];
-    }
-}
-
-void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, size_t count, mat4_t M) {
-    const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
-    const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
-    const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
-
-    const md_256 m21 = md_mm256_set1_ps(M.elem[1][0]);
-    const md_256 m22 = md_mm256_set1_ps(M.elem[1][1]);
-    const md_256 m23 = md_mm256_set1_ps(M.elem[1][2]);
-
-    const md_256 m31 = md_mm256_set1_ps(M.elem[2][0]);
-    const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
-    const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
-
-    const md_256 m41 = md_mm256_set1_ps(M.elem[3][0]);
-    const md_256 m42 = md_mm256_set1_ps(M.elem[3][1]);
-    const md_256 m43 = md_mm256_set1_ps(M.elem[3][2]);
-
-    const md_256 w = md_mm256_set1_ps(w_comp);
-
-    size_t i = 0;
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        md_256 x = md_mm256_loadu_ps(in_x + i);
-        md_256 y = md_mm256_loadu_ps(in_y + i);
-        md_256 z = md_mm256_loadu_ps(in_z + i);
-
-        md_256 rx = md_mm256_mul_ps(m11, x);
-        md_256 ry = md_mm256_mul_ps(m12, x);
-        md_256 rz = md_mm256_mul_ps(m13, x);
-
-        rx = md_mm256_fmadd_ps(m21, y, rx);
-        rx = md_mm256_fmadd_ps(m31, z, rx);
-        rx = md_mm256_fmadd_ps(m41, w, rx);
-
-        ry = md_mm256_fmadd_ps(m22, y, ry);
-        ry = md_mm256_fmadd_ps(m32, z, ry);
-        ry = md_mm256_fmadd_ps(m42, w, ry);
-
-        rz = md_mm256_fmadd_ps(m23, y, rz);
-        rz = md_mm256_fmadd_ps(m33, z, rz);
-        rz = md_mm256_fmadd_ps(m43, w, rz);
-
-        md_mm256_storeu_ps(out_x + i, rx);
-        md_mm256_storeu_ps(out_y + i, ry);
-        md_mm256_storeu_ps(out_z + i, rz);
-    }
-
-    for (; i < count; i++) {
-        const float x = in_x[i];
-        const float y = in_y[i];
-        const float z = in_z[i];
-
-        out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0] + w_comp * M.elem[3][0];
-        out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1] + w_comp * M.elem[3][1];
-        out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2] + w_comp * M.elem[3][2];
-    }
+void mat4_batch_transform_inplace(vec3_t* in_out_xyz, float w_comp, size_t count, mat4_t M) {
+    mat4_batch_transform(in_out_xyz, in_out_xyz, w_comp, count, M);
 }

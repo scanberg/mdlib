@@ -111,7 +111,6 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
 bool md_gfx_structure_destroy(md_gfx_handle_t id);
 
 // ATOM FIELDS
-bool md_gfx_structure_set_atom_position_soa(md_gfx_handle_t id, const float* x, const float* y, const float* z, uint32_t count);
 bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const struct vec3_t* xyz, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, uint32_t count, uint32_t byte_stride);

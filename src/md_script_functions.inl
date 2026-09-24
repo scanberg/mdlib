@@ -824,7 +824,7 @@ static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_
 
         // Round up to nearest multiple of 6.0 as it seems like a good granularity for typical molecular configurations.
 		double cell_ext = ceil(max_cutoff / 6.0) * 6.0;
-        md_coord_stream_t coords = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, NULL, ctx->sys->atom.count);
+        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), NULL, ctx->sys->atom.count);
         md_spatial_acc_init(&ctx->spatial_acc, &coords, cell_ext, &ctx->cur_state->unitcell, 0);
 		ctx->spatial_acc_cell_ext = cell_ext;
     }
@@ -964,10 +964,8 @@ static inline bool range_in_range(irange_t small_range, irange_t big_range) {
     return big_range.beg <= small_range.beg && small_range.end <= big_range.end;
 }
 
-static inline vec3_t extract_com(const float* x, const float* y, const float* z, const float* w, const md_bitfield_t* bitfield) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
+static inline vec3_t extract_com(const vec3_t* xyz, const float* w, const md_bitfield_t* bitfield) {
+    ASSERT(xyz);
     ASSERT(bitfield);
 
     vec4_t sum = {0};
@@ -975,7 +973,7 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         const float weight = w ? w[idx] : 1.0f;
-        vec4_t v = vec4_set(x[idx], y[idx], z[idx], 1.0f);
+        vec4_t v = vec4_from_vec3(xyz[idx], 1.0f);
         v = vec4_mul1(v, weight);
         sum = vec4_add(sum, v);
     }
@@ -983,10 +981,8 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     return vec3_div1(vec3_from_vec4(sum), sum.w);
 }
 
-static inline vec3_t* extract_vec3(const float* x, const float* y, const float* z, const md_bitfield_t* bf, md_allocator_i* alloc) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
+static inline vec3_t* extract_vec3(const vec3_t* xyz, const md_bitfield_t* bf, md_allocator_i* alloc) {
+    ASSERT(xyz);
     ASSERT(bf);
     ASSERT(alloc);
 
@@ -1000,84 +996,14 @@ static inline vec3_t* extract_vec3(const float* x, const float* y, const float* 
     size_t i = 0;
     while (md_bitfield_iter_next(&it)) {
         const uint64_t idx = md_bitfield_iter_idx(&it);
-        result[i++] = vec3_set(x[idx], y[idx], z[idx]);
+        result[i++] = xyz[idx];
     }
     return result;
 }
 
-static inline size_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
-    ASSERT(dst_x);
-    ASSERT(dst_y);
-    ASSERT(dst_z);
-    ASSERT(src_x);
-    ASSERT(src_y);
-    ASSERT(src_z);
-    ASSERT(bf);
-
-    size_t count = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        const uint64_t idx = md_bitfield_iter_idx(&it);
-        dst_x[count] = src_x[idx];
-        dst_y[count] = src_y[idx];
-        dst_z[count] = src_z[idx];
-        count += 1;
-    }
-
-    return count;
-}
-
-static inline size_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
-    ASSERT(dst_xyz);
-    ASSERT(src_x);
-    ASSERT(src_y);
-    ASSERT(src_z);
-    ASSERT(bf);
-
-    size_t count = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        const uint64_t idx = md_bitfield_iter_idx(&it);
-        dst_xyz[count] = vec3_set(src_x[idx], src_y[idx], src_z[idx]);
-        count += 1;
-    }
-
-    return count;
-}
-
-static inline size_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, float* dst_w, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
-    ASSERT(dst_x);
-    ASSERT(dst_y);
-    ASSERT(dst_z);
-    ASSERT(dst_w);
-    ASSERT(src_x);
-    ASSERT(src_y);
-    ASSERT(src_z);
-    ASSERT(src_w);
-    ASSERT(bf);
-
-    size_t count = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        const uint64_t idx = md_bitfield_iter_idx(&it);
-        dst_x[count] = src_x[idx];
-        dst_y[count] = src_y[idx];
-        dst_z[count] = src_z[idx];
-        dst_w[count] = src_w[idx];
-        count += 1;
-    }
-
-    return count;
-}
-
-static inline size_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
+static inline size_t extract_xyzw_vec4(vec4_t* dst_xyzw, const vec3_t* src_xyz, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_xyzw);
-    ASSERT(src_x);
-    ASSERT(src_y);
-    ASSERT(src_z);
+    ASSERT(src_xyz);
     ASSERT(bf);
 
     size_t count = 0;
@@ -1085,26 +1011,7 @@ static inline size_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, con
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         const uint64_t idx = md_bitfield_iter_idx(&it);
-        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w ? src_w[idx] : 1.0f);
-        count += 1;
-    }
-
-    return count;
-}
-
-static inline size_t extract_xyz1_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float fixed_w, const md_bitfield_t* bf) {
-    ASSERT(dst_xyzw);
-    ASSERT(src_x);
-    ASSERT(src_y);
-    ASSERT(src_z);
-    ASSERT(bf);
-
-    size_t count = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        const uint64_t idx = md_bitfield_iter_idx(&it);
-        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], fixed_w);
+        dst_xyzw[count] = vec4_from_vec3(src_xyz[idx], src_w ? src_w[idx] : 1.0f);
         count += 1;
     }
 
@@ -1539,7 +1446,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + indices[i] - 1;
-            vec3_t pos = { ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx] };
+            vec3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
             md_array_push(positions, pos, ctx->temp_alloc);
         }
         break;
@@ -1560,7 +1467,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 while (md_bitfield_iter_next(&it)) {
                     const int64_t idx = md_bitfield_iter_idx(&it);
                     if ((k % step) == 0) {
-                        vec3_t pos = { ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx] };
+                        vec3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                     ++k;
@@ -1570,7 +1477,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 int64_t len = MAX(0, range.end - range.beg);
                 md_array_ensure(positions, (size_t)((len + step - 1) / step), ctx->temp_alloc);
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    vec3_t pos = { ctx->cur_state->x[j], ctx->cur_state->y[j], ctx->cur_state->z[j] };
+                    vec3_t pos = { ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z };
                     md_array_push(positions, pos, ctx->temp_alloc);
                 }
             }
@@ -1592,7 +1499,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
                 bf = &tmp_bf;
             }
-            positions = extract_vec3(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, bf, ctx->temp_alloc);
+            positions = extract_vec3(ctx->cur_state->xyz, bf, ctx->temp_alloc);
         }
         else {
             for (size_t i = 0; i < num_bf; ++i) {
@@ -1608,11 +1515,11 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_array_ensure(positions, md_array_size(positions) + count, ctx->temp_alloc);
                     while (md_bitfield_iter_next(&it)) {
                         const uint64_t idx = md_bitfield_iter_idx(&it);
-                        vec3_t pos = vec3_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx]);
+                        vec3_t pos = vec3_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z);
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                 } else {
-                    vec3_t com = extract_com(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
+                    vec3_t com = extract_com(ctx->cur_state->xyz, ctx->atom_mass, bf);
                     md_array_push(positions, com, ctx->temp_alloc);
                 }
             }
@@ -1655,7 +1562,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + in_idx[i] - 1;
-            out_xyzw[i] = vec4_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+            out_xyzw[i] = vec4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
         }
         break;
     }
@@ -1674,7 +1581,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 while (md_bitfield_iter_next(&it)) {
                     const uint64_t idx = md_bitfield_iter_idx(&it);
                     if ((k % step) == 0) {
-                        vec4_t xyzw = vec4_set(ctx->cur_state->x[idx], ctx->cur_state->y[idx], ctx->cur_state->z[idx], ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+                        vec4_t xyzw = vec4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
                         md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                     }
                     ++k;
@@ -1682,7 +1589,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
             }
             else {
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    vec4_t xyzw = vec4_set(ctx->cur_state->x[j], ctx->cur_state->y[j], ctx->cur_state->z[j], ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
+                    vec4_t xyzw = vec4_set(ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z, ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
                     md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                 }
             }
@@ -1706,7 +1613,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 bf = &tmp_bf;
             }
             md_array_resize(out_xyzw, md_bitfield_popcount(bf), ctx->temp_alloc);
-            extract_xyzw_vec4(out_xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
+            extract_xyzw_vec4(out_xyzw, ctx->cur_state->xyz, ctx->atom_mass, bf);
         }
         else {
             md_array(int32_t) indices = 0;
@@ -1719,7 +1626,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 md_array_resize(indices, md_bitfield_popcount(bf), ctx->temp_alloc);
                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                 md_bitfield_iter_extract_indices(indices, md_array_size(indices), it);
-                vec3_t xyz = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, md_array_size(indices), &ctx->cur_state->unitcell);
+                vec3_t xyz = md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, md_array_size(indices), &ctx->cur_state->unitcell);
                 double w = 0;
                 if (ctx->atom_mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
@@ -1860,11 +1767,11 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         }
 
         if (num_idx == 1) {
-            com = (vec3_t) { ctx->cur_state->x[idx[0]], ctx->cur_state->y[idx[0]], ctx->cur_state->z[idx[0]] };
+            com = ctx->cur_state->xyz[idx[0]];
             goto done;
         }
         
-        com = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, idx, num_idx, &ctx->cur_state->unitcell);
+        com = md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, idx, num_idx, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_IRANGE: {
@@ -1892,7 +1799,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     }
                     ++k;
                 }
-                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
                 md_array_push(xyzw_arr, xyzw, ctx->temp_alloc);
             }
             else {
@@ -1903,7 +1810,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
         }
 
@@ -1930,7 +1837,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             size_t len = md_bitfield_popcount(bf);
             int32_t* indices = md_temp_alloc_array(temp, int32_t, len);
             md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-            com = md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell);
+            com = md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell);
         }
         else {
             // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
@@ -1946,7 +1853,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
             com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->cur_state->unitcell);
         }
@@ -2513,9 +2420,9 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
             while ((beg_bit = md_bitfield_scan(src_bf, beg_bit, end_bit)) != 0) {
                 const int64_t idx = beg_bit - 1;
 
-                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->xyz[idx].x && ctx->cur_state->xyz[idx].x <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->xyz[idx].y && ctx->cur_state->xyz[idx].y <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->xyz[idx].z && ctx->cur_state->xyz[idx].z <= range_z.end)
                 {
                     md_bitfield_set_bit(dst_bf, idx);
                 }
@@ -2524,9 +2431,9 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
         else {
             md_bitfield_reserve_range(dst_bf, 0, ctx->sys->atom.count);
             for (size_t idx = 0; idx < ctx->sys->atom.count; ++idx) {
-                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->xyz[idx].x && ctx->cur_state->xyz[idx].x <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->xyz[idx].y && ctx->cur_state->xyz[idx].y <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->xyz[idx].z && ctx->cur_state->xyz[idx].z <= range_z.end)
                 {
                     md_bitfield_set_bit(dst_bf, idx);
                 }
@@ -2541,9 +2448,9 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
             int64_t end_bit = src_bf->end_bit;
             while ((beg_bit = md_bitfield_scan(src_bf, beg_bit, end_bit)) != 0) {
                 const int64_t idx = beg_bit - 1;
-                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->xyz[idx].x && ctx->cur_state->xyz[idx].x <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->xyz[idx].y && ctx->cur_state->xyz[idx].y <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->xyz[idx].z && ctx->cur_state->xyz[idx].z <= range_z.end)
                 {
                     count += 1;
                 }
@@ -2551,9 +2458,9 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
         }
         else {
             for (size_t idx = 0; idx < ctx->sys->atom.count; ++idx) {
-                if (range_x.beg <= ctx->cur_state->x[idx] && ctx->cur_state->x[idx] <= range_x.end &&
-                    range_y.beg <= ctx->cur_state->y[idx] && ctx->cur_state->y[idx] <= range_y.end &&
-                    range_z.beg <= ctx->cur_state->z[idx] && ctx->cur_state->z[idx] <= range_z.end)
+                if (range_x.beg <= ctx->cur_state->xyz[idx].x && ctx->cur_state->xyz[idx].x <= range_x.end &&
+                    range_y.beg <= ctx->cur_state->xyz[idx].y && ctx->cur_state->xyz[idx].y <= range_y.end &&
+                    range_z.beg <= ctx->cur_state->xyz[idx].z && ctx->cur_state->xyz[idx].z <= range_z.end)
                 {
                     count += 1;
                 }
@@ -2664,7 +2571,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             
         md_bitfield_t* bf_dst = 0;
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), idx, num_idx);
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
@@ -2675,7 +2582,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             visualize_atom_mask(ctx->mol_ctx, ctx);
             for (size_t i = 0; i < num_idx; ++i) {
-                vec3_t pos = vec3_set(ctx->cur_state->x[idx[i]], ctx->cur_state->y[idx[i]], ctx->cur_state->z[idx[i]]);
+                vec3_t pos = ctx->cur_state->xyz[idx[i]];
                 push_sphere(pos, radius, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2787,7 +2694,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         (void)num_written;
         ASSERT(num_written == num_idx);
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), idx, num_idx);
         md_bitfield_t* bf_dst = 0;
         
         if (dst) {
@@ -2799,7 +2706,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             const float rad = rad_range.end;
             for (size_t i = 0; i < num_idx; ++i) {
-                vec3_t pos = vec3_set(ctx->cur_state->x[idx[i]], ctx->cur_state->y[idx[i]], ctx->cur_state->z[idx[i]]);
+                vec3_t pos = ctx->cur_state->xyz[idx[i]];
                 push_sphere(pos, rad, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2910,7 +2817,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitfield_iter_t it = md_bitfield_iter_create(bf_b);
 		md_bitfield_iter_extract_indices(indices, num_indices, it);
 
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, indices, num_indices);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
 		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
@@ -2956,7 +2863,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->sys, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_coord_stream_t a_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, a_indices, a_length);
+            md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), a_indices, a_length);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
@@ -3104,10 +3011,10 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     if (discard) continue;
                 }
 
-                md_script_vis_vertex_t vbeg = vertex(vec3_set(ctx->cur_state->x[*ring_beg], ctx->cur_state->y[*ring_beg], ctx->cur_state->z[*ring_beg]), COLOR_WHITE);
+                md_script_vis_vertex_t vbeg = vertex(vec3_set(ctx->cur_state->xyz[*ring_beg].x, ctx->cur_state->xyz[*ring_beg].y, ctx->cur_state->xyz[*ring_beg].z), COLOR_WHITE);
                 md_script_vis_vertex_t v0 = vbeg;
                 for (const md_atom_idx_t* it = ring_beg+1; it != ring_end; ++it) {
-                    md_script_vis_vertex_t v1 = vertex(vec3_set(ctx->cur_state->x[*it], ctx->cur_state->y[*it], ctx->cur_state->z[*it]), COLOR_WHITE);
+                    md_script_vis_vertex_t v1 = vertex(vec3_set(ctx->cur_state->xyz[*it].x, ctx->cur_state->xyz[*it].y, ctx->cur_state->xyz[*it].z), COLOR_WHITE);
                     push_line(v0, v1, ctx->vis);
                     v0 = v1;
                 }
@@ -4402,7 +4309,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(ctx->sys);
         ASSERT(ctx->atom_mass);
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-        ASSERT(ctx->ref_state->x && ctx->ref_state->y && ctx->ref_state->z);
+        ASSERT(ctx->ref_state->xyz);
 
         if (dst->ptr) {
             const md_bitfield_t* src_bf = as_bitfield(arg[0]);
@@ -4423,8 +4330,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
                 };
 
-                extract_xyzw_vec4(xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ctx->atom_mass, &bf);
-                extract_xyzw_vec4(xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
+                extract_xyzw_vec4(xyzw[0], ctx->ref_state->xyz, ctx->atom_mass, &bf);
+                extract_xyzw_vec4(xyzw[1], ctx->cur_state->xyz, ctx->atom_mass, &bf);
 
                 vec3_t com[2] = {
                     md_util_com_compute_vec4(xyzw[0], NULL, count, &ctx->ref_state->unitcell),
@@ -4996,7 +4903,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         size_t count = md_bitfield_popcount(&bf);
         vec4_t* xyzw = md_temp_alloc_array(temp, vec4_t, count);
 
-        extract_xyzw_vec4(xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, &bf);
+        extract_xyzw_vec4(xyzw, ctx->cur_state->xyz, ctx->atom_mass, &bf);
         //md_util_pbc_vec4(xyzw, count, &ctx->sys->unit_cell);
 
         vec4_t mid_point = vec4_from_vec3(rc, 0);
@@ -5375,7 +5282,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t ref_flags = 0;
     if (ref_idx) {
         ref_len = md_array_size(ref_idx);
-        ref_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ref_idx, ref_len);
+        ref_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), ref_idx, ref_len);
         ref_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
         md_array(vec3_t) ref_pos = coordinate_extract(arg[0], ctx);
@@ -5390,7 +5297,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t trg_flags = 0;
     if (trg_idx) {
         trg_len = md_array_size(trg_idx);
-        trg_stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_len);
+        trg_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), trg_idx, trg_len);
         trg_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
         md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
@@ -5815,9 +5722,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
 
-        ASSERT(ctx->ref_state->x);
-        ASSERT(ctx->ref_state->y);
-        ASSERT(ctx->ref_state->z);
+        ASSERT(ctx->ref_state->xyz);
 
         // This could happen if we have dynamic length as input
         if (num_ref_bitfields == 0) goto done;
@@ -5852,7 +5757,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // images the stored configuration happens to use.
         // @NOTE: against ref_state's OWN cell. The reference configuration and the current frame need
         // not share one, which matters under a varying cell.
-        extract_xyzw_vec4(ref_xyzw[0], ctx->ref_state->x, ctx->ref_state->y, ctx->ref_state->z, ref_w, ref_bf);
+        extract_xyzw_vec4(ref_xyzw[0], ctx->ref_state->xyz, ref_w, ref_bf);
         md_util_deperiodize_self_vec4(ref_xyzw[0], ref_size, &ctx->ref_state->unitcell, &ref_com[0]);
 
         // Fetch target positions
@@ -5860,7 +5765,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
 
         const double cell_ext = cutoff;
-        md_coord_stream_t stream = md_coord_stream_from_soa(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, trg_idx, trg_size);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = temp.arena };
         md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
@@ -5895,7 +5800,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // below are sized for ref_size, so a mismatch would be an overrun rather than a bad result.
             if (md_bitfield_popcount(bf) != ref_size) continue;
 
-            extract_xyzw_vec4(ref_xyzw[1], ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ref_w, bf);
+            extract_xyzw_vec4(ref_xyzw[1], ctx->cur_state->xyz, ref_w, bf);
 
             // Rotation, centre and each point's periodic image are solved for together, so the images
             // are chosen to minimise the very residual this alignment is about to be judged by. No
@@ -6025,9 +5930,9 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Build a working copy of coordinates and deperiodize to make selection contiguous
     md_array(vec4_t) xyzr = 0;
     md_array_resize(xyzr, count, ctx->temp_alloc);
-    extract_xyzw_vec4(xyzr, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, rad, bf);
+    extract_xyzw_vec4(xyzr, ctx->cur_state->xyz, rad, bf);
     const vec3_t com = md_util_com_compute_vec4(xyzr, 0, count, &ctx->cur_state->unitcell);
-    md_util_com_compute(ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, NULL, idx, count, &ctx->cur_state->unitcell);
+    md_util_com_compute(ctx->cur_state->xyz, NULL, idx, count, &ctx->cur_state->unitcell);
     md_util_deperiodize_vec4(xyzr, count, com, &ctx->cur_state->unitcell);
 
     vec3_t bmin, bmax;
@@ -6148,7 +6053,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 if (count > 0) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
 
-                    extract_xyzw_vec4(xyzw, ctx->cur_state->x, ctx->cur_state->y, ctx->cur_state->z, ctx->atom_mass, bf);
+                    extract_xyzw_vec4(xyzw, ctx->cur_state->xyz, ctx->atom_mass, bf);
                     vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->cur_state->unitcell);
                     md_util_deperiodize_vec4(xyzw, count, com, &ctx->cur_state->unitcell);
 

@@ -177,6 +177,7 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm_set1_ps simde_mm_set1_ps
 #define md_mm_set1_pd simde_mm_set1_pd
 #define md_mm256_set1_ps simde_mm256_set1_ps
+#define md_mm256_setr_ps simde_mm256_setr_ps
 #define md_mm256_set1_pd simde_mm256_set1_pd
 
 #define md_mm_set_ps simde_mm_set_ps
@@ -550,6 +551,90 @@ MD_SIMD_INLINE void md_mm_load_xyz_packed_ps(md_128* out_x, md_128* out_y, md_12
     *out_z = simde_mm_shuffle_ps(t1, v2, SIMDE_MM_SHUFFLE(3, 0, 3, 1));           // z0 z1 z2 z3
 #endif
 }
+
+// The inverse: four x, y and z back into packed triplets. Writes exactly the twelve floats.
+MD_SIMD_INLINE void md_mm_store_xyz_packed_ps(float* out_xyz, md_128 x, md_128 y, md_128 z) {
+#if defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    float32x4x3_t v;
+    v.val[0] = simde__m128_to_neon_f32(x);
+    v.val[1] = simde__m128_to_neon_f32(y);
+    v.val[2] = simde__m128_to_neon_f32(z);
+    vst3q_f32(out_xyz, v);
+#else
+    const md_128 a = simde_mm_shuffle_ps(x, y, SIMDE_MM_SHUFFLE(2, 0, 2, 0));  // x0 x2 y0 y2
+    const md_128 b = simde_mm_shuffle_ps(y, z, SIMDE_MM_SHUFFLE(3, 1, 3, 1));  // y1 y3 z1 z3
+    const md_128 c = simde_mm_shuffle_ps(z, x, SIMDE_MM_SHUFFLE(3, 1, 2, 0));  // z0 z2 x1 x3
+    simde_mm_storeu_ps(out_xyz + 0, simde_mm_shuffle_ps(a, c, SIMDE_MM_SHUFFLE(2, 0, 2, 0)));  // x0 y0 z0 x1
+    simde_mm_storeu_ps(out_xyz + 4, simde_mm_shuffle_ps(b, a, SIMDE_MM_SHUFFLE(3, 1, 2, 0)));  // y1 z1 x2 y2
+    simde_mm_storeu_ps(out_xyz + 8, simde_mm_shuffle_ps(c, b, SIMDE_MM_SHUFFLE(3, 1, 3, 1)));  // z2 x3 y3 z3
+#endif
+}
+
+// Eight packed triplets, 24 floats. On x86 each 128 bit lane does the four atom split above at once,
+// atoms 0-3 in the low lane and 4-7 in the high; on NEON it is two de-interleaving loads.
+MD_SIMD_INLINE void md_mm256_load_xyz_packed_ps(md_256* out_x, md_256* out_y, md_256* out_z, const float* in_xyz) {
+#if defined(SIMDE_ARM_NEON_A32V7_NATIVE)
+    md_128 x0, y0, z0, x1, y1, z1;
+    md_mm_load_xyz_packed_ps(&x0, &y0, &z0, in_xyz);
+    md_mm_load_xyz_packed_ps(&x1, &y1, &z1, in_xyz + 12);
+    *out_x = simde_mm256_set_m128(x1, x0);
+    *out_y = simde_mm256_set_m128(y1, y0);
+    *out_z = simde_mm256_set_m128(z1, z0);
+#else
+    const md_256 v0 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(simde_mm_loadu_ps(in_xyz + 0)), simde_mm_loadu_ps(in_xyz + 12), 1);
+    const md_256 v1 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(simde_mm_loadu_ps(in_xyz + 4)), simde_mm_loadu_ps(in_xyz + 16), 1);
+    const md_256 v2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(simde_mm_loadu_ps(in_xyz + 8)), simde_mm_loadu_ps(in_xyz + 20), 1);
+    const md_256 t0 = simde_mm256_shuffle_ps(v1, v2, SIMDE_MM_SHUFFLE(2, 1, 3, 2));
+    const md_256 t1 = simde_mm256_shuffle_ps(v0, v1, SIMDE_MM_SHUFFLE(1, 0, 2, 1));
+    *out_x = simde_mm256_shuffle_ps(v0, t0, SIMDE_MM_SHUFFLE(2, 0, 3, 0));
+    *out_y = simde_mm256_shuffle_ps(t1, t0, SIMDE_MM_SHUFFLE(3, 1, 2, 0));
+    *out_z = simde_mm256_shuffle_ps(t1, v2, SIMDE_MM_SHUFFLE(3, 0, 3, 1));
+#endif
+}
+
+MD_SIMD_INLINE void md_mm256_store_xyz_packed_ps(float* out_xyz, md_256 x, md_256 y, md_256 z) {
+    md_mm_store_xyz_packed_ps(out_xyz,      simde_mm256_castps256_ps128(x), simde_mm256_castps256_ps128(y), simde_mm256_castps256_ps128(z));
+    md_mm_store_xyz_packed_ps(out_xyz + 12, simde_mm256_extractf128_ps(x, 1), simde_mm256_extractf128_ps(y, 1), simde_mm256_extractf128_ps(z, 1));
+}
+
+// x, y and z of the atoms idx names in packed triplets: the same three gathers as from separate
+// arrays, at three times the index.
+MD_SIMD_INLINE void md_mm_i32gather_xyz_ps(md_128* out_x, md_128* out_y, md_128* out_z, const float* in_xyz, md_128i idx) {
+    const md_128i i3 = simde_mm_add_epi32(idx, simde_mm_add_epi32(idx, idx));
+    *out_x = simde_mm_i32gather_ps(in_xyz + 0, i3, 4);
+    *out_y = simde_mm_i32gather_ps(in_xyz + 1, i3, 4);
+    *out_z = simde_mm_i32gather_ps(in_xyz + 2, i3, 4);
+}
+
+MD_SIMD_INLINE void md_mm256_i32gather_xyz_ps(md_256* out_x, md_256* out_y, md_256* out_z, const float* in_xyz, md_256i idx) {
+    const md_256i i3 = simde_mm256_add_epi32(idx, simde_mm256_add_epi32(idx, idx));
+    *out_x = simde_mm256_i32gather_ps(in_xyz + 0, i3, 4);
+    *out_y = simde_mm256_i32gather_ps(in_xyz + 1, i3, 4);
+    *out_z = simde_mm256_i32gather_ps(in_xyz + 2, i3, 4);
+}
+
+#if defined(__AVX512F__)
+MD_SIMD_INLINE __m512 md_mm512_from_m256_ps(__m256 lo, __m256 hi) {
+    return _mm512_castpd_ps(_mm512_insertf64x4(_mm512_castps_pd(_mm512_castps256_ps512(lo)), _mm256_castps_pd(hi), 1));
+}
+
+// Sixteen packed triplets, 48 floats
+MD_SIMD_INLINE void md_mm512_load_xyz_packed_ps(__m512* out_x, __m512* out_y, __m512* out_z, const float* in_xyz) {
+    md_256 x0, y0, z0, x1, y1, z1;
+    md_mm256_load_xyz_packed_ps(&x0, &y0, &z0, in_xyz);
+    md_mm256_load_xyz_packed_ps(&x1, &y1, &z1, in_xyz + 24);
+    *out_x = md_mm512_from_m256_ps(x0, x1);
+    *out_y = md_mm512_from_m256_ps(y0, y1);
+    *out_z = md_mm512_from_m256_ps(z0, z1);
+}
+
+MD_SIMD_INLINE void md_mm512_i32gather_xyz_ps(__m512* out_x, __m512* out_y, __m512* out_z, const float* in_xyz, __m512i idx) {
+    const __m512i i3 = _mm512_add_epi32(idx, _mm512_add_epi32(idx, idx));
+    *out_x = _mm512_i32gather_ps(i3, in_xyz + 0, 4);
+    *out_y = _mm512_i32gather_ps(i3, in_xyz + 1, 4);
+    *out_z = _mm512_i32gather_ps(i3, in_xyz + 2, 4);
+}
+#endif
 
 MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* out_z, const float* in_xyz, size_t stride_in_bytes) {
     md_128  r0, r1, r2, r3;
@@ -1280,6 +1365,56 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     *s = md_mm256_xor_ps(xmm1, sign_bit_sin);
     *c = md_mm256_xor_ps(xmm2, sign_bit_cos);
 }
+
+// NATIVE WIDTH
+//
+// md_xv is the widest float vector the target executes natively: eight lanes with AVX, four
+// otherwise. simde provides the eight lane type everywhere, but on NEON it is two four lane halves
+// behind a layer the compiler does not see through, and a loop over it runs several times slower
+// than the same loop over four lanes. Kernels that have no reason to prefer eight lanes use this.
+#if defined(__AVX__)
+typedef md_256 md_xv;
+#define MD_XV_WIDTH 8
+#define md_xv_loadu_ps              md_mm256_loadu_ps
+#define md_xv_storeu_ps             md_mm256_storeu_ps
+#define md_xv_set1_ps               md_mm256_set1_ps
+#define md_xv_setzero_ps            md_mm256_setzero_ps
+#define md_xv_add_ps                md_mm256_add_ps
+#define md_xv_sub_ps                md_mm256_sub_ps
+#define md_xv_mul_ps                md_mm256_mul_ps
+#define md_xv_fmadd_ps              md_mm256_fmadd_ps
+#define md_xv_min_ps                md_mm256_min_ps
+#define md_xv_max_ps                md_mm256_max_ps
+#define md_xv_round_ps              md_mm256_round_ps
+#define md_xv_blendv_ps             md_mm256_blendv_ps
+#define md_xv_cmpeq_ps              md_mm256_cmpeq_ps
+#define md_xv_sincos_ps             md_mm256_sincos_ps
+#define md_xv_cubic_spline_ps       md_mm256_cubic_spline_ps
+#define md_xv_reduce_add_ps         md_mm256_reduce_add_ps
+#define md_xv_load_xyz_packed_ps    md_mm256_load_xyz_packed_ps
+#define md_xv_store_xyz_packed_ps   md_mm256_store_xyz_packed_ps
+#else
+typedef md_128 md_xv;
+#define MD_XV_WIDTH 4
+#define md_xv_loadu_ps              md_mm_loadu_ps
+#define md_xv_storeu_ps             md_mm_storeu_ps
+#define md_xv_set1_ps               md_mm_set1_ps
+#define md_xv_setzero_ps            md_mm_setzero_ps
+#define md_xv_add_ps                md_mm_add_ps
+#define md_xv_sub_ps                md_mm_sub_ps
+#define md_xv_mul_ps                md_mm_mul_ps
+#define md_xv_fmadd_ps              md_mm_fmadd_ps
+#define md_xv_min_ps                md_mm_min_ps
+#define md_xv_max_ps                md_mm_max_ps
+#define md_xv_round_ps              md_mm_round_ps
+#define md_xv_blendv_ps             md_mm_blendv_ps
+#define md_xv_cmpeq_ps              md_mm_cmpeq_ps
+#define md_xv_sincos_ps             md_mm_sincos_ps
+#define md_xv_cubic_spline_ps       md_mm_cubic_spline_ps
+#define md_xv_reduce_add_ps         md_mm_reduce_add_ps
+#define md_xv_load_xyz_packed_ps    md_mm_load_xyz_packed_ps
+#define md_xv_store_xyz_packed_ps   md_mm_store_xyz_packed_ps
+#endif
 
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
 MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {

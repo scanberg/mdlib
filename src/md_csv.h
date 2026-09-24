@@ -3,6 +3,7 @@
 #include <core/md_str.h>
 
 struct md_allocator_i;
+struct md_system_t;
 
 // Utils for comma separated value files (CSV)
 
@@ -27,6 +28,13 @@ bool  md_csv_write_to_file(const float* const field_values[], const str_t field_
 
 // Free csv structures created from the csv_parse functions
 void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc);
+
+// The file's columns as a series along the run "run/<name>" (see md_run_publish_series in
+// md_system.h), in the group "csv/<file stem>": with a first column named time, its values are the
+// group's own time axis and every run frame must find its time there; otherwise the rows are the
+// run's frames. A column's unit is the one in parentheses in its name, "Distance (nm)". Read in the
+// script with attr("csv/<stem>/<column>").
+bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run);
 
 #ifdef __cplusplus
 }

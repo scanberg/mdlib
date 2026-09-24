@@ -25,12 +25,13 @@ UTEST(mmcif, 1fez) {
         //EXPECT_EQ(1, mol.atom.resid[0]);
         //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
 
-        EXPECT_NEAR(52.489, sys_state.x[0], 0.001);
-        EXPECT_NEAR(21.292, sys_state.y[0], 0.001);
-        EXPECT_NEAR(84.339, sys_state.z[0], 0.001);
+        EXPECT_NEAR(52.489, sys_state.xyz[0].x, 0.001);
+        EXPECT_NEAR(21.292, sys_state.xyz[0].y, 0.001);
+        EXPECT_NEAR(84.339, sys_state.xyz[0].z, 0.001);
     }
 
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
 }
 
 UTEST(mmcif, 2or2) {
@@ -50,12 +51,13 @@ UTEST(mmcif, 2or2) {
         //EXPECT_STREQ("ALA", sys.atom.resname[0].buf);
         //EXPECT_EQ(1, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
-        EXPECT_NEAR(58.157, sys_state.x[0], 0.001);
-        EXPECT_NEAR(49.822, sys_state.y[0], 0.001);
-        EXPECT_NEAR(80.569, sys_state.z[0], 0.001);
+        EXPECT_NEAR(58.157, sys_state.xyz[0].x, 0.001);
+        EXPECT_NEAR(49.822, sys_state.xyz[0].y, 0.001);
+        EXPECT_NEAR(80.569, sys_state.xyz[0].z, 0.001);
     }
 
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
 }
 
 UTEST(mmcif, 8g7u) {
@@ -75,12 +77,13 @@ UTEST(mmcif, 8g7u) {
         //EXPECT_STREQ("PHE", sys.atom.resname[0].buf);
         //EXPECT_EQ(241, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
-        EXPECT_NEAR(77.862,  sys_state.x[0], 0.001);
-        EXPECT_NEAR(105.453, sys_state.y[0], 0.001);
-        EXPECT_NEAR(80.951,  sys_state.z[0], 0.001);
+        EXPECT_NEAR(77.862,  sys_state.xyz[0].x, 0.001);
+        EXPECT_NEAR(105.453, sys_state.xyz[0].y, 0.001);
+        EXPECT_NEAR(80.951,  sys_state.xyz[0].z, 0.001);
     }
 
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
 }
 
 #include <md_mmcif.c>
@@ -350,14 +353,14 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     // Check that coordinates are reasonable (not all zeros or infinities)
     bool has_nonzero_coord = false;
     for (int64_t i = 0; i < sys.atom.count && i < MAX_VALIDATION_SAMPLES; ++i) {
-        EXPECT_FALSE(isnan(sys_state.x[i]));
-        EXPECT_FALSE(isnan(sys_state.y[i]));
-        EXPECT_FALSE(isnan(sys_state.z[i]));
-        EXPECT_FALSE(isinf(sys_state.x[i]));
-        EXPECT_FALSE(isinf(sys_state.y[i]));
-        EXPECT_FALSE(isinf(sys_state.z[i]));
+        EXPECT_FALSE(isnan(sys_state.xyz[i].x));
+        EXPECT_FALSE(isnan(sys_state.xyz[i].y));
+        EXPECT_FALSE(isnan(sys_state.xyz[i].z));
+        EXPECT_FALSE(isinf(sys_state.xyz[i].x));
+        EXPECT_FALSE(isinf(sys_state.xyz[i].y));
+        EXPECT_FALSE(isinf(sys_state.xyz[i].z));
         
-        if (sys_state.x[i] != 0.0f || sys_state.y[i] != 0.0f || sys_state.z[i] != 0.0f) {
+        if (sys_state.xyz[i].x != 0.0f || sys_state.xyz[i].y != 0.0f || sys_state.xyz[i].z != 0.0f) {
             has_nonzero_coord = true;
         }
     }
@@ -377,6 +380,7 @@ UTEST(mmcif, nonexistent_file) {
     
     // Should be safe to free even when init failed
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
     md_temp_end(temp);
 }
 

@@ -13,9 +13,9 @@
 #include <core/md_os.h>
 #include <md_script.h>
 #include <md_system.h>
-#include <md_trajectory.h>
 #include <md_gro.h>
 #include <md_pdb.h>
+#include <md_trr.h>
 
 #include <md_script.c>
 
@@ -24,6 +24,11 @@
 static float mol_x[] = {1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8};
 static float mol_y[] = {4,3,2,1,4,3,2,1,1,1,1,1,1,1,1,1};
 static float mol_z[] = {3,2,1,4,3,2,1,2,2,2,2,2,2,2,2,2};
+// The same coordinates packed, as a state holds them
+static vec3_t mol_xyz[] = {
+    {1,4,3}, {2,3,2}, {3,2,1}, {4,1,4}, {5,4,3}, {6,3,2}, {7,2,1}, {8,1,2},
+    {1,1,2}, {2,1,2}, {3,1,2}, {4,1,2}, {5,1,2}, {6,1,2}, {7,1,2}, {8,1,2},
+};
 static md_atom_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2, 3, 2, 4};
 
 #define ATOM_TYPE_COUNT 5
@@ -70,9 +75,7 @@ md_system_t test_mol = {
     // from when there is no trajectory frame.
     .reference = {
         .num_atoms = ATOM_COUNT,
-        .x = mol_x,
-        .y = mol_y,
-        .z = mol_z,
+        .xyz = mol_xyz,
     },
     .atom = {
         .count = ATOM_COUNT,
@@ -103,6 +106,15 @@ md_system_t test_mol = {
     },
 };
 
+// The run the fixture's trajectory is published as, and its number of frames
+#define SCRIPT_RUN STR_LIT("run/ala")
+
+static uint32_t script_frames(const md_system_t* sys) {
+    char buf[64];
+    const md_attribute_t* time = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), SCRIPT_RUN, STR_LIT("time")));
+    return time ? time->format.shape[0] : 0;
+}
+
 struct script {
     bool initialized;
     md_allocator_i* arena;
@@ -122,6 +134,8 @@ UTEST_F_SETUP(script) {
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    // Its models are the frames the evaluations below step through.
+    ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
 
     // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
@@ -1291,7 +1305,7 @@ UTEST_F(script, within_radius_sweep_frange) {
 UTEST_F(script, within_radius_over_trajectory) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GT(num_frames, 0u);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1306,7 +1320,7 @@ UTEST_F(script, within_radius_over_trajectory) {
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_NE(NULL, eval);
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
         md_script_eval_free(eval);
     }
     md_arena_allocator_destroy(alloc);
@@ -1329,7 +1343,7 @@ UTEST_F(script, dynamic_length) {
 UTEST_F(script, property_compute) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    uint32_t num_frames = (uint32_t)script_frames(mol);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -1342,7 +1356,7 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1383,7 +1397,7 @@ UTEST_F(script, property_compute) {
             EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/plan")));
             EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/iso")));
         }
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
         md_script_eval_free(eval);
     }
 
@@ -1401,7 +1415,7 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1433,7 +1447,7 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1446,7 +1460,7 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(1, md_script_eval_property_count(eval));
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -1458,7 +1472,7 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
         md_script_eval_free(eval);
     }
 
@@ -1471,7 +1485,7 @@ UTEST_F(script, property_compute) {
 UTEST_F(script, property_attributes) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    uint32_t num_frames = (uint32_t)script_frames(mol);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -1484,10 +1498,14 @@ UTEST_F(script, property_attributes) {
 
         const md_attributes_t* attributes = md_script_eval_attributes(eval);
         ASSERT_NE(NULL, attributes);
-        EXPECT_EQ(num_frames, attributes->num_frames);
+        // The evaluation's own frame axis, which every temporal property is checked against.
+        const md_attribute_t* axis = md_attributes_find(attributes, STR_LIT("time"));
+        ASSERT_TRUE(axis != NULL);
+        EXPECT_EQ(num_frames, axis->format.shape[0]);
 
         const md_attribute_t* attr = md_attributes_find(attributes, STR_LIT("script/d"));
         ASSERT_TRUE(attr != NULL);
+        EXPECT_EQ(axis, md_attributes_axis(attributes, attr));
         EXPECT_EQ(MD_ATTRIBUTE_FLAG_TEMPORAL, attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
         EXPECT_EQ(MD_ATTRIBUTE_TYPE_F32, attr->format.type);
         EXPECT_EQ(1u, attr->format.components);
@@ -1505,7 +1523,7 @@ UTEST_F(script, property_attributes) {
         EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/d/mean")) == NULL);
 
         const uint64_t version = md_attributes_version(attributes, attr->id);
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
         EXPECT_TRUE(md_attributes_version(attributes, attr->id) > version);
 
         // One frame out of the middle, through the attribute rather than the pointer.
@@ -1557,7 +1575,7 @@ UTEST_F(script, property_attributes) {
         EXPECT_EQ(1u, ext->format.rank);
         EXPECT_EQ(num_frames, ext->format.shape[0]);
 
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         float minmax[2] = {0, 0};
         md_attribute_slice_t slice = md_attribute_slice_1(0);
@@ -1612,7 +1630,7 @@ UTEST_F(script, property_attributes) {
         // The values and the weights are separate buffers; they used to be one.
         EXPECT_TRUE(attr->data != weight->data);
 
-        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
         // The bin coordinates are computed from the range the evaluation settled on.
         md_array(float) coords = md_array_create(float, num_bins, alloc);
@@ -1708,8 +1726,8 @@ void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
     const size_t num_props = md_script_ir_property_count(data->ir);
     const str_t* props = md_script_ir_property_names(data->ir);
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->sys->trajectory);
-    if (md_script_eval_frame_range(data->eval, data->ir, data->sys, 0, num_frames)) {
+    const uint32_t num_frames = (uint32_t)script_frames(data->sys);
+    if (md_script_eval_frame_range(data->eval, data->ir, data->sys, SCRIPT_RUN, 0, num_frames)) {
         for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
             char path[256];
             snprintf(path, sizeof(path), "script/%.*s", (int)props[p_idx].len, props[p_idx].ptr);
@@ -1733,7 +1751,6 @@ void func(void* user_data) {
 UTEST_F(script, parallel_evaluation) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    md_trajectory_i* traj = utest_fixture->ala.trajectory;
 
     const str_t script = STR_LIT("p1 = distance(1,10);");
 
@@ -1741,7 +1758,7 @@ UTEST_F(script, parallel_evaluation) {
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
-    size_t num_frames = md_trajectory_num_frames(traj);
+    size_t num_frames = script_frames(mol);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_from_source(ir, script, mol, NULL);
@@ -1750,7 +1767,7 @@ UTEST_F(script, parallel_evaluation) {
 
     md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
     EXPECT_EQ(num_frames, md_script_eval_frame_count(ref_eval));
-    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, 0, (uint32_t)num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, SCRIPT_RUN, 0, (uint32_t)num_frames));
 
     const md_attribute_t* p1 = md_attributes_find(md_script_eval_attributes(ref_eval), STR_LIT("script/p1"));
     ASSERT_TRUE(p1);
@@ -2192,6 +2209,120 @@ UTEST_F(script, named_args_binding) {
     EXPECT_TRUE(node == NULL || node->named_args == NULL);
 
     md_arena_allocator_destroy(alloc);
+}
+
+// ### attr() ###
+
+static md_attribute_id_t publish_f64(md_attributes_t* t, const char* path, md_attribute_format_t fmt, md_attribute_flags_t flags, md_unit_t unit, const double* data) {
+    return md_attributes_create(t, &(md_attribute_desc_t){
+        .path = str_from_cstr(path), .format = fmt, .flags = flags, .unit = unit,
+        .data = data, .byte_size = md_attribute_element_count(&fmt) * sizeof(double)});
+}
+
+static md_attribute_format_t series_fmt(uint32_t n, uint32_t components) {
+    return (md_attribute_format_t){.type = MD_ATTRIBUTE_TYPE_F64, .components = components, .rank = 1, .shape = {n}};
+}
+
+static bool compiles(md_script_ir_t* ir, const char* src, const md_system_t* sys) {
+    md_script_ir_clear(ir);
+    md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL);
+    return md_script_ir_valid(ir);
+}
+
+// attr() reads a temporal attribute of the system at the frame being evaluated. The attribute keeps
+// its own axis - here one sampled twice as often as the trajectory - and the row is found by time.
+UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t state = {.alloc = arena};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+
+    md_attributes_t* t = &sys.attributes;
+    const md_attribute_t* run_time = md_attributes_find(t, STR_LIT("run/t/time"));
+    ASSERT_TRUE(run_time != NULL);
+    const uint32_t F = run_time->format.shape[0];
+    ASSERT_GT(F, 2u);
+    const double* frame_times = (const double*)run_time->data;
+    const md_unit_t time_unit = run_time->unit;
+    ASSERT_TRUE(md_unit_equal(time_unit, md_unit_picosecond()));
+
+    // Twice the rate: every frame time and the midpoints between them.
+    const uint32_t R = 2 * F - 1;
+    double* obs_time = md_alloc(arena, R * sizeof(double));
+    double* obs_val  = md_alloc(arena, R * sizeof(double));
+    double* obs_vec  = md_alloc(arena, R * 3 * sizeof(double));
+    double* obs_ten  = md_alloc(arena, R * 9 * sizeof(double));
+    for (uint32_t r = 0; r < R; ++r) {
+        obs_time[r] = (r % 2 == 0) ? frame_times[r / 2] : 0.5 * (frame_times[r / 2] + frame_times[r / 2 + 1]);
+        obs_val[r]  = 2.0 * obs_time[r];
+        for (int k = 0; k < 3; ++k) obs_vec[r * 3 + k] = obs_time[r] + k;
+        for (int k = 0; k < 9; ++k) obs_ten[r * 9 + k] = k;
+    }
+    ASSERT_NE(publish_f64(t, "run/t/obs/time",  series_fmt(R, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_picosecond(), obs_time), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/t/obs/value", series_fmt(R, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_kelvin(), obs_val), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/t/obs/vec",   series_fmt(R, 3), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), obs_vec), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/t/obs/tensor",
+        (md_attribute_format_t){.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3, .shape = {R, 3, 3}},
+        MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), obs_ten), MD_ATTRIBUTE_INVALID);
+    const double constant[3] = {1, 2, 3};
+    ASSERT_NE(publish_f64(t, "run/t/static", series_fmt(3, 1), MD_ATTRIBUTE_FLAG_NONE, md_unit_none(), constant), MD_ATTRIBUTE_INVALID);
+
+    md_script_ir_t* ir = md_script_ir_create(arena);
+
+    // Relative to the run, evaluated over every frame: the value at frame f is the one at the
+    // frame's own time, not at row f of the finer axis.
+    ASSERT_TRUE(compiles(ir, "e = attr(\"obs/value\");", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(eval != NULL);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        const md_attribute_t* e = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/e"));
+        ASSERT_TRUE(e != NULL);
+        EXPECT_TRUE(md_unit_equal(e->unit, md_unit_kelvin()));
+        for (uint32_t f = 0; f < F; ++f) {
+            EXPECT_NEAR((float)(2.0 * frame_times[f]), ((const float*)e->data)[f], 1.0e-3f);
+        }
+        md_script_eval_free(eval);
+    }
+
+    // A vector is float[3], a tensor float[3][3] - which a property cannot hold as it is, so it is
+    // flattened - and a path may also be given in full.
+    ASSERT_TRUE(compiles(ir, "v = attr(\"obs/vec\");", &sys));
+    ASSERT_TRUE(compiles(ir, "m = flatten(attr(\"run/t/obs/tensor\"));", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(eval != NULL);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        const md_attribute_t* m = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/m"));
+        ASSERT_TRUE(m != NULL);
+        EXPECT_EQ(9u, m->format.shape[1]);
+        EXPECT_EQ(5.0f, ((const float*)m->data)[9 * 3 + 5]);
+        md_script_eval_free(eval);
+    }
+
+    // What attr() refuses, each for its own reason.
+    EXPECT_FALSE(compiles(ir, "x = attr(\"obs/missing\");", &sys));
+    EXPECT_FALSE(compiles(ir, "x = attr(\"static\");", &sys));
+    EXPECT_FALSE(compiles(ir, "x = attr(\"run/t/time\" + 1);", &sys));
+
+    // A second run holding the same relative path makes the short form ambiguous, and it is an
+    // error rather than a choice. Naming the run in full still works.
+    ASSERT_NE(publish_f64(t, "run/u/time", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, time_unit, frame_times), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/u/obs/time",  series_fmt(R, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_picosecond(), obs_time), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/u/obs/value", series_fmt(R, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), obs_val), MD_ATTRIBUTE_INVALID);
+    EXPECT_FALSE(compiles(ir, "e = attr(\"obs/value\");", &sys));
+    EXPECT_TRUE(compiles(ir, "e = attr(\"run/u/obs/value\");", &sys));
+
+    // import() is gone: files are loaded into the attributes, and read with attr().
+    EXPECT_FALSE(compiles(ir, "t = import(\"" MD_UNITTEST_DATA_DIR "/ener.edr\");", &sys));
+    EXPECT_FALSE(compiles(ir, "t = import(\"" MD_UNITTEST_DATA_DIR "/energy.xvg\");", &sys));
+
+    md_script_ir_free(ir);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Regressions
@@ -2208,13 +2339,13 @@ static const float* eval_property_data(md_script_eval_t* eval, const char* name)
 UTEST_F(script, distance_max_is_the_largest_distance) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(compiles(ir, "lo = distance_min(residue(1), residue(2)); hi = distance_max(residue(1), residue(2));", mol));
     md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
     ASSERT_TRUE(eval != NULL);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
     const float* lo = eval_property_data(eval, "lo");
     const float* hi = eval_property_data(eval, "hi");
@@ -2238,7 +2369,7 @@ UTEST(script, xor_of_selections_covers_the_union_of_the_ranges) {
 UTEST_F(script, contact_count_is_counted_per_element) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(compiles(ir,
@@ -2249,7 +2380,7 @@ UTEST_F(script, contact_count_is_counted_per_element) {
         "c4 = contact_count(residue(4), residue(5:8), 5.0);", mol));
     md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
     ASSERT_TRUE(eval != NULL);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
     const float* all4 = eval_property_data(eval, "all4");
     const float* c[4] = {
@@ -2274,9 +2405,9 @@ UTEST_F(script, destructuring_a_constant) {
     // Selections: the identifiers hold one residue each, and can be used in later statements
     ASSERT_TRUE(compiles(ir, "{a, b} = residue(1:2); na = count(a); nb = count(b) + 0.0 * distance(1, 2);", mol));
     {
-        md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create((uint32_t)script_frames(mol), ir, alloc);
         ASSERT_TRUE(eval != NULL);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 1));
         const float* nb = eval_property_data(eval, "nb");
         ASSERT_TRUE(nb != NULL);
         EXPECT_EQ(10.0f, nb[0]); // residue 2 of the peptide has ten atoms
@@ -2286,9 +2417,9 @@ UTEST_F(script, destructuring_a_constant) {
     // Vectors
     ASSERT_TRUE(compiles(ir, "{x, y} = vec2(1, 2); z = x + y + 0.0 * distance(1, 2);", mol));
     {
-        md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create((uint32_t)script_frames(mol), ir, alloc);
         ASSERT_TRUE(eval != NULL);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 1));
         const float* z = eval_property_data(eval, "z");
         ASSERT_TRUE(z != NULL);
         EXPECT_EQ(3.0f, z[0]);
@@ -2301,7 +2432,7 @@ UTEST_F(script, destructuring_a_constant) {
 UTEST_F(script, comparison_operators_compile) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(mol->trajectory);
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
     const char* ok[] = {
@@ -2317,7 +2448,7 @@ UTEST_F(script, comparison_operators_compile) {
         if (md_script_ir_valid(ir)) {
             md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
             ASSERT_TRUE(eval != NULL);
-            EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+            EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
             md_script_eval_free(eval);
         }
     }
@@ -2325,4 +2456,89 @@ UTEST_F(script, comparison_operators_compile) {
     // A comparison of arrays of different lengths is still an error
     EXPECT_FALSE(compiles(ir, "a = distance(1, 2) in residue(1:3); b = distance(1, 2) in residue(1:4); c = a < b;", mol));
 }
+
+// The script reference (docs/script_reference.md) gives every procedure an entry with a machine readable comment,
+// `<!-- proc name=... aliases=a,b ... -->`, which is what the in-app help navigates by. Keep the two in step: every
+// procedure the parser knows is documented, and every name the reference documents is one the parser knows.
+static str_t reference_meta_value(str_t line, str_t key) {
+    for (size_t p = 0; p + key.len < line.len; ++p) {
+        if ((p == 0 || line.ptr[p - 1] == ' ') && str_eq(str_substr(line, p, key.len), key) && line.ptr[p + key.len] == '=') {
+            const size_t beg = p + key.len + 1;
+            size_t end = beg;
+            while (end < line.len && line.ptr[end] != ' ') ++end;
+            return str_substr(line, beg, end - beg);
+        }
+    }
+    return (str_t){0};
+}
+
+static bool reference_contains(const str_t* names, size_t count, str_t name) {
+    for (size_t i = 0; i < count; ++i) {
+        if (str_eq(names[i], name)) return true;
+    }
+    return false;
+}
+
+static bool procedure_table_contains(const procedure_t* table, size_t count, str_t name) {
+    for (size_t i = 0; i < count; ++i) {
+        if (str_eq(table[i].name, name)) return true;
+    }
+    return false;
+}
+
+UTEST(script, reference_documents_every_procedure) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t doc = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/../docs/script_reference.md"), alloc);
+    ASSERT_FALSE(str_empty(doc));
+
+    // Procedures that the parser handles itself rather than through the procedure table
+    static const str_t intrinsics[] = { STR_LIT("attr"), STR_LIT("flatten"), STR_LIT("transpose") };
+
+    str_t names[1024];  // documented names and aliases
+    size_t num_names = 0;
+    char msg[256];
+
+    str_t rest = doc;
+    str_t line;
+    while (str_extract_line(&line, &rest)) {
+        if (!str_begins_with(line, STR_LIT("<!-- proc"))) continue;
+        const str_t name = reference_meta_value(line, STR_LIT("name"));
+        snprintf(msg, sizeof(msg), "procedure comment without a name: '%.*s'", STR_ARG(line));
+        EXPECT_FALSE_MSG(str_empty(name), msg);
+        ASSERT_LT(num_names, ARRAY_SIZE(names));
+        names[num_names++] = name;
+
+        str_t list = reference_meta_value(line, STR_LIT("aliases"));
+        while (!str_empty(list)) {
+            size_t comma = list.len;
+            str_find_char(&comma, list, ',');
+            const str_t alias = str_trim(str_substr(list, 0, comma));
+            if (!str_empty(alias)) {
+                ASSERT_LT(num_names, ARRAY_SIZE(names));
+                names[num_names++] = alias;
+            }
+            list = str_substr(list, MIN(comma + 1, list.len), SIZE_MAX);
+        }
+    }
+    EXPECT_GT(num_names, (size_t)0);
+
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        if (procedure_table_contains(procedures, i, procedures[i].name)) continue;  // another overload, already checked
+        snprintf(msg, sizeof(msg), "procedure '%.*s' has no entry in docs/script_reference.md", STR_ARG(procedures[i].name));
+        EXPECT_TRUE_MSG(reference_contains(names, num_names, procedures[i].name), msg);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(intrinsics); ++i) {
+        snprintf(msg, sizeof(msg), "procedure '%.*s' has no entry in docs/script_reference.md", STR_ARG(intrinsics[i]));
+        EXPECT_TRUE_MSG(reference_contains(names, num_names, intrinsics[i]), msg);
+    }
+    for (size_t i = 0; i < num_names; ++i) {
+        const bool known = procedure_table_contains(procedures, ARRAY_SIZE(procedures), names[i]) ||
+                           procedure_table_contains(operators,  ARRAY_SIZE(operators),  names[i]) ||
+                           procedure_table_contains(casts,      ARRAY_SIZE(casts),      names[i]) ||
+                           reference_contains(intrinsics, ARRAY_SIZE(intrinsics), names[i]);
+        snprintf(msg, sizeof(msg), "docs/script_reference.md documents '%.*s', which the parser does not know", STR_ARG(names[i]));
+        EXPECT_TRUE_MSG(known, msg);
+    }
+
+    str_free(doc, alloc);
 }

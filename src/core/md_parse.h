@@ -419,7 +419,7 @@ static inline uint32_t parse_u32(const char* ptr, size_t len) {
     uint64_t shift = (64 - (len << 3));
     uint64_t val = load_u64(ptr);
     val = val << shift;
-    val -= 0x3030303030303030 << shift; // '0'
+    val -= 0x3030303030303030ULL << shift; // '0'
     val = (val * 10) + (val >> 8); // val = (val * 2561) >> 8;
     val = (((val & mask) * mul1) + (((val >> 16) & mask) * mul2)) >> 32;
     return (uint32_t)val;

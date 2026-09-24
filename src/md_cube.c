@@ -279,6 +279,7 @@ void md_cube_free(md_cube_t* cube, md_allocator_i* alloc) {
 	ASSERT(cube);
 	ASSERT(alloc);
 	if (cube->data.val)		md_array_free(cube->data.val,	 alloc);
+	if (cube->data.id)		md_array_free(cube->data.id,	 alloc);
 	if (cube->atom.coord)	md_array_free(cube->atom.coord,	 alloc); 
 	if (cube->atom.number)	md_array_free(cube->atom.number, alloc); 
 	if (cube->atom.charge)	md_array_free(cube->atom.charge, alloc); 

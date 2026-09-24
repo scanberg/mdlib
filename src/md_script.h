@@ -12,7 +12,6 @@
 struct md_bitfield_t;
 struct md_attributes_t;
 struct md_system_t;
-struct md_trajectory_i;
 struct md_allocator_i;
 
 /*
@@ -201,10 +200,12 @@ void md_script_eval_clear_data(md_script_eval_t* eval);
 // Must be performed after the eval_init
 // eval             : evaluation object to hold result
 // ir               : holds an IR of the script to be evaluated
-// mol              : molecule
-// traj             : trajectory
-// frame_(beg/end)  : range of frames [beg,end[ to evaluate 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, uint32_t frame_beg, uint32_t frame_end);
+// sys              : the system, whose attribute table holds the run
+// run              : "run/<name>", the run whose frames are evaluated (see RUNS in md_system.h)
+// frame_(beg/end)  : range of frames [beg,end[ to evaluate
+// Safe to call for disjoint ranges from several threads at once: each call keeps its own extraction
+// context, and with it its own open files.
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, uint32_t frame_beg, uint32_t frame_end);
 
 // Number of properties held by the evaluation
 size_t md_script_eval_property_count(const md_script_eval_t* eval);
@@ -223,6 +224,9 @@ size_t md_script_eval_property_count(const md_script_eval_t* eval);
 //   script/<ident>/extent     2 components, (min, max)
 //   script/<ident>/weight     a distribution's per bin weight
 //   script/<ident>/bin        a distribution's bin coordinates (virtual), in the bin axis unit
+//   time                      the frame axis every temporal property is temporal along (see FRAME
+//                             AXES in md_system.h). Frame ordinals without a unit: the evaluation
+//                             knows how many frames it covers, not when they were taken.
 //
 // The table and the attributes in it are created with the evaluation and never added to or
 // removed, so attribute pointers stay valid for the lifetime of the evaluation. The data is written

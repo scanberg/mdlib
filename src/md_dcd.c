@@ -1,6 +1,5 @@
 #include <md_dcd.h>
 #include <md_system.h>
-#include <md_trajectory.h>
 #include <md_util.h>
 
 #include <core/md_common.h>
@@ -12,9 +11,8 @@
 #include <core/md_unit.h>
 
 #include <math.h>
+#include <stdio.h>
 
-#define MD_DCD_TRAJ_MAGIC 0x3F5C8A1B7E902D46ULL
-#define MD_DCD_TRAJ_READER_MAGIC 0x3F5C8A1B7E902D47ULL
 
 // 1 AKMA time unit = 48.88821 fs = 0.04888821 ps
 // NAMD's TIMEFACTOR for converting DCD timestamps to femtoseconds
@@ -41,12 +39,9 @@ typedef struct dcd_file_header_t {
     int32_t* free_indices;   // 1-based indices of free (non-fixed) atoms; NULL when nfixed == 0
 } dcd_file_header_t;
 
-// ==================== Trajectory instance ====================
+// ==================== What the file is ====================
 
 typedef struct dcd_t {
-    uint64_t magic;
-    str_t filepath;
-    md_allocator_i* allocator;
 
 	dcd_file_header_t header;
 	size_t num_frames;           // Actual frame count (may differ from header.nset when file was not closed cleanly)
@@ -62,8 +57,6 @@ typedef struct dcd_t {
 	int64_t* frame_steps;         // Simulation step per frame (istart + i*nsavc), length = num_frames.
 	md_unit_t time_unit;          // Time unit for frame_times. Empty when the file carried no timestep and the times are frame ordinals standing in for real time.
 
-    md_unitcell_t initial_unitcell; // Store a copy of the initial unitcell in case it is not stored in the trajectory itself.
-
     // Full coordinate snapshot of frame 0, used for fixed-atom reconstruction in subsequent frames.
     // Only allocated when nfixed > 0.
     float* first_frame_x;
@@ -72,13 +65,6 @@ typedef struct dcd_t {
 
     vec3_t translation;
 } dcd_t;
-
-typedef struct dcd_reader_t {
-    uint64_t magic;
-    md_file_t file;
-    const dcd_t* traj;
-    md_allocator_i* arena;
-} dcd_reader_t;
 
 // ==================== Byte-swap helpers ====================
 
@@ -518,191 +504,33 @@ done:
     return true;
 }
 
-static bool dcd_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* out) {
-    ASSERT(inst && out);
-    dcd_t* dcd = (dcd_t*)inst;
-    if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
-        MD_LOG_ERROR("DCD: Invalid trajectory instance in get_header");
-        return false;
-    }
-	*out = (md_trajectory_header_t){
-		.num_frames  = dcd->num_frames,
-		.num_atoms   = (size_t)dcd->header.natoms,
-		.time_unit   = dcd->time_unit,
-		.frame_times = dcd->frame_times,
-		.frame_steps = dcd->frame_steps,
-	};
-    return true;
-}
+// ==================== Index ====================
 
-static bool dcd_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t idx, size_t* out_num_atoms, md_unitcell_t* out_cell, float* x, float* y, float* z) {
-    ASSERT(inst);
-    dcd_reader_t* reader = (dcd_reader_t*)inst;
-    ASSERT(reader->magic == MD_DCD_TRAJ_READER_MAGIC);
-
-    const dcd_t* dcd = reader->traj;
-    if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
-        MD_LOG_ERROR("DCD: Invalid trajectory instance in load_frame");
-        return false;
-    }
-	if (idx < 0 || idx >= (int64_t)dcd->num_frames) {
-		MD_LOG_ERROR("DCD: Frame index out of range (got %lld, valid range is [0, %zu))", idx, dcd->num_frames);
-		return false;
-	}
-	if ((x || y || z) && !(x && y && z)) {
-		MD_LOG_ERROR("DCD: Coordinate arrays must all be provided or all be NULL");
-		return false;
-	}
-    if (!md_file_valid(reader->file)) {
-        MD_LOG_ERROR("DCD: Invalid file handle in reader instance");
-		return false;
-	}
-    md_file_offset_t offset = dcd_frame_offset(dcd, idx);
-	const bool is_first_frame = (idx == 0);
-	const int natoms = (int)dcd->header.natoms;
-	// Pre-fill output with first-frame coords so fixed-atom slots are correct
-	// before dcd_read_frame_at scatters only the free-atom coordinates.
-	if (x && dcd->header.nfixed > 0 && !is_first_frame) {
-		MEMCPY(x, dcd->first_frame_x, (size_t)natoms * sizeof(float));
-		MEMCPY(y, dcd->first_frame_y, (size_t)natoms * sizeof(float));
-		MEMCPY(z, dcd->first_frame_z, (size_t)natoms * sizeof(float));
-	}
-	md_unitcell_t unitcell = dcd->initial_unitcell;
-    bool success = dcd_read_frame_at(reader->file, &offset, natoms, dcd->header.nfixed, dcd->header.charmm, dcd->header.reverse_endian,
-									 dcd->header.free_indices,
-									 is_first_frame,
-									 &unitcell,
-									 x, y, z);
-    if (!success) {
-        MD_LOG_ERROR("DCD: Failed to read frame %zu", (size_t)idx);
-        return false;
-    }
-
-    if (x && y && z && vec3_length_squared(dcd->translation) > 0.0f) {
-        // Apply the cumulative translation to the coordinates so that the trajectory is consistent with the unit cell.
-        for (int i = 0; i < natoms; ++i) {
-            x[i] += dcd->translation.x;
-            y[i] += dcd->translation.y;
-            z[i] += dcd->translation.z;
-        }
-    }
-
-	if (out_num_atoms) {
-		*out_num_atoms = (size_t)natoms;
-	}
-
-	if (out_cell) {
-		*out_cell = unitcell;
-	}
-
-	return true;
-}
-
-static void dcd_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
-    if (!reader) {
-        return;
-    }
-
-    dcd_reader_t* inst = (dcd_reader_t*)reader->inst;
-    if (inst) {
-        ASSERT(inst->magic == MD_DCD_TRAJ_READER_MAGIC);
-        if (md_file_valid(inst->file)) {
-            md_file_close(&inst->file);
-        }
-        md_arena_allocator_destroy(inst->arena);
-    }
-
-    MEMSET(reader, 0, sizeof(*reader));
-}
-
-// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
-// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
-// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
-static bool dcd_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
-    size_t num_atoms = 0;
-    md_unitcell_t cell = {0};
-    float* x = state ? state->x : NULL;
-    float* y = state ? state->y : NULL;
-    float* z = state ? state->z : NULL;
-    if (!dcd_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
-        return false;
-    }
-    if (state) {
-        state->unitcell = cell;
-        if (state->num_atoms == 0) {
-            state->num_atoms = num_atoms;
-        }
-    }
-    return true;
-}
-
-static bool dcd_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
-    ASSERT(reader);
-    ASSERT(traj_inst);
-
-    dcd_t* dcd = (dcd_t*)traj_inst;
-    ASSERT(dcd->magic == MD_DCD_TRAJ_MAGIC);
+// Everything known about the file short of its coordinates: the header, where the frames are and when
+// they were taken, the first frame in full (which the fixed atoms of every later frame take their
+// positions from), and the translation the coordinates are presented with. Allocated from alloc.
+static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
+    MEMSET(dcd, 0, sizeof(*dcd));
 
     md_file_t file = {0};
-    if (!md_file_open(&file, dcd->filepath, MD_FILE_READ)) {
-        MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(dcd->filepath));
+    if (!md_file_open(&file, path, MD_FILE_READ)) {
+        MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(path));
         return false;
     }
-
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    dcd_reader_t* inst = md_alloc(arena, sizeof(dcd_reader_t));
-    MEMSET(inst, 0, sizeof(dcd_reader_t));
-    inst->magic = MD_DCD_TRAJ_READER_MAGIC;
-    inst->file = file;
-    inst->traj = dcd;
-    inst->arena = arena;
-
-    MEMSET(reader, 0, sizeof(*reader));
-    reader->inst = (struct md_trajectory_reader_o*)inst;
-    reader->free = dcd_trajectory_reader_free;
-    reader->load_frame = dcd_reader_load_frame;
-
-    return true;
-}
-
-void md_dcd_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj && traj->inst);
-    dcd_t* dcd = (dcd_t*)traj->inst;
-    if (dcd->magic != MD_DCD_TRAJ_MAGIC) {
-        MD_LOG_ERROR("DCD: Cannot free trajectory, invalid magic");
-        ASSERT(false);
-        return;
-    }
-    md_arena_allocator_destroy(dcd->allocator);
-}
-
-// ==================== Creation and destruction ====================
-md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
-    ASSERT(ext_alloc);
-    (void)flags;
-
-    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
-
-    md_file_t file = {0};
-    if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(filename));
-        goto fail;
-    }
+    bool result = false;
 
     const int64_t filesize = (int64_t)md_file_size(file);
-
     md_file_seek(file, 0, MD_FILE_BEG);
 
     // Always parse the raw DCD header so we have ground-truth metadata.
     dcd_file_header_t fhdr;
     if (!dcd_parse_file_header(file, &fhdr, alloc)) {
-        MD_LOG_ERROR("DCD: Failed to parse header of '" STR_FMT "'", STR_ARG(filename));
-        goto fail;
+        MD_LOG_ERROR("DCD: Failed to parse header of '" STR_FMT "'", STR_ARG(path));
+        goto done;
     }
-
     if (fhdr.natoms <= 0) {
         MD_LOG_ERROR("DCD: Atom count is zero or negative");
-        goto fail;
+        goto done;
     }
 
     // Compute fixed per-frame byte sizes analytically from the header fields.
@@ -710,7 +538,7 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
     dcd_compute_frame_sizes(&fhdr, &first_frame_size, &frame_size);
 
     // Determine how many complete frames fit in the file payload.
-    const int64_t payload   = filesize - fhdr.header_size;
+    const int64_t payload = filesize - fhdr.header_size;
     size_t num_frames = 0;
     if (payload >= first_frame_size) {
         num_frames = 1 + (size_t)MAX(0LL, (payload - first_frame_size) / frame_size);
@@ -722,8 +550,8 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
         num_frames = (size_t)fhdr.nset + 1;
     }
     if (num_frames == 0) {
-        MD_LOG_ERROR("DCD: No complete frames found in '" STR_FMT "'", STR_ARG(filename));
-        goto fail;
+        MD_LOG_ERROR("DCD: No complete frames found in '" STR_FMT "'", STR_ARG(path));
+        goto done;
     }
 
     // Simulation step per frame. DCD records the first step and the dump interval, so the step of
@@ -735,32 +563,20 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
 
     // Frame timestamps: convert from AKMA to picoseconds.
     double* frame_times = (double*)md_alloc(alloc, num_frames * sizeof(double));
-	md_unit_t time_unit = md_unit_none();
+    md_unit_t time_unit = md_unit_none();
     if (fhdr.delta > 0) {
         for (size_t i = 0; i < num_frames; ++i) {
             frame_times[i] = (double)frame_steps[i] * fhdr.delta * DCD_AKMA_TO_PS;
         }
-		time_unit = md_unit_picosecond();
-    }
-    else {
+        time_unit = md_unit_picosecond();
+    } else {
         // No integration timestep in the file, so real time is unknowable. Fall back to the frame
         // ordinal and leave time_unit empty rather than labelling a count as picoseconds.
         for (size_t i = 0; i < num_frames; ++i) {
             frame_times[i] = (double)i;
-		}
+        }
     }
 
-    // Allocate trajectory and internal structs from the arena.
-    void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(dcd_t));
-    ASSERT(mem);
-    MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(dcd_t));
-
-    md_trajectory_i* traj = (md_trajectory_i*)mem;
-    dcd_t*           dcd  = (dcd_t*)(traj + 1);
-
-    dcd->magic            = MD_DCD_TRAJ_MAGIC;
-    dcd->filepath         = str_copy(filename, alloc);
-    dcd->allocator        = alloc;
     dcd->header           = fhdr;
     dcd->num_frames       = num_frames;
     dcd->file_header_size = (size_t)fhdr.header_size;
@@ -768,68 +584,356 @@ md_trajectory_i* md_dcd_trajectory_create(str_t filename, md_allocator_i* ext_al
     dcd->frame_size       = (size_t)frame_size;
     dcd->frame_times      = frame_times;
     dcd->frame_steps      = frame_steps;
-	dcd->time_unit        = time_unit;
-    
-    // When fixed atoms are present, store the full first-frame coordinates.
-    // These are blended with subsequent frames that only contain free-atom deltas.
-    dcd->first_frame_x = NULL;
-    dcd->first_frame_y = NULL;
-    dcd->first_frame_z = NULL;
+    dcd->time_unit        = time_unit;
+
+    // The full first frame. Later frames with fixed atoms carry only the free ones; the rest keep
+    // these positions.
     {
         const int natoms   = fhdr.natoms;
-		dcd->first_frame_x = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
-		dcd->first_frame_y = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
-		dcd->first_frame_z = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
-		md_file_offset_t first_frame_offset = dcd_frame_offset(dcd, 0);
+        dcd->first_frame_x = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
+        dcd->first_frame_y = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
+        dcd->first_frame_z = (float*)md_alloc(alloc, (size_t)natoms * sizeof(float));
+        md_file_offset_t first_frame_offset = dcd_frame_offset(dcd, 0);
         md_unitcell_t unitcell = { 0 };
         // Read the first frame treating nfixed as 0 so that all atoms are read.
-		if (!dcd_read_frame_at(file, &first_frame_offset, natoms, 0, fhdr.charmm, fhdr.reverse_endian,
+        if (!dcd_read_frame_at(file, &first_frame_offset, natoms, 0, fhdr.charmm, fhdr.reverse_endian,
                                NULL, true, &unitcell,
                                dcd->first_frame_x, dcd->first_frame_y, dcd->first_frame_z))
         {
             MD_LOG_ERROR("DCD: Failed to read first frame for fixed-atom initialisation");
-            goto fail;
+            goto done;
         }
 
         // We always read the first frame atoms and check the COM, we want to identify if the coordiantes should be shifted by unitcell center.
-		vec3_t com = md_util_com_compute(dcd->first_frame_x, dcd->first_frame_y, dcd->first_frame_z, NULL, NULL, (size_t)natoms, &unitcell);
+        // The file stores x, y and z apart; the COM takes them packed
+        vec3_t com = {0};
+        {
+            md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+            vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, (size_t)natoms);
+            for (int i = 0; i < natoms; ++i) {
+                xyz[i] = vec3_set(dcd->first_frame_x[i], dcd->first_frame_y[i], dcd->first_frame_z[i]);
+            }
+            com = md_util_com_compute(xyz, NULL, NULL, (size_t)natoms, &unitcell);
+            md_temp_end(temp);
+        }
 
         mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, &unitcell);
-		vec3_t uc_center = mat3_mul_vec3(A, (vec3_t) { 0.5f, 0.5f, 0.5f });
+        vec3_t uc_center = mat3_mul_vec3(A, (vec3_t) { 0.5f, 0.5f, 0.5f });
 
         // Check which com is closest
-		float dist_com = vec3_distance(com, (vec3_t) { 0, 0, 0 });
+        float dist_com = vec3_distance(com, (vec3_t) { 0, 0, 0 });
         float dist_uc_center = vec3_distance(com, uc_center);
         if (dist_uc_center < dist_com) {
             dcd->translation = uc_center;
-		}
+        }
     }
+    result = true;
 
-    traj->inst        = (struct md_trajectory_o*)dcd;
-    traj->free        = md_dcd_trajectory_free;
-    traj->get_header  = dcd_get_header;
-    traj->init_reader = dcd_trajectory_reader_init;
-
+done:
     md_file_close(&file);
-
-    return traj;
-
-fail:
-    if (md_file_valid(file)) md_file_close(&file);
-    md_arena_allocator_destroy(alloc);
-    return NULL;
+    return result;
 }
 
-// Attach convenience wrapper: create trajectory and attach to system
-bool md_dcd_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
-    if (!sys) return false;
-    md_trajectory_i* traj = md_dcd_trajectory_create(filename, sys->alloc, flags);
-    if (!traj) return false;
-	dcd_t* dcd = (dcd_t*)traj->inst;
-	if (dcd && dcd->magic == MD_DCD_TRAJ_MAGIC) {
-        dcd->initial_unitcell = sys->reference.unitcell;
+// ==================== Run ====================
+
+static const void* dcd_resident(const md_attributes_t* attributes, str_t run, const char* leaf, md_attribute_type_t type, size_t* out_count) {
+    char buf[512];
+    const md_attribute_t* a = md_attributes_find(attributes, md_run_path(buf, sizeof(buf), run, str_from_cstr(leaf)));
+    if (!a || a->format.type != type || !a->data) return NULL;
+    if (out_count) *out_count = md_attribute_value_count(&a->format);
+    return a->data;
+}
+
+static inline float dcd_load_f32(const uint8_t* p, bool rev) {
+    uint32_t u;
+    MEMCPY(&u, p, 4);
+    if (rev) u = BSWAP32(u);
+    float f;
+    MEMCPY(&f, &u, 4);
+    return f;
+}
+
+static inline int32_t dcd_load_i32(const uint8_t* p, bool rev) {
+    int32_t v;
+    MEMCPY(&v, p, 4);
+    return dcd_swap32(v, rev);
+}
+
+// source/layout: how a frame of this file is laid out
+enum { DCD_LAYOUT_CHARMM, DCD_LAYOUT_REVERSE_ENDIAN, DCD_LAYOUT_NFIXED, DCD_LAYOUT_COUNT };
+
+static bool dcd_has_cell_block(int32_t charmm) {
+    return (charmm & DCD_IS_CHARMM) && (charmm & DCD_HAS_EXTRA_BLOCK);
+}
+
+// <run>/atom/position. One read of the frame; the file stores x, y and z as three planes, which are
+// interleaved here into the packed layout the attribute has. Fixed atoms keep their first frame
+// position, which the run holds as source/first_frame.
+static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    const md_system_t* sys = (const md_system_t*)user_data;
+    ASSERT(sys);
+    const md_attributes_t* attributes = &sys->attributes;
+    if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
+
+    md_run_source_t src;
+    if (!md_run_source(&src, attributes, attr, STR_LIT("atom/position"))) return 0;
+    const str_t run = src.run;
+    const int64_t* offsets = src.offset;
+    const int64_t* sizes   = src.size;
+    size_t layout_count = 0;
+    const int32_t* layout      = dcd_resident(attributes, run, "source/layout",      MD_ATTRIBUTE_TYPE_I32, &layout_count);
+    const float*   translation = dcd_resident(attributes, run, "source/translation", MD_ATTRIBUTE_TYPE_F32, NULL);
+    if (!layout || layout_count != DCD_LAYOUT_COUNT || !translation) {
+        MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its source attributes", STR_ARG(run));
+        return 0;
     }
-    md_system_attach_trajectory(sys, traj);
-    return true;
+
+    const uint32_t frame = slice->idx[0];
+    const size_t N = attr->format.shape[1];
+    const bool rev = layout[DCD_LAYOUT_REVERSE_ENDIAN] != 0;
+    const size_t nfixed = (size_t)layout[DCD_LAYOUT_NFIXED];
+    const bool all_atoms = (nfixed == 0 || frame == 0);
+    const size_t n = all_atoms ? N : N - nfixed;
+
+    const int32_t* free_atoms  = NULL;
+    const float*   first_frame = NULL;
+    if (!all_atoms) {
+        size_t free_count = 0, first_count = 0;
+        free_atoms  = dcd_resident(attributes, run, "source/free_atoms",  MD_ATTRIBUTE_TYPE_I32, &free_count);
+        first_frame = dcd_resident(attributes, run, "source/first_frame", MD_ATTRIBUTE_TYPE_F32, &first_count);
+        if (!free_atoms || !first_frame || free_count != n || first_count != N) {
+            MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its fixed atoms", STR_ARG(run));
+            return 0;
+        }
+    }
+
+    size_t first = 0, count = N;
+    if (slice->num_idx == 2) {
+        if (slice->idx[1] >= N) return 0;
+        first = slice->idx[1];
+        count = 1;
+    }
+    if (cap != count * 3) return 0;
+
+    const size_t frame_size = (size_t)sizes[frame];
+    const size_t skip = dcd_has_cell_block(layout[DCD_LAYOUT_CHARMM]) ? 56 : 0;
+    const size_t record = (n + 2) * 4;
+    if (skip + 3 * record > frame_size) return 0;
+
+    md_temp_scope_t temp = md_temp_begin();
+    size_t written = 0;
+    const str_t file_path = src.path;
+    // The cell block, if any, is read along: one read of the frame rather than one per plane.
+    uint8_t* raw = md_temp_alloc(temp, skip + 3 * record);
+    float* xyz = (count == N) ? (float*)dst : md_temp_alloc(temp, N * 3 * sizeof(float));
+
+    if (raw && xyz && md_attribute_io_read_at(io, file_path, offsets[frame], raw, skip + 3 * record) == skip + 3 * record) {
+        bool ok = true;
+        if (!all_atoms) {
+            MEMCPY(xyz, first_frame, N * 3 * sizeof(float));
+        }
+        for (size_t d = 0; d < 3 && ok; ++d) {
+            const uint8_t* rec = raw + skip + d * record;
+            if ((size_t)dcd_load_i32(rec, rev) != n * 4) {
+                MD_LOG_ERROR("DCD: frame %u of '" STR_FMT "' is not laid out as its header says", frame, STR_ARG(file_path));
+                ok = false;
+                break;
+            }
+            const uint8_t* data = rec + 4;
+            if (all_atoms) {
+                for (size_t i = 0; i < N; ++i) xyz[i * 3 + d] = dcd_load_f32(data + i * 4, rev);
+            } else {
+                for (size_t i = 0; i < n; ++i) {
+                    const int32_t idx = free_atoms[i];
+                    if (idx < 0 || (size_t)idx >= N) { ok = false; break; }
+                    xyz[(size_t)idx * 3 + d] = dcd_load_f32(data + i * 4, rev);
+                }
+            }
+        }
+        if (ok) {
+            if (translation[0] != 0.0f || translation[1] != 0.0f || translation[2] != 0.0f) {
+                for (size_t i = 0; i < N; ++i) {
+                    xyz[i * 3 + 0] += translation[0];
+                    xyz[i * 3 + 1] += translation[1];
+                    xyz[i * 3 + 2] += translation[2];
+                }
+            }
+            if (count != N) {
+                MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
+            }
+            written = cap;
+        }
+    } else {
+        MD_LOG_ERROR("DCD: Failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(file_path));
+    }
+    md_temp_end(temp);
+    return written;
+}
+
+// <run>/unitcell, for a file whose frames carry a cell block: 48 bytes at the start of the frame
+static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    const md_system_t* sys = (const md_system_t*)user_data;
+    ASSERT(sys);
+    const md_attributes_t* attributes = &sys->attributes;
+    if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
+
+    md_run_source_t src;
+    if (!md_run_source(&src, attributes, attr, STR_LIT("unitcell"))) return 0;
+    const str_t run = src.run;
+    const int64_t* offsets = src.offset;
+    size_t layout_count = 0;
+    const int32_t* layout  = dcd_resident(attributes, run, "source/layout", MD_ATTRIBUTE_TYPE_I32, &layout_count);
+    if (!layout || layout_count != DCD_LAYOUT_COUNT) {
+        MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its source attributes", STR_ARG(run));
+        return 0;
+    }
+    if (slice->num_idx == 1 ? cap != 9 : (cap != 3 || slice->idx[1] >= 3)) return 0;
+
+    const bool rev = layout[DCD_LAYOUT_REVERSE_ENDIAN] != 0;
+    const str_t file_path = src.path;
+    uint8_t raw[4 + 48];
+    if (md_attribute_io_read_at(io, file_path, offsets[slice->idx[0]], raw, sizeof(raw)) != sizeof(raw)) {
+        MD_LOG_ERROR("DCD: Failed to read the cell of frame %u from '" STR_FMT "'", slice->idx[0], STR_ARG(file_path));
+        return 0;
+    }
+
+    float A[3][3] = {0};
+    if (dcd_load_i32(raw, rev) == 48) {
+        double uc[6];
+        for (int i = 0; i < 6; ++i) {
+            uint64_t u;
+            MEMCPY(&u, raw + 4 + i * 8, 8);
+            if (rev) u = BSWAP64(u);
+            MEMCPY(&uc[i], &u, 8);
+        }
+        const md_unitcell_t cell = dcd_unitcell_from_params(uc);
+        md_unitcell_A_extract_float(A, &cell);
+    }
+    // A block of another size carries no cell known here: the frame has none.
+    if (slice->num_idx == 1) {
+        MEMCPY(dst, A, sizeof(A));
+    } else {
+        MEMCPY(dst, A[slice->idx[1]], sizeof(A[0]));
+    }
+    return cap;
+}
+
+bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+    ASSERT(sys);
+    (void)flags;
+    char path_buf[4096];
+    const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+    const str_t path = {path_buf, path_len};
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    bool result = false;
+
+    dcd_t dcd;
+    if (path_len == 0 || !dcd_index_load(&dcd, path, arena)) {
+        goto done;
+    }
+
+    const size_t F = dcd.num_frames;
+    const size_t N = (size_t)dcd.header.natoms;
+    const size_t nfixed = (size_t)dcd.header.nfixed;
+
+    int64_t* offsets = md_alloc(arena, F * sizeof(int64_t));
+    int64_t* sizes   = md_alloc(arena, F * sizeof(int64_t));
+    for (size_t i = 0; i < F; ++i) {
+        offsets[i] = dcd_frame_offset(&dcd, (int64_t)i);
+        sizes[i]   = (int64_t)(i == 0 ? dcd.first_frame_size : dcd.frame_size);
+    }
+
+    // The cell: read from each frame when the file keeps one per frame; otherwise the system's own at
+    // every frame.
+    const md_attribute_virtual_t cell_virt = { .provider = dcd_cell_provider, .user_data = sys };
+    float* boxes = NULL;
+    if (!dcd_has_cell_block(dcd.header.charmm)) {
+        float A[3][3] = {0};
+        md_unitcell_A_extract_float(A, &sys->reference.unitcell);
+        boxes = md_alloc(arena, F * 9 * sizeof(float));
+        for (size_t i = 0; i < F; ++i) {
+            MEMCPY(boxes + i * 9, A, sizeof(A));
+        }
+    }
+
+    const md_attribute_virtual_t pos_virt = { .provider = dcd_position_provider, .user_data = sys };
+    const md_run_desc_t desc = {
+        .num_frames    = F,
+        .num_atoms     = N,
+        .time          = dcd.frame_times,
+        .time_unit     = dcd.time_unit,   // none without a timestep in the file: time is then ordinals
+        .step          = dcd.frame_steps,
+        .unitcell      = boxes,
+        .unitcell_virt = boxes ? NULL : &cell_virt,
+        .source_path   = path,
+        .source_offset = offsets,
+        .source_size   = sizes,
+        .position_virt = &pos_virt,
+    };
+    if (!md_run_publish(sys, run, &desc)) {
+        goto done;
+    }
+
+    // How to read a frame of this file: what the providers need beyond the frame table
+    md_attributes_t* attributes = &sys->attributes;
+    const int32_t layout[DCD_LAYOUT_COUNT] = {
+        [DCD_LAYOUT_CHARMM]         = dcd.header.charmm,
+        [DCD_LAYOUT_REVERSE_ENDIAN] = dcd.header.reverse_endian ? 1 : 0,
+        [DCD_LAYOUT_NFIXED]         = dcd.header.nfixed,
+    };
+    const float translation[3] = { dcd.translation.x, dcd.translation.y, dcd.translation.z };
+    char buf[512];
+
+    bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
+        .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { DCD_LAYOUT_COUNT } },
+        .unit = md_unit_none(),
+        .description = STR_LIT("CHARMM flags, byte order reversed, number of fixed atoms"),
+        .data = layout, .byte_size = sizeof(layout)});
+
+    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/translation")),
+        .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 0 },
+        .unit = md_unit_angstrom(),
+        .description = STR_LIT("Added to every coordinate read from the file"),
+        .data = translation, .byte_size = sizeof(translation)});
+
+    if (ok && nfixed > 0) {
+        // Every frame after the first carries only the free atoms; the fixed ones stay where the
+        // first frame put them. Both are small next to the trajectory, so they are held.
+        const size_t nfree = N - nfixed;
+        int32_t* free_atoms = md_alloc(arena, nfree * sizeof(int32_t));
+        for (size_t i = 0; i < nfree; ++i) {
+            free_atoms[i] = dcd.header.free_indices[i] - 1;
+        }
+        float* first_frame = md_alloc(arena, N * 3 * sizeof(float));
+        for (size_t i = 0; i < N; ++i) {
+            first_frame[i * 3 + 0] = dcd.first_frame_x[i];
+            first_frame[i * 3 + 1] = dcd.first_frame_y[i];
+            first_frame[i * 3 + 2] = dcd.first_frame_z[i];
+        }
+        ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/free_atoms")),
+            .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { (uint32_t)nfree } },
+            .unit = md_unit_none(), .description = STR_LIT("The atoms each frame after the first carries, zero based"),
+            .data = free_atoms, .byte_size = nfree * sizeof(int32_t)});
+        ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/first_frame")),
+            .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 1, .shape = { (uint32_t)N } },
+            .unit = md_unit_angstrom(), .description = STR_LIT("The first frame as stored, before the translation"),
+            .data = first_frame, .byte_size = N * 3 * sizeof(float)});
+    }
+
+    if (!ok) {
+        MD_LOG_ERROR("DCD: failed to publish '" STR_FMT "' as '" STR_FMT "'", STR_ARG(path), STR_ARG(run));
+        md_attributes_remove_prefix(attributes, run);
+        goto done;
+    }
+    result = true;
+
+done:
+    md_arena_allocator_destroy(arena);
+    return result;
 }

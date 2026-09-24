@@ -28,12 +28,8 @@
 #include <md_script.h>
 
 #include <md_system.h>
-#include <md_trajectory.h>
 #include <md_filter.h>
 #include <md_util.h>
-#include <md_xvg.h>
-#include <md_edr.h>
-#include <md_csv.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_common.h>
@@ -80,7 +76,6 @@
 
 #define MAX_SUPPORTED_PROC_ARGS 8
 #define MAX_NUM_DIMS 4
-#define TIMESTAMP_ERROR_MARGIN 1.0e-4
 
 // ################################
 // ###   FORWARD DECLARATIONS   ###
@@ -138,7 +133,7 @@ typedef enum ast_type_t {
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
     AST_CONSTANT_VALUE,
-    AST_TABLE,
+    AST_ATTRIBUTE,          // attr("edr/potential"): a temporal attribute of the system, read at the evaluated frame
     AST_IDENTIFIER,
     AST_ARRAY,              // This is also just to declare an array in tree form, the node tells us the types, the children contains the values... inefficient, yes.
     AST_ARRAY_SUBSCRIPT,    // [..]
@@ -318,6 +313,10 @@ typedef struct eval_context_t {
     // can never come from different frames.
     const md_system_state_t* cur_state;
 
+    // The frame axis of the run being evaluated, which cur_state->frame indexes. 0 outside an
+    // evaluation over a run, where an attr() follows the axis of its own run.
+    md_attribute_id_t run_axis_id;
+
     // The configuration the system's topology was inferred from. Replaces the old
     // initial_configuration, which meant three different things depending on entry point:
     // trajectory frame 0, the system's own coordinates, or whatever the caller passed.
@@ -377,41 +376,6 @@ typedef struct proc_sig_t {
     param_sig_t param[MAX_SUPPORTED_PROC_ARGS];
 } proc_sig_t;
 
-typedef struct table_t {
-    str_t name;
-    size_t num_fields;
-    size_t num_values;
-    md_unit_t x_unit;
-    
-    md_array(str_t) field_names;
-    md_array(md_unit_t) field_units;
-    md_array(md_array(double)) field_values;
-} table_t;
-
-// Appends a field to the table and returns its storage, num_values long, for the caller to fill
-static double* table_push_field(table_t* table, str_t name, md_unit_t unit, size_t count, md_allocator_i* alloc) {
-    (void)count;
-    ASSERT(count == table->num_values);
-    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
-    md_array_push(table->field_names, str_copy(name, alloc), alloc);
-    md_array_push(table->field_units, unit, alloc);
-    md_array_push(table->field_values, field_data, alloc);
-    table->num_fields = md_array_size(table->field_names);
-    return field_data;
-}
-
-static void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, size_t count, md_allocator_i* alloc) {
-    double* dst = table_push_field(table, name, unit, count, alloc);
-    MEMCPY(dst, data, sizeof(double) * table->num_values);
-}
-
-static void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, size_t count, md_allocator_i* alloc) {
-    double* dst = table_push_field(table, name, unit, count, alloc);
-    for (size_t i = 0; i < table->num_values; ++i) {
-        dst[i] = data[i];
-    }
-}
-
 // An argument of a procedure call as written in the source
 typedef struct named_arg_t {
     str_t   name;   // Empty for a positional argument
@@ -441,9 +405,14 @@ struct ast_node_t {
     irange_t            subscript_ranges[MAX_NUM_DIMS]; // The ranges for the array subscript operator
     size_t              subscript_dim;
 
-    // TABLE
-    const table_t*      table;
-    md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
+    // ATTRIBUTE
+    // Resolved by the static check. Ids rather than pointers: an attribute pointer dies with the next
+    // create or remove on the table, an id is stable for as long as the path exists.
+    str_t               attr_path;      // the resolved, absolute path
+    md_attribute_id_t   attr_id;        // what is read
+    md_attribute_id_t   attr_axis_id;   // its frame axis
+    md_attribute_id_t   run_axis_id;    // the frame axis of the run being evaluated
+    uint64_t            attr_version;   // the three versions combined, so a reload changes the fingerprint
 
     // CONTEXT
     size_t              num_contexts;   // Number of arguments for procedure calls
@@ -485,7 +454,6 @@ struct md_script_ir_t {
     md_array(str_t)     static_expression_str;          // string for debugging
     
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
-    md_array(table_t) tables;                           // List of tables which are used in the script
 
     md_array(md_script_property_flags_t) property_flags;    // List of property infos
     md_array(const ast_node_t*)          property_nodes;    // List of property nodes;
@@ -568,7 +536,7 @@ static int operator_precedence(ast_type_t type) {
     case AST_EXPRESSION:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
-    case AST_TABLE:
+    case AST_ATTRIBUTE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
@@ -632,7 +600,7 @@ static bool operator_binary(ast_type_t type) {
     case AST_EXPRESSION:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
-    case AST_TABLE:
+    case AST_ATTRIBUTE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
@@ -656,7 +624,7 @@ static associativity_t operator_associativity(ast_type_t type) {
     case AST_EXPRESSION:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
-    case AST_TABLE:
+    case AST_ATTRIBUTE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
@@ -933,10 +901,6 @@ static size_t type_info_total_element_count(type_info_t ti) {
 
 static size_t bitfield_byte_size(size_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
-}
-
-static bool timestamps_approx_equal(double t0, double t1) {
-    return (t0 - t1) < TIMESTAMP_ERROR_MARGIN;
 }
 
 static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc) {
@@ -1219,8 +1183,8 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 }
 
 static inline bool is_identifier_static_procedure(str_t ident) {
-    if (str_eq(ident, STR_LIT("import"))) {
-        return true;   
+    if (str_eq(ident, STR_LIT("attr"))) {
+        return true;
     }
     else if (str_eq(ident, STR_LIT("flatten"))) {
         return true;
@@ -2154,7 +2118,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
     return node;
 }
 
-// import, flatten and transpose are parsed as procedure calls but become nodes of their own, which are never
+// attr, flatten and transpose are parsed as procedure calls but become nodes of their own, which are never
 // bound against a signature. Named arguments would silently be ignored there, so they are rejected up front.
 static bool reject_named_arguments(parse_context_t* ctx, const ast_node_t* node) {
     for (size_t i = 0; i < md_array_size(node->named_args); ++i) {
@@ -2180,10 +2144,14 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     constant_t* c = 0;
     
     if (str_eq(ident, STR_LIT("import"))) {
+        // Gone: data from files is loaded into the system's attributes and read with attr().
+        LOG_ERROR(ctx->ir, token, "import() has been removed: load the file alongside the trajectory, and read what it holds with attr(\"<path>\")");
+        return NULL;
+    } else if (str_eq(ident, STR_LIT("attr"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
             if (!reject_named_arguments(ctx, node)) return NULL;
-            node->type = AST_TABLE;
+            node->type = AST_ATTRIBUTE;
         }
     } else if (str_eq(ident, STR_LIT("flatten"))) {
         node = parse_procedure_call(ctx, token);
@@ -2328,6 +2296,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     ASSERT(token.type == '<' || token.type == '>' || token.type == TOKEN_EQ || token.type == TOKEN_LE || token.type == TOKEN_GE);
     
     ast_node_t* lhs = ctx->node;
+    ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
 
@@ -2344,7 +2313,6 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
         }
         node = create_node(ctx->ir, type, token);
         ast_node_t* args[2] = {lhs, rhs};
-    ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
         md_array_push_array(node->children, args, 2, ctx->ir->arena);
     }
    
@@ -2819,104 +2787,45 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
-static bool evaluate_table_lookup(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node && node->type == AST_TABLE);
 
-    if (dst) {
-        ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
+static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_ATTRIBUTE);
 
-        const size_t num_frames = md_trajectory_num_frames(ctx->sys->trajectory);
+    if (!dst) {
+        return true;
+    }
+    ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
 
-        if (!num_frames || !ctx->cur_state || !md_state_has_frame(ctx->cur_state)) {
-            MD_LOG_ERROR("Missing frame information on the evaluated state, cannot evaluate table");
-            return false;
-        }
-        if (!is_type_equivalent(dst->type, node->data.type)) {
-            MD_LOG_ERROR("Type mismatch when evaluating table value");
-            return false;
-        }
-        if (!node->table || !node->table_field_indices) {
-            MD_LOG_ERROR("Missing table and or field mappings when evaluating table value");
-            return false;
-        }
-
-        const int64_t num_rows = (int64_t)node->table->num_values;
-        int64_t row_index = -1;
-        if (str_eq(node->table->field_names[0], STR_LIT("Time"))) {
-            // Complex case, find the matching time
-            const double* time = node->table->field_values[0];
-
-            if (!time) {
-                MD_LOG_DEBUG("Missing time field when evaluating table value");
-                return false;
-            }
-
-            // Time is derived from the frame rather than stored alongside it, so the two cannot disagree
-            const double ref_time = md_trajectory_time_at_frame(ctx->sys->trajectory, ctx->cur_state->frame);
-
-            // Find the row_index in the table which corresponds to the current time
-            double t0 = 0.0;
-            double t1 = 1.0;
-            const double* traj_times = md_trajectory_frame_times(ctx->sys->trajectory);
-            if (traj_times) {
-                t0 = traj_times[0];
-                t1 = traj_times[num_frames - 1];
-            }
-
-            // Make a guess based on the current time
-            const double t = (ref_time - t0) / (t1 - t0);
-
-            // Guess row index from t
-            row_index = CLAMP((int64_t)(t * num_rows), 0, num_rows - 1);
-
-            if (time[row_index] < ref_time) {
-                for (int64_t i = row_index; i < num_rows; ++i) {
-                    if (timestamps_approx_equal(time[i], ref_time)) {
-                        row_index = i;
-                        break;
-                    }
-                    else if (time[i] - TIMESTAMP_ERROR_MARGIN > ref_time) {
-                        row_index = -1;
-                    }
-                }
-            }
-            else if (time[row_index] > ref_time) {
-                for (int64_t i = row_index; i >= 0; --i) {
-                    if (timestamps_approx_equal(time[i], ref_time)) {
-                        row_index = i;
-                        break;
-                    }
-                    else if (time[i] + TIMESTAMP_ERROR_MARGIN < ref_time) {
-                        row_index = -1;
-                    }
-                }
-            }
-        } else {
-            // Simple case, find the matching frame.
-            // @NOTE: this is the trajectory ORDINAL, which is what a row index wants. It used to be
-            // whatever the file called a frame - the simulation step for XTC and TRR, the MODEL
-            // record number for PDB - so any trajectory written at an interval other than every
-            // step indexed the table with a step count and silently found nothing.
-			row_index = (int64_t)md_state_frame_nearest(ctx->cur_state);
-        }
-
-        if (row_index == -1) {
-            MD_LOG_DEBUG("Unable to lookup corresponding row when evaluating table");
-            return false;
-        }
-
-        if (row_index >= num_rows) {
-			MD_LOG_DEBUG("Row index out of bounds when evaluating table");
-			return false;
-		}
-         
-        for (size_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
-            int idx = node->table_field_indices[i];
-            ((float*)dst->ptr)[i] = (float)node->table->field_values[idx][row_index];
-        }
+    if (!ctx->cur_state || !md_state_has_frame(ctx->cur_state)) {
+        MD_LOG_ERROR("attr: the evaluated state carries no frame");
+        return false;
     }
 
-    return true;
+    const md_attributes_t* attributes = &ctx->sys->attributes;
+    const md_attribute_t* attr     = md_attributes_get(attributes, node->attr_id);
+    const md_attribute_t* attr_ax  = md_attributes_get(attributes, node->attr_axis_id);
+    // The frame is a frame of the run being evaluated, which need not be the run the attribute
+    // was found in: another member of an ensemble is matched to it by time.
+    const md_attribute_t* run_ax   = md_attributes_get(attributes, ctx->run_axis_id ? ctx->run_axis_id : node->run_axis_id);
+    if (!attr || !attr_ax || !run_ax) {
+        MD_LOG_ERROR("attr: '"STR_FMT"' is no longer in the system", STR_ARG(node->attr_path));
+        return false;
+    }
+
+    const size_t frame = (size_t)md_state_frame_nearest(ctx->cur_state);
+    size_t row;
+    if (!md_attribute_axis_map(&row, run_ax, frame, attr_ax)) {
+        MD_LOG_ERROR("attr: '"STR_FMT"' has no value at frame %zu", STR_ARG(node->attr_path), frame);
+        return false;
+    }
+
+    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
+    const size_t count = md_attribute_slice_count(attr, &slice);
+    if (count * sizeof(float) > dst->size) {
+        MD_LOG_ERROR("attr: '"STR_FMT"' changed shape since the script was compiled", STR_ARG(node->attr_path));
+        return false;
+    }
+    return md_attribute_extract_slice_f32((float*)dst->ptr, count, attr, &slice, md_unit_none()) == count;
 }
 
 static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -3533,8 +3442,8 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
             return evaluate_array_subscript(dst, node, ctx);
         case AST_CONSTANT_VALUE:
             return evaluate_constant_value(dst, node, ctx);
-        case AST_TABLE:
-            return evaluate_table_lookup(dst, node, ctx);
+        case AST_ATTRIBUTE:
+            return evaluate_attribute(dst, node, ctx);
         case AST_FLATTEN:
             return evaluate_flatten(dst, node, ctx);
         case AST_TRANSPOSE:
@@ -3991,402 +3900,119 @@ static size_t print_argument_list(char* buf, size_t cap, const type_info_t arg_t
     return len;
 }
 
-static table_t* find_table(md_script_ir_t* ir, str_t name) {
-    for (size_t i = 0; i < md_array_size(ir->tables); ++i) {
-        if (str_eq(ir->tables[i].name, name)) {
-            return &ir->tables[i];
-        }
-    }
-    return NULL;
-}
-
-// There are some heuristics/mumbo jumbo here,
-// we try to match the frame times of the trajectory and the table.
-// If the table has more frames than the trajectory, we assume that the table is a subset of the trajectory.
-static bool frame_times_compatible(const double* traj_times, size_t num_traj_frames, const double* table_times, size_t num_table_frames) {
-    if (!traj_times) return false;
-    if (!table_times) return false;
-
-    if (num_table_frames < num_traj_frames) {
-        return false;
-    }
-
-    // We want to ensure that every frame time in the trajectory is present in the table.
-    size_t table_idx = 0;
-    for (size_t i = 0; i < num_traj_frames; ++i) {
-        while (table_idx < num_table_frames && table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
-            ++table_idx;
-        }
-        if (!timestamps_approx_equal(table_times[table_idx], traj_times[i])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static bool frame_times_compatible_f(const double* traj_times, size_t num_traj_frames, const float* table_times, size_t num_table_frames) {
-    if (!traj_times) return false;
-    if (!table_times) return false;
-
-    if (num_table_frames < num_traj_frames) {
-        return false;
-    }
-
-    // We want to ensure that every frame time in the trajectory is present in the table.
-    size_t table_idx = 0;
-    for (size_t i = 0; i < num_traj_frames; ++i) {
-        while (table_idx < num_table_frames && (double)table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
-            ++table_idx;
-        }
-        if (!timestamps_approx_equal((double)table_times[table_idx], traj_times[i])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// Find the possible occurrence of parenthesis and try to match its contents to a unit.
-static md_unit_t extract_unit_from_label(str_t label) {
-    md_unit_t unit = md_unit_none();
-    size_t beg_loc, end_loc;
-    if (str_find_char(&beg_loc, label, '(') && str_find_char(&end_loc, label, ')')) {
-        str_t unit_str = str_substr(label, beg_loc + 1, end_loc - beg_loc - 1);
-        md_unit_t label_unit;
-        if (md_unit_parse(&label_unit, unit_str)) {
-            unit = label_unit;
-        }
-    }
-    return unit;
-}
-
-static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file, const md_trajectory_i* traj) {
-    str_t ext;
-    if (!extract_ext(&ext, path_to_file)) {
-        LOG_ERROR(ir, tok, "Could not extract extension from file path '"STR_FMT"'", STR_ARG(path_to_file));
-        return NULL;
-    }
-    table_t* table = NULL;
-    md_unit_t traj_time_unit = md_trajectory_time_unit(traj);
-    const size_t num_frames = md_trajectory_num_frames(traj);
-    bool traj_has_time = !md_unit_is_none(traj_time_unit);
-
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(ir->arena);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-   
-    if (str_eq_cstr_ignore_case(ext, "edr")) {
-        md_edr_energies_t edr = {0};
-        if (md_edr_energies_parse_file(&edr, path_to_file, temp_alloc)) {
-            bool success = true;
-            if (traj_has_time) {
-                if (!frame_times_compatible(md_trajectory_frame_times(traj), num_frames, edr.frame_time, edr.num_frames)) {
-                    LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, could not match timestamps");
-                    success = false;
-                }
-            } else {
-                if (num_frames != edr.num_frames) {
-					LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, number of frames did not match");
-					success = false;
-				}
-            }
-            if (success) {
-                md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
-                table = md_array_last(ir->tables);
-                table->name = str_copy(path_to_file, ir->arena);
-
-                table_push_field_d(table, STR_LIT("Time"), md_unit_picosecond(), edr.frame_time, edr.num_frames, ir->arena);
-                for (size_t i = 0; i < edr.num_energies; ++i) {
-                    table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
-                }
-            }
-        }
-        md_edr_energies_free(&edr);
-    } else if (str_eq_cstr_ignore_case(ext, "xvg")) {
-        md_xvg_t xvg = {0};
-        if (md_xvg_parse_file(&xvg, path_to_file, temp_alloc)) {
-            bool success = true;
-            bool xvg_has_time = str_eq_cstr_n_ignore_case(xvg.header_info.xaxis_label, "time", 4);
-            if (traj_has_time && xvg_has_time) {
-                if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, xvg.fields[0], xvg.num_values)) {
-                    LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, could not match timestamps");
-                    success = false;
-                }
-            } else {
-            	if (num_frames != xvg.num_values) {
-                	LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, number of frames did not match");
-                	success = false;
-                }
-            }
-            if (success) {
-                md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
-                table = md_array_last(ir->tables);
-                table->name = str_copy(path_to_file, ir->arena);
-                
-                size_t i = 0;
-                if (xvg_has_time) {
-                    md_unit_t time_unit = extract_unit_from_label(xvg.header_info.xaxis_label);
-                    table_push_field_f(table, STR_LIT("Time"), time_unit, xvg.fields[0], xvg.num_values, ir->arena);
-                    i = 1;
-                }
-
-                md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
-                for (; i < xvg.num_fields; ++i) {
-                    str_t name = STR_LIT("");
-                    if (0 < i && i-1 < md_array_size(xvg.header_info.legends)) {
-                        name = xvg.header_info.legends[i-1];
-                    }
-                    table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
-                }
-            }
-            md_xvg_free(&xvg, temp_alloc);
-        }
-    } else if (str_eq_cstr_ignore_case(ext, "csv")) {
-        md_csv_t csv = {0};
-        if (md_csv_parse_file(&csv, path_to_file, temp_alloc)) {
-            bool success = true;
-            bool csv_has_time = csv.field_names && str_eq_cstr_n_ignore_case(csv.field_names[0], "time", 4);
-
-            if (traj_has_time && csv_has_time) {
-                if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, csv.field_values[0], csv.num_values)) {
-                    LOG_ERROR(ir, tok, "CSV file is not compatible with loaded trajectory, could not match timestamps");
-                    success = false;
-                }
-            } else {
-                if (num_frames != csv.num_values) {
-					LOG_ERROR(ir, tok, "CSV file is not compatible with loaded trajectory, number of frames did not match");
-					success = false;
-				}
-            }
-            if (success) {
-                md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
-                table = md_array_last(ir->tables);
-                table->name = str_copy(path_to_file, ir->arena);
-
-                size_t i = 0;
-                if (csv_has_time) {
-                    md_unit_t time_unit = extract_unit_from_label(csv.field_names[0]);
-                    table_push_field_f(table, STR_LIT("Time"), time_unit, csv.field_values[0], csv.num_values, ir->arena);
-                    i = 1;
-                }
-
-                for (; i < csv.num_fields; ++i) {
-                    md_unit_t unit = md_unit_none();
-                    str_t name = STR_LIT("");
-                    if (csv.field_names) {
-                        name = csv.field_names[i];
-                        unit = extract_unit_from_label(csv.field_names[i]);
-                    }
-                    table_push_field_f(table, name, unit, csv.field_values[i], csv.num_values, ir->arena);
-                }
-            }
-
-            md_csv_free(&csv, temp_alloc);
-        }
-    } else {
-        LOG_ERROR(ir, (token_t){0}, "import: unsupported file extension '"STR_FMT"'", (int)ext.len, ext.ptr);
-        goto done;
-    }
-
-done:
-    md_temp_end(temp_scope);
-    return table;
-}
-
-static void swap_int(int* a, int* b) {
-    int tmp = *a;
-    *a = *b;
-    *b = tmp;
-}
-
-// The number of matches may be more than number of candidates, therefore the true number of matches computed are returned
-static size_t str_find_n_best_matches(int match_idx[], size_t num_idx, str_t str, str_t candidates[], size_t num_candidates) {
-    num_idx = MIN(num_idx, num_candidates);
-    md_temp_scope_t temp = md_temp_begin();
-    int* distances = md_temp_alloc_array(temp, int, num_idx);
-    for (size_t i = 0; i < num_idx; ++i) {
-        distances[i] = INT32_MAX;
-    }
-    for (size_t i = 0; i < num_candidates; ++i) {
-        str_t can = candidates[i];
-        int dist = str_edit_distance(str, can);
-        
-        // If the first characters differ, then add a penalty
-        const size_t min_len = MIN(str.len, can.len);
-        for (size_t j = 0; j < MIN(3, min_len); ++j) {
-            if (to_lower(str.ptr[j]) != to_lower(can.ptr[j])) {
-                dist += 10;
-            }
-        }
-        
-        if (dist < distances[num_idx - 1]) {
-            // Insertion sort
-            distances[num_idx - 1] = dist;
-            match_idx[num_idx - 1] = (int)i;
-            size_t j = num_idx - 1;
-            while (j > 0 && distances[j] < distances[j - 1]) {
-                swap_int(&distances[j], &distances[j-1]);
-                swap_int(&match_idx[j], &match_idx[j-1]);
-                --j;
-            }
-        }
-    }
-    md_temp_end(temp);
-    return num_idx;
-}
-
-static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node);
+// attr("<path>") names a temporal attribute of the system. The path is either absolute
+// ("run/a/edr/potential") or relative to a run ("edr/potential"), in which case it has to exist in
+// exactly one run: with a single trajectory that is always the case, and when it is not the error
+// says which runs to choose between rather than picking one.
+static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_ATTRIBUTE);
     ASSERT(ctx);
 
     if (!static_check_children(node, ctx)) {
         return false;
     }
 
-    const size_t num_args = md_array_size(node->children);
-    ast_node_t** const args = node->children;
-
-    if (num_args == 0) {
-        LOG_ERROR(ctx->ir, node->token, "import: expected at least one argument");
+    ast_node_t** args = node->children;
+    if (md_array_size(args) != 1 || args[0]->type != AST_CONSTANT_VALUE || !is_type_equivalent(args[0]->data.type, (type_info_t)TI_STRING)) {
+        LOG_ERROR(ctx->ir, node->token, "attr: expected one constant string, the path of the attribute, e.g. attr(\"edr/potential\")");
+        return false;
+    }
+    if (!ctx->sys) {
+        LOG_ERROR(ctx->ir, node->token, "attr: there is no system to read attributes from");
         return false;
     }
 
-    if (num_args > 2) {
-        LOG_ERROR(ctx->ir, node->token, "import: to many arguments");
+    const md_attributes_t* attributes = &ctx->sys->attributes;
+    const str_t path = args[0]->value._string;
+    if (str_empty(path)) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: empty path");
         return false;
     }
 
-    if (!is_type_equivalent(args[0]->data.type, (type_info_t)TI_STRING) || (args[0]->type != AST_CONSTANT_VALUE)) {
-        LOG_ERROR(ctx->ir, node->token, "import: requires as minimum a constant string containing the path to the file to import");
-        return false;
-    }
-
-    str_t full_path = md_path_make_canonical(args[0]->value._string, ctx->temp_alloc);
-    if (str_empty(full_path)) {
-        LOG_ERROR(ctx->ir, node->token, "import: failed to resolve path '"STR_FMT"'", (int)full_path.len, full_path.ptr);
-        return false;
-    }
-
-    table_t* table = find_table(ctx->ir, full_path);
-    if (!table) {
-        table = import_table(ctx->ir, node->token, full_path, ctx->sys->trajectory);
-        if (!table) {
-            LOG_ERROR(ctx->ir, node->token, "import: failed to import file '"STR_FMT"'", (int)full_path.len, full_path.ptr);
+    char buf[512];
+    const md_attribute_t* attr = md_attributes_find(attributes, path);
+    if (!attr) {
+        // Relative to a run: look in every one and insist on exactly one match.
+        str_t runs[64];
+        const size_t num_runs = MIN(md_attributes_query_children(runs, ARRAY_SIZE(runs), attributes, STR_LIT("run")), ARRAY_SIZE(runs));
+        size_t num_matches = 0;
+        md_strb_t candidates = md_strb_create(ctx->temp_alloc);
+        for (size_t i = 0; i < num_runs; ++i) {
+            int len = snprintf(buf, sizeof(buf), "run/"STR_FMT"/"STR_FMT, STR_ARG(runs[i]), STR_ARG(path));
+            if (len <= 0 || (size_t)len >= sizeof(buf)) continue;
+            const md_attribute_t* a = md_attributes_find(attributes, (str_t){buf, (size_t)len});
+            if (a) {
+                attr = a;
+                num_matches += 1;
+                md_strb_fmt(&candidates, "  '%s'\n", buf);
+            }
+        }
+        if (num_matches == 0) {
+            LOG_ERROR(ctx->ir, args[0]->token, "attr: no attribute '"STR_FMT"' in the system or in any run", STR_ARG(path));
+            return false;
+        }
+        if (num_matches > 1) {
+            LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' exists in more than one run, name it in full:\n"STR_FMT,
+                STR_ARG(path), STR_ARG(md_strb_to_str(candidates)));
             return false;
         }
     }
 
-    md_array(int) field_indices = 0;
-
-    // Resolve mappings if supplied (what fields to load)
-    if (num_args == 2) {
-        const ast_node_t* arg = args[1];
-        type_info_t type = arg->data.type;
-
-        if (arg->flags & FLAG_DYNAMIC) {
-            LOG_ERROR(ctx->ir, node->token, "import: second argument must be a constant");
-            return false;
-        }
-       
-        if (is_type_directly_compatible(type, (type_info_t)TI_INT_ARR)) {
-            const size_t count = element_count(arg->data);
-            const int* ints = as_int_arr(arg->data);
-            for (size_t i = 0; i < count; ++i) {
-                int idx = ints[i];
-                if (idx < 1 || (int)table->num_fields < idx) {
-                    LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
-                        (int)table->num_fields);
-                    return false;
-                }
-                md_array_push(field_indices, idx - 1, ctx->ir->arena);
-            }
-        } else if (is_type_directly_compatible(type, (type_info_t)TI_IRANGE_ARR)) {
-            const size_t count = element_count(arg->data);
-            const irange_t* ranges = as_irange_arr(arg->data);
-
-            for (size_t i = 0; i < count; ++i) {
-                irange_t range = ranges[i];
-                if (range.end < range.beg) {
-                    LOG_ERROR(ctx->ir, node->token, "import: invalid range");
-                    return false;
-                }
-                if (range.beg == INT32_MIN) range.beg = 1;
-                if (range.end == INT32_MAX) range.end = (int)table->num_fields;
-                for (int idx = range.beg; idx <= range.end; ++idx) {
-                    if (idx < 1 || (int)table->num_fields < idx) {
-                        LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
-                            (int)table->num_fields);
-                        return false;
-                    }
-                    md_array_push(field_indices, idx - 1, ctx->ir->arena);
-                }
-            }
-        } else if (is_type_directly_compatible(type, (type_info_t)TI_STRING_ARR)) {
-            const size_t count = element_count(arg->data);
-            const str_t* strings = as_string_arr(arg->data);
-            for (size_t i = 0; i < count; ++i) {
-                str_t str = strings[i];
-                if (str.len == 0) {
-                    LOG_ERROR(ctx->ir, node->token, "import: empty string not allowed");
-                    return false;
-                }
-                int match_idx = -1;
-                for (int j = 0; j < (int)table->num_fields; ++j) {
-                    if (str_eq(str, table->field_names[j])) {
-                        match_idx = j;
-                        break;
-                    }
-                }
-                if (match_idx == -1) {
-                    char buf[512];
-                    int len = 0;
-                    int best_idx[3];
-                    const size_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names, table->num_fields);
-                    for (size_t j = 0; j < num_best_matches; ++j) {
-                        int idx = best_idx[j];
-                        str_t name = table->field_names[idx];
-                        len += snprintf(buf + len, sizeof(buf) - len, "'"STR_FMT"'\n", (int)name.len, name.ptr);
-                    }
-                    
-                    LOG_ERROR(ctx->ir, node->token, "import: field '"STR_FMT"' not found, closest field names are:\n%s", (int)str.len, str.ptr, buf);
-                    return false;
-                }
-                md_array_push(field_indices, match_idx, ctx->ir->arena);
-            }
-        } else {
-            LOG_ERROR(ctx->ir, node->token, "import: unexpected type of second argument");
-            return false;
-        }
-    } else {
-        ASSERT(num_args == 1);
-        // Setup node table fields to hold all available fields within the imported table
-        for (size_t i = 0; i < table->num_fields; ++i) {
-            md_array_push(field_indices, (int)i, ctx->ir->arena);
-        }
+    if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not vary over the trajectory; attr() reads temporal attributes", STR_ARG(attr->path));
+        return false;
     }
-
-    if (md_array_size(field_indices) == 0) {
-        LOG_ERROR(ctx->ir, node->token, "import: no fields matched");
+    if (attr->format.type == MD_ATTRIBUTE_TYPE_STR || attr->format.type == MD_ATTRIBUTE_TYPE_NONE) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not hold numbers", STR_ARG(attr->path));
         return false;
     }
 
-    md_unit_t y_unit = table->field_units[field_indices[0]];
-    for (size_t i = 0; i < md_array_size(field_indices); ++i) {
-        if (!md_unit_equal(y_unit, table->field_units[field_indices[i]])) {
-            // If we have conflicting units, we make it unitless and let the user know.
-            //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
-            y_unit = md_unit_none();
-            break;
-        }
+    // The run is the first two segments, and its frames are the ones the script steps through.
+    const str_t full = attr->path;
+    size_t name_len = 0;
+    if (!str_begins_with(full, STR_LIT("run/")) || !str_find_char(&name_len, str_substr(full, 4, SIZE_MAX), '/')) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' is not part of a run ('run/<name>/...'), so it has no frames to follow", STR_ARG(full));
+        return false;
+    }
+    const str_t run = str_substr(full, 0, 4 + name_len);
+    int len = snprintf(buf, sizeof(buf), STR_FMT"/time", STR_ARG(run));
+    const md_attribute_t* run_axis = (len > 0 && (size_t)len < sizeof(buf)) ? md_attributes_find(attributes, (str_t){buf, (size_t)len}) : NULL;
+    if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: the run '"STR_FMT"' has no frame axis ('"STR_FMT"/time')", STR_ARG(run), STR_ARG(run));
+        return false;
+    }
+    const md_attribute_t* attr_axis = md_attributes_axis(attributes, attr);
+    if (!attr_axis) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' has no frame axis", STR_ARG(full));
+        return false;
     }
 
-    node->type = AST_TABLE;
-    node->data.type = (type_info_t) {TYPE_FLOAT, {(int)md_array_size(field_indices)}};
-    node->data.unit[0] = table->x_unit;
-    node->data.unit[1] = y_unit;
-    node->table = table;
-    node->table_field_indices = field_indices;
-    node->flags |= FLAG_DYNAMIC; // It is not a constant value, it will change depending on what time we evaluate it.
+    // One value per frame: the index axes left after the frame axis, then the components of a
+    // value. A 3x3 tensor is float[3][3], a vector float[3], a scalar float.
+    const uint32_t num_dims = (attr->format.rank - 1) + (attr->format.components > 1 ? 1 : 0);
+    if (num_dims > MAX_NUM_DIMS) {
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' has more dimensions per frame than a script value can hold (%d)", STR_ARG(full), MAX_NUM_DIMS);
+        return false;
+    }
+    type_info_t type = { .base_type = TYPE_FLOAT, .dim = {1} };
+    uint32_t d = 0;
+    for (uint32_t i = 1; i < attr->format.rank; ++i) {
+        type.dim[d++] = (int)attr->format.shape[i];
+    }
+    if (attr->format.components > 1) {
+        type.dim[d++] = (int)attr->format.components;
+    }
+
+    node->attr_path    = str_copy(full, ctx->ir->arena);
+    node->attr_id      = attr->id;
+    node->attr_axis_id = attr_axis->id;
+    node->run_axis_id  = run_axis->id;
+    node->attr_version = attr->version ^ (attr_axis->version << 21) ^ (run_axis->version << 42);
+
+    node->data.type    = type;
+    node->data.unit[0] = md_unit_none();
+    node->data.unit[1] = attr->unit;
+    node->flags       |= FLAG_DYNAMIC;  // a different value at every frame
 
     return true;
 }
@@ -5117,6 +4743,11 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     dim_prune_leading_ones(ident->data->type.dim);
                     ident->data->size = stride;
                     ident->data->ptr = 0;
+                    // If the right hand side was evaluated at compile time, the identifier refers to its i-th element.
+                    // Without this, a constant identifier would be read through a null pointer.
+                    if (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) {
+                        ident->data->ptr = (uint8_t*)rhs->data.ptr + (size_t)i * stride;
+                    }
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;
@@ -5258,11 +4889,6 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             return false;
                         }
 
-                    // If the right hand side was evaluated at compile time, the identifier refers to its i-th element.
-                    // Without this, a constant identifier would be read through a null pointer.
-                    if (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) {
-                        ident->data->ptr = (uint8_t*)rhs->data.ptr + (size_t)i * stride;
-                    }
                         type_info_t local_type = lhs->data.type;
 
                         if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
@@ -5358,8 +4984,8 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_IDENTIFIER:
         result = static_check_identifier_reference(node, ctx);
         break;
-    case AST_TABLE:
-        result = static_check_import(node, ctx);
+    case AST_ATTRIBUTE:
+        result = static_check_attribute(node, ctx);
         break;
     case AST_FLATTEN:
         result = static_check_flatten(node, ctx);
@@ -5423,16 +5049,6 @@ static uint64_t hash_children(const ast_node_t* node, uint64_t seed) {
     return hash;
 }
 
-static uint64_t hash_table(const table_t* table, uint64_t seed) {
-    // Tables are resolved at compile time, thus we can check their contents directly
-    uint64_t hash = seed;
-    for (size_t i = 0; i < table->num_fields; ++i) {
-        hash = md_hash64(table->field_names[i].ptr, table->field_names[i].len, hash);
-        hash = md_hash64(table->field_values[i], sizeof(double) * table->num_values, hash);
-    }
-    return hash;
-}
-
 static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
     ASSERT(node);
     switch (node->type) {
@@ -5455,8 +5071,10 @@ static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
         return md_hash64(node->ident.ptr, node->ident.len, md_hash64(&node->data.type, sizeof(node->data.type), seed));
     case AST_PROC_CALL:
         return md_hash64(node->ident.ptr, node->ident.len, md_hash64(&node->data.type, sizeof(node->data.type), hash_children(node, seed)));
-    case AST_TABLE:
-        return hash_table(node->table, md_hash64(node->table_field_indices, md_array_bytes(node->table_field_indices), seed));
+    case AST_ATTRIBUTE:
+        // What was read and which version of it. The data itself can be large and lives in the
+        // system, whose attribute versions already say when it changed.
+        return md_hash64(node->attr_path.ptr, node->attr_path.len, md_hash64(&node->attr_version, sizeof(node->attr_version), seed));
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
     default:
@@ -5753,7 +5371,7 @@ static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* a
 // The bin coordinates of a distribution are its range cut into equal bins, and that range is not
 // known until frames have been evaluated - it may be widened by the data itself. Computing them on
 // demand keeps them correct without anyone having to remember to rewrite them.
-static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const eval_property_t* prop = (const eval_property_t*)user_data;
     if (!prop || !prop->range || attr->format.rank != 1) {
         return 0;
@@ -5928,7 +5546,7 @@ static void clear_property(eval_property_t* prop) {
     prop->accum_count = 0;
 }
 
-static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
+static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_t run, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
     ASSERT(sys);
     ASSERT(ir);
@@ -5948,15 +5566,23 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
     md_system_state_t cur_state = { .alloc = temp_alloc };
     md_system_state_init(&cur_state, sys->atom.count);
 
+    // No per frame attribute table on this state. The scratch it would live in is rewound after
+    // every frame, so a table filled on frame f would be read on frame f+1 out of memory the
+    // evaluation has since reused. The evaluation asks for nothing that would land there anyway.
+    cur_state.attributes.alloc = NULL;
+
     // coordinate data for reading trajectory frames into
     const size_t stride = ALIGN_TO(sys->atom.count, 16);    // Round up allocation size to simd width to allow for vectorized operations
 
     float* atom_mass   = md_temp_alloc_array(temp, float, stride);
     float* atom_radius = md_temp_alloc_array(temp, float, stride);
 
-    md_trajectory_reader_i traj_reader = {0};
-    if (!md_trajectory_reader_init(&traj_reader, sys->trajectory)) {
-        MD_LOG_ERROR("Failed to initialize trajectory reader for evaluation");
+    // One extraction context for the range: the files a run streams from stay open across its
+    // frames. It is made on this thread and used by it alone, which is what a context asks for.
+    const str_t coord_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+    md_system_extract_t* extract = md_system_extract_begin(sys, run, coord_paths, ARRAY_SIZE(coord_paths), md_get_heap_allocator());
+    if (!extract) {
+        MD_LOG_ERROR("Failed to begin extracting frames for evaluation");
         result = false;
         goto done;
     }
@@ -5983,6 +5609,11 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
         .cur_state = &cur_state,
         .ref_state = &sys->reference,
     };
+    {
+        char buf[512];
+        const md_attribute_t* axis = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+        ctx.run_axis_id = axis ? axis->id : MD_ATTRIBUTE_INVALID;
+    }
 
     // We evaluate each frame, one at a time
     for (uint32_t f_idx = frame_beg; f_idx < frame_end; ++f_idx) {
@@ -5990,7 +5621,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
             goto done;
         }
         
-        result = md_trajectory_reader_load_frame(traj_reader, f_idx, &cur_state);
+        result = md_system_extract_frame(extract, f_idx, &cur_state);
 
         if (!result) {
             MD_LOG_ERROR("Failed to load frame during evaluation");
@@ -6136,7 +5767,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, cons
 done:
     //md_logf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
     md_temp_end(temp);
-    md_trajectory_reader_free(&traj_reader);
+    md_system_extract_end(extract);
     return result;
 }
 
@@ -6213,35 +5844,8 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         md_strb_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
     }
 
-    if (node->type == AST_TABLE) {
-        // Write header contents of table to provide an overview of what is there
-        md_strb_push_char(&sb, '\n');
-        bool matching_units = true;
-        for (size_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
-            int idx = node->table_field_indices[i];
-            if (idx < 0 || (int)node->table->num_fields <= idx) {
-                MD_LOG_DEBUG("Attempting to read out of bounds in table_field_indices");
-                continue;
-            }
-            str_t name = node->table->field_names[idx];
-            md_strb_fmt(&sb, "[%i]: \""STR_FMT"\"", (int)(i + 1), STR_ARG(name));
-            md_unit_t y_unit = node->table->field_units[idx];
-            if (!md_unit_is_none(y_unit)) {
-                char unit_buf[128];
-                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), y_unit);
-                if (unit_len > 0) {
-                    str_t unit_str = str_copy((str_t){unit_buf, unit_len}, temp_arena);
-                    md_strb_fmt(&sb, " ("STR_FMT")", STR_ARG(unit_str));
-                }
-            }
-            if (!md_unit_equal(node->data.unit[1], y_unit)) {
-                matching_units = false;
-            }
-            md_strb_push_char(&sb, '\n');
-        }
-        if (!matching_units) {
-            md_strb_fmt(&sb, "Cannot assign unit to data due to conflicting units in fields.");
-        }
+    if (node->type == AST_ATTRIBUTE) {
+        md_strb_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
     } else if (!(node->flags & FLAG_DYNAMIC)) {
         if (node->data.type.base_type != TYPE_BITFIELD) {
             md_strb_push_char(&sb, '\n');
@@ -6652,8 +6256,29 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     md_bitfield_init(&eval->frame_mask, eval->arena);
     md_bitfield_reserve_range(&eval->frame_mask, 0, num_frames);
 
-    eval->attributes.alloc      = eval->arena;
-    eval->attributes.num_frames = (uint32_t)num_frames;
+    eval->attributes.alloc = eval->arena;
+
+    // The frame axis every temporal property is checked against. It lives at the ROOT, outside
+    // 'script/', so that a property the user happens to call "time" can never become the axis of
+    // its neighbours. The evaluation knows how many frames it covers but not when they were taken,
+    // so the coordinates are ordinals and the unit is empty, which is the convention for exactly
+    // that. The time of a frame is the trajectory's business.
+    if (num_frames > 0) {
+        md_attribute_desc_t axis = {
+            .path   = STR_LIT("time"),
+            .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)num_frames } },
+            .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit   = md_unit_none(),
+            .label  = STR_LIT("Frame"),
+        };
+        md_attribute_id_t axis_id = md_attributes_create(&eval->attributes, &axis);
+        double* ordinals = axis_id ? (double*)md_attributes_data(&eval->attributes, axis_id, MD_ATTRIBUTE_TYPE_F64) : NULL;
+        if (ordinals) {
+            for (size_t i = 0; i < num_frames; ++i) {
+                ordinals[i] = (double)i;
+            }
+        }
+    }
 
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
     // of the property it describes, and a growing array would move it out from under one.
@@ -6682,7 +6307,7 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
     eval->interrupt = false;
 }
 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, uint32_t frame_beg, uint32_t frame_end) {
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
 
     if (!ir) {
@@ -6694,9 +6319,11 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
 
-    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(sys->trajectory);
+    char buf[512];
+    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+    const uint32_t num_frames = run_axis ? run_axis->format.shape[0] : 0;
     if (num_frames == 0) {
-        MD_LOG_ERROR("Script eval: Trajectory was empty");
+        MD_LOG_ERROR("Script eval: no frames in the run '" STR_FMT "'", STR_ARG(run));
         return false;
     }
     if (frame_beg > frame_end || frame_end > num_frames) {
@@ -6709,7 +6336,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
     
-    bool result = eval_properties(eval, sys, ir, frame_beg, frame_end);
+    bool result = eval_properties(eval, sys, run, ir, frame_beg, frame_end);
 
     // The buffers were written through md_attributes_data, which deliberately does not bump a
     // version. This is the producer saying it is done.

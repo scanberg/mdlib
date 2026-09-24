@@ -1248,6 +1248,71 @@ static inline md_256 simd_deperiodize_ortho(md_256 x, md_256 r, md_256 period, m
     return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
 }
 
+// PACKED XYZ, COMPONENT WISE
+//
+// Eight packed atoms are 24 floats, and float p of them is component p % 3. An operation that treats
+// x, y and z alike but apart - a min image in an orthorhombic cell, a blend, a sum - works on those
+// floats as they are loaded, with its per axis constants laid out in the same pattern, and never
+// splits them into x, y and z. The 24 floats are XYZ_GROUP_VECS native vectors (md_xv): three of
+// eight lanes with AVX, six of four on NEON.
+#define XYZ_GROUP_VECS (24 / MD_XV_WIDTH)
+
+// Per axis constants in the lane pattern of a group
+static inline void xyz_lane_pattern(md_xv out[XYZ_GROUP_VECS], float x, float y, float z) {
+    const float v[3] = { x, y, z };
+    float p[24];
+    for (int k = 0; k < 24; ++k) p[k] = v[k % 3];
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) out[j] = md_xv_loadu_ps(p + j * MD_XV_WIDTH);
+}
+
+// Eight per atom values (weights) spread to the lanes of their atoms' three components
+static inline void xyz_lane_spread(md_xv out[XYZ_GROUP_VECS], const float* w8) {
+#if MD_XV_WIDTH == 8
+    const md_256 w = md_mm256_loadu_ps(w8);
+    out[0] = md_mm256_permutevar8x32_ps(w, simde_mm256_setr_epi32(0, 0, 0, 1, 1, 1, 2, 2));
+    out[1] = md_mm256_permutevar8x32_ps(w, simde_mm256_setr_epi32(2, 3, 3, 3, 4, 4, 4, 5));
+    out[2] = md_mm256_permutevar8x32_ps(w, simde_mm256_setr_epi32(5, 5, 6, 6, 6, 7, 7, 7));
+#else
+    for (int h = 0; h < 2; ++h) {
+        const md_128 w = md_mm_loadu_ps(w8 + 4 * h);
+        out[3 * h + 0] = md_mm_shuffle_ps(w, w, SIMDE_MM_SHUFFLE(1, 0, 0, 0));   // w0 w0 w0 w1
+        out[3 * h + 1] = md_mm_shuffle_ps(w, w, SIMDE_MM_SHUFFLE(2, 2, 1, 1));   // w1 w1 w2 w2
+        out[3 * h + 2] = md_mm_shuffle_ps(w, w, SIMDE_MM_SHUFFLE(3, 3, 3, 2));   // w2 w3 w3 w3
+    }
+#endif
+}
+
+// A group's lanes summed per component
+static inline void xyz_lane_reduce_add(double out[3], const md_xv v[XYZ_GROUP_VECS]) {
+    float t[24];
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) md_xv_storeu_ps(t + j * MD_XV_WIDTH, v[j]);
+    for (int p = 0; p < 24; ++p) out[p % 3] += t[p];
+}
+
+// x brought to the image nearest r, lane by lane; a lane with no period (zero) is left alone
+static inline md_xv xv_deperiodize_ortho(md_xv x, md_xv r, md_xv period, md_xv inv_period) {
+    md_xv d = md_xv_mul_ps(md_xv_sub_ps(x, r), inv_period);
+    d = md_xv_sub_ps(d, md_xv_round_ps(d));
+    const md_xv p = md_xv_fmadd_ps(d, period, r);
+    return md_xv_blendv_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
+}
+
+// Atoms to step over before packed coordinates at p are aligned to the given boundary, so every load
+// of a group stays within its cache line; from a 16 byte boundary, which is where an md_array's
+// elements begin, half of the 32 byte loads would straddle two. Zero if p is not float aligned.
+static inline size_t xyz_align_peel_to(const void* p, size_t count, size_t alignment) {
+    const size_t a = (size_t)((uintptr_t)p & (alignment - 1));
+    if (a & 3) return 0;
+    for (size_t k = 0; k < alignment / 4; ++k) {
+        if (((a + 12 * k) & (alignment - 1)) == 0) return MIN(k, count);
+    }
+    return 0;
+}
+
+static inline size_t xyz_align_peel(const void* p, size_t count) {
+    return xyz_align_peel_to(p, count, 32);
+}
+
 static inline int simd_xyz_mask(float ext[3]) {
     int mask = 0;
     if (ext[0] > 0.0f) mask |= 1;
@@ -1986,11 +2051,9 @@ void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const fl
     }
 }
 
-void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     ASSERT(out_secondary_structure);
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
+    ASSERT(xyz);
     ASSERT(cell);
     ASSERT(backbone);
 
@@ -2011,9 +2074,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     dssp_res_hbonds_t* res_hbonds = md_temp_alloc_array(temp, dssp_res_hbonds_t, backbone_segment_count);
     uint32_t* res_range_id = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
     uint8_t* turn_mask = md_temp_alloc_array(temp, uint8_t, backbone_segment_count);
-    float* res_ca_x = md_temp_alloc_array(temp, float, backbone_segment_count);
-    float* res_ca_y = md_temp_alloc_array(temp, float, backbone_segment_count);
-    float* res_ca_z = md_temp_alloc_array(temp, float, backbone_segment_count);
+    vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
 
     md_array(residue_pair_t) sheet_candidates = NULL;
 	md_array_ensure(sheet_candidates, 1024, temp_alloc);
@@ -2036,17 +2097,15 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             md_atom_idx_t o_idx  = backbone_atoms[i].o;
             md_atom_idx_t hn_idx = backbone_atoms[i].hn;
 
-			res_ca_x[i] = x[ca_idx];
-			res_ca_y[i] = y[ca_idx];
-			res_ca_z[i] = z[ca_idx];
+			res_ca[i] = xyz[ca_idx];
 
-            res_coords[i].CA = vec4_set(x[ca_idx], y[ca_idx], z[ca_idx], 0);
-            res_coords[i].N  = vec4_set(x[n_idx],  y[n_idx],  z[n_idx],  0);
-            res_coords[i].C  = vec4_set(x[c_idx],  y[c_idx],  z[c_idx],  0);
-            res_coords[i].O  = vec4_set(x[o_idx],  y[o_idx],  z[o_idx],  0);
+            res_coords[i].CA = vec4_from_vec3(xyz[ca_idx], 0);
+            res_coords[i].N  = vec4_from_vec3(xyz[n_idx], 0);
+            res_coords[i].C  = vec4_from_vec3(xyz[c_idx], 0);
+            res_coords[i].O  = vec4_from_vec3(xyz[o_idx], 0);
 
             if (hn_idx >= 0) {
-                res_coords[i].H = vec4_set(x[hn_idx], y[hn_idx], z[hn_idx], 0);
+                res_coords[i].H = vec4_from_vec3(xyz[hn_idx], 0);
             } else {
                 if (i > range.beg)
                     res_coords[i].H = estimate_HN(res_coords[i].N, res_coords[i].CA, res_coords[i - 1].C);
@@ -2059,7 +2118,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(res_ca_x, res_ca_y, res_ca_z, NULL, backbone_segment_count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(vec3_t), NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &stream, 9.0, cell, 0);
 
@@ -2491,7 +2550,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     md_temp_end(temp);
 }
 
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
 
     if (!backbone) return false;
     if (capacity < backbone->segment.count) {
@@ -2503,24 +2562,22 @@ bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t seconda
 #if 0
     return tm_align(secondary_structure, capacity, sys);
 #else
-    if (secondary_structure && x && y && z && backbone) {
-        dssp(secondary_structure, capacity, x, y, z, cell, backbone);
+    if (secondary_structure && xyz && backbone) {
+        dssp(secondary_structure, capacity, xyz, cell, backbone);
         return true;
     }
     return false;
 #endif
 }
 
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
     MEMSET(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
 
     if (!backbone) return false;
-    if (!x) return false;
-    if (!y) return false;
-    if (!z) return false;
+    if (!xyz) return false;
     if (!backbone->segment.atoms) return false;
 
     for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
@@ -2538,11 +2595,11 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 			int  n_idx     = backbone->segment.atoms[i].n;
 			int n_next_idx = backbone->segment.atoms[i + 1].n;
 
-			vec3_t c_prev = vec3_set(x[c_prev_idx], y[c_prev_idx], z[c_prev_idx]);
-            vec3_t n      = vec3_set(x[n_idx], y[n_idx], z[n_idx]);
-            vec3_t ca     = vec3_set(x[ca_idx], y[ca_idx], z[ca_idx]);
-            vec3_t c      = vec3_set(x[c_idx], y[c_idx], z[c_idx]);
-            vec3_t n_next = vec3_set(x[n_next_idx], y[n_next_idx], z[n_next_idx]);
+			vec3_t c_prev = xyz[c_prev_idx];
+            vec3_t n      = xyz[n_idx];
+            vec3_t ca     = xyz[ca_idx];
+            vec3_t c      = xyz[c_idx];
+            vec3_t n_next = xyz[n_next_idx];
 
             vec3_t d[4] = {
                 vec3_sub(n, c_prev),
@@ -3697,12 +3754,8 @@ static int compare_atom_pair(const void* a, const void* b) {
     return 0;
 }
 
-static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const float* x, const float* y, const float* z, const md_unitcell_t* cell, md_array(bond_pair_t)* candidates, md_allocator_i* alloc) {
-    vec3_t d = vec3_set(
-        x[atom_i] - x[atom_j],
-        y[atom_i] - y[atom_j],
-        z[atom_i] - z[atom_j]
-    );
+static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const vec3_t* xyz, const md_unitcell_t* cell, md_array(bond_pair_t)* candidates, md_allocator_i* alloc) {
+    vec3_t d = vec3_sub(xyz[atom_i], xyz[atom_j]);
     md_util_min_image_vec3(&d, 1, cell);
     float dist = vec3_length(d);
     if (dist < cutoff) {
@@ -3738,8 +3791,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
     md_bond_data_clear(bond);
     
-    if (!state->x || !state->y || !state->z) {
-        MD_LOG_ERROR("Missing atom field (x/y/z)");
+    if (!state->xyz) {
+        MD_LOG_ERROR("Missing atom coordinates");
         goto done;
     }
 
@@ -3778,12 +3831,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 }
                 for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
                     for (size_t j = i + 1; j < atom_range.end; ++j) {
-                        test_bb_pair((int)i, (int)j, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
+                        test_bb_pair((int)i, (int)j, 4.0f, state->xyz, &state->unitcell, &candidates, temp_arena);
                     }
                 }
             }
             if (bb_prev >= 0 && bb_i >= 0) {
-                test_bb_pair(bb_prev, bb_i, 4.0f, state->x, state->y, state->z, &state->unitcell, &candidates, temp_arena);
+                test_bb_pair(bb_prev, bb_i, 4.0f, state->xyz, &state->unitcell, &candidates, temp_arena);
             }
             bb_prev = bb_i;
         }
@@ -3869,7 +3922,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
-            md_coord_stream_t coords = md_coord_stream_from_soa(state->x, state->y, state->z, NULL, state->num_atoms);
+            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &coords, cell_ext, &state->unitcell, 0);
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
@@ -4490,12 +4543,10 @@ static inline void spatial_acc_hbond_candidate_callback(const uint32_t* i_idx, c
     }
 }
 
-void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
+void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const vec3_t* atom_xyz,
                                  const md_unitcell_t* unitcell, double max_dist, double min_angle) {
     ASSERT(hbond_data);
-    ASSERT(atom_x);
-    ASSERT(atom_y);
-    ASSERT(atom_z);
+    ASSERT(atom_xyz);
 
     hbond_data->num_bonds = 0;
     md_array_shrink(hbond_data->bonds, 0);
@@ -4514,7 +4565,7 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
     for (size_t i = 0; i < num_acc; ++i) {
         int idx = hbond_data->candidate.acceptor.idx[i];
         acc_idx[i] = idx;
-        acc_xyz[i] = vec4_set(atom_x[idx], atom_y[idx], atom_z[idx], 0);
+        acc_xyz[i] = vec4_from_vec3(atom_xyz[idx], 0);
     }
 
     size_t num_don = hbond_data->candidate.donor.count;
@@ -4527,8 +4578,8 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
         int d_idx = hbond_data->candidate.donor.d_idx[i];
         int h_idx = hbond_data->candidate.donor.h_idx[i];
         don_idx[i] = d_idx;
-        don_xyz[i] = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
-        hyd_xyz[i] = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
+        don_xyz[i] = vec4_from_vec3(atom_xyz[d_idx], 0);
+        hyd_xyz[i] = vec4_from_vec3(atom_xyz[h_idx], 0);
     }
 
     hbond_candidate_callback_data_t payload = {
@@ -4542,11 +4593,11 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const floa
 
     const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
     
-    md_coord_stream_t acc_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, acc_idx, num_acc);
+    md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), acc_idx, num_acc);
     md_spatial_acc_t acc = { .alloc = temp_arena };
     md_spatial_acc_init(&acc, &acc_stream, cell_ext, unitcell, 0);
 
-    md_coord_stream_t don_stream = md_coord_stream_from_soa(atom_x, atom_y, atom_z, don_idx, num_don);
+    md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), don_idx, num_don);
     md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
 
     typedef struct {
@@ -5880,10 +5931,10 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* s
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = temp_arena};
             double cutoff = MAX(radius, 6.0); // Avoid small cells
-            md_coord_stream_t stream = md_coord_stream_from_soa(state->x, state->y, state->z, viable_indices, viable_count);
+            md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), viable_indices, viable_count);
             md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
 
-            md_coord_stream_t ext_stream = md_coord_stream_from_soa(state->x, state->y, state->z, indices, num_indices);
+            md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
@@ -5891,129 +5942,82 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* s
     md_temp_end(temp);
 }
 
-void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count) {
+void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count) {
     ASSERT(out_aabb_min);
     ASSERT(out_aabb_max);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+    ASSERT(in_xyz);
 
-    md_256 vx_min = md_mm256_set1_ps(+FLT_MAX);
-    md_256 vy_min = md_mm256_set1_ps(+FLT_MAX);
-    md_256 vz_min = md_mm256_set1_ps(+FLT_MAX);
-
-    md_256 vx_max = md_mm256_set1_ps(-FLT_MAX);
-    md_256 vy_max = md_mm256_set1_ps(-FLT_MAX);
-    md_256 vz_max = md_mm256_set1_ps(-FLT_MAX);
-
+    const float* xyz = (const float*)in_xyz;
+    vec4_t aabb_min = vec4_set1( FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
     size_t i = 0;
-    const size_t simd_elem = 8;
-    const size_t simd_count = ROUND_DOWN(count, simd_elem);
 
-    if (in_idx) {
-        if (in_r) {
-            for (; i < simd_count; i += simd_elem) {
-                md_256i idx = md_mm256_loadu_si256(in_idx + i);
-
-                md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
-                md_256 y = md_mm256_i32gather_ps(in_y, idx, 4);
-                md_256 z = md_mm256_i32gather_ps(in_z, idx, 4);
-                md_256 r = md_mm256_i32gather_ps(in_r, idx, 4);
-
-                vx_min = md_mm256_min_ps(vx_min, md_mm256_sub_ps(x, r));
-                vy_min = md_mm256_min_ps(vy_min, md_mm256_sub_ps(y, r));
-                vz_min = md_mm256_min_ps(vz_min, md_mm256_sub_ps(z, r));
-
-                vx_max = md_mm256_max_ps(vx_max, md_mm256_add_ps(x, r));
-                vy_max = md_mm256_max_ps(vy_max, md_mm256_add_ps(y, r));
-                vz_max = md_mm256_max_ps(vz_max, md_mm256_add_ps(z, r));
+    if (!in_idx && !in_r) {
+        // A minimum and a maximum need no split: float p of a group of eight atoms is component p % 3
+        // Scalar up to 32 byte alignment
+        const size_t head = xyz_align_peel(xyz, count);
+        for (; i < head; ++i) {
+            const vec4_t c = vec4_from_vec3(in_xyz[i], 0);
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
+        md_xv v_min[XYZ_GROUP_VECS], v_max[XYZ_GROUP_VECS];
+        for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+            v_min[j] = md_xv_set1_ps(+FLT_MAX);
+            v_max[j] = md_xv_set1_ps(-FLT_MAX);
+        }
+        for (; i + 8 <= count; i += 8) {
+            for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+                const md_xv v = md_xv_loadu_ps(xyz + i * 3 + j * MD_XV_WIDTH);
+                v_min[j] = md_xv_min_ps(v_min[j], v);
+                v_max[j] = md_xv_max_ps(v_max[j], v);
             }
-        } else {
-            for (; i < simd_count; i += simd_elem) {
-                md_256i idx = md_mm256_loadu_si256(in_idx + i);
-
-                md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
-                md_256 y = md_mm256_i32gather_ps(in_y, idx, 4);
-                md_256 z = md_mm256_i32gather_ps(in_z, idx, 4);
-
-                vx_min = md_mm256_min_ps(vx_min, x);
-                vy_min = md_mm256_min_ps(vy_min, y);
-                vz_min = md_mm256_min_ps(vz_min, z);
-
-                vx_max = md_mm256_max_ps(vx_max, x);
-                vy_max = md_mm256_max_ps(vy_max, y);
-                vz_max = md_mm256_max_ps(vz_max, z);
-            }
+        }
+        float lo[24], hi[24];
+        for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+            md_xv_storeu_ps(lo + j * MD_XV_WIDTH, v_min[j]);
+            md_xv_storeu_ps(hi + j * MD_XV_WIDTH, v_max[j]);
+        }
+        for (int p = 0; p < 24; ++p) {
+            aabb_min.elem[p % 3] = MIN(aabb_min.elem[p % 3], lo[p]);
+            aabb_max.elem[p % 3] = MAX(aabb_max.elem[p % 3], hi[p]);
         }
     } else {
-        if (in_r) {
-            for (; i < simd_count; i += simd_elem) {
-                md_256 x = md_mm256_loadu_ps(in_x + i);
-                md_256 y = md_mm256_loadu_ps(in_y + i);
-                md_256 z = md_mm256_loadu_ps(in_z + i);
-                md_256 r = md_mm256_loadu_ps(in_r + i);
+        md_256 vx_min = md_mm256_set1_ps(+FLT_MAX);
+        md_256 vy_min = md_mm256_set1_ps(+FLT_MAX);
+        md_256 vz_min = md_mm256_set1_ps(+FLT_MAX);
+        md_256 vx_max = md_mm256_set1_ps(-FLT_MAX);
+        md_256 vy_max = md_mm256_set1_ps(-FLT_MAX);
+        md_256 vz_max = md_mm256_set1_ps(-FLT_MAX);
 
-                vx_min = md_mm256_min_ps(vx_min, md_mm256_sub_ps(x, r));
-                vy_min = md_mm256_min_ps(vy_min, md_mm256_sub_ps(y, r));
-                vz_min = md_mm256_min_ps(vz_min, md_mm256_sub_ps(z, r));
-
-                vx_max = md_mm256_max_ps(vx_max, md_mm256_add_ps(x, r));
-                vy_max = md_mm256_max_ps(vy_max, md_mm256_add_ps(y, r));
-                vz_max = md_mm256_max_ps(vz_max, md_mm256_add_ps(z, r));
+        for (; i + 8 <= count; i += 8) {
+            md_256 x, y, z, r;
+            if (in_idx) {
+                const md_256i idx = md_mm256_loadu_si256(in_idx + i);
+                md_mm256_i32gather_xyz_ps(&x, &y, &z, xyz, idx);
+                r = in_r ? md_mm256_i32gather_ps(in_r, idx, 4) : md_mm256_setzero_ps();
+            } else {
+                md_mm256_load_xyz_packed_ps(&x, &y, &z, xyz + i * 3);
+                r = md_mm256_loadu_ps(in_r + i);
             }
-        } else {
-            for (; i < simd_count; i += simd_elem) {
-                md_256 x = md_mm256_loadu_ps(in_x + i);
-                md_256 y = md_mm256_loadu_ps(in_y + i);
-                md_256 z = md_mm256_loadu_ps(in_z + i);
-
-                vx_min = md_mm256_min_ps(vx_min, x);
-                vy_min = md_mm256_min_ps(vy_min, y);
-                vz_min = md_mm256_min_ps(vz_min, z);
-
-                vx_max = md_mm256_max_ps(vx_max, x);
-                vy_max = md_mm256_max_ps(vy_max, y);
-                vz_max = md_mm256_max_ps(vz_max, z);
-            }
+            vx_min = md_mm256_min_ps(vx_min, md_mm256_sub_ps(x, r));
+            vy_min = md_mm256_min_ps(vy_min, md_mm256_sub_ps(y, r));
+            vz_min = md_mm256_min_ps(vz_min, md_mm256_sub_ps(z, r));
+            vx_max = md_mm256_max_ps(vx_max, md_mm256_add_ps(x, r));
+            vy_max = md_mm256_max_ps(vy_max, md_mm256_add_ps(y, r));
+            vz_max = md_mm256_max_ps(vz_max, md_mm256_add_ps(z, r));
         }
+        aabb_min = vec4_min(aabb_min, vec4_set(md_mm256_reduce_min_ps(vx_min), md_mm256_reduce_min_ps(vy_min), md_mm256_reduce_min_ps(vz_min), 0));
+        aabb_max = vec4_max(aabb_max, vec4_set(md_mm256_reduce_max_ps(vx_max), md_mm256_reduce_max_ps(vy_max), md_mm256_reduce_max_ps(vz_max), 0));
     }
 
-    vec4_t aabb_min = (vec4_t) { md_mm256_reduce_min_ps(vx_min), md_mm256_reduce_min_ps(vy_min), md_mm256_reduce_min_ps(vz_min) };
-    vec4_t aabb_max = (vec4_t) { md_mm256_reduce_max_ps(vx_max), md_mm256_reduce_max_ps(vy_max), md_mm256_reduce_max_ps(vz_max) };
-
-    // Handle remainder
-    if (in_idx) {
-        if (in_r) {
-            for (; i < count; ++i) {
-                int32_t idx = in_idx[i];
-                const vec4_t c = { in_x[idx], in_y[idx], in_z[idx] };
-                const vec4_t r = vec4_set1(in_r[idx]);
-                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
-                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
-            }
-        } else {
-            for (; i < count; ++i) {
-                int32_t idx = in_idx[i];
-                const vec4_t c = { in_x[idx], in_y[idx], in_z[idx] };
-                aabb_min = vec4_min(aabb_min, c);
-                aabb_max = vec4_max(aabb_max, c);
-            }
-        }
-    } else {
-        if (in_r) {
-            for (; i < count; ++i) {
-                const vec4_t c = { in_x[i], in_y[i], in_z[i] };
-                const vec4_t r = vec4_set1(in_r[i]);
-                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
-                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
-            }
-        } else {
-            for (; i < count; ++i) {
-                const vec4_t c = { in_x[i], in_y[i], in_z[i] };
-                aabb_min = vec4_min(aabb_min, c);
-                aabb_max = vec4_max(aabb_max, c);
-            }
-        }
+    // Remainder
+    for (; i < count; ++i) {
+        const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
+        const vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
+        const vec4_t r = vec4_set1(in_r ? in_r[idx] : 0.0f);
+        aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
+        aabb_max = vec4_max(aabb_max, vec4_add(c, r));
     }
 
     MEMCPY(out_aabb_min, &aabb_min, sizeof(float) * 3);
@@ -6045,14 +6049,14 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 }
 
 
-void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_basis);
     ASSERT(out_ext_min);
     ASSERT(out_ext_max);
 
     if (count == 0) return;
 
-    vec3_t com = md_util_com_compute(in_x, in_y, in_z, NULL, in_idx, count, cell);
+    vec3_t com = md_util_com_compute(in_xyz, NULL, in_idx, count, cell);
     double cov[3][3] = {0};
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
@@ -6062,7 +6066,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                const vec4_t c = vec4_deperiodize_ortho(vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f), ref, ext);
+                const vec4_t c = vec4_deperiodize_ortho(vec4_from_vec3(in_xyz[idx], 0.0f), ref, ext);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -6079,7 +6083,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
             md_unitcell_A_extract_float(A, cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
+                vec4_t c = vec4_from_vec3(in_xyz[idx], 0.0f);
                 deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
@@ -6116,7 +6120,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     for (size_t i = 0; i < count; ++i) {
         int32_t idx = in_idx ? in_idx[i] : (int)i;
         float  r = in_r ? in_r[idx] : 0.0f;
-        vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 1.0f };
+        vec4_t c = vec4_from_vec3(in_xyz[idx], 1.0f);
 
         vec4_t p = mat4_mul_vec4(Ri, c);
         min_ext = vec4_min(min_ext, vec4_sub1(p, r));
@@ -7380,7 +7384,205 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     return com;
 }
 
-static void com(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count) {
+// Contiguous atoms without an index: the sums run on the packed floats, the weights spread to the
+// lanes of their atoms' three components. Scalar up to 32 byte alignment and for the last few.
+static void com_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count) {
+    const float* f = (const float*)in_xyz;
+    double acc[3] = {0};
+    double acc_w = 0;
+
+    size_t i = 0;
+    const size_t head = xyz_align_peel(in_xyz, count);
+    for (; i < head; ++i) {
+        const double w = in_w ? in_w[i] : 1.0;
+        acc[0] += in_xyz[i].x * w;
+        acc[1] += in_xyz[i].y * w;
+        acc[2] += in_xyz[i].z * w;
+        acc_w  += w;
+    }
+
+    md_xv s[XYZ_GROUP_VECS];
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) s[j] = md_xv_setzero_ps();
+    md_xv sw = md_xv_setzero_ps();
+    const size_t beg = i;
+    if (in_w) {
+        for (; i + 8 <= count; i += 8) {
+            md_xv w[XYZ_GROUP_VECS];
+            xyz_lane_spread(w, in_w + i);
+            for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+                s[j] = md_xv_fmadd_ps(md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH), w[j], s[j]);
+            }
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i));
+#if MD_XV_WIDTH == 4
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i + 4));
+#endif
+        }
+        acc_w += md_xv_reduce_add_ps(sw);
+    } else {
+        for (; i + 8 <= count; i += 8) {
+            for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+                s[j] = md_xv_add_ps(s[j], md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH));
+            }
+        }
+        acc_w += (double)(i - beg);
+    }
+    xyz_lane_reduce_add(acc, s);
+
+    for (; i < count; ++i) {
+        const double w = in_w ? in_w[i] : 1.0;
+        acc[0] += in_xyz[i].x * w;
+        acc[1] += in_xyz[i].y * w;
+        acc[2] += in_xyz[i].z * w;
+        acc_w  += w;
+    }
+
+    out_com[0] = (float)(acc[0] / acc_w);
+    out_com[1] = (float)(acc[1] / acc_w);
+    out_com[2] = (float)(acc[2] / acc_w);
+}
+
+// The periodic mean in an orthorhombic cell, contiguous atoms without an index. The angle of each
+// coordinate is its own axis scaled (M is diagonal), so the sines and cosines are taken on the
+// packed floats as they lie and summed per lane; the same angles and the same epilogue as _com_pbc.
+static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
+    const float* f = (const float*)in_xyz;
+    double acc_c[3] = {0};
+    double acc_s[3] = {0};
+    double acc_w = 0;
+
+    size_t i = 0;
+#if defined(__AVX512F__) && defined(__AVX512DQ__)
+    const size_t head = xyz_align_peel_to(in_xyz, count, 64);
+#else
+    const size_t head = xyz_align_peel(in_xyz, count);
+#endif
+    for (; i < head; ++i) {
+        const double w = in_w ? in_w[i] : 1.0;
+        for (int k = 0; k < 3; ++k) {
+            const double t = in_xyz[i].elem[k] * M[k][k];
+            acc_c[k] += w * cos(t);
+            acc_s[k] += w * sin(t);
+        }
+        acc_w += w;
+    }
+
+    const size_t beg = i;
+
+#if defined(__AVX512F__) && defined(__AVX512DQ__)
+    {
+        // Sixteen atoms, 48 floats: lane k of the j:th vector holds component (16j + k) % 3
+        float   pat[48];
+        int32_t spread[48];
+        for (int p = 0; p < 48; ++p) {
+            pat[p]    = M[p % 3][p % 3];
+            spread[p] = p / 3;
+        }
+        __m512  m5[3], c5[3], s5[3];
+        __m512i w5_idx[3];
+        for (int j = 0; j < 3; ++j) {
+            m5[j] = _mm512_loadu_ps(pat + 16 * j);
+            w5_idx[j] = _mm512_loadu_si512(spread + 16 * j);
+            c5[j] = _mm512_setzero_ps();
+            s5[j] = _mm512_setzero_ps();
+        }
+        __m512 sw5 = _mm512_setzero_ps();
+        for (; i + 16 <= count; i += 16) {
+            __m512 w16 = _mm512_setzero_ps();
+            if (in_w) {
+                w16 = _mm512_loadu_ps(in_w + i);
+                sw5 = _mm512_add_ps(sw5, w16);
+            }
+            for (int j = 0; j < 3; ++j) {
+                const __m512 t = _mm512_mul_ps(_mm512_loadu_ps(f + i * 3 + j * 16), m5[j]);
+                __m512 s, c;
+                md_mm512_sincos_ps(t, &s, &c);
+                if (in_w) {
+                    const __m512 w = _mm512_permutexvar_ps(w5_idx[j], w16);
+                    c5[j] = _mm512_fmadd_ps(c, w, c5[j]);
+                    s5[j] = _mm512_fmadd_ps(s, w, s5[j]);
+                } else {
+                    c5[j] = _mm512_add_ps(c5[j], c);
+                    s5[j] = _mm512_add_ps(s5[j], s);
+                }
+            }
+        }
+        float tc[48], ts[48];
+        for (int j = 0; j < 3; ++j) {
+            _mm512_storeu_ps(tc + 16 * j, c5[j]);
+            _mm512_storeu_ps(ts + 16 * j, s5[j]);
+        }
+        for (int p = 0; p < 48; ++p) {
+            acc_c[p % 3] += tc[p];
+            acc_s[p % 3] += ts[p];
+        }
+        if (in_w) acc_w += _mm512_reduce_add_ps(sw5);
+    }
+#endif
+
+    md_xv m[XYZ_GROUP_VECS];
+    xyz_lane_pattern(m, M[0][0], M[1][1], M[2][2]);
+    md_xv vc[XYZ_GROUP_VECS];
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) vc[j] = md_xv_setzero_ps();
+    md_xv vs[XYZ_GROUP_VECS];
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) vs[j] = md_xv_setzero_ps();
+    md_xv sw = md_xv_setzero_ps();
+    for (; i + 8 <= count; i += 8) {
+        md_xv w[XYZ_GROUP_VECS];
+        if (in_w) {
+            xyz_lane_spread(w, in_w + i);
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i));
+#if MD_XV_WIDTH == 4
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i + 4));
+#endif
+        }
+        for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+            const md_xv t = md_xv_mul_ps(md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH), m[j]);
+            md_xv s, c;
+            md_xv_sincos_ps(t, &s, &c);
+            if (in_w) {
+                vc[j] = md_xv_fmadd_ps(c, w[j], vc[j]);
+                vs[j] = md_xv_fmadd_ps(s, w[j], vs[j]);
+            } else {
+                vc[j] = md_xv_add_ps(vc[j], c);
+                vs[j] = md_xv_add_ps(vs[j], s);
+            }
+        }
+    }
+    acc_w += in_w ? md_xv_reduce_add_ps(sw) : (double)(i - beg);
+    xyz_lane_reduce_add(acc_c, vc);
+    xyz_lane_reduce_add(acc_s, vs);
+
+    for (; i < count; ++i) {
+        const double w = in_w ? in_w[i] : 1.0;
+        for (int k = 0; k < 3; ++k) {
+            const double t = in_xyz[i].elem[k] * M[k][k];
+            acc_c[k] += w * cos(t);
+            acc_s[k] += w * sin(t);
+        }
+        acc_w += w;
+    }
+
+    const double inv_w = 1.0 / acc_w;
+    double theta[3];
+    for (int j = 0; j < 3; ++j) {
+        double t = PI;
+        const double x = acc_c[j] * inv_w;
+        const double y = acc_s[j] * inv_w;
+        if (x * x + y * y > TRIG_ATAN2_R2_THRESHOLD) {
+            t += atan2(-y, -x);
+        }
+        theta[j] = t;
+    }
+    for (int j = 0; j < 3; ++j) {
+        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
+    }
+}
+
+static void com(float* out_com, const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count) {
+    if (!in_idx) {
+        com_packed(out_com, in_xyz, in_w, count);
+        return;
+    }
     size_t i = 0;
     double acc_x = 0;
     double acc_y = 0;
@@ -7398,9 +7600,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         if (in_w) {
             for (; i < simd_count; i += 16) {
                 __m512i idx = _mm512_loadu_si512(in_idx + i);
-                __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
-                __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
-                __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
+                __m512 x, y, z;
+                md_mm512_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
                 __m512 w    = _mm512_i32gather_ps(idx, in_w, 4);
 
                 vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
@@ -7411,9 +7612,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         } else {
             for (; i < simd_count; i += 16) {
                 __m512i idx = _mm512_loadu_si512(in_idx + i);
-                __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
-                __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
-                __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
+                __m512 x, y, z;
+                md_mm512_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
 
                 vx = _mm512_add_ps(vx, x);
                 vy = _mm512_add_ps(vy, y);
@@ -7423,9 +7623,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
     } else {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512 x = _mm512_loadu_ps(in_x + i);
-                __m512 y = _mm512_loadu_ps(in_y + i);
-                __m512 z = _mm512_loadu_ps(in_z + i);
+                __m512 x, y, z;
+                md_mm512_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
                 __m512 w = _mm512_loadu_ps(in_w + i);
 
                 vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
@@ -7435,9 +7634,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512 x = _mm512_loadu_ps(in_x + i);
-                __m512 y = _mm512_loadu_ps(in_y + i);
-                __m512 z = _mm512_loadu_ps(in_z + i);
+                __m512 x, y, z;
+                md_mm512_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
 
                 vx = _mm512_add_ps(vx, x);
                 vy = _mm512_add_ps(vy, y);
@@ -7462,9 +7660,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         if (in_w) {
             for (; i < simd_count; i += 8) {
                 md_256i idx = md_mm256_loadu_si256(in_idx + i);
-                md_256 x    = md_mm256_i32gather_ps(in_x, idx, 4);
-                md_256 y    = md_mm256_i32gather_ps(in_y, idx, 4);
-                md_256 z    = md_mm256_i32gather_ps(in_z, idx, 4);
+                md_256 x, y, z;
+                md_mm256_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
                 md_256 w    = md_mm256_i32gather_ps(in_w, idx, 4);
 
                 vx = md_mm256_add_ps(vx, md_mm256_mul_ps(x, w));
@@ -7475,9 +7672,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         } else {
             for (; i < simd_count; i += 8) {
                 md_256i idx = md_mm256_loadu_si256(in_idx + i);
-                md_256 x    = md_mm256_i32gather_ps(in_x, idx, 4);
-                md_256 y    = md_mm256_i32gather_ps(in_y, idx, 4);
-                md_256 z    = md_mm256_i32gather_ps(in_z, idx, 4);
+                md_256 x, y, z;
+                md_mm256_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
 
                 vx = md_mm256_add_ps(vx, x);
                 vy = md_mm256_add_ps(vy, y);
@@ -7487,9 +7683,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
     } else {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                md_256 x = md_mm256_loadu_ps(in_x + i);
-                md_256 y = md_mm256_loadu_ps(in_y + i);
-                md_256 z = md_mm256_loadu_ps(in_z + i);
+                md_256 x, y, z;
+                md_mm256_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
                 md_256 w = md_mm256_loadu_ps(in_w + i);
 
                 vx = md_mm256_add_ps(vx, md_mm256_mul_ps(x, w));
@@ -7499,9 +7694,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
             }
         } else {
             for (; i < simd_count; i += 8) {
-                md_256 x = md_mm256_loadu_ps(in_x + i);
-                md_256 y = md_mm256_loadu_ps(in_y + i);
-                md_256 z = md_mm256_loadu_ps(in_z + i);
+                md_256 x, y, z;
+                md_mm256_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
 
                 vx = md_mm256_add_ps(vx, x);
                 vy = md_mm256_add_ps(vy, y);
@@ -7515,7 +7709,7 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
     acc_z = md_mm256_reduce_add_ps(vz);
     acc_w = md_mm256_reduce_add_ps(vw);
 
-#elif defined(__SSE2__)
+#else
     md_128 vx = md_mm_setzero_ps();
     md_128 vy = md_mm_setzero_ps();
     md_128 vz = md_mm_setzero_ps();
@@ -7527,9 +7721,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         if (in_w) {
             for (; i < simd_count; i += 4) {
                 md_128i idx = md_mm_loadu_si128(in_idx + i);
-                md_128 x    = md_mm_i32gather_ps(in_x, idx, 4);
-                md_128 y    = md_mm_i32gather_ps(in_y, idx, 4);
-                md_128 z    = md_mm_i32gather_ps(in_z, idx, 4);
+                md_128 x, y, z;
+                md_mm_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
                 md_128 w    = md_mm_i32gather_ps(in_w, idx, 4);
 
                 vx = md_mm_add_ps(vx, md_mm_mul_ps(x, w));
@@ -7540,9 +7733,8 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         } else {
             for (; i < simd_count; i += 4) {
                 md_128i idx = md_mm_loadu_si128(in_idx + i);
-                md_128 x    = md_mm_i32gather_ps(in_x, idx, 4);
-                md_128 y    = md_mm_i32gather_ps(in_y, idx, 4);
-                md_128 z    = md_mm_i32gather_ps(in_z, idx, 4);
+                md_128 x, y, z;
+                md_mm_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
 
                 vx = md_mm_add_ps(vx, x);
                 vy = md_mm_add_ps(vy, y);
@@ -7552,21 +7744,19 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
     } else {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                md_128 x = md_mm_loadu_ps(in_x + i);
-                md_128 y = md_mm_loadu_ps(in_y + i);
-                md_128 z = md_mm_loadu_ps(in_z + i);
+                md_128 x, y, z;
+                md_mm_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
                 md_128 w = md_mm_loadu_ps(in_w + i);
 
-                vx = _mm_add_ps(vx, md_mm_mul_ps(x, w));
-                vy = _mm_add_ps(vy, md_mm_mul_ps(y, w));
-                vz = _mm_add_ps(vz, md_mm_mul_ps(z, w));
-                vw = _mm_add_ps(vw, w);
+                vx = md_mm_add_ps(vx, md_mm_mul_ps(x, w));
+                vy = md_mm_add_ps(vy, md_mm_mul_ps(y, w));
+                vz = md_mm_add_ps(vz, md_mm_mul_ps(z, w));
+                vw = md_mm_add_ps(vw, w);
             }
         } else {
             for (; i < simd_count; i += 4) {
-                md_128 x = md_mm_loadu_ps(in_x + i);
-                md_128 y = md_mm_loadu_ps(in_y + i);
-                md_128 z = md_mm_loadu_ps(in_z + i);
+                md_128 x, y, z;
+                md_mm_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
 
                 vx = md_mm_add_ps(vx, x);
                 vy = md_mm_add_ps(vy, y);
@@ -7586,17 +7776,17 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
             for (; i < count; ++i) {
                 int64_t idx = in_idx[i];
                 float w = in_w[idx];
-                acc_x += in_x[idx] * w;
-                acc_y += in_y[idx] * w;
-                acc_z += in_z[idx] * w;
+                acc_x += in_xyz[idx].x * w;
+                acc_y += in_xyz[idx].y * w;
+                acc_z += in_xyz[idx].z * w;
                 acc_w += w;
             }
         } else {
             for (; i < count; ++i) {
                 int64_t idx = in_idx[i];
-                acc_x += in_x[idx];
-                acc_y += in_y[idx];
-                acc_z += in_z[idx];
+                acc_x += in_xyz[idx].x;
+                acc_y += in_xyz[idx].y;
+                acc_z += in_xyz[idx].z;
             }
             acc_w = (double)count;
         }
@@ -7604,16 +7794,16 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
         if (in_w) {
             for (; i < count; ++i) {
                 float w = in_w[i];
-                acc_x += in_x[i] * w;
-                acc_y += in_y[i] * w;
-                acc_z += in_z[i] * w;
+                acc_x += in_xyz[i].x * w;
+                acc_y += in_xyz[i].y * w;
+                acc_z += in_xyz[i].z * w;
                 acc_w += w;
             }
         } else {
             for (; i < count; ++i) {
-                acc_x += in_x[i];
-                acc_y += in_y[i];
-                acc_z += in_z[i];
+                acc_x += in_xyz[i].x;
+                acc_y += in_xyz[i].y;
+                acc_z += in_xyz[i].z;
             }
             acc_w = (double)count;
         }
@@ -7625,11 +7815,9 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
 }
 
 // Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, const float* in_z, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_w(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
     ASSERT(out_com);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+    ASSERT(in_xyz);
     ASSERT(in_w);
     ASSERT(M);
     ASSERT(I);
@@ -7646,9 +7834,8 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     const size_t simd_count = ROUND_DOWN(count, 16);
     for (; i < simd_count; i += 16) {
         // Load
-        md_512 v_x = _mm512_loadu_ps(in_x + i);
-        md_512 v_y = _mm512_loadu_ps(in_y + i);
-        md_512 v_z = _mm512_loadu_ps(in_z + i);
+        md_512 v_x, v_y, v_z;
+        md_mm512_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         md_512 v_w = _mm512_loadu_ps(in_w + i);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -7685,9 +7872,8 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_256 v_x = md_mm256_loadu_ps(in_x + i);
-        md_256 v_y = md_mm256_loadu_ps(in_y + i);
-        md_256 v_z = md_mm256_loadu_ps(in_z + i);
+        md_256 v_x, v_y, v_z;
+        md_mm256_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         md_256 v_w = md_mm256_loadu_ps(in_w + i);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -7717,16 +7903,15 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
     acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
     acc_w    = md_mm256_reduce_add_ps(v_acc_w);
-#elif defined(__SSE2__)
+#else
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     md_128 v_acc_w = md_mm_setzero_ps();
     const size_t simd_count = ROUND_DOWN(count, 4);
     for (; i < simd_count; i += 4) {
         // Load
-        md_128 v_x = md_mm_loadu_ps(in_x + i);
-        md_128 v_y = md_mm_loadu_ps(in_y + i);
-        md_128 v_z = md_mm_loadu_ps(in_z + i);
+        md_128 v_x, v_y, v_z;
+        md_mm_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         md_128 v_w = md_mm_loadu_ps(in_w + i);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -7759,9 +7944,9 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
 #endif
     // Scalar remainder
     for (; i < count; ++i) {
-        double x = in_x[i];
-        double y = in_y[i];
-        double z = in_z[i];
+        double x = in_xyz[i].x;
+        double y = in_xyz[i].y;
+        double z = in_xyz[i].z;
         double w = in_w[i];
         double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
         double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
@@ -7797,11 +7982,9 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
 }
 
 // Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, const float* in_z, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc(float out_com[3], const vec3_t* in_xyz, size_t count, const float M[3][3], const float I[3][3]) {
     ASSERT(out_com);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+    ASSERT(in_xyz);
     ASSERT(M);
     ASSERT(I);
 
@@ -7815,9 +7998,8 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     const size_t simd_count = ROUND_DOWN(count, 16);
     for (; i < simd_count; i += 16) {
         // Load
-        md_512 v_x = _mm512_loadu_ps(in_x + i);
-        md_512 v_y = _mm512_loadu_ps(in_y + i);
-        md_512 v_z = _mm512_loadu_ps(in_z + i);
+        md_512 v_x, v_y, v_z;
+        md_mm512_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -7850,9 +8032,8 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_256 v_x = md_mm256_loadu_ps(in_x + i);
-        md_256 v_y = md_mm256_loadu_ps(in_y + i);
-        md_256 v_z = md_mm256_loadu_ps(in_z + i);
+        md_256 v_x, v_y, v_z;
+        md_mm256_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -7879,15 +8060,14 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
     acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
     acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-#elif defined(__SSE2__)
+#else
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     const size_t simd_count = ROUND_DOWN(count, 4);
     for (; i < simd_count; i += 4) {
         // Load
-        md_128 v_x = md_mm_loadu_ps(in_x + i);
-        md_128 v_y = md_mm_loadu_ps(in_y + i);
-        md_128 v_z = md_mm_loadu_ps(in_z + i);
+        md_128 v_x, v_y, v_z;
+        md_mm_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -7917,9 +8097,9 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
 #endif
     // Scalar remainder
     for (; i < count; ++i) {
-        double x = in_x[i];
-        double y = in_y[i];
-        double z = in_z[i];
+        double x = in_xyz[i].x;
+        double y = in_xyz[i].y;
+        double z = in_xyz[i].z;
         double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
         double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
         double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
@@ -7953,11 +8133,9 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
 }
 
 
-static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_i(float out_com[3], const vec3_t* in_xyz, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
     ASSERT(out_com);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+    ASSERT(in_xyz);
     ASSERT(M);
     ASSERT(I);
 
@@ -7972,9 +8150,8 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     for (; i < simd_count; i += 16) {
         // Load
         md_512i idx = _mm512_loadu_si512(in_idx + i);
-        md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
-        md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
-        md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
+        md_512 v_x, v_y, v_z;
+        md_mm512_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -8008,9 +8185,8 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     for (; i < simd_count; i += 8) {
         // Load
         md_256i idx = md_mm256_loadu_si256(in_idx + i);
-        md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
-        md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
-        md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
+        md_256 v_x, v_y, v_z;
+        md_mm256_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -8037,16 +8213,15 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
     acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
     acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-#elif defined(__SSE2__)
+#else
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     const size_t simd_count = ROUND_DOWN(count, 4);
     for (; i < simd_count; i += 4) {
         // Load
         md_128i idx = md_mm_loadu_si128(in_idx + i);
-        md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
-        md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
-        md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
+        md_128 v_x, v_y, v_z;
+        md_mm_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
         // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
@@ -8077,9 +8252,9 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     // Scalar remainder
     for (; i < count; ++i) {
         int32_t idx = in_idx[i];
-        double x = in_x[idx];
-        double y = in_y[idx];
-        double z = in_z[idx];
+        double x = in_xyz[idx].x;
+        double y = in_xyz[idx].y;
+        double z = in_xyz[idx].z;
         double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
         double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
         double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
@@ -8112,11 +8287,9 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     }
 }
 
-static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_iw(float out_com[3], const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
     ASSERT(out_com);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+    ASSERT(in_xyz);
     ASSERT(in_w);
     ASSERT(M);
     ASSERT(I);
@@ -8134,9 +8307,8 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     for (; i < simd_count; i += 16) {
         // Load
         md_512i idx = _mm512_loadu_si512(in_idx + i);
-        md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
-        md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
-        md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
+        md_512 v_x, v_y, v_z;
+        md_mm512_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         md_512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -8174,9 +8346,8 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     for (; i < simd_count; i += 8) {
         // Load
         md_256i idx = md_mm256_loadu_si256(in_idx + i);
-        md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
-        md_256 v_y  = md_mm256_i32gather_ps(in_y, idx, 4);
-        md_256 v_z  = md_mm256_i32gather_ps(in_z, idx, 4);
+        md_256 v_x, v_y, v_z;
+        md_mm256_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -8206,7 +8377,7 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
     acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
     acc_w    = md_mm256_reduce_add_ps(v_acc_w);
-#elif defined(__SSE2__)
+#else
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     md_128 v_acc_w = md_mm_setzero_ps();
@@ -8214,9 +8385,8 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     for (; i < simd_count; i += 4) {
         // Load
         md_128i idx = md_mm_loadu_si128(in_idx + i);
-        md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
-        md_128 v_y  = md_mm_i32gather_ps(in_y, idx, 4);
-        md_128 v_z  = md_mm_i32gather_ps(in_z, idx, 4);
+        md_128 v_x, v_y, v_z;
+        md_mm_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
         md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
         // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
         // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
@@ -8250,9 +8420,9 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     // Scalar remainder
     for (; i < count; ++i) {
         int32_t idx = in_idx[i];
-        double x = in_x[idx];
-        double y = in_y[idx];
-        double z = in_z[idx];
+        double x = in_xyz[idx].x;
+        double y = in_xyz[idx].y;
+        double z = in_xyz[idx].z;
         double w = in_w[idx];
         double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
         double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
@@ -8288,7 +8458,7 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
 }
 
 // This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float out_com[3], const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+static void com_pbc(float out_com[3], const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
 
     mat3_t A = { 0 };
     md_unitcell_A_extract_float(A.elem, cell);
@@ -8301,18 +8471,23 @@ static void com_pbc(float out_com[3], const float* in_x, const float* in_y, cons
     // Inverse transform
     mat3_t I = mat3_mul(A, mat3_scale(1.0/TWO_PI, 1.0/TWO_PI, 1.0/TWO_PI));
 
+    if (!in_idx && md_unitcell_is_orthorhombic(cell)) {
+        com_pbc_ortho_packed(out_com, in_xyz, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
+        return;
+    }
+
     // Here we select the correct internal version based on the available inputs
     if (in_w) {
         if (in_idx) {
-            _com_pbc_iw(out_com, in_x, in_y, in_z, in_w, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
+            _com_pbc_iw(out_com, in_xyz, in_w, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         } else {
-            _com_pbc_w(out_com, in_x, in_y, in_z, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
+            _com_pbc_w(out_com, in_xyz, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         }
     } else {
         if (in_idx) {
-            _com_pbc_i(out_com, in_x, in_y, in_z, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
+            _com_pbc_i(out_com, in_xyz, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         } else {
-            _com_pbc(out_com, in_x, in_y, in_z, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
+            _com_pbc(out_com, in_xyz, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         }
     }
 }
@@ -8445,10 +8620,8 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
     }
 }
 
-vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+vec3_t md_util_com_compute(const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
+    ASSERT(in_xyz);
 
     if (count == 0) {
         return (vec3_t) {0,0,0};
@@ -8456,12 +8629,12 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
 
     vec3_t xyz = {0};
     if (!unit_cell || unit_cell->flags == MD_UNITCELL_NONE) {
-        com(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count);
+        com(xyz.elem, in_xyz, in_w, in_idx, count);
         return xyz;
     }
 
     if (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) {
-        com_pbc(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count, unit_cell);
+        com_pbc(xyz.elem, in_xyz, in_w, in_idx, count, unit_cell);
         return xyz;
     }
 
@@ -8768,31 +8941,44 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
     }
 }
 
-static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
+// Wraps into [0, ext) along each axis with a period; an axis without one (ext zero) is left alone.
+// Without an index the axes are independent and it runs on the packed floats directly.
+static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t box_ext) {
+    ASSERT(xyz);
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     const vec4_t ref = vec4_mul1(ext, 0.5f);
 
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            int32_t idx = indices[i];
-            vec4_t pos = {x[idx], y[idx], z[idx], 0};
-            pos = vec4_deperiodize_ortho(pos, ref, ext);
-            x[i] = pos.x;
-            y[i] = pos.y;
-            z[i] = pos.z;
+    size_t i = 0;
+    if (!indices) {
+        md_xv v_ext[XYZ_GROUP_VECS], v_inv[XYZ_GROUP_VECS], v_ref[XYZ_GROUP_VECS], v_keep[XYZ_GROUP_VECS];
+        xyz_lane_pattern(v_ext, ext.x, ext.y, ext.z);
+        xyz_lane_pattern(v_inv, ext.x > 0 ? 1.0f / ext.x : 0.0f, ext.y > 0 ? 1.0f / ext.y : 0.0f, ext.z > 0 ? 1.0f / ext.z : 0.0f);
+        xyz_lane_pattern(v_ref, ref.x, ref.y, ref.z);
+        for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+            v_keep[j] = md_xv_cmpeq_ps(v_ext[j], md_xv_setzero_ps());
         }
-    } else {
-        for (size_t i = 0; i < count; ++i) {
-            vec4_t pos = {x[i], y[i], z[i], 0};
-            pos = vec4_deperiodize_ortho(pos, ref, ext);
-            x[i] = pos.x;
-            y[i] = pos.y;
-            z[i] = pos.z;
+
+        // Scalar up to alignment, then eight atoms at a time
+        const size_t head = xyz_align_peel(xyz, count);
+        for (; i < head; ++i) {
+            xyz[i] = vec3_from_vec4(vec4_deperiodize_ortho(vec4_from_vec3(xyz[i], 0), ref, ext));
         }
+        float* f = (float*)xyz;
+        for (; i + 8 <= count; i += 8) {
+            for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+                const md_xv v = md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH);
+                md_xv d = md_xv_mul_ps(md_xv_sub_ps(v, v_ref[j]), v_inv[j]);
+                d = md_xv_sub_ps(d, md_xv_round_ps(d));
+                const md_xv p = md_xv_fmadd_ps(d, v_ext[j], v_ref[j]);
+                md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_blendv_ps(p, v, v_keep[j]));
+            }
+        }
+    }
+    for (; i < count; ++i) {
+        const int32_t idx = indices ? indices[i] : (int32_t)i;
+        const vec4_t pos = vec4_deperiodize_ortho(vec4_from_vec3(xyz[idx], 0), ref, ext);
+        xyz[idx] = vec3_from_vec4(pos);
     }
 }
 
@@ -8804,43 +8990,49 @@ static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     }
 }
 
-static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    
+// Into the cell: to fractional coordinates, the fraction of each, and back.
+static void pbc_triclinic(vec3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    ASSERT(xyz);
+
     mat3_t A = { 0 };
     md_unitcell_A_extract_float(A.elem, cell);
 
     mat3_t I = { 0 };
     md_unitcell_I_extract_float(I.elem, cell);
 
-    mat4x3_t I4x3 = mat4x3_from_mat3(I);
-    mat4x3_t A4x3 = mat4x3_from_mat3(A);
-
-    if (indices) {
-        for (size_t i = 0; i < count; ++i) {
-            int32_t idx = indices[i];
-            vec4_t cart = {x[idx], y[idx], z[idx], 0};
-            vec4_t frac = mat4x3_mul_vec4(I4x3, cart);
-            vec4_t c    = vec4_fract(frac);
-            c           = mat4x3_mul_vec4(A4x3, c);
-
-            x[idx] = c.x;
-            y[idx] = c.y;
-            z[idx] = c.z;
+    size_t i = 0;
+    if (!indices) {
+        md_256 vA[3][3], vI[3][3];
+        for (int c = 0; c < 3; ++c) {
+            for (int r = 0; r < 3; ++r) {
+                vA[c][r] = md_mm256_set1_ps(A.elem[c][r]);
+                vI[c][r] = md_mm256_set1_ps(I.elem[c][r]);
+            }
         }
-    } else {
-        for (size_t i = 0; i < count; ++i) {
-            vec4_t cart = {x[i], y[i], z[i], 0};
-            vec4_t frac = mat4x3_mul_vec4(I4x3, cart);
-            vec4_t c    = vec4_fract(frac);
-            c           = mat4x3_mul_vec4(A4x3, c);
-
-            x[i] = c.x;
-            y[i] = c.y;
-            z[i] = c.z;
+        for (; i + 8 <= count; i += 8) {
+            md_256 x, y, z;
+            md_mm256_load_xyz_packed_ps(&x, &y, &z, (const float*)(xyz + i));
+            md_256 f[3];
+            for (int r = 0; r < 3; ++r) {
+                f[r] = md_mm256_fmadd_ps(vI[0][r], x, md_mm256_fmadd_ps(vI[1][r], y, md_mm256_mul_ps(vI[2][r], z)));
+                f[r] = md_mm256_fract_ps(f[r]);
+            }
+            md_256 c[3];
+            for (int r = 0; r < 3; ++r) {
+                c[r] = md_mm256_fmadd_ps(vA[0][r], f[0], md_mm256_fmadd_ps(vA[1][r], f[1], md_mm256_mul_ps(vA[2][r], f[2])));
+            }
+            md_mm256_store_xyz_packed_ps((float*)(xyz + i), c[0], c[1], c[2]);
         }
+    }
+
+    const mat4x3_t I4x3 = mat4x3_from_mat3(I);
+    const mat4x3_t A4x3 = mat4x3_from_mat3(A);
+    for (; i < count; ++i) {
+        const int32_t idx = indices ? indices[i] : (int32_t)i;
+        vec4_t c = mat4x3_mul_vec4(I4x3, vec4_from_vec3(xyz[idx], 0));
+        c = vec4_fract(c);
+        c = mat4x3_mul_vec4(A4x3, c);
+        xyz[idx] = vec3_from_vec4(c);
     }
 }
 
@@ -8866,9 +9058,9 @@ static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* 
     }
 }
 
-bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    if (!x || !y || !z) {
-        MD_LOG_ERROR("Missing required input: x,y or z");
+bool md_util_pbc(vec3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    if (!xyz) {
+        MD_LOG_ERROR("Missing required input: xyz");
         return false;
     }
 
@@ -8881,10 +9073,10 @@ bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t co
     if (flags & MD_UNITCELL_ORTHO) {
         vec3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
-        pbc_ortho(x, y, z, indices, count, ext);
+        pbc_ortho(xyz, indices, count, ext);
         return true;
     } else if (flags & MD_UNITCELL_TRICLINIC) {
-        pbc_triclinic(x, y, z, indices, count, cell);
+        pbc_triclinic(xyz, indices, count, cell);
         return true;
     }
 
@@ -8926,9 +9118,9 @@ bool md_util_system_pbc(md_system_state_t* state) {
     if (md_unitcell_is_orthorhombic(&state->unitcell)) {
         vec3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, &state->unitcell);
-        pbc_ortho(state->x, state->y, state->z, 0, state->num_atoms, ext);
+        pbc_ortho(state->xyz, 0, state->num_atoms, ext);
     } else if (md_unitcell_is_triclinic(&state->unitcell)) {
-		pbc_triclinic(state->x, state->y, state->z, 0, state->num_atoms, &state->unitcell);
+		pbc_triclinic(state->xyz, 0, state->num_atoms, &state->unitcell);
     }
 
     return true;
@@ -8972,8 +9164,8 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
         const int32_t a = structure->atom_idx[i];
         const int32_t p = structure->parent_idx[i];
 
-        const vec3_t x = { state->x[a], state->y[a], state->z[a] };
-        const vec3_t r = { state->x[p], state->y[p], state->z[p] };
+        const vec3_t x = state->xyz[a];
+        const vec3_t r = state->xyz[p];
 	    vec3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
 
         if (is_ortho) {
@@ -8985,9 +9177,7 @@ void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* st
         // The atom is placed relative to its PARENT, not relative to where it happened to sit:
         // dx is already the minimum image of (x - r), so the unwrapped position is r + dx.
         // Adding dx to x instead yields 2x - r, which is wrong even when no image correction applies.
-        state->x[a] = r.x + dx.x;
-        state->y[a] = r.y + dx.y;
-        state->z[a] = r.z + dx.z;
+        state->xyz[a] = vec3_add(r, dx);
     }
 }
 
@@ -9341,16 +9531,16 @@ mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_
     return mat3_extract_rotation(C);
 }
 
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w, in_idx, count, in_com);
+double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {
+    const mat3_t R = mat3_optimal_rotation(in_xyz, in_w, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx0 = in_idx[0][i];
             int32_t idx1 = in_idx[1][i];
-            vec3_t u = {in_x[0][idx0] - in_com[0].x, in_y[0][idx0] - in_com[0].y, in_z[0][idx0] - in_com[0].z};
-            vec3_t v = {in_x[1][idx1] - in_com[1].x, in_y[1][idx1] - in_com[1].y, in_z[1][idx1] - in_com[1].z};
+            vec3_t u = {in_xyz[0][idx0].x - in_com[0].x, in_xyz[0][idx0].y - in_com[0].y, in_xyz[0][idx0].z - in_com[0].z};
+            vec3_t v = {in_xyz[1][idx1].x - in_com[1].x, in_xyz[1][idx1].y - in_com[1].y, in_xyz[1][idx1].z - in_com[1].z};
             vec3_t vp = mat3_mul_vec3(R, v);
             vec3_t d = vec3_sub(u, vp);
             float weight = in_w ? (in_w[0][idx0] + in_w[1][idx1]) * 0.5f : 1.0f;
@@ -9358,9 +9548,42 @@ double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[
             w_sum += weight;
         }
     } else {
-        for (size_t i = 0; i < count; ++i) {
-            vec3_t u = {in_x[0][i] - in_com[0].x, in_y[0][i] - in_com[0].y, in_z[0][i] - in_com[0].z};
-            vec3_t v = {in_x[1][i] - in_com[1].x, in_y[1][i] - in_com[1].y, in_z[1][i] - in_com[1].z};
+        // A native vector of atoms at a time: the deviation of each from the rotated second set
+        size_t i = 0;
+        md_xv vR[3][3];
+        for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) vR[c][r] = md_xv_set1_ps(R.elem[c][r]);
+        const md_xv c0[3] = { md_xv_set1_ps(in_com[0].x), md_xv_set1_ps(in_com[0].y), md_xv_set1_ps(in_com[0].z) };
+        const md_xv c1[3] = { md_xv_set1_ps(in_com[1].x), md_xv_set1_ps(in_com[1].y), md_xv_set1_ps(in_com[1].z) };
+        md_xv vd = md_xv_setzero_ps();
+        md_xv vw = md_xv_setzero_ps();
+        for (; i + MD_XV_WIDTH <= count; i += MD_XV_WIDTH) {
+            md_xv u[3], v[3];
+            md_xv_load_xyz_packed_ps(&u[0], &u[1], &u[2], (const float*)(in_xyz[0] + i));
+            md_xv_load_xyz_packed_ps(&v[0], &v[1], &v[2], (const float*)(in_xyz[1] + i));
+            for (int k = 0; k < 3; ++k) {
+                u[k] = md_xv_sub_ps(u[k], c0[k]);
+                v[k] = md_xv_sub_ps(v[k], c1[k]);
+            }
+            md_xv d2 = md_xv_setzero_ps();
+            for (int r = 0; r < 3; ++r) {
+                // (R v)_r = R[0][r] v.x + R[1][r] v.y + R[2][r] v.z, R column major
+                const md_xv vp = md_xv_fmadd_ps(vR[0][r], v[0], md_xv_fmadd_ps(vR[1][r], v[1], md_xv_mul_ps(vR[2][r], v[2])));
+                const md_xv d  = md_xv_sub_ps(u[r], vp);
+                d2 = md_xv_fmadd_ps(d, d, d2);
+            }
+            md_xv w = md_xv_set1_ps(1.0f);
+            if (in_w) {
+                w = md_xv_mul_ps(md_xv_add_ps(md_xv_loadu_ps(in_w[0] + i), md_xv_loadu_ps(in_w[1] + i)), md_xv_set1_ps(0.5f));
+            }
+            vd = md_xv_fmadd_ps(w, d2, vd);
+            vw = md_xv_add_ps(vw, w);
+        }
+        d_sum += md_xv_reduce_add_ps(vd);
+        w_sum += md_xv_reduce_add_ps(vw);
+
+        for (; i < count; ++i) {
+            vec3_t u = {in_xyz[0][i].x - in_com[0].x, in_xyz[0][i].y - in_com[0].y, in_xyz[0][i].z - in_com[0].z};
+            vec3_t v = {in_xyz[1][i].x - in_com[1].x, in_xyz[1][i].y - in_com[1].y, in_xyz[1][i].z - in_com[1].z};
             vec3_t vp = mat3_mul_vec3(R, v);
             vec3_t d = vec3_sub(u, vp);
             float weight = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f : 1.0f;
@@ -9411,141 +9634,171 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
     return weights;
 }
 
-bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unitcell_t* cell, float t) {
-    ASSERT(out_x);
-    ASSERT(out_y);
-    ASSERT(out_z);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
+// One group of eight atoms, packed floats as they lie. The second frame is brought to the minimum
+// image of the first when the cell is periodic.
+static inline void lerp_xyz8(float* dst, const float* a, const float* b, const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, float t) {
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+        const md_xv x0 = md_xv_loadu_ps(a + j * MD_XV_WIDTH);
+        md_xv x1 = md_xv_loadu_ps(b + j * MD_XV_WIDTH);
+        if (periodic) x1 = xv_deperiodize_ortho(x1, x0, ext[j], inv[j]);
+        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, md_xv_fmadd_ps(md_xv_sub_ps(x1, x0), md_xv_set1_ps(t), x0));
+    }
+}
+
+static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, md_xv t, md_xv s) {
+    for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+        md_xv x0 = md_xv_loadu_ps(src[0] + j * MD_XV_WIDTH);
+        const md_xv x1 = md_xv_loadu_ps(src[1] + j * MD_XV_WIDTH);
+        md_xv x2 = md_xv_loadu_ps(src[2] + j * MD_XV_WIDTH);
+        md_xv x3 = md_xv_loadu_ps(src[3] + j * MD_XV_WIDTH);
+        if (periodic) {
+            x0 = xv_deperiodize_ortho(x0, x1, ext[j], inv[j]);
+            x2 = xv_deperiodize_ortho(x2, x1, ext[j], inv[j]);
+            x3 = xv_deperiodize_ortho(x3, x2, ext[j], inv[j]);
+        }
+        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, md_xv_cubic_spline_ps(x0, x1, x2, x3, t, s));
+    }
+}
+
+// Linear interpolation of packed coordinates. Without a cell or in an orthorhombic one the axes are
+// independent and it runs on the packed floats directly, eight atoms at a time, with a few leading
+// atoms first so the loads are aligned and a partial group last, each through a small staging copy;
+// any count works. A triclinic cell couples the axes: that path splits eight atoms into x, y and z
+// and relies on the arrays being padded to a multiple of eight atoms.
+bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
+    ASSERT(out_xyz);
+    ASSERT(in_xyz);
+    ASSERT(in_xyz[0]);
+    ASSERT(in_xyz[1]);
 
     t = CLAMP(t, 0.0f, 1.0f);
 
-    bool ortho = md_unitcell_is_orthorhombic(cell);
-    bool tricl = md_unitcell_is_triclinic(cell);
-    
+    const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
+    const bool tricl = cell && md_unitcell_is_triclinic(cell);
+
+    mat3_t A = { 0 };
+    mat3_t I = { 0 };
     if (ortho | tricl) {
-        mat3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
-        for (size_t i = 0; i < count; i += 8) {
-            md_256 x0[3] = {
-                md_mm256_loadu_ps(in_x[0] + i),
-                md_mm256_loadu_ps(in_y[0] + i),
-                md_mm256_loadu_ps(in_z[0] + i)
-            };
+        md_unitcell_I_extract_float(I.elem, cell);
+    }
 
-            md_256 x1[3] = {
-                md_mm256_loadu_ps(in_x[1] + i),
-                md_mm256_loadu_ps(in_y[1] + i),
-                md_mm256_loadu_ps(in_z[1] + i)
-            };
+    const float* src0 = (const float*)in_xyz[0];
+    const float* src1 = (const float*)in_xyz[1];
+    float* dst = (float*)out_xyz;
 
-            if (ortho) {
-                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(A.elem[0][0]));
-                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(A.elem[1][1]));
-                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(A.elem[2][2]));
-            } else if (tricl) {
-                simd_deperiodize_triclinic(x1, x0, MD_AS_CONST_MAT3(A.elem));
+    if (!tricl) {
+        md_xv ext[XYZ_GROUP_VECS], inv[XYZ_GROUP_VECS];
+        xyz_lane_pattern(ext, A.elem[0][0], A.elem[1][1], A.elem[2][2]);
+        xyz_lane_pattern(inv, I.elem[0][0], I.elem[1][1], I.elem[2][2]);
+
+        size_t i = 0;
+        const size_t head = xyz_align_peel(src0, count);
+        while (i < count) {
+            const size_t n = (i == 0 && head) ? head : MIN(8, count - i);
+            if (n == 8) {
+                lerp_xyz8(dst + i * 3, src0 + i * 3, src1 + i * 3, ext, inv, ortho, t);
+            } else {
+                float a[24] = {0}, b[24] = {0}, r[24];
+                MEMCPY(a, src0 + i * 3, n * sizeof(vec3_t));
+                MEMCPY(b, src1 + i * 3, n * sizeof(vec3_t));
+                lerp_xyz8(r, a, b, ext, inv, ortho, t);
+                MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
             }
-
-            md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
-            md_256 y = md_mm256_lerp_ps(x0[1], x1[1], t);
-            md_256 z = md_mm256_lerp_ps(x0[2], x1[2], t);
-
-            md_mm256_storeu_ps(out_x + i, x);
-            md_mm256_storeu_ps(out_y + i, y);
-            md_mm256_storeu_ps(out_z + i, z);
+            i += n;
         }
-    } else {
-        // Straight forward lerp
-        for (size_t i = 0; i < count; i += 8) {
-            md_256 x0 = md_mm256_loadu_ps(in_x[0] + i);
-            md_256 y0 = md_mm256_loadu_ps(in_y[0] + i);
-            md_256 z0 = md_mm256_loadu_ps(in_z[0] + i);
+        return true;
+    }
 
-            md_256 x1 = md_mm256_loadu_ps(in_x[1] + i);
-            md_256 y1 = md_mm256_loadu_ps(in_y[1] + i);
-            md_256 z1 = md_mm256_loadu_ps(in_z[1] + i);
+    for (size_t i = 0; i < count; i += 8) {
+        md_256 x0[3], x1[3];
+        md_mm256_load_xyz_packed_ps(&x0[0], &x0[1], &x0[2], src0 + i * 3);
+        md_mm256_load_xyz_packed_ps(&x1[0], &x1[1], &x1[2], src1 + i * 3);
 
-            md_256 x = md_mm256_lerp_ps(x0, x1, t);
-            md_256 y = md_mm256_lerp_ps(y0, y1, t);
-            md_256 z = md_mm256_lerp_ps(z0, z1, t);
+        simd_deperiodize_triclinic(x1, x0, MD_AS_CONST_MAT3(A.elem));
 
-            md_mm256_storeu_ps(out_x + i, x);
-            md_mm256_storeu_ps(out_y + i, y);
-            md_mm256_storeu_ps(out_z + i, z);
-        }
+        const md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
+        const md_256 y = md_mm256_lerp_ps(x0[1], x1[1], t);
+        const md_256 z = md_mm256_lerp_ps(x0[2], x1[2], t);
+
+        md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
     }
 
     return true;
 }
 
-bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unitcell_t* cell, float t, float s) {
-    ASSERT(out_x);
-    ASSERT(out_y);
-    ASSERT(out_z);
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
-    
+// As md_util_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
+// split into x, y and z (and padded) in a triclinic one.
+bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+    ASSERT(out_xyz);
+    ASSERT(in_xyz);
+    ASSERT(in_xyz[0]);
+    ASSERT(in_xyz[1]);
+    ASSERT(in_xyz[2]);
+    ASSERT(in_xyz[3]);
+
     t = CLAMP(t, 0.0f, 1.0f);
     s = CLAMP(s, 0.0f, 1.0f);
 
-    bool ortho = md_unitcell_is_orthorhombic(cell);
-    bool tricl = md_unitcell_is_triclinic(cell);
+    const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
+    const bool tricl = cell && md_unitcell_is_triclinic(cell);
     mat3_t A = { 0 };
-    md_unitcell_A_extract_float(A.elem, cell);
     mat3_t I = { 0 };
-    md_unitcell_I_extract_float(I.elem, cell);
+    if (ortho | tricl) {
+        md_unitcell_A_extract_float(A.elem, cell);
+        md_unitcell_I_extract_float(I.elem, cell);
+    }
+
+    const md_256 vt = md_mm256_set1_ps(t);
+    const md_256 vs = md_mm256_set1_ps(s);
+    const md_xv xt = md_xv_set1_ps(t);
+    const md_xv xs = md_xv_set1_ps(s);
+
+    const float* src[4] = { (const float*)in_xyz[0], (const float*)in_xyz[1], (const float*)in_xyz[2], (const float*)in_xyz[3] };
+    float* dst = (float*)out_xyz;
+
+    if (!tricl) {
+        md_xv ext[XYZ_GROUP_VECS], inv[XYZ_GROUP_VECS];
+        xyz_lane_pattern(ext, A.elem[0][0], A.elem[1][1], A.elem[2][2]);
+        xyz_lane_pattern(inv, I.elem[0][0], I.elem[1][1], I.elem[2][2]);
+
+        size_t i = 0;
+        const size_t head = xyz_align_peel(src[1], count);
+        while (i < count) {
+            const size_t n = (i == 0 && head) ? head : MIN(8, count - i);
+            if (n == 8) {
+                const float* const g[4] = { src[0] + i * 3, src[1] + i * 3, src[2] + i * 3, src[3] + i * 3 };
+                cubic_xyz8(dst + i * 3, g, ext, inv, ortho, xt, xs);
+            } else {
+                float stage[4][24] = {0}, r[24];
+                for (int k = 0; k < 4; ++k) {
+                    MEMCPY(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
+                }
+                const float* const g[4] = { stage[0], stage[1], stage[2], stage[3] };
+                cubic_xyz8(r, g, ext, inv, ortho, xt, xs);
+                MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
+            }
+            i += n;
+        }
+        return true;
+    }
 
     for (size_t i = 0; i < count; i += 8) {
-        md_256 x0[3] = {
-            md_mm256_loadu_ps(in_x[0] + i),
-            md_mm256_loadu_ps(in_y[0] + i),
-            md_mm256_loadu_ps(in_z[0] + i),
-        };
+        md_256 x0[3], x1[3], x2[3], x3[3];
+        md_mm256_load_xyz_packed_ps(&x0[0], &x0[1], &x0[2], src[0] + i * 3);
+        md_mm256_load_xyz_packed_ps(&x1[0], &x1[1], &x1[2], src[1] + i * 3);
+        md_mm256_load_xyz_packed_ps(&x2[0], &x2[1], &x2[2], src[2] + i * 3);
+        md_mm256_load_xyz_packed_ps(&x3[0], &x3[1], &x3[2], src[3] + i * 3);
 
-        md_256 x1[3] = {
-            md_mm256_loadu_ps(in_x[1] + i),
-            md_mm256_loadu_ps(in_y[1] + i),
-            md_mm256_loadu_ps(in_z[1] + i),
-        };
+        simd_deperiodize_triclinic(x0, x1, MD_AS_CONST_MAT3(A.elem));
+        simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
+        simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
 
-        md_256 x2[3] = {
-            md_mm256_loadu_ps(in_x[2] + i),
-            md_mm256_loadu_ps(in_y[2] + i),
-            md_mm256_loadu_ps(in_z[2] + i),
-        };
+        const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], vt, vs);
+        const md_256 y = md_mm256_cubic_spline_ps(x0[1], x1[1], x2[1], x3[1], vt, vs);
+        const md_256 z = md_mm256_cubic_spline_ps(x0[2], x1[2], x2[2], x3[2], vt, vs);
 
-        md_256 x3[3] = {
-            md_mm256_loadu_ps(in_x[3] + i),
-            md_mm256_loadu_ps(in_y[3] + i),
-            md_mm256_loadu_ps(in_z[3] + i),
-        };
-
-        if (ortho) {
-            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
-            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
-            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(I.elem[0][0]));
-            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
-            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
-            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(I.elem[1][1]));
-            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
-            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
-            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(I.elem[2][2]));
-        } else if (tricl) {
-            simd_deperiodize_triclinic(x0, x1, MD_AS_CONST_MAT3(A.elem));
-            simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
-            simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
-        }
-
-        const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
-        const md_256 y = md_mm256_cubic_spline_ps(x0[1], x1[1], x2[1], x3[1], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
-        const md_256 z = md_mm256_cubic_spline_ps(x0[2], x1[2], x2[2], x3[2], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
-
-        md_mm256_storeu_ps(out_x + i, x);
-        md_mm256_storeu_ps(out_y + i, y);
-        md_mm256_storeu_ps(out_z + i, z);
+        md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
     }
 
     return true;
@@ -9679,7 +9932,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         float alpha  = 1.0f;
                         vec3_t rgb = hcl_to_rgb(hue, chroma, light);
                         // Pack into 0xAARRGGBB
-                        color = (uint32_t)((uint8_t)(alpha * 255) << 24 | (uint8_t)(rgb.x * 255) << 16 | (uint8_t)(rgb.y * 255) << 8 | (uint8_t)(rgb.z * 255));
+                        color = (uint32_t)(uint8_t)(alpha * 255) << 24 | (uint32_t)(uint8_t)(rgb.x * 255) << 16 | (uint32_t)(uint8_t)(rgb.y * 255) << 8 | (uint32_t)(uint8_t)(rgb.z * 255);
                         sys->atom.type.color[i] = color;
                     }
                 }
@@ -9728,7 +9981,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
             md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
             // Candidates above are derived from bonds and elements; the pairs below need geometry.
             if (md_system_state_has_coords(state)) {
-                md_util_hydrogen_bond_infer(&sys->hydrogen_bond, state->x, state->y, state->z, &state->unitcell, 3.0, 150.0);
+                md_util_hydrogen_bond_infer(&sys->hydrogen_bond, state->xyz, &state->unitcell, 3.0, 150.0);
             }
         }
 #endif
@@ -9807,8 +10060,8 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                     // Backbone identification above is topological; angles and secondary structure
                     // are geometric and are only valid for the state they were computed from.
                     if (md_system_state_has_coords(state)) {
-                        md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
-                        md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, state->x, state->y, state->z, &state->unitcell, &sys->protein_backbone);
+                        md_util_backbone_angles_compute(sys->protein_backbone.segment.angle, sys->protein_backbone.segment.count, state->xyz, &state->unitcell, &sys->protein_backbone);
+                        md_util_backbone_secondary_structure_infer(sys->protein_backbone.segment.secondary_structure, sys->protein_backbone.segment.count, state->xyz, &state->unitcell, &sys->protein_backbone);
                     }
                     md_util_backbone_ramachandran_classify(sys->protein_backbone.segment.rama_type, sys->protein_backbone.segment.count, sys);
                 }
@@ -9943,9 +10196,12 @@ static void computeOrder(uint32_t* result, const float* vx, const float* vy, con
 
     // generate Morton order based on the position inside a unit cube
     for (size_t i = 0; i < count; ++i) {
-        int x = (int)((vx[i] - minv[0]) * scale * 1023.f + 0.5f);
-        int y = (int)((vy[i] - minv[1]) * scale * 1023.f + 0.5f);
-        int z = (int)((vz[i] - minv[2]) * scale * 1023.f + 0.5f);
+        const float px = *(const float*)((const char*)vx + byte_stride * i);
+        const float py = *(const float*)((const char*)vy + byte_stride * i);
+        const float pz = *(const float*)((const char*)vz + byte_stride * i);
+        int x = (int)((px - minv[0]) * scale * 1023.f + 0.5f);
+        int y = (int)((py - minv[1]) * scale * 1023.f + 0.5f);
+        int z = (int)((pz - minv[2]) * scale * 1023.f + 0.5f);
 
         result[i] = part1By2(x) | (part1By2(y) << 1) | (part1By2(z) << 2);
     }
@@ -9987,13 +10243,26 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
     }
 }
 
-void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
-    if (!source || !z || !y || !z || count <= 0) return;
+// Packed coordinates: the bounds come from the packed AABB, which reads them as they lie, and the
+// keys from each atom in turn.
+void md_util_sort_spatial(uint32_t* source, const vec3_t* xyz, size_t count) {
+    if (!source || !xyz || count == 0) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();
 
+    float minv[3], maxv[3];
+    md_util_aabb_compute(minv, maxv, xyz, NULL, NULL, count);
+    const float extent = MAX(maxv[0] - minv[0], MAX(maxv[1] - minv[1], maxv[2] - minv[2]));
+    const float scale = extent == 0 ? 0.f : 1023.f / extent;
+
+    // Morton order based on the position inside a unit cube
     uint32_t* keys = md_temp_alloc_array(temp_scope, uint32_t, count);
-    computeOrder(keys, x, y, z, count, 0);
+    for (size_t i = 0; i < count; ++i) {
+        const int x = (int)((xyz[i].x - minv[0]) * scale + 0.5f);
+        const int y = (int)((xyz[i].y - minv[1]) * scale + 0.5f);
+        const int z = (int)((xyz[i].z - minv[2]) * scale + 0.5f);
+        keys[i] = part1By2(x) | (part1By2(y) << 1) | (part1By2(z) << 2);
+    }
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};

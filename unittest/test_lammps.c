@@ -3,11 +3,12 @@
 #include <math.h>
 
 #include <md_lammps.h>
-#include <md_trajectory.h>
 #include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
+
+#include "run_check.h"
 
 #define MAX_VALIDATION_SAMPLES 100
 
@@ -130,9 +131,9 @@ UTEST(lammps, water_ethane_cubic) {
     md_system_state_t sys_state = { .alloc = alloc };
     md_lammps_system_init_from_data(&sys, &sys_state, &data);
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], data.atoms[i].x);
-        EXPECT_EQ(sys_state.y[i], data.atoms[i].y);
-        EXPECT_EQ(sys_state.z[i], data.atoms[i].z);
+        EXPECT_EQ(sys_state.xyz[i].x, data.atoms[i].x);
+        EXPECT_EQ(sys_state.xyz[i].y, data.atoms[i].y);
+        EXPECT_EQ(sys_state.xyz[i].z, data.atoms[i].z);
     }
 
     // Skip first atom type == Unknown
@@ -163,6 +164,7 @@ UTEST(lammps, water_ethane_cubic) {
     }
 
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
 
     md_lammps_data_free(&data, alloc);
 }
@@ -273,159 +275,96 @@ UTEST(lammps, water_ethane_triclinic) {
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_lammps_system_init_from_data(&sys, &sys_state, &data));
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], data.atoms[i].x);
-        EXPECT_EQ(sys_state.y[i], data.atoms[i].y);
-        EXPECT_EQ(sys_state.z[i], data.atoms[i].z);
+        EXPECT_EQ(sys_state.xyz[i].x, data.atoms[i].x);
+        EXPECT_EQ(sys_state.xyz[i].y, data.atoms[i].y);
+        EXPECT_EQ(sys_state.xyz[i].z, data.atoms[i].z);
         EXPECT_NE(sys.atom.type_idx[i], 0);
     }
 
     md_system_free(&sys);
+    md_system_state_free(&sys_state);
 
     md_lammps_data_free(&data, alloc);
 }
 
-UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
+#define LAMMPS_RUN STR_LIT("run/dump")
 
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
-    ASSERT_TRUE(traj);
+// Recorded from the trajectory reader this replaced
+static const run_ref_t lammps_refs_cubic[] = {
+    { 0, {151603.819, 153255.739, 151588.291}, {0.717131853, 20.3001785, 16.4538536}, {18.2944317, 28.1543579, 25.7364693}, {39.1212633, 39.1212633, 39.1212633, 0, 0, 0} },
+    { 5, {152777.457, 152629.797, 152331.6},   {38.5581512, 19.8276329, 16.9380589},  {19.7969627, 29.9873066, 27.0132313}, {39.1212633, 39.1212633, 39.1212633, 0, 0, 0} },
+    { 9, {152191.176, 152829.139, 152926.806}, {38.6221504, 19.5720139, 16.8795338},  {19.8374538, 29.1452999, 27.2056694}, {39.1212633, 39.1212633, 39.1212633, 0, 0, 0} },
+};
+static const run_ref_t lammps_refs_triclinic[] = {
+    { 0, {133787.04, 125832.176, 163041.841},  {12.2316074, 29.3010769, 23.6809902}, {17.5067368, 1.37374055, 25.4883747}, {39.12, 35.7833136, 42.3503281, 3.13063428, -7.48770942, -3.11742148} },
+    { 5, {134817.816, 126200.858, 163380.641}, {12.568203, 28.2144489, 24.4033165},  {19.1436806, 2.89150667, 24.8202133}, {39.12, 35.7833136, 42.3503281, 3.13063428, -7.48770942, -3.11742148} },
+    { 9, {134242.501, 126280.058, 163813.305}, {11.6662769, 28.0301437, 25.3092327}, {19.9502373, 2.64502144, 25.6623058}, {39.12, 35.7833136, 42.3503281, 3.13063428, -7.48770942, -3.11742148} },
+};
 
-    size_t num_atoms = md_trajectory_num_atoms(traj);
-    size_t num_frames = md_trajectory_num_frames(traj);
-    EXPECT_EQ(7800, num_atoms);
-    EXPECT_EQ(10, num_frames);
-    size_t stride = ALIGN_TO(num_atoms, 16);
-    const size_t bytes = stride * 3 * sizeof(float);
-    md_temp_scope_t temp = md_temp_begin();
-    void* mem = md_temp_alloc(temp, bytes);
-    float* x = (float*)mem + stride * 0;
-    float* y = (float*)mem + stride * 1;
-    float* z = (float*)mem + stride * 2;
+UTEST(lammps, run_cubic) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7800, lammps_refs_cubic, ARRAY_SIZE(lammps_refs_cubic));
 
-    md_system_state_t state = {0, x, y, z, {0}};
-    for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
-        EXPECT_EQ(7800, state.num_atoms);
-    }
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &state));
-    EXPECT_NE(x[0], 0);
-    
+    // Scaled coordinates in the file: the first atom sits at these fractions of the cell
+    md_system_state_t st = {.alloc = arena};
+    md_system_state_init(&st, 7800);
+    ASSERT_TRUE(run_extract_one(&st, &sys, LAMMPS_RUN, 0));
+    EXPECT_NEAR(st.xyz[0].x, 0.018331 * 39.121262, 0.0001);
+    EXPECT_NEAR(st.xyz[0].y, 0.518904 * 39.121262, 0.0001);
+    EXPECT_NEAR(st.xyz[0].z, 0.420586 * 39.121262, 0.0001);
 
-    EXPECT_NEAR(x[0], 0.018331 * 39.121262, 0.0001); //Should be about 0.018331 of cell
-    EXPECT_NEAR(state.unitcell.x, 39.121262, 0.0001);
-
-    EXPECT_NEAR(y[0], 0.518904 * 39.121262, 0.0001); //Should be about 0.518904 of cell
-    EXPECT_NEAR(state.unitcell.y, 39.121262, 0.0001);
-
-    EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
-    EXPECT_NEAR(state.unitcell.z, 39.121262, 0.0001);
-
-    md_temp_end(temp);
-    md_trajectory_free(traj);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
 }
 
-// A LAMMPS dump records the TIMESTEP but not dt, so real time is not derivable. The steps must be
-// reported exactly and the times must fall back to ordinals with an empty unit, rather than the
-// steps being handed out as femtoseconds.
+// A LAMMPS dump records the TIMESTEP but not dt, so real time is not derivable. The steps are
+// reported exactly and the times fall back to ordinals with no unit, rather than the steps being
+// handed out as femtoseconds.
 UTEST(lammps, frame_steps_and_time_fallback) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
-    ASSERT_TRUE(traj);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/dump/time"));
+    const md_attribute_t* step = md_attributes_find(&sys.attributes, STR_LIT("run/dump/step"));
+    ASSERT_TRUE(time && step);
 
-    md_trajectory_header_t header = {0};
-    ASSERT_TRUE(md_trajectory_get_header(traj, &header));
-
-    ASSERT_TRUE(header.frame_times);
-    ASSERT_TRUE(header.frame_steps);
-
-    // Empty time unit: the times below are ordinals standing in for time, not picoseconds or femtoseconds
-    EXPECT_TRUE(md_unit_is_none(header.time_unit));
-    for (size_t i = 0; i < header.num_frames; ++i) {
-        EXPECT_NEAR(header.frame_times[i], (double)i, 1.0e-9);
+    // No unit: the times are ordinals standing in for time, not picoseconds or femtoseconds
+    EXPECT_TRUE(md_unit_is_none(time->unit));
+    const size_t F = time->format.shape[0];
+    for (size_t i = 0; i < F; ++i) {
+        EXPECT_NEAR(((const double*)time->data)[i], (double)i, 1.0e-9);
+    }
+    // Steps are whatever the file said, and non decreasing
+    for (size_t i = 1; i < F; ++i) {
+        EXPECT_GE(((const int64_t*)step->data)[i], ((const int64_t*)step->data)[i - 1]);
     }
 
-    // Steps are whatever the file said, and must be non decreasing
-    for (size_t i = 1; i < header.num_frames; ++i) {
-        EXPECT_GE(header.frame_steps[i], header.frame_steps[i - 1]);
-    }
-
-    md_trajectory_free(traj);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
 }
 
-UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
-    
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
-    ASSERT_TRUE(traj);
+UTEST(lammps, run_triclinic) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/triclinic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7722, lammps_refs_triclinic, ARRAY_SIZE(lammps_refs_triclinic));
 
-    size_t num_atoms = md_trajectory_num_atoms(traj);
-    size_t num_frames = md_trajectory_num_frames(traj);
-    EXPECT_EQ(7722, num_atoms);
-    EXPECT_EQ(10, num_frames);
-    size_t stride = ALIGN_TO(num_atoms, 16);
-    const size_t bytes = stride * 3 * sizeof(float);
-    md_temp_scope_t temp = md_temp_begin();
-    void* mem = md_temp_alloc(temp, bytes);
-    float* x = (float*)mem + stride * 0;
-    float* y = (float*)mem + stride * 1;
-    float* z = (float*)mem + stride * 2;
+    // One atom: the whole frame is parsed, the atom lines being in no order, and one kept.
+    md_system_state_t st = {.alloc = arena};
+    md_system_state_init(&st, 7722);
+    ASSERT_TRUE(run_extract_one(&st, &sys, LAMMPS_RUN, 9));
+    const md_attribute_t* pos = md_attributes_find(&sys.attributes, STR_LIT("run/dump/atom/position"));
+    float xyz[3];
+    md_attribute_slice_t one = md_attribute_slice_2(9, 17);
+    ASSERT_EQ(3u, md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_none()));
+    EXPECT_EQ(st.xyz[17].x, xyz[0]);
+    EXPECT_EQ(st.xyz[17].z, xyz[2]);
 
-    md_system_state_t state = {0, x, y, z, {0}};
-
-    for (size_t i = 0; i < num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
-        EXPECT_EQ(7722, state.num_atoms);
-    }
-
-    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &state));
-
-    EXPECT_NEAR(12.2316074, x[0], 0.0001); //Should be about 0.35 of cell
-    EXPECT_NEAR(39.1199989, state.unitcell.x, 0.0001);
-
-    EXPECT_NEAR(29.3010769, y[0], 0.0001); //Should be about 0.87 of cell
-    EXPECT_NEAR(35.7833138, state.unitcell.y, 0.0001);
-
-    EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
-    EXPECT_NEAR(42.3503265, state.unitcell.z, 0.0001);
-
-    md_temp_end(temp);
-    md_trajectory_free(traj);
-
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
 }
-
-UTEST(lammps, trajectory_reader_i) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj");
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
-    ASSERT_TRUE(traj);
-
-    size_t num_atoms = md_trajectory_num_atoms(traj);
-    size_t stride = ALIGN_TO(num_atoms, 16);
-    const size_t bytes = stride * 3 * sizeof(float);
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    void* mem = md_temp_alloc(temp, bytes);
-    float* x = (float*)mem + stride * 0;
-    float* y = (float*)mem + stride * 1;
-    float* z = (float*)mem + stride * 2;
-
-    md_trajectory_reader_i reader = {0};
-    ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
-
-    md_system_state_t state = {0, x, y, z, {0}};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
-    EXPECT_EQ(7800, state.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
-    EXPECT_EQ(7800, state.num_atoms);
-
-    md_trajectory_reader_free(&reader);
-    md_temp_end(temp);
-    md_trajectory_free(traj);
-}
-
 
 UTEST(lammps, comprehensive_data_validation) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -448,14 +387,15 @@ UTEST(lammps, comprehensive_data_validation) {
         
         // Validate coordinates are finite for a sample of atoms
         for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, sys.atom.count); ++i) {
-            EXPECT_FALSE(isnan(sys_state.x[i]));
-            EXPECT_FALSE(isnan(sys_state.y[i]));
-            EXPECT_FALSE(isnan(sys_state.z[i]));
-            EXPECT_FALSE(isinf(sys_state.x[i]));
-            EXPECT_FALSE(isinf(sys_state.y[i]));
-            EXPECT_FALSE(isinf(sys_state.z[i]));
+            EXPECT_FALSE(isnan(sys_state.xyz[i].x));
+            EXPECT_FALSE(isnan(sys_state.xyz[i].y));
+            EXPECT_FALSE(isnan(sys_state.xyz[i].z));
+            EXPECT_FALSE(isinf(sys_state.xyz[i].x));
+            EXPECT_FALSE(isinf(sys_state.xyz[i].y));
+            EXPECT_FALSE(isinf(sys_state.xyz[i].z));
         }
         
         md_system_free(&sys);
+        md_system_state_free(&sys_state);
     }
 }

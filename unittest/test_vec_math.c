@@ -2,6 +2,8 @@
 
 #include <core/md_vec_math.h>
 
+// The batch forms against the single vector products, on 17 atoms so both the eight wide path and
+// the scalar tail are covered, out of place and in place.
 UTEST(vec_math, mat3) {
 	mat3_t M = {
 		1,2,3,
@@ -9,48 +11,28 @@ UTEST(vec_math, mat3) {
 		3,4,1,
 	};
 
-	vec3_t v[2] = {
-		{1,1,1},
-		{2,2,2},
-	};
+	vec3_t xyz[17], out[17];
+	for (int i = 0; i < 17; ++i) xyz[i] = vec3_set(1.0f + i, 2.0f - 0.5f * i, 0.25f * i);
 
-	float x[17] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2};
-	float y[17] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2};
-	float z[17] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2};
+	mat3_batch_transform(out, xyz, 17, M);
+	for (int i = 0; i < 17; ++i) {
+		const vec3_t r = mat3_mul_vec3(M, xyz[i]);
+		EXPECT_NEAR(r.x, out[i].x, 1.0e-4f);
+		EXPECT_NEAR(r.y, out[i].y, 1.0e-4f);
+		EXPECT_NEAR(r.z, out[i].z, 1.0e-4f);
+	}
+	mat3_batch_transform_inplace(xyz, 17, M);
+	for (int i = 0; i < 17; ++i) {
+		EXPECT_EQ(out[i].x, xyz[i].x);
+		EXPECT_EQ(out[i].y, xyz[i].y);
+		EXPECT_EQ(out[i].z, xyz[i].z);
+	}
 
-	float x_[17];
-	float y_[17];
-	float z_[17];
-
-	mat3_batch_transform(x_, y_, z_, x, y, z, 17, M);
-	mat3_batch_transform_inplace(x, y, z, 17, M);
-
-	v[0] = mat3_mul_vec3(M, v[0]);
-	v[1] = mat3_mul_vec3(M, v[1]);
-
-	EXPECT_EQ(8, x[0]);
-	EXPECT_EQ(9, y[0]);
-	EXPECT_EQ(6, z[0]);
-
-	EXPECT_EQ(8, x_[0]);
-	EXPECT_EQ(9, y_[0]);
-	EXPECT_EQ(6, z_[0]);
-
-	EXPECT_EQ(8, v[0].x);
-	EXPECT_EQ(9, v[0].y);
-	EXPECT_EQ(6, v[0].z);
-
-	EXPECT_EQ(16, x[16]);
-	EXPECT_EQ(18, y[16]);
-	EXPECT_EQ(12, z[16]);
-
-	EXPECT_EQ(16, x_[16]);
-	EXPECT_EQ(18, y_[16]);
-	EXPECT_EQ(12, z_[16]);
-
-	EXPECT_EQ(16, v[1].x);
-	EXPECT_EQ(18, v[1].y);
-	EXPECT_EQ(12, v[1].z);
+	vec3_t one = {1,1,1};
+	one = mat3_mul_vec3(M, one);
+	EXPECT_EQ(8, one.x);
+	EXPECT_EQ(9, one.y);
+	EXPECT_EQ(6, one.z);
 }
 
 UTEST(vec_math, mat4) {
@@ -61,48 +43,40 @@ UTEST(vec_math, mat4) {
 		4,3,2,1,
 	};
 
-	vec4_t v[2] = {
-		{1,1,1,1},
-		{2,2,2,1},
-	};
+	vec3_t xyz[17], out[17];
+	for (int i = 0; i < 17; ++i) xyz[i] = vec3_set(1.0f + i, 2.0f - 0.5f * i, 0.25f * i);
 
-	float x[2] = {1,2};
-	float y[2] = {1,2};
-	float z[2] = {1,2};
+	mat4_batch_transform(out, xyz, 1.0f, 17, M);
+	for (int i = 0; i < 17; ++i) {
+		const vec4_t r = mat4_mul_vec4(M, vec4_from_vec3(xyz[i], 1.0f));
+		EXPECT_NEAR(r.x, out[i].x, 1.0e-4f);
+		EXPECT_NEAR(r.y, out[i].y, 1.0e-4f);
+		EXPECT_NEAR(r.z, out[i].z, 1.0e-4f);
+	}
+	mat4_batch_transform_inplace(xyz, 1.0f, 17, M);
+	for (int i = 0; i < 17; ++i) {
+		EXPECT_EQ(out[i].x, xyz[i].x);
+		EXPECT_EQ(out[i].y, xyz[i].y);
+		EXPECT_EQ(out[i].z, xyz[i].z);
+	}
+}
 
-	float x_[2];
-	float y_[2];
-	float z_[2];
-
-	mat4_batch_transform(x_, y_, z_, x, y, z, 1.0f, 2, M);
-	mat4_batch_transform_inplace(x, y, z, 1.0f, 2, M);
-
-	v[0] = mat4_mul_vec4(M, v[0]);
-	v[1] = mat4_mul_vec4(M, v[1]);
-
-	EXPECT_EQ(12, x[0]);
-	EXPECT_EQ(12, y[0]);
-	EXPECT_EQ(8,  z[0]);
-
-	EXPECT_EQ(12, x_[0]);
-	EXPECT_EQ(12, y_[0]);
-	EXPECT_EQ(8,  z_[0]);
-
-	EXPECT_EQ(12, v[0].x);
-	EXPECT_EQ(12, v[0].y);
-	EXPECT_EQ(8,  v[0].z);
-
-	EXPECT_EQ(20, x[1]);
-	EXPECT_EQ(21, y[1]);
-	EXPECT_EQ(14, z[1]);
-
-	EXPECT_EQ(20, x_[1]);
-	EXPECT_EQ(21, y_[1]);
-	EXPECT_EQ(14, z_[1]);
-
-	EXPECT_EQ(20, v[1].x);
-	EXPECT_EQ(21, v[1].y);
-	EXPECT_EQ(14, v[1].z);
+UTEST(vec_math, translate) {
+	vec3_t xyz[19], out[19];
+	for (int i = 0; i < 19; ++i) xyz[i] = vec3_set((float)i, 100.0f + i, -3.0f * i);
+	const vec3_t t = {0.5f, -2.0f, 7.0f};
+	vec3_batch_translate(out, xyz, 19, t);
+	for (int i = 0; i < 19; ++i) {
+		EXPECT_EQ(xyz[i].x + t.x, out[i].x);
+		EXPECT_EQ(xyz[i].y + t.y, out[i].y);
+		EXPECT_EQ(xyz[i].z + t.z, out[i].z);
+	}
+	vec3_batch_translate_inplace(xyz, 19, t);
+	for (int i = 0; i < 19; ++i) {
+		EXPECT_EQ(out[i].x, xyz[i].x);
+		EXPECT_EQ(out[i].y, xyz[i].y);
+		EXPECT_EQ(out[i].z, xyz[i].z);
+	}
 }
 
 // mat4x3_t is THREE columns of four rows. The product combines those three columns using v.x, v.y

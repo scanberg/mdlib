@@ -65,11 +65,11 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
@@ -95,10 +95,10 @@ void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const struc
 
 // Attempts to infer hydrogen bonds based on distance and angle criteria
 // The identified hydrogen bonds are stored in hbond_data
-// atom_x, atom_y, atom_z: Arrays of atom coordinates
+// atom_xyz: packed atom coordinates
 // unitcell: Periodic boundary conditions, (optional, can be NULL for non-periodic systems)
 // desc: Descriptor for the hydrogen bond calculation (optional, can be NULL for default values)
-void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const float* in_x, const float* in_y, const float* in_z,
+void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const vec3_t* atom_xyz,
                                  const md_unitcell_t* unitcell, double max_dist, double min_angle);
 
 // Identify isolated structures by covalent bonds.
@@ -144,7 +144,7 @@ void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unitcell_t
 void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unitcell_t* cell);
 
 // Applies periodic boundary conditions to coordinates
-bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+bool md_util_pbc(vec3_t* in_out_xyz, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
 
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
@@ -218,57 +218,58 @@ mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
-void md_util_aabb_compute     (float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count);
+void md_util_aabb_compute     (float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count);
 void md_util_aabb_compute_vec4(float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count);
 
 // Computes an object oriented bounding box based on the PCA of the provided points (with optional radius)
-void md_util_oobb_compute     (float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+void md_util_oobb_compute     (float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 void md_util_oobb_compute_vec4(float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 
 // Computes the center of mass for a set of points with a given weight
-// x,y,z / xyz: Arrays containing coordinates
+// xyz:         Packed coordinates
 // w:           Array of weights (optional): set as NULL to use equal weights
-// indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
+// indices:     Array of indices (optional): indices into the arrays (xyz,w)
 // count:       Length of all arrays
 // unit_cell:   The unit_cell of the system [Optional]
-vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+vec3_t md_util_com_compute(const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
 // The rmsd is the root mean squared deviation between the two sets of aligned vectors.
-// coords:  Coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
+// xyz:     Packed coordinate arrays [2]
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
-// count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
+// count:   Length of all arrays (xyz0, xyz1, w)
+double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
 double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
 
 // Perform linear interpolation of supplied coordinates
-// out_x/y/z:   Destination arrays (x,y,z)
-// in_x/y/z:    Source arrays [2] (x0, x1), (y0, y1), (z0, z1)
+// out_xyz:     Destination, packed
+// in_xyz:      Sources [2], packed
 // count:       Count of coordinates (this implies that all coordinate arrays must be equal in length)
 // unit_cell:   The unit_cell of the system [Optional]
 // t: interpolation factor (0..1)
-// @NOTE: This will assume that the input and output are padded such that it can operate on full simd width
-bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unitcell_t* cell, float t);
+// @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
+bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t);
 
 // Perform cubic interpolation of supplied coordinates
-// out_x/y/z:   Destination arrays (x,y,z)
-// in_x/y/z:    Source arrays [2] (x0, x1, x2, x3), (y0, y1, y2, y3), (z0, z1, z2, z3)
+// out_xyz:     Destination, packed
+// in_xyz:      Sources [4], packed
 // count:       Count of coordinates (this implies that all coordinate arrays must be equal in length)
 // unit_cell:   The unit_cell of the system [Optional]
 // t:           Interpolation factor (0..1)
 // s:           Scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
-bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unitcell_t* cell, float t, float s);
+// @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
+bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_sort_spatial(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
+void md_util_sort_spatial(uint32_t* source_indices, const vec3_t* xyz, size_t count);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.

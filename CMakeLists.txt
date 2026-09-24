@@ -161,7 +161,6 @@ set(SRC_FILES
   src/md_topo.h
   src/md_tpr.c
   src/md_tpr.h
-  src/md_trajectory.h
   src/md_trr.c
   src/md_trr.h
   src/md_types.h

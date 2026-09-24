@@ -22,6 +22,7 @@ set (SRC_FILES
     test_handle.c
     test_edr.c
     test_cube.c
+    test_dcd.c
     test_fifo.c
     test_intrinsics.c
     test_simd.c
@@ -50,6 +51,7 @@ set (SRC_FILES
     rmsd.c
     test_lammps.c
     test_system_invariants.c
+    test_run_cache.c
     test_molden.c
 )
 

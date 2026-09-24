@@ -1,4 +1,7 @@
 #include <md_csv.h>
+#include <md_system.h>
+#include <core/md_unit.h>
+#include <stdio.h>
 
 #include "core/md_allocator.h"
 #include "core/md_os.h"
@@ -174,4 +177,99 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
         md_array_free(csv->field_values[i], alloc);
     }
     MEMSET(csv, 0, sizeof(md_csv_t));
+}
+
+// ### RUN ###
+
+// The unit in parentheses in a label - "Time (ps)", "Energy (kJ/mol)" - or none
+static md_unit_t csv_label_unit(str_t label) {
+    size_t beg, end;
+    md_unit_t unit = md_unit_none();
+    if (str_find_char(&beg, label, '(') && str_find_char(&end, label, ')') && end > beg) {
+        md_unit_t parsed;
+        if (md_unit_parse(&parsed, str_substr(label, beg + 1, end - beg - 1))) {
+            unit = parsed;
+        }
+    }
+    return unit;
+}
+
+// "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
+static str_t csv_group(char* buf, size_t cap, const char* kind, str_t filename) {
+    str_t file = filename;
+    extract_file(&file, filename);
+    size_t dot;
+    if (str_rfind_char(&dot, file, '.') && dot > 0) {
+        file = str_substr(file, 0, dot);
+    }
+    size_t len = (size_t)snprintf(buf, cap, "%s/", kind);
+    const size_t base = len;
+    bool sep = false;
+    for (size_t i = 0; i < file.len && len + 2 < cap; ++i) {
+        char c = file.ptr[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) { sep = (len > base); continue; }
+        if (sep) { buf[len++] = '_'; sep = false; }
+        buf[len++] = c;
+    }
+    if (len == base) len += (size_t)snprintf(buf + len, cap - len, "data");
+    buf[len] = '\0';
+    return (str_t){ buf, len };
+}
+
+bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
+    ASSERT(sys);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    bool result = false;
+
+    md_csv_t csv = {0};
+    if (!md_csv_parse_file(&csv, filename, alloc) || csv.num_fields == 0 || csv.num_values == 0) {
+        MD_LOG_ERROR("CSV: failed to read '" STR_FMT "'", STR_ARG(filename));
+        goto done;
+    }
+
+    {
+        // The first column is time when its name says so; each column's unit is in its name.
+        const bool has_time = csv.field_names && str_eq_cstr_n_ignore_case(str_trim(csv.field_names[0]), "time", 4);
+        const size_t first = has_time ? 1 : 0;
+        const size_t C = csv.num_fields - first;
+        if (C == 0) {
+            MD_LOG_ERROR("CSV: '" STR_FMT "' holds a time column and nothing else", STR_ARG(filename));
+            goto done;
+        }
+        str_t*        names   = md_temp_alloc(temp, C * sizeof(str_t));
+        md_unit_t*    units   = md_temp_alloc(temp, C * sizeof(md_unit_t));
+        const float** columns = md_temp_alloc(temp, C * sizeof(float*));
+        for (size_t k = 0; k < C; ++k) {
+            names[k]   = csv.field_names ? csv.field_names[first + k] : (str_t){0};
+            units[k]   = csv.field_names ? csv_label_unit(csv.field_names[first + k]) : md_unit_none();
+            columns[k] = csv.field_values[first + k];
+        }
+        double* time = NULL;
+        if (has_time) {
+            time = md_temp_alloc(temp, csv.num_values * sizeof(double));
+            for (size_t i = 0; i < csv.num_values; ++i) time[i] = csv.field_values[0][i];
+        }
+
+        char group_buf[256];
+        char path_buf[4096];
+        const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+        const md_run_series_desc_t desc = {
+            .group       = csv_group(group_buf, sizeof(group_buf), "csv", filename),
+            .num_rows    = csv.num_values,
+            .num_columns = C,
+            .time        = time,
+            .time_unit   = has_time ? csv_label_unit(csv.field_names[0]) : md_unit_none(),
+            .names       = names,
+            .units       = units,
+            .columns     = columns,
+            .source_path = (str_t){ path_buf, path_len },
+        };
+        result = md_run_publish_series(sys, run, &desc);
+    }
+
+done:
+    md_temp_end(temp);
+    return result;
 }

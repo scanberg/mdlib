@@ -1,12 +1,12 @@
 ﻿#include "utest.h"
 #include <string.h>
 #include <math.h>
+#include <float.h>
 
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xyz.h>
 #include <md_mmcif.h>
-#include <md_trajectory.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <md_smiles.h>
@@ -19,6 +19,36 @@
 #include <core/md_hash.h>
 
 #include "rmsd.h"
+
+// The tests below lay out coordinates per axis, which reads well; a state holds them packed.
+static vec3_t* pack_xyz(vec3_t* dst, const float* x, const float* y, const float* z, size_t n) {
+    for (size_t i = 0; i < n; ++i) dst[i] = vec3_set(x[i], y[i], z[i]);
+    return dst;
+}
+
+// md_util_com_compute over planar inputs: packed first. With indices the source is as long as the
+// largest index reaches.
+static vec3_t com_planar(const float* x, const float* y, const float* z, const float* w, const int32_t* idx, size_t n, const md_unitcell_t* cell) {
+    size_t len = n;
+    if (idx) {
+        len = 0;
+        for (size_t i = 0; i < n; ++i) len = MAX(len, (size_t)idx[i] + 1);
+    }
+    md_temp_scope_t temp = md_temp_begin();
+    vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, ALIGN_TO(len, 16));
+    pack_xyz(xyz, x, y, z, len);
+    const vec3_t com = md_util_com_compute(xyz, w, idx, n, cell);
+    md_temp_end(temp);
+    return com;
+}
+
+static void unpack_xyz(float* x, float* y, float* z, const vec3_t* src, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        x[i] = src[i].x;
+        y[i] = src[i].y;
+        z[i] = src[i].z;
+    }
+}
 
 struct util {
     md_allocator_i* alloc;
@@ -43,6 +73,7 @@ UTEST_F_SETUP(util) {
     utest_fixture->mol_ala.alloc = alloc;
     md_system_state_t mol_ala_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&utest_fixture->mol_ala, &mol_ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    md_pdb_system_publish_run(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     md_util_system_infer(&utest_fixture->mol_ala, &mol_ala_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_pftaa.alloc = alloc;
@@ -115,7 +146,7 @@ UTEST(util, hbonds) {
     EXPECT_LT(0, hbond_data.candidate.donor.count);
     EXPECT_LT(0, hbond_data.candidate.acceptor.count);
 
-    md_util_hydrogen_bond_infer(&hbond_data, sys_state.x, sys_state.y, sys_state.z, &sys_state.unitcell, 3.0, 150.0);
+    md_util_hydrogen_bond_infer(&hbond_data, sys_state.xyz, &sys_state.unitcell, 3.0, 150.0);
     EXPECT_LT(0, hbond_data.num_bonds);
 
     md_temp_end(temp);
@@ -167,64 +198,60 @@ UTEST_F(util, structure) {
 UTEST_F(util, rmsd) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t* mol = &utest_fixture->mol_ala;
-    md_trajectory_i* traj = utest_fixture->mol_ala.trajectory;
     ASSERT_TRUE(mol);
-    ASSERT_TRUE(traj);
 
-    const int64_t stride = mol->atom.count;
-    const int64_t mem_size = stride * 6 * sizeof(float) + stride * 6 * sizeof(double);
-    float* mem = md_alloc(alloc, mem_size);
-    float* x[2] = {
-        mem + stride * 0,
-        mem + stride * 1,
+    const size_t N = mol->atom.count;
+    const size_t cap = ALIGN_TO(N, 16);
+    vec3_t* xyz[2] = {
+        md_alloc(alloc, cap * sizeof(vec3_t)),
+        md_alloc(alloc, cap * sizeof(vec3_t)),
     };
-    float* y[2] = {
-        mem + stride * 2,
-        mem + stride * 3,
-    };
-    float* z[2] = {
-        mem + stride * 4,
-        mem + stride * 5,
-    };
+    double* xyz0 = md_alloc(alloc, N * 3 * sizeof(double));
+    double* xyz1 = md_alloc(alloc, N * 3 * sizeof(double));
 
-    float* w = md_alloc(alloc, sizeof(float) * stride);
+    float* w = md_alloc(alloc, sizeof(float) * N);
 	md_atom_extract_masses(w, 0, mol->atom.count, &mol->atom);
 
-    double* xyz0 = (double*)(mem + stride * 6);
-    double* xyz1 = (double*)(mem + stride * 6) + stride * 3;
+    {
+        const str_t paths[] = { STR_LIT("atom/position") };
+        md_system_extract_t* ex = md_system_extract_begin(mol, STR_LIT("run/ala"), paths, 1, md_get_heap_allocator());
+        ASSERT_TRUE(ex != NULL);
+        ASSERT_TRUE(md_system_extract_frame(ex, 0, &(md_system_state_t){ .xyz = xyz[0] }));
+        ASSERT_TRUE(md_system_extract_frame(ex, 1, &(md_system_state_t){ .xyz = xyz[1] }));
+        md_system_extract_end(ex);
+    }
 
-    md_trajectory_load_frame(traj, 0, &(md_system_state_t){0, x[0], y[0], z[0], {0}});
-    md_trajectory_load_frame(traj, 1, &(md_system_state_t){0, x[1], y[1], z[1], {0}});
+    for (size_t i = 0; i < N; ++i) {
+        xyz0[i * 3 + 0] = xyz[0][i].x;
+        xyz0[i * 3 + 1] = xyz[0][i].y;
+        xyz0[i * 3 + 2] = xyz[0][i].z;
 
-    for (int64_t i = 0; i < mol->atom.count; ++i) {
-        xyz0[i * 3 + 0] = x[0][i];
-        xyz0[i * 3 + 1] = y[0][i];
-        xyz0[i * 3 + 2] = z[0][i];
-
-        xyz1[i * 3 + 0] = x[1][i];
-        xyz1[i * 3 + 1] = y[1][i];
-        xyz1[i * 3 + 2] = z[1][i];
+        xyz1[i * 3 + 0] = xyz[1][i].x;
+        xyz1[i * 3 + 1] = xyz[1][i].y;
+        xyz1[i * 3 + 2] = xyz[1][i].z;
     }
 
     // Reference
     double ref_rmsd;
-    fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)mol->atom.count, &ref_rmsd);
+    fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)N, &ref_rmsd);
 
     // Our implementation
-    const float* const cx[2] = { x[0], x[1] };
-    const float* const cy[2] = { y[0], y[1] };
-    const float* const cz[2] = { z[0], z[1] };
+    const vec3_t* const cxyz[2] = { xyz[0], xyz[1] };
     const float* const cw[2] = { w, w };
 
     vec3_t com[2] = {
-        md_util_com_compute(x[0], y[0], z[0], w, 0, mol->atom.count, 0),
-        md_util_com_compute(x[1], y[1], z[1], w, 0, mol->atom.count, 0),
+        md_util_com_compute(xyz[0], w, 0, N, 0),
+        md_util_com_compute(xyz[1], w, 0, N, 0),
     };
-    double rmsd = md_util_rmsd_compute(cx, cy, cz, cw, 0, mol->atom.count, com);
-    
+    double rmsd = md_util_rmsd_compute(cxyz, cw, 0, N, com);
+
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
-    md_free(alloc, mem, mem_size);
+    md_free(alloc, xyz[0], cap * sizeof(vec3_t));
+    md_free(alloc, xyz[1], cap * sizeof(vec3_t));
+    md_free(alloc, xyz0, N * 3 * sizeof(double));
+    md_free(alloc, xyz1, N * 3 * sizeof(double));
+    md_free(alloc, w, N * sizeof(float));
 }
 
 UTEST(util, com) {
@@ -590,9 +617,11 @@ UTEST(util, unwrap_structure_coarse_grained_without_bonds) {
         y[2 * i + 1] = fmodf(8.5f + 3.0f, 10.0f); // 3A up, wrapped to the bottom of the cell
         z[2 * i + 1] = 5.0f;
     }
-    md_system_state_t state = { .num_atoms = 2 * N, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
+    vec3_t xyz[2 * N];
+    md_system_state_t state = { .num_atoms = 2 * N, .xyz = pack_xyz(xyz, x, y, z, 2 * N), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
     md_util_unwrap_system(&state, &sys);
+    unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i + 1 < N; ++i) {
         EXPECT_NEAR(x[2 * (i + 1)] - x[2 * i], 3.8f, 1.0e-4f);
@@ -620,7 +649,8 @@ UTEST(util, infer_bonds_coarse_grained) {
     float x[] = {0, 0, 0,   3.8f, 3.8f, 3.8f};
     float y[] = {0, 3, 6,   0,    3,    6};
     float z[] = {0, 0, 0,   0,    0,    0};
-    md_system_state_t state = { .num_atoms = 6, .x = x, .y = y, .z = z };
+    vec3_t xyz[6];
+    md_system_state_t state = { .num_atoms = 6, .xyz = pack_xyz(xyz, x, y, z, 6) };
 
     md_bond_data_t bond = {0};
     md_util_infer_covalent_bonds(&bond, &state, &sys, alloc);
@@ -661,7 +691,8 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
     float x[] = {0.0f, 1.5f, 3.0f, 4.5f, 20.0f};
     float y[] = {0, 0, 0, 0, 0};
     float z[] = {0, 0, 0, 0, 0};
-    md_system_state_t state = { .num_atoms = 5, .x = x, .y = y, .z = z };
+    vec3_t xyz[5];
+    md_system_state_t state = { .num_atoms = 5, .xyz = pack_xyz(xyz, x, y, z, 5) };
 
     md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc);
     ASSERT_EQ(sys.bond.count, 3u);
@@ -731,11 +762,13 @@ UTEST(util, unwrap_structure_ortho) {
     for (int i = 0; i < 9; ++i) {
         x[i] = fmodf(1.0f + 2.0f * i, 10.0f);
     }
-    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = md_unitcell_from_extent(10, 10, 10) };
+    vec3_t xyz[9];
+    md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
     md_structure_t structure = {0};
     ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
     md_util_unwrap_structure(&state, &structure);
+    unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i < 8; ++i) {
         EXPECT_NEAR(x[i + 1] - x[i], 2.0f, 1.0e-4f);
@@ -773,11 +806,13 @@ UTEST(util, unwrap_structure_triclinic) {
         y[i] = ty[i] + na * A[0][1] + nb * A[1][1];
         z[i] = tz[i] + na * A[0][2] + nb * A[1][2];
     }
-    md_system_state_t state = { .num_atoms = 9, .x = x, .y = y, .z = z, .unitcell = cell };
+    vec3_t xyz[9];
+    md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = cell };
 
     md_structure_t structure = {0};
     ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
     md_util_unwrap_structure(&state, &structure);
+    unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     const float ox = x[0] - tx[0];
     const float oy = y[0] - ty[0];
@@ -1178,14 +1213,14 @@ UTEST(util, com_pbc_matches_plain_mean) {
                 xyzw[i] = vec4_set(x[i], y[i], z[i], w[i]);
             }
 
-            const vec3_t plain_u = md_util_com_compute(x, y, z, NULL, NULL, n, NULL);
-            const vec3_t plain_w = md_util_com_compute(x, y, z, w,    NULL, n, NULL);
+            const vec3_t plain_u = com_planar(x, y, z, NULL, NULL, n, NULL);
+            const vec3_t plain_w = com_planar(x, y, z, w,    NULL, n, NULL);
 
             // the four internal variants, in order: _com_pbc, _com_pbc_w, _com_pbc_i, _com_pbc_iw
-            const vec3_t pbc    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t pbc_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t pbc_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t pbc_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+            const vec3_t pbc    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t pbc_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t pbc_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t pbc_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             // and the vec4 entry point, which carries its weight in w
             const vec3_t pbc_v4 = md_util_com_compute_vec4(xyzw, NULL, n, &cells[ci]);
@@ -1230,10 +1265,10 @@ UTEST(util, com_pbc_invariant_under_lattice_shift) {
             com_make_blob(x, y, z, w, n, &cells[ci]);
             for (size_t i = 0; i < n; ++i) idx[i] = (int32_t)i;
 
-            const vec3_t before    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t before_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t before_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t before_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+            const vec3_t before    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t before_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t before_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t before_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             // scatter the points across images - a different lattice vector for every third one
             for (size_t i = 0; i < n; ++i) {
@@ -1246,10 +1281,10 @@ UTEST(util, com_pbc_invariant_under_lattice_shift) {
                 z[i] += shift.z;
             }
 
-            const vec3_t after    = md_util_com_compute(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t after_w  = md_util_com_compute(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t after_i  = md_util_com_compute(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t after_iw = md_util_com_compute(x, y, z, w,    idx,  n, &cells[ci]);
+            const vec3_t after    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const vec3_t after_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const vec3_t after_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const vec3_t after_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             for (int e = 0; e < 3; ++e) {
                 EXPECT_NEAR(after.elem[e],    before.elem[e],    0.02f);
@@ -1273,8 +1308,8 @@ UTEST(util, com_pbc_indices_select) {
         float xs[COM_MAX_PTS], ys[COM_MAX_PTS], zs[COM_MAX_PTS], ws[COM_MAX_PTS];
         com_make_blob(xs, ys, zs, ws, n, &cells[ci]);
 
-        const vec3_t want   = md_util_com_compute(xs, ys, zs, NULL, NULL, n, &cells[ci]);
-        const vec3_t want_w = md_util_com_compute(xs, ys, zs, ws,   NULL, n, &cells[ci]);
+        const vec3_t want   = com_planar(xs, ys, zs, NULL, NULL, n, &cells[ci]);
+        const vec3_t want_w = com_planar(xs, ys, zs, ws,   NULL, n, &cells[ci]);
 
         // stride the real points through a 3x larger array, junk in between
         float bx[COM_MAX_PTS * 3], by[COM_MAX_PTS * 3], bz[COM_MAX_PTS * 3], bw[COM_MAX_PTS * 3];
@@ -1291,8 +1326,8 @@ UTEST(util, com_pbc_indices_select) {
             idx[i] = (int32_t)slot;
         }
 
-        const vec3_t got   = md_util_com_compute(bx, by, bz, NULL, idx, n, &cells[ci]);
-        const vec3_t got_w = md_util_com_compute(bx, by, bz, bw,   idx, n, &cells[ci]);
+        const vec3_t got   = com_planar(bx, by, bz, NULL, idx, n, &cells[ci]);
+        const vec3_t got_w = com_planar(bx, by, bz, bw,   idx, n, &cells[ci]);
 
         for (int e = 0; e < 3; ++e) {
             EXPECT_NEAR(got.elem[e],   want.elem[e],   1.0e-4f);
@@ -1317,7 +1352,7 @@ UTEST(util, com_pbc_weights_apply) {
     float w[2] = { 10.0f, 1.0f };
 
     const vec3_t expect = vec3_div1(vec3_add(vec3_mul1(p0, 10.0f), p1), 11.0f);
-    const vec3_t got    = md_util_com_compute(x, y, z, w, NULL, 2, &cell);
+    const vec3_t got    = com_planar(x, y, z, w, NULL, 2, &cell);
 
     EXPECT_NEAR(got.x, expect.x, 0.05f);
     EXPECT_NEAR(got.y, expect.y, 0.05f);
@@ -2237,4 +2272,260 @@ UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
 
     EXPECT_GT(md_bitfield_popcount(&ref), (size_t)1);
     EXPECT_EQ(md_bitfield_popcount(&ref), md_bitfield_popcount(&mask));
+}
+
+// An atom that crosses the cell boundary between two frames goes the short way, across the
+// boundary, and not back through the box. The orthorhombic branch once discarded its
+// minimum image and so did exactly that.
+UTEST(util, interpolate_linear_across_boundary) {
+    const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
+    vec3_t a[16] = {0}, b[16] = {0}, out[16] = {0};
+    for (int i = 0; i < 16; ++i) {
+        a[i] = vec3_set(9.5f, 5.0f, 0.25f);
+        b[i] = vec3_set(0.5f, 5.0f, 9.75f);
+    }
+    const vec3_t* const in[2] = { a, b };
+    ASSERT_TRUE(md_util_interpolate_linear(out, in, 16, &cell, 0.5f));
+    for (int i = 0; i < 16; ++i) {
+        // Halfway is on the boundary: 10 or its image 0, never 5
+        EXPECT_NEAR(0.0f, fabsf(fmodf(out[i].x + 5.0f, 10.0f) - 5.0f), 1.0e-4f);
+        EXPECT_NEAR(5.0f, out[i].y, 1.0e-4f);
+        EXPECT_NEAR(0.0f, fabsf(fmodf(out[i].z + 5.0f, 10.0f) - 5.0f), 1.0e-4f);
+    }
+
+    // Without a cell it is a plain blend
+    ASSERT_TRUE(md_util_interpolate_linear(out, in, 16, NULL, 0.5f));
+    EXPECT_NEAR(5.0f, out[3].x, 1.0e-4f);
+}
+
+// Wrapping a subset moves those atoms and no others; the orthorhombic branch once wrote each result
+// to the i:th atom instead of the one indexed.
+UTEST(util, pbc_indexed) {
+    const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
+    vec3_t xyz[20];
+    for (int i = 0; i < 20; ++i) xyz[i] = vec3_set(12.0f + i, -3.0f, 5.0f);
+    const int32_t idx[3] = { 17, 4, 11 };
+    ASSERT_TRUE(md_util_pbc(xyz, idx, 3, &cell));
+    for (int i = 0; i < 20; ++i) {
+        const bool wrapped = (i == 17 || i == 4 || i == 11);
+        const float ex = wrapped ? fmodf(12.0f + i, 10.0f) : 12.0f + i;
+        EXPECT_NEAR(ex, xyz[i].x, 1.0e-4f);
+        EXPECT_NEAR(wrapped ? 7.0f : -3.0f, xyz[i].y, 1.0e-4f);
+    }
+
+    // All of them, through the eight wide path and its tail. An atom on the boundary may come out
+    // at either end, which is the same place.
+    ASSERT_TRUE(md_util_pbc(xyz, NULL, 20, &cell));
+    for (int i = 0; i < 20; ++i) {
+        EXPECT_GE(xyz[i].x, 0.0f);
+        EXPECT_LE(xyz[i].x, 10.0f);
+        EXPECT_NEAR(0.0f, remainderf(xyz[i].x - (12.0f + i), 10.0f), 1.0e-4f);
+        EXPECT_NEAR(7.0f, xyz[i].y, 1.0e-4f);
+        EXPECT_NEAR(5.0f, xyz[i].z, 1.0e-4f);
+    }
+
+    // Triclinic: every wrapped atom lands inside the cell
+    const md_unitcell_t tri = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
+    for (int i = 0; i < 20; ++i) xyz[i] = vec3_set(12.0f + i, -3.0f - i, 25.0f);
+    ASSERT_TRUE(md_util_pbc(xyz, NULL, 20, &tri));
+    mat3_t I = {0};
+    md_unitcell_I_extract_float(I.elem, &tri);
+    for (int i = 0; i < 20; ++i) {
+        const vec3_t f = mat3_mul_vec3(I, xyz[i]);
+        for (int k = 0; k < 3; ++k) {
+            EXPECT_GE(f.elem[k], -1.0e-4f);
+            EXPECT_LE(f.elem[k], 1.0f + 1.0e-4f);
+        }
+    }
+}
+
+// Each of the four paths (plain, radius, index, both) against a scalar reference, on a count that
+// leaves a tail after the eight wide part.
+UTEST(util, aabb_paths) {
+    enum { N = 37 };
+    vec3_t xyz[N];
+    float r[N];
+    int32_t idx[N];
+    for (int i = 0; i < N; ++i) {
+        const float s = (float)((i * 2654435761u) % 1000) / 100.0f - 5.0f;
+        xyz[i] = vec3_set(s, -2.0f * s + i, 0.5f * i - s);
+        r[i]   = 0.1f * (i % 7);
+        idx[i] = (i * 11) % N;
+    }
+    for (int variant = 0; variant < 4; ++variant) {
+        const float*   rr = (variant & 1) ? r   : NULL;
+        const int32_t* ii = (variant & 2) ? idx : NULL;
+        const size_t   n  = ii ? 29 : N;
+        float ref_min[3] = { FLT_MAX,  FLT_MAX,  FLT_MAX};
+        float ref_max[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        for (size_t k = 0; k < n; ++k) {
+            const int32_t j = ii ? ii[k] : (int32_t)k;
+            const float rad = rr ? rr[j] : 0.0f;
+            for (int c = 0; c < 3; ++c) {
+                ref_min[c] = MIN(ref_min[c], xyz[j].elem[c] - rad);
+                ref_max[c] = MAX(ref_max[c], xyz[j].elem[c] + rad);
+            }
+        }
+        float got_min[3], got_max[3];
+        md_util_aabb_compute(got_min, got_max, xyz, rr, ii, n);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_EQ(ref_min[c], got_min[c]);
+            EXPECT_EQ(ref_max[c], got_max[c]);
+        }
+    }
+}
+
+// The spline passes through the two middle frames at t = 0 and t = 1, and across a boundary it
+// takes the neighbouring frames' images rather than their wrapped positions.
+UTEST(util, interpolate_cubic) {
+    vec3_t f[4][16], out[16];
+    for (int i = 0; i < 16; ++i) {
+        for (int k = 0; k < 4; ++k) {
+            f[k][i] = vec3_set(1.0f * k + i, 2.0f * k, -0.5f * k * k);
+        }
+    }
+    const vec3_t* const in[4] = { f[0], f[1], f[2], f[3] };
+    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, NULL, 0.0f, 0.5f));
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(f[1][i].x, out[i].x, 1.0e-4f);
+        EXPECT_NEAR(f[1][i].z, out[i].z, 1.0e-4f);
+    }
+    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, NULL, 1.0f, 0.5f));
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(f[2][i].y, out[i].y, 1.0e-4f);
+    }
+
+    // Moving +1 per frame along x, wrapped into a box of 10
+    const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
+    for (int i = 0; i < 16; ++i) {
+        for (int k = 0; k < 4; ++k) {
+            f[k][i] = vec3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);   // 8, 9, 0, 1
+        }
+    }
+    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, &cell, 0.5f, 0.5f));
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
+    }
+}
+
+// The order is a permutation of the atoms, and atoms that share a position end up together.
+UTEST(util, sort_spatial) {
+    enum { N = 64 };
+    vec3_t xyz[N];
+    for (int i = 0; i < N; ++i) {
+        const int cluster = i % 4;
+        xyz[i] = vec3_set(cluster * 20.0f, cluster * 20.0f, 0.0f);
+    }
+    uint32_t order[N];
+    md_util_sort_spatial(order, xyz, N);
+    bool seen[N] = {0};
+    for (int i = 0; i < N; ++i) {
+        ASSERT_LT(order[i], (uint32_t)N);
+        EXPECT_FALSE(seen[order[i]]);
+        seen[order[i]] = true;
+    }
+    int changes = 0;
+    for (int i = 1; i < N; ++i) {
+        changes += (order[i] % 4) != (order[i - 1] % 4);
+    }
+    EXPECT_EQ(3, changes);
+}
+
+// The component wise kernels step over a few atoms to align their loads, so where an array begins
+// decides how they split the work. Every start, against scalar references.
+UTEST(util, packed_kernels_any_alignment) {
+    enum { N = 37, PAD = 64 };
+    const md_unitcell_t cell = md_unitcell_from_extent(10, 12, 14);
+    const vec3_t ext = {10, 12, 14};
+    vec3_t base_a[N + PAD], base_b[N + PAD], base_o[N + PAD];
+    float  base_w[N + PAD];
+    for (int off = 0; off < 8; ++off) {
+        vec3_t* a = base_a + off;
+        vec3_t* b = base_b + off;
+        vec3_t* o = base_o + off;
+        float*  w = base_w + off;
+        for (int i = 0; i < N; ++i) {
+            const float s = (float)((i * 2654435761u + off) % 1000) / 1000.0f;
+            a[i] = vec3_set(9.0f * s + 0.5f, 11.0f * (1.0f - s) + 0.5f, 13.0f * s * s + 0.5f);
+            b[i] = vec3_add(a[i], vec3_set(3.0f - 6.0f * s, 5.0f * s - 2.5f, 1.5f));
+            w[i] = 0.5f + s;
+        }
+
+        // Plain and weighted COM without a cell
+        double ref[3] = {0}, ref_w[3] = {0}, sw = 0;
+        for (int i = 0; i < N; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                ref[k]   += a[i].elem[k];
+                ref_w[k] += a[i].elem[k] * w[i];
+            }
+            sw += w[i];
+        }
+        const vec3_t c  = md_util_com_compute(a, NULL, NULL, N, NULL);
+        const vec3_t cw = md_util_com_compute(a, w,    NULL, N, NULL);
+        for (int k = 0; k < 3; ++k) {
+            EXPECT_NEAR(ref[k] / N, c.elem[k], 1.0e-4);
+            EXPECT_NEAR(ref_w[k] / sw, cw.elem[k], 1.0e-4);
+        }
+
+        // Periodic COM of a cloud well inside the cell is its plain mean, weighted or not
+        vec3_t near_center[N];
+        for (int i = 0; i < N; ++i) near_center[i] = vec3_add(vec3_set(5, 6, 7), vec3_mul1(vec3_sub(a[i], vec3_set(5, 6, 7)), 0.1f));
+        MEMCPY(o, near_center, sizeof(near_center));
+        const vec3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
+        const vec3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
+        const vec3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
+        const vec3_t mcw = md_util_com_compute(o, w,    NULL, N, NULL);
+        for (int k = 0; k < 3; ++k) {
+            EXPECT_NEAR(mc.elem[k],  pc.elem[k],  2.0e-2);
+            EXPECT_NEAR(mcw.elem[k], pcw.elem[k], 2.0e-2);
+        }
+
+        // AABB
+        float mn[3], mx[3];
+        md_util_aabb_compute(mn, mx, a, NULL, NULL, N);
+        for (int k = 0; k < 3; ++k) {
+            float lo = FLT_MAX, hi = -FLT_MAX;
+            for (int i = 0; i < N; ++i) { lo = MIN(lo, a[i].elem[k]); hi = MAX(hi, a[i].elem[k]); }
+            EXPECT_EQ(lo, mn[k]);
+            EXPECT_EQ(hi, mx[k]);
+        }
+
+        // Linear interpolation, no cell and orthorhombic, and nothing written past the end
+        base_o[off + N] = vec3_set(-1, -1, -1);
+        const vec3_t* const in[2] = { a, b };
+        ASSERT_TRUE(md_util_interpolate_linear(o, in, N, NULL, 0.25f));
+        for (int i = 0; i < N; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                EXPECT_NEAR(a[i].elem[k] + 0.25f * (b[i].elem[k] - a[i].elem[k]), o[i].elem[k], 1.0e-4f);
+            }
+        }
+        ASSERT_TRUE(md_util_interpolate_linear(o, in, N, &cell, 0.25f));
+        for (int i = 0; i < N; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                float d = b[i].elem[k] - a[i].elem[k];
+                d -= ext.elem[k] * roundf(d / ext.elem[k]);
+                EXPECT_NEAR(a[i].elem[k] + 0.25f * d, o[i].elem[k], 1.0e-4f);
+            }
+        }
+        EXPECT_EQ(-1.0f, base_o[off + N].x);
+
+        // Cubic through the middle frames at the ends of the interval
+        const vec3_t* const in4[4] = { a, a, b, b };
+        ASSERT_TRUE(md_util_interpolate_cubic_spline(o, in4, N, NULL, 1.0f, 0.5f));
+        for (int i = 0; i < N; ++i) {
+            EXPECT_NEAR(b[i].y, o[i].y, 1.0e-4f);
+        }
+        EXPECT_EQ(-1.0f, base_o[off + N].x);
+
+        // Wrapping
+        MEMCPY(o, b, N * sizeof(vec3_t));
+        ASSERT_TRUE(md_util_pbc(o, NULL, N, &cell));
+        for (int i = 0; i < N; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                EXPECT_GE(o[i].elem[k], -1.0e-4f);
+                EXPECT_LE(o[i].elem[k], ext.elem[k] + 1.0e-4f);
+                EXPECT_NEAR(0.0f, remainderf(o[i].elem[k] - b[i].elem[k], ext.elem[k]), 1.0e-4f);
+            }
+        }
+    }
 }

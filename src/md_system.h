@@ -5,9 +5,7 @@
 
 #include <md_types.h>
 #include <core/md_unit.h>
-
-// Forward declare trajectory type to avoid including trajectory header here
-typedef struct md_trajectory_i md_trajectory_i;
+#include <core/md_os.h>
 
 typedef struct md_atom_type_data_t {
     size_t count;
@@ -298,8 +296,32 @@ typedef struct md_hydrogen_bond_data_t {
 // has a shape, a type, a unit and a version like anything else - and it handles a non uniform axis,
 // which a stored min/max could not.
 //
-// The frame axis needs no sibling. Every attribute flagged MD_ATTRIBUTE_FLAG_TEMPORAL has it as
-// axis 0 and there is one per trajectory, so "frame/time" describes it once for all of them.
+// FRAME AXES are the same idea once more, and they are what makes a quantity temporal. The axis of
+// an attribute flagged MD_ATTRIBUTE_FLAG_TEMPORAL is the NEAREST attribute named "time" at or above
+// its own group: for "run/a/atom/position" that is "run/a/atom/time" when it exists and otherwise
+// "run/a/time". An axis is itself temporal, rank 1, one component and numeric, so it is its own
+// axis; a "time" of any other shape is not an axis and the search walks past it. The search follows
+// the attribute that OWNS the data rather than the name it was asked by, so an alias published
+// under an unrelated group still reads the axis of what it aliases.
+//
+// Nearest rather than one table wide axis, because a table holds several. Every member of an
+// ensemble is a run with its own frame count, and a source sampled at its own rate keeps its own
+// axis inside the run instead of being resampled onto the trajectory's:
+//
+//     run/a/time                  F64 rank 1 {F}                the run's frames
+//     run/a/backbone/angle        F32 rank 2 {F,S} components 2 indexed by run/a/time
+//     run/a/edr/time              F64 rank 1 {R}                the energy file's own frames
+//     run/a/edr/potential         F64 rank 1 {R}                indexed by run/a/edr/time
+//     run/a/edr/virial            F64 rank 3 {R,3,3}            indexed by run/a/edr/time
+//
+// Two axes are related by VALUE and never by index: md_attribute_axis_map finds where a frame of one
+// lands on the other. A frame with no matching coordinate has no value there, which is an answer
+// rather than an invitation to pick a neighbour.
+//
+// RUNS. "run/<name>" is where one trajectory, and everything sampled along it, lives, and
+// "run/<name>/time" is its frame axis. Removing a run is removing that prefix. Nothing in the table
+// enforces the convention - groups are never predeclared - it is what the script and the
+// application look for when they need a run.
 //
 // EXTENT IS NOT CHECKED. The convention is that the atom axis is the LAST index axis, so an
 // "atom/..." path has shape[rank-1] == sys->atom.count and one whole per atom array is
@@ -392,9 +414,11 @@ typedef enum md_attribute_storage_t {
 typedef enum md_attribute_flags_t {
 	MD_ATTRIBUTE_FLAG_NONE     = 0,
 
-	// The OUTERMOST index axis is the frame axis: shape[0] is the trajectory's frame count. The tag
-	// is a claim, and md_attributes_create verifies it against md_attributes_t::num_frames - which
-	// is the point of tagging rather than relying on the shape looking right.
+	// The OUTERMOST index axis is a frame axis: shape[0] is the extent of the attribute's axis, the
+	// nearest "time" at or above it (see FRAME AXES). The tag is a claim, and md_attributes_create
+	// verifies it against that axis - which is the point of tagging rather than relying on the
+	// shape looking right. A temporal attribute with no axis above it is refused, so publish the
+	// axis first.
 	//
 	// It also decides what "the whole attribute" means. For a resident one that is just its bytes,
 	// so a whole extract is a copy and is allowed. For a VIRTUAL one it means producing every frame,
@@ -416,6 +440,11 @@ typedef struct md_attribute_format_t {
 // offset - see md_attribute_virtual_t.
 typedef struct md_attribute_t md_attribute_t;
 typedef struct md_attribute_slice_t md_attribute_slice_t;
+
+// What a provider that streams from disk reads through. Opaque, and owned by an extraction context
+// (md_system_extract_begin), which keeps files open across the frames it extracts; see
+// md_attribute_io_read_at. A provider reached any other way gets NULL, and must work with it.
+typedef struct md_attribute_io_t md_attribute_io_t;
 
 // A virtual attribute's provider is handed the SAME slice a caller asked to extract, never a
 // pre-resolved offset: it is the one place a computed attribute is allowed to know its own
@@ -440,13 +469,16 @@ typedef struct md_attribute_slice_t md_attribute_slice_t;
 //     extracting at once is safe. Nesting is also safe as long as a provider unwinds its own temp
 //     scopes before returning - which it must anyway.
 //
+// io is NULL unless the extract runs inside an extraction context. A provider that reads files
+// reads them through md_attribute_io_read_at either way; every other provider ignores it.
+//
 // The table never caches what a provider returns: a virtual attribute is recomputed on every
 // extract. Caching is the CALLER's, keyed on whatever it already keys other derived work on. That
 // is deliberate - a cache inside a const read is mutation nothing can see.
 //
 // Returns elements written, which must equal cap on success and 0 on failure.
 typedef size_t (*md_attribute_provider_fn)(
-	void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data
+	void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io
 );
 
 typedef struct md_attribute_virtual_t {
@@ -561,15 +593,6 @@ typedef struct md_attributes_t {
     // so comparing two versions also orders them - and a replaced attribute keeps its id but gets a
     // higher version, which is exactly the case a per attribute counter reset would get wrong.
     uint64_t version_counter;
-
-    // Frames in the trajectory these attributes are indexed against, or 0 when there is none / it
-    // is not known yet. Set by whoever owns the table, before anything temporal is published.
-    //
-    // This is what makes MD_ATTRIBUTE_FLAG_TEMPORAL checkable: create refuses a temporal attribute
-    // whose shape[0] disagrees, which catches the mistake where it is made rather than 12000
-    // elements into an extract. 0 skips the check rather than failing it - a table with no
-    // trajectory behind it can still hold temporal attributes it cannot yet verify.
-    uint32_t num_frames;
 } md_attributes_t;
 
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
@@ -591,9 +614,16 @@ typedef struct md_attributes_t {
 // Two presence bits, both self describing:
 //   num_atoms == 0        -> no coordinates
 //   unitcell.flags == 0   -> no cell
-// num_atoms is used rather than testing x != NULL because md_array_ensure allocates capacity
-// without setting size, so a non NULL x does not imply the coordinates were populated.
-// Ownership: alloc non-NULL means this state owns x/y/z and must be freed with
+// num_atoms is used rather than testing xyz != NULL because md_array_ensure allocates capacity
+// without setting size, so a non NULL xyz does not imply the coordinates were populated.
+//
+// xyz is packed, one vec3_t of 12 bytes per atom - the layout every source and every consumer
+// already has: the files, a run's atom/position attribute, the GPU buffers. Kernels that want x, y
+// and z apart load four or eight atoms and de-interleave in registers (md_mm_load_xyz_packed_ps).
+// The array is padded to a multiple of 16 atoms, zeroed past num_atoms, so such loads never need a
+// scalar tail for reading.
+//
+// Ownership: alloc non-NULL means this state owns xyz and must be freed with
 // md_system_state_free. alloc NULL means the state is a non owning view over coordinates somebody
 // else owns - a scratch arena during script evaluation, a GPU mapped buffer during interpolation.
 // Both forms are load bearing, and this is the only thing that distinguishes them.
@@ -602,9 +632,9 @@ typedef struct md_attributes_t {
 // be set before loading. The two then read symmetrically at the call site, and the state's lifetime
 // is free to differ from the system's - a temp allocator for the state, a persistent one for the
 // system, is a legitimate and useful combination.
-// frame is the trajectory ordinal the coordinates came from, as a continuous quantity: the integer
-// part selects the frame, the fractional part is how far between that frame and the next the state
-// has been interpolated. A NEGATIVE value means the state did not come from a trajectory at all
+// frame is the ordinal of the run frame the coordinates came from, as a continuous quantity: the
+// integer part selects the frame, the fractional part is how far between that frame and the next the
+// state has been interpolated. A NEGATIVE value means the state did not come from a run at all
 // (a topology's own coordinates, a scratch buffer), which is why 0.0 cannot serve as that marker.
 // Use md_state_has_frame / md_state_frame_floor / md_state_frame_nearest / md_state_frame_frac
 // rather than reading the field: a raw cast of the absent value lands on frame 0, which is in range
@@ -613,17 +643,15 @@ typedef struct md_attributes_t {
 // CAVEAT, unlike the two presence bits above: -1 does not survive zero initialisation. A state
 // built as {0} or with designated initialisers that omit frame reads as frame 0, not as absent.
 // md_system_state_init stamps -1, so any state that went through it reads as absent until something
-// writes a real frame; a hand rolled {0} does not. Only md_trajectory_reader_load_frame and the
+// writes a real frame; a hand rolled {0} does not. Only md_system_extract_frame and the
 // interpolation which produces a state write a non negative value.
 //
-// @NOTE: physical time is deliberately NOT stored here. It is derivable from frame and the
-// trajectory's frame times (md_trajectory_time_at_frame), and storing both would reintroduce the
+// @NOTE: physical time is deliberately NOT stored here. It is derivable from frame and the run's
+// frame axis ("<run>/time"), and storing both would reintroduce the
 // very thing this struct exists to prevent - two fields which must agree, with nothing enforcing it.
 typedef struct md_system_state_t {
     size_t num_atoms;
-    float* x;
-    float* y;
-    float* z;
+    vec3_t* xyz;
     md_unitcell_t unitcell;
     double frame;
     md_attributes_t attributes;   // per frame quantities beyond the interpolation contract above
@@ -634,7 +662,6 @@ typedef struct md_system_state_t {
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
     md_allocator_i*             alloc;
-    md_trajectory_i*            trajectory;
 
     // The state from which the derived topology below (bonds, rings, structures, backbones) was
     // inferred. Written by md_util_system_infer as part of performing the inference, so it is by
@@ -848,6 +875,13 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
 
+// Removes every attribute at or below prefix, matched at segment boundaries exactly as
+// md_attributes_query matches, together with any alias of them elsewhere. This is how a group goes
+// as a whole - a run and everything sampled along it, an energy file being replaced - and an empty
+// prefix is refused rather than taken to mean the whole table. Returns the number removed, aliases
+// included.
+size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix);
+
 // Create, replacing whatever is already at desc->path. Otherwise identical to md_attributes_create.
 //
 // This is what a PRODUCER wants, and md_attributes_create is not: loading another file into the
@@ -980,6 +1014,29 @@ size_t md_attributes_query_flags(md_attribute_id_t out_ids[], size_t cap, const 
 // the stored paths and follow the same invalidation rule.
 // Returns the total number of children and writes at most cap of them.
 size_t md_attributes_query_children(str_t out_names[], size_t cap, const md_attributes_t* attributes, str_t prefix);
+
+// FRAME AXES
+
+// The frame axis of a temporal attribute: the nearest valid "time" at or above the group of the
+// attribute that owns attr's data (see FRAME AXES above). An axis is its own axis. NULL when attr is
+// not temporal, or when nothing above it qualifies - which md_attributes_create does not allow, so
+// in practice that means the axis was removed after its members were published. The pointer
+// follows the same invalidation rule as md_attributes_get.
+const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, const md_attribute_t* attr);
+
+// Where frame src_index of src_axis lands on dst_axis, matched by coordinate VALUE. The same axis
+// maps every index to itself. Otherwise the coordinate is converted into dst_axis' unit and the
+// nearest coordinate on dst_axis is accepted when it lies within float precision of the value or
+// within a thousandth of the local spacing, whichever is larger - the times of an XTC are stored as
+// float, the times of an EDR as double, and the two have to meet.
+//
+// Both axes must be non decreasing, which a time series is. An axis with no unit holds ordinals
+// standing in for time and only ever matches another axis with no unit: an ordinal is not a
+// picosecond, and pretending otherwise pairs frames that have nothing to do with each other.
+//
+// Returns false, and leaves out_index untouched, when src_index is out of range, the units cannot
+// be related, or no coordinate on dst_axis matches.
+bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis);
 
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
@@ -1162,7 +1219,7 @@ static inline size_t md_atom_count(const md_atom_data_t* atom_data) {
 static inline vec3_t md_state_coord(const md_system_state_t* state, size_t atom_idx) {
     ASSERT(state);
     if (atom_idx < state->num_atoms) {
-        return vec3_set(state->x[atom_idx], state->y[atom_idx], state->z[atom_idx]);
+        return state->xyz[atom_idx];
     }
     return vec3_zero();
 }
@@ -1877,16 +1934,13 @@ static inline int md_hydrogen_bond_acceptor_num_lone_pairs(const md_hydrogen_bon
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
 
-// Attach helpers: set or create-and-attach trajectories to a system.
-void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj);
-
 // STATE
 // A state owns its coordinate arrays and must be freed with the same allocator it was created with.
 
 // True if the state carries coordinates. A state may legitimately carry a cell but no coordinates
 // (a topology only format such as PSF), or coordinates but no cell (xyz without a cell).
 static inline bool md_system_state_has_coords(const md_system_state_t* state) {
-    return state && state->num_atoms > 0 && state->x && state->y && state->z;
+    return state && state->num_atoms > 0 && state->xyz;
 }
 
 static inline bool md_system_state_has_unitcell(const md_system_state_t* state) {
@@ -1901,8 +1955,8 @@ static inline bool md_system_state_has_unitcell(const md_system_state_t* state) 
 // validate sys->alloc and state->alloc, then call md_system_reset(sys) and md_system_state_init(state, N)
 // as a pair before touching either. Pass the exact atom count for N when it is known up front and
 // write coordinates by index; pass 0 when atoms are filtered while parsing, then reserve with
-// md_array_ensure(state->x, capacity, state->alloc) and push. Either way finish with
-// state->num_atoms = sys->atom.count, and grow the coordinate arrays with state->alloc and never
+// md_array_ensure(state->xyz, capacity, state->alloc) and push. Either way finish with
+// state->num_atoms = sys->atom.count, and grow the coordinate array with state->alloc and never
 // with sys->alloc - md_system_state_free releases them with state->alloc, and the two allocators
 // are routinely different.
 bool md_system_state_init(md_system_state_t* state, size_t num_atoms);
@@ -1914,6 +1968,169 @@ void md_system_state_free(md_system_state_t* state);
 
 // Copy src into dst, reallocating dst as needed. dst->alloc must be set.
 bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src);
+
+// EXTRACTION
+//
+// A state IS a snapshot of a run's temporal attributes at one frame, and these take it. What to take
+// is said once, up front, and the context that comes back is then asked for frames:
+//
+//     const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+//     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 2, alloc);
+//     for (f = beg; f < end; ++f) md_system_extract_frame(ex, f, &state);
+//     md_system_extract_end(ex);
+//
+// Saying it once is what lets the context be worth having. It resolves the paths a single time, and
+// it keeps what a source is expensive to reopen - the files a trajectory streams from - open for as
+// long as it lives. Opening a file is cheap on a local disk and not on the file servers of a
+// cluster, where every open is a round trip to a metadata server that every rank shares.
+//
+// Paths are relative to the run ("<run>/<path>") and each lands in the state:
+//
+//   atom/position   into xyz, straight from the source: both are packed.
+//   unitcell        into unitcell, a {F,3,3} box per frame with row i box vector i.
+//   anything else   into out->attributes under the same relative path, as the value at that frame -
+//                   a {F,N} c3 attribute arrives as {N} c3 - and without the temporal flag, since a
+//                   snapshot has no frame axis. An attribute along an axis of its own (an energy file
+//                   written more often than the coordinates, velocities written less often) is read
+//                   at the row whose time matches the frame. A frame with no such row leaves it OUT
+//                   of the state: its absence is the answer, and a state reused from frame to frame
+//                   never shows another frame's value in its place.
+//
+// Every extract stamps out->frame. out->num_atoms must be 0 or the run's atom count, and a state
+// asking for positions must have storage for that many; nothing is allocated for coordinates here.
+//
+// OWNERSHIP AND LIFETIME. The context belongs to the caller and to ONE thread at a time; a thread
+// pool keeps one per thread. It holds attribute ids rather than pointers and looks each up again on
+// every frame, so an attribute removed underneath it fails the extract instead of being read. It must
+// still be ENDED before the run it reads is removed, since the files it holds are that run's.
+typedef struct md_system_extract_t md_system_extract_t;
+
+// NULL when the run, or any of the paths in it, does not exist. alloc is what the context lives in;
+// the thread that begins it need not be the one that uses it, but only one may use it at a time.
+md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, const str_t paths[], size_t num_paths, struct md_allocator_i* alloc);
+bool                 md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_state_t* out);
+void                 md_system_extract_end(md_system_extract_t* ex);
+
+// For a provider: read bytes at offset from the file at path. Inside an extraction context the file
+// is opened once and kept, and at most a handful are kept at once, the least recently used going
+// first; with io NULL it is opened, read and closed here. Returns the number of bytes read.
+size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes);
+
+// PUBLISHING A RUN
+//
+// What a trajectory format publishes is the same shape whatever the format (see RUNS):
+//
+//     <run>/time            F64 {F}        the frame axis; without a unit it holds frame ordinals
+//     <run>/step            I64 {F}        the simulation step of each frame, when the file says
+//     <run>/unitcell        F32 {F,3,3}    Angstrom, row i box vector i, zero where a frame has none
+//     <run>/atom/position   F32 {F,N} c3   Angstrom, VIRTUAL: read from the file per frame
+//     <run>/source/path     STR            the file the frames are read from
+//     <run>/source/offset   I64 {F}        where each frame starts in it
+//     <run>/source/size     I64 {F}        and how many bytes it has
+//
+// md_run_publish puts all of it in place from one description, or none of it: a publish that fails
+// part way removes the run's prefix. What a format adds beyond this (velocities, how its frames are
+// laid out) it publishes itself afterwards, under the same run, removing the prefix on failure too.
+// Flags for a format's run publisher
+typedef enum md_run_flag_t {
+    MD_RUN_FLAG_NONE                = 0,
+    MD_RUN_FLAG_DISABLE_CACHE_WRITE = 1,    // leave no '<file>.cache' index beside the file
+} md_run_flag_t;
+
+typedef uint32_t md_run_flags_t;
+
+// INDEX CACHE. A format that has to scan its file to know where the frames are keeps what the scan
+// learned beside it, as '<file>.cache', so the scan is paid once per file. The cache starts with
+// this header and the format appends its own blocks after it.
+//
+// A cache is only as good as its match with the file: md_run_cache_open accepts it when the magic
+// and version are the format's and the file's size and modification time, as the operating system
+// reports them now, are the ones the cache was made from. Anything else - a run still being written,
+// a file replaced by one of the same size - is a cache to make again.
+typedef struct md_run_cache_header_t {
+    uint64_t       magic;
+    uint64_t       version;
+    uint64_t       source_size;        // bytes
+    md_file_time_t source_modified;    // the OS modification time, nanoseconds since the epoch
+    uint64_t       num_atoms;
+    uint64_t       num_frames;
+} md_run_cache_header_t;
+
+// Opens '<source_path>.cache' and reads its header. True, with the file left open just past the
+// header for the format's own blocks, when the cache matches the source file as it is now.
+bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, str_t source_path, uint64_t magic, uint64_t version);
+
+// Creates '<source_path>.cache' and writes the header, stamped with the source file's size and
+// modification time as they were when it was scanned: take scanned with md_file_info_extract before
+// the scan, so a file that grows during it leaves a cache that does not match it. True, with the
+// file left open for the format's own blocks.
+bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames);
+
+typedef struct md_run_desc_t {
+    size_t          num_frames;
+    size_t          num_atoms;
+
+    const double*   time;               // num_frames values, required
+    md_unit_t       time_unit;          // none when the file does not know time: time is then ordinals
+    const int64_t*  step;               // num_frames values, or NULL when the file has none
+
+    // The cell: RESIDENT from num_frames * 9 floats, or VIRTUAL from a provider (a format that
+    // keeps it in the frames), or neither for a run without one.
+    const float*                  unitcell;
+    const md_attribute_virtual_t* unitcell_virt;
+
+    str_t           source_path;        // copied
+    const int64_t*  source_offset;      // num_frames values
+    const int64_t*  source_size;        // num_frames values
+
+    const md_attribute_virtual_t* position_virt;   // required
+} md_run_desc_t;
+
+bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* desc);
+
+// "<run>/<leaf>" into buf. Empty when it does not fit.
+str_t md_run_path(char* buf, size_t cap, str_t run, str_t leaf);
+
+// For a provider of a run's attribute: the run it belongs to - its path minus "/<leaf>" - and the
+// file and frame table the run reads from. False, and logged, when the attribute is not at <leaf>
+// or the run has lost its source attributes.
+typedef struct md_run_source_t {
+    str_t          run;
+    str_t          path;
+    const int64_t* offset;
+    const int64_t* size;
+    size_t         num_frames;
+} md_run_source_t;
+
+bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf);
+
+// SERIES ALONG A RUN
+//
+// Columns of numbers sampled along a run - an .xvg or .csv of per frame quantities - published as a
+// group below it, "<run>/<group>", so that attr() and extraction read them like anything else in the
+// run. Each column becomes "<run>/<group>/<name>", the name folded to lower case letters, digits and
+// '_' (the original is the label); a name taken twice gets a suffix.
+//
+// With a time column the group has a frame axis of its own, "<run>/<group>/time", and every frame of
+// the run must find its time in it, as an energy file's must; the columns are read at the matching
+// row. Time without a unit is taken to be in the run's. Without a time column the rows ARE the run's
+// frames, and there must be exactly as many.
+//
+// The group replaces one of the same name, all or nothing. source_path, when given, is published as
+// "<run>/<group>/source" so a session can load it again.
+typedef struct md_run_series_desc_t {
+    str_t               group;          // below the run, e.g. "xvg/energy"
+    size_t              num_rows;
+    size_t              num_columns;
+    const double*       time;           // num_rows values, or NULL: the rows are the run's frames
+    md_unit_t           time_unit;
+    const str_t*        names;          // num_columns
+    const md_unit_t*    units;          // num_columns, or NULL for none
+    const float* const* columns;        // num_columns arrays of num_rows values
+    str_t               source_path;    // optional
+} md_run_series_desc_t;
+
+bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc_t* desc);
 
 #ifdef __cplusplus
 }

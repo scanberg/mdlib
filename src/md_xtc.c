@@ -2,7 +2,6 @@
 #include <md_xdr.h>
 
 #include <md_system.h>
-#include <md_trajectory.h>
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -20,9 +19,7 @@
 #endif
 
 #define MD_XTC_CACHE_MAGIC   0x8281237612371
-#define MD_XTC_CACHE_VERSION 4
-#define MD_XTC_TRAJ_MAGIC 0x162365dac721995
-#define MD_XTC_TRAJ_READER_MAGIC 0x162365dac721996
+#define MD_XTC_CACHE_VERSION 6   // 6: the shared run cache header; 5: the step and box of every frame
 
 #define XTC_MAGIC 1995
 
@@ -65,26 +62,6 @@ typedef md_128i v4i_t;
 #define v4i_add(a, b)       md_mm_add_epi32(a, b)
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(addr)      md_mm_loadu_epi32(addr)
-
-// Trajectory opaque data for xtc
-typedef struct xtc_t {
-    uint64_t magic;
-	str_t filepath;
-    md_array(int64_t) frame_offsets;
-    md_trajectory_header_t header;
-    md_allocator_i* alloc;
-} xtc_t;
-
-// Trajectory reader state
-typedef struct xtc_reader_t {
-	uint64_t magic;
-    md_file_t file;
-    md_array(uint8_t) frame_data; // scratch buffer for compressed frame data, resized as needed for each frame
-    size_t num_atoms;
-    size_t num_frames;
-	const int64_t* frame_offsets; // pointer into xtc_t.frame_offsets for quick access
-    md_allocator_i*   arena;
-} xtc_reader_t;
 
 // Number of guard bytes that must be readable past the end of a bitstream so
 // the stateless 16-byte unaligned reads in extract_bits_be_raw_* never overrun.
@@ -412,7 +389,29 @@ static inline bool decode_header(const uint8_t* frame_ptr, md_xtc_header_t* out_
     return true;
 }
 
+// The scan reads every frame header on its way through the file, and a header holds the step and
+// the box as well as the time. steps and boxes may be NULL; boxes takes nine floats per frame, nm.
+static size_t xtc_scan(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times,
+                       md_array(int64_t)* frame_steps, md_array(float)* frame_boxes, md_allocator_i* alloc);
+
 size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+    return xtc_scan(xdr, frame_offsets, frame_times, NULL, NULL, alloc);
+}
+
+static void xtc_scan_push_header(md_array(int64_t)* frame_steps, md_array(float)* frame_boxes, const md_xtc_header_t* h, md_allocator_i* alloc) {
+    if (frame_steps) {
+        md_array_push(*frame_steps, (int64_t)h->step, alloc);
+    }
+    if (frame_boxes) {
+        const float* box = &h->box[0][0];
+        for (int i = 0; i < 9; ++i) {
+            md_array_push(*frame_boxes, box[i], alloc);
+        }
+    }
+}
+
+static size_t xtc_scan(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times,
+                       md_array(int64_t)* frame_steps, md_array(float)* frame_boxes, md_allocator_i* alloc) {
     size_t filesize = (size_t)md_file_size(xdr);
 
     if (filesize == 0) {
@@ -446,6 +445,7 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* fra
     // Push first frame
     md_array_push(*frame_offsets, 0, alloc);
     md_array_push(*frame_times, xtc_header.time, alloc);
+    xtc_scan_push_header(frame_steps, frame_boxes, &xtc_header, alloc);
     num_frames += 1;
 
     /* Dont bother with compression for nine atoms or less */
@@ -469,6 +469,7 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* fra
             if (success) {
                 md_array_push(*frame_offsets, offset, alloc);
                 md_array_push(*frame_times, xtc_header.time, alloc);
+                xtc_scan_push_header(frame_steps, frame_boxes, &xtc_header, alloc);
                 num_frames += 1;
             } else {
                MD_LOG_DEBUG("XTC: encountered corrupted frame header");
@@ -534,6 +535,7 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr, md_array(int64_t)* fra
             /* Store position in `offsets`, adjust for header */
             md_array_push(*frame_offsets, offset, alloc);
             md_array_push(*frame_times, xtc_header.time, alloc);
+            xtc_scan_push_header(frame_steps, frame_boxes, &xtc_header, alloc);
             num_frames += 1;
         }
         // Add last offset
@@ -543,7 +545,9 @@ done:
     return num_frames;
 }
 
-bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms) {
+// xyz packed, the layout the file holds them in, scaled on the way out exactly as the SoA variant
+// below scales: scale 10 turns the file's nm into Angstrom with no second pass over the coordinates.
+static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms, float scale) {
     if (frame_ptr == NULL || frame_bytes == 0) {
         return false;
     }
@@ -556,6 +560,10 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
     if (out_header) {
         if (!decode_header(frame_ptr, out_header)) {
             return false;
+        }
+        float* box = &out_header->box[0][0];
+        for (int i = 0; i < 9; ++i) {
+            box[i] *= scale;
         }
 	}
 
@@ -575,6 +583,9 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
     if (natoms <= 9) {
 		// No compression for 9 atoms or less, just read the coordinates directly
 		md_xdr_load_f32_array(out_coords, frame_ptr + offset, (size_t)natoms * 3);
+        for (size_t i = 0; i < (size_t)natoms * 3; ++i) {
+            out_coords[i] *= scale;
+        }
         return true;
     }
 
@@ -630,7 +641,7 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
     size_t bit_offset = 0;
 
     float* lfp = out_coords;
-    md_128 invp = md_mm_set1_ps(1.0f / precision);
+    md_128 invp = md_mm_set1_ps(scale / precision);
     v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
     v4i_t thiscoord;
     int run = 0;
@@ -716,6 +727,10 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
 
 done:
     return atom_idx == natoms;
+}
+
+bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms) {
+    return xtc_decode_frame_data_scaled(frame_ptr, frame_bytes, out_header, out_coords, num_atoms, 1.0f);
 }
 
 static bool md_xtc_decode_frame_data_soa_scaled(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, size_t num_atoms, float scale) {
@@ -908,235 +923,115 @@ bool md_xtc_decode_frame_data_soa(const uint8_t* frame_ptr, size_t frame_bytes, 
     return md_xtc_decode_frame_data_soa_scaled(frame_ptr, frame_bytes, out_header, out_x, out_y, out_z, num_atoms, 1.0f);
 }
 
-static bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
-    xtc_t* xtc = (xtc_t*)inst;
-    ASSERT(xtc);
-    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
-    ASSERT(header);
-
-    *header = xtc->header;
-    return true;
-}
-
-static bool xtc_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* out_num_atoms, md_unitcell_t* out_cell, float* out_x, float* out_y, float* out_z) {
-    ASSERT(inst);
-
-    xtc_reader_t* xtc = (xtc_reader_t*)inst;
-    bool result = false;
-    if (md_file_valid(xtc->file)) {
-        if (!xtc->frame_offsets) {
-            MD_LOG_ERROR("XTC: Frame offsets is empty");
-            return 0;
-        }
-
-        if (frame_idx < 0 || (int64_t)xtc->num_frames <= frame_idx) {
-            MD_LOG_ERROR("XTC: Frame index is out of range");
-            return 0;
-        }
-		const int64_t beg = xtc->frame_offsets[frame_idx];
-		const int64_t end = xtc->frame_offsets[frame_idx + 1];
-        if (end <= beg) {
-            MD_LOG_ERROR("XTC: Invalid frame offset range");
-            return false;
-		}
-		const size_t frame_size = end - beg;
-
-        md_array_ensure(xtc->frame_data, ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES, xtc->arena);
-        size_t read_size = md_file_read_at(xtc->file, beg, xtc->frame_data, frame_size);
-
-        if (read_size == frame_size) {
-            md_xtc_header_t xtc_header = {0};
-
-            if (md_xtc_decode_frame_data_soa_scaled(xtc->frame_data, frame_size, &xtc_header, out_x, out_y, out_z, xtc->num_atoms, 10.0f)) {
-                if (out_num_atoms) {
-                    *out_num_atoms = xtc_header.natoms;
-                }
-                if (out_cell) {
-                    // @NOTE: md_xtc_decode_frame_data_soa_scaled has already applied the scale to the box
-                    *out_cell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(xtc_header.box));
-                }
-
-                result = true;
-            } else {
-                MD_LOG_ERROR("XTC: Failed to decode frame data");
-            }
-        } else {
-            MD_LOG_ERROR("XTC: Failed to read frame data from file, expected %zu bytes, got %zu bytes", frame_size, read_size);
-        }
-    }
-
-    return result;
-}
-
-static void xtc_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
-    if (!reader) {
-        return;
-    }
-    xtc_reader_t* inst = (xtc_reader_t*)reader->inst;
-    if (inst) {
-        ASSERT(inst->magic == MD_XTC_TRAJ_READER_MAGIC);
-        if (md_file_valid(inst->file)) {
-            md_file_close(&inst->file);
-        }
-        md_arena_allocator_destroy(inst->arena);
-    }
-    MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
-}
-
-// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
-// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
-// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
-static bool xtc_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
-    size_t num_atoms = 0;
-    md_unitcell_t cell = {0};
-    float* x = state ? state->x : NULL;
-    float* y = state ? state->y : NULL;
-    float* z = state ? state->z : NULL;
-    if (!xtc_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
-        return false;
-    }
-    if (state) {
-        state->unitcell = cell;
-        if (state->num_atoms == 0) {
-            state->num_atoms = num_atoms;
-        }
-    }
-    return true;
-}
-
-static bool xtc_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
-    ASSERT(reader);
-    ASSERT(traj_inst);
-
-    xtc_t* xtc = (xtc_t*)traj_inst;
-    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
-
-    md_file_t file = {0};
-    if (!md_file_open(&file, xtc->filepath, MD_FILE_READ)) {
-        MD_LOG_ERROR("XTC: Failed to open file '" STR_FMT "'", STR_ARG(xtc->filepath));
-        return false;
-    }
-
-    MEMSET(reader, 0, sizeof(md_trajectory_reader_i));
-
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-
-    xtc_reader_t* inst = md_alloc(arena, sizeof(xtc_reader_t));
-    MEMSET(inst, 0, sizeof(xtc_reader_t));
-    inst->magic = MD_XTC_TRAJ_READER_MAGIC;
-    inst->file = file;
-    inst->arena = arena;
-    inst->num_atoms = xtc->header.num_atoms;
-    inst->num_frames = xtc->header.num_frames;
-    inst->frame_offsets = xtc->frame_offsets;
-
-    reader->inst = (struct md_trajectory_reader_o*)inst;
-    reader->load_frame = xtc_reader_load_frame;
-    reader->free = xtc_trajectory_reader_free;
-
-    return true;
-}
-
+// Everything the scan learns about the file, which is everything short of the coordinates: where
+// each frame is, and the time, step and box its header states. Kept beside the trajectory as
+// '<file>.cache' so the scan is paid once per file rather than once per load.
 typedef struct xtc_cache_t {
-    md_trajectory_cache_header_t header;
-    int64_t* frame_offsets;
-    double*  frame_times;
+    md_run_cache_header_t header;
+    int64_t* frame_offsets;   // num_frames + 1: the last one is the file size
+    double*  frame_times;     // ps
+    int64_t* frame_steps;
+    float*   frame_boxes;     // 9 per frame, nm, row major
 } xtc_cache_t;
 
-static bool try_read_cache(xtc_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_file_time_t traj_last_modified, md_allocator_i* alloc) {
-    ASSERT(cache);
-    ASSERT(alloc);
-
-    bool result = false;
-    md_file_t file = {0};
-    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
-        if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
-            MD_LOG_ERROR("XTC trajectory cache: failed to read header");
-            goto done;
-        }
-
-        if (cache->header.magic != MD_XTC_CACHE_MAGIC) {
-            MD_LOG_ERROR("XTC trajectory cache: magic was incorrect or corrupt");
-            goto done;
-        }
-        if (cache->header.version != MD_XTC_CACHE_VERSION) {
-            MD_LOG_INFO("XTC trajectory cache: version mismatch, expected %i, got %i", MD_XTC_CACHE_VERSION, (int)cache->header.version);
-            goto done;
-        }
-        if (cache->header.num_bytes != traj_num_bytes) {
-            MD_LOG_INFO("XTC trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
-        }
-        if (traj_last_modified != 0 && cache->header.last_modified != traj_last_modified) {
-            MD_LOG_INFO("XTC trajectory cache: source file has been modified, cache is stale");
-            goto done;
-        }
-        if (cache->header.num_atoms == 0) {
-            MD_LOG_ERROR("XTC trajectory cache: num atoms was zero");
-            goto done;
-        }
-        if (cache->header.num_frames == 0) {
-            MD_LOG_ERROR("XTC trajectory cache: num frames was zero");
-            goto done;
-        }
-
-        const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
-        cache->frame_offsets = md_alloc(alloc, offset_bytes);
-        if (md_file_read(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
-            MD_LOG_ERROR("XTC trajectory cache: Failed to read offset data");
-            md_free(alloc, cache->frame_offsets, offset_bytes);
-            goto done;
-        }
-
-        const size_t time_bytes = cache->header.num_frames * sizeof(double);
-        cache->frame_times = md_alloc(alloc, time_bytes);
-        if (md_file_read(file, cache->frame_times, time_bytes) != time_bytes) {
-        	MD_LOG_ERROR("XTC trajectory cache: times are incomplete");
-        	md_free(alloc, cache->frame_offsets, offset_bytes);
-        	md_free(alloc, cache->frame_times, time_bytes);
-        	goto done;
-        }
-
-        // Test position in file, we expect to be at the end of the file
-        if (md_file_tell(file) != (int64_t)md_file_size(file)) {
-        	MD_LOG_ERROR("XTC trajectory cache: file position was not at the end of the file");
-        	md_free(alloc, cache->frame_offsets, offset_bytes);
-        	md_free(alloc, cache->frame_times, time_bytes);
-        	goto done;
-        }
-
-        result = true;
-    done:
-        md_file_close(&file);
-    }
-    return result;
+static bool cache_read_block(md_file_t file, void** dst, size_t bytes, md_allocator_i* alloc) {
+    *dst = md_alloc(alloc, bytes);
+    return *dst && md_file_read(file, *dst, bytes) == bytes;
 }
 
-static bool write_cache(const xtc_cache_t* cache, str_t cache_file) {
-    bool result = false;
+// On failure nothing is freed here: alloc is always an arena owned by the caller, which goes as a
+// whole, so there is no partial state to unwind.
+static bool try_read_cache(xtc_cache_t* cache, str_t path, md_allocator_i* alloc) {
+    md_file_t file = {0};
+    if (!md_run_cache_open(&file, &cache->header, path, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION)) {
+        return false;
+    }
+    const size_t n = cache->header.num_frames;
+    const bool ok =
+        cache_read_block(file, (void**)&cache->frame_offsets, (n + 1) * sizeof(int64_t), alloc) &&
+        cache_read_block(file, (void**)&cache->frame_times,   n * sizeof(double),        alloc) &&
+        cache_read_block(file, (void**)&cache->frame_steps,   n * sizeof(int64_t),       alloc) &&
+        cache_read_block(file, (void**)&cache->frame_boxes,   n * 9 * sizeof(float),     alloc) &&
+        md_file_tell(file) == (int64_t)md_file_size(file);
+    if (!ok) {
+        MD_LOG_ERROR("XTC: the cache of '" STR_FMT "' is incomplete", STR_ARG(path));
+    }
+    md_file_close(&file);
+    return ok;
+}
+
+static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+    md_file_t file = {0};
+    const size_t n = cache->header.num_frames;
+    if (!md_run_cache_create(&file, path, scanned, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION, cache->header.num_atoms, n)) {
+        return false;
+    }
+    const bool ok =
+        md_file_write(file, cache->frame_offsets, (n + 1) * sizeof(int64_t)) == (n + 1) * sizeof(int64_t) &&
+        md_file_write(file, cache->frame_times,   n * sizeof(double))        == n * sizeof(double) &&
+        md_file_write(file, cache->frame_steps,   n * sizeof(int64_t))       == n * sizeof(int64_t) &&
+        md_file_write(file, cache->frame_boxes,   n * 9 * sizeof(float))     == n * 9 * sizeof(float);
+    if (!ok) {
+        MD_LOG_ERROR("XTC: failed to write the cache of '" STR_FMT "'", STR_ARG(path));
+    }
+    md_file_close(&file);
+    return ok;
+}
+
+// What the file is, from its cache when that is current and from a scan otherwise (writing the
+// cache unless told not to). path must be canonical; every array is allocated from alloc.
+static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_allocator_i* alloc) {
+    MEMSET(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
-    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        MD_LOG_INFO("XTC trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
+    if (!md_file_open(&file, path, MD_FILE_READ)) {
+        MD_LOG_ERROR("XTC: Failed to open file '" STR_FMT "'", STR_ARG(path));
         return false;
     }
 
-    if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
-        MD_LOG_ERROR("XTC trajectory cache: failed to write header");
+    bool result = false;
+    md_file_info_t scanned = {0};
+    md_file_info_extract(file, &scanned);
+
+    uint8_t frame_header_data[XTC_SMALL_HEADER_SIZE];
+    md_xtc_header_t xtc_header = { 0 };
+    if (md_file_read(file, frame_header_data, XTC_SMALL_HEADER_SIZE) != XTC_SMALL_HEADER_SIZE || !decode_header(frame_header_data, &xtc_header)) {
+        MD_LOG_ERROR("XTC: Failed to read header of first frame, file may be corrupt or not a valid xtc trajectory");
+        goto done;
+    }
+    if (xtc_header.natoms <= 0) {
+        MD_LOG_ERROR("XTC: Number of atoms in trajectory was zero");
         goto done;
     }
 
-    const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
-    if (md_file_write(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
-        MD_LOG_ERROR("Failed to write offset cache, offsets");
+    if (try_read_cache(cache, path, alloc)) {
+        result = true;
         goto done;
     }
 
-    const size_t time_bytes = cache->header.num_frames * sizeof(double);
-    if (md_file_write(file, cache->frame_times, time_bytes) != time_bytes) {
-    	MD_LOG_ERROR("Failed to write offset cache, times");
-    	goto done;
-    }
+    MEMSET(cache, 0, sizeof(*cache));
+    cache->header.num_atoms = xtc_header.natoms;
 
+    md_array(int64_t) offsets = 0;
+    md_array(double)  times   = 0;
+    md_array(int64_t) steps   = 0;
+    md_array(float)   boxes   = 0;
+    cache->header.num_frames = xtc_scan(file, &offsets, &times, &steps, &boxes, alloc);
+    if (!cache->header.num_frames || !offsets || !times) {
+        MD_LOG_DEBUG("XTC: frame offsets or frame times was empty");
+        goto done;
+    }
+    cache->frame_offsets = offsets;
+    cache->frame_times   = times;
+    cache->frame_steps   = steps;
+    cache->frame_boxes   = boxes;
+
+    if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+        // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+        if (write_cache(cache, path, &scanned)) {
+            MD_LOG_INFO("XTC: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
+        }
+    }
     result = true;
 
 done:
@@ -1144,121 +1039,112 @@ done:
     return result;
 }
 
-static void md_xtc_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    xtc_t* xtc = (xtc_t*)traj->inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        MD_LOG_ERROR("XTC: Cannot free trajectory, is not a valid XTC trajectory.");
-        ASSERT(false);
-        return;
+// ### RUN ###
+
+// <run>/atom/position. Everything it needs beyond the slice is in the table: the run is the path
+// minus "/atom/position", and the file, offset and size of the frame are its source attributes.
+static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    const md_system_t* sys = (const md_system_t*)user_data;
+    ASSERT(sys);
+    const md_attributes_t* attributes = &sys->attributes;
+
+    // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed.
+    if (!slice || slice->num_idx == 0 || slice->num_idx > 2) {
+        return 0;
     }
-    MEMSET(traj, 0, sizeof(md_trajectory_i));
-    md_arena_allocator_destroy(xtc->alloc);
+
+    md_run_source_t src;
+    if (!md_run_source(&src, attributes, attr, STR_LIT("atom/position"))) {
+        return 0;
+    }
+    const int64_t* offsets = src.offset;
+    const int64_t* sizes   = src.size;
+
+    const uint32_t frame = slice->idx[0];
+    const size_t num_atoms = attr->format.shape[1];
+    const size_t frame_size = (size_t)sizes[frame];
+
+    md_temp_scope_t temp = md_temp_begin();
+    size_t written = 0;
+
+    // The decoder reads the bit stream a word at a time and may look past the end of the frame.
+    uint8_t* frame_data = md_temp_alloc(temp, ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES);
+    if (frame_data) {
+        MEMSET(frame_data + frame_size, 0, ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES - frame_size);
+    }
+    // Through io: inside an extraction context the file stays open from frame to frame, which is
+    // what makes streaming from a cluster's file server bearable. Without one it is opened here.
+    const str_t file_path = src.path;
+    const size_t read = frame_data ? md_attribute_io_read_at(io, file_path, offsets[frame], frame_data, frame_size) : 0;
+    if (frame_data && read != frame_size) {
+        MD_LOG_ERROR("XTC: Failed to read frame %u from '" STR_FMT "', expected %zu bytes, got %zu", frame, STR_ARG(file_path), frame_size, read);
+    }
+    if (frame_data && read == frame_size) {
+        if (slice->num_idx == 1 && cap == num_atoms * 3) {
+            // The whole frame, which is the case that matters: decoded straight into the caller.
+            if (xtc_decode_frame_data_scaled(frame_data, frame_size, NULL, (float*)dst, num_atoms, 10.0f)) {
+                written = cap;
+            }
+        } else if (slice->num_idx == 2 && cap == 3 && slice->idx[1] < num_atoms) {
+            // One atom: the stream is not seekable, so the frame is decoded and one value kept.
+            float* xyz = md_temp_alloc(temp, num_atoms * 3 * sizeof(float));
+            if (xyz && xtc_decode_frame_data_scaled(frame_data, frame_size, NULL, xyz, num_atoms, 10.0f)) {
+                MEMCPY(dst, xyz + (size_t)slice->idx[1] * 3, 3 * sizeof(float));
+                written = cap;
+            }
+        }
+    }
+
+    md_temp_end(temp);
+    return written;
 }
 
-md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t flags) {
-    ASSERT(ext_alloc);
-    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
-
-    char path_buf[4096];
-    size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    str_t path = {path_buf, path_len};
-
-    md_file_t file = {0};
-    if (md_file_open(&file, path, MD_FILE_READ)) {
-        const size_t filesize = md_file_size(file);
-        md_file_info_t file_info = {0};
-        md_file_info_extract(file, &file_info);
-
-        uint8_t frame_header_data[XTC_SMALL_HEADER_SIZE];
-        if (md_file_read(file, frame_header_data, XTC_SMALL_HEADER_SIZE) != XTC_SMALL_HEADER_SIZE) {
-            MD_LOG_ERROR("XTC: Failed to read header of first frame, file may be corrupt or not a valid xtc trajectory");
-            goto fail;
-        }
-
-        md_xtc_header_t xtc_header = { 0 };
-        if (!decode_header(frame_header_data, &xtc_header)) {
-            MD_LOG_ERROR("XTC: Failed to decode header of first frame, file may be corrupt or not a valid xtc trajectory");
-            goto fail;
-        }
-
-        if (xtc_header.natoms == 0) {
-            MD_LOG_ERROR("XTC: Number of atoms in trajectory was zero");
-            goto fail;
-        }
-
-        char cache_buf[4096];
-		int len = snprintf(cache_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(path));
-		ASSERT(0 < len && len < (int)sizeof(cache_buf));
-        str_t cache_path = { cache_buf, (size_t)len };
-
-        xtc_cache_t cache = {0};
-        if (!try_read_cache(&cache, cache_path, filesize, file_info.modified_time, alloc)) {
-            cache.header.magic = MD_XTC_CACHE_MAGIC;
-            cache.header.version = MD_XTC_CACHE_VERSION;
-            cache.header.num_bytes = filesize;
-            cache.header.num_atoms = xtc_header.natoms;
-            cache.header.last_modified = file_info.modified_time;
-            cache.header.num_frames = md_xtc_read_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
-            if (!cache.header.num_frames) {
-                goto fail;
-            }
-            if (!cache.frame_offsets || !cache.frame_times) {
-                MD_LOG_DEBUG("XTC: frame offsets or frame times was empty");
-                goto fail;
-            }
-
-            if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
-                // If we fail to write the cache, that's ok, we can inform about it, but do not halt
-                if (write_cache(&cache, cache_path)) {
-                    MD_LOG_INFO("XTC: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
-                }
-            }
-        }
-
-        void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xtc_t));
-        ASSERT(mem);
-        MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(xtc_t));
-
-        md_trajectory_i* traj = mem;
-        xtc_t* xtc = (xtc_t*)(traj + 1);
-
-        xtc->magic = MD_XTC_TRAJ_MAGIC;
-        xtc->filepath = str_copy(path, alloc);
-        xtc->alloc = alloc;
-        xtc->frame_offsets = cache.frame_offsets;
-
-        xtc->header = (md_trajectory_header_t) {
-            .num_frames = cache.header.num_frames,
-            .num_atoms = xtc_header.natoms,
-            .time_unit = md_unit_picosecond(),
-            .frame_times = cache.frame_times,
-        };
-
-        traj->inst = (struct md_trajectory_o*)xtc;
-        traj->free = md_xtc_trajectory_free;
-        traj->get_header = xtc_get_header;
-		traj->init_reader = xtc_trajectory_reader_init;
-
-        md_file_close(&file);
-        return traj;
-    }
-fail:
-    if (md_file_valid(file)) md_file_close(&file);
-    md_arena_allocator_destroy(alloc);
-    return NULL;
-}
-
-// Attach convenience wrapper: create trajectory and attach to system
-bool md_xtc_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags) {
-    if (!sys) return false;
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator not set");
+bool md_xtc_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+    ASSERT(sys);
+    if (str_empty(run)) {
+        MD_LOG_ERROR("XTC: no run to publish into");
         return false;
     }
-    md_trajectory_i* traj = md_xtc_trajectory_create(filename, sys->alloc, flags);
-    if (!traj) return false;
-    md_system_attach_trajectory(sys, traj);
-    return true;
+    char path_buf[4096];
+    const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+    const str_t path = {path_buf, path_len};
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    bool result = false;
+
+    xtc_cache_t index;
+    if (!xtc_index_load(&index, path, flags, arena)) {
+        goto done;
+    }
+
+    const size_t F = index.header.num_frames;
+    const size_t N = index.header.num_atoms;
+
+    int64_t* sizes = md_alloc(arena, F * sizeof(int64_t));
+    float*   boxes = md_alloc(arena, F * 9 * sizeof(float));
+    for (size_t i = 0; i < F; ++i) {
+        sizes[i] = index.frame_offsets[i + 1] - index.frame_offsets[i];
+    }
+    for (size_t i = 0; i < F * 9; ++i) {
+        boxes[i] = index.frame_boxes[i] * 10.0f;   // nm to Angstrom, as the coordinates
+    }
+
+    const md_attribute_virtual_t virt = { .provider = xtc_position_provider, .user_data = sys };
+    const md_run_desc_t desc = {
+        .num_frames    = F,
+        .num_atoms     = N,
+        .time          = index.frame_times,
+        .time_unit     = md_unit_picosecond(),
+        .step          = index.frame_steps,
+        .unitcell      = boxes,
+        .source_path   = path,
+        .source_offset = index.frame_offsets,
+        .source_size   = sizes,
+        .position_virt = &virt,
+    };
+    result = md_run_publish(sys, run, &desc);
+
+done:
+    md_arena_allocator_destroy(arena);
+    return result;
 }

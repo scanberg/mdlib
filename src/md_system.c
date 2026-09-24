@@ -1,11 +1,15 @@
 ﻿#include <md_system.h>
-#include <md_trajectory.h>
+
+#include <inttypes.h>
+#include <stdio.h>
 
 #include <core/md_log.h>
+#include <core/md_simd.h>
 #include <core/md_array.h>
 #include <core/md_hash.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_os.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +19,6 @@ void md_system_free(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
-    md_trajectory_free(sys->trajectory);
 
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
@@ -53,6 +56,7 @@ void md_system_free(md_system_t* sys) {
             str_free(sys->entity.description[i], alloc);
         }
     }
+    md_array_free(sys->entity.description, alloc);
 
     // PROTEIN BACKBONE
     md_array_free(sys->protein_backbone.range.offset, alloc);
@@ -123,8 +127,8 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
     // publish into a freshly initialised state without a second setup step.
     state->attributes.alloc = alloc;
 
-    // A freshly initialised state did not come from a trajectory. Only md_trajectory_reader_load_frame
-    // and the interpolation which produces a state write a non negative frame. See md_system_state_t.
+    // A freshly initialised state did not come from a run. Only md_system_extract_frame and the
+    // interpolation which produces a state write a non negative frame. See md_system_state_t.
     state->frame = -1.0;
 
     if (num_atoms == 0) {
@@ -133,17 +137,13 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
 
     const size_t capacity = ALIGN_TO(num_atoms, 16);
 
-    md_array_resize(state->x, capacity, alloc);
-    md_array_resize(state->y, capacity, alloc);
-    md_array_resize(state->z, capacity, alloc);
+    md_array_resize(state->xyz, capacity, alloc);
 
     // Zero the padding past num_atoms. The capacity is rounded up so vectorised code may load whole
-    // 16 wide chunks; an uninitialised tail puts garbage floats into those lanes.
-    const size_t tail_bytes = (capacity - num_atoms) * sizeof(float);
+    // groups of atoms; an uninitialised tail puts garbage floats into those lanes.
+    const size_t tail_bytes = (capacity - num_atoms) * sizeof(vec3_t);
     if (tail_bytes > 0) {
-        MEMSET(state->x + num_atoms, 0, tail_bytes);
-        MEMSET(state->y + num_atoms, 0, tail_bytes);
-        MEMSET(state->z + num_atoms, 0, tail_bytes);
+        MEMSET(state->xyz + num_atoms, 0, tail_bytes);
     }
 
     state->num_atoms = num_atoms;
@@ -156,9 +156,7 @@ void md_system_state_free(md_system_state_t* state) {
 
     // A view owns nothing; zeroing it is the whole job.
     if (state->alloc) {
-        md_array_free(state->x, state->alloc);
-        md_array_free(state->y, state->alloc);
-        md_array_free(state->z, state->alloc);
+        md_array_free(state->xyz, state->alloc);
         md_attributes_free(&state->attributes);
     }
     md_allocator_i* alloc = state->alloc;
@@ -176,10 +174,8 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
     if (!md_system_state_init(dst, src->num_atoms)) {
         return false;
     }
-    if (src->num_atoms > 0 && src->x && src->y && src->z) {
-        MEMCPY(dst->x, src->x, src->num_atoms * sizeof(float));
-        MEMCPY(dst->y, src->y, src->num_atoms * sizeof(float));
-        MEMCPY(dst->z, src->z, src->num_atoms * sizeof(float));
+    if (src->num_atoms > 0 && src->xyz) {
+        MEMCPY(dst->xyz, src->xyz, src->num_atoms * sizeof(vec3_t));
     }
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;
@@ -283,12 +279,6 @@ void md_system_bond_build_connectivity(md_system_t* sys) {
 	md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
 }
 
-// Attach a trajectory to the system, freeing any existing attached trajectory.
-void md_system_attach_trajectory(md_system_t* sys, struct md_trajectory_i* traj) {
-    if (!sys) return;
-    md_trajectory_free(sys->trajectory);
-    sys->trajectory = traj;
-}
 
 
 // ATTRIBUTES
@@ -397,7 +387,7 @@ str_t md_attribute_leaf(const md_attribute_t* attr) {
 // an offset it would have to reverse back into indices.
 #define MD_ATTR_DEFINE_EXTRACT_RANGE(SUFFIX, DST_T)                                                 \
 static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr,      \
-                                          size_t first, size_t count, const md_attribute_slice_t* slice, md_unit_t dst_unit) { \
+                                          size_t first, size_t count, const md_attribute_slice_t* slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
     ASSERT(attr);                                                                                   \
                                                                                                     \
     if (!dst) {                                                                                     \
@@ -438,6 +428,17 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
     /* its target's business - which is exactly why it inherits both 'data' and 'virt'. Switching */ \
     /* on storage sent an alias of a computed attribute down the resident path, where it found no */ \
     /* data and returned nothing at all. */                                                          \
+    /* When the stored type IS the destination type and nothing is rescaled, the scratch buffer  */ \
+    /* would be written once and copied once for nothing: the provider writes straight into dst.  */ \
+    /* For a coordinate array that copy was 5-8% of decoding the frame it came from.              */ \
+    if (attr->virt.provider && attr->format.type == MD_ATTRIBUTE_TYPE_##SUFFIX && factor == 1.0) {   \
+        size_t written = attr->virt.provider(dst, count, attr, slice, attr->virt.user_data, io);    \
+        if (written != count) {                                                                     \
+            MD_LOG_ERROR("Attribute '" STR_FMT "' provider wrote %zu of %zu requested values", STR_ARG(attr->path), written, count); \
+            return 0;                                                                               \
+        }                                                                                           \
+        return count;                                                                               \
+    }                                                                                               \
     const void* src = NULL;                                                                         \
     md_temp_scope_t temp = {0};                                                                     \
     bool own_temp = false;                                                                          \
@@ -453,7 +454,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
             md_temp_end(temp);                                                                      \
             return 0;                                                                               \
         }                                                                                           \
-        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data);        \
+        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data, io);    \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" STR_FMT "' provider wrote %zu of %zu requested values", STR_ARG(attr->path), written, count); \
             md_temp_end(temp);                                                                      \
@@ -614,33 +615,43 @@ static bool attr_reject_whole_temporal(const md_attribute_t* attr) {
 size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
     if (attr_reject_whole_temporal(attr)) return 0;
-    return attr_extract_range_F32(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
+    return attr_extract_range_F32(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit, NULL);
 }
 
 size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_unit_t dst_unit) {
     ASSERT(attr);
     if (attr_reject_whole_temporal(attr)) return 0;
-    return attr_extract_range_F64(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit);
+    return attr_extract_range_F64(dst, cap, attr, 0, md_attribute_element_count(&attr->format), NULL, dst_unit, NULL);
+}
+
+// The slice extracts with an io to hand to a provider. Only an extraction context has one to give,
+// so this stays internal and the public functions pass NULL.
+static size_t attr_extract_slice_io_F32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    ASSERT(attr);
+    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
+    size_t first, count;
+    if (!attr_slice_window(&first, &count, attr, slice)) {
+        return 0;
+    }
+    return attr_extract_range_F32(dst, cap, attr, first, count, slice, dst_unit, io);
+}
+
+static size_t attr_extract_slice_io_F64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    ASSERT(attr);
+    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
+    size_t first, count;
+    if (!attr_slice_window(&first, &count, attr, slice)) {
+        return 0;
+    }
+    return attr_extract_range_F64(dst, cap, attr, first, count, slice, dst_unit, io);
 }
 
 size_t md_attribute_extract_slice_f32(float dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
-    ASSERT(attr);
-    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
-    size_t first, count;
-    if (!attr_slice_window(&first, &count, attr, slice)) {
-        return 0;
-    }
-    return attr_extract_range_F32(dst, cap, attr, first, count, slice, dst_unit);
+    return attr_extract_slice_io_F32(dst, cap, attr, slice, dst_unit, NULL);
 }
 
 size_t md_attribute_extract_slice_f64(double dst[], size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_unit_t dst_unit) {
-    ASSERT(attr);
-    if ((!slice || slice->num_idx == 0) && attr_reject_whole_temporal(attr)) return 0;
-    size_t first, count;
-    if (!attr_slice_window(&first, &count, attr, slice)) {
-        return 0;
-    }
-    return attr_extract_range_F64(dst, cap, attr, first, count, slice, dst_unit);
+    return attr_extract_slice_io_F64(dst, cap, attr, slice, dst_unit, NULL);
 }
 
 static bool attr_path_valid(str_t path) {
@@ -704,6 +715,53 @@ static size_t attr_index_from_id(const md_attributes_t* attributes, md_attribute
         }
     }
     return SIZE_MAX;
+}
+
+// FRAME AXES. What qualifies as an axis is a property of the attribute alone: temporal, one index
+// axis, one component, a number, and called "time". Anything else called "time" is walked past.
+static bool attr_leaf_is_time(str_t path) {
+    size_t loc;
+    str_t leaf = attr_path_split(&loc, path) ? str_substr(path, loc + 1, SIZE_MAX) : path;
+    return str_eq(leaf, STR_LIT("time"));
+}
+
+static bool attr_format_is_axis(const md_attribute_format_t* format, md_attribute_flags_t flags) {
+    return (flags & MD_ATTRIBUTE_FLAG_TEMPORAL) &&
+        format->rank == 1 && format->components == 1 &&
+        format->type != MD_ATTRIBUTE_TYPE_NONE && format->type != MD_ATTRIBUTE_TYPE_STR;
+}
+
+// The nearest valid axis at or above the GROUP of path, never path itself: create asks this for a
+// path that is not in the table yet, and an axis answers for itself before getting here. Walks
+// group by group towards the root, "run/a/atom/time", "run/a/time", "run/time", "time".
+static const md_attribute_t* attr_axis_above(const md_attributes_t* attributes, str_t path) {
+    char buf[512];
+    size_t loc;
+    str_t group = attr_path_split(&loc, path) ? str_substr(path, 0, loc) : (str_t){0};
+
+    for (;;) {
+        size_t len = 0;
+        if (!str_empty(group)) {
+            if (group.len + 1 + 4 >= sizeof(buf)) {
+                MD_LOG_ERROR("Attribute path '" STR_FMT "' is too long to search for a frame axis", STR_ARG(path));
+                return NULL;
+            }
+            MEMCPY(buf, group.ptr, group.len);
+            len = group.len;
+            buf[len++] = '/';
+        }
+        MEMCPY(buf + len, "time", 4);
+        len += 4;
+
+        const md_attribute_t* axis = md_attributes_find(attributes, (str_t){buf, len});
+        if (axis && attr_format_is_axis(&axis->format, axis->flags)) {
+            return axis;
+        }
+        if (str_empty(group)) {
+            return NULL;
+        }
+        group = attr_path_split(&loc, group) ? str_substr(group, 0, loc) : (str_t){0};
+    }
 }
 
 // The storage tag is STATED by the producer rather than derived from the other fields, and stating
@@ -1077,17 +1135,24 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 
     // TEMPORAL is a claim about the outermost axis, so it is checked rather than believed. This is
     // the whole reason for tagging instead of inferring: a shape that merely looks frame sized is a
-    // coincidence, while a tag that disagrees with num_frames is a bug, and catching it here beats
-    // finding it partway through an extract.
+    // coincidence, while a tag that disagrees with its axis is a bug, and catching it here beats
+    // finding it partway through an extract. An axis is its own axis and has nothing to agree with.
     if (desc->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) {
         if (desc->format.rank == 0) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal but has no index axes", STR_ARG(path));
             return MD_ATTRIBUTE_INVALID;
         }
-        if (attributes->num_frames != 0 && desc->format.shape[0] != attributes->num_frames) {
-            MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal with an outermost extent of %u, but the table is indexed against %u frames",
-                STR_ARG(path), desc->format.shape[0], attributes->num_frames);
-            return MD_ATTRIBUTE_INVALID;
+        if (!(attr_leaf_is_time(path) && attr_format_is_axis(&format, desc->flags))) {
+            const md_attribute_t* axis = attr_axis_above(attributes, path);
+            if (!axis) {
+                MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal but no frame axis ('time') exists at or above it", STR_ARG(path));
+                return MD_ATTRIBUTE_INVALID;
+            }
+            if (desc->format.shape[0] != axis->format.shape[0]) {
+                MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal with an outermost extent of %u, but its axis '" STR_FMT "' has %u frames",
+                    STR_ARG(path), desc->format.shape[0], STR_ARG(axis->path), axis->format.shape[0]);
+                return MD_ATTRIBUTE_INVALID;
+            }
         }
     }
 
@@ -1367,6 +1432,30 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
     return true;
 }
 
+size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix) {
+    ASSERT(attributes);
+
+    if (str_empty(attr_prefix_trim(prefix))) {
+        MD_LOG_ERROR("Refusing to remove attributes under an empty prefix");
+        return 0;
+    }
+
+    // In batches, because every removal shifts the array and may take aliases elsewhere with it -
+    // which is also why the count is taken from the table rather than from the removals.
+    const size_t before = md_array_size(attributes->attr);
+    md_attribute_id_t ids[64];
+    for (;;) {
+        const size_t n = md_attributes_query(ids, ARRAY_SIZE(ids), attributes, prefix);
+        if (n == 0) {
+            break;
+        }
+        for (size_t i = 0; i < MIN(n, ARRAY_SIZE(ids)); ++i) {
+            md_attributes_remove(attributes, ids[i]);
+        }
+    }
+    return before - md_array_size(attributes->attr);
+}
+
 const md_attribute_t* md_attributes_get(const md_attributes_t* attributes, md_attribute_id_t id) {
     ASSERT(attributes);
     size_t idx = attr_index_from_id(attributes, id);
@@ -1486,6 +1575,787 @@ size_t md_attributes_query_children(str_t out_names[], size_t cap, const md_attr
     }
 
     return count;
+}
+
+const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, const md_attribute_t* attr) {
+    ASSERT(attributes);
+    ASSERT(attr);
+
+    // An alias is a second name for a datum, and the datum's axis is decided by where its owner
+    // lives. Searching from the alias' own path would pair it with whatever "time" happens to sit
+    // above the new name.
+    const md_attribute_t* owner = attr;
+    if (attr->root != attr->id) {
+        owner = md_attributes_get(attributes, attr->root);
+        if (!owner) {
+            return NULL;
+        }
+    }
+    if (!(owner->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+        return NULL;
+    }
+    if (attr_leaf_is_time(owner->path) && attr_format_is_axis(&owner->format, owner->flags)) {
+        return owner;
+    }
+    return attr_axis_above(attributes, owner->path);
+}
+
+static inline double attr_abs(double x) {
+    return x < 0.0 ? -x : x;
+}
+
+// One coordinate, read through the extract so a computed axis works exactly like a resident one.
+// unit is md_unit_none() for "as stored".
+static bool attr_axis_value(double* out, const md_attribute_t* axis, size_t i, md_unit_t unit) {
+    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)i);
+    return md_attribute_extract_slice_f64(out, 1, axis, &slice, unit) == 1;
+}
+
+bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis) {
+    ASSERT(out_index);
+    ASSERT(src_axis);
+    ASSERT(dst_axis);
+
+    if (!attr_format_is_axis(&src_axis->format, src_axis->flags) || !attr_format_is_axis(&dst_axis->format, dst_axis->flags)) {
+        MD_LOG_ERROR("Mapping between '" STR_FMT "' and '" STR_FMT "': both have to be frame axes", STR_ARG(src_axis->path), STR_ARG(dst_axis->path));
+        return false;
+    }
+
+    const size_t src_count = src_axis->format.shape[0];
+    const size_t dst_count = dst_axis->format.shape[0];
+    if (src_index >= src_count) {
+        return false;
+    }
+
+    if (md_attribute_same_data(src_axis, dst_axis)) {
+        *out_index = src_index;
+        return true;
+    }
+
+    // Ordinals only meet ordinals. With a unit on both sides the extract converts, and refuses
+    // outright when the dimensions differ, which is the same answer for the same reason.
+    if (md_unit_is_none(src_axis->unit) != md_unit_is_none(dst_axis->unit)) {
+        return false;
+    }
+
+    double t;
+    if (!attr_axis_value(&t, src_axis, src_index, dst_axis->unit)) {
+        return false;
+    }
+
+    // First coordinate not below t; the match is that one or the one before it.
+    size_t lo = 0;
+    size_t hi = dst_count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        double v;
+        if (!attr_axis_value(&v, dst_axis, mid, md_unit_none())) {
+            return false;
+        }
+        if (v < t) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    size_t best = SIZE_MAX;
+    double best_dist = 0.0;
+    double best_val  = 0.0;
+    for (size_t c = (lo > 0 ? lo - 1 : 0); c <= lo && c < dst_count; ++c) {
+        double v;
+        if (!attr_axis_value(&v, dst_axis, c, md_unit_none())) {
+            return false;
+        }
+        const double d = attr_abs(v - t);
+        if (best == SIZE_MAX || d < best_dist) {
+            best = c;
+            best_dist = d;
+            best_val = v;
+        }
+    }
+    if (best == SIZE_MAX) {
+        return false;
+    }
+
+    // Float precision of the value itself: an XTC stores its times as float, so 12345.6 ps comes
+    // back a few ulps off, and a fixed absolute margin either rejects that or accepts neighbours
+    // on a finely sampled axis. A thousandth of the local spacing covers the other side.
+    double tol = 1.0e-6 * attr_abs(t);
+    double spacing = 0.0;
+    if (best + 1 < dst_count) {
+        double v;
+        if (attr_axis_value(&v, dst_axis, best + 1, md_unit_none())) {
+            spacing = attr_abs(v - best_val);
+        }
+    }
+    if (best > 0) {
+        double v;
+        if (attr_axis_value(&v, dst_axis, best - 1, md_unit_none())) {
+            const double s = attr_abs(best_val - v);
+            if (s > 0.0 && (spacing == 0.0 || s < spacing)) {
+                spacing = s;
+            }
+        }
+    }
+    tol = MAX(tol, 1.0e-3 * spacing);
+
+    if (best_dist > tol) {
+        return false;
+    }
+    *out_index = best;
+    return true;
+}
+
+// ### IO ###
+
+#define ATTR_IO_MAX_FILES 16
+
+// A small cache of open files, keyed by path. A handful is enough: an extraction context reads one
+// run, and a run is one file per source. The limit is what keeps a long ensemble, one context per
+// thread, from walking into the process limit on open descriptors.
+struct md_attribute_io_t {
+    struct {
+        uint64_t  hash;       // of the path; 0 marks an empty slot
+        str_t     path;       // owned by alloc
+        md_file_t file;
+        uint64_t  last_use;
+    } slot[ATTR_IO_MAX_FILES];
+    uint64_t        tick;
+    md_allocator_i* alloc;
+};
+
+static void attr_io_close_slot(md_attribute_io_t* io, size_t i) {
+    if (io->slot[i].hash) {
+        md_file_close(&io->slot[i].file);
+        str_free(io->slot[i].path, io->alloc);
+        MEMSET(&io->slot[i], 0, sizeof(io->slot[i]));
+    }
+}
+
+static void attr_io_close_all(md_attribute_io_t* io) {
+    for (size_t i = 0; i < ATTR_IO_MAX_FILES; ++i) {
+        attr_io_close_slot(io, i);
+    }
+}
+
+size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes) {
+    if (!io) {
+        md_file_t file = {0};
+        if (!md_file_open(&file, path, MD_FILE_READ)) {
+            MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
+            return 0;
+        }
+        const size_t read = md_file_read_at(file, offset, dst, bytes);
+        md_file_close(&file);
+        return read;
+    }
+
+    uint64_t hash = md_hash64(path.ptr, path.len, 0);
+    if (hash == 0) hash = 1;
+
+    size_t idx = SIZE_MAX;
+    size_t lru = 0;
+    for (size_t i = 0; i < ATTR_IO_MAX_FILES; ++i) {
+        if (io->slot[i].hash == hash && str_eq(io->slot[i].path, path)) {
+            idx = i;
+            break;
+        }
+        if (io->slot[i].last_use < io->slot[lru].last_use) {
+            lru = i;
+        }
+    }
+
+    if (idx == SIZE_MAX) {
+        // An empty slot has last_use 0, so the least recently used is also the first empty one.
+        idx = lru;
+        attr_io_close_slot(io, idx);
+        md_file_t file = {0};
+        if (!md_file_open(&file, path, MD_FILE_READ)) {
+            MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
+            return 0;
+        }
+        io->slot[idx].hash = hash;
+        io->slot[idx].path = str_copy(path, io->alloc);
+        io->slot[idx].file = file;
+    }
+
+    io->slot[idx].last_use = ++io->tick;
+    return md_file_read_at(io->slot[idx].file, offset, dst, bytes);
+}
+
+// ### EXTRACTION ###
+
+typedef enum extract_kind_t {
+    EXTRACT_POSITION,   // atom/position into x, y, z
+    EXTRACT_CELL,       // unitcell into unitcell
+    EXTRACT_OTHER,      // anything else into out->attributes
+} extract_kind_t;
+
+typedef struct extract_entry_t {
+    str_t             path;      // relative to the run, owned
+    extract_kind_t    kind;
+    md_attribute_id_t id;
+    md_attribute_id_t axis_id;
+} extract_entry_t;
+
+struct md_system_extract_t {
+    const md_system_t*     sys;
+    md_allocator_i*        arena;       // everything the context owns
+    md_attribute_id_t      run_axis_id;
+    size_t                 num_frames;
+
+    extract_entry_t*       entries;
+    size_t                 num_entries;
+
+    md_attribute_io_t      io;
+    md_thread_id_t         owner;       // the thread that extracts; 0 until the first frame
+};
+
+static str_t extract_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
+    const int len = snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(run), STR_ARG(leaf));
+    return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
+}
+
+md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, const str_t paths[], size_t num_paths, md_allocator_i* alloc) {
+    ASSERT(sys);
+    ASSERT(alloc);
+    ASSERT(paths || num_paths == 0);
+
+    md_allocator_i* arena = md_arena_allocator_create(alloc, KILOBYTES(16));
+    md_system_extract_t* ex = md_alloc(arena, sizeof(md_system_extract_t));
+    MEMSET(ex, 0, sizeof(md_system_extract_t));
+    ex->sys      = sys;
+    ex->arena    = arena;
+    ex->io.alloc = arena;
+    ex->entries  = md_alloc(arena, MAX(num_paths, 1) * sizeof(extract_entry_t));
+
+    const md_attributes_t* attributes = &sys->attributes;
+    char buf[512];
+
+    {
+        const md_attribute_t* axis = str_empty(run) ? NULL : md_attributes_find(attributes, extract_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+        if (!axis || md_attributes_axis(attributes, axis) != axis) {
+            MD_LOG_ERROR("No run '" STR_FMT "' to extract from", STR_ARG(run));
+            goto fail;
+        }
+        ex->run_axis_id = axis->id;
+        ex->num_frames  = axis->format.shape[0];
+    }
+
+    for (size_t i = 0; i < num_paths; ++i) {
+        extract_entry_t* e = &ex->entries[ex->num_entries];
+        MEMSET(e, 0, sizeof(*e));
+        e->path = str_copy(paths[i], arena);
+        e->kind = str_eq(paths[i], STR_LIT("atom/position")) ? EXTRACT_POSITION :
+                  str_eq(paths[i], STR_LIT("unitcell"))      ? EXTRACT_CELL : EXTRACT_OTHER;
+
+        const md_attribute_t* attr = md_attributes_find(attributes, extract_run_path(buf, sizeof(buf), run, paths[i]));
+        if (!attr) {
+            MD_LOG_ERROR("Nothing at '" STR_FMT "' in '" STR_FMT "' to extract", STR_ARG(paths[i]), STR_ARG(run));
+            goto fail;
+        }
+
+        if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+            MD_LOG_ERROR("'" STR_FMT "' does not vary over the run; read it from the system directly", STR_ARG(attr->path));
+            goto fail;
+        }
+        if (attr->format.type == MD_ATTRIBUTE_TYPE_STR) {
+            MD_LOG_ERROR("'" STR_FMT "' is text and cannot be carried by a state", STR_ARG(attr->path));
+            goto fail;
+        }
+        if (e->kind == EXTRACT_POSITION && !(attr->format.rank == 2 && attr->format.components == 3)) {
+            MD_LOG_ERROR("'" STR_FMT "' is not {F,N} with three components", STR_ARG(attr->path));
+            goto fail;
+        }
+        if (e->kind == EXTRACT_CELL && !(attr->format.rank == 3 && attr->format.shape[1] == 3 && attr->format.shape[2] == 3 && attr->format.components == 1)) {
+            MD_LOG_ERROR("'" STR_FMT "' is not {F,3,3}", STR_ARG(attr->path));
+            goto fail;
+        }
+        const md_attribute_t* axis = md_attributes_axis(attributes, attr);
+        if (!axis) {
+            MD_LOG_ERROR("'" STR_FMT "' has no frame axis", STR_ARG(attr->path));
+            goto fail;
+        }
+        e->id      = attr->id;
+        e->axis_id = axis->id;
+        ex->num_entries += 1;
+    }
+
+    return ex;
+
+fail:
+    md_arena_allocator_destroy(arena);
+    return NULL;
+}
+
+void md_system_extract_end(md_system_extract_t* ex) {
+    if (!ex) return;
+    attr_io_close_all(&ex->io);
+    md_arena_allocator_destroy(ex->arena);
+}
+
+// The value of attr at one row in its STORED type, which a state keeps it in: secondary structure
+// labels stay integers. Resident storage is copied; a provider is asked, with the context's io.
+static bool extract_raw_row(void* dst, const md_attribute_t* attr, const md_attribute_slice_t* slice, md_attribute_io_t* io) {
+    size_t first, count;
+    if (!attr_slice_window(&first, &count, attr, slice)) {
+        return false;
+    }
+    if (attr->virt.provider) {
+        return attr->virt.provider(dst, count, attr, slice, attr->virt.user_data, io) == count;
+    }
+    if (!attr->data) {
+        return false;
+    }
+    const size_t type_size = md_attribute_type_size(attr->format.type);
+    MEMCPY(dst, (const uint8_t*)attr->data + first * type_size, count * type_size);
+    return true;
+}
+
+bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_state_t* out) {
+    ASSERT(ex);
+    ASSERT(out);
+
+    // One thread at a time. Recorded on first use rather than at begin, so a context may be made on
+    // one thread and handed to the one that uses it.
+    const md_thread_id_t tid = md_thread_id();
+    if (ex->owner == 0) {
+        ex->owner = tid;
+    }
+    ASSERT(ex->owner == tid && "an extraction context is used by one thread at a time");
+
+    if (frame < 0 || (size_t)frame >= ex->num_frames) {
+        MD_LOG_ERROR("Frame %" PRId64 " is outside the %zu frames being extracted from", frame, ex->num_frames);
+        return false;
+    }
+
+    const md_attributes_t* attributes = &ex->sys->attributes;
+    const bool want_coords = out->xyz != NULL;
+
+    const md_attribute_t* run_axis = md_attributes_get(attributes, ex->run_axis_id);
+    if (!run_axis) {
+        MD_LOG_ERROR("The run being extracted from is gone; end the context before removing it");
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    bool result = true;
+
+    for (size_t i = 0; i < ex->num_entries && result; ++i) {
+        const extract_entry_t* e = &ex->entries[i];
+        const md_attribute_t* attr = md_attributes_get(attributes, e->id);
+        const md_attribute_t* axis = md_attributes_get(attributes, e->axis_id);
+        if (!attr || !axis) {
+            MD_LOG_ERROR("'" STR_FMT "' is gone from the run being extracted from", STR_ARG(e->path));
+            result = false;
+            break;
+        }
+
+        size_t row = (size_t)frame;
+        if (e->axis_id != ex->run_axis_id && !md_attribute_axis_map(&row, run_axis, (size_t)frame, axis)) {
+            if (e->kind != EXTRACT_OTHER) {
+                MD_LOG_ERROR("'" STR_FMT "' has no value at frame %" PRId64, STR_ARG(e->path), frame);
+                result = false;
+                break;
+            }
+            // Sampled at other times than the frames (velocities written every fifth frame): this
+            // frame has none, and the state says so by not carrying it - never the value of another
+            // frame, which a state reused from the last one would otherwise still hold.
+            if (out->attributes.alloc) {
+                const md_attribute_t* prev = md_attributes_find(&out->attributes, e->path);
+                if (prev) md_attributes_remove(&out->attributes, prev->id);
+            }
+            continue;
+        }
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
+
+        switch (e->kind) {
+        case EXTRACT_POSITION: {
+            if (!want_coords) break;
+            const size_t N = attr->format.shape[1];
+            if (out->num_atoms != 0 && out->num_atoms != N) {
+                MD_LOG_ERROR("The state holds %zu atoms, '" STR_FMT "' %zu", out->num_atoms, STR_ARG(attr->path), N);
+                result = false;
+                break;
+            }
+            if (attr_extract_slice_io_F32((float*)out->xyz, N * 3, attr, &slice, md_unit_angstrom(), &ex->io) != N * 3) {
+                result = false;
+                break;
+            }
+            out->num_atoms = N;
+            break;
+        }
+        case EXTRACT_CELL: {
+            float box[3][3];
+            if (attr_extract_slice_io_F32(&box[0][0], 9, attr, &slice, md_unit_angstrom(), &ex->io) != 9) {
+                result = false;
+                break;
+            }
+            const bool empty = box[0][0] == 0.0f && box[1][1] == 0.0f && box[2][2] == 0.0f;
+            out->unitcell = empty ? (md_unitcell_t){0} : md_unitcell_from_matrix_float(box);
+            break;
+        }
+        case EXTRACT_OTHER: {
+            if (!out->attributes.alloc) {
+                MD_LOG_ERROR("'" STR_FMT "' goes into the state's attributes, and the state has none (no allocator)", STR_ARG(e->path));
+                result = false;
+                break;
+            }
+            md_attribute_format_t fmt;
+            md_attribute_slice_format(&fmt, attr, &slice);
+            const size_t bytes = md_attribute_byte_size(&fmt);
+            void* data = md_temp_alloc(temp, MAX(bytes, 1));
+            if (!data || !extract_raw_row(data, attr, &slice, &ex->io)) {
+                result = false;
+                break;
+            }
+            const md_attribute_desc_t desc = {
+                .path   = e->path,
+                .format = fmt,
+                .unit   = attr->unit,
+                .label  = attr->label,
+                .data   = data,
+                .byte_size = bytes,
+            };
+            if (!md_attributes_replace(&out->attributes, &desc)) {
+                result = false;
+            }
+            break;
+        }
+        }
+    }
+
+    md_temp_end(temp);
+    if (result) {
+        out->frame = (double)frame;
+    }
+    return result;
+}
+
+// ### RUNS ###
+
+static str_t run_cache_path(char* buf, size_t cap, str_t source_path) {
+    const int len = snprintf(buf, cap, STR_FMT ".cache", STR_ARG(source_path));
+    return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
+}
+
+bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, str_t source_path, uint64_t magic, uint64_t version) {
+    ASSERT(out_file);
+    ASSERT(out_header);
+    MEMSET(out_file, 0, sizeof(*out_file));
+
+    md_file_info_t info = {0};
+    if (!md_file_info_extract_from_path(source_path, &info)) {
+        return false;
+    }
+    char buf[4096];
+    const str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
+    md_file_t file = {0};
+    if (str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_READ)) {
+        return false;
+    }
+
+    const char* stale = NULL;
+    if (md_file_read(file, out_header, sizeof(*out_header)) != sizeof(*out_header)) {
+        stale = "incomplete header";
+    } else if (out_header->magic != magic) {
+        stale = "not this format's";
+    } else if (out_header->version != version) {
+        stale = "an older version";
+    } else if (out_header->source_size != (uint64_t)info.size) {
+        stale = "made from a file of another size";
+    } else if (out_header->source_modified != info.modified_time) {
+        stale = "made from a file modified at another time";
+    } else if (out_header->num_frames == 0 || out_header->num_atoms == 0) {
+        stale = "empty";
+    }
+    if (stale) {
+        MD_LOG_INFO("'" STR_FMT "' is %s; it will be made again", STR_ARG(cache_path), stale);
+        md_file_close(&file);
+        return false;
+    }
+    *out_file = file;
+    return true;
+}
+
+bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames) {
+    ASSERT(out_file);
+    ASSERT(scanned);
+    MEMSET(out_file, 0, sizeof(*out_file));
+    const md_file_info_t info = *scanned;
+    char buf[4096];
+    const str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
+    md_file_t file = {0};
+    if (str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+        MD_LOG_INFO("Could not create '" STR_FMT "'", STR_ARG(cache_path));
+        return false;
+    }
+    const md_run_cache_header_t header = {
+        .magic           = magic,
+        .version         = version,
+        .source_size     = (uint64_t)info.size,
+        .source_modified = info.modified_time,
+        .num_atoms       = num_atoms,
+        .num_frames      = num_frames,
+    };
+    if (md_file_write(file, &header, sizeof(header)) != sizeof(header)) {
+        md_file_close(&file);
+        return false;
+    }
+    *out_file = file;
+    return true;
+}
+
+str_t md_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
+    return extract_run_path(buf, cap, run, leaf);
+}
+
+bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
+    ASSERT(sys);
+    ASSERT(d);
+    if (str_empty(run) || !d->time || !d->source_offset || !d->source_size || !d->position_virt || str_empty(d->source_path)) {
+        MD_LOG_ERROR("An incomplete description of the run '" STR_FMT "'", STR_ARG(run));
+        return false;
+    }
+    const size_t F = d->num_frames;
+    const size_t N = d->num_atoms;
+    if (F == 0 || N == 0 || F > UINT32_MAX || N > UINT32_MAX) {
+        MD_LOG_ERROR("The run '" STR_FMT "' has %zu frames of %zu atoms, which cannot be published", STR_ARG(run), F, N);
+        return false;
+    }
+    if (sys->atom.count != 0 && sys->atom.count != N) {
+        MD_LOG_ERROR("The run '" STR_FMT "' holds %zu atoms, the system %zu", STR_ARG(run), N, sys->atom.count);
+        return false;
+    }
+
+    md_attributes_t* attributes = &sys->attributes;
+    if (!attributes->alloc) {
+        attributes->alloc = sys->alloc;
+    }
+
+    const md_attribute_format_t series_f64 = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)F } };
+    const md_attribute_format_t series_i64 = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)F } };
+    const md_attribute_format_t cell_format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 3, .shape = { (uint32_t)F, 3, 3 } };
+    char buf[512];
+
+    // The axis first: everything temporal below is checked against it.
+    bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = d->time_unit, .label = STR_LIT("Time"),
+        .data = d->time, .byte_size = F * sizeof(double)});
+
+    if (ok && d->step) {
+        ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = md_unit_none(), .label = STR_LIT("Step"),
+            .description = STR_LIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
+            .data = d->step, .byte_size = F * sizeof(int64_t)});
+    }
+
+    if (ok && (d->unitcell || d->unitcell_virt)) {
+        ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("unitcell")), .format = cell_format,
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_LIT("Unit Cell"),
+            .data = d->unitcell_virt ? NULL : d->unitcell, .byte_size = d->unitcell_virt ? 0 : F * 9 * sizeof(float),
+            .virt = d->unitcell_virt});
+    }
+
+    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/path")),
+        .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
+        .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(str_t)});
+
+    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/offset")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none(), .data = d->source_offset, .byte_size = F * sizeof(int64_t)});
+
+    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/size")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none(), .data = d->source_size, .byte_size = F * sizeof(int64_t)});
+
+    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
+        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("atom/position")),
+        .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)F, (uint32_t)N } },
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_LIT("Position"),
+        .virt = d->position_virt});
+
+    if (!ok) {
+        MD_LOG_ERROR("Failed to publish the run '" STR_FMT "' from '" STR_FMT "'", STR_ARG(run), STR_ARG(d->source_path));
+        md_attributes_remove_prefix(attributes, run);
+    }
+    return ok;
+}
+
+bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf) {
+    ASSERT(out);
+    ASSERT(attributes);
+    ASSERT(attr);
+    MEMSET(out, 0, sizeof(*out));
+
+    const str_t p = attr->path;
+    if (p.len <= leaf.len + 1 || !str_ends_with(p, leaf) || p.ptr[p.len - leaf.len - 1] != '/') {
+        return false;
+    }
+    out->run = str_substr(p, 0, p.len - leaf.len - 1);
+
+    char buf[512];
+    const md_attribute_t* path   = md_attributes_find(attributes, md_run_path(buf, sizeof(buf), out->run, STR_LIT("source/path")));
+    const md_attribute_t* offset = md_attributes_find(attributes, md_run_path(buf, sizeof(buf), out->run, STR_LIT("source/offset")));
+    const md_attribute_t* size   = md_attributes_find(attributes, md_run_path(buf, sizeof(buf), out->run, STR_LIT("source/size")));
+    if (!path || path->format.type != MD_ATTRIBUTE_TYPE_STR ||
+        !offset || offset->format.type != MD_ATTRIBUTE_TYPE_I64 || !offset->data ||
+        !size   || size->format.type   != MD_ATTRIBUTE_TYPE_I64 || !size->data ||
+        offset->format.shape[0] != size->format.shape[0]) {
+        MD_LOG_ERROR("The run '" STR_FMT "' has lost its source attributes", STR_ARG(out->run));
+        return false;
+    }
+    out->path       = md_attribute_str(attributes, path, 0);
+    out->offset     = (const int64_t*)offset->data;
+    out->size       = (const int64_t*)size->data;
+    out->num_frames = offset->format.shape[0];
+    return true;
+}
+
+// Lower case letters and digits, anything else one '_' between them
+static size_t run_series_slug(char* buf, size_t cap, str_t name) {
+    size_t len = 0;
+    bool pending_sep = false;
+    for (size_t i = 0; i < name.len && len + 2 < cap; ++i) {
+        char c = name.ptr[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        const bool keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (!keep) {
+            pending_sep = (len > 0);
+            continue;
+        }
+        if (pending_sep) {
+            buf[len++] = '_';
+            pending_sep = false;
+        }
+        buf[len++] = c;
+    }
+    buf[len] = '\0';
+    return len;
+}
+
+bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc_t* d) {
+    ASSERT(sys);
+    ASSERT(d);
+    md_attributes_t* attributes = &sys->attributes;
+    if (!attributes->alloc) {
+        attributes->alloc = sys->alloc;
+    }
+
+    char buf[512];
+    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find(attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+    if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
+        MD_LOG_ERROR("No run '" STR_FMT "' to publish '" STR_FMT "' along", STR_ARG(run), STR_ARG(d->group));
+        return false;
+    }
+    const size_t F = run_axis->format.shape[0];
+    const size_t R = d->num_rows;
+    if (R == 0 || d->num_columns == 0 || R > UINT32_MAX || !d->names || !d->columns) {
+        MD_LOG_ERROR("'" STR_FMT "' holds no values", STR_ARG(d->group));
+        return false;
+    }
+
+    char group_buf[512];
+    const str_t group = md_run_path(group_buf, sizeof(group_buf), run, d->group);
+    if (str_empty(group) || str_empty(d->group)) {
+        MD_LOG_ERROR("No group to publish the series under");
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool result = false;
+
+    md_unit_t time_unit = d->time_unit;
+    if (d->time) {
+        if (md_unit_is_none(time_unit)) {
+            time_unit = run_axis->unit;
+        }
+        for (size_t i = 1; i < R; ++i) {
+            if (d->time[i] < d->time[i - 1]) {
+                MD_LOG_ERROR("'" STR_FMT "': time decreases at row %zu", STR_ARG(d->group), i);
+                goto done;
+            }
+        }
+        // Whether the rows cover the run is a question about the values, answered against a scratch
+        // table before the real one is touched.
+        md_attributes_t probe = { .alloc = temp_alloc };
+        const md_attribute_id_t probe_id = md_attributes_create(&probe, &(md_attribute_desc_t){
+            .path = STR_LIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .data = d->time, .byte_size = R * sizeof(double)});
+        const md_attribute_t* axis = probe_id ? md_attributes_get(&probe, probe_id) : NULL;
+        if (!axis) goto done;
+        for (size_t f = 0; f < F; ++f) {
+            size_t row;
+            if (!md_attribute_axis_map(&row, run_axis, f, axis)) {
+                MD_LOG_ERROR("'" STR_FMT "' has no row at the time of frame %zu of '" STR_FMT "'; it belongs to another run", STR_ARG(d->group), f, STR_ARG(run));
+                goto done;
+            }
+        }
+    } else if (R != F) {
+        MD_LOG_ERROR("'" STR_FMT "' has %zu rows and no time, and '" STR_FMT "' %zu frames: the rows cannot be the frames", STR_ARG(d->group), R, STR_ARG(run), F);
+        goto done;
+    }
+
+    md_attributes_remove_prefix(attributes, group);
+
+    const md_attribute_format_t series = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = { (uint32_t)R } };
+    bool ok = true;
+    if (d->time) {
+        ok = md_attributes_create(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")),
+            .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .label = STR_LIT("Time"),
+            .data = d->time, .byte_size = R * sizeof(double)}) != MD_ATTRIBUTE_INVALID;
+    }
+
+    md_array(str_t) taken = 0;
+    md_array_push(taken, STR_LIT("time"),   temp_alloc);
+    md_array_push(taken, STR_LIT("source"), temp_alloc);
+    for (size_t k = 0; ok && k < d->num_columns; ++k) {
+        char slug[128];
+        size_t len = run_series_slug(slug, sizeof(slug) - 8, d->names[k]);
+        if (len == 0) {
+            len = (size_t)snprintf(slug, sizeof(slug), "column%zu", k + 1);
+        }
+        const size_t base = len;
+        for (int n = 2;; ++n) {
+            bool clash = false;
+            for (size_t t = 0; t < md_array_size(taken); ++t) {
+                if (str_eq(taken[t], (str_t){slug, len})) { clash = true; break; }
+            }
+            if (!clash) break;
+            len = base + (size_t)snprintf(slug + base, sizeof(slug) - base, "_%d", n);
+        }
+        md_array_push(taken, str_copy((str_t){slug, len}, temp_alloc), temp_alloc);
+
+        ok = md_attributes_create(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), group, (str_t){slug, len}),
+            .format = series, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = d->units ? d->units[k] : md_unit_none(), .label = d->names[k],
+            .data = d->columns[k], .byte_size = R * sizeof(float)}) != MD_ATTRIBUTE_INVALID;
+    }
+    if (ok && !str_empty(d->source_path)) {
+        ok = md_attributes_create(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source")),
+            .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
+            .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(str_t)}) != MD_ATTRIBUTE_INVALID;
+    }
+    if (!ok) {
+        MD_LOG_ERROR("Failed to publish '" STR_FMT "'", STR_ARG(group));
+        md_attributes_remove_prefix(attributes, group);
+        goto done;
+    }
+    result = true;
+
+done:
+    md_temp_end(temp);
+    return result;
 }
 
 #ifdef __cplusplus

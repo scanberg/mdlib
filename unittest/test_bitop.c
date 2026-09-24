@@ -11,7 +11,7 @@ static uint64_t set_bits(uint64_t* bits, const char* bit_str) {
     const uint64_t num_bits = strlen(bit_str);
     for (uint64_t i = 0; i < num_bits; i++) {
         const uint64_t blk_idx = i / 64;
-        const uint64_t bit_mask = (1LLU << i);
+        const uint64_t bit_mask = (1LLU << (i % 64));
         if (bit_str[i] != '0')
             bits[blk_idx] |= bit_mask;
         else
@@ -23,7 +23,7 @@ static uint64_t set_bits(uint64_t* bits, const char* bit_str) {
 static void print_bits(uint64_t* bits, uint64_t num_bits) {
     for (uint64_t i = 0; i < num_bits; ++i) {
         const uint64_t blk_idx = i / 64;
-        const uint64_t bit_mask = (1LLU << i);
+        const uint64_t bit_mask = (1LLU << (i % 64));
         printf("%i", bits[blk_idx] & bit_mask ? 1 : 0);
     }
 }

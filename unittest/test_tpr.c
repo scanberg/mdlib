@@ -72,7 +72,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
-        if (fabsf(state->x[i] - a->x * 10.0f) > 0.006f || fabsf(state->y[i] - a->y * 10.0f) > 0.006f || fabsf(state->z[i] - a->z * 10.0f) > 0.006f) {
+        if (fabsf(state->xyz[i].x - a->x * 10.0f) > 0.006f || fabsf(state->xyz[i].y - a->y * 10.0f) > 0.006f || fabsf(state->xyz[i].z - a->z * 10.0f) > 0.006f) {
             coord_mismatch += 1;
         }
     }

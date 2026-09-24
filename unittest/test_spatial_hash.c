@@ -658,7 +658,7 @@ UTEST(spatial_hash, n2) {
 
     // Spatial acc implementation
     start = md_tick_now();
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
     md_spatial_acc_for_each_internal_pair_in_neighboring_cells(&acc, spatial_acc_neighbor_callback, &count);
@@ -687,7 +687,7 @@ UTEST(spatial_hash, n2) {
     // This is so slow that we don't want to run it by default, but it can be useful for validating the reference implementation
     // Brute force
     start = md_tick_now();
-    size_t bf_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, 5.0, G, I, NULL, NULL);
+    size_t bf_count = do_brute_force_double(sys_state.xyz, sys.atom.count, 5.0, G, I, NULL, NULL);
     end = md_tick_now();
     printf("Brute force: %f ms\n", md_tick_to_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);
@@ -723,7 +723,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
     
@@ -749,7 +749,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         // breaks on the arm64 build.
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
+            double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
             double si[3];
             cart_to_fract(si, xi, I);
 
@@ -784,7 +784,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
 
     srand(31);
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
@@ -804,7 +804,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         int ref_count = 0;
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
+            double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < radius_sq) {
@@ -838,7 +838,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
@@ -858,7 +858,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
         int ref_count = 0;
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
+            double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < radius_sq) {
@@ -895,7 +895,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
@@ -917,7 +917,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
 #if 0
 		// Do N^2 test as well to validate the reference implementation
-        ref_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, radius, G, I, NULL, NULL);
+        ref_count = do_brute_force_double(sys_state.xyz, sys.atom.count, radius, G, I, NULL, NULL);
 		md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
         EXPECT_NEAR(ref_count, sa_count, 2);
 #endif
@@ -925,7 +925,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
         ref_count = 0;
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
+            double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < radius_sq) {
@@ -960,7 +960,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
 
@@ -1014,8 +1014,8 @@ UTEST_F(spatial_hash, npt_triclinic) {
         int i0 = 835;
         int i1 = 6160;
 
-        double x0[3] = { sys_state.x[i0], sys_state.y[i0], sys_state.z[i0] };
-		double x1[3] = { sys_state.x[i1], sys_state.y[i1], sys_state.z[i1] };
+        double x0[3] = { sys_state.xyz[i0].x, sys_state.xyz[i0].y, sys_state.xyz[i0].z };
+		double x1[3] = { sys_state.xyz[i1].x, sys_state.xyz[i1].y, sys_state.xyz[i1].z };
 
         double s0[3];
         double s1[3];
@@ -1045,7 +1045,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
 #if 0
         // Do N^2 test as well to validate the reference implementation
-        ref_count = do_brute_force_double(sys_state.x, sys_state.y, sys_state.z, sys.atom.count, radius, G, I, NULL, NULL);
+        ref_count = do_brute_force_double(sys_state.xyz, sys.atom.count, radius, G, I, NULL, NULL);
         md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, (float)radius, spatial_acc_pair_count_callback, &sa_count);
         EXPECT_NEAR(ref_count, sa_count, 2);
 #endif
@@ -1053,7 +1053,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         ref_count = 0;
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            double xi[3] = { sys_state.x[i], sys_state.y[i], sys_state.z[i] };
+            double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
             double si[3];
             cart_to_fract(si, xi, I);
             if (distance_ref_mic27(G, s0, si) < radius_sq) {

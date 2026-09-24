@@ -2,7 +2,6 @@
 #include <string.h>
 
 #include <md_gro.h>
-#include <md_trajectory.h>
 #include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
@@ -22,9 +21,9 @@ UTEST(gro, parse_small) {
     md_system_state_t sys_state = { .alloc = alloc };
     md_gro_system_init_from_data(&sys, &sys_state, &gro_data);
     for (int64_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], gro_data.atom_data[i].x * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.y[i], gro_data.atom_data[i].y * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.z[i], gro_data.atom_data[i].z * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].y, gro_data.atom_data[i].y * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].z, gro_data.atom_data[i].z * NM_TO_ANGSTROM);
     }
     md_system_reset(&sys);
 
@@ -35,11 +34,13 @@ UTEST(gro, parse_small) {
         EXPECT_TRUE(str_empty(md_atom_type_ff_type(&sys.atom.type, t)));
     }
     for (int64_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], gro_data.atom_data[i].x * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.y[i], gro_data.atom_data[i].y * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.z[i], gro_data.atom_data[i].z * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].y, gro_data.atom_data[i].y * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].z, gro_data.atom_data[i].z * NM_TO_ANGSTROM);
     }
 
+    md_system_free(&sys);
+    md_system_state_free(&sys_state);
     md_gro_data_free(&gro_data, alloc);
 }
 
@@ -55,19 +56,21 @@ UTEST(gro, parse_big) {
     md_system_state_t sys_state = { .alloc = alloc };
     md_gro_system_init_from_data(&sys, &sys_state, &gro_data);
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], gro_data.atom_data[i].x * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.y[i], gro_data.atom_data[i].y * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.z[i], gro_data.atom_data[i].z * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].y, gro_data.atom_data[i].y * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].z, gro_data.atom_data[i].z * NM_TO_ANGSTROM);
     }
     md_system_reset(&sys);
 
     EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path));
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], gro_data.atom_data[i].x * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.y[i], gro_data.atom_data[i].y * NM_TO_ANGSTROM);
-        EXPECT_EQ(sys_state.z[i], gro_data.atom_data[i].z * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].y, gro_data.atom_data[i].y * NM_TO_ANGSTROM);
+        EXPECT_EQ(sys_state.xyz[i].z, gro_data.atom_data[i].z * NM_TO_ANGSTROM);
     }
 
+    md_system_free(&sys);
+    md_system_state_free(&sys_state);
     md_gro_data_free(&gro_data, alloc);
 }
 

@@ -1,7 +1,6 @@
 ﻿#include <md_pdb.h>
 
 #include <md_system.h>
-#include <md_trajectory.h>
 #include <md_util.h>
 
 #include <core/md_common.h>
@@ -24,31 +23,9 @@
 extern "C" {
 #endif
 
-static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags);
-
-#define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
-#define MD_PDB_TRAJ_READER_MAGIC 0x2312ad7b78a9bc79
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
-#define MD_PDB_CACHE_VERSION 16
+#define MD_PDB_CACHE_VERSION 17
 #define MD_PDB_PARSE_BIOMT 1
-
-// The opaque blob
-typedef struct pdb_trajectory_t {
-    uint64_t magic;
-	str_t filepath;
-    int64_t* frame_offsets;
-    md_unitcell_t unitcell;                // For pdb trajectories we have a static cell
-    md_trajectory_header_t header;
-    md_allocator_i* allocator;
-} pdb_trajectory_t;
-
-typedef struct pdb_reader_t {
-    uint64_t magic;
-    md_file_t file;
-    const pdb_trajectory_t* traj;
-    md_array(uint8_t) frame_data;
-    md_allocator_i* arena;
-} pdb_reader_t;
 
 static inline void copy_str_field(char* dst, size_t dst_size, str_t line, size_t beg, size_t end) {
     str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
@@ -201,90 +178,6 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
 
 static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connect_t* other) {
     MEMCPY(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
-}
-
-bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
-    ASSERT(pdb);
-    ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
-    ASSERT(header);
-
-    *header = pdb->header;
-    return true;
-}
-
-// This is lowlevel cruft for enabling parallel loading and decoding of frames
-// Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-static size_t pdb_fetch_frame_data(const pdb_trajectory_t* pdb, md_file_t file, int64_t frame_idx, void* frame_data_ptr) {
-    ASSERT(pdb);
-    ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
-
-    if (!pdb->frame_offsets) {
-        MD_LOG_ERROR("Frame offsets is empty");
-        return 0;
-    }
-
-    if (frame_idx < 0 || (int64_t)pdb->header.num_frames <= frame_idx) {
-        MD_LOG_ERROR("Frame index is out of range");
-        return 0;
-    }
-
-    const int64_t beg = pdb->frame_offsets[frame_idx + 0];
-    const int64_t end = pdb->frame_offsets[frame_idx + 1];
-    size_t frame_size = (size_t)MAX(0, end - beg);
-
-    if (frame_data_ptr) {
-        if (!md_file_valid(file)) {
-            MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(pdb->filepath));
-            return 0;
-	    }
-
-        size_t bytes_read = md_file_read_at(file, beg, frame_data_ptr, frame_size);
-		frame_size = (bytes_read == frame_size) ? frame_size : 0;
-    }
-
-    return frame_size;
-}
-
-static bool pdb_decode_frame_data(const pdb_trajectory_t* pdb, const void* frame_data, size_t frame_size, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
-    ASSERT(frame_data);
-    ASSERT(frame_size);
-
-    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Error when decoding frame header, pdb magic did not match");
-        return false;
-    }
-
-    str_t str = { .ptr = (char*)frame_data, .len = frame_size };
-    str_t line;
-
-    // Consume the frame's leading MODEL record. Its model number used to be reported as the frame
-    // step; the ordinal is now stamped by md_trajectory_reader_load_frame, which is the only place
-    // that knows it.
-    str_extract_line(&line, &str);
-
-    size_t i = 0;
-    while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
-        if (line.len < 6) continue;
-        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            if (x) { x[i] = extract_float(line, 31, 38); }
-            if (y) { y[i] = extract_float(line, 39, 46); }
-            if (z) { z[i] = extract_float(line, 47, 54); }
-
-            i += 1;
-        }
-    }
-
-    if (num_atoms) {
-        *num_atoms = i;
-    }
-
-    if (cell) {
-        // PDB trajectories carry a single CRYST1 record, so every frame shares the file's cell
-        *cell = pdb->unitcell;
-    }
-
-    return true;
 }
 
 // PUBLIC PROCEDURES
@@ -506,9 +399,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
     md_array(str_t) comp_auth_asym_ids = 0;
 
-    md_array_ensure(state->x,           capacity, state->alloc);
-    md_array_ensure(state->y,           capacity, state->alloc);
-    md_array_ensure(state->z,           capacity, state->alloc);
+    md_array_ensure(state->xyz,           capacity, state->alloc);
     md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
     md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
@@ -575,9 +466,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         sys->atom.count += 1;
 
         md_array_push_no_grow(atom_name, atom_id);
-        md_array_push_no_grow(state->x, x);
-        md_array_push_no_grow(state->y, y);
-        md_array_push_no_grow(state->z, z);
+        md_array_push_no_grow(state->xyz, vec3_set(x, y, z));
         md_array_push_no_grow(sys->atom.flags, flags);
         md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
         md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
@@ -589,7 +478,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
 
-    ASSERT(md_array_size(state->x) == sys->atom.count);
+    ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
     // Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The paths
@@ -717,343 +606,245 @@ bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     md_pdb_data_t data = {0};
     bool success = pdb_parse(&data, &reader, temp_arena, false) && md_pdb_system_init_from_data(sys, state, &data, options);
 
-    // If the file contained multiple models, interpret as a trajectory and attach one.
-    if (success && data.num_models > 1) {
-        md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
-        if (options & MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) {
-            traj_flags |= MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE;
-        }
-        md_trajectory_i* traj = md_pdb_trajectory_create(filename, sys->alloc, traj_flags);
-        if (traj) {
-            md_system_attach_trajectory(sys, traj);
-        }
-    }
+    // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
 
     md_temp_end(temp_scope);
 
     return success;
 }
 
-static bool pdb_reader_load_frame_raw(struct md_trajectory_reader_o* inst, int64_t frame_idx, size_t* num_atoms, md_unitcell_t* cell, float* x, float* y, float* z) {
-    ASSERT(inst);
-
-    pdb_reader_t* reader = (pdb_reader_t*)inst;
-    ASSERT(reader->magic == MD_PDB_TRAJ_READER_MAGIC);
-
-    const pdb_trajectory_t* pdb = reader->traj;
-    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Error when decoding frame coord, pdb magic did not match");
-        return false;
-    }
-
-    bool result = false;
-    const size_t frame_size = pdb_fetch_frame_data(pdb, reader->file, frame_idx, NULL);
-    if (frame_size > 0) {
-        md_array_ensure(reader->frame_data, frame_size, reader->arena);
-        const size_t read_size = pdb_fetch_frame_data(pdb, reader->file, frame_idx, reader->frame_data);
-        if (read_size != frame_size) {
-            MD_LOG_ERROR("Failed to read the expected size");
-            return false;
-        }
-
-        result = pdb_decode_frame_data(pdb, reader->frame_data, frame_size, num_atoms, cell, x, y, z);
-    }
-
-    return result;
-}
-
-static void pdb_trajectory_reader_free(struct md_trajectory_reader_i* reader) {
-    if (!reader) {
-        return;
-    }
-
-    pdb_reader_t* inst = (pdb_reader_t*)reader->inst;
-    if (inst) {
-        ASSERT(inst->magic == MD_PDB_TRAJ_READER_MAGIC);
-        if (md_file_valid(inst->file)) {
-            md_file_close(&inst->file);
-        }
-        md_arena_allocator_destroy(inst->arena);
-    }
-
-    MEMSET(reader, 0, sizeof(*reader));
-}
-
-// Adapts the raw reader to the state based interface. Everything the frame yields lands on the one
-// state, which is what makes a metadata/coordinate mismatch unrepresentable here.
-// @NOTE: state->frame is stamped by md_trajectory_reader_load_frame, not here.
-static bool pdb_reader_load_frame(struct md_trajectory_reader_o* inst, int64_t idx, md_system_state_t* state) {
-    size_t num_atoms = 0;
-    md_unitcell_t cell = {0};
-    float* x = state ? state->x : NULL;
-    float* y = state ? state->y : NULL;
-    float* z = state ? state->z : NULL;
-    if (!pdb_reader_load_frame_raw(inst, idx, &num_atoms, &cell, x, y, z)) {
-        return false;
-    }
-    if (state) {
-        state->unitcell = cell;
-        if (state->num_atoms == 0) {
-            state->num_atoms = num_atoms;
-        }
-    }
-    return true;
-}
-
-static bool pdb_trajectory_reader_init(md_trajectory_reader_i* reader, struct md_trajectory_o* traj_inst) {
-    ASSERT(reader);
-    ASSERT(traj_inst);
-
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj_inst;
-    ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
-
-    md_file_t file = {0};
-    if (!md_file_open(&file, pdb->filepath, MD_FILE_READ)) {
-        MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(pdb->filepath));
-        return false;
-    }
-
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    pdb_reader_t* inst = md_alloc(arena, sizeof(pdb_reader_t));
-    MEMSET(inst, 0, sizeof(pdb_reader_t));
-    inst->magic = MD_PDB_TRAJ_READER_MAGIC;
-    inst->file = file;
-    inst->traj = pdb;
-    inst->arena = arena;
-
-    MEMSET(reader, 0, sizeof(*reader));
-    reader->inst = (struct md_trajectory_reader_o*)inst;
-    reader->free = pdb_trajectory_reader_free;
-    reader->load_frame = pdb_reader_load_frame;
-    return true;
-}
-
 typedef struct pdb_cache_t {
-    md_trajectory_cache_header_t header;
+    md_run_cache_header_t header;
     md_unitcell_t cell;
     int64_t* frame_offsets;
 } pdb_cache_t;
 
-static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_file_time_t traj_last_modified, md_allocator_i* alloc) {
+// The cache beside path when it was made from the file as it is now: header, cell, num_frames + 1
+// model offsets.
+static bool try_read_cache(pdb_cache_t* cache, str_t path, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
-
-    bool result = false;
     md_file_t file = {0};
-    if (md_file_open(&file, cache_file, MD_FILE_READ)) {
-        if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
-            MD_LOG_ERROR("PDB trajectory cache: failed to read header");
-            goto done;
-        }
-
-        if (cache->header.magic != MD_PDB_CACHE_MAGIC) {
-            MD_LOG_ERROR("PDB trajectory cache: magic was incorrect or corrupt");
-            goto done;
-        }
-        if (cache->header.version != MD_PDB_CACHE_VERSION) {
-            MD_LOG_INFO("PDB trajectory cache: version mismatch, expected %i, got %i", MD_PDB_CACHE_VERSION, (int)cache->header.version);
-            goto done;
-        }
-        if (cache->header.num_bytes != traj_num_bytes) {
-            MD_LOG_INFO("PDB trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
-        }
-        if (traj_last_modified != 0 && cache->header.last_modified != traj_last_modified) {
-            MD_LOG_INFO("PDB trajectory cache: source file has been modified, cache is stale");
-            goto done;
-        }
-        if (cache->header.num_atoms == 0) {
-            MD_LOG_ERROR("PDB trajectory cache: num atoms was zero");
-            goto done;
-        }
-        if (cache->header.num_frames == 0) {
-            MD_LOG_ERROR("PDB trajectory cache: num frames was zero");
-            goto done;
-        }
-
-        if (md_file_read(file, &cache->cell, sizeof(cache->cell)) != sizeof(cache->cell)) {
-			MD_LOG_ERROR("PDB trajectory cache: failed to read unit cell");
-			goto done;
-		}
-
-        const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
-        cache->frame_offsets = md_alloc(alloc, offset_bytes);
-        if (md_file_read(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
-            MD_LOG_ERROR("PDB trajectory cache: Failed to read offset data");
-            md_free(alloc, cache->frame_offsets, offset_bytes);
-            goto done;
-        }
-
-        // Test position in file, we expect to be at the end of the file
-        if (md_file_tell(file) != (int64_t)md_file_size(file)) {
-            MD_LOG_ERROR("PDB trajectory cache: file position was not at the end of the file");
-            md_free(alloc, cache->frame_offsets, offset_bytes);
-            goto done;
-        }
-
-        result = true;
-    done:
-        md_file_close(&file);
-    }
-    return result;
-}
-
-static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
-    bool result = false;
-
-    md_file_t file = {0};
-    if (!md_file_open(&file, cache_file, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        MD_LOG_INFO("PDB trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
+    if (!md_run_cache_open(&file, &cache->header, path, MD_PDB_CACHE_MAGIC, MD_PDB_CACHE_VERSION)) {
         return false;
     }
-
-    if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
-        MD_LOG_ERROR("PDB trajectory cache: failed to write header");
-        goto done;
-    }
-
-    if (md_file_write(file, &cache->cell, sizeof(cache->cell)) != sizeof(cache->cell)) {
-    	MD_LOG_ERROR("PDB trajectory cache: failed to write unit cell");
-    	goto done;
-    }
-
     const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
-    if (md_file_write(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
-        MD_LOG_ERROR("PDB trajectory cache: failed to write frame offsets");
-        goto done;
+    cache->frame_offsets = md_alloc(alloc, offset_bytes);
+    const bool ok =
+        md_file_read(file, &cache->cell, sizeof(cache->cell)) == sizeof(cache->cell) &&
+        md_file_read(file, cache->frame_offsets, offset_bytes) == offset_bytes &&
+        md_file_tell(file) == (int64_t)md_file_size(file);
+    if (!ok) {
+        MD_LOG_ERROR("The PDB cache beside '" STR_FMT "' is incomplete", STR_ARG(path));
+        md_free(alloc, cache->frame_offsets, offset_bytes);
+        cache->frame_offsets = NULL;
     }
-
-    result = true;
-
-done:
     md_file_close(&file);
-    return result;
+    return ok;
 }
 
-static void md_pdb_trajectory_free(md_trajectory_i* traj) {
-    ASSERT(traj);
-    ASSERT(traj->inst);
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj->inst;
-    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Trajectory is not a valid PDB trajectory.");
-        ASSERT(false);
-        return;
+static bool write_cache(const pdb_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+    md_file_t file = {0};
+    if (!md_run_cache_create(&file, path, scanned, MD_PDB_CACHE_MAGIC, MD_PDB_CACHE_VERSION, cache->header.num_atoms, cache->header.num_frames)) {
+        return false;
     }
-    
-    md_arena_allocator_destroy(pdb->allocator);
+    const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    const bool ok =
+        md_file_write(file, &cache->cell, sizeof(cache->cell)) == sizeof(cache->cell) &&
+        md_file_write(file, cache->frame_offsets, offset_bytes) == offset_bytes;
+    if (!ok) {
+        MD_LOG_ERROR("Failed to write the PDB cache beside '" STR_FMT "'", STR_ARG(path));
+    }
+    md_file_close(&file);
+    return ok;
 }
 
-static md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
-	md_file_info_t file_info = { 0 };
-    if (!md_file_info_extract_from_path(filename, &file_info)) {
+// Where each model is and the file's cell, from the cache beside the file when that is current and
+// from a parse of the file otherwise (writing the cache unless told not to). From alloc; the parse's
+// scratch keeps clear of avoid, which is what alloc was made from.
+static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t flags, md_allocator_i* alloc, md_allocator_i* avoid) {
+    MEMSET(cache, 0, sizeof(*cache));
+
+    if (try_read_cache(cache, filename, alloc)) {
+        return true;
+    }
+    MEMSET(cache, 0, sizeof(*cache));
+
+    // The file as it is before the parse is what the cache is stamped with
+    md_file_info_t scanned = { 0 };
+    if (!md_file_info_extract_from_path(filename, &scanned)) {
         MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
-        return NULL;
+        return false;
     }
+    const size_t filesize = scanned.size;
 
-    const size_t filesize = file_info.size;
-
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(ext_alloc);
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(avoid);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-
-    md_strb_t sb = md_strb_create(temp_alloc);
-    md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
-    str_t cache_file = md_strb_to_str(sb);
-
-    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
-    md_trajectory_i* traj = NULL;
     bool success = false;
 
-    pdb_cache_t cache = {0};
-    if (!try_read_cache(&cache, cache_file, filesize, file_info.modified_time, alloc)) {
-        md_pdb_data_t data = {0};
-        if (!md_pdb_data_parse_file(&data, filename, temp_alloc)) {
+    md_pdb_data_t data = {0};
+    if (!md_pdb_data_parse_file(&data, filename, temp_alloc)) {
+        goto done;
+    }
+
+    if (data.num_models <= 1) {
+        MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
+        goto done;
+    }
+
+    // Validate the models
+    const size_t num_atoms = (size_t)MAX(0, data.models[0].end_atom_index - data.models[0].beg_atom_index);
+    if (!num_atoms) {
+        MD_LOG_ERROR("The PDB file models are empty and cannot be read as a trajectory");
+        goto done;
+    }
+    for (size_t i = 1; i < data.num_models; ++i) {
+        const size_t length = (size_t)MAX(0, data.models[i].end_atom_index - data.models[i].beg_atom_index);
+        if (length && length != num_atoms) {
+            MD_LOG_ERROR("The PDB file models are empty or not of equal length and cannot be read as a trajectory");
             goto done;
-        }
-
-        if (data.num_models <= 1) {
-            MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
-            goto done;
-        }
-
-        // Validate the models
-        const size_t num_atoms = (size_t)MAX(0, data.models[0].end_atom_index - data.models[0].beg_atom_index);
-        if (!num_atoms) {
-			MD_LOG_ERROR("The PDB file models are empty and cannot be read as a trajectory");
-			goto done;
-		}
-        for (size_t i = 1; i < data.num_models; ++i) {
-            const size_t length = (size_t)MAX(0, data.models[i].end_atom_index - data.models[i].beg_atom_index);
-            if (length && length != num_atoms) {
-                MD_LOG_ERROR("The PDB file models are empty or not of equal length and cannot be read as a trajectory");
-                goto done;
-            }
-        }
-        
-        cache.header.magic = MD_PDB_CACHE_MAGIC;
-        cache.header.version = MD_PDB_CACHE_VERSION;
-        cache.header.num_bytes = filesize;
-        cache.header.num_atoms = num_atoms;
-        cache.header.num_frames = data.num_models;
-        cache.header.last_modified = file_info.modified_time;
-
-        cache.frame_offsets = md_alloc(alloc, (cache.header.num_frames + 1) * sizeof(int64_t));
-        for (size_t i = 0; i < cache.header.num_frames; ++i) {
-            cache.frame_offsets[i] = data.models[i].byte_offset;
-        }
-        cache.frame_offsets[cache.header.num_frames] = filesize;
-
-        if (data.num_cryst1 > 0) {
-            if (data.num_cryst1 > 1) {
-                md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
-            }
-            // If it is in fact a box, that will be handled as well
-            cache.cell = md_unitcell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
-        }
-
-        if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
-            // If we fail to write the cache, that's ok, we can inform about it, but do not halt
-            if (write_cache(&cache, cache_file)) {
-                MD_LOG_INFO("PDB: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
-            }
         }
     }
 
-    md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
-    for (size_t i = 0; i < cache.header.num_frames; ++i) {
-        frame_times[i] = (double)i;
+    cache->header.num_atoms = num_atoms;
+    cache->header.num_frames = data.num_models;
+
+    cache->frame_offsets = md_alloc(alloc, (cache->header.num_frames + 1) * sizeof(int64_t));
+    for (size_t i = 0; i < cache->header.num_frames; ++i) {
+        cache->frame_offsets[i] = data.models[i].byte_offset;
+    }
+    cache->frame_offsets[cache->header.num_frames] = filesize;
+
+    if (data.num_cryst1 > 0) {
+        if (data.num_cryst1 > 1) {
+            md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
+        }
+        // If it is in fact a box, that will be handled as well
+        cache->cell = md_unitcell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
     }
 
-    void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
-    ASSERT(mem);
-    MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
-
-    traj = mem;
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);
-
-    pdb->magic = MD_PDB_TRAJ_MAGIC;
-	pdb->filepath = str_copy(filename, alloc);
-    pdb->frame_offsets = cache.frame_offsets;
-    pdb->allocator = alloc;
-    pdb->header = (md_trajectory_header_t) {
-        .num_frames = cache.header.num_frames,
-        .num_atoms = cache.header.num_atoms,
-        .time_unit = {0},
-        .frame_times = frame_times,
-    };
-    pdb->unitcell = cache.cell;
-
-    traj->inst = (struct md_trajectory_o*)pdb;
-    traj->free = md_pdb_trajectory_free;
-    traj->get_header = pdb_get_header;
-    traj->init_reader = pdb_trajectory_reader_init;
-
+    if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+        // A cache that cannot be written only costs the next load a parse
+        write_cache(cache, filename, &scanned);
+    }
     success = true;
 
 done:
     md_temp_end(temp_scope);
-    if (!success && alloc) {
-        md_arena_allocator_destroy(alloc);
+    return success;
+}
+
+// ### RUN ###
+
+// The coordinates of atoms [first, first + count) of one model, packed xyz, straight off its ATOM and
+// HETATM records. Returns how many were written.
+static size_t pdb_parse_model_coords(float* xyz, str_t str, size_t first, size_t count) {
+    str_t line;
+    // The model's leading MODEL record
+    str_extract_line(&line, &str);
+
+    size_t i = 0;
+    size_t written = 0;
+    while (written < count && str_extract_line(&line, &str)) {
+        if (line.len < 6) continue;
+        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
+            if (i >= first) {
+                xyz[written * 3 + 0] = extract_float(line, 31, 38);
+                xyz[written * 3 + 1] = extract_float(line, 39, 46);
+                xyz[written * 3 + 2] = extract_float(line, 47, 54);
+                written += 1;
+            }
+            i += 1;
+        }
     }
-    return traj;
+    return written;
+}
+
+// <run>/atom/position: one read of the model's text, parsed into the caller's buffer. One atom asks
+// for the text up to that atom only.
+static size_t pdb_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    const md_system_t* sys = (const md_system_t*)user_data;
+    ASSERT(sys);
+    if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
+
+    md_run_source_t src;
+    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+
+    const uint32_t frame = slice->idx[0];
+    const size_t N = attr->format.shape[1];
+    size_t first = 0, count = N;
+    if (slice->num_idx == 2) {
+        if (slice->idx[1] >= N) return 0;
+        first = slice->idx[1];
+        count = 1;
+    }
+    if (cap != count * 3) return 0;
+
+    const size_t frame_size = (size_t)src.size[frame];
+    md_temp_scope_t temp = md_temp_begin();
+    size_t written = 0;
+    char* text = md_temp_alloc(temp, MAX(frame_size, 1));
+    if (text && md_attribute_io_read_at(io, src.path, src.offset[frame], text, frame_size) == frame_size) {
+        if (pdb_parse_model_coords((float*)dst, (str_t){ text, frame_size }, first, count) == count) {
+            written = cap;
+        } else {
+            MD_LOG_ERROR("PDB: model %u of '" STR_FMT "' has fewer than %zu atoms", frame, STR_ARG(src.path), first + count);
+        }
+    } else {
+        MD_LOG_ERROR("PDB: Failed to read model %u from '" STR_FMT "'", frame, STR_ARG(src.path));
+    }
+    md_temp_end(temp);
+    return written;
+}
+
+bool md_pdb_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+    ASSERT(sys);
+    char path_buf[4096];
+    const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+    const str_t path = { path_buf, path_len };
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    bool result = false;
+
+    pdb_cache_t index;
+    if (path_len == 0 || !pdb_index_load(&index, path, flags, arena, md_get_heap_allocator())) {
+        goto done;
+    }
+
+    const size_t F = index.header.num_frames;
+    const size_t N = index.header.num_atoms;
+    double*  times = md_alloc(arena, F * sizeof(double));
+    int64_t* sizes = md_alloc(arena, F * sizeof(int64_t));
+    float*   boxes = md_alloc(arena, F * 9 * sizeof(float));
+
+    // One CRYST1 for the file, so one cell for every model; zero without one
+    float A[3][3] = {0};
+    if (index.cell.flags) {
+        md_unitcell_A_extract_float(A, &index.cell);
+    }
+    for (size_t i = 0; i < F; ++i) {
+        times[i] = (double)i;
+        sizes[i] = index.frame_offsets[i + 1] - index.frame_offsets[i];
+        MEMCPY(boxes + i * 9, A, sizeof(A));
+    }
+
+    const md_attribute_virtual_t virt = { .provider = pdb_position_provider, .user_data = sys };
+    const md_run_desc_t desc = {
+        .num_frames    = F,
+        .num_atoms     = N,
+        .time          = times,
+        .time_unit     = md_unit_none(),    // a model has no time: ordinals
+        .unitcell      = boxes,
+        .source_path   = path,
+        .source_offset = index.frame_offsets,
+        .source_size   = sizes,
+        .position_virt = &virt,
+    };
+    result = md_run_publish(sys, run, &desc);
+
+done:
+    md_arena_allocator_destroy(arena);
+    return result;
 }
 
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num) {
@@ -1118,9 +909,9 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
             chain_id[0],        // chain ID
             res_seq_str,        // residue sequence number
             ' ',                // iCode
-            state->x[idx],      // x coordinate
-            state->y[idx],      // y coordinate
-            state->z[idx],      // z coordinate
+            state->xyz[idx].x,      // x coordinate
+            state->xyz[idx].y,      // y coordinate
+            state->xyz[idx].z,      // z coordinate
             1.0,                // occupancy
             0.0,                // bfactor
             element,            // element symbol

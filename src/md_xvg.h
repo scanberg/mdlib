@@ -4,6 +4,7 @@
 #include <core/md_array.h>
 
 struct md_allocator_i;
+struct md_system_t;
 
 // Utils for xmgrace multicolum files (XVG)
 
@@ -41,6 +42,13 @@ str_t	md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 str_t	md_xvg_format		(str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc);
 
 str_t	md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
+
+// The file's columns as a series along the run "run/<name>" (see md_run_publish_series in
+// md_system.h), in the group "xvg/<file stem>": with the x axis labelled time, its values are the
+// group's own time axis and every run frame must find its time there; otherwise the rows are the
+// run's frames. Columns are named by their legends and carry the unit in the axis label's
+// parentheses, "Energy (kJ/mol)". Read in the script with attr("xvg/<stem>/<legend>").
+bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run);
 
 #ifdef __cplusplus
 }

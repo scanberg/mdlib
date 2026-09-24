@@ -43,9 +43,9 @@ UTEST(vlx, parse) {
 	EXPECT_NEAR(-0.048400000000, xyz[2], 1.0e-5);
 
 	// The system's own state is that geometry too, narrowed to float.
-	EXPECT_NEAR(xyz[0], (double)t.state.x[0], 1.0e-5);
-	EXPECT_NEAR(xyz[1], (double)t.state.y[0], 1.0e-5);
-	EXPECT_NEAR(xyz[2], (double)t.state.z[0], 1.0e-5);
+	EXPECT_NEAR(xyz[0], (double)t.state.xyz[0].x, 1.0e-5);
+	EXPECT_NEAR(xyz[1], (double)t.state.xyz[0].y, 1.0e-5);
+	EXPECT_NEAR(xyz[2], (double)t.state.xyz[0].z, 1.0e-5);
 
 	const size_t num_iter = qm_test_count(&t, STR_LIT("vlx/scf/history/energy"));
 	ASSERT_TRUE(num_iter > 0);
