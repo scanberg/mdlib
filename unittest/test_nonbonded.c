@@ -2,6 +2,9 @@
 
 #include <md_nonbonded.h>
 #include <md_tpr.h>
+#include <md_system.h>
+#include <md_util.h>
+#include <core/md_vec_math.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -179,6 +182,49 @@ UTEST(nonbonded, from_tpr) {
     // Without readable simulation parameters there is nothing to go by
     tpr = (md_tpr_data_t){0};
     EXPECT_FALSE(md_nb_potential_init_from_tpr(&pot, &tpr));
+
+    md_arena_allocator_destroy(arena);
+}
+
+// The force field a system loaded from a tpr carries: the same energies, from the system's own coordinates (Å)
+UTEST(nonbonded, system_forcefield) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));
+    ASSERT_TRUE(sys.nonbonded != NULL);
+    const md_nb_forcefield_t* ff = sys.nonbonded;
+    ASSERT_EQ((size_t)19, ff->num_atoms);
+    EXPECT_TRUE(md_nb_forcefield_excluded(ff, 5, 8));
+    EXPECT_FALSE(md_nb_forcefield_excluded(ff, 5, 9));
+    EXPECT_FALSE(md_nb_forcefield_excluded(ff, 4, 5));
+
+    const double lj_ref[3]   = { -0.987358510494, -0.170260623097, -0.001748379553 };
+    const double coul_ref[3] = { -0.367957115173, 4.140795707703, -15.993323326111 };
+    double lj[3] = {0}, coul[3] = {0};
+    for (uint32_t i = 0; i < 19; ++i) {
+        for (uint32_t j = i + 1; j < 19; ++j) {
+            vec3_t d = { state.x[i] - state.x[j], state.y[i] - state.y[j], state.z[i] - state.z[j] };
+            md_util_min_image_vec3(&d, 1, &state.unitcell);
+            const double r2 = 0.01 * ((double)d.x * d.x + (double)d.y * d.y + (double)d.z * d.z);
+            double elj, ec;
+            md_nb_forcefield_pair_energy(ff, i, j, r2, &elj, &ec);
+            const int g = (i >= 15) + (j >= 15);
+            lj[g] += elj;
+            coul[g] += ec;
+        }
+    }
+    for (int g = 0; g < 3; ++g) {
+        EXPECT_TRUE(close_to(lj[g], lj_ref[g], 1e-4, 1e-6));
+    }
+    EXPECT_TRUE(close_to(coul[1], coul_ref[1], 1e-4, 1e-6));
+    md_system_free(&sys);
+
+    // LJ-PME cannot be evaluated pair by pair: no force field, so no energies
+    md_system_t sys2 = { .alloc = arena };
+    md_system_state_t state2 = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys2, &state2, STR_LIT(TPR_DIR "nb_ljpme.tpr")));
+    EXPECT_TRUE(sys2.nonbonded == NULL);
 
     md_arena_allocator_destroy(arena);
 }

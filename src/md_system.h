@@ -673,6 +673,10 @@ typedef struct md_system_t {
     // which composes with a path prefix in one pass.
     md_attributes_t             attributes;
 
+    // The non-bonded force field (md_nonbonded.h), when the system was loaded with one (a tpr): particle types,
+    // charges, pair parameters, exclusions and how the simulation cut the interactions off. NULL otherwise.
+    struct md_nb_forcefield_t*  nonbonded;
+
     str_t                       description;
 } md_system_t;
 

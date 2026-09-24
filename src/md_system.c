@@ -1,5 +1,6 @@
 ﻿#include <md_system.h>
 #include <md_trajectory.h>
+#include <md_nonbonded.h>
 
 #include <core/md_log.h>
 #include <core/md_array.h>
@@ -16,6 +17,12 @@ void md_system_free(md_system_t* sys) {
     ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
     md_trajectory_free(sys->trajectory);
+
+    if (sys->nonbonded) {
+        md_nb_forcefield_free(sys->nonbonded);
+        md_free(alloc, sys->nonbonded, sizeof(md_nb_forcefield_t));
+        sys->nonbonded = NULL;
+    }
 
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);

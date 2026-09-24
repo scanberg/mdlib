@@ -3,6 +3,7 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <md_nonbonded.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -1553,6 +1554,16 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     if (!str_empty(data->name)) {
         sys->description = str_copy(data->name, alloc);
+    }
+
+    // ## Non-bonded force field, when its interactions can be evaluated pair by pair
+    {
+        md_nb_forcefield_t* ff = md_alloc(alloc, sizeof(md_nb_forcefield_t));
+        if (md_nb_forcefield_init_from_tpr(ff, data, alloc)) {
+            sys->nonbonded = ff;
+        } else {
+            md_free(alloc, ff, sizeof(md_nb_forcefield_t));
+        }
     }
 
     md_temp_end(temp);

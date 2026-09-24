@@ -267,6 +267,8 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // M site of TIP4P, has no element and is not a bead.
 //
 // Published attributes: 'atom/charge' (e) and, when present, 'atom/velocity' (nm/ps).
+// The non-bonded force field is kept as sys->nonbonded (md_nonbonded.h) when its interactions can be evaluated pair
+// by pair (not for LJ-PME or tabulated potentials).
 // The bonds are the topology's and are complete, so a caller should not infer covalent bonds on
 // top of them.
 bool md_tpr_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data);

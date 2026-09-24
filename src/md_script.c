@@ -2368,6 +2368,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     ASSERT(token.type == '<' || token.type == '>' || token.type == TOKEN_EQ || token.type == TOKEN_LE || token.type == TOKEN_GE);
     
     ast_node_t* lhs = ctx->node;
+    ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
 
@@ -2384,7 +2385,6 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
         }
         node = create_node(ctx->ir, type, token);
         ast_node_t* args[2] = {lhs, rhs};
-    ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
         md_array_push_array(node->children, args, 2, ctx->ir->arena);
     }
    
@@ -5403,7 +5403,9 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     ident->data->type = type_info_element_type(rhs->data.type);
                     dim_prune_leading_ones(ident->data->type.dim);
                     ident->data->size = stride;
-                    ident->data->ptr = 0;
+                    // A constant right hand side was evaluated at compile time: the identifier is its i-th element.
+                    // Without this, references to a constant identifier would read through a null pointer.
+                    ident->data->ptr = (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) ? (uint8_t*)rhs->data.ptr + (size_t)i * stride : 0;
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;

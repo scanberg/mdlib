@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 struct md_tpr_data_t;
+struct md_allocator_i;
 
 // Non-bonded pair potentials as an MD engine evaluates them: Lennard-Jones and Coulomb between two particles,
 // cut off, and modified so that they go to zero at the cut-off. Evaluated this way the energy of a pair is
@@ -87,6 +88,48 @@ double md_nb_lj_energy(const md_nb_potential_t* pot, double c6, double c12, doub
 
 // Coulomb energy of a pair with charge product qq (e^2) at squared distance r2 (nm^2), kJ/mol. Zero from the cut-off on.
 double md_nb_coulomb_energy(const md_nb_potential_t* pot, double qq, double r2);
+
+// ### FORCE FIELD OF A SYSTEM ###
+// The non-bonded force field of a system: what each particle is, how pairs of them interact, and which pairs do not.
+// A system carries one (md_system_t::nonbonded) when it was loaded with it, today from a tpr. It is NULL otherwise,
+// and then there are no energies: the parameters alone (an itp) do not say how the simulation cut them off.
+typedef struct md_nb_forcefield_t {
+    md_nb_potential_t potential;
+
+    size_t    num_types;
+    float*    c6;               // [num_types * num_types], kJ/mol nm^6
+    float*    c12;              // [num_types * num_types], kJ/mol nm^12
+
+    size_t    num_atoms;
+    uint16_t* type;             // [num_atoms]
+    float*    charge;           // [num_atoms], e
+
+    // Exclusions, stored per molecule type: particle k is particle k - mol_beg[k] of a molecule of type mol_type[k].
+    // The particles excluded from local particle i of type t are excl[excl_base[t] + excl_off[off_base[t] + i]] ..
+    // up to the next offset. Types without exclusions have off_base[t] == UINT32_MAX.
+    uint32_t* mol_beg;          // [num_atoms]
+    uint32_t* mol_type;         // [num_atoms]
+    size_t    num_mol_types;
+    uint32_t* off_base;         // [num_mol_types]
+    uint32_t* excl_base;        // [num_mol_types]
+    uint32_t* excl_off;
+    uint32_t* excl;
+    size_t    excl_off_count;
+    size_t    excl_count;
+
+    struct md_allocator_i* alloc;
+} md_nb_forcefield_t;
+
+// From a tpr. Fails, quietly, when its non-bonded interactions are not supported by md_nb_potential_t.
+bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const struct md_tpr_data_t* tpr, struct md_allocator_i* alloc);
+void md_nb_forcefield_free(md_nb_forcefield_t* ff);
+
+// Whether the force field excludes the pair from non-bonded interactions (same molecule, bonded neighbours)
+bool md_nb_forcefield_excluded(const md_nb_forcefield_t* ff, uint32_t a, uint32_t b);
+
+// The Lennard-Jones and Coulomb energy (kJ/mol) of particles a and b at squared distance r2_nm (nm^2). Zero for
+// excluded pairs.
+void md_nb_forcefield_pair_energy(const md_nb_forcefield_t* ff, uint32_t a, uint32_t b, double r2_nm, double* e_lj, double* e_coul);
 
 #ifdef __cplusplus
 }
