@@ -2204,6 +2204,7 @@ UTEST_F(script, named_args_binding) {
     EXPECT_TRUE(node == NULL || node->named_args == NULL);
 
     md_arena_allocator_destroy(alloc);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Regressions
@@ -2216,6 +2217,11 @@ static const float* eval_property_data(md_script_eval_t* eval, const char* name)
     return attr ? (const float*)attr->data : NULL;
 }
 
+static bool compiles(md_script_ir_t* ir, const char* src, const md_system_t* sys) {
+    md_script_ir_clear(ir);
+    return md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL);
+}
+
 // distance_max used to call the routine for the minimum distance.
 UTEST_F(script, distance_max_is_the_largest_distance) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
@@ -2226,7 +2232,7 @@ UTEST_F(script, distance_max_is_the_largest_distance) {
     ASSERT_TRUE(compiles(ir, "lo = distance_min(residue(1), residue(2)); hi = distance_max(residue(1), residue(2));", mol));
     md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
     ASSERT_TRUE(eval != NULL);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
     const float* lo = eval_property_data(eval, "lo");
     const float* hi = eval_property_data(eval, "hi");
@@ -2261,7 +2267,7 @@ UTEST_F(script, contact_count_is_counted_per_element) {
         "c4 = contact_count(residue(4), residue(5:8), 5.0);", mol));
     md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
     ASSERT_TRUE(eval != NULL);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
 
     const float* all4 = eval_property_data(eval, "all4");
     const float* c[4] = {
@@ -2288,7 +2294,7 @@ UTEST_F(script, destructuring_a_constant) {
     {
         md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
         ASSERT_TRUE(eval != NULL);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, 1));
         const float* nb = eval_property_data(eval, "nb");
         ASSERT_TRUE(nb != NULL);
         EXPECT_EQ(10.0f, nb[0]); // residue 2 of the peptide has ten atoms
@@ -2300,7 +2306,7 @@ UTEST_F(script, destructuring_a_constant) {
     {
         md_script_eval_t* eval = md_script_eval_create((uint32_t)md_trajectory_num_frames(mol->trajectory), ir, alloc);
         ASSERT_TRUE(eval != NULL);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, 1));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, 1));
         const float* z = eval_property_data(eval, "z");
         ASSERT_TRUE(z != NULL);
         EXPECT_EQ(3.0f, z[0]);
@@ -2329,14 +2335,13 @@ UTEST_F(script, comparison_operators_compile) {
         if (md_script_ir_valid(ir)) {
             md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
             ASSERT_TRUE(eval != NULL);
-            EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, (str_t){0}, 0, num_frames));
+            EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, 0, num_frames));
             md_script_eval_free(eval);
         }
     }
 
     // A comparison of arrays of different lengths is still an error
     EXPECT_FALSE(compiles(ir, "a = distance(1, 2) in residue(1:3); b = distance(1, 2) in residue(1:4); c = a < b;", mol));
-}
 }
 
 // ### IDENTIFIER MEMOIZATION ###
