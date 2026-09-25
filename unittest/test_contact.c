@@ -188,7 +188,7 @@ UTEST_F(contact, overlapping_groups) {
 // Prepared once, evaluated per frame: the same as preparing for every frame
 UTEST_F(contact, query_over_trajectory) {
     md_system_t* sys = &utest_fixture->ala;
-    const str_t run = STR_LIT("run/ala");
+    const str_t run = STR_INIT("run/ala");
     ASSERT_TRUE(md_pdb_system_publish_run(sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const size_t num_frames = run_num_frames(sys, run);
     ASSERT_GT(num_frames, (size_t)1);
@@ -203,7 +203,7 @@ UTEST_F(contact, query_over_trajectory) {
     md_system_state_t state = { .alloc = utest_fixture->alloc };
     ASSERT_TRUE(md_system_state_init(&state, sys->atom.count));
 
-    const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
 

@@ -447,7 +447,7 @@ static size_t print_predefined_pow(char* buf, size_t cap, md_unit_t unit) {
                         continue;
                     }
 
-                    str_t prefix = STR_LIT("");
+                    str_t prefix = STR_INIT("");
                     const double leftover = md_unit_scale(unit) / md_unit_scale(ref);
                     if (!value_equal(leftover, 1.0)) {
                         if (pass == 0) {
@@ -505,7 +505,7 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
     // account since the prefix binds tighter, i.e. 'ns^2' is (1e-9 s)^2 and not 1e-9 * s^2.
     // If no term can absorb it, the scale is printed as an explicit factor.
     const double leftover = md_unit_scale(rem);
-    str_t prefix = STR_LIT("");
+    str_t prefix = STR_INIT("");
     size_t prefix_term = num_terms;
     if (!value_equal(leftover, 1.0)) {
         for (size_t i = 0; i < num_terms; ++i) {

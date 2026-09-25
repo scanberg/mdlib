@@ -8,7 +8,7 @@
 
 UBENCH_EX(pdb, dppc64) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/dppc64.pdb");
+    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/dppc64.pdb");
 
     str_t text = load_textfile(path, md_get_heap_allocator());
     if (str_empty(text)) {

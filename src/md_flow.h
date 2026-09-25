@@ -14,8 +14,6 @@
 //
 // Layout is computed in GRAPH SPACE (x = column, y in [0,1] by cumulative weight). Pan and zoom
 // belong to whoever draws it, so changing the zoom never triggers a relayout.
-//
-// See docs/transition_flow_design.md in the viamd repository for the reasoning.
 
 #include <core/md_array.h>
 #include <core/md_bitfield.h>

@@ -40,15 +40,13 @@
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
 
-#define BAKE_STR(s) {s"", sizeof(s)}
 
-static const str_t default_shader_output = BAKE_STR(
+static const str_t default_shader_output = STR_INIT(
 "layout(location = 0) out vec4 out_color;\n"
 "void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {\n"
 "    out_color = color;\n"
 "}\n");
 
-#undef BAKE_STR
 
 enum {
     GL_VERSION_UNKNOWN = 0,
@@ -650,14 +648,14 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
     const str_t perm_str[] = {
-        STR_LIT("#define ORTHO 0"),
-        STR_LIT("#define ORTHO 1"),
+        STR_INIT("#define ORTHO 0"),
+        STR_INIT("#define ORTHO 1"),
     };
     
     ASSERT(ARRAY_SIZE(perm_str) <= MAX_SHADER_PERMUTATIONS);
 
     for (uint32_t perm = 0; perm < MAX_SHADER_PERMUTATIONS; ++perm) {
-        md_gl_shader_src_injection_t injections[] = { {perm_str[perm], {0}}, {frag_output_src, STR_LIT("EXTRA_SRC")} };
+        md_gl_shader_src_injection_t injections[] = { {perm_str[perm], {0}}, {frag_output_src, STR_INIT("EXTRA_SRC")} };
 
         if (!str_empty(vert_src) && !md_gl_shader_compile(vert_shader, vert_src, injections, 1)) {
             MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_ARG(identifier));

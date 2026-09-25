@@ -7,14 +7,13 @@
 
 #include <xdrfile_xtc.h>
 
-#define STR(x) {x"", sizeof(x"")-1}
 
 #define FULL_TEST 1
 
-static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
-static const str_t amy_path = STR(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
-static const str_t asp_path = STR(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
-static const str_t ion_path = STR(MD_BENCHMARK_DATA_DIR "/ef.xtc");
+static const str_t cat_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
+static const str_t amy_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
+static const str_t asp_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
+static const str_t ion_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
 
 UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));

@@ -13,7 +13,7 @@
 #include <core/md_array.h>
 
 UTEST(xvg, rdf) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/rdf.xvg");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/rdf.xvg");
     md_xvg_t xvg = {0};
     bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -38,7 +38,7 @@ UTEST(xvg, rdf) {
 }
 
 UTEST(xvg, energy) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
     md_xvg_t xvg = {0};
     bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -74,7 +74,7 @@ UTEST(xvg, energy) {
 }
 
 UTEST(xvg, lj_sr_lig_protein) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/LJ-SR_LIG-Protein.xvg");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/LJ-SR_LIG-Protein.xvg");
     md_xvg_t xvg = {0};
     bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -128,7 +128,7 @@ UTEST(xvg, series_along_a_run) {
     series_run(&sys, STR_LIT("run/r"), every4, F, md_unit_picosecond());
     series_run(&sys, STR_LIT("run/o"), offset, F, md_unit_picosecond());
 
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
     ASSERT_TRUE(md_xvg_system_supplement_from_file(&sys, path, STR_LIT("run/r")));
     EXPECT_FALSE(md_xvg_system_supplement_from_file(&sys, path, STR_LIT("run/o")));
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/o/xvg/energy/time")) == NULL);
@@ -147,7 +147,7 @@ UTEST(xvg, series_along_a_run) {
     EXPECT_TRUE(md_unit_equal(coul->unit, kj_per_mol));
 
     // Frame 1 of the run is at 4 ps, row 2 of the file.
-    const str_t paths[] = { STR_LIT("xvg/energy/coul_sr_2s29_2s29") };
+    const str_t paths[] = { STR_INIT("xvg/energy/coul_sr_2s29_2s29") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, STR_LIT("run/r"), paths, 1, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t st = {.alloc = arena};
@@ -180,9 +180,9 @@ UTEST(xvg, csv_series_along_a_run) {
     const double times[4] = { 0.0, 1.0, 2.0, 3.0 };
     series_run(&sys, STR_LIT("run/r"), times, 4, md_unit_picosecond());
 
-    const str_t with_time = STR_LIT("md_unittest_series_time.csv");
-    const str_t per_frame = STR_LIT("md_unittest_series_frames.csv");
-    const str_t too_short = STR_LIT("md_unittest_series_short.csv");
+    const str_t with_time = STR_INIT("md_unittest_series_time.csv");
+    const str_t per_frame = STR_INIT("md_unittest_series_frames.csv");
+    const str_t too_short = STR_INIT("md_unittest_series_short.csv");
     md_file_t f = {0};
     ASSERT_TRUE(md_file_open(&f, with_time, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
     md_file_printf(f, "Time (ps),Distance (nm),Angle\n");

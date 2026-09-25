@@ -8,7 +8,7 @@
 
 UBENCH_EX(lammps, load) {
 	md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-	str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/Water_Ethane_Cubic_Init.data");
+	str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/Water_Ethane_Cubic_Init.data");
 
 	md_file_t file = {0};
 	if (!md_file_open(&file, path, MD_FILE_READ)) {

@@ -975,11 +975,11 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 	// question about the values and has to be answered before the real table is touched.
 	md_attributes_t probe = { .alloc = temp_alloc };
 	const md_attribute_desc_t time_desc = {
-		.path   = STR_LIT("time"),
+		.path   = STR_INIT("time"),
 		.format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
 		.flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
 		.unit   = md_unit_picosecond(),
-		.label  = STR_LIT("Time"),
+		.label  = STR_INIT("Time"),
 		.data   = energies->frame_time,
 		.byte_size = R * sizeof(double),
 	};
@@ -1112,7 +1112,7 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, str_t filename, str_t 
 			.path   = edr_join(path_buf, sizeof(path_buf), group, "source", 6),
 			.format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
 			.unit   = md_unit_none(),
-			.label  = STR_LIT("Source"),
+			.label  = STR_INIT("Source"),
 			.data   = &filename,
 			.byte_size = sizeof(str_t),
 		};

@@ -1274,7 +1274,7 @@ static inline size_t md_component_count(const md_component_data_t* comp) {
 
 static inline str_t md_component_name(const md_component_data_t* comp, size_t comp_idx) {
     ASSERT(comp);
-    str_t name = STR_LIT("");
+    str_t name = STR_INIT("");
     if (comp->name && comp_idx < comp->count) {
         name = LBL_TO_STR(comp->name[comp_idx]);
     }
@@ -1439,7 +1439,7 @@ static inline size_t md_inst_atom_count(const md_instance_data_t* inst, size_t i
 
 static inline str_t md_instance_id(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
-    str_t id = STR_LIT("");
+    str_t id = STR_INIT("");
     if (inst->id && inst_idx < inst->count) {
         id = LBL_TO_STR(inst->id[inst_idx]);
     }
@@ -1448,7 +1448,7 @@ static inline str_t md_instance_id(const md_instance_data_t* inst, size_t inst_i
 
 static inline str_t md_instance_auth_id(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
-    str_t auth_id = STR_LIT("");
+    str_t auth_id = STR_INIT("");
     if (inst->auth_id && inst_idx < inst->count) {
         auth_id = LBL_TO_STR(inst->auth_id[inst_idx]);
     }
@@ -1486,7 +1486,7 @@ static inline md_entity_idx_t md_entity_find_by_id(const md_entity_data_t* entit
 
 static inline str_t md_entity_id(const md_entity_data_t* entity, size_t entity_idx) {
     ASSERT(entity);
-    str_t label = STR_LIT("");
+    str_t label = STR_INIT("");
     if (entity->id && entity_idx < entity->count) {
         label = LBL_TO_STR(entity->id[entity_idx]);
     }
@@ -1495,7 +1495,7 @@ static inline str_t md_entity_id(const md_entity_data_t* entity, size_t entity_i
 
 static inline str_t md_entity_description(const md_entity_data_t* entity, size_t entity_idx) {
     ASSERT(entity);
-    str_t desc = STR_LIT("");
+    str_t desc = STR_INIT("");
     if (entity->description && entity_idx < entity->count) {
         desc = entity->description[entity_idx];
     }
@@ -1610,7 +1610,7 @@ static inline md_flags_t md_system_instance_flags(const md_system_t* sys, size_t
 
 static inline str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
-    str_t id = STR_LIT("");
+    str_t id = STR_INIT("");
     if (sys->instance.id && inst_idx < sys->instance.count) {
         id = md_instance_id(&sys->instance, inst_idx);
     }
@@ -1619,7 +1619,7 @@ static inline str_t md_system_instance_id(const md_system_t* sys, size_t inst_id
 
 static inline str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
-    str_t id = STR_LIT("");
+    str_t id = STR_INIT("");
     if (sys->instance.id && inst_idx < sys->instance.count) {
         id = md_instance_auth_id(&sys->instance, inst_idx);
     }

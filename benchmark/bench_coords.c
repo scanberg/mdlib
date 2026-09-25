@@ -222,12 +222,12 @@ UBENCH_EX(coords, script_eval_trr) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    const str_t run = STR_LIT("run/t");
+    const str_t run = STR_INIT("run/t");
     if (md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro")) &&
         md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL) &&
         md_trr_system_publish_run(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         md_script_ir_t* ir = md_script_ir_create(arena);
-        const str_t src = STR_LIT(
+        const str_t src = STR_INIT(
             "c = com(all);\n"
             "d = distance(com(residue(1)), com(all));\n"
             "g = rdf(element('C'), element('O'), 8.0);\n"
@@ -253,10 +253,10 @@ UBENCH_EX(coords, extract_trr) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    const str_t run = STR_LIT("run/t");
+    const str_t run = STR_INIT("run/t");
     if (md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro")) &&
         md_trr_system_publish_run(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
-        const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
         md_system_extract_t* ex = md_system_extract_begin(&sys, run, paths, 2, md_get_heap_allocator());
         UBENCH_DO_BENCHMARK() {
             for (int64_t f = 0; f < 101; ++f) md_system_extract_frame(ex, f, &st);

@@ -9,7 +9,6 @@
 #include <md_util.h>
 #include <md_system.h>
 
-#define BAKE(str) {str, sizeof(str)-1}
 
 // Enumerate fields in _atom_site
 enum {
@@ -38,27 +37,27 @@ enum {
 };
 
 static const str_t atom_site_labels[] = {
-    BAKE("group_PDB"),
-    BAKE("id"),
-    BAKE("type_symbol"),
-    BAKE("label_atom_id"),
-    BAKE("label_alt_id"),
-    BAKE("label_comp_id"),
-    BAKE("label_asym_id"),
-    BAKE("label_entity_id"),
-    BAKE("label_seq_id"),
-    BAKE("pdbx_PDB_ins_code"),
-    BAKE("Cartn_x"),
-    BAKE("Cartn_y"),
-    BAKE("Cartn_z"),
-    BAKE("occupancy"),
-    BAKE("B_iso_or_equiv"),
-    BAKE("pdbx_formal_charge"),
-    BAKE("auth_seq_id"),
-    BAKE("auth_comp_id"),
-    BAKE("auth_asym_id"),
-    BAKE("auth_atom_id"),
-    BAKE("pdbx_PDB_model_num"),
+    STR_INIT("group_PDB"),
+    STR_INIT("id"),
+    STR_INIT("type_symbol"),
+    STR_INIT("label_atom_id"),
+    STR_INIT("label_alt_id"),
+    STR_INIT("label_comp_id"),
+    STR_INIT("label_asym_id"),
+    STR_INIT("label_entity_id"),
+    STR_INIT("label_seq_id"),
+    STR_INIT("pdbx_PDB_ins_code"),
+    STR_INIT("Cartn_x"),
+    STR_INIT("Cartn_y"),
+    STR_INIT("Cartn_z"),
+    STR_INIT("occupancy"),
+    STR_INIT("B_iso_or_equiv"),
+    STR_INIT("pdbx_formal_charge"),
+    STR_INIT("auth_seq_id"),
+    STR_INIT("auth_comp_id"),
+    STR_INIT("auth_asym_id"),
+    STR_INIT("auth_atom_id"),
+    STR_INIT("pdbx_PDB_model_num"),
 };
 
 static const int required_atom_site_fields[] = {
@@ -122,12 +121,12 @@ enum {
 };
 
 static const str_t entity_type_str[] = {
-    BAKE(""),
-    BAKE("branched"),
-    BAKE("macrolide"),
-    BAKE("non-polymer"),
-    BAKE("polymer"),
-    BAKE("water"),
+    STR_INIT(""),
+    STR_INIT("branched"),
+    STR_INIT("macrolide"),
+    STR_INIT("non-polymer"),
+    STR_INIT("polymer"),
+    STR_INIT("water"),
 };
 
 typedef int mmcif_entity_type_t;
@@ -154,15 +153,15 @@ enum {
 };
 
 static const str_t entity_poly_type_str[] = {
-    BAKE(""),
-    BAKE("cyclic-pseudo-peptide"),
-    BAKE("other"),
-    BAKE("peptide nucleic acid"),
-    BAKE("polydeoxyribonucleotide"),
-    BAKE("polydeoxyribonucleotide/polyribonucleotide hybrid"),
-    BAKE("polypeptide(D)"),
-    BAKE("polypeptide(L)"),
-    BAKE("polyribonucleotide"),
+    STR_INIT(""),
+    STR_INIT("cyclic-pseudo-peptide"),
+    STR_INIT("other"),
+    STR_INIT("peptide nucleic acid"),
+    STR_INIT("polydeoxyribonucleotide"),
+    STR_INIT("polydeoxyribonucleotide/polyribonucleotide hybrid"),
+    STR_INIT("polypeptide(D)"),
+    STR_INIT("polypeptide(L)"),
+    STR_INIT("polyribonucleotide"),
 };
 
 typedef int mmcif_entity_poly_type_t;

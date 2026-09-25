@@ -282,6 +282,7 @@ static inline size_t md_array_raw_grow_cap_internal(size_t cap, size_t n) {
 }
 
 static inline bool md_array_raw_set_capacity_internal(void** data_ptr, size_t* cap_ptr, size_t size, size_t new_cap, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
+    (void)size;
     ASSERT(data_ptr);
     ASSERT(cap_ptr);
     ASSERT(alloc);

@@ -26,13 +26,13 @@ UTEST(os, path_canonical) {
         */
     }
     {
-        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_canonical(path, temp_arena);
         printf("canonical: '%.*s'\n", (int)result.len, result.ptr);
     }
     {
         // '.' and '..' are resolved and the path does not have to exist
-        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/./../dir/subdir/does_not_exist.txt");
+        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/./../dir/subdir/does_not_exist.txt");
         str_t result = md_path_make_canonical(path, temp_arena);
         EXPECT_TRUE(str_ends_with(result, STR_LIT("/dir/subdir/does_not_exist.txt")));
     }
@@ -48,59 +48,59 @@ UTEST(os, path_relative) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("../../40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./dir/subdir/", result.ptr);
     }
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/" );
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/" );
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./file.txt", result.ptr);
     }
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./", result.ptr);
     }
     {
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.dat");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.dat");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./file.dat", result.ptr);
     }
     {
         // Whole components are compared: 'sub' is not a prefix folder of 'subdir'
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/sub/file.txt");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/sub/file.txt");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("../sub/file.txt", result.ptr);
     }
     {
         // Neither path has to exist: this is the case when saving a new workspace
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/does_not_exist.vwsp");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/does_not_exist.vwsp");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, temp_arena);
         EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
         // folder(from) + relative(from, to) has to resolve back to to
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t rel  = md_path_make_relative(from, to, temp_arena);
         str_t folder = {0};
         EXPECT_TRUE(extract_folder_path(&folder, from));
@@ -109,15 +109,15 @@ UTEST(os, path_relative) {
     }
     {
         // An empty path yields an empty result, not whatever happened to be on the stack
-        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         EXPECT_TRUE(str_empty(md_path_make_relative(path, (str_t){0}, temp_arena)));
         EXPECT_TRUE(str_empty(md_path_make_relative((str_t){0}, path, temp_arena)));
     }
     {
         // A buffer which cannot hold the result fails cleanly
         char buf[8] = {'x'};
-        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to   = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         EXPECT_EQ(0u, md_path_write_relative(buf, sizeof(buf), from, to));
         EXPECT_EQ('\0', buf[0]);
     }
@@ -248,9 +248,9 @@ UTEST(os, time_converters_agree) {
 }
 
 UTEST(os, path_validity) {
-    const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-    const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-    const str_t bad_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/missing.txt");
+    const str_t file_path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t dir_path  = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+    const str_t bad_path  = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/missing.txt");
 
     EXPECT_TRUE(md_path_is_valid(file_path));
     EXPECT_TRUE(md_path_is_valid(dir_path));
@@ -276,8 +276,8 @@ UTEST(os, path_validity) {
 }
 
 UTEST(os, file_info_extract) {
-    const str_t file_path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-    const str_t dir_path  = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+    const str_t file_path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t dir_path  = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
 
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, file_path, MD_FILE_READ));
@@ -302,7 +302,7 @@ UTEST(os, file_info_extract) {
 }
 
 UTEST(os, file_read_seek_tell_size) {
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -333,7 +333,7 @@ UTEST(os, file_read_seek_tell_size) {
 #if 0
 // This cannot be guaranteed on windows because the underlying implementation uses the synchronous path.
 UTEST(os, file_read_at_preserves_offset) {
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 

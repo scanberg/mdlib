@@ -5864,7 +5864,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
 
     // One extraction context for the range: the files a run streams from stay open across its
     // frames. It is made on this thread and used by it alone, which is what a context asks for.
-    const str_t coord_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+    const str_t coord_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
     md_system_extract_t* extract = md_system_extract_begin(sys, run, coord_paths, ARRAY_SIZE(coord_paths), md_get_heap_allocator());
     if (!extract) {
         MD_LOG_ERROR("Failed to begin extracting frames for evaluation");
@@ -6542,11 +6542,11 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     // that. The time of a frame is the trajectory's business.
     if (num_frames > 0) {
         md_attribute_desc_t axis = {
-            .path   = STR_LIT("time"),
+            .path   = STR_INIT("time"),
             .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)num_frames } },
             .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
             .unit   = md_unit_none(),
-            .label  = STR_LIT("Frame"),
+            .label  = STR_INIT("Frame"),
         };
         md_attribute_id_t axis_id = md_attributes_create(&eval->attributes, &axis);
         double* ordinals = axis_id ? (double*)md_attributes_data(&eval->attributes, axis_id, MD_ATTRIBUTE_TYPE_F64) : NULL;
@@ -7232,19 +7232,17 @@ bool md_script_identifier_name_valid(str_t ident) {
     return true;
 }
 
-#define NAME(cstr) {cstr"", sizeof(cstr)-1}
 
 // Keep in step with the tokenizer (tokenizer_get_next_from_buffer)
 static const str_t script_keywords[] = {
-    NAME("and"), NAME("or"), NAME("xor"), NAME("not"), NAME("in"), NAME("of"), NAME("out"),
+    STR_INIT("and"), STR_INIT("or"), STR_INIT("xor"), STR_INIT("not"), STR_INIT("in"), STR_INIT("of"), STR_INIT("out"),
 };
 
 // Procedures that the parser handles itself instead of looking them up in the procedure table
 static const str_t script_intrinsics[] = {
-    NAME("attr"), NAME("flatten"), NAME("transpose"),
+    STR_INIT("attr"), STR_INIT("flatten"), STR_INIT("transpose"),
 };
 
-#undef NAME
 
 size_t md_script_num_keywords(void) {
     return ARRAY_SIZE(script_keywords);

@@ -135,7 +135,7 @@ static bool dcd_write(str_t path, const dcd_spec_t* s) {
     return true;
 }
 
-static const str_t dcd_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+static const str_t dcd_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
 
 // Every frame through one context against what the writer put there: free atoms at their frame's
 // position, fixed atoms at their first frame's, the translation added to all of them, and the cell
@@ -177,7 +177,7 @@ static void dcd_check_frames(int* utest_result, const md_system_t* sys, str_t ru
 // together, which the run must piece together the same way.
 UTEST(dcd, run_matches_the_trajectory) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT("md_unittest_run.dcd");
+    const str_t path = STR_INIT("md_unittest_run.dcd");
     const dcd_spec_t spec = { .charmm = true, .cell_block = true, .rev = true, .natoms = 7, .nfixed = 2, .nframes = 5, .istart = 1000, .nsavc = 50, .delta = 0.5 };
     ASSERT_TRUE(dcd_write(path, &spec));
 
@@ -226,7 +226,7 @@ UTEST(dcd, run_matches_the_trajectory) {
 // system's own cell, both as the reader has them.
 UTEST(dcd, run_without_cell_or_timestep) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT("md_unittest_run_xplor.dcd");
+    const str_t path = STR_INIT("md_unittest_run_xplor.dcd");
     const dcd_spec_t spec = { .charmm = false, .natoms = 9, .nframes = 3, .istart = 0, .nsavc = 10, .delta = 0.0 };
     ASSERT_TRUE(dcd_write(path, &spec));
 
@@ -246,7 +246,7 @@ UTEST(dcd, run_without_cell_or_timestep) {
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, spec.natoms);
-    const str_t cell_only[] = { STR_LIT("unitcell") };
+    const str_t cell_only[] = { STR_INIT("unitcell") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, DCD_RUN, cell_only, 1, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     ASSERT_TRUE(md_system_extract_frame(ex, 1, &st));
@@ -261,7 +261,7 @@ UTEST(dcd, run_without_cell_or_timestep) {
 
 UTEST(dcd, run_refuses_a_different_system) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT("md_unittest_run_other.dcd");
+    const str_t path = STR_INIT("md_unittest_run_other.dcd");
     const dcd_spec_t spec = { .charmm = true, .natoms = 4, .nframes = 2, .nsavc = 1, .delta = 1.0 };
     ASSERT_TRUE(dcd_write(path, &spec));
 
