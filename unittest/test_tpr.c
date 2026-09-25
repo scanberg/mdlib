@@ -227,6 +227,50 @@ UTEST(tpr, virtual_sites) {
     md_arena_allocator_destroy(arena);
 }
 
+// A topology may leave out the atomic number of some or all of its atom types ([atomtypes] without the
+// at.num column, as hand written ligand parameters often are). The elements are then inferred from the
+// names and masses, and the atoms are not taken for coarse grained beads.
+static void expect_elements_as(int* utest_result, const md_system_t* ref, const md_tpr_data_t* data, md_allocator_i* arena) {
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &state, data));
+    ASSERT_EQ(ref->atom.count, sys.atom.count);
+    size_t mismatch = 0;
+    size_t coarse = 0;
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        mismatch += md_atom_atomic_number(&sys.atom, i) != md_atom_atomic_number(&ref->atom, i);
+        coarse   += (sys.atom.flags[i] & MD_FLAG_COARSE_GRAINED) != 0;
+    }
+    EXPECT_EQ(0u, mismatch);
+    EXPECT_EQ(0u, coarse);
+}
+
+UTEST(tpr, missing_atomic_numbers) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_tpr_data_t data = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+
+    md_system_t ref = { .alloc = arena };
+    md_system_state_t ref_state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&ref, &ref_state, &data));
+
+    // Only the peptide without: a minority of the system, trusted because the rest has elements
+    for (size_t i = 0; i < data.moltypes[0].num_atoms; ++i) {
+        data.moltypes[0].atoms[i].atomic_number = -1;
+    }
+    expect_elements_as(utest_result, &ref, &data, arena);
+
+    // None of it: the peptide, water and ions all by name and mass
+    for (size_t t = 0; t < data.num_moltypes; ++t) {
+        for (size_t i = 0; i < data.moltypes[t].num_atoms; ++i) {
+            data.moltypes[t].atoms[i].atomic_number = -1;
+        }
+    }
+    expect_elements_as(utest_result, &ref, &data, arena);
+
+    md_arena_allocator_destroy(arena);
+}
+
 UTEST(tpr, corrupt) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_allocator_i* heap = md_get_heap_allocator();
@@ -309,7 +353,8 @@ UTEST(tpr, martini) {
     ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &state, &data));
     ASSERT_EQ(619u, sys.atom.count);
 
-    // Every type is a bead with a radius from the force field, and no element
+    // Every type is a bead with a radius from the force field, and no element. The CL bead has
+    // chlorine's name and mass, but in a system of beads that is not taken for chlorine.
     for (size_t t = 1; t < sys.atom.type.count; ++t) {
         EXPECT_EQ(0, sys.atom.type.z[t]);
         EXPECT_TRUE(sys.atom.type.flags[t] & MD_FLAG_COARSE_GRAINED);

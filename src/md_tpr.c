@@ -1348,6 +1348,44 @@ float md_tpr_lj_vdw_radius(md_tpr_lj_t lj) {
     return (float)(0.5 * pow(2.0, 1.0 / 6.0) * sigma * 10.0);   // nm -> Ångström
 }
 
+// Whether a mass is what an atom of element z weighs in an atomistic force field: the element
+// itself, a united atom carrying up to three hydrogens (four for carbon: GROMOS' CH4), or a heavy
+// atom that gave hydrogens mass under hydrogen mass repartitioning. A hydrogen may be heavier,
+// by repartitioning or as deuterium. The tolerance is tight on purpose: Martini beads of 36, 54
+// and 72 must not pass for anything.
+static bool tpr_mass_fits_element(md_atomic_number_t z, float mass) {
+    if (z == 0 || !(mass > 0.0f)) return false;
+    const float m_h = 1.008f;
+    const float tol = 0.05f;
+    if (z == MD_Z_H) {
+        for (int k = 1; k <= 4; ++k) {
+            if (fabsf(mass - k * m_h) < tol) return true;
+        }
+        return false;
+    }
+    const float m_z = md_atomic_number_mass(z);
+    const int max_h = (z == MD_Z_C) ? 4 : 3;
+    for (int k = 0; k <= max_h; ++k) {
+        if (fabsf(mass - (m_z + k * m_h)) < tol) return true;
+    }
+    for (int k = 1; k <= 3; ++k) {
+        if (fabsf(mass - (m_z - k * 2.0f * m_h)) < tol) return true;
+    }
+    return false;
+}
+
+// The element of a particle the topology gives no atomic number for (-1: its [atomtypes] entry has
+// no at.num, typical of hand written ligand parameters). The name says which element is meant and
+// the mass has to agree with it; failing that, a mass that is exactly an element's. Zero when
+// neither holds, which is what a coarse grained bead gives.
+static md_atomic_number_t tpr_infer_atomic_number(str_t name, str_t res_name, size_t res_size, float mass) {
+    const md_atomic_number_t z_label = md_atomic_number_infer_from_label(name, res_name, res_size);
+    if (tpr_mass_fits_element(z_label, mass)) {
+        return z_label;
+    }
+    return md_atomic_number_infer_from_mass(mass);
+}
+
 bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data) {
     ASSERT(sys);
     ASSERT(state);
@@ -1392,7 +1430,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // A type is everything the topology says about a particle that is not per atom: its name, element,
     // force field type, mass and particle type. Atoms sharing all of those share a type, so the type
     // carries the mass exactly and no per atom copy of it is needed.
-    //   - Element and radius from the atomic number when the topology has one.
+    //   - Element and radius from the atomic number when the topology has one, or when it can be
+    //     inferred from the name and mass (see Elements below).
     //   - Otherwise the particle is a coarse grained bead (or a massless virtual site): no element, and
     //     a radius from the Lennard-Jones parameters of its non-bonded type when it has any.
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
@@ -1405,6 +1444,80 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     sys->atom.type.count = 0;
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
+    // ### Elements
+    // An atom without an atomic number is either a coarse grained bead or an atom whose type was
+    // written without one - a ligand's hand written [atomtypes] in an otherwise atomistic topology.
+    // Its element is inferred from its name and mass, but the inferences are only trusted when atoms
+    // with an element, given or inferred, make up most of the system. A Martini system would
+    // otherwise gain a chlorine: its CL bead has chlorine's name and mass.
+    md_atomic_number_t** moltype_z = md_temp_alloc_array(temp, md_atomic_number_t*, data->num_moltypes + 1);
+    bool** moltype_inferred = md_temp_alloc_array(temp, bool*, data->num_moltypes + 1);
+    {
+        size_t num_real = 0;        // Particles that are not virtual sites
+        size_t num_known = 0;       // ... with an atomic number from the topology
+        size_t num_inferred = 0;    // ... with one inferred here
+        size_t num_types_inferred = 0;
+        size_t* mt_counts = md_temp_alloc_array(temp, size_t, 3 * (data->num_moltypes + 1));
+        MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
+
+        for (size_t t = 0; t < data->num_moltypes; ++t) {
+            const md_tpr_moltype_t* mt = &data->moltypes[t];
+            moltype_z[t] = md_temp_alloc_array(temp, md_atomic_number_t, mt->num_atoms + 1);
+            moltype_inferred[t] = md_temp_alloc_array(temp, bool, mt->num_atoms + 1);
+            MEMSET(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
+
+            uint32_t* res_size = md_temp_alloc_array(temp, uint32_t, mt->num_residues + 1);
+            MEMSET(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
+            for (size_t i = 0; i < mt->num_atoms; ++i) {
+                res_size[mt->atoms[i].residue] += 1;
+            }
+
+            size_t* counts = &mt_counts[3 * t];
+            for (size_t i = 0; i < mt->num_atoms; ++i) {
+                const md_tpr_atom_t* atom = &mt->atoms[i];
+                md_atomic_number_t z = (atom->atomic_number > 0 && atom->atomic_number < 119) ? (md_atomic_number_t)atom->atomic_number : 0;
+                if (atom->ptype == MD_TPR_PTYPE_VSITE) {
+                    moltype_z[t][i] = z;
+                    continue;
+                }
+                counts[0] += 1;
+                if (z) {
+                    counts[1] += 1;
+                } else if (atom->ptype == MD_TPR_PTYPE_ATOM) {
+                    const md_tpr_residue_t* res = &mt->residues[atom->residue];
+                    z = tpr_infer_atomic_number(atom->name, res->name, res_size[atom->residue], atom->mass);
+                    if (z) {
+                        counts[2] += 1;
+                        moltype_inferred[t][i] = true;
+                    }
+                }
+                moltype_z[t][i] = z;
+            }
+        }
+
+        for (size_t b = 0; b < data->num_molblocks; ++b) {
+            const md_tpr_molblock_t* mb = &data->molblocks[b];
+            const size_t* counts = &mt_counts[3 * mb->moltype];
+            num_real     += (size_t)mb->nmol * counts[0];
+            num_known    += (size_t)mb->nmol * counts[1];
+            num_inferred += (size_t)mb->nmol * counts[2];
+        }
+
+        const bool trust_inferred = num_inferred > 0 && 2 * (num_known + num_inferred) > num_real;
+        for (size_t t = 0; t < data->num_moltypes; ++t) {
+            const md_tpr_moltype_t* mt = &data->moltypes[t];
+            for (size_t i = 0; i < mt->num_atoms; ++i) {
+                if (moltype_inferred[t][i]) {
+                    if (!trust_inferred) moltype_z[t][i] = 0;
+                    num_types_inferred += trust_inferred;
+                }
+            }
+        }
+        if (trust_inferred) {
+            MD_LOG_INFO("TPR: %zu atoms (%zu molecule type atoms) have no atomic number in the topology, their elements were inferred from names and masses", num_inferred, num_types_inferred);
+        }
+    }
+
     md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
     md_atom_type_idx_t** moltype_type = md_temp_alloc_array(temp, md_atom_type_idx_t*, data->num_moltypes + 1);
     for (size_t t = 0; t < data->num_moltypes; ++t) {
@@ -1412,7 +1525,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         moltype_type[t] = md_temp_alloc_array(temp, md_atom_type_idx_t, mt->num_atoms + 1);
         for (size_t i = 0; i < mt->num_atoms; ++i) {
             const md_tpr_atom_t* atom = &mt->atoms[i];
-            const md_atomic_number_t z = (atom->atomic_number > 0 && atom->atomic_number < 119) ? (md_atomic_number_t)atom->atomic_number : 0;
+            const md_atomic_number_t z = moltype_z[t][i];
 
             const struct {
                 uint32_t nb_type;
