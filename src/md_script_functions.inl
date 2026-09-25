@@ -403,7 +403,7 @@ static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (position[N
 static int _angle   (data_t*, data_t[], eval_context_t*); // (position[], position[], position[]) -> float
 static int _dihedral(data_t*, data_t[], eval_context_t*); // (position[], position[], position[]), position[]) -> float
 
-static int _rmsd    (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
+static int _rmsd    (data_t*, data_t[], eval_context_t*); // (bitfield[N]) -> float[N]
 
 // Radial distribution function: The idea is that we use a fixed (high) amount of bins, then we let the user choose some kernel to smooth it.
 static int _rdf_flt (data_t*, data_t[], eval_context_t*); // (position[], position[], float)  -> float[1024] (Histogram).
@@ -734,7 +734,7 @@ static procedure_t procedures[] = {
     {STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_VISUALIZE},
+    {STR_INIT("rmsd"),      TI_FLOAT_ARR, 1, {TI_BITFIELD_ARR}, _rmsd,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
@@ -4341,65 +4341,87 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(ctx);
 
-    bool result = 0;
+    // One value per bitfield of the argument: rmsd(residue(:)) gives the deviation of every residue on its
+    // own, each fitted separately. rmsd(flatten(...)) pools them into a single fit and a single value.
+    const size_t num_bf = element_count(arg[0]);
 
     if (dst) {
         ASSERT(ctx->sys);
         ASSERT(ctx->atom_mass);
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
         ASSERT(ctx->ref_state->xyz);
 
-        if (dst->ptr) {
-            const md_bitfield_t* src_bf = as_bitfield(arg[0]);
-            md_bitfield_t bf = _internal_flatten_bf(src_bf, element_count(arg[0]), ctx->temp_alloc);
+        // Total count, not element_count: evaluated in a context the result is laid out as [context][N],
+        // so this call sees float[1][N]
+        // The two agree except for an argument whose length varies over frames evaluated inside a context:
+        // the context fixes the length of each of its parts at compile time. Write what fits, zero the rest.
+        float* out = as_float_arr(*dst);
+        const size_t out_len = type_info_total_element_count(dst->type);
+        for (size_t i = num_bf; i < out_len; ++i) {
+            out[i] = 0.0f;
+        }
 
+        const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+
+        md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
+
+        md_bitfield_t tmp_bf = {0};
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        }
+
+        md_array(vec4_t) xyzw[2] = {0};
+
+        for (size_t i = 0; i < MIN(num_bf, out_len); ++i) {
+            const md_bitfield_t* bf = &bf_arr[i];
             if (ctx->mol_ctx) {
-                md_bitfield_t tmp_bf = {0};
-                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-                md_bitfield_and (&tmp_bf, &bf, ctx->mol_ctx);
-                bf = tmp_bf;
+                md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                bf = &tmp_bf;
             }
-            const size_t count = md_bitfield_popcount(&bf);
-            if (count > 0) {
-                md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
-                
-                vec4_t* xyzw[2] = {
-                    md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
-                    md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
-                };
 
-                extract_xyzw_vec4(xyzw[0], ctx->ref_state->xyz, ctx->atom_mass, &bf);
-                extract_xyzw_vec4(xyzw[1], ctx->cur_state->xyz, ctx->atom_mass, &bf);
+            // An empty selection is valid - a dynamic one can be empty in some frames - and deviates by nothing
+            out[i] = 0.0f;
+            const size_t count = md_bitfield_popcount(bf);
+            if (count == 0) continue;
 
-                // Each set is placed into mutually consistent images against its own cell, and its centre is
-                // the plain weighted mean of the placed points - which is what the fit below subtracts.
-                // Coordinates stay absolute: md_util_rmsd_compute_vec4 subtracts the centres itself, so
-                // handing it relative coordinates as well subtracts them twice. A circular mean lands in
-                // the reference cell whatever image the set sits in, so that double subtraction turned
-                // every boundary crossing into a jump of up to a whole cell in the result.
-                // Correct while the selection spans less than half a cell, as any per point image choice.
-                vec3_t com[2] = {0};
-                md_util_deperiodize_self_vec4(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
-                md_util_deperiodize_self_vec4(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
+            md_array_resize(xyzw[0], count, ctx->temp_alloc);
+            md_array_resize(xyzw[1], count, ctx->temp_alloc);
 
-                as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
-                md_temp_end(temp);
-            }
+            extract_xyzw_vec4(xyzw[0], ctx->ref_state->xyz, ctx->atom_mass, bf);
+            extract_xyzw_vec4(xyzw[1], ctx->cur_state->xyz, ctx->atom_mass, bf);
+
+            // Each set is placed into mutually consistent images against its own cell, and its centre is
+            // the plain weighted mean of the placed points - which is what the fit below subtracts.
+            // Coordinates stay absolute: md_util_rmsd_compute_vec4 subtracts the centres itself.
+            // Correct while the selection spans less than half a cell, as any per point image choice.
+            vec3_t com[2] = {0};
+            md_util_deperiodize_self_vec4(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
+            md_util_deperiodize_self_vec4(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
+
+            out[i] = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
         }
-    }
-    else {
-        if (ctx->vis) {
-            // Visualize
-            // I don't think we need another visualization than the bitfield highlighting the atoms involved...
-            coordinate_visualize(arg[0], ctx);
-        } else {
-            // Validate args
-            // Nothing really to validate, arguments are of type bitfields and if the bitfield is empty, that would be ok, since that would yield a valid rmsd -> 0.
-            // And the empty bitfield must be valid in the case of dynamic selection.
-        }
+
+        md_temp_end(temp);
+        return 0;
     }
 
-    return result;
+    if (ctx->vis) {
+        // The bitfield highlighting the atoms involved is all there is to show
+        coordinate_visualize(arg[0], ctx);
+        return 0;
+    }
+
+    // Query / validation. Nothing to validate: an empty bitfield is a valid (zero) deviation, and has to be
+    // for dynamic selections. The length follows the argument, including when that varies over frames.
+    if (ctx->backchannel) {
+        if (ctx->arg_flags && (ctx->arg_flags[0] & FLAG_DYNAMIC_LENGTH)) {
+            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
+        ctx->backchannel->unit[0] = md_unit_none();
+        ctx->backchannel->unit[1] = md_unit_angstrom();
+        ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
+    }
+    return (int)num_bf;
 }
 
 
@@ -6089,10 +6111,13 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
 
         vec3_t* out_weights = as_vec3_arr(*dst);
+        // Bounded by the destination: evaluated inside a context, an argument whose length varies over frames
+        // can hold more bitfields than the length the context fixed at compile time
+        const size_t out_len = type_info_total_element_count(dst->type) / 3;
 
         md_array(vec4_t)  xyzw = 0;
         if (arg[0].type.base_type == TYPE_BITFIELD) {
-            const size_t bf_len = element_count(arg[0]);
+            const size_t bf_len = MIN(element_count(arg[0]), out_len);
             const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
             md_bitfield_t tmp_bf = {0};
             if (ctx->mol_ctx) {

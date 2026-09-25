@@ -484,7 +484,8 @@ d = distance_pair(ring(), vec3(0, 0, 0));       # centre of each ring to the ori
 ### Selectors: residue level
 
 These return a `bitfield[]` with one selection per matching residue. Use them as the right-hand side of `in`, or
-pass them where a bitfield is accepted (an array of bitfields is then flattened into one selection).
+pass them where a bitfield is accepted (an array of bitfields is then flattened into one selection; [`rmsd`](#rmsd)
+is the exception and gives one value per selection).
 
 ### protein
 
@@ -896,16 +897,26 @@ side_chain_torsion = dihedral(2, 3, 6, 10) in resname("ALA");
 <!-- proc name=rmsd category=property -->
 
 ```text
-rmsd(sel: bitfield) -> float [Å]
+rmsd(sel: bitfield[]) -> float[] [Å]
 ```
 
 The mass-weighted root-mean-square deviation of the selected atoms from the system's reference structure (the first
-frame), after removing translation and finding the optimal rotation. The selection may change from frame to frame.
-Inside a context only the atoms of the context are used.
+frame), after removing translation and finding the optimal rotation. Each bitfield of the argument is a structure of
+its own, fitted and reported separately: the result has one value per bitfield. Unlike most procedures, which merge
+an array of selections into one, `rmsd` keeps them apart; use [`flatten`](#flatten) to fit them together as one
+structure. A single selection (`backbone()`, `within(...)`, a combination with `and`/`or`) gives a single value.
+
+The selection may change from frame to frame, and an empty one gives 0. If the *number* of selections changes from
+frame to frame (`residue(within(...))`) the result is not published as a property; `flatten` it. Inside a context
+only the atoms of the context are used. Periodic boundaries are handled as long as a structure spans less than half
+the cell.
 
 ```mdscript
-backbone_rmsd = rmsd(backbone());
-ligand_rmsd = rmsd(resname("LIG"));
+backbone_rmsd = rmsd(backbone());               # one value
+chain_rmsd = rmsd(chain(:));                    # one value per chain, each fitted on its own
+residue_rmsd = rmsd(protein());                 # one value per protein residue
+protein_rmsd = rmsd(flatten(protein()));        # the whole protein as one structure
+ligand_rmsd = rmsd(resname("LIG"));             # one value per LIG residue
 ```
 
 ### rdf
@@ -1943,7 +1954,7 @@ Defects and gaps in the current implementation. They are listed so that the docu
 the code delivers; remove an entry when it is fixed.
 
 1. **Units are lost in several places.** Unary minus, adding a bare number to a quantity, and the math functions
-   return values without a unit tag; `rmsd` is also reported without a unit.
+   return values without a unit tag.
 2. **Some values cannot be plotted.** `density(...)`, `coord`, `coord_xy/xz/yz`, `bool` values and arrays of `float[3]`
    are not published as properties (see [What becomes a property](#what-becomes-a-property)).
 3. **Constants are not properties.** A script whose statements are all constant (`a = count(protein());`) reports

@@ -3682,6 +3682,7 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
 
 static const pbc_probe_t PBC_PROBES[] = {
     { "r",  0, 1.0e-3f },
+    { "rf", 0, 1.0e-3f },
     { "a",  0, 1.0e-3f },
     { "d",  0, 1.0e-3f },
     { "x",  0, 1.0e-2f },
@@ -3693,6 +3694,7 @@ UTEST_F(script, pbc_invariance_ortho) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->ala,
         "r = rmsd(residue(1:8));\n"
+        "rf = rmsd(flatten(residue(1:8)));\n"
         "a = angle(atom(1), atom(45), atom(90));\n"
         "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
         "x = distance(residue(1), residue(8));\n"
@@ -3706,11 +3708,98 @@ UTEST_F(script, pbc_invariance_triclinic) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->npt,
         "r = rmsd(residue(1:8));\n"
+        "rf = rmsd(flatten(residue(1:8)));\n"
         "a = angle(atom(1), atom(45), atom(90));\n"
         "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
         "x = distance(residue(1), residue(8));\n"
         "w = shape_weights(residue(1:8));\n"
         "v = sdf(residue(4), element('O'), 8.0);\n",
         "residue(4)", PBC_PROBES, ARRAY_SIZE(PBC_PROBES), alloc);
+    md_vm_arena_destroy(alloc);
+}
+
+// rmsd takes each bitfield of its argument as a structure of its own: one fit and one value per bitfield.
+// flatten() pools them into a single structure.
+UTEST_F(script, rmsd_per_structure) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_system_t* sys = &utest_fixture->ala;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_script_ir_compile_from_source(ir, STR_LIT(
+        "rr = rmsd(residue(1:8));\n"
+        "rf = rmsd(flatten(residue(1:8)));\n"
+        "r1 = rmsd(residue(1));\n"
+        "r3 = rmsd(residue(3));\n"
+        "r8 = rmsd(residue(8));\n"
+        "rp = rmsd(residue(1:8) or residue(1:8));\n"
+        "rc = rmsd(all()) in residue(1:8);\n"
+        "rx = rmsd(residue(1:8)) in residue(3);\n"), sys, NULL);
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        str_t err = md_script_ir_errors(ir)[i].text;
+        printf("  %.*s\n", (int)err.len, err.ptr);
+    }
+    ASSERT_TRUE(md_script_ir_valid(ir));
+
+    // Every atom displaced by a pseudo random amount, so that each residue deviates by something different
+    const md_system_state_t* ref = &sys->reference;
+    md_system_state_t state = *ref;
+    state.xyz = md_alloc(alloc, sizeof(vec3_t) * ref->num_atoms);
+    srand(1234);
+    for (size_t i = 0; i < ref->num_atoms; ++i) {
+        const float s = 0.2f + 0.05f * (float)(i % 13);
+        const vec3_t d = { s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f) };
+        state.xyz[i] = vec3_add(ref->xyz[i], d);
+    }
+
+    data_t rr = {0}, rf = {0}, r1 = {0}, r3 = {0}, r8 = {0}, rc = {0}, rx = {0};
+    ASSERT_TRUE(pbc_eval(&rr, ir, "rr", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&rf, ir, "rf", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&r1, ir, "r1", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&r3, ir, "r3", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&r8, ir, "r8", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&rc, ir, "rc", sys, &state, alloc));
+    ASSERT_TRUE(pbc_eval(&rx, ir, "rx", sys, &state, alloc));
+
+    ASSERT_EQ((size_t)8, rr.size / sizeof(float));
+    ASSERT_EQ((size_t)1, rf.size / sizeof(float));
+    ASSERT_EQ((size_t)1, r1.size / sizeof(float));
+
+    const float* v = (const float*)rr.ptr;
+    EXPECT_GT(v[0], 0.01f);
+    EXPECT_NEAR(v[0], as_float(r1), 1.0e-5f);
+    EXPECT_NEAR(v[2], as_float(r3), 1.0e-5f);
+    EXPECT_NEAR(v[7], as_float(r8), 1.0e-5f);
+
+    // The pooled fit is a different quantity from any of the separate ones: one rigid fit of all eight
+    // residues cannot do better than eight separate fits, so it deviates at least as much as their mean square
+    double ms = 0;
+    for (int i = 0; i < 8; ++i) ms += (double)v[i] * v[i];
+    EXPECT_GE(as_float(rf) + 1.0e-4f, (float)sqrt(ms / 8.0) * 0.9f);
+    EXPECT_NE(as_float(rf), v[0]);
+
+    // A selection combined with 'or' is still one bitfield
+    data_t rp = {0};
+    ASSERT_TRUE(pbc_eval(&rp, ir, "rp", sys, &state, alloc));
+    EXPECT_EQ((size_t)1, rp.size / sizeof(float));
+    EXPECT_NEAR(as_float(rp), as_float(rf), 1.0e-5f);
+
+    // In a context the atoms are restricted to the context: all() in residue(i) is residue(i)
+    ASSERT_EQ((size_t)8, rc.size / sizeof(float));
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_NEAR(((const float*)rc.ptr)[i], v[i], 1.0e-5f);
+    }
+    // An array argument inside a context gives [context][N]: residue indices are relative to the context,
+    // so residue(1) in residue(3) is residue 3
+    EXPECT_EQ((size_t)8, rx.size / sizeof(float));
+    EXPECT_NEAR(((const float*)rx.ptr)[0], v[2], 1.0e-5f);
+
+    // Over the trajectory, as a property: one value per residue per frame
+    const uint32_t num_frames = script_frames(sys);
+    ASSERT_GT(num_frames, 0u);
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    EXPECT_TRUE(md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames));
+    md_script_eval_free(eval);
+
     md_vm_arena_destroy(alloc);
 }
