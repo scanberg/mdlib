@@ -15,66 +15,65 @@ typedef struct {
     md_atomic_number_t z;
 } Mapping;
 
-#define STR(str) {str, sizeof(str)-1}
 
 // Predefined mappings (applies to a combination from res_name:atom_name)
 static const Mapping predefined_mappings[] = {
     // Common ions
-    {STR("NA:NA"), MD_Z_Na},
-    {STR("SOD:SOD"), MD_Z_Na},
-    {STR("SOD:NA"),MD_Z_Na},
-    {STR("K:K"),   MD_Z_K},
-    {STR("POT:K"), MD_Z_K},
-    {STR("CL:CL"), MD_Z_Cl},
-    {STR("CLA:CL"),MD_Z_Cl},
-    {STR("CLA:CLA"),MD_Z_Cl},
-    {STR("CA:CA"), MD_Z_Ca},
-    {STR("CAL:CA"),MD_Z_Ca},
-    {STR("MG:MG"), MD_Z_Mg},
-    {STR("MAG:MG"),MD_Z_Mg},
-    {STR("ZN:ZN"), MD_Z_Zn},
-    {STR("FE:FE"), MD_Z_Fe},
-    {STR("CU:CU"), MD_Z_Cu},
-    {STR("MN:MN"), MD_Z_Mn},
-    {STR("F: F"),  MD_Z_F},
-    {STR("BR:BR"), MD_Z_Br},
-    {STR("I: I"),  MD_Z_I},
-    {STR("IOD:I"), MD_Z_I},
+    {STR_INIT("NA:NA"), MD_Z_Na},
+    {STR_INIT("SOD:SOD"), MD_Z_Na},
+    {STR_INIT("SOD:NA"),MD_Z_Na},
+    {STR_INIT("K:K"),   MD_Z_K},
+    {STR_INIT("POT:K"), MD_Z_K},
+    {STR_INIT("CL:CL"), MD_Z_Cl},
+    {STR_INIT("CLA:CL"),MD_Z_Cl},
+    {STR_INIT("CLA:CLA"),MD_Z_Cl},
+    {STR_INIT("CA:CA"), MD_Z_Ca},
+    {STR_INIT("CAL:CA"),MD_Z_Ca},
+    {STR_INIT("MG:MG"), MD_Z_Mg},
+    {STR_INIT("MAG:MG"),MD_Z_Mg},
+    {STR_INIT("ZN:ZN"), MD_Z_Zn},
+    {STR_INIT("FE:FE"), MD_Z_Fe},
+    {STR_INIT("CU:CU"), MD_Z_Cu},
+    {STR_INIT("MN:MN"), MD_Z_Mn},
+    {STR_INIT("F: F"),  MD_Z_F},
+    {STR_INIT("BR:BR"), MD_Z_Br},
+    {STR_INIT("I: I"),  MD_Z_I},
+    {STR_INIT("IOD:I"), MD_Z_I},
 
     // Other
-    {STR("POPC:HS"), MD_Z_H},
-    {STR("HOH:O"), MD_Z_O},
-    {STR("WAT:O"), MD_Z_O},
-    {STR("H2O:O"), MD_Z_O},
-    {STR("DOD:O"), MD_Z_O}, // Heavy water
-    {STR("CO3:C"), MD_Z_C}, // Carbonate
-    {STR("CO3:O"), MD_Z_O},
-    {STR("CO2:C"), MD_Z_C}, // Carbon dioxide
-    {STR("CO2:O"), MD_Z_O},
-    {STR("NH4:N"), MD_Z_N}, // Ammonium
-    {STR("NH4:H"), MD_Z_H},
-    {STR("NO3:N"), MD_Z_N}, // Nitrate
-    {STR("NO3:O"), MD_Z_O},
-    {STR("SO4:S"), MD_Z_S}, // Sulfate
-    {STR("SO4:O"), MD_Z_O},
+    {STR_INIT("POPC:HS"), MD_Z_H},
+    {STR_INIT("HOH:O"), MD_Z_O},
+    {STR_INIT("WAT:O"), MD_Z_O},
+    {STR_INIT("H2O:O"), MD_Z_O},
+    {STR_INIT("DOD:O"), MD_Z_O}, // Heavy water
+    {STR_INIT("CO3:C"), MD_Z_C}, // Carbonate
+    {STR_INIT("CO3:O"), MD_Z_O},
+    {STR_INIT("CO2:C"), MD_Z_C}, // Carbon dioxide
+    {STR_INIT("CO2:O"), MD_Z_O},
+    {STR_INIT("NH4:N"), MD_Z_N}, // Ammonium
+    {STR_INIT("NH4:H"), MD_Z_H},
+    {STR_INIT("NO3:N"), MD_Z_N}, // Nitrate
+    {STR_INIT("NO3:O"), MD_Z_O},
+    {STR_INIT("SO4:S"), MD_Z_S}, // Sulfate
+    {STR_INIT("SO4:O"), MD_Z_O},
 
     // Hem
-    {STR("HEM:FE"), MD_Z_Fe},
+    {STR_INIT("HEM:FE"), MD_Z_Fe},
 };
 
 static const str_t resname_fallback_to_single_character[] = {
-    STR("ALA"), STR("ARG"),
-    STR("ASN"), STR("ASP"), STR("CYS"), STR("GLN"),
-    STR("GLU"), STR("GLY"), STR("HIS"), STR("ILE"), STR("LEU"), STR("LYS"), STR("MET"), STR("PHE"), STR("PRO"), STR("SER"), STR("THR"), STR("TRP"), STR("TYR"), STR("VAL"),
-    STR("DA"),  STR("DC"),  STR("DG"),  STR("DT"),  STR("A"),   STR("C"),   STR("G"),   STR("U"),
-    STR("HOH"), STR("H2O"), STR("DOD"), STR("WAT"),
+    STR_INIT("ALA"), STR_INIT("ARG"),
+    STR_INIT("ASN"), STR_INIT("ASP"), STR_INIT("CYS"), STR_INIT("GLN"),
+    STR_INIT("GLU"), STR_INIT("GLY"), STR_INIT("HIS"), STR_INIT("ILE"), STR_INIT("LEU"), STR_INIT("LYS"), STR_INIT("MET"), STR_INIT("PHE"), STR_INIT("PRO"), STR_INIT("SER"), STR_INIT("THR"), STR_INIT("TRP"), STR_INIT("TYR"), STR_INIT("VAL"),
+    STR_INIT("DA"),  STR_INIT("DC"),  STR_INIT("DG"),  STR_INIT("DT"),  STR_INIT("A"),   STR_INIT("C"),   STR_INIT("G"),   STR_INIT("U"),
+    STR_INIT("HOH"), STR_INIT("H2O"), STR_INIT("DOD"), STR_INIT("WAT"),
     
-    STR("HEM"), STR("HEME"),
-    STR("ADP"), STR("ATP"), STR("GDP"), STR("GTP"),
+    STR_INIT("HEM"), STR_INIT("HEME"),
+    STR_INIT("ADP"), STR_INIT("ATP"), STR_INIT("GDP"), STR_INIT("GTP"),
 
-    STR("POPC"), STR("DPPC"), STR("DMPC"), STR("DOPC"), STR("POPE"), STR("DOPE"),
+    STR_INIT("POPC"), STR_INIT("DPPC"), STR_INIT("DMPC"), STR_INIT("DOPC"), STR_INIT("POPE"), STR_INIT("DOPE"),
 
-    STR("CHOL"),  // Cholesterol
+    STR_INIT("CHOL"),  // Cholesterol
 };
 
 // Core atomic number functions using existing md_util tables

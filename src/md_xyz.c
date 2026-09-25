@@ -223,7 +223,7 @@ static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char en
 // Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
 
 static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
-    const str_t pattern = STR_LIT("Lattice=");
+    const str_t pattern = STR_INIT("Lattice=");
     size_t loc;
     if (!str_find_str(&loc, line, pattern)) {
         // Lattice information not found, since Lattice is optional, this is not an error
@@ -932,7 +932,7 @@ bool md_xyz_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
     if (!md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
         .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 0 },
-        .unit = md_unit_none(), .description = STR_LIT("Which XYZ dialect the frames are written in"),
+        .unit = md_unit_none(), .description = STR_INIT("Which XYZ dialect the frames are written in"),
         .data = &layout, .byte_size = sizeof(layout)})) {
         md_attributes_remove_prefix(&sys->attributes, run);
         goto done;

@@ -12,7 +12,7 @@
 UTEST(gro, parse_small) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/catalyst.gro");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/catalyst.gro");
     md_gro_data_t gro_data = {0};
     ASSERT_TRUE(md_gro_data_parse_file(&gro_data, path, alloc));
     EXPECT_EQ(gro_data.num_atoms, 1336);
@@ -47,7 +47,7 @@ UTEST(gro, parse_small) {
 UTEST(gro, parse_big) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/centered.gro");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/centered.gro");
     md_gro_data_t gro_data = { 0 };
     ASSERT_TRUE(md_gro_data_parse_file(&gro_data, path, alloc));
     EXPECT_EQ(gro_data.num_atoms, 161742);
@@ -77,7 +77,7 @@ UTEST(gro, parse_big) {
 UTEST(gro, parse_small_water) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/water.gro");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/water.gro");
     md_gro_data_t gro_data = {0};
     bool result = md_gro_data_parse_file(&gro_data, path, alloc);
     EXPECT_TRUE(result);
@@ -98,7 +98,7 @@ UTEST(gro, parse_small_water) {
 
 UTEST(gro, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro");
     md_gro_data_t gro_data = {0};
     bool result = md_gro_data_parse_file(&gro_data, path, alloc);
     EXPECT_FALSE(result);

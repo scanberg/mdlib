@@ -9,7 +9,7 @@
 #include <inttypes.h>
 
 UBENCH_EX(str, buffered_reader) {
-    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
         MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
@@ -36,10 +36,10 @@ UBENCH_EX(str, buffered_reader) {
 
 UBENCH_EX(str, parse_int) {
     str_t str[] = {
-        STR_LIT("1928123123123"),
-        STR_LIT("1123    "),
-        STR_LIT("19228123"),
-        STR_LIT("1921238123"),
+        STR_INIT("1928123123123"),
+        STR_INIT("1123    "),
+        STR_INIT("19228123"),
+        STR_INIT("1921238123"),
     };
 
     int64_t num_bytes = 0;
@@ -60,10 +60,10 @@ UBENCH_EX(str, parse_int) {
 
 UBENCH_EX(str, parse_int_simd) {
     str_t str[] = {
-        STR_LIT("19312312"),
-        STR_LIT("1123    "),
-        STR_LIT("19228123"),
-        STR_LIT("19212381"),
+        STR_INIT("19312312"),
+        STR_INIT("1123    "),
+        STR_INIT("19228123"),
+        STR_INIT("19212381"),
     };
 
     int64_t num_bytes = 0;
@@ -84,10 +84,10 @@ UBENCH_EX(str, parse_int_simd) {
 
 UBENCH_EX(str, parse_float) {
     str_t str[] = {
-        STR_LIT("1928123.2767"),
-        STR_LIT("19.2    "),
-        STR_LIT("12323   "),
-        STR_LIT("0.000000"),
+        STR_INIT("1928123.2767"),
+        STR_INIT("19.2    "),
+        STR_INIT("12323   "),
+        STR_INIT("0.000000"),
     };
 
     int64_t num_bytes = 0;
@@ -108,10 +108,10 @@ UBENCH_EX(str, parse_float) {
 
 UBENCH_EX(str, parse_float_simd) {
     str_t str[] = {
-        STR_LIT("1928123.2767    "),
-        STR_LIT("19.2            "),
-        STR_LIT("12323           "),
-        STR_LIT("0.000000        "),
+        STR_INIT("1928123.2767    "),
+        STR_INIT("19.2            "),
+        STR_INIT("12323           "),
+        STR_INIT("0.000000        "),
     };
 
     int64_t num_bytes = 0;

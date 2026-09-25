@@ -490,10 +490,10 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = md_unit_picosecond(), .label = STR_LIT("Time"), .data = times, .byte_size = n * sizeof(double)});
+        .unit = md_unit_picosecond(), .label = STR_INIT("Time"), .data = times, .byte_size = n * sizeof(double)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), group, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = md_unit_none(), .label = STR_LIT("Step"), .data = steps, .byte_size = n * sizeof(int64_t)});
+        .unit = md_unit_none(), .label = STR_INIT("Step"), .data = steps, .byte_size = n * sizeof(int64_t)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/path")),
         .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
@@ -573,7 +573,7 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         md_unit_div(md_unit_angstrom(), md_unit_picosecond()),
         md_unit_div(md_unit_div(md_unit_scl(md_unit_joule(), 1.0e3), md_unit_mole()), md_unit_nanometer()),
     };
-    const str_t labels[] = { STR_LIT("Position"), STR_LIT("Velocity"), STR_LIT("Force") };
+    const str_t labels[] = { STR_INIT("Position"), STR_INIT("Velocity"), STR_INIT("Force") };
     char buf[512];
 
     // Velocities and forces: beside the positions when written in exactly the frames the positions

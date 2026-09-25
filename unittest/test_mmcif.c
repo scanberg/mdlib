@@ -9,7 +9,7 @@
 #define MAX_VALIDATION_SAMPLES 100
 
 UTEST(mmcif, 1fez) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
@@ -35,7 +35,7 @@ UTEST(mmcif, 1fez) {
 }
 
 UTEST(mmcif, 2or2) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
@@ -61,7 +61,7 @@ UTEST(mmcif, 2or2) {
 }
 
 UTEST(mmcif, 8g7u) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
@@ -93,7 +93,7 @@ UTEST(mmcif, tokenizer) {
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     {
-        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         char* buf = md_temp_alloc(temp, MEGABYTES(1));
@@ -135,7 +135,7 @@ UTEST(mmcif, tokenizer) {
     }
 
     {
-        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
+        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         char* buf = md_temp_alloc(temp, MEGABYTES(1));
@@ -186,7 +186,7 @@ UTEST(mmcif, parse_section) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t section = STR_LIT(
+    str_t section = STR_INIT(
         "_entity_poly.entity_id                      1 \n"
         "_entity_poly.type                           \"polypeptide(L)\" \n"
         "_entity_poly.nstd_linkage                   no \n"
@@ -255,7 +255,7 @@ UTEST(mmcif, parse_section) {
         EXPECT_STREQ("?", str_ptr(sec.values[7]));
     }
 
-    str_t item_looped = STR_LIT(
+    str_t item_looped = STR_INIT(
         "_entity.id \n"
         "_entity.type \n"
         "_entity.src_method \n"
@@ -338,7 +338,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
@@ -372,7 +372,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
 UTEST(mmcif, nonexistent_file) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
@@ -388,7 +388,7 @@ UTEST(mmcif, advance_to_next_control) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
     char* buf = md_temp_alloc(temp, MEGABYTES(1));

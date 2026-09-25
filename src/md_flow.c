@@ -437,7 +437,7 @@ void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
             .level  = 0,
             .weight = (float)other_weight[c],
             .color  = {0.6f, 0.6f, 0.6f, 1.0f},
-            .label  = STR_LIT("Others"),
+            .label  = STR_INIT("Others"),
             .key    = (MD_FLOW_OTHER_KEY_TAG << 32) | (uint64_t)c,
             .flags  = MD_FLOW_NODE_FLAG_OTHER,
         };

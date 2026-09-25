@@ -56,7 +56,7 @@ UTEST(trr, run_matches_reference) {
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, sys.atom.count);
-    const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("atom/velocity") };
+    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("atom/velocity") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (size_t r = 0; r < ARRAY_SIZE(trr_vel_refs); ++r) {
@@ -158,7 +158,7 @@ static void trr_put_frame(md_file_t file, int natoms, int step, float time, cons
 // positions and the velocities get a group of their own, each at the time it was written.
 UTEST(trr, run_publishes_sections_at_their_own_times) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT("md_unittest_trr_sections.trr");
+    const str_t path = STR_INIT("md_unittest_trr_sections.trr");
     enum { NA = 5 };
 
     // nm, row i box vector i, tilted as GROMACS writes it: below the diagonal
@@ -220,7 +220,7 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_slice_f32(vv, NA * 3, vel, &s1, md_unit_none()));
     EXPECT_EQ(0.5f * 4 * 10.0f, vv[4]);
 
-    const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell"), STR_LIT("atom/force") };
+    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell"), STR_INIT("atom/force") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, ARRAY_SIZE(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t st = {.alloc = arena};
@@ -245,7 +245,7 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
 
     // Along the run, the velocities are there at the frames that have them and absent at the
     // others: one state reused through all of them never shows the last frame's in their place.
-    const str_t with_velocity[] = { STR_LIT("atom/position"), STR_LIT("trr/velocity/atom/velocity") };
+    const str_t with_velocity[] = { STR_INIT("atom/position"), STR_INIT("trr/velocity/atom/velocity") };
     ex = md_system_extract_begin(&sys, TRR_RUN, with_velocity, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t fr = 0; fr < 4; ++fr) {

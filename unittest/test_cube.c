@@ -81,7 +81,7 @@ static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
 
 UTEST(cube, serialize_deserialize) {
 	md_cube_t cube_a = {0};
-	str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
+	str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
 	ASSERT_TRUE(md_cube_file_load(&cube_a, path, md_get_heap_allocator()));
 	
 	str_t str = md_cube_serialize(&cube_a, md_get_heap_allocator());

@@ -140,7 +140,7 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 // MO's coefficient row, evaluate. This doubles as the worked example for the whole interface.
 UTEST(vlx, minimal_example) {
 	vlx_test_t t = {0};
-	str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
+	str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
 	ASSERT_TRUE(vlx_test_load(&t, path, MEGABYTES(32)));
 
 	md_allocator_i* arena = t.alloc;
@@ -385,10 +385,10 @@ UTEST(vlx, combined_spin_densities_h2o) {
 	const size_t plane  = num_ao * num_ao;
 
 	str_t paths[4] = {
-		STR_LIT("orbital/alpha/density"),
-		STR_LIT("orbital/beta/density"),
-		STR_LIT("orbital/total/density"),
-		STR_LIT("orbital/difference/density"),
+		STR_INIT("orbital/alpha/density"),
+		STR_INIT("orbital/beta/density"),
+		STR_INIT("orbital/total/density"),
+		STR_INIT("orbital/difference/density"),
 	};
 
 	double* mat[4] = {0};
@@ -441,9 +441,9 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 	ASSERT_TRUE(num_states > 0);
 
 	str_t paths[3] = {
-		STR_LIT("vlx/rsp/transition_density/attachment"),
-		STR_LIT("vlx/rsp/transition_density/detachment"),
-		STR_LIT("vlx/rsp/transition_density/difference"),
+		STR_INIT("vlx/rsp/transition_density/attachment"),
+		STR_INIT("vlx/rsp/transition_density/detachment"),
+		STR_INIT("vlx/rsp/transition_density/difference"),
 	};
 
 	const md_attribute_t* attr[3] = {0};

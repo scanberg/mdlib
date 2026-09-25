@@ -270,14 +270,14 @@ UTEST(xtc, decode_bits) {
 UTEST(xtc, run_every_frame) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/c"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(501u, run_num_frames(&sys, STR_LIT("run/c")));
     EXPECT_EQ(1336u, run_num_atoms(&sys, STR_LIT("run/c")));
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, 1336);
-    const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, STR_LIT("run/c"), paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t i = 0; i < 501; ++i) {
@@ -291,7 +291,7 @@ UTEST(xtc, catalyst) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp);
 
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -354,7 +354,7 @@ UTEST(xtc, big) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
-    const str_t path = STR_LIT("E:/data/md/big/PROD_r2.part0001.xtc");
+    const str_t path = STR_INIT("E:/data/md/big/PROD_r2.part0001.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -416,7 +416,7 @@ UTEST(xtc, amyloid) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
-    const str_t path = STR_LIT("E:/data/md/amyloid-6T/prod-centered.xtc");
+    const str_t path = STR_INIT("E:/data/md/amyloid-6T/prod-centered.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -474,7 +474,7 @@ UTEST(xtc, H1N1) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp);
 
-    const str_t path = STR_LIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
+    const str_t path = STR_INIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -533,7 +533,7 @@ done:
 
 #define XTC_RUN STR_LIT("run/catalyst")
 
-static const str_t xtc_coord_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+static const str_t xtc_coord_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
 
 // Recorded from the trajectory reader this replaced
 static const run_ref_t xtc_refs[] = {
@@ -543,7 +543,7 @@ static const run_ref_t xtc_refs[] = {
 };
 
 static bool xtc_load_catalyst(md_system_t* sys, md_allocator_i* arena) {
-    const str_t xtc = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const str_t xtc = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     sys->alloc = arena;
     md_system_state_t sys_state = {.alloc = arena};
     return md_gro_system_init_from_file(sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")) &&
@@ -606,7 +606,7 @@ UTEST(xtc, run_matches_reference) {
     EXPECT_EQ(md_attribute_extract_f32(all, F * N * 3, pos, md_unit_none()), 0u);
 
     // The cell and the frame alone: only the cell asked for, into a state without coordinates.
-    const str_t cell_only[] = { STR_LIT("unitcell") };
+    const str_t cell_only[] = { STR_INIT("unitcell") };
     ex = md_system_extract_begin(&sys, XTC_RUN, cell_only, 1, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t meta = {0};
@@ -638,17 +638,17 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
     for (size_t i = 0; i < F * 3; ++i) obs_label[i] = (int32_t)i;
 
     md_attributes_t* t = &sys.attributes;
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_LIT("run/catalyst/obs/time"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/obs/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {R}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_picosecond(), .data = obs_time, .byte_size = R * sizeof(double)}), MD_ATTRIBUTE_INVALID);
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_LIT("run/catalyst/obs/value"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/obs/value"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {R}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_kelvin(), .data = obs_value, .byte_size = R * sizeof(double)}), MD_ATTRIBUTE_INVALID);
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_LIT("run/catalyst/label"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/label"),
         .format = {.type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 2, .shape = {(uint32_t)F, 3}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = obs_label, .byte_size = F * 3 * sizeof(int32_t)}), MD_ATTRIBUTE_INVALID);
 
-    const str_t paths[] = { STR_LIT("obs/value"), STR_LIT("label") };
+    const str_t paths[] = { STR_INIT("obs/value"), STR_INIT("label") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, paths, ARRAY_SIZE(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
 
@@ -728,7 +728,7 @@ UTEST(xtc, run_needs_positions) {
     sys.attributes.alloc = arena;
     const double times[3] = { 0.0, 1.0, 2.0 };
     ASSERT_NE(md_attributes_create(&sys.attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("run/bare/time"),
+        .path = STR_INIT("run/bare/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {3}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = sizeof(times)}), MD_ATTRIBUTE_INVALID);
@@ -747,8 +747,8 @@ UTEST(xtc, run_needs_positions) {
 // it could not if the file were opened again per frame, as it is without a context.
 UTEST(xtc, run_context_keeps_the_file_open) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t src = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    const str_t tmp = STR_LIT("/tmp/md_unittest_run_context.xtc");
+    const str_t src = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const str_t tmp = STR_INIT("/tmp/md_unittest_run_context.xtc");
 
     // A private copy to remove.
     md_file_t in = {0}, out = {0};

@@ -81,7 +81,7 @@ static size_t count_flagged(const md_system_t* sys, md_bond_flags_t flag) {
 UTEST(itp, parse_sections_and_preprocessor) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
-    str_t src = STR_LIT(
+    str_t src = STR_INIT(
         "; comment line\n"
         "#define FLEXIBLE\n"
         "[ atomtypes ]\n"
@@ -172,7 +172,7 @@ UTEST(itp, parse_sections_and_preprocessor) {
 
     {
         // settles when FLEXIBLE is not defined
-        str_t rigid = STR_LIT("[ moleculetype ]\nSOL 2\n[ atoms ]\n1 OW 1 SOL OW 1\n2 HW 1 SOL HW1 1\n3 HW 1 SOL HW2 1\n"
+        str_t rigid = STR_INIT("[ moleculetype ]\nSOL 2\n[ atoms ]\n1 OW 1 SOL OW 1\n2 HW 1 SOL HW1 1\n3 HW 1 SOL HW2 1\n"
                               "#ifndef FLEXIBLE\n[ settles ]\n1 1 0.1 0.16\n#else\n[ bonds ]\n2 3 1\n#endif\n");
         md_itp_data_t d = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&d, rigid, STR_LIT(""), alloc));
@@ -181,7 +181,7 @@ UTEST(itp, parse_sections_and_preprocessor) {
     }
 
     {
-        str_t broken = STR_LIT("#ifdef A\n[ moleculetype ]\nX 1\n");
+        str_t broken = STR_INIT("#ifdef A\n[ moleculetype ]\nX 1\n");
         md_itp_data_t d = {0};
         EXPECT_FALSE(md_itp_data_parse_str(&d, broken, STR_LIT(""), alloc));
     }
@@ -280,7 +280,7 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
 
-    str_t water = STR_LIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
+    str_t water = STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
     {
         md_strb_t top = md_strb_create(alloc);
         md_strb_push_str(&top, make_msc_itp(alloc, "MSC", 3));

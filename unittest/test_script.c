@@ -282,7 +282,7 @@ UTEST_F(script, common_subexpression_elimination) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(arena);
-    str_t src = STR_LIT(
+    str_t src = STR_INIT(
         "x = element('H') in resname('ALA');\n"
         "y = element('O') in resname('ALA');\n"
     );
@@ -542,7 +542,7 @@ UTEST(script, array) {
     md_script_ir_t* ir = create_ir(arena);
 
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "s1 = residue(1:2);\n"
             "s2 = residue(2:4);\n"
             "s = {s1, s2};"
@@ -570,7 +570,7 @@ UTEST(script, array) {
     }
 
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "d1 = distance(1,2) in residue(1:2);\n"
             "d2 = distance(1,2) in residue(2:4);\n"
             "d = {d1, d2};"
@@ -598,7 +598,7 @@ UTEST(script, array) {
     }
 
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "c1 = coord(1:2);\n"
             "c2 = coord(4:6);\n"
             "c = {c1, c2};"
@@ -630,7 +630,7 @@ UTEST(script, array) {
 
     {
         // Stride on selection ranges: residue(1:2:3) -> residues {1,3}
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "s = residue(1:2:3);"
         );
 
@@ -647,7 +647,7 @@ UTEST(script, array) {
 
     {
         // Stride on index ranges for coordinate selection: coord(1:2:5) -> atoms {1,3,5}
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "c = coord(1:2:5);"
         );
 
@@ -776,7 +776,7 @@ UTEST(script, array_subscript) {
         }
     }
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "xyz  = coord(:);"
             "xyz1 = xyz[1,:];"
             "xyz2 = xyz[2,2:];"
@@ -902,7 +902,7 @@ UTEST(script, array_subscript) {
 
     {
         // Strided subscript over first dimension: pick x-component for atoms {1,3,5,7}
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "xyz = coord(1:8);"
             "xs  = xyz[1:2:7,1];"
         );
@@ -946,7 +946,7 @@ UTEST(script, dim_op) {
     md_script_ir_t* ir = create_ir(arena);
 
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
             "xyz  = coord(1:15);\n"
             "flat = flatten(xyz);\n"
             "xyz_t = transpose(xyz);\n"
@@ -1336,7 +1336,7 @@ UTEST_F(script, dynamic_length) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        str_t src = STR_LIT("sel1 = residue(within_z(1:50));");
+        str_t src = STR_INIT("sel1 = residue(within_z(1:50));");
         md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
@@ -1353,7 +1353,7 @@ UTEST_F(script, property_compute) {
 
     {
         md_script_ir_clear(ir);
-        str_t src = STR_LIT("num = count(residue(resname('ALA') and within(3.0, protein)));");
+        str_t src = STR_INIT("num = count(residue(resname('ALA') and within(3.0, protein)));");
         md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
@@ -1367,7 +1367,7 @@ UTEST_F(script, property_compute) {
 
     {
         md_script_ir_clear(ir);
-        str_t src = STR_LIT("{lin, plan, iso} = shape_weights(:);");
+        str_t src = STR_INIT("{lin, plan, iso} = shape_weights(:);");
         md_script_ir_compile_from_source(ir, src, mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
@@ -1407,7 +1407,7 @@ UTEST_F(script, property_compute) {
 
     {
         md_script_ir_clear(ir);
-        str_t src = STR_LIT("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
+        str_t src = STR_INIT("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
         md_script_ir_compile_from_source(ir, src, mol, NULL);
         ASSERT_TRUE(md_script_ir_valid(ir));
 
@@ -1470,7 +1470,7 @@ UTEST_F(script, property_compute) {
     }
 
     {
-        str_t src = STR_LIT("s1 = count(within(10, residue(:)));");
+        str_t src = STR_INIT("s1 = count(within(10, residue(:)));");
 
         md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, src, mol, NULL);
@@ -1756,7 +1756,7 @@ UTEST_F(script, parallel_evaluation) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
-    const str_t script = STR_LIT("p1 = distance(1,10);");
+    const str_t script = STR_INIT("p1 = distance(1,10);");
 
     md_script_eval_t* eval[NUM_THREADS] = {0};
     md_thread_t* threads[NUM_THREADS] = {0};
@@ -1847,7 +1847,7 @@ UTEST_F(script, visualize) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        str_t src = STR_LIT(
+        str_t src = STR_INIT(
         "w = shape_weights(residue(:));"
         "{x,y,z} = {w[:,1], w[:,2], w[:,3]};"
         "sx = w[5,1];"
@@ -1886,7 +1886,7 @@ UTEST_F(script, visualize) {
 
 UTEST(script, named_args_signature_table) {
     const str_t keywords[] = {
-        STR_LIT("in"), STR_LIT("of"), STR_LIT("out"), STR_LIT("and"), STR_LIT("or"), STR_LIT("xor"), STR_LIT("not"),
+        STR_INIT("in"), STR_INIT("of"), STR_INIT("out"), STR_INIT("and"), STR_INIT("or"), STR_INIT("xor"), STR_INIT("not"),
     };
 
     for (size_t s = 0; s < ARRAY_SIZE(signatures); ++s) {
@@ -2045,14 +2045,14 @@ UTEST_F(script, named_args_compile) {
 
     // The default script of viamd, and the same script with its arguments given by name in a different order.
     // Binding happens before anything else looks at the calls, so the two must compile to the same thing.
-    str_t positional = STR_LIT(
+    str_t positional = STR_INIT(
         "s1 = resname(\"ALA\")[2:8];\n"
         "d1 = distance(10,30);\n"
         "a1 = angle(2,1,3) in resname(\"ALA\");\n"
         "r = rdf(element('C'), element('H'), 10.0);\n"
         "v = sdf(s1, element('H'), 10.0);\n"
         "{lin,plan,iso} = shape_weights(all);\n");
-    str_t named = STR_LIT(
+    str_t named = STR_INIT(
         "s1 = resname(\"ALA\")[2:8];\n"
         "d1 = distance(b=30, a=10);\n"
         "a1 = angle(c=3, a=2, b=1) in resname(\"ALA\");\n"
@@ -2138,35 +2138,35 @@ UTEST_F(script, named_args_binding) {
     };
 
     const proc_sig_t sig_default = {
-        .proc = STR_LIT("angle"), .num_params = 3,
+        .proc = STR_INIT("angle"), .num_params = 3,
         .param = {
-            {STR_LIT("a"), PARAM_REQUIRED},
-            {STR_LIT("b"), PARAM_REQUIRED},
-            {STR_LIT("c"), PARAM_DEFAULT, .def_type = TI_INT, .def = {._int = 7}},
+            {STR_INIT("a"), PARAM_REQUIRED},
+            {STR_INIT("b"), PARAM_REQUIRED},
+            {STR_INIT("c"), PARAM_DEFAULT, .def_type = TI_INT, .def = {._int = 7}},
         },
     };
     const proc_sig_t sig_optional = {
-        .proc = STR_LIT("angle"), .num_params = 3,
+        .proc = STR_INIT("angle"), .num_params = 3,
         .param = {
-            {STR_LIT("a"), PARAM_REQUIRED},
-            {STR_LIT("b"), PARAM_OPTIONAL},
-            {STR_LIT("c"), PARAM_OPTIONAL},
+            {STR_INIT("a"), PARAM_REQUIRED},
+            {STR_INIT("b"), PARAM_OPTIONAL},
+            {STR_INIT("c"), PARAM_OPTIONAL},
         },
     };
     const proc_sig_t sig_kw_only = {
-        .proc = STR_LIT("angle"), .num_params = 3,
+        .proc = STR_INIT("angle"), .num_params = 3,
         .param = {
-            {STR_LIT("a"), PARAM_REQUIRED},
-            {STR_LIT("b"), PARAM_REQUIRED},
-            {STR_LIT("c"), PARAM_KW_ONLY},
+            {STR_INIT("a"), PARAM_REQUIRED},
+            {STR_INIT("b"), PARAM_REQUIRED},
+            {STR_INIT("c"), PARAM_KW_ONLY},
         },
     };
     const proc_sig_t sig_shadow = {
-        .proc = STR_LIT("angle"), .num_params = 3,
+        .proc = STR_INIT("angle"), .num_params = 3,
         .param = {
-            {STR_LIT("count"),   PARAM_REQUIRED},
-            {STR_LIT("residue"), PARAM_REQUIRED},
-            {STR_LIT("c"),       PARAM_REQUIRED},
+            {STR_INIT("count"),   PARAM_REQUIRED},
+            {STR_INIT("residue"), PARAM_REQUIRED},
+            {STR_INIT("c"),       PARAM_REQUIRED},
         },
     };
 
@@ -2506,7 +2506,7 @@ UTEST(script, reference_documents_every_procedure) {
     ASSERT_FALSE(str_empty(doc));
 
     // Procedures that the parser handles itself rather than through the procedure table
-    static const str_t intrinsics[] = { STR_LIT("attr"), STR_LIT("flatten"), STR_LIT("transpose") };
+    static const str_t intrinsics[] = { STR_INIT("attr"), STR_INIT("flatten"), STR_INIT("transpose") };
 
     str_t names[1024];  // documented names and aliases
     size_t num_names = 0;
@@ -3032,7 +3032,7 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
     EXPECT_EQ(md_script_ir_property_flags(ir, STR_LIT("d")), MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
 
     // Hovering the expressions
-    const str_t names[] = { STR_LIT("c"), STR_LIT("d"), STR_LIT("n") };
+    const str_t names[] = { STR_INIT("c"), STR_INIT("d"), STR_INIT("n") };
     for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
         identifier_t* ident = get_identifier(ir, names[i]);
         ASSERT_TRUE(ident);

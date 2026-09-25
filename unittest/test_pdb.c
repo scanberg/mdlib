@@ -11,7 +11,7 @@
 UTEST(pdb, parse_ordinary) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
@@ -29,7 +29,7 @@ UTEST(pdb, parse_ordinary) {
 UTEST(pdb, tryptophan) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
 
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/tryptophan.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/tryptophan.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
@@ -46,7 +46,7 @@ UTEST(pdb, tryptophan) {
 
 UTEST(pdb, unmatched_model_entry) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
@@ -63,7 +63,7 @@ UTEST(pdb, unmatched_model_entry) {
 
 UTEST(pdb, parse_trajectory) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_TRUE(result);
@@ -90,7 +90,7 @@ UTEST(pdb, parse_trajectory) {
 
 UTEST(pdb, create_system) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, arena));
@@ -117,7 +117,7 @@ UTEST(pdb, create_system) {
 
 UTEST(pdb, parse_nonexistent_file) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, alloc);
     EXPECT_FALSE(result);
@@ -151,7 +151,7 @@ static const run_ref_t pdb_refs[] = {
 // One frame per model, time as model ordinals, and the file's one CRYST1 cell at every frame.
 UTEST(pdb, run_matches_reference) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));

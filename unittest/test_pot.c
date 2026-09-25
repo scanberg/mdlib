@@ -89,7 +89,7 @@ UTEST(pot, minimal_and_units) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     // No atom-name column, bohr units, a comment and an unsupported section
-    str_t src = STR_LIT(
+    str_t src = STR_INIT(
         "# a comment\n"
         "@environment\n"
         "units: au\n"
@@ -129,23 +129,23 @@ UTEST(pot, malformed) {
 
     {   // Too few fields in @environment
         md_pot_t pot = {0};
-        str_t src = STR_LIT("@environment\nunits: angstrom\nxyz:\nO 0.0 0.0\n@end\n");
+        str_t src = STR_INIT("@environment\nunits: angstrom\nxyz:\nO 0.0 0.0\n@end\n");
         EXPECT_FALSE(md_pot_parse_str(&pot, src, alloc));
         EXPECT_EQ(0u, (unsigned)pot.num_sites);
     }
     {   // Coordinate that is not a number
         md_pot_t pot = {0};
-        str_t src = STR_LIT("@environment\nunits: angstrom\nxyz:\nO 0.0 0.0 abc\n@end\n");
+        str_t src = STR_INIT("@environment\nunits: angstrom\nxyz:\nO 0.0 0.0 abc\n@end\n");
         EXPECT_FALSE(md_pot_parse_str(&pot, src, alloc));
     }
     {   // Missing 'xyz:' directive
         md_pot_t pot = {0};
-        str_t src = STR_LIT("@environment\nunits: angstrom\nO 0.0 0.0 0.0\n@end\n");
+        str_t src = STR_INIT("@environment\nunits: angstrom\nO 0.0 0.0 0.0\n@end\n");
         EXPECT_FALSE(md_pot_parse_str(&pot, src, alloc));
     }
     {   // No @environment at all
         md_pot_t pot = {0};
-        str_t src = STR_LIT("@charges\nO -0.6 water\n@end\n");
+        str_t src = STR_INIT("@charges\nO -0.6 water\n@end\n");
         EXPECT_FALSE(md_pot_parse_str(&pot, src, alloc));
     }
 }

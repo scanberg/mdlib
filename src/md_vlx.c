@@ -3809,7 +3809,6 @@ done:
 	return result;
 }
 
-#define BAKE_STR(str) {str "", sizeof(str) - 1}
 
 static inline str_t resolve_basis_set_ident(str_t input) {
 	struct map_t {
@@ -3818,25 +3817,25 @@ static inline str_t resolve_basis_set_ident(str_t input) {
 	};
 
 	static const struct map_t alias_table[] = {
-        {BAKE_STR("6-31G*"),			BAKE_STR("6-31G_D_")},
-		{BAKE_STR("6-31G**"),			BAKE_STR("6-31G_D,P_")},
-		{BAKE_STR("6-31+G*"),			BAKE_STR("6-31+G_D_")},
-        {BAKE_STR("6-31+G**"),			BAKE_STR("6-31+G_D,P_")},
-		{BAKE_STR("6-31++G*"),			BAKE_STR("6-31++G_D_")},
-		{BAKE_STR("6-31++G**"),			BAKE_STR("6-31++G_D,P_")},
-        {BAKE_STR("6-311G*"),			BAKE_STR("6-311G_D_")},
-		{BAKE_STR("6-311G**"),			BAKE_STR("6-311G_D,P_")},
-		{BAKE_STR("6-311+G*"),			BAKE_STR("6-311+G_D_")},
-        {BAKE_STR("6-311+G**"),			BAKE_STR("6-311+G_D,P_")},
-		{BAKE_STR("6-311++G*"),			BAKE_STR("6-311++G_D_")},
-		{BAKE_STR("6-311++G**"),		BAKE_STR("6-311++G_D,P_")},
-        {BAKE_STR("6-31G(2DF,P)"),		BAKE_STR("6-31G_2DF,P_")},
-		{BAKE_STR("6-31G(3DF,3PD)"),	BAKE_STR("6-31G_3DF,3PD_")},
-		{BAKE_STR("6-311G(2DF,2PD)"),	BAKE_STR("6-311G_2DF,2PD_")},
-        {BAKE_STR("6-311+G(2D,P)"),		BAKE_STR("6-311+G_2D,P_")},
-		{BAKE_STR("6-311++G(2D,2P)"),	BAKE_STR("6-311++G_2D,2P_")},
-		{BAKE_STR("6-311++G(3DF,3PD)"),	BAKE_STR("6-311++G_3DF,3PD_")},
-        {BAKE_STR("DEF2-SV(P)"),		BAKE_STR("DEF2-SV_P_")},
+        {STR_INIT("6-31G*"),			STR_INIT("6-31G_D_")},
+		{STR_INIT("6-31G**"),			STR_INIT("6-31G_D,P_")},
+		{STR_INIT("6-31+G*"),			STR_INIT("6-31+G_D_")},
+        {STR_INIT("6-31+G**"),			STR_INIT("6-31+G_D,P_")},
+		{STR_INIT("6-31++G*"),			STR_INIT("6-31++G_D_")},
+		{STR_INIT("6-31++G**"),			STR_INIT("6-31++G_D,P_")},
+        {STR_INIT("6-311G*"),			STR_INIT("6-311G_D_")},
+		{STR_INIT("6-311G**"),			STR_INIT("6-311G_D,P_")},
+		{STR_INIT("6-311+G*"),			STR_INIT("6-311+G_D_")},
+        {STR_INIT("6-311+G**"),			STR_INIT("6-311+G_D,P_")},
+		{STR_INIT("6-311++G*"),			STR_INIT("6-311++G_D_")},
+		{STR_INIT("6-311++G**"),		STR_INIT("6-311++G_D,P_")},
+        {STR_INIT("6-31G(2DF,P)"),		STR_INIT("6-31G_2DF,P_")},
+		{STR_INIT("6-31G(3DF,3PD)"),	STR_INIT("6-31G_3DF,3PD_")},
+		{STR_INIT("6-311G(2DF,2PD)"),	STR_INIT("6-311G_2DF,2PD_")},
+        {STR_INIT("6-311+G(2D,P)"),		STR_INIT("6-311+G_2D,P_")},
+		{STR_INIT("6-311++G(2D,2P)"),	STR_INIT("6-311++G_2D,2P_")},
+		{STR_INIT("6-311++G(3DF,3PD)"),	STR_INIT("6-311++G_3DF,3PD_")},
+        {STR_INIT("DEF2-SV(P)"),		STR_INIT("DEF2-SV_P_")},
     };
 
 	for (size_t i = 0; i < ARRAY_SIZE(alias_table); ++i) {
@@ -3848,7 +3847,6 @@ static inline str_t resolve_basis_set_ident(str_t input) {
 	return input;
 }
 
-#undef BAKE_STR
 
 static int vlx_xps_compare_entry(const void* a, const void* b) {
 	const vlx_xps_entry_t* ea = (const vlx_xps_entry_t*)a;
@@ -4688,8 +4686,8 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		const size_t num_ao_nto = vlx_scf_number_of_atomic_orbitals(vlx);
 		if (max_lambdas > 0 && num_ao_nto > 0) {
 			const vlx_nto_type_t types[2] = { VLX_NTO_PARTICLE, VLX_NTO_HOLE };
-			str_t paths[2] = { STR_LIT("vlx/rsp/nto/particle/coefficient"), STR_LIT("vlx/rsp/nto/hole/coefficient") };
-			str_t labels[2] = { STR_LIT("Particle"), STR_LIT("Hole") };
+			str_t paths[2] = { STR_INIT("vlx/rsp/nto/particle/coefficient"), STR_INIT("vlx/rsp/nto/hole/coefficient") };
+			str_t labels[2] = { STR_INIT("Particle"), STR_INIT("Hole") };
 
 			md_attribute_format_t format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
@@ -4894,7 +4892,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bool supplemental) {
 	ASSERT(sys);
 
-	const str_t path = STR_LIT("qm/atom/system_index");
+	const str_t path = STR_INIT("qm/atom/system_index");
 	// Declared before the if: this is C, not the C++ side of the tree.
 	const md_attribute_t* existing = md_attributes_find(&sys->attributes, path);
 	if (existing) {
@@ -4917,7 +4915,7 @@ static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bo
 		.path   = path,
 			.format = format,
 			.unit   = md_unit_none(),
-			.label  = STR_LIT("System Atom Index"),
+			.label  = STR_INIT("System Atom Index"),
 	});
 
 	uint32_t* dst = (uint32_t*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_U32);

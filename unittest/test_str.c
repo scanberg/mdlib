@@ -7,12 +7,12 @@
 
 UTEST(str, parse_int) {
     str_t test_data[] = {
-        STR_LIT("1023"),
-        STR_LIT("-248"),
-        STR_LIT("1232326745"),
-        STR_LIT("1"),
-        STR_LIT("0"),
-        STR_LIT("-0"),
+        STR_INIT("1023"),
+        STR_INIT("-248"),
+        STR_INIT("1232326745"),
+        STR_INIT("1"),
+        STR_INIT("0"),
+        STR_INIT("-0"),
     };
 
     int64_t ref_data[] = {
@@ -27,7 +27,7 @@ UTEST(str, parse_int) {
 }
 
 UTEST(str, perf_int) {
-    const str_t str = STR_LIT("128326746123");
+    const str_t str = STR_INIT("128326746123");
     const int64_t num_iter = 1000000;
     int64_t acc = 0;
 
@@ -50,13 +50,13 @@ UTEST(str, perf_int) {
 
 UTEST(str, parse_float) {
     str_t test_data[] = {
-        STR_LIT("1023.22311283798172389718923789172389"),
-        STR_LIT("-248.273"),
-        STR_LIT("0000000000000.273"),
-        STR_LIT("1232326745e10"),
-        STR_LIT("1.0e-29"),
-        STR_LIT("0.02e+10"),
-        STR_LIT("-0"),
+        STR_INIT("1023.22311283798172389718923789172389"),
+        STR_INIT("-248.273"),
+        STR_INIT("0000000000000.273"),
+        STR_INIT("1232326745e10"),
+        STR_INIT("1.0e-29"),
+        STR_INIT("0.02e+10"),
+        STR_INIT("-0"),
     };
 
     double ref_data[] = {
@@ -77,7 +77,7 @@ UTEST(str, parse_float) {
 }
 
 UTEST(str, perf_float) {
-    const str_t str = STR_LIT("-248.271233");
+    const str_t str = STR_INIT("-248.271233");
     const int64_t num_iter = 1000000;
     double acc = 0;
 
@@ -98,7 +98,7 @@ UTEST(str, perf_float) {
 }
 
 UTEST(str, extract_line) {
-    str_t str = STR_LIT(
+    str_t str = STR_INIT(
         "this is some text\n"
         "this is line 2\n"
         "\n"

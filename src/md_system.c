@@ -2149,21 +2149,21 @@ bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
     // The axis first: everything temporal below is checked against it.
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = d->time_unit, .label = STR_LIT("Time"),
+        .unit = d->time_unit, .label = STR_INIT("Time"),
         .data = d->time, .byte_size = F * sizeof(double)});
 
     if (ok && d->step) {
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), run, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-            .unit = md_unit_none(), .label = STR_LIT("Step"),
-            .description = STR_LIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
+            .unit = md_unit_none(), .label = STR_INIT("Step"),
+            .description = STR_INIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
             .data = d->step, .byte_size = F * sizeof(int64_t)});
     }
 
     if (ok && (d->unitcell || d->unitcell_virt)) {
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), run, STR_LIT("unitcell")), .format = cell_format,
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_LIT("Unit Cell"),
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_INIT("Unit Cell"),
             .data = d->unitcell_virt ? NULL : d->unitcell, .byte_size = d->unitcell_virt ? 0 : F * 9 * sizeof(float),
             .virt = d->unitcell_virt});
     }
@@ -2184,7 +2184,7 @@ bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("atom/position")),
         .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)F, (uint32_t)N } },
-        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_LIT("Position"),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_INIT("Position"),
         .virt = d->position_virt});
 
     if (!ok) {
@@ -2293,7 +2293,7 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         // table before the real one is touched.
         md_attributes_t probe = { .alloc = temp_alloc };
         const md_attribute_id_t probe_id = md_attributes_create(&probe, &(md_attribute_desc_t){
-            .path = STR_LIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
+            .path = STR_INIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .data = d->time, .byte_size = R * sizeof(double)});
         const md_attribute_t* axis = probe_id ? md_attributes_get(&probe, probe_id) : NULL;
         if (!axis) goto done;
@@ -2317,7 +2317,7 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         ok = md_attributes_create(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .label = STR_LIT("Time"),
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .label = STR_INIT("Time"),
             .data = d->time, .byte_size = R * sizeof(double)}) != MD_ATTRIBUTE_INVALID;
     }
 

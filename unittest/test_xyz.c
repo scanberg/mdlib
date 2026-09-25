@@ -12,7 +12,7 @@
 #include <core/md_array.h>
 
 UTEST(xyz, xyz_standard) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -37,7 +37,7 @@ UTEST(xyz, xyz_standard) {
 }
 
 UTEST(xyz, c60) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -53,7 +53,7 @@ UTEST(xyz, c60) {
 }
 
 UTEST(xyz, xyz_xmol) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -79,7 +79,7 @@ UTEST(xyz, xyz_xmol) {
 }
 
 UTEST(xyz, xyz_tinker) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/full.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -110,7 +110,7 @@ UTEST(xyz, xyz_tinker) {
 }
 
 UTEST(xyz, xyz_tinker_arc) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/full.arc");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/full.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -141,7 +141,7 @@ UTEST(xyz, xyz_tinker_arc) {
 }
 
 UTEST(xyz, o2_arc) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/o2.arc");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/o2.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -169,7 +169,7 @@ UTEST(xyz, o2_arc) {
 }
 
 UTEST(xyz, h2o_arc) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/h2o.arc");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/h2o.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -190,7 +190,7 @@ UTEST(xyz, h2o_arc) {
 }
 
 UTEST(xyz, ch4_arc) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/ch4.arc");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/ch4.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
@@ -211,7 +211,7 @@ UTEST(xyz, ch4_arc) {
 }
 
 UTEST(xyz, extended_xyz) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/extended.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
 
@@ -248,7 +248,7 @@ UTEST(xyz, extended_xyz) {
 }
 
 UTEST(xyz, extended1_xyz) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/extended1.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/extended1.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
 
@@ -285,7 +285,7 @@ UTEST(xyz, extended1_xyz) {
 }
 
 UTEST(xyz, extended2_xyz) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/extended2.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/extended2.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_get_heap_allocator());
 
@@ -319,7 +319,7 @@ UTEST(xyz, extended2_xyz) {
 }
 
 UTEST(xyz, extended_xyz_lattice_braced) {
-    str_t input = STR_LIT(
+    str_t input = STR_INIT(
         "4\n"
         "Lattice={1 2 3 4 5 6 7 8 9} "
         "Properties=species:S:1:pos:R:3:forces:R:3:energies:R:1\n"
@@ -361,7 +361,7 @@ UTEST(xyz, extended_xyz_lattice_braced) {
 }
 
 UTEST(xyz, extended_xyz_lattice_array) {
-    str_t input = STR_LIT(
+    str_t input = STR_INIT(
         "4\n"
         "Lattice=[[1,2, 3], [4,5,6], [ 7 , 8, 9]] "
         "Properties=species:S:1:pos:R:3:forces:R:3:energies:R:1\n"
@@ -404,7 +404,7 @@ UTEST(xyz, extended_xyz_lattice_array) {
 
 UTEST(xyz, create_molecule) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
 
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
@@ -429,7 +429,7 @@ UTEST(xyz, create_molecule) {
 
 UTEST(xyz, comprehensive_c720) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/c720.xyz");
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
@@ -464,7 +464,7 @@ UTEST(xyz, error_handling) {
     md_allocator_i* alloc = md_get_heap_allocator();
     
     // Test nonexistent file
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
     bool result = md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_NONE);
@@ -558,7 +558,7 @@ UTEST(xyz, run_matches_reference) {
 
 // Extended XYZ with a tilted Lattice that changes from frame to frame: each frame's own cell.
 UTEST(xyz, run_extended_cell_per_frame) {
-    const str_t path = STR_LIT("md_unittest_run_extended.xyz");
+    const str_t path = STR_INIT("md_unittest_run_extended.xyz");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
     for (int f = 0; f < 3; ++f) {

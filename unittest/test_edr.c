@@ -47,10 +47,10 @@ UTEST(edr, comprehensive_validation) {
     
     // Test all available EDR files systematically
     str_t edr_files[] = {
-        STR_LIT(MD_UNITTEST_DATA_DIR "/ener.edr"),
-        STR_LIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"),
-        STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"),
-        STR_LIT(MD_UNITTEST_DATA_DIR "/orires.edr")
+        STR_INIT(MD_UNITTEST_DATA_DIR "/ener.edr"),
+        STR_INIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"),
+        STR_INIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"),
+        STR_INIT(MD_UNITTEST_DATA_DIR "/orires.edr")
     };
     
     for (int f = 0; f < 4; ++f) {
@@ -84,7 +84,7 @@ UTEST(edr, comprehensive_validation) {
 
 UTEST(edr, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.edr");
+    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/nonexistent.edr");
     
     md_edr_energies_t energies = {0};
     bool result = md_edr_energies_parse_file(&energies, path, alloc);
@@ -173,7 +173,7 @@ UTEST(edr, supplement_publishes_terms_along_their_own_axis) {
 
 static md_attribute_id_t edr_publish_run_axis(md_system_t* sys, const double* times, uint32_t n) {
     return md_attributes_create(&sys->attributes, &(md_attribute_desc_t){
-        .path = STR_LIT("run/test/time"),
+        .path = STR_INIT("run/test/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {n}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = n * sizeof(double)});
@@ -243,7 +243,7 @@ UTEST(edr, supplement_refuses_decreasing_times) {
     md_allocator_i* alloc = md_get_heap_allocator();
     double times[3]  = {0.0, 2.0, 1.0};
     double values[3] = {1.0, 2.0, 3.0};
-    md_edr_energy_t term = {.name = STR_LIT("Potential"), .unit_str = STR_LIT("kJ/mol"), .values = values};
+    md_edr_energy_t term = {.name = STR_INIT("Potential"), .unit_str = STR_INIT("kJ/mol"), .values = values};
     md_edr_energies_t e = {.num_frames = 3, .frame_time = times, .num_energies = 1, .energy = &term};
 
     md_system_t sys = {.alloc = alloc};

@@ -87,8 +87,8 @@ static bool cache_opens(str_t src, uint64_t magic, uint64_t version) {
 }
 
 UTEST(run_cache, accepts_the_file_it_was_made_from) {
-    const str_t src   = STR_LIT("md_unittest_run_cache.dat");
-    const str_t cache = STR_LIT("md_unittest_run_cache.dat.cache");
+    const str_t src   = STR_INIT("md_unittest_run_cache.dat");
+    const str_t cache = STR_INIT("md_unittest_run_cache.dat.cache");
     ASSERT_TRUE(write_text(src, "some frames"));
     md_file_info_t info = {0};
     ASSERT_TRUE(md_file_info_extract_from_path(src, &info));
@@ -120,8 +120,8 @@ UTEST(run_cache, accepts_the_file_it_was_made_from) {
 // The stamp is what the file was when the scan began, so a file written during the scan leaves a
 // cache that is already stale.
 UTEST(run_cache, rejects_another_size_or_time) {
-    const str_t src   = STR_LIT("md_unittest_run_cache_stale.dat");
-    const str_t cache = STR_LIT("md_unittest_run_cache_stale.dat.cache");
+    const str_t src   = STR_INIT("md_unittest_run_cache_stale.dat");
+    const str_t cache = STR_INIT("md_unittest_run_cache_stale.dat.cache");
     ASSERT_TRUE(write_text(src, "some frames"));
     md_file_info_t info = {0};
     ASSERT_TRUE(md_file_info_extract_from_path(src, &info));
@@ -175,7 +175,7 @@ static bool publish_lammps(md_system_t* sys, str_t path, str_t run, md_allocator
 // reads it and leaves it be, and once the stamp no longer matches the file the next publish scans
 // again and writes a cache that does.
 static void check_format(int* utest_result, str_t data, str_t copy, publish_fn publish, size_t expected_frames) {
-    const str_t run = STR_LIT("run/c");
+    const str_t run = STR_INIT("run/c");
     char cache_buf[512];
     const str_t cache = {cache_buf, (size_t)snprintf(cache_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(copy))};
 

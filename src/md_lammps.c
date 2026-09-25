@@ -1658,7 +1658,7 @@ bool md_lammps_system_publish_run(md_system_t* sys, str_t filename, str_t run, u
 		.path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
 		.format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { LAMMPS_LAYOUT_COUNT } },
 		.unit = md_unit_none(),
-		.description = STR_LIT("Columns of an atom line: id, x, y, z, ix, iy, iz; token count; cartesian, scaled, unwrapped"),
+		.description = STR_INIT("Columns of an atom line: id, x, y, z, ix, iy, iz; token count; cartesian, scaled, unwrapped"),
 		.data = layout, .byte_size = sizeof(layout)})) {
 		md_attributes_remove_prefix(&sys->attributes, run);
 		goto done;

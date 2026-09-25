@@ -30,11 +30,19 @@ typedef struct str_t {
 #endif
 } str_t;
 
-// Macro to bake a string literal into a str_t
+// Macros to bake a string literal into a str_t.
+// The empty string concatenation (cstr"") asserts that the input is a compile time string literal.
+//
+// STR_INIT: Braced initializer. Use when initializing a str_t (static/const variables, array elements, struct fields),
+//           since compound literals are not constant expressions in C (MSVC rejects them in static initializers).
+//           e.g. static const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+// STR_LIT:  Expression of type str_t. Use as function arguments, in assignments, return values, member access, etc.
+//           e.g. md_attributes_find(&attr, STR_LIT("atom/position"));
+#define STR_INIT(cstr) {(cstr""), (sizeof(cstr)-1)}
 #ifdef __cplusplus
-#define STR_LIT(cstr) {(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) (str_t STR_INIT(cstr))
 #else
-#define STR_LIT(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) ((str_t)STR_INIT(cstr))
 #endif
 
 #define STR_FMT "%.*s"

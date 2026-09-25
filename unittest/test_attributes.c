@@ -79,7 +79,7 @@ UTEST(attributes, format_math) {
 UTEST(attributes, create_and_reject) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 10, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 10, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
     EXPECT_NE(id, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_count(&t), 1u);
 
@@ -89,18 +89,18 @@ UTEST(attributes, create_and_reject) {
         EXPECT_EQ(data[i], 0.0f);
     }
 
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // duplicate
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("/atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // leading separator
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/x/"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // trailing separator
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom//x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // empty segment
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT(""), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // empty path
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_NONE, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // no type
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 0), .unit = md_unit_none(), .data = NULL, .byte_size = 0}),  MD_ATTRIBUTE_INVALID); // zero extent
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // duplicate
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("/atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // leading separator
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/x/"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // trailing separator
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom//x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // empty segment
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT(""), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // empty path
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_NONE, 10), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID); // no type
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 0), .unit = md_unit_none(), .data = NULL, .byte_size = 0}),  MD_ATTRIBUTE_INVALID); // zero extent
     EXPECT_EQ(md_attributes_count(&t), 1u);
 
     // an unset allocator is a rejection, not a crash
     md_attributes_t no_alloc = {0};
-    EXPECT_EQ(md_attributes_create(&no_alloc, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&no_alloc, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0}), MD_ATTRIBUTE_INVALID);
 
     md_attributes_free(&t);
     EXPECT_EQ(md_attributes_count(&t), 0u);
@@ -110,7 +110,7 @@ UTEST(attributes, create_with_data) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const float charges[4] = {-0.5f, 0.25f, 0.0f, 1.5f};
-    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = charges, .byte_size = sizeof(charges)});
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = charges, .byte_size = sizeof(charges)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     const md_attribute_t* a = md_attributes_get(&t, id);
@@ -123,7 +123,7 @@ UTEST(attributes, create_with_data) {
     EXPECT_TRUE(a->data != (const void*)charges);
 
     // NULL reserves and zeroes
-    md_attribute_id_t vel = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t vel = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
     ASSERT_NE(vel, MD_ATTRIBUTE_INVALID);
     const float* v = (const float*)md_attributes_get(&t, vel)->data;
     for (int i = 0; i < 12; ++i) {
@@ -140,19 +140,19 @@ UTEST(attributes, create_rejects_a_size_that_disagrees_with_the_format) {
     const float  values[4]     = {1.0f, 2.0f, 3.0f, 4.0f};
 
     // the f64-buffer-into-an-f32-format mistake, which is the whole point of taking a size
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = wrong_type, .byte_size = sizeof(wrong_type)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = wrong_type, .byte_size = sizeof(wrong_type)}), MD_ATTRIBUTE_INVALID);
     // too few elements
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(float)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(float)}), MD_ATTRIBUTE_INVALID);
     // a size with no pointer is a caller who meant to pass one
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 4 * sizeof(float)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 4 * sizeof(float)}), MD_ATTRIBUTE_INVALID);
     // a pointer with no size likewise
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = 0}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = 0}), MD_ATTRIBUTE_INVALID);
 
     // nothing was registered by any of them
     EXPECT_EQ(md_attributes_count(&t), 0u);
 
     // and the correct call still works
-    EXPECT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = sizeof(values)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = values, .byte_size = sizeof(values)}), MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_count(&t), 1u);
 
     md_attributes_free(&t);
@@ -161,8 +161,8 @@ UTEST(attributes, create_rejects_a_size_that_disagrees_with_the_format) {
 UTEST(attributes, path_and_lookup) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attribute_id_t mul = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t scf = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("scf_energy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 1), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t mul = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t scf = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("scf_energy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 1), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
 
     const md_attribute_t* a = md_attributes_find(&t, STR_LIT("atom/charge/mulliken"));
     ASSERT_TRUE(a != NULL);
@@ -191,14 +191,14 @@ UTEST(attributes, unit_round_trips) {
     const float b[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     md_unit_t angstrom_sq = md_unit_pow(md_unit_angstrom(), 2);
 
-    md_attribute_id_t bf  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/b_factor"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = angstrom_sq, .data = b, .byte_size = sizeof(b)});
-    md_attribute_id_t occ = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = b, .byte_size = sizeof(b)});
+    md_attribute_id_t bf  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/b_factor"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = angstrom_sq, .data = b, .byte_size = sizeof(b)});
+    md_attribute_id_t occ = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = b, .byte_size = sizeof(b)});
 
     EXPECT_TRUE(md_unit_equal(md_attributes_get(&t, bf)->unit, angstrom_sq));
     EXPECT_TRUE(md_unit_is_none(md_attributes_get(&t, occ)->unit));
 
     // a zeroed unit is dimensionless, not an invalid state to guard against
-    md_attribute_id_t z = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/anything"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = (md_unit_t){0}, .data = NULL, .byte_size = 0});
+    md_attribute_id_t z = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/anything"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = (md_unit_t){0}, .data = NULL, .byte_size = 0});
     EXPECT_TRUE(md_unit_is_none(md_attributes_get(&t, z)->unit));
 
     md_attributes_free(&t);
@@ -215,8 +215,8 @@ UTEST(attributes, anchored_vector_group) {
 
     md_unit_t au = md_unit_scl(md_unit_mul(md_unit_mul(md_unit_ampere(), md_unit_second()), md_unit_bohr_radius()), 1.602176634e-19);
 
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("dipole/ground_state/vector"), .format = vec3, .unit = au, .data = vector, .byte_size = sizeof(vector)});
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("dipole/ground_state/origin"), .format = vec3, .unit = md_unit_angstrom(), .data = origin, .byte_size = sizeof(origin)});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("dipole/ground_state/vector"), .format = vec3, .unit = au, .data = vector, .byte_size = sizeof(vector)});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("dipole/ground_state/origin"), .format = vec3, .unit = md_unit_angstrom(), .data = origin, .byte_size = sizeof(origin)});
 
     // one 3-vector, not three scalars: this is what components buys over an extra axis
     const md_attribute_t* v = md_attributes_find(&t, STR_LIT("dipole/ground_state/vector"));
@@ -256,10 +256,10 @@ UTEST(attributes, extract_converts_type) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const double src[4] = {1.5, -2.25, 0.0, 1.0e-8};
-    md_attribute_id_t f64 = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/f64"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 4), .unit = md_unit_none(), .data = src, .byte_size = sizeof(src)});
+    md_attribute_id_t f64 = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/f64"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 4), .unit = md_unit_none(), .data = src, .byte_size = sizeof(src)});
 
     const int16_t ints[4] = {-3, 0, 7, 32767};
-    md_attribute_id_t i16 = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/i16"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_I16, 4), .unit = md_unit_none(), .data = ints, .byte_size = sizeof(ints)});
+    md_attribute_id_t i16 = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/i16"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_I16, 4), .unit = md_unit_none(), .data = ints, .byte_size = sizeof(ints)});
 
     float dst[8];
 
@@ -275,7 +275,7 @@ UTEST(attributes, extract_converts_type) {
 
     // the whole attribute, components included: {N,3} yields N*3 floats
     const float vecs[6] = {1,2,3, 4,5,6};
-    md_attribute_id_t v = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/vec"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 2, 3), .unit = md_unit_none(), .data = vecs, .byte_size = sizeof(vecs)});
+    md_attribute_id_t v = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/vec"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 2, 3), .unit = md_unit_none(), .data = vecs, .byte_size = sizeof(vecs)});
     EXPECT_EQ(md_attribute_extract_f32(dst, ARRAY_SIZE(dst), md_attributes_get(&t, v), md_unit_none()), 6u);
     EXPECT_EQ(dst[5], 6.0f);
 
@@ -289,7 +289,7 @@ UTEST(attributes, extract_converts_unit) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const float lengths[2] = {10.0f, 2.5f};
-    md_attribute_id_t len = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/length"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2), .unit = md_unit_angstrom(), .data = lengths, .byte_size = sizeof(lengths)});
+    md_attribute_id_t len = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/length"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2), .unit = md_unit_angstrom(), .data = lengths, .byte_size = sizeof(lengths)});
 
     float dst[4];
 
@@ -315,10 +315,10 @@ UTEST(attributes, extract_refuses_incompatible_units) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const double dipole[3] = {0.0, 0.0, 0.7273};   // e a0
-    md_attribute_id_t d = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("dipole/ground_state/vector"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F64, 1, 3), .unit = md_unit_elementary_charge_bohr(), .data = dipole, .byte_size = sizeof(dipole)});
+    md_attribute_id_t d = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("dipole/ground_state/vector"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F64, 1, 3), .unit = md_unit_elementary_charge_bohr(), .data = dipole, .byte_size = sizeof(dipole)});
 
     const float occ[2] = {0.5f, 1.0f};
-    md_attribute_id_t o = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2), .unit = md_unit_none(), .data = occ, .byte_size = sizeof(occ)});
+    md_attribute_id_t o = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2), .unit = md_unit_none(), .data = occ, .byte_size = sizeof(occ)});
 
     float dst[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
 
@@ -372,13 +372,13 @@ UTEST(attributes, extract_from_pdb) {
 UTEST(attributes, query_matches_at_segment_boundary) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attribute_id_t vel  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t mul  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t low  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t zed  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atomic_number/z"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_U8,  4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t dip  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("dipole/magnetic"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t vel  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t mul  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t low  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t zed  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atomic_number/z"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_U8,  4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t dip  = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("dipole/magnetic"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
     // sorts BETWEEN "atom" and "atom/..." because '-' is below '/', so a naive walk stops early
-    md_attribute_id_t dash = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom-x/weird"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t dash = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom-x/weird"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
     EXPECT_EQ(md_attributes_count(&t), 6u);
 
     md_attribute_id_t ids[16];
@@ -419,10 +419,10 @@ UTEST(attributes, query_matches_at_segment_boundary) {
 UTEST(attributes, query_children) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("dipole/magnetic"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("dipole/magnetic"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
 
     str_t children[8];
 
@@ -450,7 +450,7 @@ UTEST(attributes, query_children) {
 UTEST(attributes, data_is_type_checked) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
 
     float* p = (float*)md_attributes_data(&t, id, MD_ATTRIBUTE_TYPE_F32);
     ASSERT_TRUE(p != NULL);
@@ -471,9 +471,9 @@ UTEST(attributes, data_is_type_checked) {
 UTEST(attributes, remove_keeps_the_table_sorted) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    md_attribute_id_t vel = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t mul = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
-    md_attribute_id_t low = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t vel = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/velocity"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 4, 3), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t mul = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t low = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
 
     EXPECT_TRUE(md_attributes_remove(&t, mul));
     EXPECT_FALSE(md_attributes_remove(&t, mul));
@@ -486,7 +486,7 @@ UTEST(attributes, remove_keeps_the_table_sorted) {
     EXPECT_EQ(md_attributes_get(&t, ids[1])->id, vel);
 
     // the id is the path hash, so recreating the same path yields the same id
-    md_attribute_id_t again = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
+    md_attribute_id_t again = md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = NULL, .byte_size = 0});
     EXPECT_EQ(again, mul);
     EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &t, STR_LIT("atom")), 3u);
 
@@ -587,11 +587,11 @@ UTEST(attributes, components_must_be_stated) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     md_attribute_format_t no_components = {.type = MD_ATTRIBUTE_TYPE_F32, .rank = 1, .shape = {10}};
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/b"), .format = no_components, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/b"), .format = no_components, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
 
     // An extent past the declared rank is the old {N,3} spelling surviving a port.
     md_attribute_format_t stale = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 1, .shape = {10, 3}};
-    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_LIT("a/c"), .format = stale, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("a/c"), .format = stale, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
 
     EXPECT_EQ(md_attributes_count(&t), 0u);
     md_attributes_free(&t);
@@ -610,7 +610,7 @@ UTEST(attributes, multi_axis_slice) {
     };
     md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(),
+        .path = STR_INIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(),
         .data = charges, .byte_size = sizeof(charges)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
@@ -664,7 +664,7 @@ UTEST(attributes, slice_keeps_components) {
 
     md_attribute_format_t modes = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = {2, 3}};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/normal_mode"), .format = modes, .unit = md_unit_none(),
+        .path = STR_INIT("atom/normal_mode"), .format = modes, .unit = md_unit_none(),
         .data = disp, .byte_size = sizeof(disp)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
@@ -697,15 +697,15 @@ UTEST(attributes, label_and_description) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     md_attribute_id_t a = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
-        .unit = md_unit_none(), .label = STR_LIT("Mulliken"),
-        .description = STR_LIT("Partial charge by Mulliken population analysis")});
+        .path = STR_INIT("atom/charge/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .label = STR_INIT("Mulliken"),
+        .description = STR_INIT("Partial charge by Mulliken population analysis")});
     ASSERT_NE(a, MD_ATTRIBUTE_INVALID);
 
     // duplicate labels are legal and not a warning: nothing keys on them
     md_attribute_id_t b = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
-        .unit = md_unit_none(), .label = STR_LIT("Mulliken")});
+        .path = STR_INIT("atom/charge/lowdin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .label = STR_INIT("Mulliken")});
     EXPECT_NE(b, MD_ATTRIBUTE_INVALID);
 
     EXPECT_TRUE(str_eq(md_attributes_get(&t, a)->label, STR_LIT("Mulliken")));
@@ -714,7 +714,7 @@ UTEST(attributes, label_and_description) {
 
     // an omitted label is empty: a valid state, and the consumer's cue to prettify the leaf
     md_attribute_id_t c = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/hirshfeld"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()});
+        .path = STR_INIT("atom/charge/hirshfeld"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()});
     ASSERT_NE(c, MD_ATTRIBUTE_INVALID);
     EXPECT_TRUE(str_empty(md_attributes_get(&t, c)->label));
     EXPECT_TRUE(str_empty(md_attributes_get(&t, c)->description));
@@ -734,7 +734,7 @@ UTEST(attributes, extract_f64_keeps_precision) {
     // Distinguishable in double, indistinguishable once narrowed to float.
     const double src[2] = { -76.0266327408, -76.0266327409 };
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("scf/energy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .path = STR_INIT("scf/energy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
         .unit = md_unit_none(), .data = src, .byte_size = sizeof(src)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
@@ -765,7 +765,7 @@ UTEST(attributes, extract_slice_f64_row) {
     };
     md_attribute_format_t format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = {3, 4}};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/alpha/coefficient"), .format = format, .unit = md_unit_none(),
+        .path = STR_INIT("orbital/alpha/coefficient"), .format = format, .unit = md_unit_none(),
         .data = coeff, .byte_size = sizeof(coeff)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
@@ -847,21 +847,21 @@ UTEST(attributes, virtual_create_and_reject) {
     // no provider is a rejection, not a virtual attribute that always fails
     md_attribute_virtual_t no_provider = {0};
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &no_provider}), MD_ATTRIBUTE_INVALID);
+        .path = STR_INIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &no_provider}), MD_ATTRIBUTE_INVALID);
 
     // virt and resident data at the same time is ambiguous about which one is authoritative
     const float data[12] = {0};
     md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+        .path = STR_INIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+        .path = STR_INIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
 
     EXPECT_EQ(md_attributes_count(&t), 0u);
 
     // the correct call publishes a virtual attribute with no resident storage
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+        .path = STR_INIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     const md_attribute_t* a = md_attributes_get(&t, id);
@@ -880,7 +880,7 @@ UTEST(attributes, virtual_extract_whole_and_slice_agree) {
     md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
     md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+        .path = STR_INIT("atom/charge/mulliken_per_state"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     const md_attribute_t* a = md_attributes_get(&t, id);
@@ -908,7 +908,7 @@ UTEST(attributes, virtual_extract_converts_unit) {
     md_attribute_virtual_t virt = {.provider = provider_constant_f32, .user_data = &length_angstrom};
     md_attribute_format_t single = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {2}};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/length"), .format = single, .unit = md_unit_angstrom(), .virt = &virt});
+        .path = STR_INIT("a/length"), .format = single, .unit = md_unit_angstrom(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     const md_attribute_t* a = md_attributes_get(&t, id);
@@ -929,7 +929,7 @@ UTEST(attributes, virtual_provider_lying_about_count_fails) {
 
     md_attribute_virtual_t virt = {.provider = provider_wrong_count};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .virt = &virt});
+        .path = STR_INIT("a/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     float dst[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
@@ -947,7 +947,7 @@ UTEST(attributes, virtual_attributes_data_returns_null) {
     md_attribute_virtual_t virt = {.provider = provider_state_ramp_f32};
     md_attribute_format_t per_state = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
+        .path = STR_INIT("a/b"), .format = per_state, .unit = md_unit_none(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     EXPECT_TRUE(md_attributes_data(&t, id, MD_ATTRIBUTE_TYPE_F32) == NULL);
@@ -970,7 +970,7 @@ UTEST(attributes, virtual_user_data_lifecycle) {
 
     md_attribute_virtual_t owned_virt = {.provider = provider_constant_f32, .user_data = owned, .user_data_size = sizeof(float)};
     md_attribute_id_t owned_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/owned"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &owned_virt});
+        .path = STR_INIT("a/owned"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &owned_virt});
     ASSERT_NE(owned_id, MD_ATTRIBUTE_INVALID);
 
     float dst[1] = {0};
@@ -981,7 +981,7 @@ UTEST(attributes, virtual_user_data_lifecycle) {
     float borrowed = 7.0f;
     md_attribute_virtual_t borrowed_virt = {.provider = provider_constant_f32, .user_data = &borrowed, .user_data_size = 0};
     md_attribute_id_t borrowed_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("a/borrowed"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &borrowed_virt});
+        .path = STR_INIT("a/borrowed"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1), .unit = md_unit_none(), .virt = &borrowed_virt});
     ASSERT_NE(borrowed_id, MD_ATTRIBUTE_INVALID);
 
     EXPECT_TRUE(md_attributes_remove(&t, borrowed_id));
@@ -997,8 +997,8 @@ UTEST(attributes, alias_shares_storage) {
 
     const float charges[4] = {0.5f, -0.25f, 0.125f, 1.0f};
     md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
-        .unit = md_unit_none(), .label = STR_LIT("Mulliken (VeloxChem)"),
+        .path = STR_INIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_none(), .label = STR_INIT("Mulliken (VeloxChem)"),
         .data = charges, .byte_size = sizeof(charges)});
     ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
 
@@ -1044,7 +1044,7 @@ UTEST(attributes, alias_cannot_outlive_its_target) {
 
     const float v[2] = {1.0f, 2.0f};
     md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("vlx/a"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
+        .path = STR_INIT("vlx/a"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
         .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
     ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
 
@@ -1072,7 +1072,7 @@ UTEST(attributes, removing_an_alias_leaves_the_target) {
 
     const float v[2] = {3.0f, 4.0f};
     md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("vlx/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
+        .path = STR_INIT("vlx/b"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 2),
         .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
     md_attribute_id_t alias = md_attributes_alias(&t, src, STR_LIT("b/neutral"), (str_t){0}, (str_t){0});
     ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
@@ -1103,7 +1103,7 @@ UTEST(attributes, removing_an_alias_leaves_the_target) {
 UTEST(attributes, id_from_path_resolves_without_the_table) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
-    const str_t path = STR_LIT("vlx/density_property/relaxed");
+    const str_t path = STR_INIT("vlx/density_property/relaxed");
     const md_attribute_id_t expected = md_attributes_id_from_path(path);
 
     EXPECT_NE(expected, MD_ATTRIBUTE_INVALID);
@@ -1142,7 +1142,7 @@ UTEST(attributes, slice_format_narrows_rank_3_to_a_matrix) {
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3, .shape = {2, 3, 3},
     };
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("rsp/transition_density"), .format = format,
+        .path = STR_INIT("rsp/transition_density"), .format = format,
         .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
@@ -1219,7 +1219,7 @@ UTEST(attributes, alias_of_a_virtual_attribute_reads_through_its_provider) {
     md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {4}};
 
     md_attribute_id_t alpha = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &virt});
+        .path = STR_INIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &virt});
     ASSERT_NE(alpha, MD_ATTRIBUTE_INVALID);
 
     md_attribute_id_t beta = md_attributes_alias(&t, alpha, STR_LIT("orbital/beta/density"), (str_t){0}, (str_t){0});
@@ -1254,19 +1254,19 @@ UTEST(attributes, virtual_over_an_alias_of_a_virtual) {
     md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {4}};
 
     md_attribute_id_t alpha = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &spin_virt});
+        .path = STR_INIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &spin_virt});
     ASSERT_NE(md_attributes_alias(&t, alpha, STR_LIT("orbital/beta/density"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
 
-    combine_ctx_t total_ctx = {&t, STR_LIT("orbital/alpha/density"), STR_LIT("orbital/beta/density"),  1.0};
-    combine_ctx_t diff_ctx  = {&t, STR_LIT("orbital/alpha/density"), STR_LIT("orbital/beta/density"), -1.0};
+    combine_ctx_t total_ctx = {&t, STR_INIT("orbital/alpha/density"), STR_INIT("orbital/beta/density"),  1.0};
+    combine_ctx_t diff_ctx  = {&t, STR_INIT("orbital/alpha/density"), STR_INIT("orbital/beta/density"), -1.0};
 
     md_attribute_virtual_t total_virt = {.provider = provider_combine_f32, .user_data = &total_ctx};
     md_attribute_virtual_t diff_virt  = {.provider = provider_combine_f32, .user_data = &diff_ctx};
 
     md_attribute_id_t total = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/total/density"), .format = fmt, .unit = md_unit_none(), .virt = &total_virt});
+        .path = STR_INIT("orbital/total/density"), .format = fmt, .unit = md_unit_none(), .virt = &total_virt});
     md_attribute_id_t diff = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("orbital/difference/density"), .format = fmt, .unit = md_unit_none(), .virt = &diff_virt});
+        .path = STR_INIT("orbital/difference/density"), .format = fmt, .unit = md_unit_none(), .virt = &diff_virt});
     ASSERT_NE(total, MD_ATTRIBUTE_INVALID);
     ASSERT_NE(diff,  MD_ATTRIBUTE_INVALID);
 
@@ -1384,7 +1384,7 @@ UTEST(attributes, temporal_flag_is_verified_against_its_axis) {
 
     const double times[2] = {0.0, 10.0};
     md_attribute_id_t axis_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/time"),
+        .path = STR_INIT("run/a/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {2}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = sizeof(times)});
@@ -1403,17 +1403,17 @@ UTEST(attributes, temporal_flag_is_verified_against_its_axis) {
         .type = MD_ATTRIBUTE_TYPE_F32, .components = 2, .rank = 2, .shape = {5, 3},
     };
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = STR_INIT("run/a/backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
 
     // Temporal with no index axes at all has no outermost axis to be about.
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/backbone/angle"), .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 0},
+        .path = STR_INIT("run/a/backbone/angle"), .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 0},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_count(&t), 1u);
 
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/backbone/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = STR_INIT("run/a/backbone/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_radian(), .data = data, .byte_size = sizeof(data)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_get(&t, id)->flags, MD_ATTRIBUTE_FLAG_TEMPORAL);
@@ -1425,14 +1425,14 @@ UTEST(attributes, temporal_flag_is_verified_against_its_axis) {
     // The same shape WITHOUT the tag is fine: a leading extent that happens to equal the frame
     // count is a coincidence, and nothing tries to infer intent from it.
     md_attribute_id_t matrix = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("some/matrix"), .format = fmt, .unit = md_unit_none(),
+        .path = STR_INIT("some/matrix"), .format = fmt, .unit = md_unit_none(),
         .data = data, .byte_size = sizeof(data)});
     ASSERT_NE(matrix, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, matrix)), NULL);
 
     // Temporal with nothing above it to be temporal ALONG is refused: publish the axis first.
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("elsewhere/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = STR_INIT("elsewhere/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
 
     // An alias is a second name for one datum, so it is the same kind of quantity - along the same
@@ -1455,20 +1455,20 @@ UTEST(attributes, nearest_axis_wins) {
     const double values[5]    = {1.0, 2.0, 3.0, 4.0, 5.0};
 
     md_attribute_id_t run_axis = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .path = STR_INIT("run/a/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(), .data = run_times, .byte_size = sizeof(run_times)});
     md_attribute_id_t edr_axis = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/edr/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
+        .path = STR_INIT("run/a/edr/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(), .data = edr_times, .byte_size = sizeof(edr_times)});
     ASSERT_NE(run_axis, MD_ATTRIBUTE_INVALID);
     ASSERT_NE(edr_axis, MD_ATTRIBUTE_INVALID);
 
     // Under edr/ the energy file's own axis is the nearer one, and the run's frame count is wrong.
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .path = STR_INIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(double)}), MD_ATTRIBUTE_INVALID);
     md_attribute_id_t pot = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
+        .path = STR_INIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = sizeof(values)});
     ASSERT_NE(pot, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, pot)), md_attributes_get(&t, edr_axis));
@@ -1476,11 +1476,11 @@ UTEST(attributes, nearest_axis_wins) {
     // A "time" of the wrong shape is data, not an axis.
     const double not_axis[2 * 3] = {0};
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/weird/time"),
+        .path = STR_INIT("run/a/weird/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = {2, 3}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = not_axis, .byte_size = sizeof(not_axis)}), MD_ATTRIBUTE_INVALID);
     md_attribute_id_t val = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("run/a/weird/value"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .path = STR_INIT("run/a/weird/value"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(double)});
     ASSERT_NE(val, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, val)), md_attributes_get(&t, run_axis));
@@ -1556,7 +1556,7 @@ UTEST(attributes, provider_writes_into_dst_when_nothing_converts) {
     void* seen = NULL;
     md_attribute_virtual_t virt = {.provider = provider_record_dst, .user_data = &seen};
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("computed/length"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("computed/length"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_angstrom(), .virt = &virt});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
     const md_attribute_t* attr = md_attributes_get(&t, id);
@@ -1616,7 +1616,7 @@ UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
 
     const double times[4] = {0.0, 1.0, 2.0, 3.0};
     md_attribute_id_t time_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("time"),
+        .path = STR_INIT("time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {4}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = sizeof(times)});
@@ -1631,7 +1631,7 @@ UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
     float constant = 1.0f;
     md_attribute_virtual_t virt = {.provider = provider_constant_f32, .user_data = &constant};
     md_attribute_id_t vir_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/position"),
+        .path = STR_INIT("atom/position"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = {4, 2}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .virt = &virt});
     ASSERT_NE(vir_id, MD_ATTRIBUTE_INVALID);
@@ -1656,25 +1656,25 @@ UTEST(attributes, query_narrows_by_flags) {
 
     // The axis the series is temporal along, at the root as a script evaluation publishes it.
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
+        .path = STR_INIT("time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(),
         .data = frames, .byte_size = sizeof(frames)}), MD_ATTRIBUTE_INVALID);
 
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("script/dist"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .path = STR_INIT("script/dist"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(),
         .data = series, .byte_size = sizeof(series)}), MD_ATTRIBUTE_INVALID);
 
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("script/rdf"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("script/rdf"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_none(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
 
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("script/rdf/bin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("script/rdf/bin"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_angstrom(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
 
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("atom/occupancy"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_none(), .data = bins, .byte_size = sizeof(bins)}), MD_ATTRIBUTE_INVALID);
 
     // One script, both kinds, one namespace - the case a second table would have split.
@@ -1701,7 +1701,7 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     const double second[3] = {10.0, 20.0, 30.0};
 
     const md_attribute_desc_t a = {
-        .path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .path = STR_INIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
         .unit = md_unit_none(), .data = first, .byte_size = sizeof(first),
     };
     md_attribute_id_t id = md_attributes_replace(&t, &a);
@@ -1714,7 +1714,7 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     // Replacing with a DIFFERENT type and values is the reload case: same path, new answer. The id
     // is a hash of the path, so anything holding it keeps working.
     const md_attribute_desc_t b = {
-        .path = STR_LIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
+        .path = STR_INIT("atom/charge"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
         .unit = md_unit_none(), .data = second, .byte_size = sizeof(second),
     };
     md_attribute_id_t id2 = md_attributes_replace(&t, &b);
@@ -1731,7 +1731,7 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
 
     // A path nothing occupies is a plain create.
     md_attribute_id_t fresh = md_attributes_replace(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .path = STR_INIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
         .unit = md_unit_none(), .data = first, .byte_size = sizeof(first)});
     ASSERT_NE(fresh, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_count(&t), 2u);
@@ -1740,7 +1740,7 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     ASSERT_NE(md_attributes_alias(&t, fresh, STR_LIT("atom/weight"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_count(&t), 3u);
     md_attributes_replace(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
+        .path = STR_INIT("atom/mass"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
         .unit = md_unit_none(), .data = first, .byte_size = sizeof(first)});
     EXPECT_EQ(md_attributes_count(&t), 2u);
     EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/weight")) == NULL);
@@ -1759,7 +1759,7 @@ UTEST(attributes, touch_reaches_every_name_of_the_datum) {
 
     const float charges[4] = {0.5f, -0.25f, 0.125f, 1.0f};
     md_attribute_id_t src = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("vlx/atom/mulliken"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_none(), .data = charges, .byte_size = sizeof(charges)});
     ASSERT_NE(src, MD_ATTRIBUTE_INVALID);
 
@@ -1791,7 +1791,7 @@ UTEST(attributes, touch_reaches_every_name_of_the_datum) {
 
     // A neighbour is untouched: the sweep is over the datum, not over the table.
     md_attribute_id_t other = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("atom/b_factor"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("atom/b_factor"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_none()});
     const uint64_t vo = md_attributes_version(&t, other);
     md_attributes_touch(&t, src);
@@ -1805,7 +1805,7 @@ UTEST(attributes, version_tracks_content_not_access) {
 
     const float v[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     const md_attribute_desc_t desc = {
-        .path = STR_LIT("backbone/angle"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .path = STR_INIT("backbone/angle"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
         .unit = md_unit_none(), .data = v, .byte_size = sizeof(v),
     };
 
@@ -1836,7 +1836,7 @@ UTEST(attributes, version_tracks_content_not_access) {
 
     // The counter is table wide, so a second attribute never collides with the first's history.
     md_attribute_id_t other = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("backbone/secondary_structure"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_I32, 4),
+        .path = STR_INIT("backbone/secondary_structure"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_I32, 4),
         .unit = md_unit_none()});
     ASSERT_NE(other, MD_ATTRIBUTE_INVALID);
     EXPECT_TRUE(md_attributes_version(&t, other) > v2);

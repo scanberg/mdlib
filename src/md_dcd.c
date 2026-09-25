@@ -890,14 +890,14 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
         .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { DCD_LAYOUT_COUNT } },
         .unit = md_unit_none(),
-        .description = STR_LIT("CHARMM flags, byte order reversed, number of fixed atoms"),
+        .description = STR_INIT("CHARMM flags, byte order reversed, number of fixed atoms"),
         .data = layout, .byte_size = sizeof(layout)});
 
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/translation")),
         .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 0 },
         .unit = md_unit_angstrom(),
-        .description = STR_LIT("Added to every coordinate read from the file"),
+        .description = STR_INIT("Added to every coordinate read from the file"),
         .data = translation, .byte_size = sizeof(translation)});
 
     if (ok && nfixed > 0) {
@@ -917,12 +917,12 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/free_atoms")),
             .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { (uint32_t)nfree } },
-            .unit = md_unit_none(), .description = STR_LIT("The atoms each frame after the first carries, zero based"),
+            .unit = md_unit_none(), .description = STR_INIT("The atoms each frame after the first carries, zero based"),
             .data = free_atoms, .byte_size = nfree * sizeof(int32_t)});
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/first_frame")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 1, .shape = { (uint32_t)N } },
-            .unit = md_unit_angstrom(), .description = STR_LIT("The first frame as stored, before the translation"),
+            .unit = md_unit_angstrom(), .description = STR_INIT("The first frame as stored, before the translation"),
             .data = first_frame, .byte_size = N * 3 * sizeof(float)});
     }
 

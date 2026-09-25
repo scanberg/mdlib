@@ -13,7 +13,7 @@
 #define TEST(str) md_filter(&bf, STR_LIT(str), &sys, &state, NULL, &is_dynamic, err, sizeof(err))
 
 UTEST(filter, centered) {
-    const str_t gro_file = STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro");
+    const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
@@ -33,7 +33,7 @@ UTEST(filter, centered) {
 
 // A filter whose number of bitfields is only known once evaluated: the residues within some distance
 UTEST(filter, variable_length) {
-    const str_t gro_file = STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro");
+    const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
