@@ -129,7 +129,15 @@ void md_spatial_acc_for_each_internal_pair_in_neighboring_cells(const md_spatial
 void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const struct md_coord_stream_t* ext_coords, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags);
 
 // Perform a spatial query for points within the spatial acceleration structure within a bounding box defined by center and half extent (radius)
+// The coordinates handed to the callback are cartesian, in the periodic images nearest the image of aabb_cen
+// which md_spatial_acc_aabb_query_center reports - which is not aabb_cen itself when that lies outside the cell.
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param);
+
+// The image of an AABB query centre the query works in: folded into the cell along the periodic axes.
+// A caller which relates the returned coordinates to its own centre offsets them by (center - out_center),
+// a lattice vector. Deriving it independently (e.g. wrapping with md_util_pbc) can disagree by a whole cell
+// for a centre on a cell face.
+void md_spatial_acc_aabb_query_center(double out_center[3], const md_spatial_acc_t* acc, const double center[3]);
 
 void md_spatial_acc_for_each_point_in_sphere(const md_spatial_acc_t* acc, const double center[3], double radius, md_spatial_acc_point_callback_t callback, void* user_param);
 

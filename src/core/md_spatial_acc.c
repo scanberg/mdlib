@@ -1939,6 +1939,33 @@ static void for_each_external_pair_within_cutoff_ortho(const md_spatial_acc_t* a
     FLUSH_TAIL_PAIR();
 }
 
+// The image of a query centre which the AABB query works in: folded into the cell along each periodic
+// axis, left alone along the others. Both the bounds test and the returned coordinates are relative to it.
+static inline void aabb_query_center(double out_frac[3], double out_cart[3], const double center[3], const md_spatial_acc_t* acc) {
+    double s[3];
+    cart_to_fract(s, center, acc);
+
+    if (acc->flags & MD_UNITCELL_PBC_X) s[0] = fract(s[0]);
+    if (acc->flags & MD_UNITCELL_PBC_Y) s[1] = fract(s[1]);
+    if (acc->flags & MD_UNITCELL_PBC_Z) s[2] = fract(s[2]);
+
+    if (out_frac) {
+        out_frac[0] = s[0];
+        out_frac[1] = s[1];
+        out_frac[2] = s[2];
+    }
+    if (out_cart) {
+        fract_to_cart(out_cart, s, acc);
+    }
+}
+
+void md_spatial_acc_aabb_query_center(double out_center[3], const md_spatial_acc_t* acc, const double center[3]) {
+    ASSERT(out_center);
+    ASSERT(acc);
+    ASSERT(center);
+    aabb_query_center(NULL, out_center, center, acc);
+}
+
 static inline void cell_range_from_aabb_center_radius(
     int out_cmin[3],                 // inclusive
     int out_cmax[3],                 // exclusive (loop while ic < cmax)
@@ -1954,15 +1981,10 @@ static inline void cell_range_from_aabb_center_radius(
         (acc->flags & MD_UNITCELL_PBC_Z) != 0,
     };
     
+    // The same image md_spatial_acc_aabb_query_center reports - they have to agree exactly
     double sc[3];
-    cart_to_fract(sc, center, acc);
-
-    for (int a = 0; a < 3; ++a) {
-        if (pbc[a]) sc[a] = fract(sc[a]);
-    }
-
     double cc[3];
-    fract_to_cart(cc, sc, acc);
+    aabb_query_center(sc, cc, center, acc);
 
     // 2) Convert 8 corners to fractional, unwrap them near the center image, take component-wise min/max.
     double fmin[3] = { +DBL_MAX, +DBL_MAX, +DBL_MAX };
@@ -2274,10 +2296,13 @@ static void for_each_point_in_aabb_triclinic(const md_spatial_acc_t* acc, const 
                         const md_256i v_idx_mask = md_mm256_compression_mask_8x32(mask);
                         md_256i v_idxj = md_mm256_loadu_si256((const md_256i*)(elem_idx + j));
 
+                        // The callback takes cartesian coordinates (see POSSIBLY_INVOKE_CALLBACK_POINT_ORT). They
+                        // were already computed for the bounds test above, so hand those out rather than the
+                        // fractional ones, which is what this used to pass on unconverted.
                         v_idxj = md_mm256_permutevar8x32_epi32(v_idxj, v_idx_mask);
-                        v_sx   = md_mm256_permutevar8x32_ps(v_sx, v_idx_mask);
-                        v_sy   = md_mm256_permutevar8x32_ps(v_sy, v_idx_mask);
-                        v_sz   = md_mm256_permutevar8x32_ps(v_sz, v_idx_mask);
+                        v_cx   = md_mm256_permutevar8x32_ps(v_cx, v_idx_mask);
+                        v_cy   = md_mm256_permutevar8x32_ps(v_cy, v_idx_mask);
+                        v_cz   = md_mm256_permutevar8x32_ps(v_cz, v_idx_mask);
 
                         // The outer flush is keyed on how big the cell is, which says nothing about how many of its
                         // elements actually match. A single cell can fill the staging buffer on its own as soon as the
@@ -2286,9 +2311,9 @@ static void for_each_point_in_aabb_triclinic(const md_spatial_acc_t* acc, const 
                         ASSERT(count + 8 <= SPATIAL_ACC_BUFLEN);
 
                         md_mm256_storeu_epi32(buf_i + count, v_idxj);
-                        md_mm256_storeu_ps   (buf_x + count, v_sx);
-                        md_mm256_storeu_ps   (buf_y + count, v_sy);
-                        md_mm256_storeu_ps   (buf_z + count, v_sz);
+                        md_mm256_storeu_ps   (buf_x + count, v_cx);
+                        md_mm256_storeu_ps   (buf_y + count, v_cy);
+                        md_mm256_storeu_ps   (buf_z + count, v_cz);
 
                         count += popcnt32(mask);
                     }
@@ -2353,7 +2378,10 @@ static void for_each_point_in_sphere_ortho(const md_spatial_acc_t* acc, const do
     const vec4_t fcell_dim = vec4_set((float)cdim[0], (float)cdim[1], (float)cdim[2], 0);
     const vec4_t r4 = vec4_set((float)center[0], (float)center[1], (float)center[2], 0);
     vec4_t f4 = vec4_cart_to_fract(r4, acc);
-    f4 = vec4_blend(vec4_fract(f4), f4, pbc_mask);
+    // Folded into the cell along the periodic axes. vec4_blend takes the second operand where the mask
+    // is set; the operands were the other way around, which left a centre outside the cell unfolded and
+    // walked cell indices out of range.
+    f4 = vec4_blend(f4, vec4_fract(f4), pbc_mask);
     const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f4, fcell_dim)));
 
     const md_256 v_xi = md_mm256_set1_ps(f4.x);
@@ -2594,7 +2622,8 @@ static void for_each_point_in_sphere_triclinic(const md_spatial_acc_t* acc, cons
         }
     }
 
-    FLUSH_TAIL_POINT_CART_TRI();
+    // The buffer holds fractional coordinates here, like every flush above converts
+    FLUSH_TAIL_POINT_FRACT_TRI();
 }
 
 #undef SPATIAL_ACC_BUFLEN

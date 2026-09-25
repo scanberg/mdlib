@@ -3557,3 +3557,160 @@ UTEST(script, keywords_and_builtin_identifiers) {
         EXPECT_TRUE_MSG(found, msg);
     }
 }
+
+// PERIODIC INVARIANCE
+//
+// Translating every atom by the same vector and wrapping each atom back into the cell does not change
+// the configuration, so it must not change anything a script measures. The translations are chosen so
+// that the probed structure ends up straddling each face of the cell in turn, which is exactly the
+// case where a procedure that treats the raw coordinates as contiguous goes wrong.
+
+typedef struct pbc_probe_t {
+    const char* name;
+    int         kind;   // 0: scalar, 1: float[N], 2: volume
+    float       tol;    // absolute for scalars, relative L1 for volumes
+} pbc_probe_t;
+
+static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, vec3_t shift, bool wrap) {
+    for (size_t i = 0; i < src->num_atoms; ++i) {
+        dst->xyz[i] = vec3_add(src->xyz[i], shift);
+    }
+    if (wrap) {
+        md_util_pbc(dst->xyz, NULL, dst->num_atoms, &dst->unitcell);
+    }
+}
+
+// As an evaluation of a frame does it, including the per atom masses and radii
+static bool pbc_eval(data_t* out, md_script_ir_t* ir, const char* name, md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    identifier_t* ident = get_identifier(ir, str_from_cstr(name));
+    if (!ident || !ident->node) return false;
+    float* mass   = md_alloc(alloc, sizeof(float) * ALIGN_TO(sys->atom.count, 16));
+    float* radius = md_alloc(alloc, sizeof(float) * ALIGN_TO(sys->atom.count, 16));
+    md_atom_extract_masses(mass,   0, sys->atom.count, &sys->atom);
+    md_atom_extract_radii (radius, 0, sys->atom.count, &sys->atom);
+    eval_context_t ctx = { .ir = ir, .sys = sys, .atom_mass = mass, .atom_radius = radius, .temp_alloc = alloc, .alloc = alloc, .cur_state = state, .ref_state = &sys->reference };
+    return evaluate_node_alloc(out, ident->node, &ctx, alloc);
+}
+
+static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src, const char* anchor, const pbc_probe_t* probes, size_t num_probes, md_allocator_i* alloc) {
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL);
+    if (!md_script_ir_valid(ir)) {
+        for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+            str_t err = md_script_ir_errors(ir)[i].text;
+            printf("  %.*s\n", (int)err.len, err.ptr);
+        }
+    }
+    ASSERT_TRUE(md_script_ir_valid(ir));
+
+    const md_system_state_t* ref = &sys->reference;
+
+    // The structure the translations are placed around: its plain centroid in the reference state
+    md_bitfield_t anchor_bf = md_bitfield_create(alloc);
+    ASSERT_TRUE(eval_selection(&anchor_bf, str_from_cstr(anchor), sys));
+    vec3_t c = {0};
+    size_t n = 0;
+    md_bitfield_iter_t it = md_bitfield_iter_create(&anchor_bf);
+    while (md_bitfield_iter_next(&it)) {
+        c = vec3_add(c, ref->xyz[md_bitfield_iter_idx(&it)]);
+        n += 1;
+    }
+    ASSERT_GT(n, (size_t)0);
+    c = vec3_div1(c, (float)n);
+
+    mat3_t A = {0}, I = {0};
+    md_unitcell_A_extract_float(A.elem, &ref->unitcell);
+    md_unitcell_I_extract_float(I.elem, &ref->unitcell);
+    const vec3_t fc = mat3_mul_vec3(I, c);
+
+    // Values in the reference state
+    data_t* want = md_alloc(alloc, sizeof(data_t) * num_probes);
+    for (size_t p = 0; p < num_probes; ++p) {
+        ASSERT_TRUE(pbc_eval(&want[p], ir, probes[p].name, sys, ref, alloc));
+    }
+
+    md_system_state_t state = *ref;
+    state.xyz = md_alloc(alloc, sizeof(vec3_t) * ref->num_atoms);
+
+    // Wrapped per atom: the centroid onto each face (fractional 0 along one axis), onto a corner,
+    // and a generic offset. Not wrapped: the whole system carried out of the cell, as a trajectory
+    // with whole molecules or without jumps has it.
+    const struct { vec3_t f; bool wrap; } targets[] = {
+        { { 0.0f,   fc.y,  fc.z }, true },
+        { { fc.x,   0.0f,  fc.z }, true },
+        { { fc.x,   fc.y,  0.0f }, true },
+        { { 0.0f,   0.0f,  0.0f }, true },
+        { { 1.0f,   0.02f, 0.97f }, true },
+        { { fc.x + 0.37f, fc.y - 0.61f, fc.z + 0.29f }, true },
+        { { fc.x + 2.0f,  fc.y, fc.z }, false },
+        { { fc.x - 0.9f,  fc.y + 1.3f, fc.z - 2.2f }, false },
+        { { 1.0f,   1.0f,  -1.0f }, false },
+    };
+
+    for (size_t t = 0; t < ARRAY_SIZE(targets); ++t) {
+        const vec3_t shift = mat3_mul_vec3(A, vec3_sub(targets[t].f, fc));
+        pbc_translate(&state, ref, shift, targets[t].wrap);
+
+        for (size_t p = 0; p < num_probes; ++p) {
+            data_t got = {0};
+            ASSERT_TRUE(pbc_eval(&got, ir, probes[p].name, sys, &state, alloc));
+            const float* a = (const float*)want[p].ptr;
+            const float* b = (const float*)got.ptr;
+            // Every probe is float data; volumes are one element of 128^3 floats, so count floats by size
+            const size_t len = got.size / sizeof(float);
+            ASSERT_EQ(want[p].size, got.size);
+
+            if (probes[p].kind == 2) {
+                double l1 = 0, sum = 0;
+                for (size_t i = 0; i < len; ++i) {
+                    l1  += fabs((double)a[i] - (double)b[i]);
+                    sum += fabs((double)a[i]);
+                }
+                const double rel = sum > 0 ? l1 / sum : l1;
+                if (!(rel <= probes[p].tol)) printf("  %s: target %zu, relative L1 difference %.4f (sum %.0f)\n", probes[p].name, t, rel, sum);
+                EXPECT_GT(sum, 0.0);
+                EXPECT_LE(rel, (double)probes[p].tol);
+            } else {
+                for (size_t i = 0; i < len; ++i) {
+                    if (!(fabsf(a[i] - b[i]) <= probes[p].tol)) printf("  %s[%zu]: target %zu, reference %f, translated %f\n", probes[p].name, i, t, a[i], b[i]);
+                    EXPECT_NEAR(a[i], b[i], probes[p].tol);
+                }
+            }
+        }
+    }
+}
+
+static const pbc_probe_t PBC_PROBES[] = {
+    { "r",  0, 1.0e-3f },
+    { "a",  0, 1.0e-3f },
+    { "d",  0, 1.0e-3f },
+    { "x",  0, 1.0e-2f },
+    { "w",  1, 1.0e-3f },
+    { "v",  2, 2.0e-2f },
+};
+
+UTEST_F(script, pbc_invariance_ortho) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    pbc_invariance(utest_result, &utest_fixture->ala,
+        "r = rmsd(residue(1:8));\n"
+        "a = angle(atom(1), atom(45), atom(90));\n"
+        "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
+        "x = distance(residue(1), residue(8));\n"
+        "w = shape_weights(residue(1:8));\n"
+        "v = sdf(residue(4), element('C'), 8.0);\n",
+        "residue(4)", PBC_PROBES, ARRAY_SIZE(PBC_PROBES), alloc);
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST_F(script, pbc_invariance_triclinic) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    pbc_invariance(utest_result, &utest_fixture->npt,
+        "r = rmsd(residue(1:8));\n"
+        "a = angle(atom(1), atom(45), atom(90));\n"
+        "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
+        "x = distance(residue(1), residue(8));\n"
+        "w = shape_weights(residue(1:8));\n"
+        "v = sdf(residue(4), element('O'), 8.0);\n",
+        "residue(4)", PBC_PROBES, ARRAY_SIZE(PBC_PROBES), alloc);
+    md_vm_arena_destroy(alloc);
+}

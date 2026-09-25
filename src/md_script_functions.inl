@@ -4143,15 +4143,27 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
     
     if (dst || ctx->vis) {
-        const vec3_t a = coordinate_extract_com(arg[0], ctx);
         const vec3_t b = coordinate_extract_com(arg[1], ctx);
-        const vec3_t c = coordinate_extract_com(arg[2], ctx);
-        const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
-        const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
+
+        // Both arms under the minimum image convention, as distance and dihedral do. Taken from the
+        // raw coordinates, an angle whose atoms sit on either side of a cell boundary came out as the
+        // angle to an arm a whole cell long.
+        vec3_t dx[2] = {
+            vec3_sub(coordinate_extract_com(arg[0], ctx), b),
+            vec3_sub(coordinate_extract_com(arg[2], ctx), b),
+        };
+        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->cur_state->unitcell);
+
+        // The ends placed in the images the arms were taken in, so the drawn angle is the measured one
+        const vec3_t a = vec3_add(b, dx[0]);
+        const vec3_t c = vec3_add(b, dx[1]);
+        const vec3_t v0 = vec3_normalize(dx[0]);
+        const vec3_t v1 = vec3_normalize(dx[1]);
+        const float  cos_angle = CLAMP(vec3_dot(v0, v1), -1.0f, 1.0f);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = acosf(vec3_dot(v0, v1));
+            as_float(*dst) = acosf(cos_angle);
         }
 
         if (ctx->vis) {
@@ -4172,7 +4184,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                 // This is the angle arc
                 const vec3_t axis = vec3_normalize(vec3_cross(v0, v1));
-                const float angle = acosf(vec3_dot(v0, v1));
+                const float angle = acosf(cos_angle);
 
                 draw_angle_arc(b, v0, axis, angle, COLOR_WHITE, ctx->vis);
 
@@ -4359,15 +4371,16 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw_vec4(xyzw[0], ctx->ref_state->xyz, ctx->atom_mass, &bf);
                 extract_xyzw_vec4(xyzw[1], ctx->cur_state->xyz, ctx->atom_mass, &bf);
 
-                vec3_t com[2] = {
-                    md_util_com_compute_vec4(xyzw[0], NULL, count, &ctx->ref_state->unitcell),
-                    md_util_com_compute_vec4(xyzw[1], NULL, count, &ctx->cur_state->unitcell),
-                };
-
-				md_util_convert_to_relative_coordinates_vec4(xyzw[0], com[0], count, &ctx->ref_state->unitcell);
-                md_util_convert_to_relative_coordinates_vec4(xyzw[1], com[1], count, &ctx->cur_state->unitcell);
-                
-				md_util_optimal_rotation_rel_vec4(xyzw[0], xyzw[1], count);
+                // Each set is placed into mutually consistent images against its own cell, and its centre is
+                // the plain weighted mean of the placed points - which is what the fit below subtracts.
+                // Coordinates stay absolute: md_util_rmsd_compute_vec4 subtracts the centres itself, so
+                // handing it relative coordinates as well subtracts them twice. A circular mean lands in
+                // the reference cell whatever image the set sits in, so that double subtraction turned
+                // every boundary crossing into a jump of up to a whole cell in the result.
+                // Correct while the selection spans less than half a cell, as any per point image choice.
+                vec3_t com[2] = {0};
+                md_util_deperiodize_self_vec4(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
+                md_util_deperiodize_self_vec4(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
 
                 as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
                 md_temp_end(temp);
@@ -5692,37 +5705,31 @@ typedef struct sdf_payload_t {
 
 // Spatial acceleration callback for point query
 void sdf_cb(const uint32_t in_idx[], const float in_x[], const float in_y[], const float in_z[], size_t num_points, void* user_param) {
-    // The coordiantes should have been pruned here and only the points which reside within the AABB should have been returned.
-    // They should also have been deperiodized with respect to the center of the AABB, meaning that the coordinates should be directly mappable to the volume grid.
-    // This means we should just transform the given coordinate to volume space and increment the corresponding voxel.
+    // The points come in the periodic images around the query centre the spatial acc works in, and M is
+    // built against exactly that centre (see md_spatial_acc_aabb_query_center), so M maps them straight
+    // onto the grid. The query box encloses the rotated volume, so its corners hold points outside the
+    // volume: those are dropped. Clamping them piled their counts onto the faces of the volume.
 
     sdf_payload_t* data = user_param;
 
-    if (data->exclusion_mask) {
-        for (size_t i = 0; i < num_points; ++i) {
-            uint32_t idx = in_idx[i];
-            if (md_bitfield_test_bit(data->exclusion_mask, idx)) {
-                continue;
-            }
+    for (size_t i = 0; i < num_points; ++i) {
+        if (data->exclusion_mask && md_bitfield_test_bit(data->exclusion_mask, in_idx[i])) {
+            continue;
+        }
 
-            vec4_t c = mat4_mul_vec4(data->M, vec4_set(in_x[i], in_y[i], in_z[i], 1.0f));
-            uint32_t ix = (uint32_t)CLAMP((int32_t)c.x, 0, MD_VOL_DIM - 1);
-            uint32_t iy = (uint32_t)CLAMP((int32_t)c.y, 0, MD_VOL_DIM - 1);
-            uint32_t iz = (uint32_t)CLAMP((int32_t)c.z, 0, MD_VOL_DIM - 1);
-            size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
-            ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
-            data->vol[vol_idx] += 1.0f;
+        const vec4_t c = mat4_mul_vec4(data->M, vec4_set(in_x[i], in_y[i], in_z[i], 1.0f));
+        if (!(c.x >= 0.0f && c.x < (float)MD_VOL_DIM &&
+              c.y >= 0.0f && c.y < (float)MD_VOL_DIM &&
+              c.z >= 0.0f && c.z < (float)MD_VOL_DIM)) {
+            continue;
         }
-    } else {
-        for (size_t i = 0; i < num_points; ++i) {
-            vec4_t c = mat4_mul_vec4(data->M, vec4_set(in_x[i], in_y[i], in_z[i], 1.0f));
-            uint32_t ix = (uint32_t)CLAMP((int32_t)c.x, 0, MD_VOL_DIM - 1);
-            uint32_t iy = (uint32_t)CLAMP((int32_t)c.y, 0, MD_VOL_DIM - 1);
-            uint32_t iz = (uint32_t)CLAMP((int32_t)c.z, 0, MD_VOL_DIM - 1);
-            size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
-            ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
-            data->vol[vol_idx] += 1.0f;
-        }
+
+        const uint32_t ix = MIN((uint32_t)c.x, MD_VOL_DIM - 1);
+        const uint32_t iy = MIN((uint32_t)c.y, MD_VOL_DIM - 1);
+        const uint32_t iz = MIN((uint32_t)c.z, MD_VOL_DIM - 1);
+        const size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
+        ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
+        data->vol[vol_idx] += 1.0f;
     }
 }
 
@@ -5797,7 +5804,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));
-        mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
+        const mat3_t A3 = mat3_transpose(eigen.vectors);
+        mat4_t A = mat4_from_mat3(A3);
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
         mat4_t V = compute_volume_matrix(cutoff);
@@ -5839,17 +5847,34 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // so drop the copy rather than smear a wrong orientation into the volume.
             if (residual > 0.25f * min_cell_extent) continue;
 
+            // ref_com[1] is in the image the copy arrived in (see md_util_optimal_rotation_pbc_vec4_iter),
+            // which is where it is drawn, so the visualized frame sits on the atoms.
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {
+                // The neighbours come back around the query centre as the spatial acc folds it into the
+                // cell, which is a whole lattice vector off ref_com[1] whenever the copy sits outside the
+                // cell - trajectories with whole molecules, or unwrapped ones. Built against ref_com[1],
+                // every one of those frames was mapped a cell away from the grid and clamped onto its faces.
+                const double aabb_cen[3] = { ref_com[1].x, ref_com[1].y, ref_com[1].z };
+                double query_cen[3];
+                md_spatial_acc_aabb_query_center(query_cen, &spatial_acc, aabb_cen);
+                const mat4_t RT_query = mat4_mul(mat4_from_mat3(R), mat4_translate(-(float)query_cen[0], -(float)query_cen[1], -(float)query_cen[2]));
+
                 sdf_payload_t payload = {
-                    .M = mat4_mul(VA, RT),
+                    .M = mat4_mul(VA, RT_query),
                     .vol = vol,
                     .exclusion_mask = bf,
                 };
 
-                const double aabb_cen[3] = { ref_com[1].x, ref_com[1].y, ref_com[1].z };
-                const double aabb_rad[3] = { cutoff, cutoff, cutoff };
+                // The volume is a cube of half extent 'cutoff' in the aligned frame. Its extent along each
+                // world axis is the query box, which must enclose all of it: a box of half extent 'cutoff'
+                // in world space misses the corners of any rotated volume.
+                const mat3_t Q = mat3_mul(A3, R);   // world -> aligned
+                double aabb_rad[3];
+                for (int k = 0; k < 3; ++k) {
+                    aabb_rad[k] = cutoff * (fabs(Q.elem[k][0]) + fabs(Q.elem[k][1]) + fabs(Q.elem[k][2]));
+                }
 				md_spatial_acc_for_each_point_in_aabb(&spatial_acc, aabb_cen, aabb_rad, sdf_cb, &payload);
             }
             if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
@@ -5950,16 +5975,21 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int* idx = md_temp_alloc_array(temp, int, count);
     md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
 
-    float* rad = md_temp_alloc_array(temp, float, count);
-    md_atom_extract_radii(rad, 0, count, &ctx->sys->atom);
+    // Per atom radii, indexed by atom index as extract_xyzw_vec4 reads them. This used to be the radii of
+    // atoms [0, count) - read by atom index, so past its end for most selections - and those values
+    // set the extent of the grid through the aabb below.
+    const float* rad = ctx->atom_radius;
+    if (!rad) {
+        float* all = md_temp_alloc_array(temp, float, ctx->sys->atom.count);
+        md_atom_extract_radii(all, 0, ctx->sys->atom.count, &ctx->sys->atom);
+        rad = all;
+    }
 
     // Build a working copy of coordinates and deperiodize to make selection contiguous
     md_array(vec4_t) xyzr = 0;
     md_array_resize(xyzr, count, ctx->temp_alloc);
     extract_xyzw_vec4(xyzr, ctx->cur_state->xyz, rad, bf);
-    const vec3_t com = md_util_com_compute_vec4(xyzr, 0, count, &ctx->cur_state->unitcell);
-    md_util_com_compute(ctx->cur_state->xyz, NULL, idx, count, &ctx->cur_state->unitcell);
-    md_util_deperiodize_vec4(xyzr, count, com, &ctx->cur_state->unitcell);
+    md_util_deperiodize_self_vec4(xyzr, count, &ctx->cur_state->unitcell, NULL);
 
     vec3_t bmin, bmax;
     md_util_aabb_compute_vec4(bmin.elem, bmax.elem, xyzr, 0, count);
@@ -6080,8 +6110,11 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
 
                     extract_xyzw_vec4(xyzw, ctx->cur_state->xyz, ctx->atom_mass, bf);
-                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->cur_state->unitcell);
-                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->cur_state->unitcell);
+                    // The covariance is about the mean of the placed points. The circular mean the
+                    // placement is seeded from is not that mean, and the offset between the two enters
+                    // the covariance squared.
+                    vec3_t com = {0};
+                    md_util_deperiodize_self_vec4(xyzw, count, &ctx->cur_state->unitcell, &com);
 
                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                     out_weights[i] = md_util_shape_weights(&M);
@@ -6090,8 +6123,8 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
-            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->cur_state->unitcell);
-            md_util_deperiodize_vec4(xyzw, count, com, &ctx->cur_state->unitcell);
+            vec3_t com = {0};
+            md_util_deperiodize_self_vec4(xyzw, count, &ctx->cur_state->unitcell, &com);
             const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
             out_weights[0] = md_util_shape_weights(&M);
         }

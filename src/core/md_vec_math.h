@@ -1210,10 +1210,11 @@ MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_blendv_ps(a.m128, b.m128, mask.m128);
 #else
-    r.x = (mask.x != 0) ? a.x : b.x;
-    r.y = (mask.y != 0) ? a.y : b.y;
-    r.z = (mask.z != 0) ? a.z : b.z;
-    r.w = (mask.w != 0) ? a.w : b.w;
+    // b where the mask is set, as blendv does
+    r.x = (mask.x != 0) ? b.x : a.x;
+    r.y = (mask.y != 0) ? b.y : a.y;
+    r.z = (mask.z != 0) ? b.z : a.z;
+    r.w = (mask.w != 0) ? b.w : a.w;
 #endif
     return r;
 }

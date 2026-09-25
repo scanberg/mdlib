@@ -1692,6 +1692,23 @@ static inline void minimum_image_triclinic(float dx[3], const float box[3][3]) {
     *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
     *   \  c_x  c_y  c_z  /                 \  6    7    8  /
     */
+
+    // The search below only looks one lattice vector in each direction, so first bring dx into the
+    // zone it covers. Without this a separation of more than one box - any point of an unwrapped
+    // trajectory which has diffused out of the cell - silently gets a wrong image.
+    // Reduce along c, then b, then a: the box is lower triangular, so each step leaves the
+    // components already reduced untouched.
+    for (int i = 2; i >= 0; --i) {
+        if (box[i][i] != 0.0f) {
+            const float n = roundf(dx[i] / box[i][i]);
+            if (n != 0.0f) {
+                for (int j = i; j >= 0; --j) {
+                    dx[j] -= n * box[i][j];
+                }
+            }
+        }
+    }
+
     double dx_min[3] = {0.0, 0.0, 0.0};
     double dsq_min = FLT_MAX;
     double dsq;
@@ -1724,6 +1741,16 @@ static inline void minimum_image_triclinic(float dx[3], const float box[3][3]) {
 }
 
 static inline void simd_minimum_image_triclinic(md_256 dx[3], const float box[3][3]) {
+    // Into the zone the one lattice vector search covers first - see minimum_image_triclinic
+    for (int i = 2; i >= 0; --i) {
+        if (box[i][i] != 0.0f) {
+            const md_256 n = md_mm256_round_ps(md_mm256_mul_ps(dx[i], md_mm256_set1_ps(1.0f / box[i][i])));
+            for (int j = i; j >= 0; --j) {
+                dx[j] = md_mm256_sub_ps(dx[j], md_mm256_mul_ps(n, md_mm256_set1_ps(box[i][j])));
+            }
+        }
+    }
+
     md_256 dx_min[3] = {md_mm256_set1_ps(0), md_mm256_set1_ps(0), md_mm256_set1_ps(0)};
     md_256 dsq_min   = md_mm256_set1_ps(FLT_MAX);
     md_256 dsq;

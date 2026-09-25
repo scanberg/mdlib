@@ -506,6 +506,135 @@ static inline double rnd_rng(double min, double max) {
     return r * (max - min) + min;
 }
 
+// The point queries hand their coordinates to the callback, and those have to be usable: cartesian, an
+// image of the point that was put in, and inside the queried region around the image of the centre the
+// query works in (md_spatial_acc_aabb_query_center). Tests which only look at the indices cannot tell
+// fractional coordinates from cartesian ones, which the triclinic AABB query used to hand out, and the
+// triclinic sphere query in its last batch.
+typedef struct spatial_acc_point_coord_collect_t {
+    md_array(uint32_t) idx;
+    md_array(vec3_t)   xyz;
+    md_allocator_i*    alloc;
+} spatial_acc_point_coord_collect_t;
+
+static void spatial_acc_point_coord_collect_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num_points, void* user_param) {
+    spatial_acc_point_coord_collect_t* data = (spatial_acc_point_coord_collect_t*)user_param;
+    for (size_t i = 0; i < num_points; ++i) {
+        md_array_push(data->idx, idx[i], data->alloc);
+        md_array_push(data->xyz, vec3_set(x[i], y[i], z[i]), data->alloc);
+    }
+}
+
+// Largest deviation of 'd' from the nearest lattice vector, as a length
+static double lattice_residual(const double A[3][3], const double I[3][3], const double d[3]) {
+    double s[3];
+    dmat3_mul_vec3(s, I, d);
+    for (int k = 0; k < 3; ++k) s[k] -= round(s[k]);
+    double r[3];
+    dmat3_mul_vec3(r, A, s);
+    return sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
+}
+
+static void point_query_coordinates(int* utest_result, const double A[3][3]) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+
+    md_unitcell_t cell = md_unitcell_from_matrix_double(A);
+    double I[3][3];
+    md_unitcell_I_extract_double(I, &cell);
+
+    // Enough points that a query overflows the staging buffer, so the in loop flushes run as well as
+    // the tail flush
+    const size_t N = 20000;
+    float* x = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* y = (float*)md_temp_alloc(temp, N * sizeof(float));
+    float* z = (float*)md_temp_alloc(temp, N * sizeof(float));
+    srand(4242);
+    for (size_t i = 0; i < N; ++i) {
+        const double s[3] = { rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0), rnd_rng(0.0, 1.0) };
+        double p[3];
+        fract_to_cart(p, s, A);
+        x[i] = (float)p[0]; y[i] = (float)p[1]; z[i] = (float)p[2];
+    }
+
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
+    md_spatial_acc_t acc = { .alloc = alloc };
+    md_spatial_acc_init(&acc, &stream, 4.0, &cell, 0);
+
+    spatial_acc_point_coord_collect_t got = { .alloc = alloc };
+    size_t total = 0;
+
+    for (int iter = 0; iter < 60; ++iter) {
+        // Centres inside the cell and well outside it
+        const double sc[3] = { rnd_rng(-2.0, 3.0), rnd_rng(-2.0, 3.0), rnd_rng(-2.0, 3.0) };
+        double cen[3];
+        fract_to_cart(cen, sc, A);
+        const double rad = rnd_rng(2.0, 8.0);
+
+        double qc[3];
+        md_spatial_acc_aabb_query_center(qc, &acc, cen);
+
+        // The query image is the centre moved by a lattice vector
+        const double dc[3] = { qc[0] - cen[0], qc[1] - cen[1], qc[2] - cen[2] };
+        EXPECT_LT(lattice_residual(A, I, dc), 1.0e-3);
+
+        for (int kind = 0; kind < 2; ++kind) {
+            md_array_shrink(got.idx, 0);
+            md_array_shrink(got.xyz, 0);
+            if (kind == 0) {
+                const double r3[3] = { rad, rad, rad };
+                md_spatial_acc_for_each_point_in_aabb(&acc, cen, r3, spatial_acc_point_coord_collect_callback, &got);
+            } else {
+                md_spatial_acc_for_each_point_in_sphere(&acc, cen, rad, spatial_acc_point_coord_collect_callback, &got);
+            }
+
+            size_t bad_image = 0, bad_region = 0;
+            for (size_t k = 0; k < md_array_size(got.idx); ++k) {
+                const uint32_t i = got.idx[k];
+                const vec3_t p = got.xyz[k];
+                const double d_in[3] = { p.x - x[i], p.y - y[i], p.z - z[i] };
+                if (lattice_residual(A, I, d_in) > 1.0e-3) bad_image += 1;
+
+                const double d[3] = { p.x - qc[0], p.y - qc[1], p.z - qc[2] };
+                const double eps = 1.0e-3;
+                if (kind == 0) {
+                    if (fabs(d[0]) > rad + eps || fabs(d[1]) > rad + eps || fabs(d[2]) > rad + eps) bad_region += 1;
+                } else {
+                    if (sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]) > rad + eps) bad_region += 1;
+                }
+            }
+            if (bad_image || bad_region) {
+                printf("  %s query, centre (%.2f %.2f %.2f) r %.2f: %zu of %zu not an image of their input, %zu outside the region\n",
+                    kind == 0 ? "aabb" : "sphere", cen[0], cen[1], cen[2], rad, bad_image, md_array_size(got.idx), bad_region);
+            }
+            EXPECT_EQ((size_t)0, bad_image);
+            EXPECT_EQ((size_t)0, bad_region);
+            total += md_array_size(got.idx);
+        }
+    }
+    EXPECT_GT(total, (size_t)0);
+
+    md_temp_end(temp);
+}
+
+UTEST(spatial_hash, point_query_coordinates_ortho) {
+    const double A[3][3] = {
+        {31.0,  0.0,  0.0},
+        { 0.0, 27.0,  0.0},
+        { 0.0,  0.0, 24.0},
+    };
+    point_query_coordinates(utest_result, A);
+}
+
+UTEST(spatial_hash, point_query_coordinates_triclinic) {
+    const double A[3][3] = {
+        {30.0,  0.0,  0.0},
+        {10.0, 28.0,  0.0},
+        {-5.0,  7.0, 22.0},
+    };
+    point_query_coordinates(utest_result, A);
+}
+
 UTEST(spatial_hash, n2) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
