@@ -5666,7 +5666,7 @@ static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
 // ? is supported to match any single character
 // # is supported to match any single digit
 
-bool pattern_match(const char* pattern, const char* str) {
+static inline bool pattern_match(const char* pattern, const char* str) {
     while (*pattern && *str) {
         if (*pattern == '*') {
             pattern++;

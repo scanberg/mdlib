@@ -26,6 +26,7 @@
 **/
 
 #include <md_script.h>
+#include <md_contact.h>
 
 #include <md_system.h>
 #include <md_filter.h>
@@ -176,6 +177,7 @@ typedef enum base_type_t {
     TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
     TYPE_COORDINATE,    // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
+    TYPE_CONTACT,       // Opaque: a set of group pairs in contact (md_contact_set_t). Its arrays live in the evaluation's allocator.
 } base_type_t;
 
 typedef enum flags_t {
@@ -270,6 +272,9 @@ struct identifier_t {
     str_t       name;
     ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
     data_t*     data;    // This is the data to fill in...
+    const md_bitfield_t* mol_ctx; // Dynamic identifiers: the context the value was evaluated in
+    bool        is_element; // Declared by destructuring a non-array expression, '{x,y,z} = com(...)': the value
+    uint32_t    elem_idx;   // is element 'elem_idx' of evaluating 'node', not all of it
 };
 
 struct constant_t {
@@ -300,6 +305,7 @@ typedef struct eval_context_t {
 
     // Contextual information for static checking 
     token_t  op_token;                  // Token for the operation which is evaluated
+    const ast_node_t* op_node;          // Node of the procedure call which is evaluated: identifies its call site
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
     flags_t* arg_flags;                 // Flags of arguments
     flags_t proc_flags;                 // Procedure flags of called procedure
@@ -361,6 +367,8 @@ typedef enum param_flags_t {
     PARAM_OPTIONAL  = 1,    // May be omitted as long as no later parameter is given; the call then binds to an overload taking fewer arguments
     PARAM_DEFAULT   = 2,    // If omitted, a constant holding 'def' (of type 'def_type') is supplied in its place
     PARAM_KW_ONLY   = 4,    // Can only be supplied by name
+    PARAM_NULLABLE  = 8,    // May be omitted anywhere: the procedure then receives an absent argument in its place, of
+                            // type TYPE_UNDEFINED and without data (Python's '= None'). Absent matches any parameter type.
 } param_flags_t;
 
 typedef struct param_sig_t {
@@ -432,6 +440,14 @@ typedef struct tokenizer_t {
     int     line_offset;  // offset to the current line
 } tokenizer_t;
 
+// The topology dependent part of a contacts() call site (md_contact_query_t), prepared once during the static check.
+// The groups of a call site cannot depend on the frame, so the evaluation of every frame only reads it.
+typedef struct contact_query_entry_t {
+    const ast_node_t*  node;
+    const md_system_t* sys;
+    md_contact_query_t query;
+} contact_query_entry_t;
+
 struct md_script_ir_t {
     uint64_t magic;
     uint64_t fingerprint;
@@ -454,6 +470,7 @@ struct md_script_ir_t {
     md_array(str_t)     static_expression_str;          // string for debugging
     
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
+    md_array(contact_query_entry_t) contact_queries;    // Prepared contacts() call sites, allocated in the arena
 
     md_array(md_script_property_flags_t) property_flags;    // List of property infos
     md_array(const ast_node_t*)          property_nodes;    // List of property nodes;
@@ -762,6 +779,7 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_IRANGE:   return sizeof(irange_t);
     case TYPE_BITFIELD: return sizeof(md_bitfield_t);
     case TYPE_STRING:   return sizeof(str_t);
+    case TYPE_CONTACT:  return sizeof(md_contact_set_t);
     case TYPE_UNDEFINED:
     default:            return 0;
     }
@@ -866,8 +884,14 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     return false;
 }
 
+// An absent argument, in place of an omitted PARAM_NULLABLE parameter: matches whatever the procedure takes there
+static inline bool is_absent_type(type_info_t ti) {
+    return ti.base_type == TYPE_UNDEFINED;
+}
+
 static bool compare_type_info_array(const type_info_t a[], const type_info_t b[], size_t num_arg_types) {
     for (size_t i = 0; i < num_arg_types; ++i) {
+        if (is_absent_type(a[i])) continue;
         if (!is_type_directly_compatible(a[i], b[i])) {
             return false;
         }
@@ -962,12 +986,15 @@ static void free_data(data_t* data, md_allocator_i* alloc) {
 static void copy_data(data_t* dst, const data_t* src) {
     ASSERT(dst);
     ASSERT(src);
-    ASSERT(src->size);
-    ASSERT(src->ptr);
-    ASSERT(dst->ptr);
     ASSERT(dst->size == src->size);
 
     dst->type = src->type;
+    if (src->size == 0) {
+        // An empty array, 'residue(x)' of an empty x: nothing to copy, and possibly no memory behind either
+        return;
+    }
+    ASSERT(src->ptr);
+    ASSERT(dst->ptr);
 
     if (dst->type.base_type == TYPE_BITFIELD) {
         const uint64_t num_elem = element_count(*dst);
@@ -1118,6 +1145,7 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_BOOL: return "boolean";
     case TYPE_STRING: return "string";
     case TYPE_BITFIELD: return "bitfield";
+    case TYPE_CONTACT: return "contact";
     default: return "type out of range";
     }
 }
@@ -1171,6 +1199,18 @@ static void create_log_token_fmt(log_level_t level, md_script_ir_t* ir, token_t 
 }
 
 // Include all procedures, operators and defines
+#ifdef MD_SCRIPT_TEST_HOOKS
+// Lets the unittests count how often a procedure is evaluated, i.e. called with a destination
+static struct {
+    int (*proc_ptr)(data_t*, data_t[], eval_context_t*);
+    size_t count;
+} test_hook_proc_eval;
+
+// Number of contact searches (md_contact_query_eval) contacts() has run
+static size_t test_hook_contact_searches;
+static size_t test_hook_contact_local_prepares;    // Evaluations which found no query prepared for their call site
+#endif
+
 #include "md_script_functions.inl"
 
 // ############################
@@ -1301,7 +1341,7 @@ static procedure_match_result_t find_cast_procedure(type_info_t from, type_info_
 static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_types[]) {
     uint32_t cost = 0;
     for (size_t j = 0; j < proc->num_args; ++j) {
-        if (type_info_equal(arg_types[j], proc->arg_type[j])) {
+        if (is_absent_type(arg_types[j]) || type_info_equal(arg_types[j], proc->arg_type[j])) {
             // No conversion needed for this argument (0 cost)
         }
         else if (is_type_directly_compatible(arg_types[j], proc->arg_type[j])) {
@@ -2663,12 +2703,95 @@ done:
 static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
+static bool evaluate_node_alloc(data_t* out, const ast_node_t* node, eval_context_t* ctx, md_allocator_i* alloc);
+
+// The evaluated arguments of a procedure call
+typedef struct proc_args_t {
+    ast_node_t* const* nodes;
+    size_t  count;
+    data_t  data  [MAX_SUPPORTED_PROC_ARGS];
+    token_t tokens[MAX_SUPPORTED_PROC_ARGS];
+    flags_t flags [MAX_SUPPORTED_PROC_ARGS];
+} proc_args_t;
+
+// Evaluates the arguments of a call to proc, each exactly once. An argument whose length is only known at run
+// time is sized by evaluating it (see evaluate_node_alloc), not by a separate query ahead of its evaluation.
+// Whatever succeeded is released by proc_args_free, also on failure.
+static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_node_t** const args, size_t num_args, eval_context_t* ctx) {
+    ASSERT(pa);
+    ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
+    MEMSET(pa, 0, sizeof(proc_args_t));
+    pa->nodes = args;
+    pa->count = num_args;
+
+    md_script_vis_t* old_vis = ctx->vis;
+    // If we are in visualization mode and the procedure is flagged with visualization, we do not want to propagate the visualization to the arguments
+    if (ctx->vis && proc->flags & FLAG_VISUALIZE) {
+        ctx->vis = 0;
+    }
+
+    bool result = true;
+    for (size_t i = 0; i < num_args; ++i) {
+        pa->tokens[i] = args[i]->token;
+        pa->flags[i]  = args[i]->flags;
+
+        if (args[i]->flags & FLAG_CONSTANT) {
+            ASSERT(args[i]->data.type.base_type != TYPE_UNDEFINED || args[i]->data.size == 0);    // Absent
+            ASSERT(args[i]->data.type.dim[0] != -1);
+            MEMCPY(&pa->data[i], &args[i]->data, sizeof(data_t));
+        } else if (!evaluate_node_alloc(&pa->data[i], args[i], ctx, ctx->temp_alloc)) {
+            // Only used as arguments, so the data goes in the temp alloc
+            result = false;
+            break;
+        }
+    }
+
+    ctx->vis = old_vis;
+    return result;
+}
+
+static void proc_args_free(proc_args_t* pa, eval_context_t* ctx) {
+    // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
+    // This means that they will most likely allocate data deeply nested within the calling scope of another procedure call with another reset point for its stack
+    // Thus, the data for the bitfields will be reset with that reset point and we will overwrite it later.
+    // To solve it I think we need another 'specific' allocator for just the bitfields which may outlive the other stack variables and can be reset separately.
+    // Conceptually we could use the top end of the stack for this and have two different stack pointers.
+    for (int64_t i = (int64_t)pa->count - 1; i >= 0; --i) {
+        if (!(pa->nodes[i]->flags & FLAG_CONSTANT)) {
+            free_data(&pa->data[i], ctx->temp_alloc);
+        }
+    }
+}
+
+// Calls proc on already evaluated arguments. dst == NULL is a query (or a static validation), which for a
+// procedure flagged FLAG_QUERYABLE_LENGTH returns the length of its result given these arguments.
+static int proc_invoke(data_t* dst, const procedure_t* proc, proc_args_t* pa, eval_context_t* ctx) {
+    flags_t* old_arg_flags  = ctx->arg_flags;
+    token_t* old_arg_tokens = ctx->arg_tokens;
+    flags_t  old_proc_flags = ctx->proc_flags;
+
+    ctx->arg_tokens = pa->tokens;
+    ctx->arg_flags  = pa->flags;
+    ctx->proc_flags = proc->flags;
+
+#ifdef MD_SCRIPT_TEST_HOOKS
+    if (dst && proc->proc_ptr == test_hook_proc_eval.proc_ptr) {
+        test_hook_proc_eval.count += 1;
+    }
+#endif
+
+    const int result = proc->proc_ptr(dst, pa->data, ctx);
+
+    ctx->arg_flags  = old_arg_flags;
+    ctx->arg_tokens = old_arg_tokens;
+    ctx->proc_flags = old_proc_flags;
+    return result;
+}
+
 static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** const args, size_t num_args, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(proc);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-
-    int result = 0;
 
     const bool visualize_only = ctx->vis && !dst;
     if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
@@ -2680,84 +2803,15 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
                 return -1;
             }
         }
-        return result;
+        return 0;
     }
 
-    data_t  arg_data  [MAX_SUPPORTED_PROC_ARGS] = {0};
-    token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
-    flags_t arg_flags [MAX_SUPPORTED_PROC_ARGS] = {0};
-
-    //uint64_t stack_reset_point = md_stack_allocator_get_pos(ctx->stack_alloc);
-
-    md_script_vis_t* old_vis = ctx->vis;
-    // If we are in visualization mode and the procedure is flagged with visualization, we do not want to propagate the visualization to the arguments
-    if (ctx->vis && proc->flags & FLAG_VISUALIZE) {
-        ctx->vis = 0;
+    proc_args_t args_data;
+    int result = -1;
+    if (proc_args_evaluate(&args_data, proc, args, num_args, ctx)) {
+        result = proc_invoke(dst, proc, &args_data, ctx);
     }
-
-    for (size_t i = 0; i < num_args; ++i) {
-        // We need to evaluate the argument nodes first before we make the proc call.
-        // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
-        // so we can allocate the data required for the node with the temp alloc
-
-        arg_tokens[i] = args[i]->token;
-        arg_flags[i] = args[i]->flags;
-
-        if (args[i]->flags & FLAG_CONSTANT) {
-            //ASSERT(args[i]->data.ptr);
-            ASSERT(args[i]->data.type.base_type != TYPE_UNDEFINED);
-            ASSERT(args[i]->data.type.dim[0] != -1);
-            MEMCPY(&arg_data[i], &args[i]->data, sizeof(data_t));
-        }
-        else {
-            type_info_t arg_type = args[i]->data.type;
-
-            if (is_variable_length(arg_type)) {
-                if (!finalize_type(&arg_type, args[i], ctx)) {
-                    MD_LOG_ERROR("Failed to finalize dynamic type in procedure call");
-                    result = -1;
-                    goto done;
-                }
-            }
-            allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
-            if (!evaluate_node(&arg_data[i], args[i], ctx)) {
-                result = -1;
-                goto done;
-            }
-        }
-    }
-
-    ctx->vis = old_vis;
-
-    flags_t* old_arg_flags  = ctx->arg_flags;
-    token_t* old_arg_tokens = ctx->arg_tokens;
-    flags_t  old_proc_flags = ctx->proc_flags;
-
-    // Set
-    ctx->arg_tokens = arg_tokens;
-    ctx->arg_flags  = arg_flags;
-    ctx->proc_flags = proc->flags;
-
-    result = proc->proc_ptr(dst, arg_data, ctx);
-
-    // Reset
-    ctx->arg_flags  = old_arg_flags;
-    ctx->arg_tokens = old_arg_tokens;
-    ctx->proc_flags = old_proc_flags;
-done:
-    for (int64_t i = (int64_t)num_args - 1; i >= 0; --i) {
-        if (!(args[i]->flags & FLAG_CONSTANT)) {
-            free_data(&arg_data[i], ctx->temp_alloc);
-        }
-    }
-
-    // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
-    // This means that they will most likely allocate data deeply nested within the calling scope of another procedure call with another reset point for its stack
-    // Thus, the data for the bitfields will be reset with that reset point and we will overwrite it later.
-    // To solve it I think we need another 'specific' allocator for just the bitfields which may outlive the other stack variables and can be reset separately.
-    // Conceptually we could use the top end of the stack for this and have two different stack pointers.
-    // 
-    //md_stack_allocator_set_pos(ctx->stack_alloc, stack_reset_point);
+    proc_args_free(&args_data, ctx);
     return result;
 }
 
@@ -2767,9 +2821,12 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
     ASSERT(node->proc);
 
     token_t old_token = ctx->op_token;
+    const ast_node_t* old_node = ctx->op_node;
     ctx->op_token = node->token;
+    ctx->op_node  = node;
     int result = do_proc_call(dst, node->proc, node->children, md_array_size(node->children), ctx);
     ctx->op_token = old_token;
+    ctx->op_node  = old_node;
 
     return result >= 0;
 }
@@ -2950,20 +3007,83 @@ static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
     return NULL;
 }
 
+// The value of a dynamic identifier which has already been evaluated for the current frame, or NULL.
+// Identifiers are evaluated in the order they are declared and a reference can only follow its declaration,
+// so within a frame the value is available by the time anything refers to it. It can only stand in for the
+// expression when referenced in the same context it was evaluated in: 'd in residue(1:3)' evaluates the
+// expression of d once per residue, which is a different value.
+static const data_t* find_evaluated_identifier(str_t name, eval_context_t* ctx) {
+    const identifier_t* ident = find_dynamic_identifier(name, ctx);
+    if (ident && ident->data && ident->data->ptr && ident->mol_ctx == ctx->mol_ctx) {
+        return ident->data;
+    }
+    return NULL;
+}
+
+// Evaluates an identifier declared by destructuring, '{x,y,z} = com(...)': the whole expression is evaluated
+// and the element belonging to the identifier is copied out of it.
+static bool evaluate_identifier_element(data_t* dst, const identifier_t* decl, const ast_node_t* expr, eval_context_t* ctx) {
+    ASSERT(dst && decl && decl->is_element);
+
+    type_info_t type = expr->data.type;
+    if (is_variable_length(type) && !finalize_type(&type, expr, ctx)) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
+    data_t whole = {0};
+    bool result = allocate_data(&whole, type, md_temp_allocator(temp)) && evaluate_node(&whole, expr, ctx);
+    if (result) {
+        const size_t stride = type_info_element_byte_stride(type);
+        if ((decl->elem_idx + 1) * stride <= whole.size && stride == dst->size) {
+            data_t elem = {
+                .type = dst->type,
+                .ptr  = (char*)whole.ptr + stride * decl->elem_idx,
+                .size = stride,
+            };
+            copy_data(dst, &elem);
+        } else {
+            MD_LOG_ERROR("Script: size mismatch when extracting element %u of '"STR_FMT"'", decl->elem_idx, STR_ARG(decl->name));
+            result = false;
+        }
+    }
+    md_temp_end(temp);
+    return result;
+}
+
 static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_IDENTIFIER);
     ASSERT(md_array_size(node->children) == 1 && node->children[0]);
-    (void)ctx;
-    
-    // @TODO(Robin): Check if we are properly handling the case where we have already evaluated the identifier
-    // And in such case, that should be copied as well.
-    
+
     // Only copy data if the node is constant
     if (dst && node->flags & FLAG_CONSTANT) {
-        ASSERT(dst->ptr && node->data.ptr && dst->size >= node->data.size);
+        ASSERT(dst->size >= node->data.size && (node->data.size == 0 || (dst->ptr && node->data.ptr)));
         copy_data(dst, &node->data);
-    } else if (dst || ctx->vis) {
-        evaluate_node(dst, node->children[0], ctx);
+        return true;
+    }
+
+    if (dst) {
+        // A dynamic identifier is evaluated once per frame, references reuse that value
+        const data_t* value = find_evaluated_identifier(node->ident, ctx);
+        if (value && value->size == dst->size) {
+            copy_data(dst, value);
+            // Visualization is not memoized, it is produced by evaluating the expression
+            return ctx->vis ? evaluate_node(NULL, node->children[0], ctx) : true;
+        }
+
+        // Not available (a different context, or no evaluation of the declaration in this pass):
+        // an identifier declared by destructuring is one element of what its expression evaluates to
+        const identifier_t* decl = get_identifier(ctx->ir, node->ident);
+        if (decl && decl->is_element) {
+            if (!evaluate_identifier_element(dst, decl, node->children[0], ctx)) {
+                return false;
+            }
+            return ctx->vis ? evaluate_node(NULL, node->children[0], ctx) : true;
+        }
+    }
+
+    if (dst || ctx->vis) {
+        return evaluate_node(dst, node->children[0], ctx);
     }
 
     return true;
@@ -3002,14 +3122,18 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
 
         ident = find_dynamic_identifier(lhs->ident, ctx);
         if (!ident && ctx->alloc) {
+            // Registered once evaluated, so a reference never picks up a value which is still being computed
+            if (!evaluate_node(dst, rhs, ctx)) {
+                return false;
+            }
             identifier_t id = {
                 .name = lhs->ident,
                 .node = rhs,
                 .data = dst,
+                .mol_ctx = ctx->mol_ctx,
             };
             md_array_push(ctx->identifiers, id, ctx->alloc);
-            ident = md_array_last(ctx->identifiers);
-            return evaluate_node(dst, rhs, ctx);
+            return true;
         }
     } else if (lhs->type == AST_ARRAY) {
         // assignment of LHS which is an array of Identifiers
@@ -3039,8 +3163,10 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                 identifier_t id = {
                     .name = child->ident,
                     .node = rhs,
-                    .data = md_alloc(ctx->alloc, sizeof(data_t))
+                    .data = md_alloc(ctx->alloc, sizeof(data_t)),
+                    .mol_ctx = ctx->mol_ctx,
                 };
+                MEMSET(id.data, 0, sizeof(data_t));
                 if (dst && dst->ptr) {
                     *id.data = child->data;
                     id.data->ptr = (char*)dst->ptr + stride * i;
@@ -3561,19 +3687,28 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
     return false;
 }
 
-static bool deduce_type_dim_from_args(type_info_t* type, ast_node_t** args, size_t num_args, token_t token, eval_context_t* ctx) {
-    ASSERT(ctx);
-
+static void deduce_type_dim_from_types(type_info_t* type, const type_info_t* arg_types, size_t num_args) {
     for (size_t i = 0; i < num_args; ++i) {
     // If the argument has leading ones in its type, we want to replicate that
-        if (dim_ndims(args[i]->data.type.dim) > 1 && args[i]->data.type.dim[i] == 1) {
+        if (dim_ndims(arg_types[i].dim) > 1 && arg_types[i].dim[i] == 1) {
             dim_shift_right(type->dim);
-            type->dim[1] = args[i]->data.type.dim[1];
+            type->dim[1] = arg_types[i].dim[1];
         } else {
-            type->dim[0] = MAX(type->dim[0], args[i]->data.type.dim[0]);
+            type->dim[0] = MAX(type->dim[0], arg_types[i].dim[0]);
         }
-
     }
+}
+
+static bool deduce_type_dim_from_args(type_info_t* type, ast_node_t** args, size_t num_args, token_t token, eval_context_t* ctx) {
+    ASSERT(ctx);
+    (void)token;
+    ASSERT(num_args <= MAX_SUPPORTED_PROC_ARGS);
+
+    type_info_t arg_types[MAX_SUPPORTED_PROC_ARGS];
+    for (size_t i = 0; i < num_args; ++i) {
+        arg_types[i] = args[i]->data.type;
+    }
+    deduce_type_dim_from_types(type, arg_types, num_args);
 
     return true;
 }
@@ -3659,10 +3794,17 @@ static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_contex
         return finalize_type(type, node->children[1], ctx);
     case AST_ARRAY:
         return finalize_type_array(type, node, ctx);
-    case AST_IDENTIFIER:
+    case AST_IDENTIFIER: {
         ASSERT(node->children);
         ASSERT(md_array_size(node->children) == 1);
+        // The length of an identifier already evaluated this frame is known, asking its expression would evaluate it again
+        const data_t* value = find_evaluated_identifier(node->ident, ctx);
+        if (value) {
+            *type = value->type;
+            return true;
+        }
         return finalize_type(type, node->children[0], ctx);
+    }
     case AST_ADD:
     case AST_SUB:
     case AST_MUL:
@@ -3691,6 +3833,125 @@ static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_contex
     return false;
 }
 
+// ### VARIABLE LENGTH EVALUATION ###
+// A value whose length is only known at run time used to be sized by finalize_type ahead of its evaluation,
+// which for a procedure call meant evaluating its arguments once to ask for the length and once more to fill
+// in the result. Nested variable length calls doubled the work per level. Here the arguments are evaluated
+// once and the length follows from them, so every node is evaluated exactly once.
+
+// Evaluates a procedure call whose result has a variable length into out, allocated from alloc.
+static bool evaluate_proc_call_alloc(data_t* out, const ast_node_t* node, eval_context_t* ctx, md_allocator_i* alloc) {
+    ASSERT(node && node->type == AST_PROC_CALL && node->proc);
+    const procedure_t* proc = node->proc;
+
+    token_t old_token = ctx->op_token;
+    const ast_node_t* old_node = ctx->op_node;
+    ctx->op_token = node->token;
+    ctx->op_node  = node;
+
+    proc_args_t args;
+    bool result = proc_args_evaluate(&args, proc, node->children, md_array_size(node->children), ctx);
+
+    type_info_t type = node->data.type;
+    if (result) {
+        if (proc->flags & FLAG_ARGS_EQUAL_LENGTH) {
+            // Only checked statically for lengths known at compile time
+            for (size_t i = 1; i < args.count; ++i) {
+                if (type_info_array_len(args.data[i].type) != type_info_array_len(args.data[0].type)) {
+                    MD_LOG_ERROR("Script: '"STR_FMT"': arguments of different length (%i and %i)", STR_ARG(node->token.str),
+                        type_info_array_len(args.data[0].type), type_info_array_len(args.data[i].type));
+                    result = false;
+                }
+            }
+        }
+        if (!result) {
+            // Reported above
+        } else if (proc->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
+            type_info_t arg_types[MAX_SUPPORTED_PROC_ARGS];
+            for (size_t i = 0; i < args.count; ++i) {
+                arg_types[i] = args.data[i].type;
+            }
+            deduce_type_dim_from_types(&type, arg_types, args.count);
+        } else if (proc->flags & FLAG_QUERYABLE_LENGTH) {
+            // Ask for the length given the evaluated arguments, then fill in the result from the same arguments
+            md_script_vis_t* old_vis = ctx->vis;
+            ctx->vis = NULL;
+            const int length = proc_invoke(NULL, proc, &args, ctx);
+            ctx->vis = old_vis;
+            if (length < 0) {
+                LOG_ERROR(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", length);
+                result = false;
+            }
+            type.dim[0] = length;
+        }
+        if (result && is_variable_length(type)) {
+            MD_LOG_ERROR("Script: failed to determine the length of '"STR_FMT"'", STR_ARG(node->token.str));
+            result = false;
+        }
+    }
+
+    result = result && allocate_data(out, type, alloc) && proc_invoke(out, proc, &args, ctx) >= 0;
+
+    proc_args_free(&args, ctx);
+    ctx->op_token = old_token;
+    ctx->op_node  = old_node;
+    return result;
+}
+
+// Evaluates node into out, allocating its storage from alloc. For a node of static length this is allocation
+// followed by evaluate_node. A variable length is determined by the evaluation itself where that is possible
+// (procedure calls, identifiers and their declarations), and by finalize_type otherwise.
+static bool evaluate_node_alloc(data_t* out, const ast_node_t* node, eval_context_t* ctx, md_allocator_i* alloc) {
+    ASSERT(out && node && ctx && alloc);
+
+    type_info_t type = node->data.type;
+    if (is_variable_length(type)) {
+        switch (node->type) {
+        case AST_PROC_CALL:
+            if (node->proc) {
+                return evaluate_proc_call_alloc(out, node, ctx, alloc);
+            }
+            break;
+        case AST_IDENTIFIER:
+            ASSERT(md_array_size(node->children) == 1);
+            if (!find_evaluated_identifier(node->ident, ctx)) {
+                // Not evaluated in this context, the reference is its expression
+                return evaluate_node_alloc(out, node->children[0], ctx, alloc);
+            }
+            break;  // Sized by its value in finalize_type, then copied by evaluate_node
+        case AST_ASSIGNMENT: {
+            // The declaration of a dynamic identifier: evaluate its expression and register the value
+            const ast_node_t* lhs = node->children[0];
+            ast_node_t* rhs = node->children[1];
+            if (lhs->type == AST_IDENTIFIER && !ctx->vis && ctx->alloc &&
+                !find_static_identifier(lhs->ident, ctx) && !find_dynamic_identifier(lhs->ident, ctx)) {
+                if (!evaluate_node_alloc(out, rhs, ctx, alloc)) {
+                    return false;
+                }
+                identifier_t id = {
+                    .name = lhs->ident,
+                    .node = rhs,
+                    .data = out,
+                    .mol_ctx = ctx->mol_ctx,
+                };
+                md_array_push(ctx->identifiers, id, ctx->alloc);
+                return true;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+
+        if (!finalize_type(&type, node, ctx)) {
+            MD_LOG_ERROR("Script: failed to determine the length of '"STR_FMT"'", STR_ARG(node->token.str));
+            return false;
+        }
+    }
+
+    return allocate_data(out, type, alloc) && evaluate_node(out, node, ctx);
+}
+
 static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
@@ -3714,7 +3975,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
         // Make sure we cast the arguments into the expected types of the procedure.
         for (size_t i = 0; i < num_args; ++i) {
-            if (!is_type_directly_compatible(args[i]->data.type, node->proc->arg_type[i])) {
+            if (!is_absent_type(args[i]->data.type) && !is_type_directly_compatible(args[i]->data.type, node->proc->arg_type[i])) {
                 // Types are not directly compatible, but should be implicitly convertible (otherwise the match should never have been found)
                 ASSERT(is_type_implicitly_convertible(args[i]->data.type, node->proc->arg_type[i]));
                 if (!convert_node(args[i], node->proc->arg_type[i], ctx)) {
@@ -3787,6 +4048,16 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
             ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
+
+            // An argument whose length is only known at run time leaves the length of the result to run time as
+            // well. Deducing from it here would take the -1 as a length and let any other argument decide it:
+            // 'coord_x(within(3, x)) * 2' became a single value.
+            for (size_t i = 0; i < num_args; ++i) {
+                if (is_variable_length(args[i]->data.type)) {
+                    node->flags |= FLAG_DYNAMIC_LENGTH;
+                    return true;
+                }
+            }
 
             return deduce_type_dim_from_args(&node->data.type, args, num_args, node->token, ctx);
         } else {
@@ -4132,6 +4403,12 @@ static int find_param_index(const proc_sig_t* sig, str_t name) {
     return -1;
 }
 
+static ast_node_t* create_absent_argument_node(md_script_ir_t* ir, token_t token) {
+    ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, token);
+    node->data.type = (type_info_t){0};
+    return node;
+}
+
 static ast_node_t* create_default_argument_node(md_script_ir_t* ir, const param_sig_t* param, token_t token) {
     ASSERT(param->flags & PARAM_DEFAULT);
     ASSERT(param->def_type.base_type != TYPE_UNDEFINED && is_scalar(param->def_type));
@@ -4196,6 +4473,8 @@ static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context
     for (size_t p = 0; p < sig->num_params; ++p) {
         if (!bound[p] && (sig->param[p].flags & PARAM_DEFAULT)) {
             bound[p] = create_default_argument_node(ctx->ir, &sig->param[p], node->token);
+        } else if (!bound[p] && (sig->param[p].flags & PARAM_NULLABLE)) {
+            bound[p] = create_absent_argument_node(ctx->ir, node->token);
         }
     }
 
@@ -4305,7 +4584,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         const size_t num_args = md_array_size(node->children);
         ast_node_t** args = node->children;
         for (size_t i = 0; i < num_args; ++i) {
-            if (node->proc->arg_type[i].base_type == TYPE_COORDINATE) {
+            if (node->proc->arg_type[i].base_type == TYPE_COORDINATE && !is_absent_type(args[i]->data.type)) {
                 if (args[i]->data.type.base_type == TYPE_FLOAT && dim_ndims(args[i]->data.type.dim) < 2) {
                     // I.e. if the procedures expects a coordinate array, but the input is a single coordinate (float[3]), we need to convert it to an array (float[1][3])
                     // To properly propagate the number of supplied coordinates (1)
@@ -4340,7 +4619,13 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
     (void)ctx; 
     ASSERT(node && node->type == AST_CONSTANT_VALUE);
-    ASSERT(node->data.type.base_type != TYPE_UNDEFINED);
+    if (is_absent_type(node->data.type)) {
+        // An absent argument (see PARAM_NULLABLE): no data
+        node->data.ptr  = NULL;
+        node->data.size = 0;
+        node->flags |= FLAG_CONSTANT;
+        return true;
+    }
     ASSERT(is_scalar(node->data.type));
 
     if (node->data.type.base_type == TYPE_IRANGE) {
@@ -4735,6 +5020,8 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     ident->node = rhs->children[i];
                 }
                 else {
+                    ident->is_element = true;
+                    ident->elem_idx = (uint32_t)i;
                     idents[i]->data.type = type_info_element_type(rhs->data.type);
                     const int stride = (int)type_info_element_byte_stride(rhs->data.type);
                     ident->data = md_alloc(ctx->ir->arena, sizeof(data_t));
@@ -4742,12 +5029,9 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     ident->data->type = type_info_element_type(rhs->data.type);
                     dim_prune_leading_ones(ident->data->type.dim);
                     ident->data->size = stride;
-                    ident->data->ptr = 0;
-                    // If the right hand side was evaluated at compile time, the identifier refers to its i-th element.
-                    // Without this, a constant identifier would be read through a null pointer.
-                    if (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) {
-                        ident->data->ptr = (uint8_t*)rhs->data.ptr + (size_t)i * stride;
-                    }
+                    // A constant right hand side was evaluated at compile time: the identifier is its i-th element.
+                    // Without this, references to a constant identifier would read through a null pointer.
+                    ident->data->ptr = (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) ? (uint8_t*)rhs->data.ptr + (size_t)i * stride : 0;
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;
@@ -5228,7 +5512,8 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
 
     // Only evaluate the node if it is not flagged as dynamic
     // Only evaluate if data.ptr is not already set (which can happen during static check)
-    if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr) {
+    // An absent argument has no data to evaluate (see PARAM_NULLABLE)
+    if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr && !is_absent_type(node->data.type)) {
         uint64_t hash = hash_node(node, 0);
 
         // Try to find in existing expressions
@@ -5634,27 +5919,19 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         ctx.spatial_acc_cell_ext = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
-            type_info_t type = expr[i]->data.type;
-            if (is_variable_length(type)) {
-                if (!finalize_type(&type, expr[i], &ctx)) {
-                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", STR_ARG(expr[i]->token.str));
-                    result = false;
-                    goto done;
-                }
+            if (!evaluate_node_alloc(&data[i], expr[i], &ctx, temp_alloc)) {
+                str_t str = expr[i]->token.str;
+                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
+                result = false;
+                goto done;
             }
-            allocate_data(&data[i], type, temp_alloc);
+            // Nothing reads these during the evaluation, the properties read them afterwards
             data[i].unit[0] = expr[i]->data.unit[0];
             data[i].unit[1] = expr[i]->data.unit[1];
             data[i].value_range = expr[i]->data.value_range;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
                 data[i].value_range.beg = -FLT_MAX;
                 data[i].value_range.end = +FLT_MAX;
-            }
-            if (!evaluate_node(&data[i], expr[i], &ctx)) {
-                str_t str = expr[i]->token.str;
-                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
-                result = false;
-                goto done;
             }
         }
 
@@ -6477,8 +6754,8 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
 #endif
 
 // The front half shared by md_filter and md_filter_evaluate: parse expr and type check it in ctx.
-// Returns the checked node, with a dynamic length already resolved, or NULL if it did not compile.
-// Whatever went wrong is recorded in ir->errors.
+// Returns the checked node, or NULL if it did not compile. A variable length is left to the evaluation,
+// which determines it (evaluate_node_alloc). Whatever went wrong is recorded in ir->errors.
 static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t expr, const md_script_ir_t* ctx_ir) {
     ir->str = str_copy(expr, ir->arena);
     if (ctx_ir) {
@@ -6497,9 +6774,6 @@ static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t
     ast_node_t* node = prune_expressions(parse_expression(&parse_ctx));
     if (!node || !static_check_node(node, ctx)) {
         return NULL;
-    }
-    if (node->data.type.base_type == TYPE_BITFIELD && type_info_array_len(node->data.type) == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
-        finalize_type(&node->data.type, node, ctx);
     }
     return node;
 }
@@ -6550,9 +6824,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     if (node) {
         if (node->data.type.base_type == TYPE_BITFIELD) {
             data_t data = {0};
-            allocate_data(&data, node->data.type, temp_alloc);
-
-            if (evaluate_node(&data, node, &ctx)) {
+            if (evaluate_node_alloc(&data, node, &ctx, temp_alloc)) {
                 const int64_t len = type_info_array_len(data.type);
                 const md_bitfield_t* bf_arr = data.ptr;
                 if (bf_arr) {
@@ -6619,19 +6891,29 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const md_system_t* sys, const 
 
     ast_node_t* node = filter_compile(ir, &ctx, expr, ctx_ir);
     if (node) {
-        const int len = node->data.type.base_type == TYPE_BITFIELD ? (int)type_info_array_len(node->data.type) : 0;
-        if (len == 1) {
+        const bool is_bitfield = node->data.type.base_type == TYPE_BITFIELD;
+        const bool variable = is_bitfield && is_variable_length(node->data.type);
+
+        // A variable length is known once evaluated
+        data_t data = {0};
+        bool evaluated = false;
+        if (variable) {
+            evaluated = evaluate_node_alloc(&data, node, &ctx, temp_alloc);
+        }
+        const int len = !is_bitfield ? 0 : variable ? (evaluated ? (int)type_info_array_len(data.type) : -1) : (int)type_info_array_len(node->data.type);
+
+        if (variable && !evaluated) {
+            success = false;
+        } else if (len == 1 && !evaluated) {
             // A single bitfield is evaluated straight into the destination
-            data_t data = {
+            data = (data_t){
                 .type = node->data.type,
                 .ptr  = dst_bf,
                 .size = sizeof(md_bitfield_t),
             };
             success = evaluate_node(&data, node, &ctx);
-        } else if (len > 1) {
-            data_t data = {0};
-            allocate_data(&data, node->data.type, temp_alloc);
-            success = evaluate_node(&data, node, &ctx);
+        } else if (len >= 1) {
+            success = evaluated || (allocate_data(&data, node->data.type, temp_alloc) && evaluate_node(&data, node, &ctx));
             if (success) {
                 const md_bitfield_t* src_bf = (const md_bitfield_t*)data.ptr;
                 for (int i = 0; i < len; ++i) {
@@ -6682,17 +6964,11 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     if (node->data.type.base_type == TYPE_BITFIELD) {
         data_t data = {0};
 
-        type_info_t type = node->data.type;
-        if (is_variable_length(type)) {
-            if (!finalize_type(&type, node, ctx)) {
-                md_log(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to finalize type for variable length expression");
-                return;
-            }
+        if (!evaluate_node_alloc(&data, node, ctx, ctx->temp_alloc)) {
+            md_log(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to evaluate expression");
+            return;
         }
-
-        allocate_data(&data, type, ctx->temp_alloc);
         if (data.ptr) {
-            evaluate_node(&data, node, ctx);
             const md_bitfield_t* bf_arr = data.ptr;
             if (ctx->subscript_ranges) {
                 int count = (int)element_count(data);
@@ -6717,8 +6993,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         const data_t* data = &node->data;
         if (!node->data.ptr) {
             // Evaluate the non constant value expression here into a data_t item and visualize it.
-            allocate_data(&tmp_data, node->data.type, ctx->temp_alloc);
-            if (!evaluate_node(&tmp_data, node, ctx)) {
+            if (!evaluate_node_alloc(&tmp_data, node, ctx, ctx->temp_alloc)) {
                 MD_LOG_ERROR("Vis Eval: Failed to evaluate coordinate expression");
                 return;
 			}
@@ -6955,4 +7230,52 @@ bool md_script_identifier_name_valid(str_t ident) {
     }
 
     return true;
+}
+
+#define NAME(cstr) {cstr"", sizeof(cstr)-1}
+
+// Keep in step with the tokenizer (tokenizer_get_next_from_buffer)
+static const str_t script_keywords[] = {
+    NAME("and"), NAME("or"), NAME("xor"), NAME("not"), NAME("in"), NAME("of"), NAME("out"),
+};
+
+// Procedures that the parser handles itself instead of looking them up in the procedure table
+static const str_t script_intrinsics[] = {
+    NAME("attr"), NAME("flatten"), NAME("transpose"),
+};
+
+#undef NAME
+
+size_t md_script_num_keywords(void) {
+    return ARRAY_SIZE(script_keywords);
+}
+
+const str_t* md_script_keywords(void) {
+    return script_keywords;
+}
+
+static bool procedure_name_before(size_t idx, str_t name) {
+    for (size_t i = 0; i < idx; ++i) {
+        if (str_eq(procedures[i].name, name)) return true;
+    }
+    return false;
+}
+
+size_t md_script_builtin_identifiers(str_t* out, size_t cap) {
+    size_t count = 0;
+    #define EMIT(name) do { if (out && count < cap) out[count] = (name); ++count; } while (0)
+
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        // Overloads share a name, list it once
+        if (!procedure_name_before(i, procedures[i].name)) EMIT(procedures[i].name);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(script_intrinsics); ++i) {
+        if (!procedure_name_before(ARRAY_SIZE(procedures), script_intrinsics[i])) EMIT(script_intrinsics[i]);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+        EMIT(constants[i].name);
+    }
+
+    #undef EMIT
+    return count;
 }

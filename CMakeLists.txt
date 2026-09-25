@@ -117,6 +117,10 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_contact.c
+  src/md_contact.h
+  src/md_nonbonded.c
+  src/md_nonbonded.h
   src/md_csv.c
   src/md_csv.h
   src/md_cube.c

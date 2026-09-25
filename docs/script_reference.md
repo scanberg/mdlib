@@ -285,11 +285,11 @@ or [destructure](#statements-and-comments) them.
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
-| [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`porosity`](#porosity) |
+| [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
 | [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
-| [Combining](#combining-and-reshaping) | [`join`](#join) (`flatten`), [`split`](#split), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
+| [Combining](#combining-and-reshaping) | [`join`](#join) (`flatten`), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
 | [External data](#data-from-outside-the-structure) | [`attr`](#attr) |
 
 ---
@@ -1024,13 +1024,18 @@ sdf2 = sdf(chain(:), resname("PFT"), 30.0);
 ```text
 count(sel: bitfield[])                  -> float
 count(sel: bitfield[], unit: string)    -> float
+count(c: contact)                       -> float
+count(c: contact, unit: string)         -> float
 ```
 
-**Parameters:** `sel` (required), `unit` (optional).
+**Parameters:** `sel` or `c` (required), `unit` (optional).
 
 The number of atoms in the selection (an array is merged first). With `unit` the number of larger structures the
 selection touches instead: `"atom"`, `"residue"`, `"chain"` or `"structure"`. An unknown unit is a compile error that
 lists the valid ones. A `count` of a dynamic selection changes over time and is a temporal property.
+
+Given a contact set from [`contacts`](#contacts), `count` is the number of group pairs in contact. With `unit`
+`"group"` it is the same, and with `"atom"` the number of particle pairs behind them.
 
 ```mdscript
 n_atoms = count(within(4.0, atom(1)));                    # temporal: neighbours of atom 1
@@ -1055,6 +1060,64 @@ when the script is compiled.
 
 ```mdscript
 contacts = contact_count(residue(1), residue(2:3), 4.0);
+```
+
+### contacts
+
+<!-- proc name=contacts category=property -->
+
+```text
+contacts(a: bitfield[], b: bitfield[], cutoff: float, exclude_bonds: int, min_separation: int,
+         parent: bitfield[], exclude_within: bitfield[]) -> contact
+```
+
+**Parameters:** `a` and `cutoff` (required), `b`, `exclude_bonds` (default 3), `min_separation` (default 0),
+`parent` and `exclude_within` (optional). Everything after `a` and `b` is given by name.
+
+The groups in contact at each frame: pairs of groups with at least one pair of particles closer than `cutoff` Å.
+A group is any selection - a residue, a chain, a slice of a fibril - and groups may overlap.
+
+- Without `b`: the pairs of distinct groups of `a`, each pair once. Particle pairs within one group never count,
+  so `a` has to be several groups (`residue(:)`, not `protein()`).
+- With `b`: every group of `a` against every group of `b`.
+
+`exclude_bonds` skips particle pairs joined by at most that many bonds (3 skips 1-2, 1-3 and 1-4 pairs, as a force
+field's exclusions do; 0 skips nothing). Within one set, `min_separation` skips pairs of groups whose indices differ
+by less than it (3 ignores a residue's nearest neighbours along its chain); `parent` says which groups share a
+sequence, and groups of different parents are never neighbours. `exclude_within` skips particle pairs that lie in
+the same element of it, for example the same chain or fibril.
+
+The groups and every parameter have to be the same for every frame, so the query is prepared once when the script
+is compiled. The result is a contact set, which is reduced with [`count`](#count) or [`degree`](#degree).
+
+```mdscript
+c = contacts(residue(:), cutoff=4.5);
+n_pairs = count(c);                                     # residue pairs in contact
+n_atom_pairs = count(c, "atom");                        # the particle pairs behind them
+
+# Between two sets, without excluding bonded neighbours
+c2 = contacts(residue(1:5), residue(6:15), cutoff=4.0, exclude_bonds=0);
+
+# Slices of five residues, ignoring their near neighbours and contacts within a chain
+c3 = contacts(chunks(residue(:), 5), cutoff=5, min_separation=3, parent=residue(:), exclude_within=chain(:));
+```
+
+### degree
+
+<!-- proc name=degree category=property -->
+
+```text
+degree(c: contact) -> float[N]
+```
+
+**Parameters:** `c` (required).
+
+For each group of `a` in a contact set from [`contacts`](#contacts), the number of groups it is in contact with.
+The length is the number of groups of `a`, which is known when the script is compiled.
+
+```mdscript
+c = contacts(residue(:), cutoff=4.5);
+d = degree(c);                                          # contacts per residue, per frame
 ```
 
 ### porosity
@@ -1682,6 +1745,25 @@ Cut a selection into `parts` pieces of (nearly) equal size by atom index. `parts
 ```mdscript
 halves = split(residue(1), 2);
 d = distance(1, 2) in split(chain(1), 4);              # measure each quarter of a chain
+```
+
+### chunks
+
+<!-- proc name=chunks category=combine -->
+
+```text
+chunks(sel: bitfield[], size: int) -> bitfield[]
+```
+
+**Parameters:** `sel`, `size` (both required).
+
+Cut each element of `sel` into consecutive runs of `size` atoms, in atom index order; a last run shorter than `size`
+is kept. Where [`split`](#split) makes a given number of parts, `chunks` makes parts of a given size: groups the
+topology does not name, such as the slices of a fibril that is a single residue. `size` must be a positive constant.
+
+```mdscript
+slices = chunks(residue(:), 5);
+c = contacts(chunks(residue(:), 5), cutoff=5.0);
 ```
 
 ### transpose
