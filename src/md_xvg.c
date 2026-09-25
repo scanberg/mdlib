@@ -1,4 +1,7 @@
 #include <md_xvg.h>
+#include <md_system.h>
+#include <core/md_unit.h>
+#include <stdio.h>
 
 #include "core/md_allocator.h"
 #include "core/md_os.h"
@@ -273,5 +276,114 @@ void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
 		str_free(xvg->header_info.header, alloc);
 	}
 	md_array_free(xvg->header_info.legends, alloc);
+	for (size_t i = 0; i < md_array_size(xvg->fields); ++i) {
+		md_array_free(xvg->fields[i], alloc);
+	}
 	md_array_free(xvg->fields, alloc);
+}
+
+// ### RUN ###
+
+// The unit in parentheses in a label - "Time (ps)", "Energy (kJ/mol)" - or none
+static md_unit_t xvg_label_unit(str_t label) {
+    size_t beg, end;
+    md_unit_t unit = md_unit_none();
+    if (str_find_char(&beg, label, '(') && str_find_char(&end, label, ')') && end > beg) {
+        md_unit_t parsed;
+        if (md_unit_parse(&parsed, str_substr(label, beg + 1, end - beg - 1))) {
+            unit = parsed;
+        }
+    }
+    return unit;
+}
+
+// "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
+static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) {
+    str_t file = filename;
+    extract_file(&file, filename);
+    size_t dot;
+    if (str_rfind_char(&dot, file, '.') && dot > 0) {
+        file = str_substr(file, 0, dot);
+    }
+    size_t len = (size_t)snprintf(buf, cap, "%s/", kind);
+    const size_t base = len;
+    bool sep = false;
+    for (size_t i = 0; i < file.len && len + 2 < cap; ++i) {
+        char c = file.ptr[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) { sep = (len > base); continue; }
+        if (sep) { buf[len++] = '_'; sep = false; }
+        buf[len++] = c;
+    }
+    if (len == base) len += (size_t)snprintf(buf + len, cap - len, "data");
+    buf[len] = '\0';
+    return (str_t){ buf, len };
+}
+
+bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
+    ASSERT(sys);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    bool result = false;
+
+    md_xvg_t xvg = {0};
+    if (!md_xvg_parse_file(&xvg, filename, alloc) || xvg.num_fields == 0 || xvg.num_values == 0) {
+        MD_LOG_ERROR("XVG: failed to read '" STR_FMT "'", STR_ARG(filename));
+        goto done;
+    }
+
+    {
+        // The first column is time when the x axis says so; every other column shares the y axis unit.
+        const bool has_time = str_eq_cstr_n_ignore_case(str_trim(xvg.header_info.xaxis_label), "time", 4);
+        const size_t first = has_time ? 1 : 0;
+        const size_t C = xvg.num_fields - first;
+        if (C == 0) {
+            MD_LOG_ERROR("XVG: '" STR_FMT "' holds a time column and nothing else", STR_ARG(filename));
+            goto done;
+        }
+        const md_unit_t y_unit = xvg_label_unit(xvg.header_info.yaxis_label);
+
+        str_t*       names   = md_temp_alloc(temp, C * sizeof(str_t));
+        md_unit_t*   units   = md_temp_alloc(temp, C * sizeof(md_unit_t));
+        const float** columns = md_temp_alloc(temp, C * sizeof(float*));
+        for (size_t k = 0; k < C; ++k) {
+            const size_t field = first + k;
+            columns[k] = xvg.fields[field];
+            if (!has_time && field == 0) {
+                names[k] = xvg.header_info.xaxis_label;
+                units[k] = xvg_label_unit(xvg.header_info.xaxis_label);
+                continue;
+            }
+            const size_t legend = field - 1;
+            names[k] = (legend < md_array_size(xvg.header_info.legends)) ? xvg.header_info.legends[legend] :
+                       (C == 1 ? xvg.header_info.yaxis_label : (str_t){0});
+            units[k] = y_unit;
+        }
+
+        double* time = NULL;
+        if (has_time) {
+            time = md_temp_alloc(temp, xvg.num_values * sizeof(double));
+            for (size_t i = 0; i < xvg.num_values; ++i) time[i] = xvg.fields[0][i];
+        }
+
+        char group_buf[256];
+        char path_buf[4096];
+        const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
+        const md_run_series_desc_t desc = {
+            .group       = xvg_group(group_buf, sizeof(group_buf), "xvg", filename),
+            .num_rows    = xvg.num_values,
+            .num_columns = C,
+            .time        = time,
+            .time_unit   = has_time ? xvg_label_unit(xvg.header_info.xaxis_label) : md_unit_none(),
+            .names       = names,
+            .units       = units,
+            .columns     = columns,
+            .source_path = (str_t){ path_buf, path_len },
+        };
+        result = md_run_publish_series(sys, run, &desc);
+    }
+
+done:
+    md_temp_end(temp);
+    return result;
 }

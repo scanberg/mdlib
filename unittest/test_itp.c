@@ -226,8 +226,8 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     for (int m = 0; m < MOLS; ++m) {
         for (int s = 0; s + 1 < SLICES; ++s) {
             const size_t a = (size_t)(m * SLICES * 7 + s * 7);
-            EXPECT_NEAR(state.x[a + 7] - state.x[a], 21.9f, 0.05f);
-            EXPECT_NEAR(state.y[a + 7] - state.y[a], 0.0f, 0.05f);
+            EXPECT_NEAR(state.xyz[a + 7].x - state.xyz[a].x, 21.9f, 0.05f);
+            EXPECT_NEAR(state.xyz[a + 7].y - state.xyz[a].y, 0.0f, 0.05f);
         }
     }
 

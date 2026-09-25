@@ -230,9 +230,7 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 
         sys->atom.count += 1;
         atom_names[i] = atom_name;
-        state->x[i] = x;
-        state->y[i] = y;
-        state->z[i] = z;
+        state->xyz[i] = vec3_set(x, y, z);
         sys->atom.type_idx[i] = 0;
         sys->atom.flags[i] = 0;
 

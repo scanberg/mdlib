@@ -26,7 +26,7 @@ enum {
 enum {
     MD_PDB_OPTION_NONE                      = 0,
     MD_PDB_OPTION_CONCAT_MODELS             = 1,
-    MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE  = 2, // Only applies if the PDB stems from file on disk and contains a trajectory.
+    MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE  = 2, // Unused: a run is published with md_pdb_system_publish_run, which takes its own flags
 };
 
 typedef uint32_t md_pdb_options_t;
@@ -184,9 +184,13 @@ bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* st
 // EXPORT
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);
 
-// TRAJECTORY
-//bool md_pdb_trajectory_attach_from_file(struct md_system_t* sys, str_t filename);
-//bool md_pdb_trajectory_attach_from_str (struct md_system_t* sys, str_t str);
+// RUN
+// A file of several models of the same atoms, published as a run (see md_run_publish in
+// md_system.h): one frame per model, time as model ordinals without a unit, the file's CRYST1 cell
+// at every frame (zero without one) and atom/position read from the model's records when a frame is
+// asked for. The index of where each model starts is kept beside the file ('<file>.cache', written
+// unless flags carries MD_RUN_FLAG_DISABLE_CACHE_WRITE). False for a file of one model.
+bool md_pdb_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

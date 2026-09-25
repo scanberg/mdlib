@@ -844,9 +844,7 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
-        state->x[i] = (float)trexio->coord[i].x;
-        state->y[i] = (float)trexio->coord[i].y;
-        state->z[i] = (float)trexio->coord[i].z;
+        state->xyz[i] = vec3_set((float)trexio->coord[i].x, (float)trexio->coord[i].y, (float)trexio->coord[i].z);
 
         const md_atomic_number_t z = trexio->atomic_number[i];
         sys->atom.type_idx[i] = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,

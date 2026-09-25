@@ -912,9 +912,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         size_t num_atoms = md_array_size(atom_entries);
         size_t reserve_size = ALIGN_TO(num_atoms, 16);
 
-        md_array_ensure(out_state->x, reserve_size, out_state->alloc);
-        md_array_ensure(out_state->y, reserve_size, out_state->alloc);
-        md_array_ensure(out_state->z, reserve_size, out_state->alloc);
+        md_array_ensure(out_state->xyz, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
@@ -991,9 +989,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             prev_inst_key = inst_key;
             prev_comp_key = comp_key;
  
-            md_array_push_no_grow(out_state->x, atom_entries[i].x);
-            md_array_push_no_grow(out_state->y, atom_entries[i].y);
-            md_array_push_no_grow(out_state->z, atom_entries[i].z);
+            md_array_push_no_grow(out_state->xyz, vec3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
             md_array_push_no_grow(sys->atom.flags, flags);
             if (occupancy && b_iso && formal_charge) {
@@ -1004,7 +1000,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             sys->atom.count += 1;
         }
 
-        ASSERT(md_array_size(out_state->x) == sys->atom.count);
+        ASSERT(md_array_size(out_state->xyz) == sys->atom.count);
         out_state->num_atoms = sys->atom.count;
 
         // The same three paths and units md_pdb publishes, because they are the same quantities out

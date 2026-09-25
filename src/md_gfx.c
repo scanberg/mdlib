@@ -1130,7 +1130,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
 // https://developer.nvidia.com/blog/thinking-parallel-part-iii-tree-construction-gpu/
 
 
-void recompute_clusters(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
+void recompute_clusters(structure_t* s, const vec3_t* xyz, uint32_t count) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 
@@ -1150,7 +1150,7 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
     uint32_t* cluster_ranges = NULL;
     uint32_t* src_indices = md_alloc(alloc, sizeof(uint32_t) * count);
 
-    md_util_sort_spatial(src_indices, x, y, z, count);
+    md_util_sort_spatial(src_indices, xyz, count);
     md_array_ensure(cluster_ranges, DIV_UP(count, MIN_COUNT_PER_CLUSTER), alloc);
 
     vec3_t min_xyz = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
@@ -1166,7 +1166,7 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
 
         for (; i < cluster_offset + cluster_size; ++i) {
             uint32_t idx = src_indices[i];
-            vec3_t p = (vec3_t){x[idx], y[idx], z[idx]};
+            vec3_t p = (vec3_t){xyz[idx].x, xyz[idx].y, xyz[idx].z};
             cluster_aabb_min = vec3_min(cluster_aabb_min, p);
             cluster_aabb_max = vec3_max(cluster_aabb_max, p);
         }
@@ -1177,7 +1177,7 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
         float area = 2.0f * (ext.x*ext.y + ext.x*ext.z + ext.y*ext.z);
         for (; i < MIN(cluster_offset + MAX_COUNT_PER_CLUSTER, count); ++i) {
             uint32_t idx = src_indices[i];
-            vec3_t p = (vec3_t){x[idx], y[idx], z[idx]};
+            vec3_t p = (vec3_t){xyz[idx].x, xyz[idx].y, xyz[idx].z};
 
             vec3_t aabb_min = vec3_min(cluster_aabb_min, p);
             vec3_t aabb_max = vec3_max(cluster_aabb_max, p);
@@ -1243,43 +1243,6 @@ void update_cluster_data(const structure_t* s) {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
-bool md_gfx_structure_set_atom_position_soa(md_gfx_handle_t id, const float* x, const float* y, const float* z, uint32_t count) {
-    structure_t* s = get_structure(id);
-    if (!s) {
-        MD_LOG_ERROR("Failed to set atom position data: Handle is invalid");
-        return false;
-    }
-
-    if (!x || !y || ! z) {
-        MD_LOG_ERROR("One or more arguments are missing, must pass x, y and z for position.");
-        return false;
-    }
-
-    if (count > s->atom.capacity) {
-        MD_LOG_ERROR("Attempting to write out of bounds");
-        return false;
-    }
-    
-    vec3_t* pos = glMapNamedBufferRange(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), s->atom.capacity * sizeof(vec3_t), GL_MAP_WRITE_BIT);
-    if (!pos) {
-        MD_LOG_ERROR("Failed to set atom position data: Could not map buffer");
-        return false;
-    }
-   
-    for (uint32_t i = 0; i < count; ++i) {
-        pos[i].x = x[i];
-        pos[i].y = y[i];
-        pos[i].z = z[i];
-    }
-    glUnmapNamedBuffer(ctx.position_buf.id);
-
-    // Recompute clusters based on new positional data
-    recompute_clusters(s, x, y, z, count, 0);
-    update_cluster_data(s);
-    
-    return true;
-}
-
 bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
@@ -1297,25 +1260,24 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, u
         return false;
     }
 
+    md_temp_scope_t temp = md_temp_begin();
+
+    // Strided input is packed first: the buffer and the clustering both take packed positions
     byte_stride = MAX(sizeof(vec3_t), byte_stride);
     if (byte_stride > sizeof(vec3_t)) {
-        vec3_t* pos = glMapNamedBufferRange(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), s->atom.capacity * sizeof(vec3_t), GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
-        if (!pos) {
-            MD_LOG_ERROR("Failed to set atom position data: Could not map buffer");
-            return false;
-        }
-
+        vec3_t* packed = md_temp_alloc_array(temp, vec3_t, count);
         for (uint32_t i = 0; i < count; ++i) {
-            pos[i] = *(const vec3_t*)((const uint8_t*)xyz + byte_stride * i);
+            packed[i] = *(const vec3_t*)((const uint8_t*)xyz + byte_stride * i);
         }
-        glUnmapNamedBuffer(ctx.position_buf.id);
-    } else {
-        glNamedBufferSubData(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), s->atom.capacity * sizeof(vec3_t), xyz);
+        xyz = packed;
     }
+    glNamedBufferSubData(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
 
     // Recompute clusters based on new positional data
-    recompute_clusters(s, &xyz->x, &xyz->y, &xyz->z, count, byte_stride);
+    recompute_clusters(s, xyz, count);
     update_cluster_data(s);
+
+    md_temp_end(temp);
 
     return true;
 }

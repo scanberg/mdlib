@@ -329,3 +329,75 @@ UTEST(simd, fast_pow) {
     EXPECT_NEAR(2.0f,  res.val[6], 0.00001f);
     EXPECT_NEAR(1.0f,  res.val[7], 0.00001f);
 }
+
+UTEST(simd, load_xyz_packed) {
+    float xyz[12];
+    for (int i = 0; i < 12; ++i) xyz[i] = (float)i;
+    md_128 x, y, z;
+    md_mm_load_xyz_packed_ps(&x, &y, &z, xyz);
+    float ox[4], oy[4], oz[4];
+    md_mm_storeu_ps(ox, x);
+    md_mm_storeu_ps(oy, y);
+    md_mm_storeu_ps(oz, z);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(ox[i], (float)(3 * i + 0));
+        EXPECT_EQ(oy[i], (float)(3 * i + 1));
+        EXPECT_EQ(oz[i], (float)(3 * i + 2));
+    }
+}
+
+UTEST(simd, store_xyz_packed) {
+    const float ix[4] = {0, 3, 6, 9}, iy[4] = {1, 4, 7, 10}, iz[4] = {2, 5, 8, 11};
+    float out[13];
+    out[12] = -1.0f;
+    md_mm_store_xyz_packed_ps(out, md_mm_loadu_ps(ix), md_mm_loadu_ps(iy), md_mm_loadu_ps(iz));
+    for (int i = 0; i < 12; ++i) EXPECT_EQ(out[i], (float)i);
+    // Exactly twelve floats
+    EXPECT_EQ(out[12], -1.0f);
+}
+
+UTEST(simd, xyz_packed_256) {
+    float xyz[25];
+    for (int i = 0; i < 24; ++i) xyz[i] = (float)i;
+    xyz[24] = -1.0f;
+    md_256 x, y, z;
+    md_mm256_load_xyz_packed_ps(&x, &y, &z, xyz);
+    float ox[8], oy[8], oz[8];
+    md_mm256_storeu_ps(ox, x);
+    md_mm256_storeu_ps(oy, y);
+    md_mm256_storeu_ps(oz, z);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(ox[i], (float)(3 * i + 0));
+        EXPECT_EQ(oy[i], (float)(3 * i + 1));
+        EXPECT_EQ(oz[i], (float)(3 * i + 2));
+    }
+    float back[25];
+    back[24] = -1.0f;
+    md_mm256_store_xyz_packed_ps(back, x, y, z);
+    for (int i = 0; i < 25; ++i) EXPECT_EQ(back[i], xyz[i]);
+}
+
+UTEST(simd, i32gather_xyz) {
+    float xyz[30];
+    for (int i = 0; i < 30; ++i) xyz[i] = (float)i;
+    const int32_t idx8[8] = {9, 0, 3, 7, 1, 1, 8, 2};
+    md_256 x, y, z;
+    md_mm256_i32gather_xyz_ps(&x, &y, &z, xyz, md_mm256_loadu_si256(idx8));
+    float ox[8], oy[8], oz[8];
+    md_mm256_storeu_ps(ox, x);
+    md_mm256_storeu_ps(oy, y);
+    md_mm256_storeu_ps(oz, z);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(ox[i], (float)(3 * idx8[i] + 0));
+        EXPECT_EQ(oy[i], (float)(3 * idx8[i] + 1));
+        EXPECT_EQ(oz[i], (float)(3 * idx8[i] + 2));
+    }
+    md_128 x4, y4, z4;
+    md_mm_i32gather_xyz_ps(&x4, &y4, &z4, xyz, md_mm_loadu_si128(idx8));
+    md_mm_storeu_ps(ox, x4);
+    md_mm_storeu_ps(oz, z4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(ox[i], (float)(3 * idx8[i] + 0));
+        EXPECT_EQ(oz[i], (float)(3 * idx8[i] + 2));
+    }
+}

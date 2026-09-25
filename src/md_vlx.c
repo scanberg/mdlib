@@ -4430,15 +4430,15 @@ done:
 	return result;
 }
 
-static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_ATTACHMENT);
 }
 
-static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DETACHMENT);
 }
 
-static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DIFFERENCE);
 }
 
@@ -4863,9 +4863,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		state->x[i] = (float)vlx->atom_coordinates[i].x;
-		state->y[i] = (float)vlx->atom_coordinates[i].y;
-		state->z[i] = (float)vlx->atom_coordinates[i].z;
+		state->xyz[i] = vec3_set((float)vlx->atom_coordinates[i].x, (float)vlx->atom_coordinates[i].y, (float)vlx->atom_coordinates[i].z);
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		str_t sym  = md_atomic_number_symbol(z);

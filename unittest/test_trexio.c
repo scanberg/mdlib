@@ -43,7 +43,7 @@ UTEST(trexio, parse) {
     // ...and they are the same three numbers the Molden file beside it was written from.
     EXPECT_NEAR(4.068065707173540, xyz[3], 1.0e-9);
 
-    EXPECT_NEAR(xyz[0], (double)t.state.x[0], 1.0e-4);
+    EXPECT_NEAR(xyz[0], (double)t.state.xyz[0].x, 1.0e-4);
 
     // nucleus_label is authoritative for the element; nucleus_charge is what the electrons see and
     // is not the atomic number for an effective core potential.

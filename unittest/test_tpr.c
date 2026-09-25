@@ -72,7 +72,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
-        if (fabsf(state->x[i] - a->x * 10.0f) > 0.006f || fabsf(state->y[i] - a->y * 10.0f) > 0.006f || fabsf(state->z[i] - a->z * 10.0f) > 0.006f) {
+        if (fabsf(state->xyz[i].x - a->x * 10.0f) > 0.006f || fabsf(state->xyz[i].y - a->y * 10.0f) > 0.006f || fabsf(state->xyz[i].z - a->z * 10.0f) > 0.006f) {
             coord_mismatch += 1;
         }
     }
@@ -277,9 +277,32 @@ UTEST(tpr, martini) {
     // W: sigma 0.47 nm, epsilon 4.65 kJ/mol
     const md_tpr_moltype_t* w = &data.moltypes[4];
     ASSERT_TRUE(str_eq(w->name, STR_LIT("W")));
-    const md_tpr_lj_t lj = data.lj[w->atoms[0].type_idx];
+    const md_tpr_lj_t lj = md_tpr_lj_pair(&data, w->atoms[0].type_idx, w->atoms[0].type_idx);
     EXPECT_NEAR(0.47f, powf(lj.c12 / lj.c6, 1.0f / 6.0f), 1e-4f);
     EXPECT_NEAR(0.5f * powf(2.0f, 1.0f / 6.0f) * 4.7f, md_tpr_lj_vdw_radius(lj), 1e-3f);
+
+    // The whole table of type pairs is kept: symmetric, and Martini 3 sets its pairs explicitly rather than
+    // mixing the diagonal, so some pair differs from the combination of its two types
+    EXPECT_TRUE(data.nb_is_lj);
+    const size_t T = data.num_nb_types;
+    size_t not_mixed = 0;
+    for (size_t a = 0; a < T; ++a) {
+        for (size_t b = 0; b < T; ++b) {
+            const md_tpr_lj_t ab = md_tpr_lj_pair(&data, a, b);
+            const md_tpr_lj_t ba = md_tpr_lj_pair(&data, b, a);
+            EXPECT_EQ(ab.c6, ba.c6);
+            EXPECT_EQ(ab.c12, ba.c12);
+            const md_tpr_lj_t aa = md_tpr_lj_pair(&data, a, a);
+            const md_tpr_lj_t bb = md_tpr_lj_pair(&data, b, b);
+            // Geometric mixing of c6 and c12 (combination rule 1 and 3 for sigma and epsilon alike)
+            const float c6  = sqrtf(aa.c6 * bb.c6);
+            const float c12 = sqrtf(aa.c12 * bb.c12);
+            if (a != b && (fabsf(ab.c6 - c6) > 1e-3f * c6 || fabsf(ab.c12 - c12) > 1e-3f * c12)) not_mixed += 1;
+        }
+    }
+    EXPECT_GT(not_mixed, (size_t)0);
+    // Beyond the table
+    EXPECT_EQ(0.0f, md_tpr_lj_pair(&data, T, 0).c6);
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
@@ -321,5 +344,156 @@ UTEST(tpr, martini) {
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_structure_count(&sys.structure));
 
+    md_arena_allocator_destroy(arena);
+}
+
+
+// ### NON-BONDED INTERACTIONS ###
+// The expected values are what 'gmx dump -s' (GROMACS 2023.3) prints for each file. epsilon-rf 'inf' is
+// stored as 0.
+
+typedef struct nb_expect_t {
+    const char* file;
+    int32_t scheme;
+    float rlist;
+    int32_t coulomb_type, coulomb_modifier;
+    float rcoulomb_switch, rcoulomb, epsilon_r, epsilon_rf;
+    int32_t vdw_type, vdw_modifier;
+    float rvdw_switch, rvdw;
+    int32_t disp_corr;
+    float ewald_rtol, ewald_rtol_lj;
+    int32_t ljpme_comb_rule;
+    float fudge_qq;
+} nb_expect_t;
+
+UTEST(tpr, nonbonded_settings) {
+    const nb_expect_t cases[] = {
+        { "martini3.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 1.21f, MD_TPR_COULOMB_RF, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, 15.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 1.0f },
+        { "peptide_tip3p.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 0.99f, MD_TPR_COULOMB_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, 1.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.8333f },
+        { "peptide_tip3p_double.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 0.99f, MD_TPR_COULOMB_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, 1.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.8333f },
+        { "peptide_tip4p.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 0.99f, MD_TPR_COULOMB_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, 1.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 0.9f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.8333f },
+        { "nb_fswitch_rf.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 1.32f, MD_TPR_COULOMB_RF, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.2f, 2.0f, 78.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_FORCE_SWITCH, 0.8f, 1.2f, MD_TPR_DISP_CORR_ENER_PRES, 1e-5f, 1e-3f, 0, 0.5f },
+        { "nb_pswitch_cut.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 1.1f, MD_TPR_COULOMB_CUT, MD_TPR_MODIFIER_NONE, 0.0f, 1.0f, 1.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SWITCH, 0.9f, 1.0f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.5f },
+        { "nb_ljpme.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 1.21f, MD_TPR_COULOMB_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, 1.0f, 0.0f,
+          MD_TPR_VDW_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, MD_TPR_DISP_CORR_NO, 1e-6f, 1e-4f, 1, 0.5f },
+        { "nb_potshift_pme.tpr", MD_TPR_CUTOFF_SCHEME_VERLET, 1.21f, MD_TPR_COULOMB_PME, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, 1.0f, 0.0f,
+          MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.5f },
+    };
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        const nb_expect_t* e = &cases[i];
+        char path[512];
+        snprintf(path, sizeof(path), "%s%s", TPR_DIR, e->file);
+        md_tpr_data_t data = {0};
+        ASSERT_TRUE(md_tpr_data_parse_file(&data, str_from_cstr(path), arena));
+        const md_tpr_nonbonded_t* nb = &data.nonbonded;
+        EXPECT_TRUE(nb->valid);
+        EXPECT_EQ(e->scheme, nb->cutoff_scheme);
+        EXPECT_NEAR(e->rlist, nb->rlist, 1e-5f);
+        EXPECT_EQ(e->coulomb_type, nb->coulomb_type);
+        EXPECT_EQ(e->coulomb_modifier, nb->coulomb_modifier);
+        EXPECT_NEAR(e->rcoulomb_switch, nb->rcoulomb_switch, 1e-6f);
+        EXPECT_NEAR(e->rcoulomb, nb->rcoulomb, 1e-6f);
+        EXPECT_NEAR(e->epsilon_r, nb->epsilon_r, 1e-6f);
+        EXPECT_NEAR(e->epsilon_rf, nb->epsilon_rf, 1e-6f);
+        EXPECT_EQ(e->vdw_type, nb->vdw_type);
+        EXPECT_EQ(e->vdw_modifier, nb->vdw_modifier);
+        EXPECT_NEAR(e->rvdw_switch, nb->rvdw_switch, 1e-6f);
+        EXPECT_NEAR(e->rvdw, nb->rvdw, 1e-6f);
+        EXPECT_EQ(e->disp_corr, nb->disp_corr);
+        EXPECT_NEAR(e->ewald_rtol, nb->ewald_rtol, 1e-9f);
+        EXPECT_NEAR(e->ewald_rtol_lj, nb->ewald_rtol_lj, 1e-8f);
+        EXPECT_EQ(e->ljpme_comb_rule, nb->ljpme_comb_rule);
+        EXPECT_NEAR(e->fudge_qq, data.fudge_qq, 1e-6f);
+        EXPECT_EQ(12.0, data.repulsion_power);
+        // Reading the simulation parameters leaves the rest as it was
+        EXPECT_EQ(MD_TPR_PBC_XYZ, data.pbc);
+        md_tpr_data_free(&data, arena);
+    }
+    md_arena_allocator_destroy(arena);
+}
+
+// nb_topol.top: types A (sigma 0.30, epsilon 0.5) and B (0.40, 1.0) mixed by combination rule 2, except for
+// A-B which [ nonbond_params ] sets to sigma 0.25, epsilon 2.0. CHAIN is A B A B A bonded in a row with
+// nrexcl 2 and an explicit [ exclusions ] 1 4; three of them, then four single atom molecules: two SOLP, two SOLN.
+UTEST(tpr, nonbonded_parameters_and_exclusions) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_tpr_data_t data = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), arena));
+
+    // c6 = 4 epsilon sigma^6, c12 = 4 epsilon sigma^12
+    ASSERT_EQ(2u, data.num_nb_types);
+    ASSERT_TRUE(data.nb_is_lj);
+    const md_tpr_lj_t aa = md_tpr_lj_pair(&data, 0, 0);
+    const md_tpr_lj_t bb = md_tpr_lj_pair(&data, 1, 1);
+    const md_tpr_lj_t ab = md_tpr_lj_pair(&data, 0, 1);
+    const md_tpr_lj_t ba = md_tpr_lj_pair(&data, 1, 0);
+    EXPECT_NEAR(4.0 * 0.5 * pow(0.30, 6),  aa.c6,  1e-9);
+    EXPECT_NEAR(4.0 * 0.5 * pow(0.30, 12), aa.c12, 1e-12);
+    EXPECT_NEAR(4.0 * 1.0 * pow(0.40, 6),  bb.c6,  1e-8);
+    // The override, not the combination (sigma 0.35, epsilon 0.707)
+    EXPECT_NEAR(4.0 * 2.0 * pow(0.25, 6),  ab.c6,  1e-9);
+    EXPECT_NEAR(4.0 * 2.0 * pow(0.25, 12), ab.c12, 1e-12);
+    EXPECT_EQ(ab.c6, ba.c6);
+    EXPECT_EQ(ab.c12, ba.c12);
+
+    ASSERT_EQ(3u, data.num_moltypes);
+    const md_tpr_moltype_t* chain = &data.moltypes[0];
+    const md_tpr_moltype_t* solo  = &data.moltypes[1];
+    ASSERT_TRUE(str_eq(solo->name, STR_LIT("SOLP")));
+    ASSERT_TRUE(str_eq(chain->name, STR_LIT("CHAIN")));
+    ASSERT_EQ(5u, chain->num_atoms);
+    ASSERT_TRUE(chain->excl_offset && chain->excl);
+    // Within two bonds, and 1-4 given explicitly. The atom itself is not listed.
+    const uint32_t expected[5][4] = { {1, 2, 3}, {0, 2, 3}, {0, 1, 3, 4}, {0, 1, 2, 4}, {2, 3} };
+    const uint32_t expected_len[5] = { 3, 3, 4, 4, 2 };
+    for (uint32_t i = 0; i < 5; ++i) {
+        ASSERT_EQ(expected_len[i], chain->excl_offset[i + 1] - chain->excl_offset[i]);
+        for (uint32_t k = 0; k < expected_len[i]; ++k) {
+            EXPECT_EQ(expected[i][k], chain->excl[chain->excl_offset[i] + k]);
+        }
+    }
+    // A single atom is only excluded from itself, which is not listed
+    EXPECT_TRUE(solo->excl_offset == NULL);
+
+    // Global: the second chain is atoms 5..9, the solos 15..18
+    EXPECT_TRUE(md_tpr_atoms_excluded(&data, 5, 8));
+    EXPECT_TRUE(md_tpr_atoms_excluded(&data, 8, 5));
+    EXPECT_FALSE(md_tpr_atoms_excluded(&data, 5, 9));
+    EXPECT_TRUE(md_tpr_atoms_excluded(&data, 7, 9));
+    EXPECT_FALSE(md_tpr_atoms_excluded(&data, 4, 5));     // Last of one chain, first of the next
+    EXPECT_FALSE(md_tpr_atoms_excluded(&data, 0, 15));
+    EXPECT_FALSE(md_tpr_atoms_excluded(&data, 15, 16));
+    EXPECT_TRUE(md_tpr_atoms_excluded(&data, 16, 16));
+    EXPECT_FALSE(md_tpr_atoms_excluded(&data, 0, 19));    // Beyond the system
+
+    // SETTLE water excludes its three atoms from each other
+    md_tpr_data_t pep = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&pep, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+    const md_tpr_moltype_t* sol = &pep.moltypes[1];
+    ASSERT_TRUE(str_eq(sol->name, STR_LIT("SOL")));
+    ASSERT_TRUE(sol->excl_offset != NULL);
+    for (uint32_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(2u, sol->excl_offset[i + 1] - sol->excl_offset[i]);
+    }
+    // The peptide excludes up to three bonds (amber: nrexcl 3): the atoms bonded to atom 0 and theirs
+    const md_tpr_moltype_t* prot = &pep.moltypes[0];
+    ASSERT_TRUE(prot->excl_offset != NULL);
+    for (size_t b = 0; b < prot->num_bonds; ++b) {
+        const int32_t i = prot->bonds[b].idx[0], j = prot->bonds[b].idx[1];
+        bool found = false;
+        for (uint32_t k = prot->excl_offset[i]; k < prot->excl_offset[i + 1]; ++k) found |= prot->excl[k] == (uint32_t)j;
+        EXPECT_TRUE(found);
+    }
+
+    md_tpr_data_free(&pep, arena);
+    md_tpr_data_free(&data, arena);
     md_arena_allocator_destroy(arena);
 }

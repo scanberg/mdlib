@@ -246,29 +246,17 @@ bool str_rfind_char(size_t* loc, str_t str, int c) {
 }
 
 bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
-    if (haystack.len == 0) return false;
-    if (needle.len   == 0) return false;
+    if (needle.len == 0 || needle.len > haystack.len) return false;
 
-    if (needle.len > haystack.len) {
-        MD_LOG_ERROR("Trying to find 'needle' which is larger than supplied 'haystack'");
-        return false;
-    }
-
+    // Every position where the needle still fits is a candidate. (Restarting the match after the character that broke
+    // a partial match is not enough: "aab" contains "ab" starting inside the partial match "aa".)
     const char* h_beg = haystack.ptr;
-    const char* h_end = haystack.ptr + haystack.len;
-
-    size_t i = 0;
-    const char* n_beg = 0;
-    for (const char* c = h_beg; c != h_end; ++c) {
-        if (*c == needle.ptr[i]) {
-            if (i == 0) n_beg = c;
-            ++i;
-        } else {
-            i = 0;
-        }
-
-        if (i == needle.len) {
-            if (loc) *loc = n_beg - h_beg;
+    const char* last  = haystack.ptr + (haystack.len - needle.len);
+    for (const char* c = h_beg; c <= last; ++c) {
+        c = (const char*)memchr(c, needle.ptr[0], (size_t)(last - c) + 1);
+        if (!c) break;
+        if (MEMCMP(c, needle.ptr, needle.len) == 0) {
+            if (loc) *loc = (size_t)(c - h_beg);
             return true;
         }
     }
@@ -463,9 +451,10 @@ void convert_to_upper(char* str, size_t len) {
 
 size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
     ASSERT(buf);
-    if (cap == 0 || str_empty(str)) return 0;
-    const size_t len = CLAMP(str.len, 0, cap - 1);
-    MEMCPY(buf, str.ptr, len);
+    if (cap == 0) return 0;
+    // An empty str still writes the terminator, so the buffer never keeps what it held before
+    const size_t len = str_empty(str) ? 0 : MIN(str.len, cap - 1);
+    if (len) MEMCPY(buf, str.ptr, len);
     buf[len] = '\0';
     return len;
 }

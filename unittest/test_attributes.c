@@ -791,7 +791,7 @@ UTEST(attributes, extract_slice_f64_row) {
 // 3 states x 4 atoms, value(state, atom) = state + atom / 10. Computed rather than stored, so the
 // same formula must come back whether asked for whole or one state's row - that agreement is the
 // point of the test, not the formula itself.
-static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)user_data;
     float* out = (float*)dst;
     size_t num_atoms = attr->format.shape[1];
@@ -809,7 +809,7 @@ static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_
 }
 
 // Reads a single constant out of user_data, so the provider itself carries no state.
-static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)attr;
     (void)slice;
     float value = *(const float*)user_data;
@@ -821,7 +821,17 @@ static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t*
 }
 
 // A provider that never honours cap, to exercise the "provider lied" error path.
-static size_t provider_wrong_count(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+// Records where it was asked to write, so a test can tell whether the extract handed it the
+// caller's own buffer or a scratch copy.
+static size_t provider_record_dst(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)attr; (void)slice;
+    *(void**)user_data = dst;
+    float* out = (float*)dst;
+    for (size_t i = 0; i < cap; ++i) out[i] = (float)i;
+    return cap;
+}
+
+static size_t provider_wrong_count(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)dst;
     (void)attr;
     (void)slice;
@@ -1175,7 +1185,7 @@ typedef struct combine_ctx_t {
     double           rhs_scale;
 } combine_ctx_t;
 
-static size_t provider_combine_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t provider_combine_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)attr;
     (void)slice;
     combine_ctx_t* ctx = (combine_ctx_t*)user_data;
@@ -1366,11 +1376,19 @@ UTEST(attributes, publish_atom_column_rules) {
     md_attributes_free(&t);
 }
 
-// TEMPORAL is a claim about the outermost axis, checked at create against the frame count the table
-// is indexed by - which is the point of tagging rather than inferring from a shape that merely looks
-// frame sized.
-UTEST(attributes, temporal_flag_is_verified_against_the_frame_count) {
-    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 2};
+// TEMPORAL is a claim about the outermost axis, checked at create against the attribute's frame axis
+// - the nearest "time" above it - which is the point of tagging rather than inferring from a shape
+// that merely looks frame sized.
+UTEST(attributes, temporal_flag_is_verified_against_its_axis) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const double times[2] = {0.0, 10.0};
+    md_attribute_id_t axis_id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/time"),
+        .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {2}},
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
+        .data = times, .byte_size = sizeof(times)});
+    ASSERT_NE(axis_id, MD_ATTRIBUTE_INVALID);
 
     float data[2 * 3 * 2];
     for (int i = 0; i < 2 * 3 * 2; ++i) data[i] = (float)i;
@@ -1379,56 +1397,226 @@ UTEST(attributes, temporal_flag_is_verified_against_the_frame_count) {
         .type = MD_ATTRIBUTE_TYPE_F32, .components = 2, .rank = 2, .shape = {2, 3},
     };
 
-    // The outermost extent disagreeing with the trajectory is a bug, and it is refused here rather
-    // than surviving until something reads past the end of it.
+    // The outermost extent disagreeing with the axis is a bug, and it is refused here rather than
+    // surviving until something reads past the end of it.
     const md_attribute_format_t wrong = {
         .type = MD_ATTRIBUTE_TYPE_F32, .components = 2, .rank = 2, .shape = {5, 3},
     };
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = STR_LIT("run/a/backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
 
     // Temporal with no index axes at all has no outermost axis to be about.
     EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("backbone/angle"), .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 0},
+        .path = STR_LIT("run/a/backbone/angle"), .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 0},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
-    EXPECT_EQ(md_attributes_count(&t), 0u);
+    EXPECT_EQ(md_attributes_count(&t), 1u);
 
     md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("backbone/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = STR_LIT("run/a/backbone/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_radian(), .data = data, .byte_size = sizeof(data)});
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_get(&t, id)->flags, MD_ATTRIBUTE_FLAG_TEMPORAL);
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, id)), md_attributes_get(&t, axis_id));
+
+    // An axis is its own axis.
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, axis_id)), md_attributes_get(&t, axis_id));
 
     // The same shape WITHOUT the tag is fine: a leading extent that happens to equal the frame
     // count is a coincidence, and nothing tries to infer intent from it.
-    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+    md_attribute_id_t matrix = md_attributes_create(&t, &(md_attribute_desc_t){
         .path = STR_LIT("some/matrix"), .format = fmt, .unit = md_unit_none(),
-        .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
+        .data = data, .byte_size = sizeof(data)});
+    ASSERT_NE(matrix, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, matrix)), NULL);
 
-    // A table with no trajectory behind it cannot check, and says so by not failing.
-    md_attributes_t u = {.alloc = md_get_heap_allocator()};
-    ASSERT_NE(md_attributes_create(&u, &(md_attribute_desc_t){
-        .path = STR_LIT("backbone/angle"), .format = wrong, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = md_unit_none()}), MD_ATTRIBUTE_INVALID);
-    md_attributes_free(&u);
+    // Temporal with nothing above it to be temporal ALONG is refused: publish the axis first.
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("elsewhere/angle"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none(), .data = data, .byte_size = sizeof(data)}), MD_ATTRIBUTE_INVALID);
 
-    // An alias is a second name for one datum, so it is the same kind of quantity.
-    md_attribute_id_t alias = md_attributes_alias(&t, id, STR_LIT("backbone/phi_psi"), (str_t){0}, (str_t){0});
+    // An alias is a second name for one datum, so it is the same kind of quantity - along the same
+    // axis, even under a group with no axis of its own.
+    md_attribute_id_t alias = md_attributes_alias(&t, id, STR_LIT("elsewhere/phi_psi"), (str_t){0}, (str_t){0});
     ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
     EXPECT_EQ(md_attributes_get(&t, alias)->flags, MD_ATTRIBUTE_FLAG_TEMPORAL);
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, alias)), md_attributes_get(&t, axis_id));
+
+    md_attributes_free(&t);
+}
+
+// The NEAREST axis wins, so a source sampled at its own rate keeps its own axis inside the run, and
+// a "time" that is not shaped like an axis is walked past rather than trusted.
+UTEST(attributes, nearest_axis_wins) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const double run_times[2] = {0.0, 10.0};
+    const double edr_times[5] = {0.0, 2.5, 5.0, 7.5, 10.0};
+    const double values[5]    = {1.0, 2.0, 3.0, 4.0, 5.0};
+
+    md_attribute_id_t run_axis = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(), .data = run_times, .byte_size = sizeof(run_times)});
+    md_attribute_id_t edr_axis = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/edr/time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(), .data = edr_times, .byte_size = sizeof(edr_times)});
+    ASSERT_NE(run_axis, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(edr_axis, MD_ATTRIBUTE_INVALID);
+
+    // Under edr/ the energy file's own axis is the nearer one, and the run's frame count is wrong.
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(double)}), MD_ATTRIBUTE_INVALID);
+    md_attribute_id_t pot = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/edr/potential"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 5),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = sizeof(values)});
+    ASSERT_NE(pot, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, pot)), md_attributes_get(&t, edr_axis));
+
+    // A "time" of the wrong shape is data, not an axis.
+    const double not_axis[2 * 3] = {0};
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/weird/time"),
+        .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = {2, 3}},
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = not_axis, .byte_size = sizeof(not_axis)}), MD_ATTRIBUTE_INVALID);
+    md_attribute_id_t val = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("run/a/weird/value"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = values, .byte_size = 2 * sizeof(double)});
+    ASSERT_NE(val, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_axis(&t, md_attributes_get(&t, val)), md_attributes_get(&t, run_axis));
+
+    md_attributes_free(&t);
+}
+
+static md_attribute_id_t publish_axis(md_attributes_t* t, const char* path, const double* v, uint32_t n, md_unit_t unit) {
+    return md_attributes_create(t, &(md_attribute_desc_t){
+        .path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, n),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = unit, .data = v, .byte_size = n * sizeof(double)});
+}
+
+// Axes are related by VALUE: a frame of one lands where the other has the same coordinate, in
+// whatever unit each is stored, or nowhere.
+UTEST(attributes, axis_map_matches_by_value) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    // What an XTC hands back: times that went through a float.
+    const double frames[4] = {0.0, (double)10.0000004f, 20.0, (double)12345.6f};
+    const double fine[7]   = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 12345.6};
+    const double in_ns[3]  = {0.0, 0.010, 0.020};
+    const double sparse[3] = {0.0, 3.0, 6.0};
+    const double ordinals[4] = {0.0, 1.0, 2.0, 3.0};
+
+    ASSERT_NE(publish_axis(&t, "run/a/time",        frames,   4, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/a/fine/time",   fine,     7, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/a/ns/time",     in_ns,    3, md_unit_nanosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/a/sparse/time", sparse,   3, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/b/time",        ordinals, 4, md_unit_none()),       MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_t* run    = md_attributes_find(&t, STR_LIT("run/a/time"));
+    const md_attribute_t* fine_a = md_attributes_find(&t, STR_LIT("run/a/fine/time"));
+    const md_attribute_t* ns_a   = md_attributes_find(&t, STR_LIT("run/a/ns/time"));
+    const md_attribute_t* sp_a   = md_attributes_find(&t, STR_LIT("run/a/sparse/time"));
+    const md_attribute_t* ord    = md_attributes_find(&t, STR_LIT("run/b/time"));
+
+    size_t idx = 999;
+    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 2, run));
+    EXPECT_EQ(idx, 2u);
+
+    // Float noise on the frame time still finds its row, including far out where a float's ulp is
+    // larger than any fixed margin would be.
+    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 1, fine_a));
+    EXPECT_EQ(idx, 2u);
+    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 3, fine_a));
+    EXPECT_EQ(idx, 6u);
+
+    // Converted between units rather than compared as numbers.
+    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 2, ns_a));
+    EXPECT_EQ(idx, 2u);
+
+    // No coordinate there is an answer, not an invitation to take the neighbour.
+    idx = 999;
+    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 1, sp_a));
+    EXPECT_EQ(idx, 999u);
+
+    // Ordinals are not picoseconds, whatever their values happen to be.
+    EXPECT_FALSE(md_attribute_axis_map(&idx, ord, 1, run));
+    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 1, ord));
+
+    // Out of range on the source.
+    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 4, fine_a));
+
+    md_attributes_free(&t);
+}
+
+// A provider whose stored type is what the caller asked for, with nothing to rescale, writes
+// straight into the caller's buffer; anything that converts still goes through scratch.
+UTEST(attributes, provider_writes_into_dst_when_nothing_converts) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    void* seen = NULL;
+    md_attribute_virtual_t virt = {.provider = provider_record_dst, .user_data = &seen};
+    md_attribute_id_t id = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("computed/length"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4),
+        .unit = md_unit_angstrom(), .virt = &virt});
+    ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
+    const md_attribute_t* attr = md_attributes_get(&t, id);
+
+    float  f[4] = {0};
+    double d[4] = {0};
+
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_unit_none()), 4u);
+    EXPECT_EQ(seen, (void*)f);
+    EXPECT_EQ(f[3], 3.0f);
+
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_unit_angstrom()), 4u);
+    EXPECT_EQ(seen, (void*)f);
+
+    // Converting: through scratch, and the values arrive converted.
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_unit_nanometer()), 4u);
+    EXPECT_NE(seen, (void*)f);
+    EXPECT_NEAR(f[3], 0.3f, 1.0e-6f);
+
+    // Another type: through scratch as well.
+    ASSERT_EQ(md_attribute_extract_f64(d, 4, attr, md_unit_none()), 4u);
+    EXPECT_NE(seen, (void*)d);
+    EXPECT_EQ(d[2], 2.0);
+
+    md_attributes_free(&t);
+}
+
+// A group goes as a whole: everything at or below the prefix, at segment boundaries, and any alias
+// of it published elsewhere - which would otherwise outlive the storage it names.
+UTEST(attributes, remove_prefix_takes_the_whole_group) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    const double v[2] = {0.0, 1.0};
+    ASSERT_NE(publish_axis(&t, "run/a/time",     v, 2, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/a/edr/time", v, 2, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_axis(&t, "run/ab/time",    v, 2, md_unit_picosecond()), MD_ATTRIBUTE_INVALID);
+    const md_attribute_t* edr_time = md_attributes_find(&t, STR_LIT("run/a/edr/time"));
+    ASSERT_TRUE(edr_time != NULL);
+    ASSERT_NE(md_attributes_alias(&t, edr_time->id, STR_LIT("energy/time"), (str_t){0}, (str_t){0}), MD_ATTRIBUTE_INVALID);
+
+    // Nothing is taken for "everything".
+    EXPECT_EQ(md_attributes_remove_prefix(&t, (str_t){0}), 0u);
+    EXPECT_EQ(md_attributes_count(&t), 4u);
+
+    EXPECT_EQ(md_attributes_remove_prefix(&t, STR_LIT("run/a")), 3u);
+    EXPECT_EQ(md_attributes_count(&t), 1u);
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("run/ab/time")) != NULL);
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("energy/time")) == NULL);
 
     md_attributes_free(&t);
 }
 
 // Whole-extraction is refused by COST, not by the frame axis. A resident temporal attribute is a
-// copy of bytes that already exist - 'frame/time' is exactly that, and a plot wants all of it.
+// copy of bytes that already exist - a run's 'time' is exactly that, and a plot wants all of it.
 UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
-    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 4};
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const double times[4] = {0.0, 1.0, 2.0, 3.0};
     md_attribute_id_t time_id = md_attributes_create(&t, &(md_attribute_desc_t){
-        .path = STR_LIT("frame/time"),
+        .path = STR_LIT("time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {4}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = sizeof(times)});
@@ -1460,10 +1648,17 @@ UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
 
 // Prefix and kind compose in one pass, which is what one producer emitting both kinds needs.
 UTEST(attributes, query_narrows_by_flags) {
-    md_attributes_t t = {.alloc = md_get_heap_allocator(), .num_frames = 3};
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
 
     const float series[3] = {1.0f, 2.0f, 3.0f};
     const float bins[4]   = {0.5f, 1.5f, 2.5f, 3.5f};
+    const double frames[3] = {0.0, 1.0, 2.0};
+
+    // The axis the series is temporal along, at the root as a script evaluation publishes it.
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = STR_LIT("time"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 3),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(),
+        .data = frames, .byte_size = sizeof(frames)}), MD_ATTRIBUTE_INVALID);
 
     ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
         .path = STR_LIT("script/dist"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 3),
@@ -1489,9 +1684,10 @@ UTEST(attributes, query_narrows_by_flags) {
     EXPECT_EQ(md_attributes_query_flags(NULL, 0, &t, STR_LIT("script"),
         MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_NONE), 2u);
 
-    // "Everything temporal in this dataset" is the same call with no prefix.
+    // "Everything temporal in this dataset" is the same call with no prefix: the series and the
+    // axis it is temporal along.
     EXPECT_EQ(md_attributes_query_flags(NULL, 0, &t, (str_t){0},
-        MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL), 1u);
+        MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL), 2u);
 
     md_attributes_free(&t);
 }

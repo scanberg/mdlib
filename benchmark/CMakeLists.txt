@@ -12,6 +12,7 @@ set(SRC_FILES
     bench_xyz.c
     bench_str.c
     bench_util.c
+    bench_coords.c
     bench_lammps.c
 )
 

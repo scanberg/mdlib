@@ -2,10 +2,11 @@
 #include <string.h>
 
 #include <md_pdb.h>
-#include <md_trajectory.h>
 #include <md_system.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
+
+#include "run_check.h"
 
 UTEST(pdb, parse_ordinary) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
@@ -87,64 +88,6 @@ UTEST(pdb, parse_trajectory) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(pdb, trajectory_i) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_system_t sys = {.alloc = arena};
-    md_system_state_t sys_state = { .alloc = arena };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-
-    md_trajectory_i* traj = sys.trajectory;
-    ASSERT_TRUE(traj);
-
-    EXPECT_EQ(md_trajectory_num_atoms(traj), 153);
-    EXPECT_EQ(md_trajectory_num_frames(traj), 38);
-
-    const size_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(arena, mem_size);
-    float *x = (float*)mem_ptr;
-    float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
-    float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
-    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
-        md_system_state_t state = {0, x, y, z, {0}};
-        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &state));
-    }
-
-    md_system_free(&sys);
-    md_arena_allocator_destroy(arena);
-}
-
-UTEST(pdb, trajectory_reader_i) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_system_t sys = { .alloc = arena };
-    md_system_state_t sys_state = { .alloc = arena };
-    md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
-    md_trajectory_i* traj = sys.trajectory;
-    ASSERT_TRUE(traj);
-
-    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(arena, mem_size);
-    float *x = (float*)mem_ptr;
-    float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
-    float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
-
-    md_trajectory_reader_i reader = {0};
-    ASSERT_TRUE(md_trajectory_reader_init(&reader, traj));
-
-    md_system_state_t state = {0, x, y, z, {0}};
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, 0, &state));
-    EXPECT_EQ(153, state.num_atoms);
-    EXPECT_TRUE(md_trajectory_reader_load_frame(reader, md_trajectory_num_frames(traj) - 1, &state));
-    EXPECT_EQ(153, state.num_atoms);
-
-    md_trajectory_reader_free(&reader);
-    md_system_free(&sys);
-    md_arena_allocator_destroy(arena);
-}
-
 UTEST(pdb, create_system) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
@@ -161,9 +104,9 @@ UTEST(pdb, create_system) {
     EXPECT_EQ(1, sys.entity.count);
 
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        EXPECT_EQ(sys_state.x[i], pdb_data.atom_coordinates[i].x);
-        EXPECT_EQ(sys_state.y[i], pdb_data.atom_coordinates[i].y);
-        EXPECT_EQ(sys_state.z[i], pdb_data.atom_coordinates[i].z);
+        EXPECT_EQ(sys_state.xyz[i].x, pdb_data.atom_coordinates[i].x);
+        EXPECT_EQ(sys_state.xyz[i].y, pdb_data.atom_coordinates[i].y);
+        EXPECT_EQ(sys_state.xyz[i].z, pdb_data.atom_coordinates[i].z);
     }
 
     md_system_free(&sys);
@@ -193,4 +136,57 @@ UTEST(pdb, parse_empty_path) {
     
     md_pdb_data_free(&pdb_data, md_get_heap_allocator());
     md_arena_allocator_destroy(alloc);
+}
+// ### RUN ###
+
+#define PDB_RUN STR_LIT("run/1ala")
+
+// Recorded from the trajectory reader this replaced
+static const run_ref_t pdb_refs[] = {
+    { 0,  {3568.34002, 7394.96399, 3699.66098}, {23.7040005, 23, 21.3549995},         {25.0020008, 75.5550003, 23.5319996}, {46.6450005, 96.6660004, 48.3619995, 0, 0, 0} },
+    { 19, {3297.43299, 6833.70401, 3418.89901}, {22.4950008, 43.8180008, 11.6870003}, {7.09700012, 53.9360008, 23.4740009}, {46.6450005, 96.6660004, 48.3619995, 0, 0, 0} },
+    { 37, {3298.315, 6835.46697, 3419.76601},   {28.4710007, 57.6910019, 25.2150002}, {8.61200047, 35.6669998, 14.9329996}, {46.6450005, 96.6660004, 48.3619995, 0, 0, 0} },
+};
+
+// One frame per model, time as model ordinals, and the file's one CRYST1 cell at every frame.
+UTEST(pdb, run_matches_reference) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t sys_state = {.alloc = arena};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_publish_run(&sys, path, PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    run_check_refs(utest_result, &sys, PDB_RUN, 38, 153, pdb_refs, ARRAY_SIZE(pdb_refs));
+
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/1ala/time"));
+    const md_attribute_t* pos  = md_attributes_find(&sys.attributes, STR_LIT("run/1ala/atom/position"));
+    ASSERT_TRUE(time && pos);
+    EXPECT_TRUE(md_unit_is_none(time->unit));
+    EXPECT_EQ(9.0, ((const double*)time->data)[9]);
+
+    // The first model is the structure's own coordinates.
+    md_system_state_t got = {.alloc = arena};
+    md_system_state_init(&got, sys.atom.count);
+    ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 0));
+    EXPECT_EQ(0, MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+
+    // One atom of one model: the text is read up to that atom and no further.
+    float xyz[3];
+    ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 9));
+    md_attribute_slice_t one = md_attribute_slice_2(9, 100);
+    ASSERT_EQ(3u, md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_none()));
+    EXPECT_EQ(got.xyz[100].x, xyz[0]);
+    EXPECT_EQ(got.xyz[100].z, xyz[2]);
+
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+}
+
+// A file of one model is a structure, not a run.
+UTEST(pdb, run_needs_several_models) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    EXPECT_FALSE(md_pdb_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/1ala/time")) == NULL);
+    md_vm_arena_destroy(arena);
 }

@@ -513,7 +513,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
 
 // Reads the basis and the QM geometry back out of the table and integrates. The geometry is
 // published in Angstrom, matching the system's own; the exponents are in bohr^-2, so it converts.
-static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;  // one whole {A,A} matrix, not indexed by anything a slice could fix
     md_system_t* sys = (md_system_t*)user_data;
 
@@ -642,12 +642,12 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
     return ok ? cap : 0;
 }
 
-static size_t qm_alpha_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t qm_alpha_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;  // one whole {A,A} matrix, not indexed by anything a slice could fix
     return qm_density_provide(dst, cap, attr, user_data, false);
 }
 
-static size_t qm_beta_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t qm_beta_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
     return qm_density_provide(dst, cap, attr, user_data, true);
 }
@@ -692,12 +692,12 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     return ok ? cap : 0;
 }
 
-static size_t qm_total_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t qm_total_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
     return qm_density_combine(dst, cap, attr, user_data, 1.0);
 }
 
-static size_t qm_difference_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data) {
+static size_t qm_difference_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
     return qm_density_combine(dst, cap, attr, user_data, -1.0);
 }

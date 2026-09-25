@@ -309,7 +309,9 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
         if (keys[i] < MD_HASH_TOMBSTONE) {
             const uint32_t new_i = md_hashmap__add_no_grow(new_keys, new_buckets, keys[i]);
             new_keys[new_i] = keys[i];
-            MEMCPY((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
+            if (value_bytes) {
+                MEMCPY((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
+            }
             ++new_elements;
         }
     }

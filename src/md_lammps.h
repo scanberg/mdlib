@@ -6,7 +6,6 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
-struct md_trajectory_i;
 struct md_system_t;
 // Coordinates are handed back through a state; only passed by pointer here.
 typedef struct md_system_state_t md_system_state_t;
@@ -141,9 +140,13 @@ bool md_lammps_system_init_from_data(struct md_system_t* sys, md_system_state_t*
 bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format);
 bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,	  const char* atom_format);
 
-// TRAJECTORY
-bool md_lammps_trajectory_attach_from_file(struct md_system_t* sys, str_t filename, uint32_t flags);
-struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
+// RUN
+// A dump file (.lammpstrj) published as a run (see md_run_publish in md_system.h): time as frame
+// ordinals without a unit (a dump records TIMESTEP, never dt), step as each frame's TIMESTEP, each
+// frame's own box and atom/position read from the frame's text in id order when asked for. The index
+// is kept beside the file ('<file>.cache', written unless flags carries
+// MD_RUN_FLAG_DISABLE_CACHE_WRITE).
+bool md_lammps_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

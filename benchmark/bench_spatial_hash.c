@@ -29,7 +29,7 @@ UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
         return;
     }
 
-    md_coord_stream_t stream = md_coord_stream_from_soa(sys_state.x, sys_state.y, sys_state.z, NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = arena };
     md_spatial_acc_init(&acc, &stream, RADIUS, &sys_state.unitcell, 0);
 

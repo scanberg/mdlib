@@ -119,6 +119,10 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_contact.c
+  src/md_contact.h
+  src/md_nonbonded.c
+  src/md_nonbonded.h
   src/md_csv.c
   src/md_csv.h
   src/md_cube.c
@@ -165,7 +169,6 @@ set(SRC_FILES
   src/md_topo.h
   src/md_tpr.c
   src/md_tpr.h
-  src/md_trajectory.h
   src/md_trr.c
   src/md_trr.h
   src/md_types.h
