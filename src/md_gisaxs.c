@@ -731,7 +731,7 @@ double md_gisaxs_particle_z_max(const md_gisaxs_t* ctx)        { return ctx ? ct
 // 1..N = film layers (graded), N+1 = substrate (half space below h[N]).
 // h[j] is the bottom boundary of layer j (j = 0..N), d[j] the thickness of layer j (j = 1..N).
 // The field in layer j is T_j exp(-i k_j (z - h_j)) + R_j exp(+i k_j (z - h_j)).
-typedef struct stack_t {
+typedef struct layer_stack_t {
     size_t  num_film;       // N
     cplx_t* sld;            // N+2, relative to the ambient (layer 0 is 0)
     double* h;              // N+1
@@ -739,7 +739,7 @@ typedef struct stack_t {
     double  roughness2;     // substrate roughness^2
     // Slice -> layer mapping
     uint32_t* slice_layer;  // num_slices
-} stack_t;
+} layer_stack_t;
 
 typedef struct field_t {
     cplx_t* k;              // N+2
@@ -752,7 +752,7 @@ static inline cplx_t c_rdiv_safe(cplx_t num, cplx_t den) {
     return c_div(num, den);
 }
 
-static void stack_init(stack_t* st, const md_gisaxs_t* ctx, const md_gisaxs_model_t* m) {
+static void stack_init(layer_stack_t* st, const md_gisaxs_t* ctx, const md_gisaxs_model_t* m) {
     const size_t S = ctx->num_slices;
     const double dz = ctx->dz;
     size_t k0 = S;  // First slice (from the bottom) that belongs to the film
@@ -800,7 +800,7 @@ static void stack_init(stack_t* st, const md_gisaxs_t* ctx, const md_gisaxs_mode
     }
 }
 
-static void stack_free(stack_t* st) {
+static void stack_free(layer_stack_t* st) {
     md_fft_free(st->sld);
     md_fft_free(st->h);
     md_fft_free(st->d);
@@ -821,7 +821,7 @@ static void field_free(field_t* f) {
 
 // Parratt recursion for a wave with vertical wave number kz0 (> 0, ambient) incident from the top with unit amplitude.
 // X (scratch, N+2) holds R/T at the bottom of each layer.
-static void field_compute(field_t* f, cplx_t* X, const stack_t* st, double kz0) {
+static void field_compute(field_t* f, cplx_t* X, const layer_stack_t* st, double kz0) {
     const size_t N = st->num_film;
     // Vertical wave numbers: k_j^2 = kz0^2 - 4 pi dSLD_j
     for (size_t j = 0; j < N + 2; ++j) {
@@ -932,7 +932,7 @@ void md_gisaxs_evaluate_range(const md_gisaxs_t* ctx, const md_gisaxs_model_t* m
         return;
     }
 
-    stack_t st;
+    layer_stack_t st;
     stack_init(&st, ctx, model);
     const size_t N = st.num_film;
     field_t fi, ff;
@@ -995,7 +995,7 @@ void md_gisaxs_evaluate(const md_gisaxs_t* ctx, const md_gisaxs_model_t* model, 
 void md_gisaxs_reflectivity(const md_gisaxs_t* ctx, const md_gisaxs_model_t* model, const double* qz, size_t num_qz, double* out) {
     ASSERT(ctx);
     ASSERT(model);
-    stack_t st;
+    layer_stack_t st;
     stack_init(&st, ctx, model);
     field_t f;
     field_alloc(&f, st.num_film);
