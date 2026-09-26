@@ -264,6 +264,41 @@ const str_t* md_script_keywords(void);
 // size of the buffer to pass.
 size_t md_script_builtin_identifiers(str_t* out, size_t cap);
 
+// ### COMPLETION ###
+
+typedef enum md_script_completion_kind_t {
+    MD_SCRIPT_COMPLETION_KEYWORD = 1,
+    MD_SCRIPT_COMPLETION_PROCEDURE,     // A built-in procedure
+    MD_SCRIPT_COMPLETION_CONSTANT,      // A predefined constant, such as PI
+    MD_SCRIPT_COMPLETION_VARIABLE,      // A name the script assigns to
+    MD_SCRIPT_COMPLETION_PARAMETER,     // A parameter of the procedure being called, to give the argument by name
+    MD_SCRIPT_COMPLETION_VALUE,         // A value the argument takes: a name found in the system (residue names,
+                                        // elements, chains, ...) or one of a fixed set, such as the units of count()
+} md_script_completion_kind_t;
+
+typedef struct md_script_completion_t {
+    str_t label;                        // What to show and to match what has been typed against: ALA, cutoff
+    str_t text;                         // What replaces the range: "ALA" (quoted if the cursor is not in a string),
+                                        // cutoff=
+    md_script_completion_kind_t kind;
+} md_script_completion_t;
+
+typedef struct md_script_completions_t {
+    md_script_range_marker_t range;     // The bytes of the source that a completion replaces: the identifier, or the
+                                        // contents of the string, that the cursor is in. Empty at the cursor if none.
+    str_t prefix;                       // The part of the range before the cursor: what has been typed so far
+    size_t count;
+    md_script_completion_t* items;
+} md_script_completions_t;
+
+// What can be written at the byte offset cursor of the script src, for completion in an editor.
+// The source may be incomplete, as it is while being typed: this follows the tokens up to the cursor and does not
+// compile anything. The items are all that is valid at the cursor, neither filtered by what has been typed nor
+// ranked, which is left to the editor. Nothing is offered in comments and numbers, and inside a string only when the
+// argument it is given to takes known values. Values from the system are only offered if sys is not NULL.
+// Everything returned (items and strings) is allocated from alloc, which is meant to be a temporary arena.
+md_script_completions_t md_script_complete(str_t src, int cursor, const struct md_system_t* sys, struct md_allocator_i* alloc);
+
 #ifdef __cplusplus
 }
 #endif

@@ -838,6 +838,31 @@ static const proc_sig_t signatures[] = {
 #undef KW_NUL
 #undef KW_INT
 
+// ### VALUE DOMAINS ###
+// The values that string parameters take, for completion (md_script_complete). The domains are read from the system
+// with the same accessors as the procedures use to match their arguments (see value_domain_t and
+// completion_domain_values in md_script_complete.inl). Like the signatures, an entry is per procedure NAME and
+// parameter position, and holds for every overload taking a string there.
+// Checked by the unittest 'script.completion_domain_table': every procedure with a string parameter has an entry.
+// attr() is parsed rather than looked up in the procedure table, but its path is declared here all the same.
+static const param_domain_t param_domains[] = {
+    {STR_INIT("name"),      0, DOMAIN_ATOM_NAME},
+    {STR_INIT("type"),      0, DOMAIN_ATOM_NAME},
+    {STR_INIT("label"),     0, DOMAIN_ATOM_NAME},
+    {STR_INIT("element"),   0, DOMAIN_ELEMENT},
+    {STR_INIT("resname"),   0, DOMAIN_COMP_NAME},
+    {STR_INIT("residue"),   0, DOMAIN_COMP_NAME},
+    {STR_INIT("component"), 0, DOMAIN_COMP_NAME},
+    {STR_INIT("chain"),     0, DOMAIN_CHAIN_ID},
+    {STR_INIT("chain_id"),  0, DOMAIN_CHAIN_ID},
+    {STR_INIT("instance"),  0, DOMAIN_INST_ID},
+    {STR_INIT("auth_id"),   0, DOMAIN_INST_AUTH_ID},
+    // count(contacts, unit) takes 'atom' or 'group' instead, which cannot be told apart without knowing the type of
+    // the first argument. Counting selections is the common case.
+    {STR_INIT("count"),     1, DOMAIN_COUNT_UNIT},
+    {STR_INIT("attr"),      0, DOMAIN_ATTR_PATH},
+};
+
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
     ASSERT(ctx);
     

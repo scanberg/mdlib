@@ -3803,3 +3803,279 @@ UTEST_F(script, rmsd_per_structure) {
 
     md_vm_arena_destroy(alloc);
 }
+
+// ### COMPLETION ###
+
+// Completions at the '|' in src, which is taken out
+static md_script_completions_t complete_at(const char* src_with_cursor, const md_system_t* sys, md_allocator_i* alloc) {
+    const char* bar = strchr(src_with_cursor, '|');
+    const int cursor = bar ? (int)(bar - src_with_cursor) : (int)strlen(src_with_cursor);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%.*s%s", cursor, src_with_cursor, bar ? bar + 1 : "");
+    return md_script_complete(str_copy_cstr(buf, alloc), cursor, sys, alloc);
+}
+
+static int count_kind(md_script_completions_t c, md_script_completion_kind_t kind) {
+    int n = 0;
+    for (size_t i = 0; i < c.count; ++i) n += c.items[i].kind == kind;
+    return n;
+}
+
+static bool has_item(md_script_completions_t c, md_script_completion_kind_t kind, const char* text) {
+    for (size_t i = 0; i < c.count; ++i) {
+        if (c.items[i].kind == kind && str_eq(c.items[i].text, str_from_cstr(text))) return true;
+    }
+    return false;
+}
+
+UTEST(script, completion_values_in_strings) {
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_script_completions_t c;
+
+    // In a string that is not closed yet: the names, and the quote that closes it
+    c = complete_at("x = resname(\"P|", &test_mol, alloc);
+    EXPECT_EQ(3, (int)c.count);
+    EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "PFT\""));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "SOL\""));
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("P")));
+    EXPECT_EQ(13, c.range.beg);
+    EXPECT_EQ(14, c.range.end);
+
+    // In a closed string: the names alone, replacing its contents
+    c = complete_at("x = resname(\"L|YZ\");", &test_mol, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "LYS"));
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("L")));
+    EXPECT_EQ(13, c.range.beg);
+    EXPECT_EQ(16, c.range.end);
+
+    // Single quotes, the other name selectors
+    c = complete_at("x = element('|')", &test_mol, alloc);
+    EXPECT_EQ(5, (int)c.count);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "He"));
+    c = complete_at("x = name('|", &test_mol, alloc);
+    EXPECT_EQ(5, (int)c.count);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "CA'"));
+    c = complete_at("x = instance(\"|\")", &test_mol, alloc);
+    EXPECT_EQ(4, (int)c.count);
+
+    // An element of an array literal
+    c = complete_at("x = resname({\"SOL\", \"|", &test_mol, alloc);
+    EXPECT_EQ(3, (int)c.count);
+
+    // A parameter that is not the first, given by position and by name
+    c = complete_at("x = count(all, \"|\")", &test_mol, alloc);
+    EXPECT_EQ(4, (int)c.count);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "residue"));
+    c = complete_at("x = count(all, unit=\"|\")", &test_mol, alloc);
+    EXPECT_EQ(4, (int)c.count);
+
+    // Values that are not from the system are there without one, the others are not
+    c = complete_at("x = count(all, \"|\")", NULL, alloc);
+    EXPECT_EQ(4, (int)c.count);
+    c = complete_at("x = resname(\"|\")", NULL, alloc);
+    EXPECT_EQ(0, (int)c.count);
+
+    // Strings that take no known values, comments and numbers get nothing
+    c = complete_at("x = attr(\"edr/|", &test_mol, alloc);  // No such attributes
+    EXPECT_EQ(0, (int)c.count);
+    c = complete_at("x = resname(\"ALA\"); # res|", &test_mol, alloc);
+    EXPECT_EQ(0, (int)c.count);
+    c = complete_at("x = 12|", &test_mol, alloc);
+    EXPECT_EQ(0, (int)c.count);
+    c = complete_at("x = resname(\"ALA\"|", &test_mol, alloc);
+    EXPECT_EQ(0, (int)c.count);
+
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(script, completion_identifiers) {
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_script_completions_t c;
+
+    // In an expression: variables, procedures, constants and keywords, and the identifier is replaced as a whole
+    c = complete_at("d1 = distance(1,2);\n{a, b} = shape_weights(all);\ny = di|st", &test_mol, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "d1"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "a"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "b"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "dist"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "transpose"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_CONSTANT, "PI"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "in"));
+    EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VARIABLE));
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "y"));   // Not in its own definition
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("di")));
+    EXPECT_EQ((int)(c.range.end - c.range.beg), 4);
+
+    // Every procedure name once
+    const size_t num_builtin = md_script_builtin_identifiers(NULL, 0);
+    EXPECT_EQ((int)(num_builtin - ARRAY_SIZE(constants)), count_kind(c, MD_SCRIPT_COMPLETION_PROCEDURE));
+
+    // A keyword being typed is an identifier being typed
+    c = complete_at("x = resname(\"ALA\") in|", &test_mol, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "instance"));
+
+    // Where a variable is named, only the names that are taken
+    c = complete_at("d1 = distance(1,2);\nd|", &test_mol, alloc);
+    EXPECT_EQ(1, (int)c.count);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "d1"));
+    c = complete_at("abc = 1;\n{ab|c, d} = shape_weights(all);", &test_mol, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "abc"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "d"));  // Being written, in the same statement
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_PROCEDURE));
+
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(script, completion_arguments) {
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_script_completions_t c;
+
+    // At the start of an argument: the values it takes (quoted), next to everything else
+    c = complete_at("x = resname(|", &test_mol, alloc);
+    EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "\"PFT\""));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    c = complete_at("x = resname(P|", &test_mol, alloc);
+    EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    // Not further into the argument
+    c = complete_at("x = resname(y + |", &test_mol, alloc);
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+
+    // The parameters that can still be given by name
+    c = complete_at("x = count(|", &test_mol, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "sel="));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "unit="));
+    c = complete_at("x = count(all, u|", &test_mol, alloc);
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "sel="));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "unit="));
+    EXPECT_EQ(4, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    c = complete_at("x = contacts(a, cutoff=3, |", &test_mol, alloc);
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "a="));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "cutoff="));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "b="));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "exclude_bonds="));
+    // Not for the value of an argument given by name, or in a nested call
+    c = complete_at("x = count(sel=|", &test_mol, alloc);
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_PARAMETER));
+    c = complete_at("x = count(residue(|", &test_mol, alloc);
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_PARAMETER));
+    EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Every procedure that takes a string says what the string is, and every entry is for a string parameter
+UTEST(script, completion_domain_table) {
+    char msg[128];
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        for (size_t p = 0; p < procedures[i].num_args; ++p) {
+            if (procedures[i].arg_type[p].base_type != TYPE_STRING) continue;
+            snprintf(msg, sizeof(msg), "procedure '%.*s' parameter %d", STR_ARG(procedures[i].name), (int)p);
+            EXPECT_TRUE_MSG(find_param_domain(procedures[i].name, (int)p) != DOMAIN_NONE, msg);
+        }
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(param_domains); ++i) {
+        bool found = false;
+        for (size_t j = 0; j < ARRAY_SIZE(script_intrinsics) && !found; ++j) {
+            found = str_eq(script_intrinsics[j], param_domains[i].proc);  // Parsed, not in the procedure table
+        }
+        for (size_t j = 0; j < ARRAY_SIZE(procedures) && !found; ++j) {
+            found = str_eq(procedures[j].name, param_domains[i].proc) && param_domains[i].param < procedures[j].num_args &&
+                    procedures[j].arg_type[param_domains[i].param].base_type == TYPE_STRING;
+        }
+        snprintf(msg, sizeof(msg), "domain of '%.*s' parameter %d", STR_ARG(param_domains[i].proc), (int)param_domains[i].param);
+        EXPECT_TRUE_MSG(found, msg);
+    }
+}
+
+// The tokenizer stops at the end of what it is given, also when that is in the middle of a larger buffer: a comment
+// that runs to the end, and a carriage return at the end of an unterminated string, used to look one past it.
+UTEST(script, tokenizer_stays_within_its_string) {
+    const char buf[] = "x = 1; # comment\nabc";
+    const str_t str = {buf, 16};  // Ends inside the comment, the buffer goes on with a newline and an identifier
+    tokenizer_t tokenizer = tokenizer_init(str);
+    int types[8] = {0};
+    int count = 0;
+    token_t token;
+    while (token = tokenizer_consume_next(&tokenizer), token.type != TOKEN_END && count < 8) {
+        types[count++] = token.type;
+    }
+    EXPECT_EQ(4, count);
+    EXPECT_EQ(TOKEN_IDENT, types[0]);
+    EXPECT_EQ(';', types[3]);
+    EXPECT_EQ(TOKEN_END, (int)token.type);
+    EXPECT_EQ(16, token.beg);
+    EXPECT_EQ(TOKEN_END, (int)tokenizer_peek_next(&tokenizer).type);
+
+    const char buf2[] = "\"abc\r\n";
+    tokenizer = tokenizer_init((str_t){buf2, 5});  // Ends at the carriage return
+    token = tokenizer_consume_next(&tokenizer);
+    EXPECT_EQ(TOKEN_UNDEF, (int)token.type);  // An unterminated string
+    EXPECT_EQ(5, token.end);
+
+    // A script that ends in a comment compiles
+    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(64));
+    md_script_ir_t* ir = md_script_ir_create(arena);
+    EXPECT_TRUE(compiles(ir, "x = 1; # comment", &test_mol));
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(arena);
+}
+
+UTEST(script, completion_attribute_paths) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t state = {.alloc = arena};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_attributes_t* t = &sys.attributes;
+    const md_attribute_t* run_time = md_attributes_find(t, STR_LIT("run/t/time"));
+    ASSERT_TRUE(run_time != NULL);
+    const uint32_t F = run_time->format.shape[0];
+    const double* frame_times = (const double*)run_time->data;
+    double* values = md_alloc(arena, F * sizeof(double));
+    for (uint32_t f = 0; f < F; ++f) values[f] = (double)f;
+    ASSERT_NE(publish_f64(t, "run/t/obs/value", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/t/static",    series_fmt(3, 1), MD_ATTRIBUTE_FLAG_NONE, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+
+    md_script_ir_t* ir = md_script_ir_create(arena);
+    char msg[256];
+    char src[256];
+
+    // Every path offered is one that attr() reads: each compiles, as it is offered
+    md_script_completions_t c = complete_at("x = attr(\"|", &sys, arena);
+    ASSERT_GT(c.count, (size_t)0);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value\""));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "time\""));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "static\""));
+    for (size_t i = 0; i < c.count; ++i) {
+        snprintf(src, sizeof(src), "x = attr(\"" STR_FMT ");", STR_ARG(c.items[i].text));
+        snprintf(msg, sizeof(msg), "offered '%.*s'", STR_ARG(c.items[i].label));
+        EXPECT_TRUE_MSG(compiles(ir, src, &sys), msg);
+    }
+
+    // Full paths, once that is what is being typed
+    c = complete_at("x = attr(\"run|\")", &sys, arena);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
+
+    // A second run with the same path makes the short form ambiguous: both are offered in full, and still compile
+    ASSERT_NE(publish_f64(t, "run/u/time",      series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, run_time->unit, frame_times), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "run/u/obs/value", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    c = complete_at("x = attr(\"|\")", &sys, arena);
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/u/obs/value"));
+    for (size_t i = 0; i < c.count; ++i) {
+        snprintf(src, sizeof(src), "x = attr(\"" STR_FMT "\");", STR_ARG(c.items[i].text));
+        snprintf(msg, sizeof(msg), "offered '%.*s'", STR_ARG(c.items[i].label));
+        EXPECT_TRUE_MSG(compiles(ir, src, &sys), msg);
+    }
+
+    md_script_ir_free(ir);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+}

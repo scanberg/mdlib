@@ -384,6 +384,27 @@ typedef struct proc_sig_t {
     param_sig_t param[MAX_SUPPORTED_PROC_ARGS];
 } proc_sig_t;
 
+// ### VALUE DOMAINS ###
+// What the strings given to a parameter name, so that completion (md_script_complete) can offer them. Declared per
+// procedure NAME and parameter position in the 'param_domains' table in md_script_functions.inl.
+typedef enum value_domain_t {
+    DOMAIN_NONE = 0,
+    DOMAIN_ATOM_NAME,       // Atom (type) names: name(), type(), label()
+    DOMAIN_ELEMENT,         // Element symbols of the atoms: element()
+    DOMAIN_COMP_NAME,       // Component (residue) names: resname(), residue(), component()
+    DOMAIN_CHAIN_ID,        // Ids of the polymer instances: chain(), chain_id()
+    DOMAIN_INST_ID,         // Ids of all instances: instance()
+    DOMAIN_INST_AUTH_ID,    // Author ids of all instances: auth_id()
+    DOMAIN_COUNT_UNIT,      // What count() counts in: 'atom', 'residue', ...
+    DOMAIN_ATTR_PATH,       // Paths of the attributes that attr() can read
+} value_domain_t;
+
+typedef struct param_domain_t {
+    str_t           proc;   // Procedure name, shared by all of its overloads
+    uint32_t        param;  // Position of the parameter
+    value_domain_t  domain;
+} param_domain_t;
+
 // An argument of a procedure call as written in the source
 typedef struct named_arg_t {
     str_t   name;   // Empty for a positional argument
@@ -1552,6 +1573,18 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
                     break;
                 }
             }
+            if (i == len) {
+                // The comment runs to the end: there is nothing after it, and buf[len] is not ours to read
+                tokenizer->cur = len;
+                token.type = TOKEN_END;
+                token.line_beg = line;
+                token.line_end = line;
+                token.col_beg  = len - tokenizer->line_offset;
+                token.col_end  = len - tokenizer->line_offset;
+                token.beg = len;
+                token.end = len;
+                break;
+            }
         }
 
         if (buf[i] == '\n') {
@@ -1628,7 +1661,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
                     ++j;
                     break;
                 }
-                else if (buf[j] == ';' || (buf[j] == '\r' && buf[j+1] == '\n')) { // We do not want to leak return carry '\r' into the text since that will malform any output
+                else if (buf[j] == ';' || (buf[j] == '\r' && j + 1 < len && buf[j+1] == '\n')) { // We do not want to leak return carry '\r' into the text since that will malform any output
                     break;
                 }
             }
@@ -4171,6 +4204,62 @@ static size_t print_argument_list(char* buf, size_t cap, const type_info_t arg_t
     return len;
 }
 
+// What attr() can read: a temporal attribute holding numbers, part of a run ('run/<name>/...') whose
+// frames it follows, with no more dimensions per frame than a script value can hold. The static check
+// reports why an attribute is not, and completion lists the ones that are.
+typedef enum attr_readable_t {
+    ATTR_READABLE = 0,
+    ATTR_NOT_TEMPORAL,
+    ATTR_NOT_NUMERIC,
+    ATTR_NOT_IN_RUN,
+    ATTR_RUN_WITHOUT_AXIS,
+    ATTR_WITHOUT_AXIS,
+    ATTR_TOO_MANY_DIMS,
+} attr_readable_t;
+
+typedef struct attr_read_info_t {
+    str_t                 run;          // 'run/<name>', a view into the path of the attribute
+    const md_attribute_t* run_axis;     // The frames of the run
+    const md_attribute_t* attr_axis;    // The frames of the attribute
+} attr_read_info_t;
+
+static attr_readable_t attr_readable(const md_attributes_t* attributes, const md_attribute_t* attr, attr_read_info_t* info) {
+    ASSERT(attributes && attr && info);
+    MEMSET(info, 0, sizeof(*info));
+
+    if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+        return ATTR_NOT_TEMPORAL;
+    }
+    if (attr->format.type == MD_ATTRIBUTE_TYPE_STR || attr->format.type == MD_ATTRIBUTE_TYPE_NONE) {
+        return ATTR_NOT_NUMERIC;
+    }
+
+    // The run is the first two segments, and its frames are the ones the script steps through.
+    const str_t full = attr->path;
+    size_t name_len = 0;
+    if (!str_begins_with(full, STR_LIT("run/")) || !str_find_char(&name_len, str_substr(full, 4, SIZE_MAX), '/')) {
+        return ATTR_NOT_IN_RUN;
+    }
+    info->run = str_substr(full, 0, 4 + name_len);
+
+    char buf[512];
+    const int len = snprintf(buf, sizeof(buf), STR_FMT"/time", STR_ARG(info->run));
+    info->run_axis = (len > 0 && (size_t)len < sizeof(buf)) ? md_attributes_find(attributes, (str_t){buf, (size_t)len}) : NULL;
+    if (!info->run_axis || md_attributes_axis(attributes, info->run_axis) != info->run_axis) {
+        return ATTR_RUN_WITHOUT_AXIS;
+    }
+    info->attr_axis = md_attributes_axis(attributes, attr);
+    if (!info->attr_axis) {
+        return ATTR_WITHOUT_AXIS;
+    }
+
+    const uint32_t num_dims = (attr->format.rank - 1) + (attr->format.components > 1 ? 1 : 0);
+    if (num_dims > MAX_NUM_DIMS) {
+        return ATTR_TOO_MANY_DIMS;
+    }
+    return ATTR_READABLE;
+}
+
 // attr("<path>") names a temporal attribute of the system. The path is either absolute
 // ("run/a/edr/potential") or relative to a run ("edr/potential"), in which case it has to exist in
 // exactly one run: with a single trajectory that is always the case, and when it is not the error
@@ -4229,42 +4318,35 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
         }
     }
 
-    if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
-        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not vary over the trajectory; attr() reads temporal attributes", STR_ARG(attr->path));
-        return false;
-    }
-    if (attr->format.type == MD_ATTRIBUTE_TYPE_STR || attr->format.type == MD_ATTRIBUTE_TYPE_NONE) {
-        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not hold numbers", STR_ARG(attr->path));
-        return false;
-    }
-
-    // The run is the first two segments, and its frames are the ones the script steps through.
+    attr_read_info_t info;
     const str_t full = attr->path;
-    size_t name_len = 0;
-    if (!str_begins_with(full, STR_LIT("run/")) || !str_find_char(&name_len, str_substr(full, 4, SIZE_MAX), '/')) {
+    switch (attr_readable(attributes, attr, &info)) {
+    case ATTR_READABLE:
+        break;
+    case ATTR_NOT_TEMPORAL:
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not vary over the trajectory; attr() reads temporal attributes", STR_ARG(full));
+        return false;
+    case ATTR_NOT_NUMERIC:
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' does not hold numbers", STR_ARG(full));
+        return false;
+    case ATTR_NOT_IN_RUN:
         LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' is not part of a run ('run/<name>/...'), so it has no frames to follow", STR_ARG(full));
         return false;
-    }
-    const str_t run = str_substr(full, 0, 4 + name_len);
-    int len = snprintf(buf, sizeof(buf), STR_FMT"/time", STR_ARG(run));
-    const md_attribute_t* run_axis = (len > 0 && (size_t)len < sizeof(buf)) ? md_attributes_find(attributes, (str_t){buf, (size_t)len}) : NULL;
-    if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
-        LOG_ERROR(ctx->ir, args[0]->token, "attr: the run '"STR_FMT"' has no frame axis ('"STR_FMT"/time')", STR_ARG(run), STR_ARG(run));
+    case ATTR_RUN_WITHOUT_AXIS:
+        LOG_ERROR(ctx->ir, args[0]->token, "attr: the run '"STR_FMT"' has no frame axis ('"STR_FMT"/time')", STR_ARG(info.run), STR_ARG(info.run));
         return false;
-    }
-    const md_attribute_t* attr_axis = md_attributes_axis(attributes, attr);
-    if (!attr_axis) {
+    case ATTR_WITHOUT_AXIS:
         LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' has no frame axis", STR_ARG(full));
         return false;
-    }
-
-    // One value per frame: the index axes left after the frame axis, then the components of a
-    // value. A 3x3 tensor is float[3][3], a vector float[3], a scalar float.
-    const uint32_t num_dims = (attr->format.rank - 1) + (attr->format.components > 1 ? 1 : 0);
-    if (num_dims > MAX_NUM_DIMS) {
+    case ATTR_TOO_MANY_DIMS:
         LOG_ERROR(ctx->ir, args[0]->token, "attr: '"STR_FMT"' has more dimensions per frame than a script value can hold (%d)", STR_ARG(full), MAX_NUM_DIMS);
         return false;
     }
+    const md_attribute_t* run_axis  = info.run_axis;
+    const md_attribute_t* attr_axis = info.attr_axis;
+
+    // One value per frame: the index axes left after the frame axis, then the components of a
+    // value. A 3x3 tensor is float[3][3], a vector float[3], a scalar float.
     type_info_t type = { .base_type = TYPE_FLOAT, .dim = {1} };
     uint32_t d = 0;
     for (uint32_t i = 1; i < attr->format.rank; ++i) {
@@ -7277,3 +7359,5 @@ size_t md_script_builtin_identifiers(str_t* out, size_t cap) {
     #undef EMIT
     return count;
 }
+
+#include "md_script_complete.inl"
