@@ -52,6 +52,7 @@ typedef enum {
 
     MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x4,      // Backbone atoms
+    MD_FLAG_DERIVED             = 0x8,      // Not defined by the source but derived when loading, e.g. entities (and thereby instances) from md_util_system_infer_entity_and_instance
     MD_FLAG_TERMINAL_BEG        = 0x10,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
     MD_FLAG_TERMINAL_END        = 0x20,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
 

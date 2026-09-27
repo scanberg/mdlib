@@ -4756,6 +4756,24 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
 // Define what size of components we group into same instances
 #define MAX_GROUPED_COMP_SIZE 4
 
+static void clear_entities_and_instances(md_system_t* sys, md_allocator_i* alloc) {
+    md_array_free(sys->instance.id, alloc);
+    md_array_free(sys->instance.auth_id, alloc);
+    md_array_free(sys->instance.comp_offset, alloc);
+    md_array_free(sys->instance.entity_idx, alloc);
+    sys->instance.count = 0;
+
+    for (size_t i = 0; i < md_array_size(sys->entity.description); ++i) {
+        if (!str_empty(sys->entity.description[i])) {
+            str_free(sys->entity.description[i], alloc);
+        }
+    }
+    md_array_free(sys->entity.id, alloc);
+    md_array_free(sys->entity.flags, alloc);
+    md_array_free(sys->entity.description, alloc);
+    sys->entity.count = 0;
+}
+
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system or components");
@@ -4770,6 +4788,11 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
     ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
+
+    // Entities and instances are derived from scratch. Whatever a loader left behind (entities without any
+    // instances referring to them, which an mmCIF without entity ids on its atoms gives) would otherwise
+    // be appended to, leaving orphaned entities and instance data which does not add up.
+    clear_entities_and_instances(sys, alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -4815,15 +4838,18 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
             uint64_t entity_key = md_hash64_str(comp_name, 0);
 
-            // Mask which controls what flags should be propagated to entities
-            const md_flags_t entity_mask = MD_FLAG_COARSE_GRAINED | MD_FLAG_POLYPEPTIDE | MD_FLAG_NUCLEOTIDE | MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION;
-            md_flags_t entity_flags = comp_flags & entity_mask;
+            // Mask which controls what flags should be propagated to entities.
+            // Entities carry the chain level flags (polypeptide / nucleic acid), which components are given once their
+            // backbone has been verified, not the monomer level ones (amino acid / nucleotide). This matches what mmCIF
+            // entities carry, and what the backbone extraction in md_util_system_infer tests instances for.
+            const md_flags_t entity_mask = MD_FLAG_COARSE_GRAINED | MD_FLAG_POLYPEPTIDE | MD_FLAG_NUCLEIC_ACID | MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_ION;
+            md_flags_t entity_flags = (comp_flags & entity_mask) | MD_FLAG_DERIVED;
 
             bool is_amino_or_nucleotide = (bool)(comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
 
             bool test_name      = (comp_flags & (MD_FLAG_WATER | MD_FLAG_ION)) && comp_size <= MAX_GROUPED_COMP_SIZE;
             bool test_auth_id   = comp_auth_asym_id && !str_empty(comp_auth_id);
-            bool test_bond      = !test_auth_id && bitfield_test_bit(connected_to_prev, j);
+            bool test_bond      = !test_auth_id && j < sys->component.count && bitfield_test_bit(connected_to_prev, j);
             bool test_seq_id    = !test_bond && !is_amino_or_nucleotide && comp_size > MAX_GROUPED_COMP_SIZE;
 #if 0
             MD_LOG_DEBUG("Identifying new instance");
@@ -4853,6 +4879,10 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                         entity_key = md_hash64_str(comp_name_j, entity_key);
                     }
 
+                    // The chain level flags are those of any component in the chain, not only the first:
+                    // a terminal residue may lack the atoms for its backbone to be verified
+                    entity_flags |= flags_j & entity_mask;
+
                     ++j;
                 }
             }
@@ -4872,32 +4902,28 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                 md_label_t entity_id;
                 entity_id.len = (uint8_t)snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
 
-                const char* entity_type_str = "";
+                // That the entity is derived is carried by MD_FLAG_DERIVED, the description only says what it is
+                str_t desc = comp_name;
                 if (entity_flags & MD_FLAG_POLYMER) {
                     if (entity_flags & MD_FLAG_POLYPEPTIDE) {
-                        entity_type_str = "polypeptide";
+                        desc = STR_LIT("polypeptide");
                     } else if (entity_flags & MD_FLAG_NUCLEIC_ACID) {
-                        entity_type_str = "nucleic acid";
+                        desc = STR_LIT("nucleic acid");
                     } else {
-                        entity_type_str = "polymer";
+                        desc = STR_LIT("polymer");
                     }
                 } else if (entity_flags & MD_FLAG_WATER) {
-                    entity_type_str = "water";
-                } else {
-                    entity_type_str = comp_name.ptr;
+                    desc = STR_LIT("water");
                 }
-
-                char buf[256];
-                snprintf(buf, sizeof(buf), "%s (*)", entity_type_str);
 
                 // Create new entity
                 md_array_push(sys->entity.id,    entity_id, alloc);
                 md_array_push(sys->entity.flags, entity_flags, alloc);
-                md_array_push(sys->entity.description, str_copy_cstr(buf, alloc), alloc);
+                md_array_push(sys->entity.description, str_copy(desc, alloc), alloc);
                 md_array_push(entity_keys, entity_key, temp_arena);
                 sys->entity.count += 1;
 #if 0
-                MD_LOG_DEBUG("New entity: %s, %s", entity_id.buf, buf);
+                MD_LOG_DEBUG("New entity: %s, " STR_FMT, entity_id.buf, STR_ARG(desc));
 #endif
             }
 

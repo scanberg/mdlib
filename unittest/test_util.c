@@ -2115,7 +2115,7 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
         
         ASSERT_EQ(md_system_instance_count(&sys), 1);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
@@ -2128,7 +2128,7 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
         
         ASSERT_EQ(md_system_instance_count(&sys), 3);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
@@ -2147,9 +2147,9 @@ UTEST(util, entity_instance) {
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
         ASSERT_EQ(md_system_entity_count(&sys), 3);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO);
-        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_HETERO | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_DERIVED);
         
         ASSERT_EQ(md_system_instance_count(&sys), 3);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
@@ -2169,14 +2169,14 @@ UTEST(util, entity_instance) {
         EXPECT_GT(md_system_atom_count(&sys),   0);
 
         ASSERT_EQ(md_system_entity_count(&sys), 8);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE);
-        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO);
-        EXPECT_EQ(md_system_entity_flags(&sys, 3), MD_FLAG_HETERO | MD_FLAG_ION);
-        EXPECT_EQ(md_system_entity_flags(&sys, 4), MD_FLAG_HETERO);
-        EXPECT_EQ(md_system_entity_flags(&sys, 5), MD_FLAG_HETERO | MD_FLAG_WATER);
-        EXPECT_EQ(md_system_entity_flags(&sys, 6), MD_FLAG_HETERO);
-        EXPECT_EQ(md_system_entity_flags(&sys, 7), MD_FLAG_HETERO);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), MD_FLAG_HETERO | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 3), MD_FLAG_HETERO | MD_FLAG_ION | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 4), MD_FLAG_HETERO | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 5), MD_FLAG_HETERO | MD_FLAG_WATER | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 6), MD_FLAG_HETERO | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 7), MD_FLAG_HETERO | MD_FLAG_DERIVED);
 
         ASSERT_EQ(md_system_instance_count(&sys), 11);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0),      STR_LIT("A")));
@@ -2231,8 +2231,8 @@ UTEST(util, entity_instance) {
         EXPECT_GT(md_system_atom_count(&sys),   0);
 
         ASSERT_EQ(md_system_entity_count(&sys), 2);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), 0);
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_WATER);
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_WATER | MD_FLAG_DERIVED);
 
         ASSERT_EQ(md_system_instance_count(&sys), 65);
         for (size_t i = 0; i < 64; ++i) {
@@ -2240,6 +2240,51 @@ UTEST(util, entity_instance) {
         }
 
         EXPECT_EQ(md_system_instance_entity_idx(&sys, 64), 1);
+    }
+
+    md_temp_end(temp_scope);
+}
+
+// Entities the file does not define are derived on load and flagged as such, file defined ones are not
+UTEST(util, entity_derived) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+
+    {
+        // Nucleosome: two DNA strands and eight histones, a .gro carries no entities
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+        md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+
+        ASSERT_EQ(md_system_entity_count(&sys), 6);
+        // The DNA strands are nucleic acids, which the nucleic backbone extraction relies upon
+        EXPECT_EQ(md_system_entity_flags(&sys, 0), MD_FLAG_POLYMER | MD_FLAG_NUCLEIC_ACID | MD_FLAG_DERIVED);
+        EXPECT_EQ(md_system_entity_flags(&sys, 1), MD_FLAG_POLYMER | MD_FLAG_NUCLEIC_ACID | MD_FLAG_DERIVED);
+        EXPECT_TRUE(str_eq(md_entity_description(&sys.entity, 0), STR_LIT("nucleic acid")));
+        for (size_t i = 2; i < 6; ++i) {
+            EXPECT_EQ(md_system_entity_flags(&sys, i), MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_DERIVED);
+        }
+        EXPECT_EQ(md_system_instance_count(&sys), 10);
+        EXPECT_EQ(sys.nucleic_backbone.range.count, 2);
+        EXPECT_EQ(sys.protein_backbone.range.count, 8);
+
+        // Deriving again starts over rather than appending
+        ASSERT_TRUE(md_util_system_infer_entity_and_instance(&sys, NULL));
+        EXPECT_EQ(md_system_entity_count(&sys), 6);
+        EXPECT_EQ(md_system_instance_count(&sys), 10);
+    }
+
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+
+        ASSERT_GT(md_system_entity_count(&sys), 0);
+        for (size_t i = 0; i < md_system_entity_count(&sys); ++i) {
+            EXPECT_FALSE(md_system_entity_flags(&sys, i) & MD_FLAG_DERIVED);
+        }
     }
 
     md_temp_end(temp_scope);
