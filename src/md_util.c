@@ -1,4 +1,4 @@
-#include <md_util.h>
+ï»¿#include <md_util.h>
 
 #include <md_system.h>
 #include <md_smiles.h>
@@ -72,7 +72,7 @@ static const str_t element_names[] = {
 };
 
 // http://dx.doi.org/10.1039/b801115j
-// Covalent radii (in Å ×100) — Cordero et al., Dalton Trans., 2008, 2832–2838
+// Covalent radii (in ï¿½ ï¿½100) ï¿½ Cordero et al., Dalton Trans., 2008, 2832ï¿½2838
 static const uint8_t element_covalent_radii_u8[] = {
       0,  31,  28, 128,  96,  84,  76,  71,  66,  57,  58, 166, 141, 121, 111, 107, 105, 102, 106, 203, 176, 170, 160, 153,
     139, 139, 132, 126, 124, 132, 122, 122, 120, 119, 120, 120, 116, 220, 195, 190, 175, 164, 154, 147, 146, 142, 139, 145,
@@ -81,7 +81,7 @@ static const uint8_t element_covalent_radii_u8[] = {
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
-// Approximate ionic radii (Å ×100), mostly Shannon radii (CN˜6, common oxidation state)
+// Approximate ionic radii (ï¿½ ï¿½100), mostly Shannon radii (CNï¿½6, common oxidation state)
 static const uint8_t element_ionic_radii_u8[] = {
     0,
     0,   0,  76,  45,  27,  16, 146, 140, 133,   0,
@@ -479,8 +479,8 @@ static const uint64_t element_alkaline_earth[2] = {
 };
 
 static const uint64_t element_covalent_mask[2] = {
-    0x003E0000001FC7E6ULL, // atomic numbers 1–63
-    0x0000000000000000ULL, // atomic numbers 64–127 (unused)
+    0x003E0000001FC7E6ULL, // atomic numbers 1ï¿½63
+    0x0000000000000000ULL, // atomic numbers 64ï¿½127 (unused)
 };
 #endif
 
@@ -2099,7 +2099,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
     dssp_res_coords_t* res_coords = md_temp_alloc_array(temp, dssp_res_coords_t, backbone_segment_count);
     dssp_res_hbonds_t* res_hbonds = md_temp_alloc_array(temp, dssp_res_hbonds_t, backbone_segment_count);
     uint32_t* res_range_id = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
-    uint8_t* turn_mask = md_temp_alloc_array(temp, uint8_t, backbone_segment_count);
+    uint8_t* turn_mask = md_temp_alloc_zero_array(temp, uint8_t, backbone_segment_count);
     vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
 
     md_array(residue_pair_t) sheet_candidates = NULL;
@@ -2111,7 +2111,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             res_range_id[i] = range_idx;
         }
     }
-    uint32_t* ss_flags = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
+    uint32_t* ss_flags = md_temp_alloc_zero_array(temp, uint32_t, backbone_segment_count);
 
     for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
         const md_irange_t range = {(int)backbone_range_offsets[range_idx], (int)backbone_range_offsets[range_idx + 1]};
@@ -3185,7 +3185,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 #else
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
-    uint8_t* type = md_temp_alloc_array(temp, uint8_t, atom->count);
+    uint8_t* type = md_temp_alloc_zero_array(temp, uint8_t, atom->count);
     uint8_t* elements = md_temp_alloc_array(temp, uint8_t, atom->count);
 
     md_atom_extract_atomic_numbers(elements, 0, atom->count, atom);

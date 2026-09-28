@@ -6057,7 +6057,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int dim2 = dim[0] * dim[1];
     const size_t num_bits = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2];
     const size_t num_u64 = (num_bits + 63) / 64;
-    uint64_t* vol_bits = md_temp_alloc_array(temp, uint64_t, num_u64);
+    uint64_t* vol_bits = md_temp_alloc_zero_array(temp, uint64_t, num_u64);
 
     const float dx = ext.x / (float)dim[0];
     const float dy = ext.y / (float)dim[1];
