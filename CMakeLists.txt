@@ -184,6 +184,8 @@ set(SRC_FILES
   src/md_xvg.h
   src/md_xyz.c
   src/md_xyz.h
+  src/md_ase_traj.c
+  src/md_ase_traj.h
 )
 
 set(GL_SHADER_FILES 
