@@ -60,7 +60,7 @@ static inline bool qm_test_has(const qm_test_t* t, str_t path) {
 static inline double qm_test_scalar(const qm_test_t* t, str_t path, double fallback) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     double value = fallback;
-    if (a && md_attribute_extract_f64(&value, 1, a, md_unit_none()) == 1) {
+    if (a && md_attribute_extract_f64(&value, 1, a, md_attribute_slice_all(), md_unit_none()) == 1) {
         return value;
     }
     return fallback;
@@ -90,7 +90,7 @@ static inline size_t qm_test_count(const qm_test_t* t, str_t path) {
 
 static inline size_t qm_test_series(double* dst, size_t cap, const qm_test_t* t, str_t path) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
-    return a ? md_attribute_extract_f64(dst, cap, a, md_unit_none()) : 0;
+    return a ? md_attribute_extract_f64(dst, cap, a, md_attribute_slice_all(), md_unit_none()) : 0;
 }
 
 // One row of a rank 2 {rows, cols} attribute. The slice is the point: a computed attribute
@@ -101,7 +101,7 @@ static inline size_t qm_test_row(double* dst, size_t cap, const qm_test_t* t, st
         return 0;
     }
     const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
-    return md_attribute_extract_slice_f64(dst, cap, a, &slice, md_unit_none());
+    return md_attribute_extract_f64(dst, cap, a, slice, md_unit_none());
 }
 
 // A whole rank 2 attribute, allocated from the test's own arena. NULL when the path is absent or
@@ -113,7 +113,7 @@ static inline double* qm_test_matrix(const qm_test_t* t, str_t path, size_t* out
     }
     const size_t n = md_attribute_element_count(&a->format);
     double* dst = (double*)md_alloc(t->alloc, sizeof(double) * n);
-    if (!dst || md_attribute_extract_f64(dst, n, a, md_unit_none()) != n) {
+    if (!dst || md_attribute_extract_f64(dst, n, a, md_attribute_slice_all(), md_unit_none()) != n) {
         return NULL;
     }
     if (out_dim) {

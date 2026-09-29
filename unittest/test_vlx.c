@@ -33,11 +33,11 @@ UTEST(vlx, parse) {
 	// The QM geometry, in Angstrom, as the calculation was run at.
 	const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
 	ASSERT_TRUE(coord != NULL);
-	ASSERT_EQ(md_attribute_components(&coord->format), 3u);
+	ASSERT_EQ(coord->format.components, 3u);
 	ASSERT_EQ(md_attribute_value_count(&coord->format), 26u);
 
 	double xyz[3 * 26] = {0};
-	ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_unit_none()), ARRAY_SIZE(xyz));
+	ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
 	EXPECT_NEAR(-3.259400000000, xyz[0], 1.0e-5);
 	EXPECT_NEAR( 0.145200000000, xyz[1], 1.0e-5);
 	EXPECT_NEAR(-0.048400000000, xyz[2], 1.0e-5);
@@ -314,7 +314,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	ASSERT_EQ(dens->format.shape[0], (uint32_t)num_ao);
 	ASSERT_EQ(dens->format.shape[1], (uint32_t)num_ao);
 
-	EXPECT_EQ(dens->storage, MD_ATTRIBUTE_STORAGE_VIRTUAL);
+	EXPECT_TRUE(md_attribute_is_virtual(dens));
 	EXPECT_TRUE(md_attributes_data(&t.sys.attributes, dens->id, MD_ATTRIBUTE_TYPE_F64) == NULL);
 
 	const size_t plane = num_ao * num_ao;
@@ -323,9 +323,9 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	double* D = (double*)md_alloc(t.alloc, sizeof(double) * plane);
 	double* ref = (double*)md_alloc(t.alloc, sizeof(double) * plane);
 
-	ASSERT_EQ(md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_unit_none()), num_mo * num_ao);
-	ASSERT_EQ(md_attribute_extract_f64(occ, num_mo, occup, md_unit_none()), num_mo);
-	ASSERT_EQ(md_attribute_extract_f64(D, plane, dens, md_unit_none()), plane);
+	ASSERT_EQ(md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()), num_mo * num_ao);
+	ASSERT_EQ(md_attribute_extract_f64(occ, num_mo, occup, md_attribute_slice_all(), md_unit_none()), num_mo);
+	ASSERT_EQ(md_attribute_extract_f64(D, plane, dens, md_attribute_slice_all(), md_unit_none()), plane);
 
 	// D = sum over molecular orbitals of occ_i * c_i c_i^T, which is the definition and not a
 	// restatement of the provider: it reads the same two attributes any consumer would.
@@ -400,12 +400,12 @@ UTEST(vlx, combined_spin_densities_h2o) {
 		EXPECT_EQ(a->format.shape[1], (uint32_t)num_ao);
 
 		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, a, md_unit_none()), plane);
+		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, a, md_attribute_slice_all(), md_unit_none()), plane);
 	}
 
 	// Restricted: beta is a second NAME for alpha, not a second reconstruction.
 	const md_attribute_t* beta = qm_test_attr(&t, STR_LIT("orbital/beta/density"));
-	EXPECT_EQ(beta->storage, MD_ATTRIBUTE_STORAGE_ALIAS);
+	EXPECT_TRUE(md_attribute_is_alias(beta));
 	EXPECT_TRUE(md_attribute_same_data(beta, alpha));
 
 	double max_total = 0.0, max_diff = 0.0, max_beta = 0.0, magnitude = 0.0;
@@ -453,7 +453,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 
 		// {S,A,A}: state outermost, then the AO x AO matrix. Square is load bearing downstream -
 		// the GL and GPU density paths pack only the upper triangle.
-		EXPECT_EQ(attr[i]->storage, MD_ATTRIBUTE_STORAGE_VIRTUAL);
+		EXPECT_TRUE(md_attribute_is_virtual(attr[i]));
 		EXPECT_EQ(attr[i]->format.type, MD_ATTRIBUTE_TYPE_F64);
 		ASSERT_EQ(attr[i]->format.rank, 3u);
 		EXPECT_EQ(attr[i]->format.shape[0], (uint32_t)num_states);
@@ -480,14 +480,14 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 		const md_attribute_slice_t slice = md_attribute_slice_1(0);
 
 		md_attribute_format_t sliced = {0};
-		ASSERT_TRUE(md_attribute_slice_format(&sliced, attr[i], &slice));
+		ASSERT_TRUE(md_attribute_slice_format(&sliced, attr[i], slice));
 		EXPECT_EQ(sliced.rank, 2u);
 		EXPECT_EQ(sliced.shape[0], (uint32_t)num_ao);
 		EXPECT_EQ(sliced.shape[1], (uint32_t)num_ao);
-		ASSERT_EQ(md_attribute_slice_count(attr[i], &slice), plane);
+		ASSERT_EQ(md_attribute_slice_count(attr[i], slice), plane);
 
 		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_slice_f64(mat[i], plane, attr[i], &slice, md_unit_none()), plane);
+		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, attr[i], slice, md_unit_none()), plane);
 	}
 
 	double max_asym = 0.0;
@@ -527,7 +527,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 		ASSERT_EQ(md_attribute_element_count(&attr[i]->format), total);
 
 		double* all = (double*)md_alloc(t.alloc, sizeof(double) * total);
-		ASSERT_EQ(md_attribute_extract_f64(all, total, attr[i], md_unit_none()), total);
+		ASSERT_EQ(md_attribute_extract_f64(all, total, attr[i], md_attribute_slice_all(), md_unit_none()), total);
 
 		for (size_t v = 0; v < plane; ++v) {
 			ASSERT_NEAR(mat[i][v], all[v], 1.0e-12);
@@ -536,8 +536,8 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 
 	// A state past the end selects nothing rather than reading past the array.
 	const md_attribute_slice_t past_end = md_attribute_slice_1((uint32_t)num_states);
-	EXPECT_EQ(md_attribute_slice_count(attr[0], &past_end), 0u);
-	EXPECT_EQ(md_attribute_extract_slice_f64(mat[0], plane, attr[0], &past_end, md_unit_none()), 0u);
+	EXPECT_EQ(md_attribute_slice_count(attr[0], past_end), 0u);
+	EXPECT_EQ(md_attribute_extract_f64(mat[0], plane, attr[0], past_end, md_unit_none()), 0u);
 
 	qm_test_free(&t);
 }
@@ -620,7 +620,7 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 	double* vec = (double*)md_alloc(t.alloc, sizeof(double) * num_ao);
 
 	const md_attribute_slice_t leading = md_attribute_slice_2(0, 0);
-	ASSERT_EQ(md_attribute_extract_slice_f64(vec, num_ao, particle, &leading, md_unit_none()), num_ao);
+	ASSERT_EQ(md_attribute_extract_f64(vec, num_ao, particle, leading, md_unit_none()), num_ao);
 
 	double norm = 0.0;
 	for (size_t i = 0; i < num_ao; ++i) {

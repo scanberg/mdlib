@@ -35,7 +35,7 @@ static inline size_t vlx_test_lumo_idx(const vlx_test_t* t, str_t occupation_pat
     const size_t num_mo = md_attribute_element_count(&a->format);
     double* occ = (double*)md_alloc(t->alloc, sizeof(double) * num_mo);
     size_t lumo = num_mo;
-    if (md_attribute_extract_f64(occ, num_mo, a, md_unit_none()) == num_mo) {
+    if (md_attribute_extract_f64(occ, num_mo, a, md_attribute_slice_all(), md_unit_none()) == num_mo) {
         for (size_t i = 0; i < num_mo; ++i) {
             if (occ[i] == 0.0) {
                 lumo = i;
@@ -59,7 +59,7 @@ static inline size_t vlx_test_atom_xyz_bohr(float* dst, size_t cap, const vlx_te
     }
     double* xyz = (double*)md_alloc(t->alloc, sizeof(double) * num_values);
     size_t num_atoms = 0;
-    if (md_attribute_extract_f64(xyz, num_values, a, md_unit_none()) == num_values) {
+    if (md_attribute_extract_f64(xyz, num_values, a, md_attribute_slice_all(), md_unit_none()) == num_values) {
         for (size_t i = 0; i < num_values; ++i) {
             dst[i] = (float)(xyz[i] * VLX_TEST_ANGSTROM_TO_BOHR);
         }

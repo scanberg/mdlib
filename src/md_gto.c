@@ -2408,15 +2408,12 @@ size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float
 // is a mistake to refuse rather than to reinterpret.
 static const void* gto_attr_column(size_t* out_count, const md_attributes_t* attributes, str_t path, md_attribute_type_t type) {
     const md_attribute_t* attr = md_attributes_find(attributes, path);
-    if (!attr) {
-        return NULL;
-    }
-    if (attr->format.type != type || attr->format.rank != 1 || md_attribute_components(&attr->format) != 1 || !attr->data) {
+    const void* data = md_attribute_view(attr, type, 1, 1);
+    if (attr && !data) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' is not the plain column a basis expects", STR_ARG(path));
-        return NULL;
     }
-    if (out_count) *out_count = attr->format.shape[0];
-    return attr->data;
+    if (data && out_count) *out_count = attr->format.shape[0];
+    return data;
 }
 
 bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t* attributes, md_allocator_i* alloc) {

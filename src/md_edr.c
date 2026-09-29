@@ -996,7 +996,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 			if (!md_attribute_axis_map(&row, run_axis, f, edr_axis)) {
 				double t = 0;
 				const md_attribute_slice_t s = md_attribute_slice_1((uint32_t)f);
-				md_attribute_extract_slice_f64(&t, 1, run_axis, &s, md_unit_picosecond());
+				md_attribute_extract_f64(&t, 1, run_axis, s, md_unit_picosecond());
 				MD_LOG_ERROR("EDR: frame %zu of '" STR_FMT "' (%g ps) has no matching time in the energy file (%g - %g ps)",
 					f, STR_ARG(run), t, energies->frame_time[0], energies->frame_time[R - 1]);
 				goto done;

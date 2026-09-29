@@ -147,6 +147,9 @@ set(SRC_FILES
   src/md_mmcif.h
   src/md_molden.c
   src/md_molden.h
+  src/md_attributes.c
+  src/md_attributes.h
+  src/md_attributes_internal.h
   src/md_system.c
   src/md_system.h
   src/md_pdb.c

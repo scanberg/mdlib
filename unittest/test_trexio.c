@@ -31,11 +31,11 @@ UTEST(trexio, parse) {
     // TREXIO stores coordinates in bohr; a system's are in Angstrom, and so is what is published.
     const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
-    ASSERT_EQ(md_attribute_components(&coord->format), 3u);
+    ASSERT_EQ(coord->format.components, 3u);
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
 
     double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
     EXPECT_NEAR(4.999999640091311, xyz[0], 1.0e-9);
     EXPECT_NEAR(7.147076485540978, xyz[1], 1.0e-9);
     EXPECT_NEAR(7.650970449269813, xyz[2], 1.0e-9);
@@ -50,7 +50,7 @@ UTEST(trexio, parse) {
     double z[3] = {0};
     const md_attribute_t* za = qm_test_attr(&t, STR_LIT("qm/atom/atomic_number"));
     ASSERT_TRUE(za != NULL);
-    ASSERT_EQ(md_attribute_extract_f64(z, 3, za, md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f64(z, 3, za, md_attribute_slice_all(), md_unit_none()), 3u);
     EXPECT_EQ(8.0, z[0]);
     EXPECT_EQ(1.0, z[1]);
     EXPECT_EQ(1.0, z[2]);

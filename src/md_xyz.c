@@ -853,13 +853,12 @@ static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t*
     md_run_source_t src;
     if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
 
-    char buf[512];
-    const md_attribute_t* layout = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), src.run, STR_LIT("source/layout")));
-    if (!layout || layout->format.type != MD_ATTRIBUTE_TYPE_I32 || !layout->data) {
+    const int32_t* layout = (const int32_t*)md_attribute_view(md_attributes_find_in(&sys->attributes, src.run, STR_LIT("source/layout")), MD_ATTRIBUTE_TYPE_I32, 1, 0);
+    if (!layout) {
         MD_LOG_ERROR("XYZ: the run '" STR_FMT "' has lost its layout", STR_ARG(src.run));
         return 0;
     }
-    const uint32_t flags = (uint32_t)((const int32_t*)layout->data)[0];
+    const uint32_t flags = (uint32_t)layout[0];
 
     const uint32_t frame = slice->idx[0];
     const size_t N = attr->format.shape[1];

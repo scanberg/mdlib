@@ -533,7 +533,7 @@ static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* a
     dvec3_t* bohr = md_temp_alloc_array(temp, dvec3_t, num_atoms);
 
     if (xyz && bohr && md_gto_basis_extract_attributes(&basis, &sys->attributes, temp_alloc)
-        && md_attribute_extract_f64(xyz, num_atoms * 3, coord, md_unit_none()) == num_atoms * 3) {
+        && md_attribute_extract_f64(xyz, num_atoms * 3, coord, md_attribute_slice_all(), md_unit_none()) == num_atoms * 3) {
 
         const double angstrom_to_bohr = 1.0 / 0.529177210903;
         for (size_t i = 0; i < num_atoms; ++i) {
@@ -631,8 +631,8 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
         MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), num_mo * num_ao + num_mo);
     }
     if (ok) {
-        ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) == num_mo * num_ao
-          && md_attribute_extract_f64(occ_data, num_mo, occ, md_unit_none()) == num_mo;
+        ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao
+          && md_attribute_extract_f64(occ_data, num_mo, occ, md_attribute_slice_all(), md_unit_none()) == num_mo;
         if (ok) {
             qm_build_density((double*)dst, coeff_data, occ_data, num_mo, num_ao);
         }
@@ -673,11 +673,11 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     if (!ok) {
         MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), cap);
     }
-    if (ok && md_attribute_extract_f64((double*)dst, cap, alpha, md_unit_none()) != cap) {
+    if (ok && md_attribute_extract_f64((double*)dst, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
         MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
         ok = false;
     }
-    if (ok && md_attribute_extract_f64(beta_data, cap, beta, md_unit_none()) != cap) {
+    if (ok && md_attribute_extract_f64(beta_data, cap, beta, md_attribute_slice_all(), md_unit_none()) != cap) {
         MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(beta->path));
         ok = false;
     }

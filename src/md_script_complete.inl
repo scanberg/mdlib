@@ -191,27 +191,17 @@ static int completion_cmp_str(const void* a, const void* b) {
 // relative to their run where that names exactly one attribute, in full otherwise. In full also when what has been
 // typed starts with 'run', which is how a full path starts.
 static void completion_attr_paths(md_array(str_t)* values, md_hashmap32_t* seen, const md_attributes_t* attributes, str_t typed, md_allocator_i* alloc) {
-    const size_t num_ids = md_attributes_query_flags(NULL, 0, attributes, STR_LIT("run"), MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL);
-    if (num_ids == 0) return;
-    md_attribute_id_t* ids = md_alloc(alloc, num_ids * sizeof(md_attribute_id_t));
-    md_attributes_query_flags(ids, num_ids, attributes, STR_LIT("run"), MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL);
-
-    str_t runs[64];
-    const size_t num_runs = MIN(md_attributes_query_children(runs, ARRAY_SIZE(runs), attributes, STR_LIT("run")), ARRAY_SIZE(runs));
     const bool full_form = str_begins_with(typed, STR_LIT("run"));
 
-    for (size_t i = 0; i < num_ids; ++i) {
-        const md_attribute_t* attr = md_attributes_get(attributes, ids[i]);
+    for (md_attribute_iter_t it = md_attributes_iter(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+        const md_attribute_t* attr = it.attr;
         attr_read_info_t info;
-        if (!attr || attr_readable(attributes, attr, &info) != ATTR_READABLE) continue;
+        if (attr_readable(attributes, attr, &info) != ATTR_READABLE) continue;
 
         const str_t relative = str_substr(attr->path, info.run.len + 1, SIZE_MAX);
         bool unique = !full_form && !md_attributes_find(attributes, relative);  // A full path is looked for first
-        for (size_t r = 0; r < num_runs && unique; ++r) {
-            char buf[512];
-            const int len = snprintf(buf, sizeof(buf), "run/"STR_FMT"/"STR_FMT, STR_ARG(runs[r]), STR_ARG(relative));
-            if (len <= 0 || (size_t)len >= sizeof(buf)) continue;
-            const md_attribute_t* other = md_attributes_find(attributes, (str_t){buf, (size_t)len});
+        for (md_attribute_iter_t run = md_attributes_iter_children(attributes, STR_LIT("run")); unique && md_attributes_next(&run);) {
+            const md_attribute_t* other = md_attributes_find_in(attributes, run.child_path, relative);
             if (other && other != attr) unique = false;
         }
         completion_add_value(values, seen, unique ? relative : attr->path, alloc);

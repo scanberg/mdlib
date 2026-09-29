@@ -80,7 +80,7 @@ UTEST(trr, run_matches_reference) {
     full[0] = st.xyz[11].x; full[1] = st.xyz[11].y; full[2] = st.xyz[11].z;
     const md_attribute_t* pos = md_attributes_find(t, STR_LIT("run/tryptophan/atom/position"));
     md_attribute_slice_t one = md_attribute_slice_2(7, 11);
-    ASSERT_EQ(3u, md_attribute_extract_slice_f32(one_xyz, 3, pos, &one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(one_xyz, 3, pos, one, md_unit_none()));
     EXPECT_EQ(0, MEMCMP(full, one_xyz, sizeof(full)));
 
     md_system_free(&sys);
@@ -214,10 +214,10 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     EXPECT_NEAR(0.7, ((const double*)vtime->data)[2], 1.0e-6);
     float vv[NA * 3];
     md_attribute_slice_t s2 = md_attribute_slice_1(2);
-    ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_slice_f32(vv, NA * 3, vel, &s2, md_unit_none()));
+    ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_f32(vv, NA * 3, vel, s2, md_unit_none()));
     EXPECT_EQ(70.0f, vv[4]);   // 7 nm/ps
     md_attribute_slice_t s1 = md_attribute_slice_1(1);
-    ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_slice_f32(vv, NA * 3, vel, &s1, md_unit_none()));
+    ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_f32(vv, NA * 3, vel, s1, md_unit_none()));
     EXPECT_EQ(0.5f * 4 * 10.0f, vv[4]);
 
     const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell"), STR_INIT("atom/force") };

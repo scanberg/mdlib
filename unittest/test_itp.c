@@ -217,7 +217,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, STR_LIT("atom/mass"));
     ASSERT_TRUE(mass_attr != NULL);
     float masses[SLICES * 7 * MOLS + 2];
-    ASSERT_EQ(md_attribute_extract_f32(masses, ARRAY_SIZE(masses), mass_attr, md_unit_dalton()), ARRAY_SIZE(masses));
+    ASSERT_EQ(md_attribute_extract_f32(masses, ARRAY_SIZE(masses), mass_attr, md_attribute_slice_all(), md_unit_dalton()), ARRAY_SIZE(masses));
     EXPECT_NEAR(masses[0], 3981.33f, 0.01f);
     EXPECT_NEAR(masses[7], 3885.336f, 0.01f);
 

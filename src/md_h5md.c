@@ -1382,7 +1382,8 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
     const md_attributes_t* attributes = &src->sys->attributes;
     const md_attribute_t* file   = md_attributes_get(attributes, src->file_id);
     const md_attribute_t* offset = md_attributes_get(attributes, src->offset_id);
-    if (!file || !offset || !offset->data || offset->format.type != MD_ATTRIBUTE_TYPE_I64) {
+    const int64_t* offsets = (const int64_t*)md_attribute_view(offset, MD_ATTRIBUTE_TYPE_I64, 1, 1);
+    if (!file || !offsets) {
         MD_LOG_ERROR("H5MD: the run has lost its source attributes");
         return 0;
     }
@@ -1401,7 +1402,7 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
     }
 
     const str_t path = md_attribute_str(attributes, file, 0);
-    const int64_t at = ((const int64_t*)offset->data)[frame];
+    const int64_t at = offsets[frame];
     float* out = (float*)dst;
 
     if (src->raw != H5MD_RAW_NONE && at >= 0) {

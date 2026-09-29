@@ -50,7 +50,7 @@ static const md_attribute_t* attr(const md_system_t* sys, const char* path) {
 
 // The values of a resident or virtual attribute's slice as doubles, in its own unit
 static size_t slice_f64(double* dst, size_t cap, const md_attribute_t* a, md_attribute_slice_t slice) {
-    return a ? md_attribute_extract_slice_f64(dst, cap, a, &slice, md_unit_none()) : 0;
+    return a ? md_attribute_extract_f64(dst, cap, a, slice, md_unit_none()) : 0;
 }
 
 static bool has_bond(const md_system_t* sys, int a, int b) {
@@ -361,7 +361,7 @@ UTEST(h5md, spec_run) {
     ASSERT_TRUE(volume != NULL);
     EXPECT_EQ(0u, volume->format.rank);
     double vol = 0;
-    ASSERT_EQ(1u, md_attribute_extract_f64(&vol, 1, volume, md_unit_pow(md_unit_angstrom(), 3)));
+    ASSERT_EQ(1u, md_attribute_extract_f64(&vol, 1, volume, md_attribute_slice_all(), md_unit_pow(md_unit_angstrom(), 3)));
     EXPECT_NEAR(24000.0, vol, 1.0e-6);
     EXPECT_TRUE(attr(&t.sys, "run/spec/h5md/observables/label/value") == NULL);
 

@@ -134,7 +134,7 @@ UTEST(edr, supplement_publishes_terms_along_their_own_axis) {
     EXPECT_TRUE(md_unit_equal(pot->unit, edr_term(&e, "Potential")->unit));
     double v[9];
     md_attribute_slice_t row = md_attribute_slice_1(7);
-    ASSERT_EQ(md_attribute_extract_slice_f64(v, 9, pot, &row, md_unit_none()), 1u);
+    ASSERT_EQ(md_attribute_extract_f64(v, 9, pot, row, md_unit_none()), 1u);
     EXPECT_EQ(v[0], edr_term(&e, "Potential")->values[7]);
 
     // Folded names: the label keeps what GROMACS called it.
@@ -151,7 +151,7 @@ UTEST(edr, supplement_publishes_terms_along_their_own_axis) {
     EXPECT_EQ(3u, vir->format.shape[1]);
     EXPECT_EQ(3u, vir->format.shape[2]);
     EXPECT_EQ(1u, vir->format.components);
-    ASSERT_EQ(md_attribute_extract_slice_f64(v, 9, vir, &row, md_unit_none()), 9u);
+    ASSERT_EQ(md_attribute_extract_f64(v, 9, vir, row, md_unit_none()), 9u);
     EXPECT_EQ(v[1], edr_term(&e, "Vir-XY")->values[7]);
     EXPECT_EQ(v[5], edr_term(&e, "Vir-YZ")->values[7]);
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/vir_xx") == NULL);
@@ -161,7 +161,7 @@ UTEST(edr, supplement_publishes_terms_along_their_own_axis) {
     ASSERT_TRUE(box != NULL);
     EXPECT_EQ(1u, box->format.rank);
     EXPECT_EQ(3u, box->format.components);
-    ASSERT_EQ(md_attribute_extract_slice_f64(v, 9, box, &row, md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f64(v, 9, box, row, md_unit_none()), 3u);
     EXPECT_EQ(v[2], edr_term(&e, "Box-Z")->values[7]);
     const md_attribute_t* box_vel = edr_attr(&sys, "run/test/edr/box_vel");
     ASSERT_TRUE(box_vel != NULL);

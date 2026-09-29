@@ -36,11 +36,11 @@ UTEST(molden, parse) {
     // [Atoms] was written in Angstrom and the state is in Angstrom, so this is a straight read.
     const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
-    ASSERT_EQ(md_attribute_components(&coord->format), 3u);
+    ASSERT_EQ(coord->format.components, 3u);
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
 
     double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
     EXPECT_NEAR(4.999999640091, xyz[0], 1.0e-6);
     EXPECT_NEAR(7.147076485541, xyz[1], 1.0e-6);
     EXPECT_NEAR(7.650970449270, xyz[2], 1.0e-6);
@@ -53,7 +53,7 @@ UTEST(molden, parse) {
     const md_attribute_t* z = qm_test_attr(&t, STR_LIT("qm/atom/atomic_number"));
     ASSERT_TRUE(z != NULL);
     double zz[3] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(zz, 3, z, md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f64(zz, 3, z, md_attribute_slice_all(), md_unit_none()), 3u);
     EXPECT_EQ(8.0, zz[0]);
     EXPECT_EQ(1.0, zz[1]);
     EXPECT_EQ(1.0, zz[2]);
@@ -357,7 +357,7 @@ UTEST(molden, vibrational_blocks) {
     double xyz[9] = {0};
     const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
     EXPECT_NEAR(1.43 * 0.529177210903, xyz[4], 1.0e-9);
 
     double freq[3] = {0};
@@ -376,7 +376,7 @@ UTEST(molden, vibrational_blocks) {
     ASSERT_EQ(2u, mode->format.rank);
     ASSERT_EQ(3u, mode->format.shape[0]);
     ASSERT_EQ(3u, mode->format.shape[1]);
-    ASSERT_EQ(3u, md_attribute_components(&mode->format));
+    ASSERT_EQ(3u, mode->format.components);
 
     double row[9] = {0};
     ASSERT_EQ(qm_test_row(row, ARRAY_SIZE(row), &t, STR_LIT("qm/atom/normal_mode"), 1), ARRAY_SIZE(row));

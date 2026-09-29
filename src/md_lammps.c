@@ -1558,13 +1558,12 @@ static size_t lammps_position_provider(void* dst, size_t cap, const md_attribute
 	md_run_source_t src;
 	if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
 
-	char buf[512];
-	const md_attribute_t* layout_attr = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), src.run, STR_LIT("source/layout")));
-	if (!layout_attr || layout_attr->format.type != MD_ATTRIBUTE_TYPE_I32 || !layout_attr->data || md_attribute_value_count(&layout_attr->format) != LAMMPS_LAYOUT_COUNT) {
+	const md_attribute_t* layout_attr = md_attributes_find_in(&sys->attributes, src.run, STR_LIT("source/layout"));
+	const int32_t* layout = (const int32_t*)md_attribute_view(layout_attr, MD_ATTRIBUTE_TYPE_I32, 1, 1);
+	if (!layout || layout_attr->format.shape[0] != LAMMPS_LAYOUT_COUNT) {
 		MD_LOG_ERROR("LAMMPS: the run '" STR_FMT "' has lost its layout", STR_ARG(src.run));
 		return 0;
 	}
-	const int32_t* layout = (const int32_t*)layout_attr->data;
 	coord_mappings_t mappings = {0};
 	mappings.id_idx           = (int8_t)layout[LAMMPS_LAYOUT_ID];
 	mappings.coord_idx[0]     = (int8_t)layout[LAMMPS_LAYOUT_X];

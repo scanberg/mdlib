@@ -34,7 +34,7 @@ UBENCH_EX(gto, evaluate_grid) {
     const md_attribute_t* coord_attr = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"));
     const size_t num_atoms = coord_attr ? md_attribute_value_count(&coord_attr->format) : 0;
     double* coords = (double*)md_arena_allocator_push(arena, sizeof(double) * 3 * num_atoms);
-    md_attribute_extract_f64(coords, 3 * num_atoms, coord_attr, md_unit_none());
+    md_attribute_extract_f64(coords, 3 * num_atoms, coord_attr, md_attribute_slice_all(), md_unit_none());
 
     vec3_t* atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * num_atoms);
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -76,7 +76,7 @@ UBENCH_EX(gto, evaluate_grid) {
     double* mo_coeffs = (double*)md_arena_allocator_push(arena, sizeof(double) * num_aos);
     const md_attribute_t* coeff_attr = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/coefficient"));
     const md_attribute_slice_t mo_slice = md_attribute_slice_1(120);
-    md_attribute_extract_slice_f64(mo_coeffs, num_aos, coeff_attr, &mo_slice, md_unit_none());
+    md_attribute_extract_f64(mo_coeffs, num_aos, coeff_attr, mo_slice, md_unit_none());
 
     md_gto_expand_with_ao_coeffs(gtos, &basis, (const float*)atom_xyz, sizeof(vec3_t), mo_coeffs, 1.0e-6);
 

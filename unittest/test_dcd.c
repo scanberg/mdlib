@@ -207,13 +207,13 @@ UTEST(dcd, run_matches_the_trajectory) {
     // A fixed atom at a later frame, alone: where the first frame put it, the translation applied.
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2(4, 6);
-    ASSERT_EQ(3u, md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
     EXPECT_EQ(dcd_coord(0, 6, 0) + shift[0], xyz[0]);
 
     // The cell of one frame on its own
     float box[9];
     md_attribute_slice_t fr = md_attribute_slice_1(3);
-    ASSERT_EQ(9u, md_attribute_extract_slice_f32(box, 9, cell, &fr, md_unit_none()));
+    ASSERT_EQ(9u, md_attribute_extract_f32(box, 9, cell, fr, md_unit_none()));
     EXPECT_NEAR(33.0f, box[0], 1.0e-4f);
     EXPECT_NEAR(20.0f, box[8], 1.0e-4f);
 

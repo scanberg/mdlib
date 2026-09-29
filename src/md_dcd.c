@@ -638,8 +638,7 @@ done:
 // ==================== Run ====================
 
 static const void* dcd_resident(const md_attributes_t* attributes, str_t run, const char* leaf, md_attribute_type_t type, size_t* out_count) {
-    char buf[512];
-    const md_attribute_t* a = md_attributes_find(attributes, md_run_path(buf, sizeof(buf), run, str_from_cstr(leaf)));
+    const md_attribute_t* a = md_attributes_find_in(attributes, run, str_from_cstr(leaf));
     if (!a || a->format.type != type || !a->data) return NULL;
     if (out_count) *out_count = md_attribute_value_count(&a->format);
     return a->data;

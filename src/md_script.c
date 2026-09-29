@@ -2910,12 +2910,12 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
     }
 
     const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
-    const size_t count = md_attribute_slice_count(attr, &slice);
+    const size_t count = md_attribute_slice_count(attr, slice);
     if (count * sizeof(float) > dst->size) {
         MD_LOG_ERROR("attr: '"STR_FMT"' changed shape since the script was compiled", STR_ARG(node->attr_path));
         return false;
     }
-    return md_attribute_extract_slice_f32((float*)dst->ptr, count, attr, &slice, md_unit_none()) == count;
+    return md_attribute_extract_f32((float*)dst->ptr, count, attr, slice, md_unit_none()) == count;
 }
 
 static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -4242,9 +4242,7 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
     }
     info->run = str_substr(full, 0, 4 + name_len);
 
-    char buf[512];
-    const int len = snprintf(buf, sizeof(buf), STR_FMT"/time", STR_ARG(info->run));
-    info->run_axis = (len > 0 && (size_t)len < sizeof(buf)) ? md_attributes_find(attributes, (str_t){buf, (size_t)len}) : NULL;
+    info->run_axis = md_attributes_find_in(attributes, info->run, STR_LIT("time"));
     if (!info->run_axis || md_attributes_axis(attributes, info->run_axis) != info->run_axis) {
         return ATTR_RUN_WITHOUT_AXIS;
     }
@@ -4289,22 +4287,17 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
         return false;
     }
 
-    char buf[512];
     const md_attribute_t* attr = md_attributes_find(attributes, path);
     if (!attr) {
         // Relative to a run: look in every one and insist on exactly one match.
-        str_t runs[64];
-        const size_t num_runs = MIN(md_attributes_query_children(runs, ARRAY_SIZE(runs), attributes, STR_LIT("run")), ARRAY_SIZE(runs));
         size_t num_matches = 0;
         md_strb_t candidates = md_strb_create(ctx->temp_alloc);
-        for (size_t i = 0; i < num_runs; ++i) {
-            int len = snprintf(buf, sizeof(buf), "run/"STR_FMT"/"STR_FMT, STR_ARG(runs[i]), STR_ARG(path));
-            if (len <= 0 || (size_t)len >= sizeof(buf)) continue;
-            const md_attribute_t* a = md_attributes_find(attributes, (str_t){buf, (size_t)len});
+        for (md_attribute_iter_t run = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&run);) {
+            const md_attribute_t* a = md_attributes_find_in(attributes, run.child_path, path);
             if (a) {
                 attr = a;
                 num_matches += 1;
-                md_strb_fmt(&candidates, "  '%s'\n", buf);
+                md_strb_fmt(&candidates, "  '"STR_FMT"'\n", STR_ARG(a->path));
             }
         }
         if (num_matches == 0) {
@@ -5977,8 +5970,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         .ref_state = &sys->reference,
     };
     {
-        char buf[512];
-        const md_attribute_t* axis = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+        const md_attribute_t* axis = md_attributes_find_in(&sys->attributes, run, STR_LIT("time"));
         ctx.run_axis_id = axis ? axis->id : MD_ATTRIBUTE_INVALID;
     }
 
@@ -6678,8 +6670,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
 
-    char buf[512];
-    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find_in(&sys->attributes, run, STR_LIT("time"));
     const uint32_t num_frames = run_axis ? run_axis->format.shape[0] : 0;
     if (num_frames == 0) {
         MD_LOG_ERROR("Script eval: no frames in the run '" STR_FMT "'", STR_ARG(run));
@@ -6699,8 +6690,8 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
 
     // The buffers were written through md_attributes_data, which deliberately does not bump a
     // version. This is the producer saying it is done.
-    for (size_t i = 0; i < md_array_size(eval->attributes.attr); ++i) {
-        md_attributes_touch(&eval->attributes, eval->attributes.attr[i].id);
+    for (md_attribute_iter_t it = md_attributes_iter(&eval->attributes, (str_t){0}); md_attributes_next(&it);) {
+        md_attributes_touch(&eval->attributes, it.attr->id);
     }
 
     return result;

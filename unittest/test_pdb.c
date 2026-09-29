@@ -174,7 +174,7 @@ UTEST(pdb, run_matches_reference) {
     float xyz[3];
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 9));
     md_attribute_slice_t one = md_attribute_slice_2(9, 100);
-    ASSERT_EQ(3u, md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
     EXPECT_EQ(got.xyz[100].x, xyz[0]);
     EXPECT_EQ(got.xyz[100].z, xyz[2]);
 

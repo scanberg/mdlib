@@ -592,18 +592,18 @@ UTEST(xtc, run_matches_reference) {
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2((uint32_t)F / 2, 7);
     ASSERT_TRUE(run_extract_one(&got, &sys, XTC_RUN, (int64_t)F / 2));
-    ASSERT_EQ(md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()), 3u);
     EXPECT_EQ(got.xyz[7].x, xyz[0]);
     EXPECT_EQ(got.xyz[7].y, xyz[1]);
     EXPECT_EQ(got.xyz[7].z, xyz[2]);
 
     // And in nanometer, converted rather than reinterpreted.
-    ASSERT_EQ(md_attribute_extract_slice_f32(xyz, 3, pos, &one, md_unit_nanometer()), 3u);
+    ASSERT_EQ(md_attribute_extract_f32(xyz, 3, pos, one, md_unit_nanometer()), 3u);
     EXPECT_NEAR(got.xyz[7].x * 0.1f, xyz[0], 1.0e-5f);
 
     // Every frame at once is exactly what the virtual attribute exists to avoid.
     float* all = md_alloc(arena, F * N * 3 * sizeof(float));
-    EXPECT_EQ(md_attribute_extract_f32(all, F * N * 3, pos, md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(all, F * N * 3, pos, md_attribute_slice_all(), md_unit_none()), 0u);
 
     // The cell and the frame alone: only the cell asked for, into a state without coordinates.
     const str_t cell_only[] = { STR_INIT("unitcell") };
@@ -781,7 +781,7 @@ UTEST(xtc, run_context_keeps_the_file_open) {
     const md_attribute_t* pos = md_attributes_find(&sys.attributes, STR_LIT("run/catalyst/atom/position"));
     float* xyz = md_alloc(arena, sys.atom.count * 3 * sizeof(float));
     md_attribute_slice_t s1 = md_attribute_slice_1(1);
-    EXPECT_EQ(0u, md_attribute_extract_slice_f32(xyz, sys.atom.count * 3, pos, &s1, md_unit_none()));
+    EXPECT_EQ(0u, md_attribute_extract_f32(xyz, sys.atom.count * 3, pos, s1, md_unit_none()));
 
     md_system_free(&sys);
     md_vm_arena_destroy(arena);

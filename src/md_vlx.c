@@ -4348,9 +4348,9 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	}
 
 	double num_core = 0.0, num_valence = 0.0, num_virtual = 0.0;
-	md_attribute_extract_f64(&num_core,    1, core, md_unit_none());
-	md_attribute_extract_f64(&num_valence, 1, val,  md_unit_none());
-	md_attribute_extract_f64(&num_virtual, 1, vir,  md_unit_none());
+	md_attribute_extract_f64(&num_core,    1, core, md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_valence, 1, val, md_attribute_slice_all(),  md_unit_none());
+	md_attribute_extract_f64(&num_virtual, 1, vir, md_attribute_slice_all(),  md_unit_none());
 
 	const size_t nocc       = num_core > 0.0 ? (size_t)num_core : (size_t)num_valence;
 	const size_t nvir       = (size_t)num_virtual;
@@ -4400,7 +4400,7 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	// Every step below gets its own report. An '&&' chain here costs nothing to write and tells a
 	// reader of the log only that the provider produced nothing, which is exactly the position this
 	// was debugged from - and there are five separate attributes it can be let down by.
-	if (md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_unit_none()) != num_mo * num_ao) {
+	if (md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
 		MD_LOG_ERROR("'" STR_FMT "': could not read the %zu x %zu coefficients from '" STR_FMT "'",
 			STR_ARG(attr->path), num_mo, num_ao, STR_ARG(coeff->path));
 		goto done;
@@ -4410,7 +4410,7 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 		const uint32_t state_idx = (slice && slice->num_idx > 0) ? slice->idx[0] : (uint32_t)s;
 		const md_attribute_slice_t row_slice = md_attribute_slice_1(state_idx);
 
-		if (md_attribute_extract_slice_f64(row, vec_len, sol, &row_slice, md_unit_none()) != vec_len) {
+		if (md_attribute_extract_f64(row, vec_len, sol, row_slice, md_unit_none()) != vec_len) {
 			MD_LOG_ERROR("'" STR_FMT "': could not read state %u's %zu element solution vector from '" STR_FMT "' (%u x %u)",
 				STR_ARG(attr->path), state_idx, vec_len, STR_ARG(sol->path), sol->format.shape[0], sol->format.shape[1]);
 			goto done;
