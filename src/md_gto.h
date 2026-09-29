@@ -301,14 +301,15 @@ typedef struct md_gto_gpu_basis_desc_t {
 // Allocate a device-local basis buffer and fully populate it from desc.
 // Ready for dispatch immediately after creation; no separate upload step required.
 // The basis is drawn from `pool` (which must serve MD_GPU_MEM_DEVICE) and
-// uploaded on `stream`. Synchronise the stream before dispatching against it,
-// or issue the dispatch into the same stream and let program order do it.
-md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_pool_t pool, md_gpu_stream_t stream, const md_gto_gpu_basis_desc_t* desc);
+// uploaded on `stream`. Issue dispatches into the same stream and program order
+// does the rest; another stream must md_gpu_stream_wait on it first.
+md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, md_gpu_pool_t pool, const md_gto_gpu_basis_desc_t* desc);
 
-void md_gto_gpu_basis_destroy(md_gto_gpu_basis_t basis_buf);
+// Stream-ordered: the memory returns to its pool at this point in `stream`.
+void md_gto_gpu_basis_destroy(md_gpu_stream_t stream, md_gto_gpu_basis_t basis_buf);
 
 // Return the underlying GPU basis buffer (CGTO metadata + PGTO data).
-md_gpu_ptr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
+md_gpu_addr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
 
 // Basis metadata queries.
 size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
@@ -360,9 +361,9 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
 	md_gto_gpu_basis_t basis;
-    md_gpu_ptr_t    atom_xyz;
-	md_gpu_ptr_t    coeff;
-    md_gpu_tex_t    out_tex;
+    md_gpu_addr_t    atom_xyz;
+    md_gpu_addr_t    coeff;
+    md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
 
     const md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -371,19 +372,18 @@ typedef struct md_gto_gpu_density_desc_t {
     md_gto_op_t op;              // operation mode (add, set, etc.)
 } md_gto_gpu_density_desc_t;
 
-// Record an electron density evaluation dispatch into the caller's cmd.
-// atom_buf must contain packed float4 atom positions (xyz in Bohr).
-// coeff_buf must contain packed upper-triangular float coefficients
-// (use md_gto_gpu_coeff_upload_density to fill it).
-// A TRANSFER→COMPUTE barrier is inserted before the dispatch so uploads recorded
-// earlier in the same cmd are visible to the shader.
+// Issue an electron density evaluation into `stream`.
+// atom_xyz must contain packed float4 atom positions (xyz in Bohr).
+// coeff must contain packed upper-triangular float coefficients
+// (md_gto_gpu_coeff_pack_density into md_gpu_upload_begin's pointer).
+// Uploads issued earlier into the same stream are visible by program order.
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
 typedef struct md_gto_gpu_orbital_desc_t {
     md_gto_gpu_basis_t basis;
-    md_gpu_ptr_t    atom_xyz;
-    md_gpu_ptr_t    coeff;
-    md_gpu_tex_t    out_tex;
+    md_gpu_addr_t    atom_xyz;
+    md_gpu_addr_t    coeff;
+    md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
 
     const md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -395,10 +395,10 @@ typedef struct md_gto_gpu_orbital_desc_t {
     md_gto_op_t op;              // operation mode (add, set, etc.)
 } md_gto_gpu_orbital_desc_t;
 
-// Record an orbital evaluation dispatch into the caller's cmd.
-// atom_buf must contain packed float4 atom positions (xyz in Bohr).
-// coeff_buf must contain num_mos packed rows of num_cgtos floats
-// (use md_gto_gpu_coeff_upload_mo to fill it).
+// Issue an orbital evaluation into `stream`.
+// atom_xyz must contain packed float4 atom positions (xyz in Bohr).
+// coeff must contain num_mos packed rows of num_cgtos floats
+// (md_gto_gpu_coeff_pack_mo into md_gpu_upload_begin's pointer).
 // eval_mode controls whether psi or psi^2 is accumulated per MO row.
 void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc);
 

@@ -236,3 +236,58 @@ void bump(uint3 tid : SV_DispatchThreadID) {
     if (tid.x >= a.n) return;
     a.dst[tid.x] = a.dst[tid.x] + a.delta;
 }
+
+// ---------------------------------------------------------------------------
+// sample_read: reads a *sampled* texture through a sampler, at texel centres
+// with nearest filtering, so the result equals the texel values exactly. The
+// only kernel that exercises the sampled-handle and sampler-handle paths.
+// ---------------------------------------------------------------------------
+struct SampleArgs {
+    uint    dim_x;
+    uint    dim_y;
+    uint    dim_z;
+    uint    _pad;
+    DescriptorHandle<Texture3D<float>> tex;
+    DescriptorHandle<SamplerState>     smp;
+    float*  dst;
+};
+
+struct SampleRoot { SampleArgs* args; };
+[[vk::push_constant]] ConstantBuffer<SampleRoot> sample_root;
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void sample_read(uint3 tid : SV_DispatchThreadID) {
+    SampleArgs a = *sample_root.args;
+    uint3 dim = uint3(a.dim_x, a.dim_y, a.dim_z);
+    if (any(tid >= dim)) return;
+    float3 uvw = (float3(tid) + 0.5) / float3(dim);
+    uint linear = tid.z * dim.x * dim.y + tid.y * dim.x + tid.x;
+    a.dst[linear] = a.tex.SampleLevel(a.smp, uvw, 0);
+}
+
+// ---------------------------------------------------------------------------
+// spin: a deliberately slow kernel. Used to keep one stream busy for a long
+// time so that tests can check that work on other streams -- and object
+// creation and destruction -- does not wait for it.
+// ---------------------------------------------------------------------------
+struct SpinArgs {
+    uint   n;
+    uint   iters;
+    uint   _pad0;
+    uint   _pad1;
+    uint*  dst;
+};
+
+struct SpinRoot { SpinArgs* args; };
+[[vk::push_constant]] ConstantBuffer<SpinRoot> spin_root;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void spin(uint3 tid : SV_DispatchThreadID) {
+    SpinArgs a = *spin_root.args;
+    if (tid.x >= a.n) return;
+    uint x = tid.x;
+    for (uint i = 0; i < a.iters; ++i) x = x * 1664525u + 1013904223u;
+    a.dst[tid.x] = x;
+}

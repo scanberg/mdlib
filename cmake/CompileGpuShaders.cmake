@@ -2,10 +2,11 @@
 #
 # Compiles Slang compute kernels for md_gpu and embeds the resulting binaries.
 #
-# Deliberately much simpler than CompileSlangShaders.cmake: md_gpu has no
-# descriptor sets and no per-dispatch resource declarations, so there is no
-# reflection step and no generated binding table. All the host side needs is
-# the raw SPIR-V (Vulkan) or metallib (Metal) bytes.
+# md_gpu has no descriptor sets and no per-dispatch resource declarations, so
+# there is no generated binding table. What the host side needs is the raw
+# SPIR-V (Vulkan) or metallib/MSL (Metal) bytes, plus each kernel's group size
+# and argument-struct size, which tools/check_gpu_arg_layout.py reads out of the
+# compiled shader while it checks argument-struct portability.
 #
 #   compile_gpu_shaders(<out_header>
 #       TARGET   <target>
@@ -18,6 +19,12 @@
 #
 #   extern const uint8_t <prefix>_<stem>_<entry>_start[];
 #   extern const size_t  <prefix>_<stem>_<entry>_byte_size;
+#   static inline md_gpu_kernel_desc_t <prefix>_<stem>_<entry>_kernel(void);
+#
+# all reachable by including <out_header>. The last is what call sites use:
+#
+#   md_gpu_kernel_desc_t d = md_shader_topo_critical_points_main_kernel();
+#   md_gpu_kernel_t k = md_gpu_kernel_create(device, &d);
 
 include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/EmbedBinaryFiles.cmake)
@@ -133,24 +140,29 @@ function(compile_gpu_shaders OUT_HEADER)
     # behaviour with nothing to look at. Same pattern EmbedBinaryFiles.cmake
     # uses for its generated sources.
     find_package(Python3 COMPONENTS Interpreter QUIET)
-    set(LINT_STAMP "")
-    if (Python3_Interpreter_FOUND)
-        set(LINT_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py)
-        set(LINT_STAMP  ${GEN_DIR}/${STEM}.arglayout.stamp)
-        add_custom_command(
-            OUTPUT ${LINT_STAMP}
-            COMMAND ${Python3_EXECUTABLE} ${LINT_SCRIPT}
-                --slangc ${SLANG_EXECUTABLE}
-                --bindless-space ${MD_GPU_BINDLESS_SPACE}
-                ${ABS_SRC} ${G2_ENTRIES}
-            COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
-            DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_SCRIPT}
-            COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
-            VERBATIM
-        )
-    else()
-        message(WARNING "md_gpu: Python3 not found, skipping argument-struct portability check")
+    if (NOT Python3_Interpreter_FOUND)
+        message(FATAL_ERROR "compile_gpu_shaders: Python 3 is required to check argument "
+                            "structs and to generate kernel descriptors")
     endif()
+    set(LINT_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py)
+    set(LINT_STAMP  ${GEN_DIR}/${STEM}.arglayout.stamp)
+    # Kernel descriptors: one md_gpu_kernel_desc_t per entry point, with the
+    # group size and argument-struct size read from the compiled shader.
+    set(KERNELS_INL ${GEN_DIR}/${STEM}_kernels.inl)
+    add_custom_command(
+        OUTPUT ${LINT_STAMP} ${KERNELS_INL}
+        COMMAND ${Python3_EXECUTABLE} ${LINT_SCRIPT}
+            --slangc ${SLANG_EXECUTABLE}
+            --bindless-space ${MD_GPU_BINDLESS_SPACE}
+            --emit ${KERNELS_INL}
+            --namespace ${G2_NAMESPACE}
+            ${ABS_SRC} ${G2_ENTRIES}
+        COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
+        DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_SCRIPT}
+        COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
+        VERBATIM
+    )
+    target_sources(${G2_TARGET} PRIVATE ${KERNELS_INL})
 
     set(BIN_FILES "")
     foreach(ENTRY ${G2_ENTRIES})
@@ -210,4 +222,7 @@ function(compile_gpu_shaders OUT_HEADER)
         OUTPUT     ${OUT_HEADER}
         FILES      ${BIN_FILES}
     )
+    # The embed header declares the code symbols; the descriptors built on
+    # them come after, so including <OUT_HEADER> gives both.
+    file(APPEND ${GEN_DIR}/${OUT_HEADER} "#include \"${STEM}_kernels.inl\"\n")
 endfunction()

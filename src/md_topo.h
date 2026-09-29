@@ -87,17 +87,18 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
 // Release all GPU resources owned by the context.
 void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context);
 
-// Record the full topology pipeline into caller-supplied cmd:
+// Issue the full topology pipeline into `stream`:
 //   bidirectional manifold → path compression → critical-point detection
-//   → compaction setup → compaction → vertex/edge extraction → staging copies.
-// Issues the whole pipeline into `stream`. Everything is ordered by the stream,
-// so no barriers or resource declarations are needed. Synchronise the stream
-// (md_gpu_stream_sync) before calling md_topo_gpu_context_extract.
+//   → compaction → vertex/edge extraction → copies into host-readable memory.
+// Everything is ordered by the stream, so no barriers or resource declarations
+// are needed. `volume` must have MD_GPU_TEX_STORAGE usage; mip 0 is read.
+// Wait for the stream (md_gpu_stream_sync, or a recorded sync) before calling
+// md_topo_gpu_context_extract.
 void md_topo_gpu_record(md_gpu_stream_t stream, md_topo_gpu_context_t* context,
-    md_gpu_tex_t volume, const struct md_grid_t* grid, float scalar_threshold);
+    md_gpu_texture_t volume, const struct md_grid_t* grid, float scalar_threshold);
 
-// Call after cmd has been submitted and completed.
-// Reads CPU-visible staging into out_graph (vertices, types, edges).
+// Call once the work issued by md_topo_gpu_record has completed.
+// Reads the host-readable results into out_graph (vertices, types, edges).
 // Returns false if zero critical points were found (out_graph left unchanged).
 bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context);
 

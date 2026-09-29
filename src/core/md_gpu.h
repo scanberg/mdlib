@@ -1,73 +1,83 @@
 /*
 md_gpu.h
 
-A CUDA-shaped compute API over Vulkan and Metal.
+A thin layer over Vulkan and Metal (and, as an alternative compute-only build,
+CUDA). One backend per build. The compute side is CUDA-shaped; the raster side,
+added later, follows the "no graphics API" model: pointers, one root argument
+pointer, a bindless heap, coarse stage barriers and no resource state.
 
-The model, in full:
+The model, in full
+------------------
+  * Work issued into a stream executes in issue order. Streams are unordered
+    with respect to each other unless joined with md_gpu_stream_wait().
 
-    Work issued into a stream executes in issue order, and every operation
-    observes all writes made by the operations before it in that stream.
-    Work in different streams is unordered unless joined by a sync point.
+  * Ordering inside a stream is IMPLICIT by default: every operation observes
+    all writes made by the operations before it in that stream, exactly as in
+    CUDA. A stream may switch to EXPLICIT ordering, in which md_gpu inserts
+    nothing and the caller places md_gpu_barrier(producer_stages,
+    consumer_stages). There are no resource lists, no layouts and no resource
+    state in either mode.
 
-That is the entire dependency model. There are no barriers, no resource state,
-no usage declarations and no descriptor sets in this API, because there is
-nothing for the caller to get wrong. Concurrency is expressed by using more
-streams, exactly as in CUDA.
+  * Device memory is a 64-bit GPU address, md_gpu_addr_t. Host-visible
+    allocations also hand back a CPU pointer. The two are distinct values of
+    distinct types and neither converts to the other implicitly -- which is
+    also why copies name their direction instead of inferring it.
+
+  * A texture is an object. Shaders never see it; they see a storage handle, a
+    sampled handle or a sampler handle, each placed in the argument struct and
+    received as a Slang DescriptorHandle<T>.
+
+  * Every call that is ordered against the GPU takes the stream as its first
+    argument. Nothing blocks the calling thread unless it says so:
+    md_gpu_stream_sync, md_gpu_sync_wait, md_gpu_stream_destroy (its own work
+    only) and md_gpu_device_destroy. In particular, creating or destroying
+    textures, pools and kernels never waits for work in flight -- a compute
+    job spanning many frames stalls nothing but its own stream.
 
 Correspondence with CUDA
 ------------------------
     cudaStreamCreate            md_gpu_stream_create
-    cudaMallocAsync             md_gpu_malloc
+    cudaMallocFromPoolAsync     md_gpu_malloc
     cudaFreeAsync               md_gpu_free
-    cudaMemcpyAsync             md_gpu_memcpy_async     (direction inferred)
-    cudaMemsetAsync             md_gpu_memset_async
+    cudaMemcpyAsync (H2D)       md_gpu_upload / md_gpu_upload_begin+end
+    cudaMemcpyAsync (D2D)       md_gpu_copy
+    cudaMemcpyAsync (D2H)       md_gpu_copy into MD_GPU_MEM_HOST_READ memory
+    cudaMemsetAsync             md_gpu_memset
     kernel<<<g,b,0,s>>>(args)   md_gpu_launch
     cudaEventRecord             md_gpu_stream_record
     cudaStreamWaitEvent         md_gpu_stream_wait
     cudaStreamSynchronize       md_gpu_stream_sync
     cudaEventQuery              md_gpu_sync_is_complete
     cudaLaunchHostFunc          md_gpu_launch_host_fn
-    cudaStreamBeginCapture      md_gpu_capture_begin
-    cudaStreamEndCapture        md_gpu_capture_end      (also instantiates)
-    cudaGraphLaunch             md_gpu_graph_launch
-    cudaCreateTextureObject     md_gpu_tex_create
-
-Device memory is a pointer
---------------------------
-md_gpu_malloc returns a real address in a flat 64-bit space. Pointer
-arithmetic works and means what it means:
-
-    float* v = md_gpu_malloc(device_pool, n * 4 * sizeof(float), s);
-    float* w = v + n;   // valid; the second half of the allocation
-
-It is *not* dereferenceable on the host unless allocated with MD_GPU_MEM_HOST_*
-and obtained through md_gpu_host_ptr(). This is exactly cudaMalloc's contract.
+    cudaSurfaceObject_t         md_gpu_storage_tex_t
+    cudaTextureObject_t         md_gpu_sampled_tex_t
 
 Kernel arguments
 ----------------
 A kernel receives one pointer to a caller-defined argument struct. The backend
 copies the struct into device memory and passes its address in an 8-byte push
-constant, so there is no size limit and no portability cliff. Shaders declare:
+constant, so there is no size limit and no portability cliff:
 
-    struct Args { uint n; float* dst; };
-    struct Root { Args* args; };
-    [[vk::push_constant]] ConstantBuffer<Root> root;
+    struct Args { uint n; uint _pad; float* dst; };
+    MD_KERNEL_ARGS(Args);                   // from md_gpu.slang
 
     [shader("compute")][numthreads(64,1,1)]
     void main(uint3 tid : SV_DispatchThreadID) {
-        Args a = *root.args;
+        Args a = MD_ARGS;
         ...
     }
 
-See md_gpu.slang for the bindless texture declarations to include.
+compile_gpu_shaders() emits, per entry point, a function returning a ready
+md_gpu_kernel_desc_t (code, group size, argument-struct size), so a call site
+never repeats [numthreads] by hand.
 
 Threading
 ---------
-  - A given md_gpu_stream_t must be used by one thread at a time. Different
-    streams may be used concurrently from different threads.
-  - md_gpu_malloc / md_gpu_free / texture and kernel creation are thread-safe.
-  - md_gpu_device_poll should be called from the thread that wants host
-    callbacks to run on it (typically the main/UI thread).
+  * A stream is used by one thread at a time. Different streams may be used
+    concurrently from different threads.
+  * Pool, allocation, texture, sampler and kernel creation/destruction are
+    thread-safe.
+  * Host callbacks run inside md_gpu_device_poll(), on the thread calling it.
 */
 
 #ifndef MD_GPU_H
@@ -89,41 +99,44 @@ extern "C" {
 #  define MD_GPU_STATIC_ASSERT(c, m) _Static_assert(c, m)
 #endif
 
-/* Device pointers are real 64-bit addresses. */
 MD_GPU_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
 
 /* =========================================================================
    Handles and value types
    ========================================================================= */
 
-typedef struct md_gpu_device* md_gpu_device_t;
-typedef struct md_gpu_stream* md_gpu_stream_t;
-typedef struct md_gpu_pool*   md_gpu_pool_t;
-typedef struct md_gpu_kernel* md_gpu_kernel_t;
-typedef struct md_gpu_graph*  md_gpu_graph_t;
+typedef struct md_gpu_device*  md_gpu_device_t;
+typedef struct md_gpu_stream*  md_gpu_stream_t;
+typedef struct md_gpu_pool*    md_gpu_pool_t;
+typedef struct md_gpu_texture* md_gpu_texture_t;   /* identity; host side only */
+typedef struct md_gpu_kernel*  md_gpu_kernel_t;
 
-/* Device memory. Arithmetic is valid; host dereference is not (see above). */
-typedef void* md_gpu_ptr_t;
+/* A GPU virtual address. Byte arithmetic is valid (`base + offsetof(T, f)`),
+   and it is the type of every pointer field in a C argument-struct mirror, so
+   no casts are needed there. Zero is null. Not dereferenceable on the host. */
+typedef uint64_t md_gpu_addr_t;
 
-/* A texture or sampler handle. Put it in an argument struct as-is; the shader
-   receives it as a Slang DescriptorHandle<T>:
+/* An allocation. `cpu` is non-NULL only for memory from an MD_GPU_MEM_HOST_*
+   pool, and then addresses the same bytes as `gpu`. */
+typedef struct md_gpu_mem_t {
+    md_gpu_addr_t gpu;
+    void*         cpu;
+} md_gpu_mem_t;
 
-       struct Args {
-           uint4 dim;                                  // xyz used, w spare
-           DescriptorHandle<RWTexture3D<float>> vol;   // <- this field
-           float* dst;
-       };
+/* Shader-visible handles. Distinct C types, so that a storage handle cannot be
+   assigned to a sampled field by accident. Each is 8 bytes, 8-aligned, and is
+   received in Slang as:
 
-   The value is a bindless heap slot: 8 bytes, but a pair of 32-bit words in
-   SPIR-V against a single 8-aligned value in MSL, so like a 2-vector it has to
-   sit at an offset that is a multiple of 8 -- see the ABI rule below. Zero is
-   the null handle. There is no binding table, no class,
-   and nothing to declare in the shader -- adding a new texture type costs no
-   host code at all. Slang type-checks the handle against the resource type,
-   so using a 3D storage handle where a 2D sampled texture is expected is a
-   compile error rather than silent corruption. */
-typedef uint64_t md_gpu_tex_t;
-typedef uint64_t md_gpu_sampler_t;
+       md_gpu_storage_tex_t   DescriptorHandle<RWTexture2D / RWTexture3D / RWTexture2DArray<T>>
+       md_gpu_sampled_tex_t   DescriptorHandle<Texture2D / Texture3D / Texture2DArray<T>>
+       md_gpu_sampler_t       DescriptorHandle<SamplerState>
+
+   A zero handle is null. Slang type-checks the handle against the resource
+   type, so using a 3D storage handle where a 2D sampled texture is expected is
+   a compile error rather than silent corruption. */
+typedef struct md_gpu_storage_tex_t { uint64_t handle; } md_gpu_storage_tex_t;
+typedef struct md_gpu_sampled_tex_t { uint64_t handle; } md_gpu_sampled_tex_t;
+typedef struct md_gpu_sampler_t     { uint64_t handle; } md_gpu_sampler_t;
 
 /* A point on a stream's timeline. Value type: copy it, store it, pass it by
    value. A zero-initialised sync is the "none" sync -- waiting on it is a
@@ -155,7 +168,7 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
    C struct is correct on both backends exactly when every vector member sits
    at an offset satisfying the stricter (Metal) alignment:
 
-       md_gpu_*2, md_gpu_tex_t     offset must be a multiple of 8
+       md_gpu_*2, handle types     offset must be a multiple of 8
        md_gpu_*4, md_gpu_float4x4  offset must be a multiple of 16
 
    That is the entire ABI rule. It is a property of the struct, not of the
@@ -187,14 +200,14 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
            md_gpu_uint4 dim;
            float        scale;
            uint32_t     _pad;
-           uint64_t     dst;
+           md_gpu_addr_t dst;
        } my_args_t;
 
    Inside shader code -- locals, groupshared, arithmetic -- 3-vectors are fine
    and cost nothing; `a.dim.xyz` is the usual way to read one back out. The
    rule constrains the argument struct only.
 
-   Scalars and 8-byte device pointers place themselves and need no help.
+   Scalars and 8-byte device addresses place themselves and need no help.
    Texture and sampler handles are the one non-vector member the rule covers:
    Slang lowers DescriptorHandle<T> to two 32-bit words, so SPIR-V aligns it to
    4 while MSL aligns it to 8. A handle preceded by an odd number of 32-bit
@@ -248,7 +261,11 @@ MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
 MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
                      "md_gpu_float4x4 must be 16-byte aligned");
 
-/* Nothing below needs it, and this header leaves no macros behind. */
+
+/* Handles are plain 8-byte values in argument structs. */
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
+MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
 #undef MD_GPU_STATIC_ASSERT
 
 /* Launch geometry, in thread groups. */
@@ -262,21 +279,13 @@ static inline md_gpu_grid_t md_gpu_grid(uint32_t x, uint32_t y, uint32_t z) {
     return g;
 }
 
-/* ceil(count / local) groups along x. */
-static inline md_gpu_grid_t md_gpu_grid_1d(uint64_t count, uint32_t local) {
-    md_gpu_grid_t g;
-    g.x = (uint32_t)((count + local - 1) / local);
-    g.y = 1; g.z = 1;
-    return g;
-}
-
 /* =========================================================================
    Errors
    ========================================================================= */
 
 /* Human-readable description of the most recent failure on the calling
    thread, or NULL. Owned by md_gpu; valid until the next failing call on the
-   same thread. Thread-safe. */
+   same thread. */
 const char* md_gpu_last_error(void);
 
 /* =========================================================================
@@ -288,23 +297,18 @@ typedef struct md_gpu_device_desc_t {
        allocator. Must outlive the device. */
     struct md_allocator_i* alloc;
 
-    /* Request backend validation (Vulkan validation layers / Metal API
-       validation). Ignored if unavailable. */
+    /* Request backend validation (Vulkan validation layers). On Metal it must
+       be enabled from the environment; see md_gpu_metal.m. */
     bool enable_validation;
 
-    /* Optional debug label. */
     const char* label;
 } md_gpu_device_desc_t;
 
 typedef struct md_gpu_device_info_t {
-    /* False implies UMA / integrated: MD_GPU_MEM_HOST_WRITE memory is
-       directly device-accessible at no cost. An allocation hint only --
-       md_gpu_memcpy_async picks the right path either way. */
+    /* False implies UMA / integrated. An allocation hint only. */
     bool     is_discrete;
     uint32_t max_threads_per_group;
     uint32_t preferred_group_multiple;   /* warp / SIMD width */
-    uint64_t timestamp_period_ns_num;    /* ticks -> ns, numerator   */
-    uint64_t timestamp_period_ns_den;    /* ticks -> ns, denominator */
     char     name[256];
 } md_gpu_device_info_t;
 
@@ -312,14 +316,14 @@ typedef struct md_gpu_device_info_t {
    md_gpu_last_error(). */
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc);
 
-/* Waits for all streams to go idle, then destroys the device and everything
-   created from it. */
+/* Waits for every stream to go idle, then destroys the device and everything
+   created from it: streams, pools, allocations, textures, samplers, kernels. */
 void md_gpu_device_destroy(md_gpu_device_t device);
 
 bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* out_info);
 
-/* Fires host callbacks whose sync point has completed, retires freed memory
-   and recycles internal transient storage. Callbacks run on the calling
+/* Fires host callbacks whose sync point has completed and releases objects
+   whose deferred destruction has become safe. Callbacks run on the calling
    thread and nowhere else. Returns the number of callbacks fired.
 
    Call once per frame. Cheap when there is nothing to do. */
@@ -330,13 +334,15 @@ uint32_t md_gpu_device_poll(md_gpu_device_t device);
    ========================================================================= */
 
 typedef enum md_gpu_stream_kind_t {
-    MD_GPU_STREAM_COMPUTE,
-    MD_GPU_STREAM_TRANSFER,   /* prefers a dedicated DMA engine if present */
+    MD_GPU_STREAM_COMPUTE,    /* async compute; work may span many frames   */
+    MD_GPU_STREAM_TRANSFER,   /* prefers a dedicated DMA engine if present;
+                                 copies and fills only, no kernel launches  */
 } md_gpu_stream_kind_t;
 
 md_gpu_stream_t md_gpu_stream_create(md_gpu_device_t device, md_gpu_stream_kind_t kind, const char* label);
 
-/* Waits for the stream to go idle, then destroys it. */
+/* Waits for this stream's own work to complete, then destroys it. Other
+   streams are not waited for. */
 void md_gpu_stream_destroy(md_gpu_stream_t stream);
 
 /* Device-owned default streams. Always valid; never destroyed by the caller. */
@@ -345,13 +351,14 @@ md_gpu_stream_t md_gpu_stream_default(md_gpu_device_t device, md_gpu_stream_kind
 md_gpu_device_t md_gpu_stream_device(md_gpu_stream_t stream);
 
 /* cudaEventRecord: submit whatever is pending and return the sync point that
-   is signalled when it completes. Returns the none sync if nothing has been
-   issued since the last record. */
+   is signalled when it completes. With nothing pending this returns the sync
+   of the most recent submission (still a correct "everything so far" point),
+   or the none sync if the stream has never submitted. */
 md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t stream);
 
 /* cudaStreamWaitEvent: work issued into `stream` after this call waits for
-   `sync`. Work already issued is unaffected. A none sync is a no-op, and a
-   sync from `stream` itself is a no-op. */
+   `sync`. Work already issued is unaffected. A none sync, a sync from `stream`
+   itself and an already completed sync are no-ops. */
 void md_gpu_stream_wait(md_gpu_stream_t stream, md_gpu_sync_t sync);
 
 /* Submit pending work without blocking. */
@@ -363,104 +370,135 @@ void md_gpu_stream_sync(md_gpu_stream_t stream);
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync);
 void md_gpu_sync_wait(md_gpu_sync_t sync);
 
+/* ---- Ordering ---------------------------------------------------------------
+
+   IMPLICIT (the default): each operation is ordered after everything before it
+   in the stream.
+
+   EXPLICIT: md_gpu inserts nothing between operations. The caller states the
+   producer and consumer stages with md_gpu_barrier -- no resource lists, no
+   layouts. Switching back to IMPLICIT orders the next operation after
+   everything before it, so an explicit region can never leak unordered work
+   past its end.
+
+       md_gpu_stream_set_ordering(s, MD_GPU_ORDER_EXPLICIT);
+       md_gpu_launch(s, k_a, ...);                 // independent of k_b,
+       md_gpu_launch(s, k_b, ...);                 //   may overlap
+       md_gpu_barrier(s, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_COMPUTE);
+       md_gpu_launch(s, k_consume_both, ...);
+       md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
+
+   Vulkan: one global VkMemoryBarrier2 with the given stage masks. Metal 3:
+   serial encoders already order everything, so md_gpu_barrier is a no-op and
+   EXPLICIT is merely slower than possible, never incorrect. Code written for
+   EXPLICIT is correct on every backend. */
+
+typedef enum md_gpu_ordering_t {
+    MD_GPU_ORDER_IMPLICIT,
+    MD_GPU_ORDER_EXPLICIT,
+} md_gpu_ordering_t;
+
+typedef uint32_t md_gpu_stage_flags_t;
+enum {
+    MD_GPU_STAGE_TRANSFER = 1u << 0,   /* copy, upload, memset, texture copies   */
+    MD_GPU_STAGE_COMPUTE  = 1u << 1,   /* kernel launches                        */
+    MD_GPU_STAGE_INDIRECT = 1u << 2,   /* consumer side: reading indirect grids  */
+    /* Raster stages arrive with the raster API. */
+    MD_GPU_STAGE_ALL      = 0xFFFFFFFFu,
+};
+
+void md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);
+md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t stream);
+
+/* Everything `producers` wrote before this point is visible to `consumers`
+   after it. Valid in either mode; redundant, but harmless, in IMPLICIT. */
+void md_gpu_barrier(md_gpu_stream_t stream, md_gpu_stage_flags_t producers, md_gpu_stage_flags_t consumers);
+
 /* =========================================================================
    Memory
    ========================================================================= */
 
-typedef uint32_t md_gpu_mem_flags_t;
-enum {
-    MD_GPU_MEM_DEVICE     = 0,       /* device-local, not host-visible      */
-    MD_GPU_MEM_HOST_WRITE = 1 << 0,  /* host-writable, persistently mapped  */
-    MD_GPU_MEM_HOST_READ  = 1 << 1,  /* host-readable; readback destination */
-};
+typedef enum md_gpu_mem_kind_t {
+    MD_GPU_MEM_DEVICE,       /* device-local; no CPU pointer                  */
+    MD_GPU_MEM_HOST_WRITE,   /* CPU-written, write-combined; device-local too
+                                where the platform allows (UMA / ReBAR):
+                                uploads and per-frame data                   */
+    MD_GPU_MEM_HOST_READ,    /* CPU-cached: readback destinations            */
+} md_gpu_mem_kind_t;
 
-/* A pool is the space allocations are drawn from, and it serves exactly one
-   kind of memory. That is not incidental: a VkDeviceMemory block has one
-   memory type and an MTLHeap has one storage mode, so a pool maps onto them
-   1:1 only if its kind is fixed at creation. It also means the grouping is
-   real -- a device pool and a readback pool are different objects rather than
-   two flavours multiplexed inside one.
-
-   There is deliberately no implicit default pool. Every allocation names the
-   space it comes from. This differs from cudaMallocAsync, which falls back to
-   a per-device default pool; the explicitness is worth the extra line.
-
-       md_gpu_pool_desc_t pd = {0};
-       pd.flags = MD_GPU_MEM_DEVICE;
-       pd.label = "md_topo scratch";
-       md_gpu_pool_t pool = md_gpu_pool_create(dev, &pd);
-*/
+/* A pool is the space allocations are drawn from. It serves exactly one kind
+   of memory, and it groups lifetimes: destroying or resetting it releases
+   everything drawn from it, textures included. */
 typedef struct md_gpu_pool_desc_t {
-    md_gpu_mem_flags_t flags;             /* the one kind of memory served    */
-    uint64_t           block_size;        /* suballocation granularity hint;
-                                             0 picks a backend default        */
-    uint64_t           release_threshold; /* bytes kept cached by trim; 0 is
-                                             release-eagerly                  */
-    const char*        label;
+    md_gpu_mem_kind_t kind;
+    /* Bytes a pool keeps cached after md_gpu_free for reuse without a new
+       device allocation. 0 means no limit: cached memory is only returned to
+       the driver by md_gpu_pool_trim or md_gpu_pool_destroy. */
+    uint64_t          cache_limit;
+    const char*       label;
 } md_gpu_pool_desc_t;
 
-md_gpu_pool_t      md_gpu_pool_create(md_gpu_device_t device, const md_gpu_pool_desc_t* desc);
-void               md_gpu_pool_destroy(md_gpu_pool_t pool);
-md_gpu_mem_flags_t md_gpu_pool_flags(md_gpu_pool_t pool);
+md_gpu_pool_t     md_gpu_pool_create(md_gpu_device_t device, const md_gpu_pool_desc_t* desc);
+md_gpu_mem_kind_t md_gpu_pool_kind(md_gpu_pool_t pool);
 
-/* Release cached blocks down to `keep_bytes`. */
+/* Never blocks. Every allocation and texture drawn from the pool is released
+   once every stream has completed the work issued before this call. Work
+   issued afterwards that still references the pool is a caller error. */
+void md_gpu_pool_destroy(md_gpu_pool_t pool);
+
+/* Free everything the pool has handed out, in one call, without returning its
+   memory to the driver -- the CPU arena-reset pattern. Allocations become
+   reusable at this point in `stream`, exactly like md_gpu_free; textures are
+   released like md_gpu_texture_destroy. Every address and texture previously
+   obtained from the pool dangles once this returns. */
+void md_gpu_pool_reset(md_gpu_stream_t stream, md_gpu_pool_t pool);
+
+/* Release cached (free and idle) memory down to `keep_bytes`. */
 void md_gpu_pool_trim(md_gpu_pool_t pool, uint64_t keep_bytes);
 
-/* Free everything the pool has handed out, in one call, without destroying the
-   pool or returning its memory to the driver -- the CPU arena-reset pattern.
-   The next round of allocations is then served entirely from cache.
-
-   Stream-ordered exactly like md_gpu_free: the blocks become reusable at this
-   point in `stream`, so work already in flight is undisturbed. Use
-   md_gpu_pool_trim afterwards to hand the memory back.
-
-   Every pointer previously obtained from this pool is dangling once this
-   returns. That is the point of the call, but it does mean a pool being reset
-   wholesale should not be shared with code that outlives the reset. */
-void md_gpu_pool_reset(md_gpu_pool_t pool, md_gpu_stream_t stream);
-
 typedef struct md_gpu_pool_stats_t {
-    uint64_t bytes_in_use;      /* handed out right now                      */
-    uint64_t bytes_reserved;    /* committed by the pool, in use or cached   */
-    uint64_t bytes_cached;      /* reserved - in_use; reusable without a new
-                                   device allocation                         */
-    uint64_t bytes_peak_in_use; /* high-water mark, for sizing               */
+    uint64_t bytes_in_use;      /* handed out right now                       */
+    uint64_t bytes_reserved;    /* committed by the pool, in use or cached    */
+    uint64_t bytes_cached;      /* reserved - in_use                          */
+    uint64_t bytes_peak_in_use; /* high-water mark, for sizing                */
     uint32_t blocks_in_use;
     uint32_t blocks_cached;
-    uint64_t alloc_count;       /* md_gpu_malloc calls served               */
+    uint64_t alloc_count;       /* md_gpu_malloc calls served                 */
     uint64_t reuse_count;       /* of those, served from cache. A ratio near
-                                   1 means the pool is doing its job         */
+                                   1 means the pool is doing its job          */
 } md_gpu_pool_stats_t;
 
 void md_gpu_pool_stats(md_gpu_pool_t pool, md_gpu_pool_stats_t* out_stats);
 
-/* cudaMallocAsync, drawn from `pool`. The memory kind comes from the pool.
-   The allocation is usable by work issued into `stream` after this point.
-   Returns NULL on failure. */
-md_gpu_ptr_t md_gpu_malloc(md_gpu_pool_t pool, size_t size, md_gpu_stream_t stream);
+/* cudaMallocFromPoolAsync. The allocation is usable by work issued into
+   `stream` after this call. `.gpu == 0` on failure. Never waits on another
+   stream: a cached block freed elsewhere is reused only once its free point
+   has completed. */
+md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_pool_t pool, size_t size);
 
-/* cudaFreeAsync. Always legal, never blocks. The memory returns to the pool
-   at this point in `stream`, so later work in the same stream may reuse it
-   with no synchronisation. Passing NULL is a no-op. */
-void md_gpu_free(md_gpu_ptr_t ptr, md_gpu_stream_t stream);
+/* cudaFreeAsync. The memory returns to its pool at this point in `stream`, so
+   later work in the same stream may reuse it with no synchronisation. A zero
+   address is a no-op; `stream` is required. */
+void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
 
-/* Host-side view of MD_GPU_MEM_HOST_* memory, valid until the pointer is
-   freed. NULL for device-local memory. */
-void* md_gpu_host_ptr(md_gpu_ptr_t ptr);
+/* ---- Copies ------------------------------------------------------------------
+   The direction is in the name and in the types; nothing is inferred from
+   address values. To read results on the host, copy into MD_GPU_MEM_HOST_READ
+   memory and read its `.cpu` pointer once the copy's sync has completed --
+   there is deliberately no copy into an arbitrary host pointer, which would
+   need hidden staging and a write to host memory at an unspecified later
+   poll. */
 
-/* Size of the allocation containing `ptr`, and the base of that allocation.
-   Both return 0 / NULL if the pointer is not a live device allocation. */
-size_t       md_gpu_ptr_size(md_gpu_ptr_t ptr);
-md_gpu_ptr_t md_gpu_ptr_base(md_gpu_ptr_t ptr);
+/* Device to device. Both ranges must lie within live allocations. */
+bool md_gpu_copy(md_gpu_stream_t stream, md_gpu_addr_t dst, md_gpu_addr_t src, size_t size);
 
-/* cudaMemcpyAsync with cudaMemcpyDefault: each pointer is looked up in the
-   live-allocation map, so host-to-device, device-to-host and device-to-device
-   are all this one call. Host staging is internal. */
-bool md_gpu_memcpy_async(void* dst, const void* src, size_t size, md_gpu_stream_t stream);
+/* Fill `size` bytes with a repeating byte value. Unaligned heads and tails are
+   handled. */
+bool md_gpu_memset(md_gpu_stream_t stream, md_gpu_addr_t dst, uint8_t value, size_t size);
 
-/* Fills `size` bytes with a repeating byte value. offset and size are rounded
-   to 4-byte alignment internally; sub-word tails are handled correctly. */
-bool md_gpu_memset_async(md_gpu_ptr_t dst, uint8_t value, size_t size, md_gpu_stream_t stream);
+/* Host to device. `src` is consumed before this returns (staged when needed),
+   so it may be reused immediately. */
+bool md_gpu_upload(md_gpu_stream_t stream, md_gpu_addr_t dst, const void* src, size_t size);
 
 /* Zero-copy upload: reserve `size` bytes and build the payload in place,
    avoiding an intermediate buffer plus memcpy. Returns a host pointer that
@@ -472,41 +510,102 @@ bool md_gpu_memset_async(md_gpu_ptr_t dst, uint8_t value, size_t size, md_gpu_st
        md_gpu_upload_end(s);
 
    Returns NULL on failure, in which case upload_end must not be called.
-   Only one upload may be open per stream at a time. */
-void* md_gpu_upload_begin(md_gpu_stream_t stream, md_gpu_ptr_t dst, size_t size);
+   At most one upload may be open per stream. */
+void* md_gpu_upload_begin(md_gpu_stream_t stream, md_gpu_addr_t dst, size_t size);
 bool  md_gpu_upload_end(md_gpu_stream_t stream);
 
 /* =========================================================================
    Textures
    ========================================================================= */
 
+typedef enum md_gpu_tex_type_t {
+    MD_GPU_TEX_TYPE_INVALID = 0,   /* a zero-initialised desc is an error */
+    MD_GPU_TEX_2D,
+    MD_GPU_TEX_2D_ARRAY,
+    MD_GPU_TEX_3D,                 /* stays 3D even with depth 1 */
+} md_gpu_tex_type_t;
+
 typedef enum md_gpu_format_t {
-    MD_GPU_FORMAT_R32_FLOAT,
-    MD_GPU_FORMAT_R32_UINT,
-    MD_GPU_FORMAT_RGBA32_FLOAT,
+    MD_GPU_FORMAT_INVALID = 0,
+    /* 8-bit normalised */
+    MD_GPU_FORMAT_R8_UNORM,
+    MD_GPU_FORMAT_RG8_UNORM,
     MD_GPU_FORMAT_RGBA8_UNORM,
+    MD_GPU_FORMAT_RGBA8_SRGB,
+    MD_GPU_FORMAT_BGRA8_UNORM,
+    MD_GPU_FORMAT_BGRA8_SRGB,
+    /* 16-bit float */
+    MD_GPU_FORMAT_R16_FLOAT,
+    MD_GPU_FORMAT_RG16_FLOAT,
+    MD_GPU_FORMAT_RGBA16_FLOAT,
+    /* 32-bit */
+    MD_GPU_FORMAT_R32_FLOAT,
+    MD_GPU_FORMAT_RG32_FLOAT,
+    MD_GPU_FORMAT_RGBA32_FLOAT,
+    MD_GPU_FORMAT_R32_UINT,
+    MD_GPU_FORMAT_RG32_UINT,
+    MD_GPU_FORMAT_RGBA32_UINT,
+    /* packed */
+    MD_GPU_FORMAT_RG11B10_FLOAT,
+    MD_GPU_FORMAT_RGB10A2_UNORM,
+    /* depth */
+    MD_GPU_FORMAT_D32_FLOAT,
+    MD_GPU_FORMAT_D32_FLOAT_S8_UINT,
     MD_GPU_FORMAT_COUNT,
 } md_gpu_format_t;
 
-typedef uint32_t md_gpu_tex_flags_t;
+/* Bytes per texel as laid out in buffers by the texture copy calls. For
+   MD_GPU_FORMAT_D32_FLOAT_S8_UINT that is the depth plane only (4 bytes). */
+uint32_t md_gpu_format_texel_size(md_gpu_format_t format);
+
+typedef uint32_t md_gpu_tex_usage_t;
 enum {
-    MD_GPU_TEX_STORAGE = 1 << 0,   /* shader read/write, random access */
-    MD_GPU_TEX_SAMPLED = 1 << 1,   /* shader sampled read              */
+    MD_GPU_TEX_STORAGE       = 1u << 0,  /* shader read/write, random access */
+    MD_GPU_TEX_SAMPLED       = 1u << 1,  /* shader sampled read              */
+    MD_GPU_TEX_RENDER_TARGET = 1u << 2,  /* colour or depth attachment (by
+                                            format); takes no heap slot      */
 };
 
-typedef struct md_gpu_tex_desc_t {
-    uint32_t           width, height, depth;  /* depth 0 or 1 => 2D */
+typedef struct md_gpu_texture_desc_t {
+    md_gpu_tex_type_t  type;
     md_gpu_format_t    format;
-    md_gpu_tex_flags_t flags;
+    md_gpu_tex_usage_t usage;            /* any non-empty combination. A
+                                            format/usage pair the device
+                                            cannot do fails at creation,
+                                            naming both                       */
+    uint32_t           width;
+    uint32_t           height;
+    uint32_t           depth_or_layers;  /* 3D: depth. 2D_ARRAY: layers.
+                                            2D: must be 0 or 1                */
+    uint32_t           mip_levels;       /* 0 = 1                            */
     const char*        label;
-} md_gpu_tex_desc_t;
+} md_gpu_texture_desc_t;
 
-/* A subregion in texels. A zero extent component means "to the end along that
-   axis", so a zero-initialised region covers the whole texture. */
-typedef struct md_gpu_tex_region_t {
-    uint32_t offset[3];
-    uint32_t extent[3];
-} md_gpu_tex_region_t;
+/* Stream-ordered creation, exactly like md_gpu_malloc: the texture is usable
+   by work issued into `stream` after this call (other streams join with
+   md_gpu_stream_wait). Never blocks. `pool` must be an MD_GPU_MEM_DEVICE pool;
+   it owns the texture's lifetime. Returns NULL on failure. */
+md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, md_gpu_pool_t pool,
+                                       const md_gpu_texture_desc_t* desc);
+
+/* Deferred and non-blocking: the texture and its handles are released once
+   every stream has completed the work issued before this call. */
+void md_gpu_texture_destroy(md_gpu_texture_t tex);
+
+/* The description the texture was created with, normalised (mip_levels >= 1,
+   depth_or_layers >= 1). Valid for the texture's lifetime. */
+const md_gpu_texture_desc_t* md_gpu_texture_desc(md_gpu_texture_t tex);
+
+/* Shader handles, created with the texture and valid for its lifetime. Null if
+   the texture lacks the usage or `mip` is out of range. A storage handle
+   addresses a single mip level; the sampled handle covers all of them. */
+md_gpu_storage_tex_t md_gpu_texture_storage(md_gpu_texture_t tex, uint32_t mip);
+md_gpu_sampled_tex_t md_gpu_texture_sampled(md_gpu_texture_t tex);
+
+/* ---- Samplers -----------------------------------------------------------------
+   Samplers are immutable values: the same desc returns the same handle, the
+   device owns them, and there is nothing to destroy. A zero-initialised desc
+   is nearest filtering with clamp-to-edge addressing. */
 
 typedef enum md_gpu_filter_t {
     MD_GPU_FILTER_NEAREST,
@@ -520,38 +619,37 @@ typedef enum md_gpu_address_mode_t {
 } md_gpu_address_mode_t;
 
 typedef struct md_gpu_sampler_desc_t {
-    md_gpu_filter_t       min_filter, mag_filter;
+    md_gpu_filter_t       min_filter, mag_filter, mip_filter;
     md_gpu_address_mode_t address_u, address_v, address_w;
-    const char*           label;
 } md_gpu_sampler_desc_t;
 
-md_gpu_tex_t md_gpu_tex_create(md_gpu_device_t device, const md_gpu_tex_desc_t* desc);
+md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t device, const md_gpu_sampler_desc_t* desc);
 
-/* Always legal with work in flight; retired once every stream has passed the
-   last sync value that touched it. `stream` may be NULL for "any". */
-void md_gpu_tex_destroy(md_gpu_tex_t tex, md_gpu_stream_t stream);
+/* ---- Texture copies -----------------------------------------------------------
+   A region is in texels of one mip level. For MD_GPU_TEX_2D_ARRAY the z axis
+   addresses layers. A zero extent component means "to the end along that
+   axis", so a zero-initialised region (or NULL) is the whole of mip 0. Buffer
+   data is tightly packed, md_gpu_format_texel_size() bytes per texel; byte
+   counts are derived from the region and checked against the allocation. */
 
-bool md_gpu_tex_desc(md_gpu_tex_t tex, md_gpu_tex_desc_t* out_desc);
+typedef struct md_gpu_tex_region_t {
+    uint32_t offset[3];
+    uint32_t extent[3];
+    uint32_t mip;
+} md_gpu_tex_region_t;
 
-/* Storage and sampled images are separate descriptor arrays, so a texture
-   created with both STORAGE and SAMPLED occupies two heap slots.
-   md_gpu_tex_create returns the storage handle; this returns the sampled one,
-   for use in a DescriptorHandle<Texture...> field. For single-usage textures
-   it returns the texture's own handle.
+/* Bytes a copy of `region` of `tex` moves (0 if the region is invalid). */
+size_t md_gpu_texture_region_size(md_gpu_texture_t tex, const md_gpu_tex_region_t* region);
 
-   Only the handle from md_gpu_tex_create identifies the texture to
-   md_gpu_tex_destroy, md_gpu_tex_desc and the texture copy calls. */
-md_gpu_tex_t md_gpu_tex_sampled(md_gpu_tex_t tex);
+bool md_gpu_copy_to_texture(md_gpu_stream_t stream, md_gpu_texture_t dst,
+                            const md_gpu_tex_region_t* region, md_gpu_addr_t src);
+bool md_gpu_copy_from_texture(md_gpu_stream_t stream, md_gpu_addr_t dst,
+                              md_gpu_texture_t src, const md_gpu_tex_region_t* region);
 
-md_gpu_sampler_t md_gpu_sampler_create(md_gpu_device_t device, const md_gpu_sampler_desc_t* desc);
-void             md_gpu_sampler_destroy(md_gpu_sampler_t sampler);
-
-/* `region` may be NULL for the whole texture. `src` is a host pointer for
-   *to_tex and a host or device pointer for *from_tex. */
-bool md_gpu_memcpy_to_tex_async(md_gpu_tex_t dst, const md_gpu_tex_region_t* region,
-                                const void* src, size_t size, md_gpu_stream_t stream);
-bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t src, const md_gpu_tex_region_t* region,
-                                  size_t size, md_gpu_stream_t stream);
+/* Host to texture. `src` is consumed before return; `size` must equal the
+   region's byte size. */
+bool md_gpu_upload_texture(md_gpu_stream_t stream, md_gpu_texture_t dst,
+                           const md_gpu_tex_region_t* region, const void* src, size_t size);
 
 /* =========================================================================
    Kernels
@@ -559,83 +657,65 @@ bool md_gpu_memcpy_from_tex_async(void* dst, md_gpu_tex_t src, const md_gpu_tex_
 
 typedef struct md_gpu_kernel_desc_t {
     /* SPIR-V on Vulkan. On Metal, either a compiled metallib or Metal Shading
-       Language source text -- the backend identifies which from the bytes and
-       compiles source at load time. Which one a build produces depends on
-       whether Apple's offline Metal compiler was available; see
-       cmake/CompileGpuShaders.cmake. */
+       Language source text -- the backend identifies which from the bytes. */
     const void* code;
     size_t      code_size;
     const char* entry_point;   /* NULL = "main" */
     const char* label;
 
-    /* Threads per group. Required on Metal, which cannot recover it from the
-       library; on Vulkan it is taken from the SPIR-V when left {0,0,0}. */
-    uint32_t group_size[3];
+    /* Threads per group, i.e. [numthreads]. Required on every backend: zero
+       is an error. On Vulkan it is also checked against the SPIR-V. */
+    uint32_t    group_size[3];
+
+    /* sizeof the argument struct. A launch passing a different size fails.
+       0 = unchecked. */
+    uint32_t    args_size;
 } md_gpu_kernel_desc_t;
 
+/* Normally fed straight from the generated descriptor:
+
+       md_gpu_kernel_desc_t d = md_shader_topo_critical_points_main_kernel();
+       md_gpu_kernel_t k = md_gpu_kernel_create(dev, &d);                  */
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t device, const md_gpu_kernel_desc_t* desc);
-void            md_gpu_kernel_destroy(md_gpu_kernel_t kernel);
+
+/* Deferred and non-blocking, like md_gpu_texture_destroy. */
+void md_gpu_kernel_destroy(md_gpu_kernel_t kernel);
 
 typedef struct md_gpu_kernel_info_t {
+    uint32_t group_size[3];
+    uint32_t args_size;
     uint32_t max_threads_per_group;
     uint32_t preferred_group_multiple;
-    uint32_t group_size[3];
 } md_gpu_kernel_info_t;
 
 bool md_gpu_kernel_info(md_gpu_kernel_t kernel, md_gpu_kernel_info_t* out_info);
 
+/* The grid of groups covering nx * ny * nz threads with this kernel's group
+   size: ceil(n / group_size) per axis. */
+md_gpu_grid_t md_gpu_grid_for(md_gpu_kernel_t kernel, uint32_t nx, uint32_t ny, uint32_t nz);
+
 /* kernel<<<grid, block, 0, stream>>>(args).
 
    `args` is copied immediately; the caller may reuse or free the memory as
-   soon as this returns. There is no practical size limit.
-
-   Launches into one stream are strictly ordered and never overlap, exactly as
-   in CUDA -- there is no flag to opt out. Concurrency comes from using more
-   streams, which md_gpu spreads across the device's hardware queues. That is
-   a deliberate omission: an "these two do not alias" flag is a promise the API
-   cannot check, and getting it wrong is silent corruption. */
+   soon as this returns. There is no practical size limit. An empty grid is a
+   no-op. Kernels cannot be launched into an MD_GPU_STREAM_TRANSFER stream. */
 bool md_gpu_launch(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_grid_t grid,
-                    const void* args, size_t args_size);
+                   const void* args, size_t args_size);
 
-/* The grid is read from device memory: 3 consecutive uint32 at `grid_ptr`. */
-bool md_gpu_launch_indirect(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_ptr_t grid_ptr,
-                             const void* args, size_t args_size);
+/* The grid is read from device memory: 3 consecutive uint32 at `grid`. */
+bool md_gpu_launch_indirect(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_addr_t grid,
+                            const void* args, size_t args_size);
 
-/* Built-in helper: writes { ceil(*count/local[0]), ceil(1/local[1]),
-   ceil(1/local[2]) } to `out_grid` as 3 uint32, reading a single uint32
-   element count from device memory. Turns a device-side count into an
-   indirect grid without every caller writing the same three-line shader. */
-bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_ptr_t out_grid,
-                      const md_gpu_ptr_t count, const uint32_t local[3]);
+/* Pass an argument struct by value; its size comes from sizeof. */
+#define MD_GPU_LAUNCH(stream, kernel, grid, args) \
+    md_gpu_launch((stream), (kernel), (grid), &(args), sizeof(args))
 
-/* =========================================================================
-   Graphs
-   ========================================================================= */
-
-/* Stream capture. Everything issued into `stream` between begin and end is
-   recorded instead of executed. Because argument blocks live in device
-   memory, relaunching with new parameters is a struct write -- the graph is
-   never re-recorded.
-
-   Capture is also how a worker thread records work for later launch. */
-bool           md_gpu_capture_begin(md_gpu_stream_t stream, const char* label);
-md_gpu_graph_t md_gpu_capture_end(md_gpu_stream_t stream);
-bool           md_gpu_is_capturing(md_gpu_stream_t stream);
-
-/* The ordinal the next md_gpu_launch into this stream will be given. Use it
-   to remember which launch's arguments you want to patch later. */
-uint32_t md_gpu_capture_next_index(md_gpu_stream_t stream);
-
-void     md_gpu_graph_destroy(md_gpu_graph_t graph);
-uint32_t md_gpu_graph_launch_count(md_gpu_graph_t graph);
-
-/* Host pointer to launch `index`'s argument block. Write to it, relaunch, and
-   no re-recording happens. NULL if the index is out of range. */
-void* md_gpu_graph_args(md_gpu_graph_t graph, uint32_t index);
-
-/* Replay. The graph may be launched into any stream of the same kind it was
-   captured on. */
-bool md_gpu_graph_launch(md_gpu_graph_t graph, md_gpu_stream_t stream);
+/* Built-in helper: reads one uint32 thread count at `count` and writes the
+   indirect grid covering it with `kernel`'s group size -- { ceil(count /
+   group_size.x), 1, 1 } -- to `out_grid` as 3 uint32. Turns a device-side
+   count into an indirect launch without a readback. */
+bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
+                      md_gpu_addr_t count, md_gpu_kernel_t kernel);
 
 /* =========================================================================
    Host-side ordering
@@ -649,24 +729,8 @@ typedef void (*md_gpu_host_fn)(void* user);
    in user code. */
 bool md_gpu_launch_host_fn(md_gpu_stream_t stream, md_gpu_host_fn fn, void* user);
 
-/* Same, keyed to an explicit sync point rather than the stream's current
-   position. */
-bool md_gpu_sync_on_complete(md_gpu_sync_t sync, md_gpu_host_fn fn, void* user);
-
-/* =========================================================================
-   Escape hatch
-   ========================================================================= */
-
-/* Program order is conservative by design. If profiling ever proves a
-   specific barrier over-strict, disable automatic ordering for a region and
-   place barriers by hand. Expect never to use this.
-
-   Vulkan only. On Metal, program order is a property of the command encoder
-   rather than something the backend emits, so there is no per-region barrier to
-   relax: both calls are no-ops there and ordering is unaffected. Code using the
-   hatch stays correct on both, it simply does not speed up on Metal. */
-void md_gpu_stream_set_auto_order(md_gpu_stream_t stream, bool enabled);
-void md_gpu_stream_barrier(md_gpu_stream_t stream);
+/* Same, keyed to an explicit sync point. A none sync fires on the next poll. */
+bool md_gpu_sync_on_complete(md_gpu_device_t device, md_gpu_sync_t sync, md_gpu_host_fn fn, void* user);
 
 #ifdef __cplusplus
 }

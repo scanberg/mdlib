@@ -393,10 +393,10 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     md_gto_gpu_basis_t gpu_basis = NULL;
     md_gpu_pool_t   dev_pool  = NULL;
     md_gpu_pool_t   read_pool = NULL;
-    md_gpu_ptr_t    atom_buf  = NULL;
-    md_gpu_ptr_t    coeff_buf = NULL;
-    md_gpu_ptr_t    readback  = NULL;
-    md_gpu_tex_t    out_tex   = 0;
+    md_gpu_addr_t    atom_buf  = 0;
+    md_gpu_addr_t    coeff_buf = 0;
+    md_gpu_mem_t     readback  = {0};
+    md_gpu_texture_t out_tex   = NULL;
     md_gpu_stream_t stream    = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
 
     mat3_t orientation = mat3_ident();
@@ -423,12 +423,12 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
 
     {
         md_gpu_pool_desc_t pd = {0};
-        pd.flags = MD_GPU_MEM_DEVICE;    pd.label = "test_gto device";   dev_pool  = md_gpu_pool_create(device, &pd);
-        pd.flags = MD_GPU_MEM_HOST_READ; pd.label = "test_gto readback"; read_pool = md_gpu_pool_create(device, &pd);
+        pd.kind = MD_GPU_MEM_DEVICE;    pd.label = "test_gto device";   dev_pool  = md_gpu_pool_create(device, &pd);
+        pd.kind = MD_GPU_MEM_HOST_READ; pd.label = "test_gto readback"; read_pool = md_gpu_pool_create(device, &pd);
     }
     if (!dev_pool || !read_pool) goto done;
 
-    gpu_basis = md_gto_gpu_basis_create(dev_pool, stream, &(md_gto_gpu_basis_desc_t){
+    gpu_basis = md_gto_gpu_basis_create(stream, dev_pool, &(md_gto_gpu_basis_desc_t){
         .basis = gto_basis,
         .cutoff = 0.0,
     });
@@ -439,17 +439,18 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     const size_t voxel_count = (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
     const size_t readback_size = sizeof(float) * voxel_count;
 
-    atom_buf  = md_gpu_malloc(dev_pool, md_gto_gpu_atom_buffer_size(num_atoms), stream);
-    coeff_buf = md_gpu_malloc(dev_pool, md_gto_gpu_coeff_size_mo(1, num_cgtos), stream);
-    readback  = md_gpu_malloc(read_pool, readback_size, stream);
-    out_tex   = md_gpu_tex_create(device, &(md_gpu_tex_desc_t){
+    atom_buf  = md_gpu_malloc(stream, dev_pool, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    coeff_buf = md_gpu_malloc(stream, dev_pool, md_gto_gpu_coeff_size_mo(1, num_cgtos)).gpu;
+    readback  = md_gpu_malloc(stream, read_pool, readback_size);
+    out_tex   = md_gpu_texture_create(stream, dev_pool, &(md_gpu_texture_desc_t){
+        .type   = MD_GPU_TEX_3D,
+        .format = MD_GPU_FORMAT_R32_FLOAT,
+        .usage  = MD_GPU_TEX_STORAGE,
         .width  = (uint32_t)grid.dim[0],
         .height = (uint32_t)grid.dim[1],
-        .depth  = (uint32_t)grid.dim[2],
-        .format = MD_GPU_FORMAT_R32_FLOAT,
-        .flags  = MD_GPU_TEX_STORAGE,
+        .depth_or_layers = (uint32_t)grid.dim[2],
     });
-    if (!atom_buf || !coeff_buf || !out_tex || !readback) goto done;
+    if (!atom_buf || !coeff_buf || !out_tex || !readback.cpu) goto done;
 
     /* Pack straight into the destination where that is safe, staging otherwise. */
     {
@@ -481,10 +482,10 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     /* Program order within the stream is the whole dependency model: the copy
        sees the kernel's writes without any explicit barrier. */
     md_gto_gpu_orbital_launch(stream, &orb_desc);
-    md_gpu_memcpy_from_tex_async(readback, out_tex, NULL, readback_size, stream);
+    md_gpu_copy_from_texture(stream, readback.gpu, out_tex, NULL);
     md_gpu_stream_sync(stream);
 
-    const float* grid_data = (const float*)md_gpu_host_ptr(readback);
+    const float* grid_data = (const float*)readback.cpu;
 
     double grid_sum = 0.0;
     double cube_sum = 0.0;
@@ -517,11 +518,11 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     printf("CUBE SUM: %.5f\n", cube_sum);
 
 done:
-    md_gpu_tex_destroy(out_tex, stream);
-    md_gto_gpu_basis_destroy(gpu_basis);
-    md_gpu_free(readback, stream);
-    md_gpu_free(coeff_buf, stream);
-    md_gpu_free(atom_buf, stream);
+    md_gpu_texture_destroy(out_tex);
+    md_gto_gpu_basis_destroy(stream, gpu_basis);
+    md_gpu_free(stream, readback.gpu);
+    md_gpu_free(stream, coeff_buf);
+    md_gpu_free(stream, atom_buf);
     md_gpu_pool_destroy(read_pool);
     md_gpu_pool_destroy(dev_pool);
     md_gto_gpu_shutdown();
