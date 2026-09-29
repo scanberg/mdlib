@@ -16,7 +16,7 @@ set(SRC_FILES
     bench_lammps.c
 )
 
-if (${MD_ENABLE_VLX})
+if (MD_ENABLE_HDF5)
     set (SRC_FILES ${SRC_FILES} bench_gto.c)
 endif()
 

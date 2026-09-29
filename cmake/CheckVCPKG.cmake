@@ -14,8 +14,10 @@ if (NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
     # unreachable from CI runners.
     #
     # Gated on HDF5 actually being requested: manifest mode installs the whole manifest at
-    # configure time, and a build without Veloxchem support has no use for it.
-    if (VIAMD_ENABLE_VELOXCHEM OR MD_ENABLE_VLX OR MD_ENABLE_HDF5)
+    # configure time, and a build without the HDF5 readers has no use for it. This runs before
+    # any option() is declared, so it sees what was passed on the command line or is in the cache:
+    # MD_ENABLE_HDF5 itself, or viamd's QM module, which turns it on.
+    if (MD_ENABLE_HDF5 OR VIAMD_ENABLE_QM OR VIAMD_ENABLE_VELOXCHEM)
         get_filename_component(MD_VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
         if (NOT DEFINED VCPKG_MANIFEST_DIR
             AND NOT EXISTS "${CMAKE_SOURCE_DIR}/vcpkg.json"

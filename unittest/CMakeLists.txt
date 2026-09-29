@@ -58,12 +58,8 @@ set (SRC_FILES
     test_molden.c
 )
 
-if (${MD_ENABLE_VLX})
-    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c)
-endif()
-
-if (${MD_ENABLE_TREXIO})
-    set (SRC_FILES ${SRC_FILES} test_trexio.c)
+if (MD_ENABLE_HDF5)
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_trexio.c test_h5md.c)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
@@ -172,7 +168,7 @@ endfunction()
 # Only when mdlib owns the bin directory. Embedded in a parent project the parent puts them
 # there for its own executable, and md_unittest sits in the same directory; copying again
 # from here would declare the same output files twice.
-if (MD_ENABLE_VLX AND NOT MD_HAS_PARENT)
+if (MD_ENABLE_HDF5 AND NOT MD_HAS_PARENT)
     set(MD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
     get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if (_is_multi_config)

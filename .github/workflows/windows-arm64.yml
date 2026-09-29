@@ -81,8 +81,7 @@ jobs:
               cmake -A ARM64 \
                 -DVCPKG_TARGET_TRIPLET=arm64-windows-static \
                 -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
-                -DMD_ENABLE_VLX=ON \
-                -DMD_ENABLE_TREXIO=ON \
+                -DMD_ENABLE_HDF5=ON \
                 -DMD_ENABLE_GPU=ON \
                 -DMD_FORCE_ASSERTIONS=ON \
                 $GITHUB_WORKSPACE

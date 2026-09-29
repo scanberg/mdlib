@@ -33,15 +33,10 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
-option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
-option(MD_ENABLE_TREXIO "Enable TREXIO Support" OFF)
+# The readers of the HDF5 based formats come as one: they share the one dependency, and a build that
+# has HDF5 has no reason to leave any of them out. Compiled in, they define MD_HDF5.
+option(MD_ENABLE_HDF5 "Enable the HDF5 based readers: VeloxChem, TREXIO and H5MD (requires HDF5)" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
-
-# TREXIO's HDF5 back end is read with HDF5 directly, so it needs the same dependency the
-# VeloxChem reader does and no new one - see md_trexio.h.
-if (MD_ENABLE_VLX OR MD_ENABLE_TREXIO)
-  set(MD_ENABLE_HDF5 TRUE)
-endif()
 
 set(MD_FLAGS)
 set(MD_FLAGS_EXT)
@@ -286,8 +281,24 @@ else()
   set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=0)    
 endif()
 
-if (MD_ENABLE_VLX)
-  list(APPEND SRC_FILES src/md_vlx.c src/md_vlx.h)
+if (MD_ENABLE_HDF5)
+  # Requested, so required: a build asked for these readers fails here rather than quietly
+  # producing a binary without them.
+  if (WIN32)
+    set(HDF5_USE_STATIC_LIBRARIES TRUE)
+  endif()
+  set(HDF5_PREFER_PARALLEL FALSE)
+  find_package(HDF5 REQUIRED)
+  list(APPEND MD_LIBS HDF5::HDF5)
+
+  list(APPEND SRC_FILES
+    src/md_vlx.c
+    src/md_vlx.h
+    src/md_trexio.c
+    src/md_trexio.h
+    src/md_h5md.c
+    src/md_h5md.h
+  )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
   # "<exe_dir>/<abs_source_path>/<ident>", a path that cannot exist, so every basis lookup
@@ -297,21 +308,7 @@ if (MD_ENABLE_VLX)
   if(NOT DEFINED MD_VLX_BASIS_FOLDER)
     set(MD_VLX_BASIS_FOLDER "basis")
   endif()
-  list(APPEND MD_DEFINES MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
-endif()
-
-if (MD_ENABLE_TREXIO)
-  list(APPEND SRC_FILES src/md_trexio.c src/md_trexio.h)
-  list(APPEND MD_DEFINES MD_TREXIO)
-endif()
-
-if (MD_ENABLE_HDF5)
-  if (WIN32)
-    set(HDF5_USE_STATIC_LIBRARIES TRUE)
-  endif()
-  set(HDF5_PREFER_PARALLEL FALSE)
-  find_package(HDF5 REQUIRED)
-  list(APPEND MD_LIBS HDF5::HDF5)
+  list(APPEND MD_DEFINES MD_HDF5 MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
 endif()
 
 create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
@@ -523,7 +520,7 @@ if (MD_ENABLE_GPU)
     TARGET   mdlib
     NAMESPACE md_shader
     SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_test.slang
-    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe
+    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin
   )
   compile_gpu_shaders(gpu_volume_shaders.inl
     TARGET   mdlib
@@ -555,7 +552,6 @@ if (has_parent)
     set(MD_LINK_FLAGS ${MD_LINK_FLAGS} PARENT_SCOPE)
     set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} PARENT_SCOPE)
     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
-    set(MD_ENABLE_VLX ${MD_ENABLE_VLX} PARENT_SCOPE)
-    set(MD_ENABLE_TREXIO ${MD_ENABLE_TREXIO} PARENT_SCOPE)
+    set(MD_ENABLE_HDF5 ${MD_ENABLE_HDF5} PARENT_SCOPE)
     set(MD_ENABLE_GPU ${MD_ENABLE_GPU} PARENT_SCOPE)
 endif()
