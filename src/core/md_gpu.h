@@ -2,9 +2,10 @@
 md_gpu.h
 
 A thin layer over Vulkan and Metal (and, as an alternative compute-only build,
-CUDA). One backend per build. The compute side is CUDA-shaped; the raster side,
-added later, follows the "no graphics API" model: pointers, one root argument
-pointer, a bindless heap, coarse stage barriers and no resource state.
+CUDA). One backend per build. The compute side is CUDA-shaped, and the raster
+side is the same model applied to draws, after Aaltonen's "No Graphics API":
+pointers, one root argument pointer, a bindless heap, coarse stage barriers,
+no vertex formats and no resource state.
 
 The model, in full
 ------------------
@@ -59,7 +60,7 @@ copies the struct into device memory and passes its address in an 8-byte push
 constant, so there is no size limit and no portability cliff:
 
     struct Args { uint n; uint _pad; float* dst; };
-    MD_KERNEL_ARGS(Args);                   // from md_gpu.slang
+    MD_SHADER_ARGS(Args);                   // from md_gpu.slang
 
     [shader("compute")][numthreads(64,1,1)]
     void main(uint3 tid : SV_DispatchThreadID) {
@@ -313,6 +314,8 @@ typedef struct md_gpu_device_info_t {
     bool     is_discrete;
     uint32_t max_threads_per_group;
     uint32_t preferred_group_multiple;   /* warp / SIMD width */
+    bool     supports_graphics;          /* GRAPHICS streams and rendering */
+    bool     supports_present;           /* surfaces can be created        */
     char     name[256];
 } md_gpu_device_info_t;
 
@@ -341,7 +344,16 @@ typedef enum md_gpu_stream_kind_t {
     MD_GPU_STREAM_COMPUTE,    /* async compute; work may span many frames   */
     MD_GPU_STREAM_TRANSFER,   /* prefers a dedicated DMA engine if present;
                                  copies and fills only, no kernel launches  */
+    MD_GPU_STREAM_GRAPHICS,   /* render passes and presentation, plus all a
+                                 COMPUTE stream does                         */
 } md_gpu_stream_kind_t;
+
+/* Why a third kind: Vulkan puts COMPUTE streams on an async compute engine
+   where one exists, and that engine cannot rasterise. Keeping the kinds apart
+   keeps long-running compute off the queue that presents, while a GRAPHICS
+   stream can still launch per-frame kernels without a cross-queue hop. Metal
+   queues are universal, so there the kind only gates validation. GRAPHICS
+   streams exist when md_gpu_device_info_t.supports_graphics is set. */
 
 md_gpu_stream_t md_gpu_stream_create(md_gpu_device_t device, md_gpu_stream_kind_t kind, const char* label);
 
@@ -381,9 +393,10 @@ void md_gpu_sync_wait(md_gpu_sync_t sync);
 
    EXPLICIT: md_gpu inserts nothing between operations. The caller states the
    producer and consumer stages with md_gpu_barrier -- no resource lists, no
-   layouts. Switching back to IMPLICIT orders the next operation after
-   everything before it, so an explicit region can never leak unordered work
-   past its end.
+   layouts. Both edges of an explicit region are ordered: its first operation
+   runs after everything before it, and switching back to IMPLICIT orders the
+   next operation after everything in it, so an explicit region can never leak
+   unordered work past either end.
 
        md_gpu_stream_set_ordering(s, MD_GPU_ORDER_EXPLICIT);
        md_gpu_launch(s, k_a, ...);                 // independent of k_b,
@@ -406,8 +419,11 @@ typedef uint32_t md_gpu_stage_flags_t;
 enum {
     MD_GPU_STAGE_TRANSFER = 1u << 0,   /* copy, upload, memset, texture copies   */
     MD_GPU_STAGE_COMPUTE  = 1u << 1,   /* kernel launches                        */
-    MD_GPU_STAGE_INDIRECT = 1u << 2,   /* consumer side: reading indirect grids  */
-    /* Raster stages arrive with the raster API. */
+    MD_GPU_STAGE_INDIRECT = 1u << 2,   /* consumer side: indirect grids and draws */
+    MD_GPU_STAGE_VERTEX     = 1u << 3, /* index fetch and vertex shading          */
+    MD_GPU_STAGE_FRAGMENT   = 1u << 4, /* fragment shading                        */
+    MD_GPU_STAGE_ATTACHMENT = 1u << 5, /* depth test, colour output, attachment
+                                          load and store                          */
     MD_GPU_STAGE_ALL      = 0xFFFFFFFFu,
 };
 
@@ -601,7 +617,10 @@ enum {
     MD_GPU_TEX_STORAGE       = 1u << 0,  /* shader read/write, random access */
     MD_GPU_TEX_SAMPLED       = 1u << 1,  /* shader sampled read              */
     MD_GPU_TEX_RENDER_TARGET = 1u << 2,  /* colour or depth attachment (by
-                                            format); takes no heap slot      */
+                                            format); 2D and 2D_ARRAY only.
+                                            Combines with SAMPLED, and with
+                                            STORAGE for colour formats the
+                                            device can write                 */
 };
 
 typedef struct md_gpu_texture_desc_t {
@@ -688,6 +707,13 @@ bool md_gpu_copy_from_texture(md_gpu_stream_t stream, md_gpu_addr_t dst,
 bool md_gpu_upload_texture(md_gpu_stream_t stream, md_gpu_texture_t dst,
                            const md_gpu_tex_region_t* region, const void* src, size_t size);
 
+/* Texture to texture: same format, same extent, no scaling (a scaled copy is
+   a draw). The extent is taken from `src_region`; `dst_region` supplies the
+   destination offset, mip and layer. */
+bool md_gpu_copy_texture(md_gpu_stream_t stream,
+                         md_gpu_texture_t dst, const md_gpu_tex_region_t* dst_region,
+                         md_gpu_texture_t src, const md_gpu_tex_region_t* src_region);
+
 /* =========================================================================
    Kernels
    ========================================================================= */
@@ -753,6 +779,437 @@ bool md_gpu_launch_indirect(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_g
    count into an indirect launch without a readback. */
 bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
                       md_gpu_addr_t count, md_gpu_kernel_t kernel);
+
+/* =========================================================================
+   Rendering
+   =========================================================================
+
+   Rasterisation on the same terms as compute:
+
+     * A draw works like a launch. It names its pipeline and takes a copied
+       argument struct that both shader stages read through the same root
+       pointer (MD_ARGS). There are no vertex buffers or input layouts: the
+       vertex shader reads what it needs through pointers in the struct.
+       Index and indirect-command buffers are GPU addresses.
+
+     * A pipeline holds what Vulkan and Metal both compile into it: shaders,
+       topology, attachment formats, blend and write masks. The state both
+       APIs make dynamic -- depth test and write, culling, winding, depth
+       bias, blend constant, viewport, scissor -- is set inside the pass.
+
+     * A render pass is a scope on a GRAPHICS stream, not an object:
+       md_gpu_render_begin names the attachments and their load and store
+       actions, md_gpu_render_end closes it. Attachments are ordinary
+       textures with MD_GPU_TEX_RENDER_TARGET usage. There are no image
+       layouts anywhere in the API.
+
+     * Ordering is the stream's. In IMPLICIT mode a pass is ordered after
+       everything before it and before everything after it. In EXPLICIT mode
+       the caller places md_gpu_barrier with the raster stages.
+
+     * Presentation goes through a surface made from native window handles.
+       Acquire returns a texture; present runs on the stream.
+
+   CONVENTIONS
+
+     Clip space as in Metal and Direct3D: +Y up, depth 0..1. Framebuffer and
+     texture space: origin at the top-left texel. Viewport and scissor are
+     in framebuffer pixels. The Vulkan backend flips its viewport so that
+     the same shader and matrices produce the same image on every backend,
+     and a rendered texture reads back the right way up.
+
+     Front faces are counter-clockwise in clip space unless the draw state
+     says otherwise, on every backend.
+
+     In a direct draw, SV_VertexID runs 0..vertex_count-1 (for an indexed
+     draw, it is the index value) and SV_InstanceID runs
+     0..instance_count-1. Direct draws have no base vertex or base instance:
+     with vertex pulling those are pointer arithmetic in the argument struct.
+     Indirect commands do carry them, because their layout is fixed by the
+     hardware, and there the backends disagree: Metal's ids include the
+     bases, Slang's SPIR-V subtracts them. Shaders drawn indirectly read ids
+     through md_draw_vertex() / md_draw_instance() from md_gpu.slang, which
+     return the draw-relative id everywhere. SV_StartInstanceLocation is
+     portable and is the way to give each indirect draw its own record: a
+     culling kernel writes draw i with first_instance = i.
+
+     The all-ones index (0xFFFF / 0xFFFFFFFF) restarts TRIANGLE_STRIP and
+     LINE_STRIP and must not appear with list topologies. Lines are one
+     pixel wide. A POINTS pipeline's vertex shader must write the point
+     size (an SV_PointSize output).
+
+     Per-frame data -- constants too large for the argument struct, vertices
+     built on the CPU -- belongs in a temp scope on the graphics stream (see
+     Memory): begin it at the start of the frame, end it after present. */
+
+#define MD_GPU_MAX_COLOR_TARGETS 8
+
+/* ---- Pipelines --------------------------------------------------------------
+   Creation is synchronous and may take a while (driver compilation), so
+   create pipelines up front and keep them. Destruction is deferred and
+   non-blocking, like kernels. Blend is part of the pipeline because Metal
+   compiles it into the fragment shader and Vulkan only makes it dynamic
+   through an optional extension. */
+
+typedef struct md_gpu_pipeline* md_gpu_pipeline_t;
+
+/* One shader entry point. compile_gpu_shaders generates these as
+   <namespace>_<stem>_<entry>_shader() for VERTEX and FRAGMENT entries; they
+   are not written by hand. `args_size` is read from the compiled shader and
+   checked against every draw. */
+typedef struct md_gpu_shader_t {
+    const void* code;             /* SPIR-V, or metallib / MSL source       */
+    size_t      code_size;
+    const char* entry_point;
+    uint32_t    args_size;        /* 0: the entry point takes no arguments  */
+} md_gpu_shader_t;
+
+typedef enum md_gpu_topology_t {
+    MD_GPU_TOPOLOGY_TRIANGLES = 0,
+    MD_GPU_TOPOLOGY_TRIANGLE_STRIP,
+    MD_GPU_TOPOLOGY_LINES,
+    MD_GPU_TOPOLOGY_LINE_STRIP,
+    MD_GPU_TOPOLOGY_POINTS,
+} md_gpu_topology_t;
+
+typedef enum md_gpu_blend_factor_t {
+    MD_GPU_BLEND_ZERO = 0,
+    MD_GPU_BLEND_ONE,
+    MD_GPU_BLEND_SRC_COLOR,
+    MD_GPU_BLEND_ONE_MINUS_SRC_COLOR,
+    MD_GPU_BLEND_SRC_ALPHA,
+    MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA,
+    MD_GPU_BLEND_DST_COLOR,
+    MD_GPU_BLEND_ONE_MINUS_DST_COLOR,
+    MD_GPU_BLEND_DST_ALPHA,
+    MD_GPU_BLEND_ONE_MINUS_DST_ALPHA,
+    MD_GPU_BLEND_CONSTANT,             /* md_gpu_draw_state_t.blend_constant */
+    MD_GPU_BLEND_ONE_MINUS_CONSTANT,
+    MD_GPU_BLEND_SRC_ALPHA_SATURATE,
+} md_gpu_blend_factor_t;
+
+typedef enum md_gpu_blend_op_t {
+    MD_GPU_BLEND_OP_ADD = 0,
+    MD_GPU_BLEND_OP_SUBTRACT,
+    MD_GPU_BLEND_OP_REVERSE_SUBTRACT,
+    MD_GPU_BLEND_OP_MIN,
+    MD_GPU_BLEND_OP_MAX,
+} md_gpu_blend_op_t;
+
+typedef uint32_t md_gpu_color_mask_t;
+enum {
+    MD_GPU_COLOR_R   = 1u << 0,
+    MD_GPU_COLOR_G   = 1u << 1,
+    MD_GPU_COLOR_B   = 1u << 2,
+    MD_GPU_COLOR_A   = 1u << 3,
+    MD_GPU_COLOR_ALL = 0xFu,
+};
+
+/* Zero-initialised: blending off. With `enable`, the factors are used as
+   given. Common setups:
+
+       premultiplied  src ONE,       dst ONE_MINUS_SRC_ALPHA  (colour and alpha)
+       straight       src SRC_ALPHA, dst ONE_MINUS_SRC_ALPHA  (colour),
+                      src ONE,       dst ONE_MINUS_SRC_ALPHA  (alpha)
+       additive       src ONE,       dst ONE
+
+   Blending an integer target is an error at pipeline creation. */
+typedef struct md_gpu_blend_t {
+    bool                  enable;
+    md_gpu_blend_factor_t src_color, dst_color;
+    md_gpu_blend_op_t     color_op;
+    md_gpu_blend_factor_t src_alpha, dst_alpha;
+    md_gpu_blend_op_t     alpha_op;
+} md_gpu_blend_t;
+
+typedef struct md_gpu_color_target_t {
+    md_gpu_format_t     format;
+    md_gpu_blend_t      blend;
+    md_gpu_color_mask_t write_disable;   /* channels NOT written; 0 = all written */
+} md_gpu_color_target_t;
+
+typedef struct md_gpu_pipeline_desc_t {
+    md_gpu_shader_t       vertex;
+    md_gpu_shader_t       fragment;      /* code == NULL: no fragment stage
+                                            (depth-only passes)                */
+    md_gpu_topology_t     topology;
+    md_gpu_color_target_t color[MD_GPU_MAX_COLOR_TARGETS];
+    uint32_t              color_count;
+    md_gpu_format_t       depth_format;  /* MD_GPU_FORMAT_INVALID: no depth
+                                            attachment                         */
+    const char*           label;
+} md_gpu_pipeline_desc_t;
+
+/* Fails if the stages disagree on args_size (they share one argument
+   struct), or if a colour format cannot be rendered to or blended as asked. */
+md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t device, const md_gpu_pipeline_desc_t* desc);
+void              md_gpu_pipeline_destroy(md_gpu_pipeline_t pipeline);
+
+/* ---- Render passes ------------------------------------------------------------
+   A pass is a scope on a GRAPHICS stream:
+
+       md_gpu_render_begin(gfx, &pass);
+           ... md_gpu_set_* and md_gpu_draw* ...
+       md_gpu_render_end(gfx);
+
+   Inside it, anything else that records GPU work on that stream fails:
+   launches, copies, uploads, barriers, texture creation, record, flush,
+   sync, md_gpu_stream_wait, surface calls, and a nested begin. md_gpu_malloc, md_gpu_free and
+   temp scopes stay legal because they record nothing.
+
+   Every attachment must be the same size at the mip it names; that is the
+   render area. At begin, viewport and scissor cover the render area and the
+   draw state is the zero-initialised md_gpu_draw_state_t.
+
+   Draws in a pass are ordered for their attachments (rasterisation order:
+   depth testing and blending see earlier draws). A draw's storage writes
+   are not visible to later draws in the same pass; end the pass and begin
+   another with MD_GPU_LOAD for that. Sampling a texture that the same pass
+   has bound as an attachment is undefined. */
+
+typedef enum md_gpu_load_t {
+    MD_GPU_LOAD = 0,           /* keep the existing contents                   */
+    MD_GPU_LOAD_CLEAR,         /* fill with the attachment's clear value       */
+    MD_GPU_LOAD_DONT_CARE,     /* undefined; cheapest, especially on tilers    */
+} md_gpu_load_t;
+
+typedef enum md_gpu_store_t {
+    MD_GPU_STORE = 0,          /* keep what the pass wrote                     */
+    MD_GPU_STORE_DISCARD,      /* undefined afterwards: transient depth, say   */
+} md_gpu_store_t;
+
+/* Read by the attachment's format: f32 for float, unorm and sRGB, u32 for
+   the UINT formats. */
+typedef union md_gpu_clear_color_t {
+    float    f32[4];
+    uint32_t u32[4];
+} md_gpu_clear_color_t;
+
+typedef struct md_gpu_color_attachment_t {
+    md_gpu_texture_t     texture;
+    uint32_t             mip;
+    uint32_t             layer;       /* MD_GPU_TEX_2D_ARRAY only             */
+    md_gpu_load_t        load;
+    md_gpu_store_t       store;
+    md_gpu_clear_color_t clear;
+} md_gpu_color_attachment_t;
+
+typedef struct md_gpu_depth_attachment_t {
+    md_gpu_texture_t texture;         /* NULL: no depth attachment            */
+    uint32_t         mip;
+    uint32_t         layer;
+    md_gpu_load_t    load;
+    md_gpu_store_t   store;
+    float            clear_depth;
+} md_gpu_depth_attachment_t;
+
+typedef struct md_gpu_render_desc_t {
+    md_gpu_color_attachment_t color[MD_GPU_MAX_COLOR_TARGETS];
+    uint32_t                  color_count;
+    md_gpu_depth_attachment_t depth;
+    const char*               label;  /* debug marker around the pass         */
+} md_gpu_render_desc_t;
+
+bool md_gpu_render_begin(md_gpu_stream_t stream, const md_gpu_render_desc_t* desc);
+bool md_gpu_render_end(md_gpu_stream_t stream);
+
+/* ---- Dynamic state ----------------------------------------------------------
+   Set inside a pass; kept until changed or the pass ends. Zero means off in
+   every field, and a zero-initialised struct (or NULL) is the state at
+   md_gpu_render_begin. The backend compares against what is set and emits
+   only the difference. */
+
+typedef enum md_gpu_compare_t {
+    MD_GPU_COMPARE_ALWAYS = 0,        /* = no depth test */
+    MD_GPU_COMPARE_NEVER,
+    MD_GPU_COMPARE_LESS,
+    MD_GPU_COMPARE_LESS_EQUAL,
+    MD_GPU_COMPARE_EQUAL,
+    MD_GPU_COMPARE_NOT_EQUAL,
+    MD_GPU_COMPARE_GREATER_EQUAL,
+    MD_GPU_COMPARE_GREATER,
+} md_gpu_compare_t;
+
+typedef enum md_gpu_cull_t {
+    MD_GPU_CULL_NONE = 0,
+    MD_GPU_CULL_BACK,
+    MD_GPU_CULL_FRONT,
+} md_gpu_cull_t;
+
+typedef struct md_gpu_draw_state_t {
+    /* Depth. depth_write with ALWAYS writes unconditionally. Depth written
+       by the fragment shader (SV_Depth*) replaces the interpolated value for
+       both test and write; impostors should prefer SV_DepthGreaterEqual
+       (SV_DepthLessEqual under reverse-Z), which keeps early rejection. */
+    md_gpu_compare_t depth_compare;
+    bool             depth_write;
+
+    md_gpu_cull_t    cull;
+    bool             front_clockwise;     /* default: counter-clockwise      */
+
+    float            depth_bias;          /* constant, in depth units        */
+    float            depth_bias_slope;    /* times the polygon's depth slope */
+    float            depth_bias_clamp;    /* 0 = unclamped                   */
+
+    float            blend_constant[4];   /* for MD_GPU_BLEND_CONSTANT       */
+} md_gpu_draw_state_t;
+
+typedef struct md_gpu_viewport_t {
+    float x, y, width, height;            /* framebuffer pixels              */
+    float min_depth, max_depth;           /* both 0: 0..1                    */
+} md_gpu_viewport_t;
+
+typedef struct md_gpu_rect_t {
+    uint32_t x, y, width, height;         /* framebuffer pixels              */
+} md_gpu_rect_t;
+
+/* Errors outside a pass. NULL restores the value the pass began with. */
+void md_gpu_set_draw_state(md_gpu_stream_t stream, const md_gpu_draw_state_t* state);
+void md_gpu_set_viewport(md_gpu_stream_t stream, const md_gpu_viewport_t* viewport);
+void md_gpu_set_scissor(md_gpu_stream_t stream, const md_gpu_rect_t* scissor);
+
+/* ---- Draws --------------------------------------------------------------------
+   Shaped like md_gpu_launch: a pipeline, an amount of work, and an argument
+   struct that is copied at the call and read by both stages. A zero count is
+   a no-op. Every draw checks that it is inside a pass on this stream, that
+   the pipeline's attachment formats equal the pass's, in order, and the
+   argument size -- a format mismatch is undefined behaviour in Vulkan and
+   Metal alike, so the check stays in release builds. */
+
+typedef enum md_gpu_index_type_t {
+    MD_GPU_INDEX_U32 = 0,
+    MD_GPU_INDEX_U16,
+} md_gpu_index_type_t;
+
+bool md_gpu_draw(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                 uint32_t vertex_count, uint32_t instance_count,
+                 const void* args, size_t args_size);
+
+/* `indices` addresses the first index and must be aligned to the index size;
+   offsetting into an index buffer is address arithmetic. */
+bool md_gpu_draw_indexed(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                         md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                         uint32_t index_count, uint32_t instance_count,
+                         const void* args, size_t args_size);
+
+/* Indirect commands, in the layout Vulkan and Metal both read directly, so a
+   kernel writes them and nothing converts them. Tightly packed arrays,
+   4-byte aligned. A culling kernel rejects a draw by writing an
+   instance_count of 0. */
+typedef struct md_gpu_draw_cmd_t {
+    uint32_t vertex_count;
+    uint32_t instance_count;
+    uint32_t first_vertex;
+    uint32_t first_instance;
+} md_gpu_draw_cmd_t;
+
+typedef struct md_gpu_draw_indexed_cmd_t {
+    uint32_t index_count;
+    uint32_t instance_count;
+    uint32_t first_index;          /* in indices, from `indices` */
+    int32_t  vertex_offset;
+    uint32_t first_instance;
+} md_gpu_draw_indexed_cmd_t;
+
+/* Draws `count` consecutive commands starting at `cmds`. Producers are
+   ordered by the stream, or by md_gpu_barrier(s, ..., MD_GPU_STAGE_INDIRECT). */
+bool md_gpu_draw_indirect(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                          md_gpu_addr_t cmds, uint32_t count,
+                          const void* args, size_t args_size);
+
+bool md_gpu_draw_indexed_indirect(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                                  md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                  md_gpu_addr_t cmds, uint32_t count,
+                                  const void* args, size_t args_size);
+
+/* Pass an argument struct by value; its size comes from sizeof. */
+#define MD_GPU_DRAW(stream, pipeline, vertex_count, instance_count, args) \
+    md_gpu_draw((stream), (pipeline), (vertex_count), (instance_count), &(args), sizeof(args))
+
+#define MD_GPU_DRAW_INDEXED(stream, pipeline, indices, type, index_count, instance_count, args) \
+    md_gpu_draw_indexed((stream), (pipeline), (indices), (type), (index_count), (instance_count), &(args), sizeof(args))
+
+/* ---- Presentation -------------------------------------------------------------
+   A surface is the swapchain of one window, made from native handles so that
+   md_gpu does not depend on a windowing library. From GLFW:
+   glfwGetWin32Window, glfwGetCocoaWindow + contentView, glfwGetX11Window +
+   glfwGetX11Display, glfwGetWaylandWindow + glfwGetWaylandDisplay.
+
+       md_gpu_texture_t back = md_gpu_surface_acquire(gfx, surface);
+       if (back) {
+           ... passes that render into `back` ...
+           md_gpu_surface_present(gfx, surface);
+       }
+
+   Acquire waits for the presentation engine to hand back an image; with
+   VSYNC that is what paces the frame loop. Apart from the sync calls and
+   teardown it is the only call in md_gpu that blocks. It returns NULL when
+   the drawable size is zero (a minimised window: skip the frame) or on
+   failure (md_gpu_last_error says which). Out-of-date swapchains are rebuilt
+   inside acquire at the size last given to md_gpu_surface_resize.
+
+   The acquired texture is 2D, in the surface's format, with RENDER_TARGET
+   usage plus what the desc asked for. It is valid from acquire to present,
+   has undefined contents at acquire (load CLEAR or DONT_CARE), and is never
+   destroyed by the caller. Other streams that touch it must be joined with
+   md_gpu_stream_record / md_gpu_stream_wait.
+
+   Present submits the stream, as md_gpu_stream_record does, and queues the
+   image for display once that work completes. There is one present per
+   acquire, on the stream that acquired.
+
+   Frames in flight need no API: the argument arena and temp scopes recycle
+   themselves, and anything else is bounded with syncs:
+
+       md_gpu_sync_wait(frame_done[frame % 2]);         // at most 2 ahead
+       ... frame ...
+       md_gpu_surface_present(gfx, surface);
+       frame_done[frame % 2] = md_gpu_stream_record(gfx); */
+
+typedef struct md_gpu_surface* md_gpu_surface_t;
+
+typedef enum md_gpu_window_system_t {
+    MD_GPU_WINDOW_INVALID = 0,
+    MD_GPU_WINDOW_WIN32,      /* window: HWND.  display: HINSTANCE or NULL            */
+    MD_GPU_WINDOW_COCOA,      /* window: NSView* or CAMetalLayer*                     */
+    MD_GPU_WINDOW_X11,        /* window: Window (the XID, cast).  display: Display*   */
+    MD_GPU_WINDOW_WAYLAND,    /* window: wl_surface*.  display: wl_display*           */
+    MD_GPU_WINDOW_HEADLESS,   /* no window; images go nowhere. For tests and CI      */
+} md_gpu_window_system_t;
+
+typedef enum md_gpu_present_mode_t {
+    MD_GPU_PRESENT_VSYNC = 0, /* always available                                     */
+    MD_GPU_PRESENT_MAILBOX,   /* low latency, no tearing. Falls back to VSYNC         */
+    MD_GPU_PRESENT_IMMEDIATE, /* no wait, may tear. Falls back to MAILBOX, then VSYNC */
+} md_gpu_present_mode_t;
+
+typedef struct md_gpu_surface_desc_t {
+    md_gpu_window_system_t system;
+    void*                  window;
+    void*                  display;
+    uint32_t               width, height;  /* drawable size in pixels            */
+    md_gpu_format_t        format;         /* INVALID = BGRA8_UNORM; BGRA8_SRGB and
+                                              RGBA16_FLOAT where supported. No
+                                              silent substitute                  */
+    md_gpu_tex_usage_t     usage;          /* beyond RENDER_TARGET: SAMPLED and/or
+                                              STORAGE (compose with a kernel).
+                                              Fails if unsupported               */
+    md_gpu_present_mode_t  present_mode;
+    const char*            label;
+} md_gpu_surface_desc_t;
+
+/* COCOA with an NSView must be called on the main thread (it attaches a
+   CAMetalLayer); passing a CAMetalLayer lifts that. */
+md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t device, const md_gpu_surface_desc_t* desc);
+
+/* Deferred and non-blocking. The window must outlive the surface's last present. */
+void md_gpu_surface_destroy(md_gpu_surface_t surface);
+
+/* From the window's framebuffer-size callback; applied at the next acquire. */
+void md_gpu_surface_resize(md_gpu_surface_t surface, uint32_t width, uint32_t height);
+
+md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t stream, md_gpu_surface_t surface);
+bool             md_gpu_surface_present(md_gpu_stream_t stream, md_gpu_surface_t surface);
 
 /* =========================================================================
    Host-side ordering

@@ -292,16 +292,23 @@ def main():
     ap.add_argument("--slangc", required=True)
     ap.add_argument("--bindless-space", default="0")
     ap.add_argument("source")
-    ap.add_argument("entries", nargs="+")
-    ap.add_argument("--emit", help="write kernel descriptors to this header")
+    ap.add_argument("entries", nargs="*", help="compute entry points (kernels)")
+    ap.add_argument("--vertex", nargs="*", default=[], help="vertex entry points")
+    ap.add_argument("--fragment", nargs="*", default=[], help="fragment entry points")
+    ap.add_argument("--emit", help="write kernel and shader descriptors to this header")
     ap.add_argument("--namespace", default="md_shader")
     args = ap.parse_args()
 
     src = Path(args.source)
     problems, checked = [], 0
-    descs = {}   # entry -> (group_size, args_size)
+    descs = {}   # entry -> (group_size, args_size); group_size None for raster stages
+    raster = set(args.vertex) | set(args.fragment)
+    all_entries = list(args.entries) + list(args.vertex) + list(args.fragment)
+    if not all_entries:
+        print(f"{src.name}: no entry points given", file=sys.stderr)
+        return 1
 
-    for entry in args.entries:
+    for entry in all_entries:
         spv = run_slang(args.slangc, src, entry, "spirv",
                         ["-emit-spirv-directly", "-profile", "glsl_450",
                          "-bindless-space-index", args.bindless_space], ".spv")
@@ -310,13 +317,15 @@ def main():
         spv_layout = spirv_struct_offsets(spv)
         structs    = msl_structs(msl)
         targets    = msl_arg_struct_names(structs)
-        local      = spirv_local_size(spv)
-        if local is None:
+        local      = None if entry in raster else spirv_local_size(spv)
+        if entry not in raster and local is None:
             problems.append(f"{src.name}:{entry}: no LocalSize in the SPIR-V; is [numthreads] missing?")
             continue
         descs[entry] = (local, 0)
         root_args = msl_root_arg_struct(msl, structs)
         if not targets:
+            if entry in raster:
+                continue          # a vertex or fragment stage may take no arguments
             problems.append(f"{src.name}:{entry}: no argument struct found in the generated MSL")
             continue
 
@@ -396,15 +405,15 @@ def main():
         for p in sorted(set(problems)):
             print("  " + p, file=sys.stderr)
         return 1
-    if checked == 0:
+    if checked == 0 and args.entries:
         print(f"{src.name}: no argument structs found to check", file=sys.stderr)
         return 1
 
     if args.emit:
-        write_descs(Path(args.emit), args.namespace, src, args.entries, descs)
+        write_descs(Path(args.emit), args.namespace, src, all_entries, descs)
 
     print(f"md_gpu arg layout OK: {src.name} "
-          f"({len(args.entries)} entry points, {checked} argument structs compared field by field)")
+          f"({len(all_entries)} entry points, {checked} argument structs compared field by field)")
     return 0
 
 
@@ -417,8 +426,23 @@ def write_descs(path, ns, src, entries, descs):
         "",
     ]
     for entry in entries:
-        (gx, gy, gz), size = descs[entry]
+        local, size = descs[entry]
         sym = f"{ns}_{stem}_{entry}"
+        if local is None:
+            lines += [
+                f"/* vertex / fragment stage, argument struct {size} bytes"
+                + (" (none)" if size == 0 else "") + " */",
+                f"static inline md_gpu_shader_t {sym}_shader(void) {{",
+                f"    md_gpu_shader_t d = {{0}};",
+                f"    d.code      = {sym}_start;",
+                f"    d.code_size = {sym}_byte_size;",
+                f"    d.args_size = {size};",
+                f"    return d;",
+                f"}}",
+                "",
+            ]
+            continue
+        gx, gy, gz = local
         lines += [
             f"/* [numthreads({gx}, {gy}, {gz})], argument struct {size} bytes"
             + (" (unchecked)" if size == 0 else "") + " */",

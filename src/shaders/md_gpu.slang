@@ -1,6 +1,6 @@
 // md_gpu.slang
 //
-// Prelude for compute shaders launched through md_gpu.h.
+// Prelude for kernels and vertex/fragment shaders used through md_gpu.h.
 //
 // There is deliberately almost nothing here. Textures and samplers are passed
 // as Slang `DescriptorHandle<T>` values living directly in the argument
@@ -20,7 +20,7 @@
 //         DescriptorHandle<SamplerState>       samp;
 //         float* dst;
 //     };
-//     MD_KERNEL_ARGS(Args);
+//     MD_SHADER_ARGS(Args);
 //
 //     [shader("compute")]
 //     [numthreads(4, 4, 4)]
@@ -138,16 +138,57 @@ export T getDescriptorFromHandle<T>(DescriptorHandle<T> handle) where T : IOpaqu
     return defaultGetDescriptorFromHandle(handle, BindlessDescriptorOptions.None);
 }
 
-// Declares the push constant holding the pointer to this kernel's argument
-// struct. Place once at file scope, after defining the struct.
-#define MD_KERNEL_ARGS(T)                                    \
+// Declares the push constant holding the pointer to the argument struct.
+// Place once at file scope, after defining the struct. Every entry point in
+// the file -- kernel, vertex or fragment -- reads the same root, which is how
+// a draw's vertex and fragment stages share one argument struct.
+#define MD_SHADER_ARGS(T)                                    \
     struct MdGpuRoot { T* args; };                           \
     [[vk::push_constant]] ConstantBuffer<MdGpuRoot> md_root
+
+// The previous name, kept until callers have moved.
+#define MD_KERNEL_ARGS(T) MD_SHADER_ARGS(T)
 
 // The argument struct, by value. Load it once into a local.
 #define MD_ARGS (*md_root.args)
 
 // The argument struct, by pointer, when you want to write through it.
 #define MD_ARGS_PTR (md_root.args)
+
+// ---------------------------------------------------------------------------
+// Draw-relative vertex and instance ids
+// ---------------------------------------------------------------------------
+//
+// Direct draws (md_gpu_draw / md_gpu_draw_indexed) have no base vertex or base
+// instance, so SV_VertexID and SV_InstanceID are already draw-relative on
+// every backend. Indirect commands carry bases, and there the targets differ:
+// Slang's SPIR-V subtracts them, Metal's [[vertex_id]] / [[instance_id]]
+// include them. Shaders drawn indirectly pass the bases in and get the
+// draw-relative id everywhere:
+//
+//     VOut vs_main(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+//                  uint base_vertex : SV_StartVertexLocation,
+//                  uint base_instance : SV_StartInstanceLocation) {
+//         uint v    = md_draw_vertex(vid, base_vertex);
+//         uint i    = md_draw_instance(iid, base_instance);
+//         Draw draw = MD_ARGS.draws[base_instance];      // one record per command
+//         ...
+//
+// SV_StartInstanceLocation itself is portable, which makes it the way to give
+// each indirect command its own record: a culling kernel writes command i with
+// first_instance = i.
+uint md_draw_vertex(uint vid, uint base_vertex) {
+    __target_switch {
+    case metal: return vid - base_vertex;
+    default:    return vid;
+    }
+}
+
+uint md_draw_instance(uint iid, uint base_instance) {
+    __target_switch {
+    case metal: return iid - base_instance;
+    default:    return iid;
+    }
+}
 
 #endif // MD_GPU_SLANG_INCLUDED

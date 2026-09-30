@@ -1,6 +1,7 @@
 # CompileGpuShaders.cmake
 #
-# Compiles Slang compute kernels for md_gpu and embeds the resulting binaries.
+# Compiles Slang kernels and vertex/fragment shaders for md_gpu and embeds the
+# resulting binaries.
 #
 # md_gpu has no descriptor sets and no per-dispatch resource declarations, so
 # there is no generated binding table. What the host side needs is the raw
@@ -12,19 +13,30 @@
 #       TARGET   <target>
 #       NAMESPACE <prefix>
 #       SOURCE   <file.slang>
-#       ENTRIES  <entry> [<entry> ...]
+#       ENTRIES  <entry> [<entry> ...]     # compute kernels
+#       VERTEX   <entry> [<entry> ...]     # vertex stages
+#       FRAGMENT <entry> [<entry> ...]     # fragment stages
 #   )
 #
-# Produces, for each entry point, symbols
+# At least one of ENTRIES / VERTEX / FRAGMENT is required. Produces, for each
+# entry point, symbols
 #
 #   extern const uint8_t <prefix>_<stem>_<entry>_start[];
 #   extern const size_t  <prefix>_<stem>_<entry>_byte_size;
-#   static inline md_gpu_kernel_desc_t <prefix>_<stem>_<entry>_kernel(void);
 #
-# all reachable by including <out_header>. The last is what call sites use:
+# and, for a kernel or a raster stage respectively,
+#
+#   static inline md_gpu_kernel_desc_t <prefix>_<stem>_<entry>_kernel(void);
+#   static inline md_gpu_shader_t      <prefix>_<stem>_<entry>_shader(void);
+#
+# all reachable by including <out_header>. The last two are what call sites use:
 #
 #   md_gpu_kernel_desc_t d = md_shader_topo_critical_points_main_kernel();
 #   md_gpu_kernel_t k = md_gpu_kernel_create(device, &d);
+#
+#   md_gpu_pipeline_desc_t pd = {0};
+#   pd.vertex   = md_shader_spheres_vs_main_shader();
+#   pd.fragment = md_shader_spheres_fs_main_shader();
 
 include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/EmbedBinaryFiles.cmake)
@@ -107,11 +119,22 @@ endif()
 
 function(compile_gpu_shaders OUT_HEADER)
     set(oneValueArgs TARGET NAMESPACE SOURCE)
-    set(multiValueArgs ENTRIES)
+    set(multiValueArgs ENTRIES VERTEX FRAGMENT)
     cmake_parse_arguments(G2 "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if (NOT G2_TARGET OR NOT G2_NAMESPACE OR NOT G2_SOURCE)
         message(FATAL_ERROR "compile_gpu_shaders: TARGET, NAMESPACE and SOURCE are required")
+    endif()
+    set(ALL_ENTRIES ${G2_ENTRIES} ${G2_VERTEX} ${G2_FRAGMENT})
+    if (NOT ALL_ENTRIES)
+        message(FATAL_ERROR "compile_gpu_shaders: at least one of ENTRIES, VERTEX, FRAGMENT is required")
+    endif()
+    set(STAGE_ARGS "")
+    if (G2_VERTEX)
+        list(APPEND STAGE_ARGS --vertex ${G2_VERTEX})
+    endif()
+    if (G2_FRAGMENT)
+        list(APPEND STAGE_ARGS --fragment ${G2_FRAGMENT})
     endif()
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "compile_gpu_shaders: SLANG_EXECUTABLE not defined")
@@ -156,7 +179,7 @@ function(compile_gpu_shaders OUT_HEADER)
             --bindless-space ${MD_GPU_BINDLESS_SPACE}
             --emit ${KERNELS_INL}
             --namespace ${G2_NAMESPACE}
-            ${ABS_SRC} ${G2_ENTRIES}
+            ${ABS_SRC} ${G2_ENTRIES} ${STAGE_ARGS}
         COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
         DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_SCRIPT}
         COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
@@ -165,7 +188,7 @@ function(compile_gpu_shaders OUT_HEADER)
     target_sources(${G2_TARGET} PRIVATE ${KERNELS_INL})
 
     set(BIN_FILES "")
-    foreach(ENTRY ${G2_ENTRIES})
+    foreach(ENTRY ${ALL_ENTRIES})
         if (MD_GPU_BACKEND STREQUAL "VULKAN")
             set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.spv")
             add_custom_command(

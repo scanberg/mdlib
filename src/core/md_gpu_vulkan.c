@@ -14,14 +14,19 @@ Structure of this file:
     9.  Memory: heaps, malloc/free, temp arenas, copies, uploads
     10. Textures and samplers
     11. Kernels and launches
-    12. Host callbacks and polling
-    13. Device destruction
+    12. Rendering: pipelines, passes, dynamic state, draws
+    13. Presentation: surfaces and swapchains
+    14. Host callbacks and polling
+    15. Device destruction
 
 The dependency model is program order within a stream, implemented as a single
 global VkMemoryBarrier2 between consecutive operations in a command buffer
 (IMPLICIT ordering), or as caller-placed stage barriers (EXPLICIT ordering).
 There is no per-resource state tracking anywhere in this file, and every image
-lives in VK_IMAGE_LAYOUT_GENERAL for its entire life.
+lives in VK_IMAGE_LAYOUT_GENERAL for its entire life -- render targets
+included, since dynamic rendering takes GENERAL attachments. Swapchain images
+are the one exception, and only at the edges: they enter GENERAL at acquire
+and leave it for PRESENT_SRC at present.
 
 Nothing here blocks the calling thread except md_gpu_stream_sync,
 md_gpu_sync_wait, md_gpu_stream_destroy (on its own stream) and device
@@ -31,9 +36,9 @@ and is released by md_gpu_device_poll once all of those have passed. That is
 what lets a compute job run for many frames without anything else stalling
 behind it.
 
-Resources are created VK_SHARING_MODE_CONCURRENT across the compute and
-transfer families whenever those differ, so a buffer or image written on one
-and read on the other needs no queue-family ownership transfer.
+Resources are created VK_SHARING_MODE_CONCURRENT across the compute,
+transfer and graphics families whenever those differ, so a buffer or image
+written on one and read on another needs no queue-family ownership transfer.
 */
 
 #include "md_gpu.h"
@@ -48,6 +53,16 @@ and read on the other needs no queue-family ownership transfer.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   /* GetModuleHandleW, for Win32 surfaces */
+#endif
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -305,6 +320,7 @@ typedef struct md_gpu_stream {
     md_gpu_stream_kind_t kind;
     uint32_t             family;
     bool                 can_compute;      /* false on a transfer-only family */
+    bool                 can_graphics;     /* GRAPHICS streams                */
     VkQueue              queue;
     VkSemaphore          timeline;
     uint64_t             next_value;       /* value the next submit signals */
@@ -325,6 +341,22 @@ typedef struct md_gpu_stream {
 
     md_vk_temp_arena_t   temp[MD_VK_TEMP_KINDS];
     uint32_t             temp_depth;       /* open temp scopes */
+
+    /* Binary semaphores for the next submit: swapchain acquire and present. */
+    VkSemaphore          bin_waits[4];
+    uint32_t             bin_wait_count;
+    VkSemaphore          bin_signals[4];
+    uint32_t             bin_signal_count;
+
+    /* The open render pass, if any. */
+    bool                 in_pass;
+    bool                 pass_labelled;
+    uint32_t             pass_color_count;
+    md_gpu_format_t      pass_color[MD_GPU_MAX_COLOR_TARGETS];
+    md_gpu_format_t      pass_depth;
+    uint32_t             pass_width, pass_height;
+    struct md_gpu_pipeline* bound_pipeline;
+    md_gpu_draw_state_t  draw_state;       /* as currently set in the command buffer */
 
     /* Open upload, if any. */
     bool                 upload_open;
@@ -357,8 +389,75 @@ typedef struct md_gpu_texture {
     uint32_t*             storage_slots;   /* one per mip, or NULL           */
     md_vk_format_info_t   fi;
     md_gpu_texture_desc_t desc;            /* normalised                     */
+    struct md_vk_attach_view_t* attach_views;   /* render-target views, made
+                                                   on first use, one per
+                                                   (mip, layer)              */
+    uint32_t              attach_view_count, attach_view_cap;
+    bool                  external;        /* a swapchain image: md_gpu owns
+                                              neither the image nor memory */
     char                  label[64];
 } md_gpu_texture;
+
+typedef struct md_vk_attach_view_t {
+    uint32_t    mip, layer;
+    VkImageView view;
+} md_vk_attach_view_t;
+
+typedef struct md_gpu_pipeline {
+    md_gpu_device_t   device;
+    VkPipeline        pipeline;
+    uint32_t          color_count;
+    md_gpu_format_t   color[MD_GPU_MAX_COLOR_TARGETS];
+    md_gpu_format_t   depth;
+    uint32_t          args_size;
+    char              label[64];
+} md_gpu_pipeline;
+
+/* A swapchain and what hangs off it. Retired as one object: on a rebuild the
+   old one goes, on surface destruction the last one takes the VkSurfaceKHR
+   and the acquire semaphores with it. */
+typedef struct md_vk_swapchain_t {
+    VkSwapchainKHR    swapchain;
+    VkQueue           present_queue;   /* idled before destruction, or NULL */
+    uint32_t          image_count;
+    md_gpu_texture_t* textures;        /* external wrappers, one per image  */
+    VkSemaphore*      present_sems;    /* one per image                     */
+    uint32_t          width, height;
+    /* Set only on the final retirement of a surface. */
+    VkSurfaceKHR      surface;
+    VkSemaphore*      extra_sems;
+    uint32_t          extra_sem_count;
+} md_vk_swapchain_t;
+
+#define MD_VK_ACQUIRE_SEMS 8u
+
+typedef struct md_gpu_surface {
+    md_gpu_device_t        device;
+    VkSurfaceKHR           surface;
+    md_gpu_surface_desc_t  desc;
+    char                   label[64];
+    VkSurfaceFormatKHR     vk_format;
+    VkPresentModeKHR       present_mode;
+    VkImageUsageFlags      image_usage;
+
+    uint32_t               want_width, want_height;
+    bool                   dirty;          /* rebuild at the next acquire     */
+    md_vk_swapchain_t*     sc;
+
+    /* Acquire semaphores, used round robin. Slot i may be reused once the
+       submission that waited on it -- at or before (stream, value) -- has
+       completed. */
+    VkSemaphore            acquire_sems[MD_VK_ACQUIRE_SEMS];
+    md_gpu_stream_t        acquire_stream[MD_VK_ACQUIRE_SEMS];
+    uint64_t               acquire_value[MD_VK_ACQUIRE_SEMS];
+    uint32_t               acquire_next;
+
+    bool                   acquired;
+    uint32_t               image_index;
+    uint32_t               acquire_slot;
+    md_gpu_stream_t        acquired_stream;
+    VkQueue                present_queue;  /* last queue presented on         */
+} md_gpu_surface;
 
 typedef struct md_vk_sampler_entry_t {
     md_gpu_sampler_desc_t desc;
@@ -384,6 +483,8 @@ typedef struct md_vk_hostfn_t {
 typedef enum md_vk_retire_kind_t {
     MD_VK_RETIRE_TEXTURE,
     MD_VK_RETIRE_KERNEL,
+    MD_VK_RETIRE_PIPELINE,
+    MD_VK_RETIRE_SWAPCHAIN,
 } md_vk_retire_kind_t;
 
 /* An object whose destruction waits for every stream to pass the point at
@@ -401,6 +502,8 @@ typedef struct md_vk_retire_t {
    vkCreateDevice with a bare VkResult. The optional flags are enabled only
    when the driver reports them. */
 typedef struct md_vk_dev_caps_t {
+    bool graphics;        /* everything rendering needs, below */
+    bool depth_bias_clamp;
     bool maintenance4;
     bool update_unused_while_pending;
     bool nonuniform_storage_image;
@@ -420,10 +523,10 @@ typedef struct md_gpu_device {
     VkPhysicalDeviceProperties       props;
     uint32_t                         subgroup_size;
 
-    uint32_t compute_family, transfer_family;
+    uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
     bool     transfer_can_compute;
-    /* Families a resource must be shared across (CONCURRENT when 2). */
-    uint32_t share_families[2];
+    /* Families a resource must be shared across (CONCURRENT when > 1). */
+    uint32_t share_families[3];
     uint32_t share_family_count;
 
     /* Streams are spread round-robin over these. A device that exposes several
@@ -433,7 +536,9 @@ typedef struct md_gpu_device {
     uint32_t compute_queue_count;
     VkQueue  transfer_queues[MD_VK_MAX_QUEUES_PER_FAMILY];
     uint32_t transfer_queue_count;
-    uint32_t next_compute_queue, next_transfer_queue;
+    VkQueue  graphics_queues[MD_VK_MAX_QUEUES_PER_FAMILY];
+    uint32_t graphics_queue_count;
+    uint32_t next_compute_queue, next_transfer_queue, next_graphics_queue;
     md_mutex_t queue_mutex;      /* streams may share a VkQueue */
     md_mutex_t device_mutex;     /* heaps, registry, textures, retire and callback lists */
 
@@ -441,7 +546,8 @@ typedef struct md_gpu_device {
     VkDescriptorSetLayout set_layout;
     VkDescriptorPool      desc_pool;
     VkDescriptorSet       desc_set;
-    VkPipelineLayout      pipeline_layout;
+    VkPipelineLayout      pipeline_layout;         /* compute: push constant for COMPUTE           */
+    VkPipelineLayout      raster_layout;           /* draws: push constant for VERTEX | FRAGMENT   */
 
     /* A 1x1x1 placeholder. Freed descriptor slots are pointed at it so that no
        descriptor ever references a destroyed view. */
@@ -466,9 +572,12 @@ typedef struct md_gpu_device {
     md_vk_vec_t     textures;   /* md_gpu_texture_t, live */
     uint64_t        texture_bytes;
     md_vk_vec_t     kernels;    /* md_gpu_kernel_t */
+    md_vk_vec_t     pipelines;  /* md_gpu_pipeline_t */
+    md_vk_vec_t     surfaces;   /* md_gpu_surface_t */
     md_vk_vec_t     streams;    /* md_gpu_stream_t */
     md_gpu_stream_t default_compute;
     md_gpu_stream_t default_transfer;
+    md_gpu_stream_t default_graphics;   /* NULL without graphics support */
 
     md_vk_vec_t     hostfns;    /* md_vk_hostfn_t */
     md_vk_vec_t     retires;    /* md_vk_retire_t */
@@ -479,6 +588,10 @@ typedef struct md_gpu_device {
 
     bool            is_discrete;
     bool            validation;
+    bool            supports_graphics;
+    bool            supports_present;   /* surface + swapchain extensions enabled */
+    bool            depth_bias_clamp;   /* feature; otherwise the clamp must be 0 */
+    bool            has_xlib_surface, has_win32_surface, has_wayland_surface, has_headless_surface;
 } md_gpu_device;
 
 /* Forward declarations. */
@@ -489,8 +602,11 @@ static bool     md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_
                                   VkBuffer* out_buffer, uint64_t* out_offset);
 static void     md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
 static void     md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k);
+static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
+static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
 static void     md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
 static void     md_vk_temp_free_all(md_gpu_stream_t s);
+static void     md_vk_abandon_pass(md_gpu_stream_t s);
 
 /* =========================================================================
    3. Allocation registry
@@ -603,6 +719,7 @@ static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_m
               | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
               | VK_BUFFER_USAGE_TRANSFER_DST_BIT
               | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+              | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
               | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     md_vk_set_sharing(dev, &bci.sharingMode, &bci.queueFamilyIndexCount, &bci.pQueueFamilyIndices);
 
@@ -824,6 +941,8 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
         switch (kind) {
         case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)object); break;
         case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)object);   break;
+        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)object); break;
+        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)object); break;
         }
         return;
     }
@@ -845,6 +964,8 @@ static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
         switch (e.kind) {
         case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)e.object); break;
         case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)e.object);   break;
+        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)e.object); break;
+        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)e.object); break;
         }
         if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_vk_wait_t));
     }
@@ -876,6 +997,13 @@ static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
             if (r->waits[w].stream == s) r->waits[w] = r->waits[--r->wait_count];
             else ++w;
         }
+    }
+    for (size_t i = 0; i < dev->surfaces.count; ++i) {
+        md_gpu_surface_t sf = MD_VK_VEC_AT(dev->surfaces, md_gpu_surface_t, i);
+        for (uint32_t k = 0; k < MD_VK_ACQUIRE_SEMS; ++k) {
+            if (sf->acquire_stream[k] == s) { sf->acquire_stream[k] = NULL; sf->acquire_value[k] = 0; }
+        }
+        if (sf->acquired_stream == s) { sf->acquired = false; sf->acquired_stream = NULL; }
     }
     for (size_t i = 0; i < dev->streams.count; ++i) {
         md_gpu_stream_t o = MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i);
@@ -916,6 +1044,21 @@ static bool md_vk_layer_available(const char* name) {
     bool found = false;
     for (uint32_t i = 0; i < n && !found; ++i) {
         if (strcmp(props[i].layerName, name) == 0) found = true;
+    }
+    free(props);
+    return found;
+}
+
+static bool md_vk_device_ext_available(VkPhysicalDevice pd, const char* name) {
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &n, NULL);
+    if (n == 0) return false;
+    VkExtensionProperties* props = (VkExtensionProperties*)malloc(n * sizeof(VkExtensionProperties));
+    if (!props) return false;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &n, props);
+    bool found = false;
+    for (uint32_t i = 0; i < n && !found; ++i) {
+        if (strcmp(props[i].extensionName, name) == 0) found = true;
     }
     free(props);
     return found;
@@ -976,6 +1119,28 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     MD_VK_REQUIRE(f2.features.shaderStorageImageWriteWithoutFormat, "shaderStorageImageWriteWithoutFormat");
 #undef MD_VK_REQUIRE
 
+    /* Rendering: optional as a whole. Vertex pulling needs draw parameters
+       (Slang's SV_VertexID subtracts the base vertex), multi-draw indirect
+       with first_instance carries per-draw records, and per-target blend
+       needs independentBlend. Dynamic rendering and the dynamic depth/cull
+       state are core 1.3 and need no feature bit beyond dynamicRendering. */
+    {
+        VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        VkPhysicalDeviceFeatures2        g2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11};
+        vkGetPhysicalDeviceFeatures2(pd, &g2);
+        uint32_t qn = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, NULL);
+        VkQueueFamilyProperties qp[16];
+        if (qn > 16) qn = 16;
+        vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, qp);
+        bool has_gfx = false;
+        for (uint32_t i = 0; i < qn; ++i) if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) has_gfx = true;
+        out_caps->graphics = has_gfx && f13.dynamicRendering && f11.shaderDrawParameters &&
+                             g2.features.multiDrawIndirect && g2.features.drawIndirectFirstInstance &&
+                             g2.features.independentBlend;
+        out_caps->depth_bias_clamp = g2.features.depthBiasClamp;
+    }
+
     out_caps->maintenance4                = f13.maintenance4;
     out_caps->update_unused_while_pending = f12.descriptorBindingUpdateUnusedWhilePending;
     out_caps->nonuniform_storage_image    = f12.shaderStorageImageArrayNonUniformIndexing;
@@ -1018,6 +1183,8 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
     dev->heap_cache_limit = (desc && desc->heap_cache_limit) ? desc->heap_cache_limit : MD_VK_HEAP_CACHE_DEFAULT;
     md_vk_vec_init(&dev->kernels,  sizeof(md_gpu_kernel_t));
+    md_vk_vec_init(&dev->pipelines, sizeof(md_gpu_pipeline_t));
+    md_vk_vec_init(&dev->surfaces, sizeof(md_gpu_surface_t));
     md_vk_vec_init(&dev->streams,  sizeof(md_gpu_stream_t));
     md_vk_vec_init(&dev->hostfns,  sizeof(md_vk_hostfn_t));
     md_vk_vec_init(&dev->retires,  sizeof(md_vk_retire_t));
@@ -1028,7 +1195,21 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     ai.apiVersion       = VK_API_VERSION_1_3;
 
     const char* layers[4];     uint32_t layer_count = 0;
-    const char* exts[4];       uint32_t ext_count   = 0;
+    const char* exts[8];       uint32_t ext_count   = 0;
+
+    /* Presentation: the surface extensions that exist. None of them is
+       required; without VK_KHR_surface md_gpu simply cannot present. */
+    if (md_vk_ext_available(VK_KHR_SURFACE_EXTENSION_NAME)) {
+        exts[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
+        if (md_vk_ext_available("VK_KHR_win32_surface"))   { exts[ext_count++] = "VK_KHR_win32_surface";   dev->has_win32_surface   = true; }
+        if (md_vk_ext_available("VK_KHR_xlib_surface"))    { exts[ext_count++] = "VK_KHR_xlib_surface";    dev->has_xlib_surface    = true; }
+        if (md_vk_ext_available("VK_KHR_wayland_surface")) { exts[ext_count++] = "VK_KHR_wayland_surface"; dev->has_wayland_surface = true; }
+        if (md_vk_ext_available(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME)) {
+            exts[ext_count++] = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME;
+            dev->has_headless_surface = true;
+        }
+    }
+    const uint32_t surface_ext_count = ext_count;
 
     bool want_debug = dev->validation
         && md_vk_layer_available("VK_LAYER_KHRONOS_validation")
@@ -1050,7 +1231,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     if (vkCreateInstance(&ici, NULL, &dev->instance) != VK_SUCCESS) {
         /* Retry without validation. */
         ici.enabledLayerCount = 0;
-        ici.enabledExtensionCount = 0;
+        ici.enabledExtensionCount = surface_ext_count;
         want_debug = false;
         if (!md_vk_check(vkCreateInstance(&ici, NULL, &dev->instance), "vkCreateInstance")) {
             md_free(alloc, dev, sizeof(*dev));
@@ -1156,6 +1337,18 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
     if (dev->transfer_family == UINT32_MAX) dev->transfer_family = dev->compute_family;
+    /* The universal family, for GRAPHICS streams. */
+    dev->graphics_family = UINT32_MAX;
+    if (caps.graphics) {
+        for (uint32_t i = 0; i < qf_count; ++i) {
+            if (qfs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { dev->graphics_family = i; break; }
+        }
+    }
+    if (dev->graphics_family != UINT32_MAX) {
+        dev->graphics_queue_count = qfs[dev->graphics_family].queueCount;
+        if (dev->graphics_queue_count > MD_VK_MAX_QUEUES_PER_FAMILY) dev->graphics_queue_count = MD_VK_MAX_QUEUES_PER_FAMILY;
+        if (dev->graphics_queue_count == 0) dev->graphics_queue_count = 1;
+    }
     dev->transfer_can_compute = dev->transfer_family < qf_count &&
                                 (qfs[dev->transfer_family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
 
@@ -1177,7 +1370,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     /* ---- logical device ---- */
     static const float prios[MD_VK_MAX_QUEUES_PER_FAMILY] = {1,1,1,1,1,1,1,1};
-    VkDeviceQueueCreateInfo qci[2];
+    VkDeviceQueueCreateInfo qci[3];
     uint32_t qci_count = 0;
     qci[qci_count] = (VkDeviceQueueCreateInfo){VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci[qci_count].queueFamilyIndex = dev->compute_family;
@@ -1191,6 +1384,14 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         qci[qci_count].pQueuePriorities = prios;
         qci_count++;
     }
+    if (dev->graphics_family != UINT32_MAX && dev->graphics_family != dev->compute_family &&
+        dev->graphics_family != dev->transfer_family) {
+        qci[qci_count] = (VkDeviceQueueCreateInfo){VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        qci[qci_count].queueFamilyIndex = dev->graphics_family;
+        qci[qci_count].queueCount       = dev->graphics_queue_count;
+        qci[qci_count].pQueuePriorities = prios;
+        qci_count++;
+    }
 
     /* Everything below was confirmed present by md_vk_probe_device. Enabling a
        feature the driver does not report is VK_ERROR_FEATURE_NOT_PRESENT, so
@@ -1198,6 +1399,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     f13.synchronization2 = VK_TRUE;
     f13.maintenance4     = caps.maintenance4 ? VK_TRUE : VK_FALSE;
+    f13.dynamicRendering = caps.graphics ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     f12.pNext = &f13;
@@ -1213,8 +1415,17 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f12.shaderStorageImageArrayNonUniformIndexing = caps.nonuniform_storage_image    ? VK_TRUE : VK_FALSE;
     f12.shaderSampledImageArrayNonUniformIndexing = caps.nonuniform_sampled_image    ? VK_TRUE : VK_FALSE;
 
+    VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    f11.pNext = &f12;
+    f11.shaderDrawParameters = caps.graphics ? VK_TRUE : VK_FALSE;
+
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    f2.pNext = &f12;
+    f2.pNext = &f11;
+    f2.features.multiDrawIndirect         = caps.graphics ? VK_TRUE : VK_FALSE;
+    f2.features.drawIndirectFirstInstance = caps.graphics ? VK_TRUE : VK_FALSE;
+    f2.features.independentBlend          = caps.graphics ? VK_TRUE : VK_FALSE;
+    f2.features.depthBiasClamp            = (caps.graphics && caps.depth_bias_clamp) ? VK_TRUE : VK_FALSE;
+    f2.features.largePoints               = VK_FALSE;
     /* Slang's heap arrays carry no format qualifier. */
     f2.features.shaderStorageImageReadWithoutFormat    = VK_TRUE;
     f2.features.shaderStorageImageWriteWithoutFormat   = VK_TRUE;
@@ -1222,13 +1433,26 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.shaderSampledImageArrayDynamicIndexing = caps.dynamic_sampled_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderInt64                            = caps.shader_int64          ? VK_TRUE : VK_FALSE;
 
+    /* Swapchains, when the instance can make surfaces and the device can
+       present through a graphics queue. */
+    const char* dev_exts[1];
+    uint32_t    dev_ext_count = 0;
+    if (caps.graphics && surface_ext_count > 0 && md_vk_device_ext_available(dev->phys, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        dev->supports_present = true;
+    }
+
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pNext                   = &f2;
     dci.queueCreateInfoCount     = qci_count;
     dci.pQueueCreateInfos        = qci;
+    dci.enabledExtensionCount    = dev_ext_count;
+    dci.ppEnabledExtensionNames  = dev_exts;
 
     if (!md_vk_check(vkCreateDevice(dev->phys, &dci, NULL, &dev->device), "vkCreateDevice")) goto fail_instance;
     dev->caps = caps;
+    dev->supports_graphics = dev->graphics_family != UINT32_MAX;
+    dev->depth_bias_clamp  = caps.depth_bias_clamp;
     volkLoadDevice(dev->device);
 
     for (uint32_t i = 0; i < dev->compute_queue_count; ++i) {
@@ -1245,14 +1469,23 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
 
+    if (dev->graphics_family != UINT32_MAX) {
+        for (uint32_t i = 0; i < dev->graphics_queue_count; ++i) {
+            vkGetDeviceQueue(dev->device, dev->graphics_family, i, &dev->graphics_queues[i]);
+        }
+    }
+
     md_mutex_init(&dev->queue_mutex);
     md_mutex_init(&dev->device_mutex);
 
     dev->share_families[0]  = dev->compute_family;
     dev->share_family_count = 1;
     if (dev->transfer_family != dev->compute_family) {
-        dev->share_families[1]  = dev->transfer_family;
-        dev->share_family_count = 2;
+        dev->share_families[dev->share_family_count++] = dev->transfer_family;
+    }
+    if (dev->graphics_family != UINT32_MAX && dev->graphics_family != dev->compute_family &&
+        dev->graphics_family != dev->transfer_family) {
+        dev->share_families[dev->share_family_count++] = dev->graphics_family;
     }
 
     /* Heap free list, allocated high-to-low so slots are handed out from 1.
@@ -1266,6 +1499,10 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     dev->default_compute  = md_vk_stream_create_internal(dev, MD_GPU_STREAM_COMPUTE,  "default compute",  true);
     dev->default_transfer = md_vk_stream_create_internal(dev, MD_GPU_STREAM_TRANSFER, "default transfer", true);
     if (!dev->default_compute || !dev->default_transfer) goto fail_device;
+    if (dev->supports_graphics) {
+        dev->default_graphics = md_vk_stream_create_internal(dev, MD_GPU_STREAM_GRAPHICS, "default graphics", true);
+        if (!dev->default_graphics) goto fail_device;
+    }
 
     if (!md_vk_create_builtin_kernels(dev)) goto fail_device;
 
@@ -1291,6 +1528,8 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->is_discrete              = dev->is_discrete;
     info->max_threads_per_group    = dev->props.limits.maxComputeWorkGroupInvocations;
     info->preferred_group_multiple = dev->subgroup_size;
+    info->supports_graphics        = dev->supports_graphics;
+    info->supports_present         = dev->supports_present;
     snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
     return true;
 }
@@ -1395,7 +1634,7 @@ static bool md_vk_create_bindless(md_gpu_device_t dev) {
     bindings[2].descriptorCount = MD_VK_MAX_TEXTURE_SLOTS;
 
     for (uint32_t i = 0; i < MD_VK_BINDING_COUNT; ++i) {
-        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[i].stageFlags = VK_SHADER_STAGE_ALL;
         bflags[i] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
                   | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
         if (dev->caps.update_unused_while_pending) {
@@ -1440,6 +1679,12 @@ static bool md_vk_create_bindless(md_gpu_device_t dev) {
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges    = &pcr;
     if (!md_vk_check(vkCreatePipelineLayout(dev->device, &plci, NULL, &dev->pipeline_layout), "vkCreatePipelineLayout")) return false;
+
+    /* Draws: the same bindless set, and the same 8-byte root pointer seen by
+       both raster stages. */
+    VkPushConstantRange rpcr = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8};
+    plci.pPushConstantRanges = &rpcr;
+    if (!md_vk_check(vkCreatePipelineLayout(dev->device, &plci, NULL, &dev->raster_layout), "vkCreatePipelineLayout (raster)")) return false;
 
     return true;
 }
@@ -1561,6 +1806,12 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         s->can_compute = dev->transfer_can_compute;
         s->queue       = dev->transfer_queues[dev->next_transfer_queue % dev->transfer_queue_count];
         dev->next_transfer_queue++;
+    } else if (kind == MD_GPU_STREAM_GRAPHICS) {
+        s->family       = dev->graphics_family;
+        s->can_compute  = true;
+        s->can_graphics = true;
+        s->queue        = dev->graphics_queues[dev->next_graphics_queue % dev->graphics_queue_count];
+        dev->next_graphics_queue++;
     } else {
         s->family      = dev->compute_family;
         s->can_compute = true;
@@ -1612,12 +1863,26 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
 
 md_gpu_stream_t md_gpu_stream_create(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label) {
     if (!dev) { md_vk_fail("md_gpu_stream_create: null device"); return NULL; }
+    if (kind != MD_GPU_STREAM_COMPUTE && kind != MD_GPU_STREAM_TRANSFER && kind != MD_GPU_STREAM_GRAPHICS) {
+        md_vk_fail("md_gpu_stream_create: invalid stream kind %d", (int)kind);
+        return NULL;
+    }
+    if (kind == MD_GPU_STREAM_GRAPHICS && !dev->supports_graphics) {
+        md_vk_fail("md_gpu_stream_create: the device has no graphics support (md_gpu_device_info_t.supports_graphics)");
+        return NULL;
+    }
     return md_vk_stream_create_internal(dev, kind, label, false);
 }
 
 md_gpu_stream_t md_gpu_stream_default(md_gpu_device_t dev, md_gpu_stream_kind_t kind) {
     if (!dev) return NULL;
-    return kind == MD_GPU_STREAM_TRANSFER ? dev->default_transfer : dev->default_compute;
+    switch (kind) {
+    case MD_GPU_STREAM_TRANSFER: return dev->default_transfer;
+    case MD_GPU_STREAM_GRAPHICS:
+        if (!dev->default_graphics) md_vk_fail("md_gpu_stream_default: the device has no graphics support");
+        return dev->default_graphics;
+    default:                     return dev->default_compute;
+    }
 }
 
 md_gpu_device_t md_gpu_stream_device(md_gpu_stream_t s) { return s ? s->device : NULL; }
@@ -1671,6 +1936,16 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
    not merely left unused. */
 static void md_vk_stream_full_masks(md_gpu_stream_t s, VkPipelineStageFlags2* src_stage, VkAccessFlags2* src_access,
                                     VkPipelineStageFlags2* dst_stage, VkAccessFlags2* dst_access) {
+    if (s->can_graphics) {
+        /* The universal queue: everything, attachments included. A global
+           memory barrier covers images as well as buffers, and every image
+           stays in GENERAL, so this is all a pass needs on either side. */
+        *src_stage  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        *src_access = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        *dst_stage  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        *dst_access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        return;
+    }
     *src_stage  = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     *src_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     *dst_stage  = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
@@ -1700,8 +1975,15 @@ static void md_vk_emit_barrier(md_gpu_stream_t s, VkPipelineStageFlags2 src_stag
 /* The command buffer an operation records into, with IMPLICIT ordering
    applied: one global barrier before the operation if anything precedes it.
    Returns VK_NULL_HANDLE on failure. */
+/* Operations that record work outside a render pass fail inside one. */
+static bool md_vk_not_in_pass(md_gpu_stream_t s, const char* what) {
+    if (!s->in_pass) return true;
+    return md_vk_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
+}
+
 static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s) {
     if (s->upload_open) { md_vk_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
+    if (!md_vk_not_in_pass(s, "operation")) return VK_NULL_HANDLE;
     if (!md_vk_stream_ensure_cmd(s)) return VK_NULL_HANDLE;
     if ((s->needs_barrier && s->ordering == MD_GPU_ORDER_IMPLICIT) || s->force_barrier) {
         VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
@@ -1724,6 +2006,11 @@ void md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
     if (ordering == MD_GPU_ORDER_IMPLICIT && s->ordering != MD_GPU_ORDER_IMPLICIT) {
         /* Order the next operation after everything in the explicit region. */
         s->needs_barrier = true;
+    }
+    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT && s->needs_barrier) {
+        /* And the region's first operation after everything before it: both
+           edges of an explicit region are ordered. */
+        s->force_barrier = true;
     }
     s->ordering = ordering;
 }
@@ -1757,6 +2044,28 @@ static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bo
         st |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         ac |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
     }
+    /* Raster stages exist only on the universal queue; elsewhere they are
+       dropped, like compute on a transfer-only queue. */
+    if ((stages & MD_GPU_STAGE_VERTEX) && s->can_graphics) {
+        if (producer) {
+            st |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            ac |= VK_ACCESS_2_SHADER_WRITE_BIT;
+        } else {
+            st |= VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            ac |= VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+        }
+    }
+    if ((stages & MD_GPU_STAGE_FRAGMENT) && s->can_graphics) {
+        st |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        ac |= producer ? VK_ACCESS_2_SHADER_WRITE_BIT
+                       : (VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    }
+    if ((stages & MD_GPU_STAGE_ATTACHMENT) && s->can_graphics) {
+        st |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+            | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        ac |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        if (!producer) ac |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    }
     *out_stage  = st;
     *out_access = ac;
 }
@@ -1764,6 +2073,7 @@ static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bo
 void md_gpu_barrier(md_gpu_stream_t s, md_gpu_stage_flags_t producers, md_gpu_stage_flags_t consumers) {
     if (!s) return;
     if (s->upload_open) { md_vk_fail("md_gpu_barrier: stream '%s' has an open upload", s->label); return; }
+    if (!md_vk_not_in_pass(s, "md_gpu_barrier")) return;
     VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
     md_vk_stage_masks(s, producers, true,  &ss, &sa);
     md_vk_stage_masks(s, consumers, false, &ds, &da);
@@ -1790,31 +2100,44 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
 
     VkSemaphoreSubmitInfo  wait_stack[8];
     VkSemaphoreSubmitInfo* waits = wait_stack;
-    const uint32_t wait_count = (uint32_t)s->waits.count;
+    const uint32_t tl_wait_count = (uint32_t)s->waits.count;
+    const uint32_t wait_count    = tl_wait_count + s->bin_wait_count;
     if (wait_count > 8) {
         waits = (VkSemaphoreSubmitInfo*)md_alloc(dev->alloc, wait_count * sizeof(VkSemaphoreSubmitInfo));
         if (!waits) return md_vk_fail("out of memory");
     }
-    for (uint32_t i = 0; i < wait_count; ++i) {
+    for (uint32_t i = 0; i < tl_wait_count; ++i) {
         md_vk_wait_t w = MD_VK_VEC_AT(s->waits, md_vk_wait_t, i);
         waits[i] = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
         waits[i].semaphore = w.stream->timeline;
         waits[i].value     = w.value;
         waits[i].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     }
+    for (uint32_t i = 0; i < s->bin_wait_count; ++i) {
+        VkSemaphoreSubmitInfo* w = &waits[tl_wait_count + i];
+        *w = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        w->semaphore = s->bin_waits[i];
+        w->stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    }
 
-    VkSemaphoreSubmitInfo signal = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = s->timeline;
-    signal.value     = signal_value;
-    signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphoreSubmitInfo signals[1 + 4];
+    signals[0] = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    signals[0].semaphore = s->timeline;
+    signals[0].value     = signal_value;
+    signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    for (uint32_t i = 0; i < s->bin_signal_count; ++i) {
+        signals[1 + i] = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        signals[1 + i].semaphore = s->bin_signals[i];
+        signals[1 + i].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    }
 
     VkSubmitInfo2 si = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     si.waitSemaphoreInfoCount   = wait_count;
     si.pWaitSemaphoreInfos      = waits;
     si.commandBufferInfoCount   = 1;
     si.pCommandBufferInfos      = &cbsi;
-    si.signalSemaphoreInfoCount = 1;
-    si.pSignalSemaphoreInfos    = &signal;
+    si.signalSemaphoreInfoCount = 1 + s->bin_signal_count;
+    si.pSignalSemaphoreInfos    = signals;
 
     md_mutex_lock(&dev->queue_mutex);
     VkResult r = vkQueueSubmit2(s->queue, 1, &si, VK_NULL_HANDLE);
@@ -1832,6 +2155,8 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     s->submitted_value = signal_value;
     s->next_value      = signal_value + 1;
     s->waits.count     = 0;
+    s->bin_wait_count  = 0;
+    s->bin_signal_count = 0;
     s->open            = VK_NULL_HANDLE;
     s->has_work        = false;
     /* md_vk_stream_ensure_cmd re-arms needs_barrier for the next buffer. */
@@ -1843,6 +2168,7 @@ md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t s) {
     md_gpu_sync_t out = md_gpu_sync_none();
     if (!s) return out;
     if (s->upload_open) { md_vk_fail("md_gpu_stream_record: stream '%s' has an open upload", s->label); return out; }
+    if (!md_vk_not_in_pass(s, "md_gpu_stream_record")) return out;
     md_vk_stream_submit(s);
     if (s->submitted_value == 0) return out;
     out.stream = s;
@@ -1854,6 +2180,7 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
     if (!s || !md_gpu_sync_is_valid(sync)) return;
     if (sync.stream == s) return;                    /* already ordered */
     if (sync.stream->device != s->device) { md_vk_fail("md_gpu_stream_wait: sync from another device"); return; }
+    if (!md_vk_not_in_pass(s, "md_gpu_stream_wait")) return;
     if (md_gpu_sync_is_complete(sync)) return;       /* nothing to wait for */
 
     /* Work already issued must not be retroactively delayed: close it first. */
@@ -1875,11 +2202,13 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
 
 void md_gpu_stream_flush(md_gpu_stream_t s) {
     if (!s) return;
+    if (!md_vk_not_in_pass(s, "md_gpu_stream_flush")) return;
     md_vk_stream_submit(s);
 }
 
 void md_gpu_stream_sync(md_gpu_stream_t s) {
     if (!s) return;
+    if (!md_vk_not_in_pass(s, "md_gpu_stream_sync")) return;
     md_vk_stream_submit(s);
     if (s->submitted_value > 0) {
         VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -1931,6 +2260,7 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
     /* Only this stream's own work. Anything else waiting on it is thereby
        satisfied, which is what makes forgetting it below safe. */
     s->upload_open = false;
+    md_vk_abandon_pass(s);
     md_gpu_stream_sync(s);
 
     md_mutex_lock(&dev->device_mutex);
@@ -2033,7 +2363,9 @@ static md_tlsf_node_t* md_vk_heap_alloc_locked(md_gpu_device_t dev, md_gpu_strea
     md_vk_heap_t* h = &dev->heaps[kind];
     md_tlsf_node_t* node = NULL;
 
-    if (kind == MD_GPU_MEM_DEVICE) {
+    /* Not inside a render pass: the barrier that makes early reuse safe
+       cannot be placed there. */
+    if (kind == MD_GPU_MEM_DEVICE && !s->in_pass) {
         for (size_t i = 0; i < dev->pending_frees.count; ++i) {
             md_vk_pending_free_t* pf = &MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
             if (pf->stream != s || pf->kind != kind) continue;
@@ -2380,6 +2712,7 @@ bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t
     if (size == 0) return true;
     if (!src) return md_vk_fail("md_gpu_upload: null source");
     if (s->upload_open) return md_vk_fail("md_gpu_upload: stream '%s' has an open upload", s->label);
+    if (!md_vk_not_in_pass(s, "md_gpu_upload")) return false;
     md_vk_span_t d;
     if (!md_vk_resolve(s->device, dst, size, &d, "md_gpu_upload")) return false;
 
@@ -2396,6 +2729,7 @@ bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t
 
 bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t size) {
     if (!s) return md_vk_fail("md_gpu_memset: null stream");
+    if (!md_vk_not_in_pass(s, "md_gpu_memset")) return false;
     if (size == 0) return true;
     md_vk_span_t b;
     if (!md_vk_resolve(s->device, dst, size, &b, "md_gpu_memset")) return false;
@@ -2434,6 +2768,7 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
 void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
     if (!s || !dst || size == 0) { md_vk_fail("md_gpu_upload_begin: null argument"); return NULL; }
     if (s->upload_open) { md_vk_fail("an upload is already open on stream '%s'", s->label); return NULL; }
+    if (!md_vk_not_in_pass(s, "md_gpu_upload_begin")) return NULL;
     md_vk_span_t b;
     if (!md_vk_resolve(s->device, dst, size, &b, "md_gpu_upload_begin")) return NULL;
 
@@ -2556,8 +2891,12 @@ static void md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
         md_free(dev->alloc, t->storage_views, mips * sizeof(VkImageView));
     }
     if (t->sampled_view) vkDestroyImageView(dev->device, t->sampled_view, NULL);
-    if (t->image)  vkDestroyImage(dev->device, t->image, NULL);
-    if (t->memory) vkFreeMemory(dev->device, t->memory, NULL);
+    for (uint32_t i = 0; i < t->attach_view_count; ++i) vkDestroyImageView(dev->device, t->attach_views[i].view, NULL);
+    if (t->attach_views) md_free(dev->alloc, t->attach_views, t->attach_view_cap * sizeof(md_vk_attach_view_t));
+    if (!t->external) {
+        if (t->image)  vkDestroyImage(dev->device, t->image, NULL);
+        if (t->memory) vkFreeMemory(dev->device, t->memory, NULL);
+    }
     md_free(dev->alloc, t, sizeof(*t));
 }
 
@@ -2580,6 +2919,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     if (!s || !desc) { md_vk_fail("md_gpu_texture_create: null argument"); return NULL; }
     md_gpu_device_t dev = s->device;
     if (s->upload_open)                  { md_vk_fail("md_gpu_texture_create: stream '%s' has an open upload", s->label); return NULL; }
+    if (!md_vk_not_in_pass(s, "md_gpu_texture_create")) return NULL;
 
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
@@ -2594,6 +2934,14 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
         return NULL;
     }
     if (d.width == 0 || d.height == 0) { md_vk_fail("texture '%s': zero width or height", label); return NULL; }
+    if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && d.type == MD_GPU_TEX_3D) {
+        md_vk_fail("texture '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", label);
+        return NULL;
+    }
+    if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && !dev->supports_graphics) {
+        md_vk_fail("texture '%s': RENDER_TARGET usage on a device without graphics support", label);
+        return NULL;
+    }
     if (d.type == MD_GPU_TEX_2D && d.depth_or_layers > 1) {
         md_vk_fail("texture '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
                    label, d.depth_or_layers);
@@ -2756,6 +3104,7 @@ fail:
 
 void md_gpu_texture_destroy(md_gpu_texture_t t) {
     if (!t) return;
+    if (t->external) { md_vk_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
     md_vk_vec_remove_ptr(&dev->textures, t);
@@ -2959,6 +3308,7 @@ bool md_gpu_copy_from_texture(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_textu
 bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_tex_region_t* region, const void* src, size_t size) {
     if (!s || !t || !src) return md_vk_fail("md_gpu_upload_texture: null argument");
     if (s->upload_open) return md_vk_fail("md_gpu_upload_texture: stream '%s' has an open upload", s->label);
+    if (!md_vk_not_in_pass(s, "md_gpu_upload_texture")) return false;
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_upload_texture")) return false;
     if ((uint64_t)size != cr.bytes) {
@@ -2970,6 +3320,48 @@ bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_t
     memcpy(host, src, size);
     cr.copy.bufferOffset = off;
     return md_vk_record_texture_copy(s, t, buf, &cr.copy, true);
+}
+
+bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_tex_region_t* dst_region,
+                         md_gpu_texture_t src, const md_gpu_tex_region_t* src_region) {
+    if (!s || !dst || !src) return md_vk_fail("md_gpu_copy_texture: null argument");
+    if (dst->device != s->device || src->device != s->device) return md_vk_fail("md_gpu_copy_texture: texture from another device");
+    if (dst->desc.format != src->desc.format) {
+        return md_vk_fail("md_gpu_copy_texture: formats differ ('%s' is %s, '%s' is %s); a converting copy is a draw or a kernel",
+                          src->label, src->fi.name, dst->label, dst->fi.name);
+    }
+    if ((dst->desc.type == MD_GPU_TEX_3D) != (src->desc.type == MD_GPU_TEX_3D)) {
+        return md_vk_fail("md_gpu_copy_texture: cannot copy between a 3D texture and a 2D one ('%s' -> '%s')", src->label, dst->label);
+    }
+    md_vk_copy_region_t sr, dr;
+    if (!md_vk_resolve_region(src, src_region, &sr, "md_gpu_copy_texture (src)")) return false;
+    /* The destination takes the source's extent. On axis 2 that is layers
+       for arrays (and plain 2D, one layer) and depth for 3D. */
+    md_gpu_tex_region_t d;
+    memset(&d, 0, sizeof(d));
+    if (dst_region) d = *dst_region;
+    d.extent[0] = sr.copy.imageExtent.width;
+    d.extent[1] = sr.copy.imageExtent.height;
+    d.extent[2] = src->desc.type == MD_GPU_TEX_3D ? sr.copy.imageExtent.depth : sr.copy.imageSubresource.layerCount;
+    if (dst->desc.type == MD_GPU_TEX_2D && d.extent[2] != 1) {
+        return md_vk_fail("md_gpu_copy_texture: %u layers of '%s' do not fit 2D texture '%s'", d.extent[2], src->label, dst->label);
+    }
+    if (!md_vk_resolve_region(dst, &d, &dr, "md_gpu_copy_texture (dst)")) return false;
+    if (!md_vk_not_in_pass(s, "md_gpu_copy_texture")) return false;
+
+    VkImageCopy ic;
+    memset(&ic, 0, sizeof(ic));
+    ic.srcSubresource = sr.copy.imageSubresource;
+    ic.srcOffset      = sr.copy.imageOffset;
+    ic.dstSubresource = dr.copy.imageSubresource;
+    ic.dstOffset      = dr.copy.imageOffset;
+    ic.extent         = sr.copy.imageExtent;
+
+    VkCommandBuffer cmd = md_vk_begin_op(s);
+    if (!cmd) return false;
+    vkCmdCopyImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+    md_vk_end_op(s);
+    return true;
 }
 
 /* =========================================================================
@@ -3192,7 +3584,1269 @@ bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_addr_t out_grid, md_gpu_addr_t c
 }
 
 /* =========================================================================
-   12. Host callbacks and polling
+   12. Rendering
+   =========================================================================
+
+   Dynamic rendering (core 1.3) with every attachment in GENERAL, so a pass
+   needs no layout transitions and no render-pass objects. The pass is
+   ordered like any other operation: IMPLICIT mode puts one global memory
+   barrier before vkCmdBeginRendering, and md_vk_end_op at render_end arms
+   the one after it. Inside the pass nothing but draws and dynamic state is
+   recorded, because a barrier inside dynamic rendering is only legal as a
+   declared self-dependency.
+
+   Pipelines bake what both APIs bake (shaders, topology, formats, blend) and
+   leave dynamic what core 1.3 and Metal both make dynamic. Clip space is
+   flipped to +Y up with a negative viewport height (core since 1.1); that
+   also flips the winding seen in framebuffer space, which is why
+   counter-clockwise in clip space maps to VK_FRONT_FACE_COUNTER_CLOCKWISE. */
+
+static bool md_vk_format_is_uint(md_gpu_format_t f) {
+    return f == MD_GPU_FORMAT_R32_UINT || f == MD_GPU_FORMAT_RG32_UINT || f == MD_GPU_FORMAT_RGBA32_UINT;
+}
+
+static bool md_vk_debug_labels(md_gpu_device_t dev) {
+    return dev->messenger != VK_NULL_HANDLE && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT;
+}
+
+/* ---- Pipelines ------------------------------------------------------------ */
+
+static VkBlendFactor md_vk_blend_factor(md_gpu_blend_factor_t f) {
+    switch (f) {
+    case MD_GPU_BLEND_ZERO:                 return VK_BLEND_FACTOR_ZERO;
+    case MD_GPU_BLEND_ONE:                  return VK_BLEND_FACTOR_ONE;
+    case MD_GPU_BLEND_SRC_COLOR:            return VK_BLEND_FACTOR_SRC_COLOR;
+    case MD_GPU_BLEND_ONE_MINUS_SRC_COLOR:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case MD_GPU_BLEND_SRC_ALPHA:            return VK_BLEND_FACTOR_SRC_ALPHA;
+    case MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case MD_GPU_BLEND_DST_COLOR:            return VK_BLEND_FACTOR_DST_COLOR;
+    case MD_GPU_BLEND_ONE_MINUS_DST_COLOR:  return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case MD_GPU_BLEND_DST_ALPHA:            return VK_BLEND_FACTOR_DST_ALPHA;
+    case MD_GPU_BLEND_ONE_MINUS_DST_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    case MD_GPU_BLEND_CONSTANT:             return VK_BLEND_FACTOR_CONSTANT_COLOR;
+    case MD_GPU_BLEND_ONE_MINUS_CONSTANT:   return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+    case MD_GPU_BLEND_SRC_ALPHA_SATURATE:   return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+    default:                                return VK_BLEND_FACTOR_MAX_ENUM;
+    }
+}
+
+static VkBlendOp md_vk_blend_op(md_gpu_blend_op_t op) {
+    switch (op) {
+    case MD_GPU_BLEND_OP_ADD:              return VK_BLEND_OP_ADD;
+    case MD_GPU_BLEND_OP_SUBTRACT:         return VK_BLEND_OP_SUBTRACT;
+    case MD_GPU_BLEND_OP_REVERSE_SUBTRACT: return VK_BLEND_OP_REVERSE_SUBTRACT;
+    case MD_GPU_BLEND_OP_MIN:              return VK_BLEND_OP_MIN;
+    case MD_GPU_BLEND_OP_MAX:              return VK_BLEND_OP_MAX;
+    default:                               return VK_BLEND_OP_MAX_ENUM;
+    }
+}
+
+static VkPrimitiveTopology md_vk_topology(md_gpu_topology_t t) {
+    switch (t) {
+    case MD_GPU_TOPOLOGY_TRIANGLES:      return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    case MD_GPU_TOPOLOGY_TRIANGLE_STRIP: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    case MD_GPU_TOPOLOGY_LINES:          return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    case MD_GPU_TOPOLOGY_LINE_STRIP:     return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+    case MD_GPU_TOPOLOGY_POINTS:         return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    default:                             return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+    }
+}
+
+static void md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p) {
+    if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
+    md_free(dev->alloc, p, sizeof(*p));
+}
+
+static bool md_vk_check_shader(const md_gpu_shader_t* sh, const char* stage, const char* label) {
+    if (sh->code_size % 4 != 0) return md_vk_fail("pipeline '%s': %s shader SPIR-V size must be a multiple of 4", label, stage);
+    const uint32_t* w = (const uint32_t*)sh->code;
+    if (sh->code_size < 20 || w[0] != 0x07230203u) return md_vk_fail("pipeline '%s': %s shader is not SPIR-V", label, stage);
+    return true;
+}
+
+md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipeline_desc_t* desc) {
+    if (!dev || !desc) { md_vk_fail("md_gpu_pipeline_create: null argument"); return NULL; }
+    const char* label = desc->label ? desc->label : "pipeline";
+    if (!dev->supports_graphics) { md_vk_fail("pipeline '%s': the device has no graphics support", label); return NULL; }
+    if (!desc->vertex.code || desc->vertex.code_size == 0) { md_vk_fail("pipeline '%s': no vertex shader", label); return NULL; }
+    if (!md_vk_check_shader(&desc->vertex, "vertex", label)) return NULL;
+    const bool has_fs = desc->fragment.code != NULL;
+    if (has_fs && !md_vk_check_shader(&desc->fragment, "fragment", label)) return NULL;
+    if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
+        md_vk_fail("pipeline '%s': %u colour targets, at most %u", label, desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+        return NULL;
+    }
+    if (!has_fs && desc->color_count > 0) {
+        md_vk_fail("pipeline '%s': colour targets without a fragment shader", label);
+        return NULL;
+    }
+    const VkPrimitiveTopology topo = md_vk_topology(desc->topology);
+    if (topo == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) { md_vk_fail("pipeline '%s': invalid topology %d", label, (int)desc->topology); return NULL; }
+    const uint32_t vs_args = desc->vertex.args_size;
+    const uint32_t fs_args = has_fs ? desc->fragment.args_size : 0;
+    if (vs_args && fs_args && vs_args != fs_args) {
+        md_vk_fail("pipeline '%s': the vertex shader takes a %u-byte argument struct and the fragment shader %u bytes; "
+                   "both stages read the same one", label, vs_args, fs_args);
+        return NULL;
+    }
+
+    VkFormat color_formats[MD_GPU_MAX_COLOR_TARGETS];
+    VkPipelineColorBlendAttachmentState blend[MD_GPU_MAX_COLOR_TARGETS];
+    memset(blend, 0, sizeof(blend));
+    for (uint32_t i = 0; i < desc->color_count; ++i) {
+        const md_gpu_color_target_t* ct = &desc->color[i];
+        md_vk_format_info_t fi = md_vk_format_info(ct->format);
+        if (fi.format == VK_FORMAT_UNDEFINED || fi.depth) {
+            md_vk_fail("pipeline '%s': colour target %u has %s, which is not a colour format", label, i,
+                       fi.format == VK_FORMAT_UNDEFINED ? "no format" : fi.name);
+            return NULL;
+        }
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+            md_vk_fail("pipeline '%s': the device cannot render to %s (colour target %u)", label, fi.name, i);
+            return NULL;
+        }
+        const md_gpu_blend_t* b = &ct->blend;
+        if (b->enable) {
+            if (md_vk_format_is_uint(ct->format)) {
+                md_vk_fail("pipeline '%s': colour target %u is %s, an integer format, and cannot blend", label, i, fi.name);
+                return NULL;
+            }
+            if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT)) {
+                md_vk_fail("pipeline '%s': the device cannot blend %s (colour target %u)", label, fi.name, i);
+                return NULL;
+            }
+            blend[i].blendEnable         = VK_TRUE;
+            blend[i].srcColorBlendFactor = md_vk_blend_factor(b->src_color);
+            blend[i].dstColorBlendFactor = md_vk_blend_factor(b->dst_color);
+            blend[i].colorBlendOp        = md_vk_blend_op(b->color_op);
+            blend[i].srcAlphaBlendFactor = md_vk_blend_factor(b->src_alpha);
+            blend[i].dstAlphaBlendFactor = md_vk_blend_factor(b->dst_alpha);
+            blend[i].alphaBlendOp        = md_vk_blend_op(b->alpha_op);
+            if (blend[i].srcColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
+                blend[i].srcAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
+                blend[i].colorBlendOp == VK_BLEND_OP_MAX_ENUM || blend[i].alphaBlendOp == VK_BLEND_OP_MAX_ENUM) {
+                md_vk_fail("pipeline '%s': invalid blend factor or op on colour target %u", label, i);
+                return NULL;
+            }
+        }
+        blend[i].colorWriteMask = (VkColorComponentFlags)(MD_GPU_COLOR_ALL & ~ct->write_disable);
+        color_formats[i] = fi.format;
+    }
+
+    VkFormat depth_format = VK_FORMAT_UNDEFINED;
+    if (desc->depth_format != MD_GPU_FORMAT_INVALID) {
+        md_vk_format_info_t fi = md_vk_format_info(desc->depth_format);
+        if (!fi.depth) {
+            md_vk_fail("pipeline '%s': depth_format %s is not a depth format", label,
+                       fi.format == VK_FORMAT_UNDEFINED ? "(invalid)" : fi.name);
+            return NULL;
+        }
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+            md_vk_fail("pipeline '%s': the device cannot use %s as a depth attachment", label, fi.name);
+            return NULL;
+        }
+        depth_format = fi.format;
+    }
+
+    md_gpu_pipeline_t p = (md_gpu_pipeline_t)md_alloc(dev->alloc, sizeof(md_gpu_pipeline));
+    if (!p) { md_vk_fail("out of memory"); return NULL; }
+    memset(p, 0, sizeof(*p));
+    p->device      = dev;
+    p->color_count = desc->color_count;
+    for (uint32_t i = 0; i < desc->color_count; ++i) p->color[i] = desc->color[i].format;
+    p->depth       = desc->depth_format;
+    p->args_size   = vs_args ? vs_args : fs_args;
+    snprintf(p->label, sizeof(p->label), "%s", label);
+
+    VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipelineShaderStageCreateInfo stages[2];
+    memset(stages, 0, sizeof(stages));
+    const md_gpu_shader_t* sh[2] = {&desc->vertex, &desc->fragment};
+    const VkShaderStageFlagBits bits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+    const uint32_t stage_count = has_fs ? 2u : 1u;
+    bool ok = true;
+    for (uint32_t i = 0; i < stage_count && ok; ++i) {
+        VkShaderModuleCreateInfo smci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        smci.codeSize = sh[i]->code_size;
+        smci.pCode    = (const uint32_t*)sh[i]->code;
+        ok = md_vk_check(vkCreateShaderModule(dev->device, &smci, NULL, &modules[i]), "vkCreateShaderModule");
+        stages[i].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[i].stage  = bits[i];
+        stages[i].module = modules[i];
+        /* A single-entry SPIR-V module from compile_gpu_shaders names its
+           entry "main"; the generated descriptors leave entry_point NULL. */
+        stages[i].pName  = sh[i]->entry_point ? sh[i]->entry_point : "main";
+    }
+
+    if (ok) {
+        VkPipelineRenderingCreateInfo prci = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        prci.colorAttachmentCount    = desc->color_count;
+        prci.pColorAttachmentFormats = color_formats;
+        prci.depthAttachmentFormat   = depth_format;
+        prci.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+        VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+        VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology               = topo;
+        ia.primitiveRestartEnable = (topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topo == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP)
+                                  ? VK_TRUE : VK_FALSE;
+
+        VkPipelineViewportStateCreateInfo vps = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vps.viewportCount = 1;
+        vps.scissorCount  = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.lineWidth   = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+        VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = desc->color_count;
+        cb.pAttachments    = blend;
+
+        static const VkDynamicState dyn[] = {
+            VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
+            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+            VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS,
+            VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+        };
+        VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dy.dynamicStateCount = (uint32_t)(sizeof(dyn) / sizeof(dyn[0]));
+        dy.pDynamicStates    = dyn;
+
+        VkGraphicsPipelineCreateInfo gpci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gpci.pNext               = &prci;
+        gpci.stageCount          = stage_count;
+        gpci.pStages             = stages;
+        gpci.pVertexInputState   = &vi;
+        gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState      = &vps;
+        gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState   = &ms;
+        gpci.pDepthStencilState  = &ds;
+        gpci.pColorBlendState    = &cb;
+        gpci.pDynamicState       = &dy;
+        gpci.layout              = dev->raster_layout;
+        ok = md_vk_check(vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gpci, NULL, &p->pipeline),
+                         "vkCreateGraphicsPipelines");
+    }
+    for (uint32_t i = 0; i < 2; ++i) if (modules[i]) vkDestroyShaderModule(dev->device, modules[i], NULL);
+    if (!ok) { md_vk_pipeline_free(dev, p); return NULL; }
+
+    md_mutex_lock(&dev->device_mutex);
+    md_gpu_pipeline_t* slot = (md_gpu_pipeline_t*)md_vk_vec_push(&dev->pipelines, dev->alloc);
+    if (slot) *slot = p;
+    md_mutex_unlock(&dev->device_mutex);
+    if (!slot) { md_vk_pipeline_free(dev, p); md_vk_fail("out of memory"); return NULL; }
+    return p;
+}
+
+void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {
+    if (!p) return;
+    md_gpu_device_t dev = p->device;
+    md_mutex_lock(&dev->device_mutex);
+    md_vk_vec_remove_ptr(&dev->pipelines, p);
+    md_vk_retire_locked(dev, MD_VK_RETIRE_PIPELINE, p);
+    md_mutex_unlock(&dev->device_mutex);
+}
+
+/* ---- Render passes ---------------------------------------------------------- */
+
+/* The view a pass renders through for (mip, layer), made on first use and
+   kept with the texture. */
+static VkImageView md_vk_attach_view(md_gpu_texture_t t, uint32_t mip, uint32_t layer) {
+    md_gpu_device_t dev = t->device;
+    VkImageView view = VK_NULL_HANDLE;
+    md_mutex_lock(&dev->device_mutex);
+    for (uint32_t i = 0; i < t->attach_view_count; ++i) {
+        if (t->attach_views[i].mip == mip && t->attach_views[i].layer == layer) {
+            view = t->attach_views[i].view;
+            md_mutex_unlock(&dev->device_mutex);
+            return view;
+        }
+    }
+    if (t->attach_view_count == t->attach_view_cap) {
+        const uint32_t cap = t->attach_view_cap ? t->attach_view_cap * 2 : 2;
+        md_vk_attach_view_t* arr = (md_vk_attach_view_t*)md_alloc(dev->alloc, cap * sizeof(md_vk_attach_view_t));
+        if (!arr) { md_mutex_unlock(&dev->device_mutex); md_vk_fail("out of memory"); return VK_NULL_HANDLE; }
+        if (t->attach_views) {
+            memcpy(arr, t->attach_views, t->attach_view_count * sizeof(md_vk_attach_view_t));
+            md_free(dev->alloc, t->attach_views, t->attach_view_cap * sizeof(md_vk_attach_view_t));
+        }
+        t->attach_views    = arr;
+        t->attach_view_cap = cap;
+    }
+    VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image    = t->image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format   = t->fi.format;
+    vci.subresourceRange.aspectMask     = t->fi.view_aspect;
+    vci.subresourceRange.baseMipLevel   = mip;
+    vci.subresourceRange.levelCount     = 1;
+    vci.subresourceRange.baseArrayLayer = layer;
+    vci.subresourceRange.layerCount     = 1;
+    if (md_vk_check(vkCreateImageView(dev->device, &vci, NULL, &view), "vkCreateImageView (attachment)")) {
+        md_vk_attach_view_t* e = &t->attach_views[t->attach_view_count++];
+        e->mip   = mip;
+        e->layer = layer;
+        e->view  = view;
+    }
+    md_mutex_unlock(&dev->device_mutex);
+    return view;
+}
+
+static bool md_vk_check_attachment(md_gpu_stream_t s, md_gpu_texture_t t, uint32_t mip, uint32_t layer,
+                                   bool depth, uint32_t index, uint32_t* w, uint32_t* h) {
+    char what[32];
+    if (depth) snprintf(what, sizeof(what), "depth attachment");
+    else       snprintf(what, sizeof(what), "colour attachment %u", index);
+    if (!t) return md_vk_fail("md_gpu_render_begin: %s has no texture", what);
+    if (t->device != s->device) return md_vk_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
+    if (!(t->desc.usage & MD_GPU_TEX_RENDER_TARGET)) {
+        return md_vk_fail("md_gpu_render_begin: %s '%s' lacks MD_GPU_TEX_RENDER_TARGET usage", what, t->label);
+    }
+    if (t->fi.depth != depth) {
+        return md_vk_fail("md_gpu_render_begin: %s '%s' is %s; %s", what, t->label, t->fi.name,
+                          depth ? "a depth attachment needs a depth format" : "depth formats go in md_gpu_render_desc_t.depth");
+    }
+    if (mip >= t->desc.mip_levels) {
+        return md_vk_fail("md_gpu_render_begin: %s '%s': mip %u out of range (%u levels)", what, t->label, mip, t->desc.mip_levels);
+    }
+    const uint32_t layers = t->desc.type == MD_GPU_TEX_2D_ARRAY ? t->desc.depth_or_layers : 1u;
+    if (layer >= layers) {
+        return md_vk_fail("md_gpu_render_begin: %s '%s': layer %u out of range (%u layers)", what, t->label, layer, layers);
+    }
+    uint32_t mw = t->desc.width  >> mip; if (!mw) mw = 1;
+    uint32_t mh = t->desc.height >> mip; if (!mh) mh = 1;
+    if (*w == 0) { *w = mw; *h = mh; }
+    else if (*w != mw || *h != mh) {
+        return md_vk_fail("md_gpu_render_begin: %s '%s' is %ux%u at mip %u but the pass is %ux%u; every attachment must be the same size",
+                          what, t->label, mw, mh, mip, *w, *h);
+    }
+    return true;
+}
+
+static VkAttachmentLoadOp md_vk_load_op(md_gpu_load_t l) {
+    switch (l) {
+    case MD_GPU_LOAD_CLEAR:     return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    case MD_GPU_LOAD_DONT_CARE: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    default:                    return VK_ATTACHMENT_LOAD_OP_LOAD;
+    }
+}
+
+static VkAttachmentStoreOp md_vk_store_op(md_gpu_store_t st) {
+    return st == MD_GPU_STORE_DISCARD ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+}
+
+static VkCompareOp md_vk_compare_op(md_gpu_compare_t c) {
+    switch (c) {
+    case MD_GPU_COMPARE_NEVER:         return VK_COMPARE_OP_NEVER;
+    case MD_GPU_COMPARE_LESS:          return VK_COMPARE_OP_LESS;
+    case MD_GPU_COMPARE_LESS_EQUAL:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case MD_GPU_COMPARE_EQUAL:         return VK_COMPARE_OP_EQUAL;
+    case MD_GPU_COMPARE_NOT_EQUAL:     return VK_COMPARE_OP_NOT_EQUAL;
+    case MD_GPU_COMPARE_GREATER_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case MD_GPU_COMPARE_GREATER:       return VK_COMPARE_OP_GREATER;
+    default:                           return VK_COMPARE_OP_ALWAYS;
+    }
+}
+
+static bool md_vk_depth_test(const md_gpu_draw_state_t* d) {
+    /* Vulkan writes depth only with the test enabled; ALWAYS makes the test
+       pass, so "write without testing" is test-enabled + ALWAYS. */
+    return d->depth_compare != MD_GPU_COMPARE_ALWAYS || d->depth_write;
+}
+
+static bool md_vk_depth_bias(const md_gpu_draw_state_t* d) {
+    return d->depth_bias != 0.0f || d->depth_bias_slope != 0.0f;
+}
+
+/* Emit the difference between the state set in the command buffer and `n`
+   (everything when `all`). */
+static void md_vk_apply_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* n, bool all) {
+    VkCommandBuffer cmd = s->open;
+    const md_gpu_draw_state_t* o = &s->draw_state;
+    if (all || md_vk_depth_test(n) != md_vk_depth_test(o)) vkCmdSetDepthTestEnable(cmd, md_vk_depth_test(n) ? VK_TRUE : VK_FALSE);
+    if (all || n->depth_write != o->depth_write)           vkCmdSetDepthWriteEnable(cmd, n->depth_write ? VK_TRUE : VK_FALSE);
+    if (all || n->depth_compare != o->depth_compare)       vkCmdSetDepthCompareOp(cmd, md_vk_compare_op(n->depth_compare));
+    if (all || n->cull != o->cull) {
+        vkCmdSetCullMode(cmd, n->cull == MD_GPU_CULL_BACK  ? VK_CULL_MODE_BACK_BIT :
+                              n->cull == MD_GPU_CULL_FRONT ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE);
+    }
+    if (all || n->front_clockwise != o->front_clockwise) {
+        vkCmdSetFrontFace(cmd, n->front_clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    }
+    if (all || md_vk_depth_bias(n) != md_vk_depth_bias(o)) vkCmdSetDepthBiasEnable(cmd, md_vk_depth_bias(n) ? VK_TRUE : VK_FALSE);
+    if (all || n->depth_bias != o->depth_bias || n->depth_bias_slope != o->depth_bias_slope || n->depth_bias_clamp != o->depth_bias_clamp) {
+        vkCmdSetDepthBias(cmd, n->depth_bias, n->depth_bias_clamp, n->depth_bias_slope);
+    }
+    if (all || memcmp(n->blend_constant, o->blend_constant, sizeof(n->blend_constant)) != 0) {
+        vkCmdSetBlendConstants(cmd, n->blend_constant);
+    }
+    s->draw_state = *n;
+}
+
+static void md_vk_apply_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* v) {
+    VkViewport vp;
+    vp.x        = v->x;
+    vp.y        = v->y + v->height;      /* flipped: clip +Y up */
+    vp.width    = v->width;
+    vp.height   = -v->height;
+    vp.minDepth = v->min_depth;
+    vp.maxDepth = v->max_depth;
+    if (v->min_depth == 0.0f && v->max_depth == 0.0f) vp.maxDepth = 1.0f;
+    vkCmdSetViewport(s->open, 0, 1, &vp);
+}
+
+static void md_vk_apply_scissor(md_gpu_stream_t s, const md_gpu_rect_t* r) {
+    /* Clamped to the render area: Metal requires it, and it is what the
+       caller means either way. */
+    uint32_t x = r->x < s->pass_width  ? r->x : s->pass_width;
+    uint32_t y = r->y < s->pass_height ? r->y : s->pass_height;
+    uint32_t w = r->width  < s->pass_width  - x ? r->width  : s->pass_width  - x;
+    uint32_t h = r->height < s->pass_height - y ? r->height : s->pass_height - y;
+    VkRect2D sc = {{(int32_t)x, (int32_t)y}, {w, h}};
+    vkCmdSetScissor(s->open, 0, 1, &sc);
+}
+
+bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
+    if (!s || !desc) return md_vk_fail("md_gpu_render_begin: null argument");
+    if (!s->can_graphics) return md_vk_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
+    if (s->in_pass) return md_vk_fail("md_gpu_render_begin: stream '%s' is already inside a render pass", s->label);
+    if (s->upload_open) return md_vk_fail("md_gpu_render_begin: stream '%s' has an open upload", s->label);
+    if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
+        return md_vk_fail("md_gpu_render_begin: %u colour attachments, at most %u", desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+    }
+    if (desc->color_count == 0 && !desc->depth.texture) return md_vk_fail("md_gpu_render_begin: the pass has no attachments");
+
+    uint32_t w = 0, h = 0;
+    VkRenderingAttachmentInfo ca[MD_GPU_MAX_COLOR_TARGETS];
+    for (uint32_t i = 0; i < desc->color_count; ++i) {
+        const md_gpu_color_attachment_t* a = &desc->color[i];
+        if (!md_vk_check_attachment(s, a->texture, a->mip, a->layer, false, i, &w, &h)) return false;
+        VkImageView view = md_vk_attach_view(a->texture, a->mip, a->layer);
+        if (!view) return false;
+        ca[i] = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        ca[i].imageView   = view;
+        ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ca[i].loadOp      = md_vk_load_op(a->load);
+        ca[i].storeOp     = md_vk_store_op(a->store);
+        memcpy(&ca[i].clearValue.color, &a->clear, sizeof(a->clear));
+    }
+    VkRenderingAttachmentInfo da = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    if (desc->depth.texture) {
+        const md_gpu_depth_attachment_t* a = &desc->depth;
+        if (!md_vk_check_attachment(s, a->texture, a->mip, a->layer, true, 0, &w, &h)) return false;
+        VkImageView view = md_vk_attach_view(a->texture, a->mip, a->layer);
+        if (!view) return false;
+        da.imageView   = view;
+        da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        da.loadOp      = md_vk_load_op(a->load);
+        da.storeOp     = md_vk_store_op(a->store);
+        da.clearValue.depthStencil.depth = a->clear_depth;
+    }
+
+    VkCommandBuffer cmd = md_vk_begin_op(s);
+    if (!cmd) return false;
+    md_gpu_device_t dev = s->device;
+    s->pass_labelled = desc->label && md_vk_debug_labels(dev);
+    if (s->pass_labelled) {
+        VkDebugUtilsLabelEXT l = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+        l.pLabelName = desc->label;
+        vkCmdBeginDebugUtilsLabelEXT(cmd, &l);
+    }
+
+    VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea.extent.width  = w;
+    ri.renderArea.extent.height = h;
+    ri.layerCount           = 1;
+    ri.colorAttachmentCount = desc->color_count;
+    ri.pColorAttachments    = ca;
+    ri.pDepthAttachment     = desc->depth.texture ? &da : NULL;
+    vkCmdBeginRendering(cmd, &ri);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->raster_layout, 0, 1, &dev->desc_set, 0, NULL);
+
+    s->in_pass          = true;
+    s->has_work         = true;
+    s->pass_width       = w;
+    s->pass_height      = h;
+    s->pass_color_count = desc->color_count;
+    for (uint32_t i = 0; i < MD_GPU_MAX_COLOR_TARGETS; ++i) {
+        s->pass_color[i] = i < desc->color_count ? desc->color[i].texture->desc.format : MD_GPU_FORMAT_INVALID;
+    }
+    s->pass_depth       = desc->depth.texture ? desc->depth.texture->desc.format : MD_GPU_FORMAT_INVALID;
+    s->bound_pipeline   = NULL;
+
+    md_gpu_draw_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    md_vk_apply_draw_state(s, &zero, true);
+    md_vk_apply_viewport(s, &(md_gpu_viewport_t){0, 0, (float)w, (float)h, 0, 0});
+    md_vk_apply_scissor(s, &(md_gpu_rect_t){0, 0, w, h});
+    return true;
+}
+
+bool md_gpu_render_end(md_gpu_stream_t s) {
+    if (!s) return md_vk_fail("md_gpu_render_end: null stream");
+    if (!s->in_pass) return md_vk_fail("md_gpu_render_end: stream '%s' has no open render pass", s->label);
+    vkCmdEndRendering(s->open);
+    if (s->pass_labelled) vkCmdEndDebugUtilsLabelEXT(s->open);
+    s->in_pass        = false;
+    s->pass_labelled  = false;
+    s->bound_pipeline = NULL;
+    md_vk_end_op(s);
+    return true;
+}
+
+/* Teardown with a pass still open: close it so the command buffer can end. */
+static void md_vk_abandon_pass(md_gpu_stream_t s) {
+    if (s->in_pass) md_gpu_render_end(s);
+}
+
+void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) {
+    if (!s) return;
+    if (!s->in_pass) { md_vk_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
+    md_gpu_draw_state_t n;
+    memset(&n, 0, sizeof(n));
+    if (state) n = *state;
+    if ((unsigned)n.depth_compare > (unsigned)MD_GPU_COMPARE_GREATER || (unsigned)n.cull > (unsigned)MD_GPU_CULL_FRONT) {
+        md_vk_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
+        return;
+    }
+    if (n.depth_bias_clamp != 0.0f && !s->device->depth_bias_clamp) {
+        md_vk_fail("md_gpu_set_draw_state: the device does not support depth_bias_clamp; leave it 0");
+        return;
+    }
+    md_vk_apply_draw_state(s, &n, false);
+}
+
+void md_gpu_set_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* viewport) {
+    if (!s) return;
+    if (!s->in_pass) { md_vk_fail("md_gpu_set_viewport: stream '%s' has no open render pass", s->label); return; }
+    md_gpu_viewport_t v = {0, 0, (float)s->pass_width, (float)s->pass_height, 0, 0};
+    if (viewport) v = *viewport;
+    if (!(v.width > 0.0f) || !(v.height > 0.0f)) { md_vk_fail("md_gpu_set_viewport: width and height must be positive"); return; }
+    if (v.min_depth < 0.0f || v.min_depth > 1.0f || v.max_depth < 0.0f || v.max_depth > 1.0f) {
+        md_vk_fail("md_gpu_set_viewport: depth range must lie in [0, 1]");
+        return;
+    }
+    md_vk_apply_viewport(s, &v);
+}
+
+void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
+    if (!s) return;
+    if (!s->in_pass) { md_vk_fail("md_gpu_set_scissor: stream '%s' has no open render pass", s->label); return; }
+    md_gpu_rect_t r = {0, 0, s->pass_width, s->pass_height};
+    if (scissor) r = *scissor;
+    md_vk_apply_scissor(s, &r);
+}
+
+/* ---- Draws ------------------------------------------------------------------ */
+
+/* Validation shared by every draw; nothing is recorded. */
+static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size, const char* what) {
+    if (!s || !p) return md_vk_fail("%s: null stream or pipeline", what);
+    if (p->device != s->device) return md_vk_fail("%s: pipeline '%s' belongs to another device", what, p->label);
+    if (!s->in_pass) return md_vk_fail("%s: stream '%s' has no open render pass", what, s->label);
+    if (p->color_count != s->pass_color_count) {
+        return md_vk_fail("%s: pipeline '%s' has %u colour targets but the pass has %u attachments",
+                          what, p->label, p->color_count, s->pass_color_count);
+    }
+    for (uint32_t i = 0; i < p->color_count; ++i) {
+        if (p->color[i] != s->pass_color[i]) {
+            return md_vk_fail("%s: pipeline '%s' colour target %u is %s but the pass attachment is %s",
+                              what, p->label, i, md_vk_format_info(p->color[i]).name, md_vk_format_info(s->pass_color[i]).name);
+        }
+    }
+    if (p->depth != s->pass_depth) {
+        return md_vk_fail("%s: pipeline '%s' depth format is %s but the pass has %s", what, p->label,
+                          p->depth ? md_vk_format_info(p->depth).name : "none",
+                          s->pass_depth ? md_vk_format_info(s->pass_depth).name : "none");
+    }
+    if (p->args_size != 0 && args_size != p->args_size) {
+        return md_vk_fail("%s: pipeline '%s' expects a %u-byte argument struct but %zu bytes were passed",
+                          what, p->label, p->args_size, args_size);
+    }
+    if (args_size > 0 && !args) return md_vk_fail("%s: null args with non-zero size", what);
+    return true;
+}
+
+/* Copy the arguments, bind, push the root pointer. */
+static VkCommandBuffer md_vk_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size) {
+    uint64_t arg_addr = 0;
+    if (args_size > 0) {
+        void* host;
+        if (!md_vk_arena_alloc(s, args_size, &arg_addr, &host, NULL, NULL)) return VK_NULL_HANDLE;
+        memcpy(host, args, args_size);
+    }
+    VkCommandBuffer cmd = s->open;
+    if (s->bound_pipeline != p) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
+        s->bound_pipeline = p;
+    }
+    vkCmdPushConstants(cmd, s->device->raster_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &arg_addr);
+    return cmd;
+}
+
+bool md_gpu_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count,
+                 const void* args, size_t args_size) {
+    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw")) return false;
+    if (vertex_count == 0 || instance_count == 0) return true;
+    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
+    if (!cmd) return false;
+    vkCmdDraw(cmd, vertex_count, instance_count, 0, 0);
+    return true;
+}
+
+static bool md_vk_bind_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count, const char* what) {
+    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_vk_fail("%s: invalid index type %d", what, (int)type);
+    const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
+    if (!indices) return md_vk_fail("%s: null index address", what);
+    if (indices % isize != 0) return md_vk_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
+    md_vk_span_t b;
+    if (!md_vk_resolve(s->device, indices, count * isize, &b, what)) return false;
+    vkCmdBindIndexBuffer(s->open, b.buffer, b.offset, type == MD_GPU_INDEX_U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    return true;
+}
+
+bool md_gpu_draw_indexed(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                         uint32_t index_count, uint32_t instance_count, const void* args, size_t args_size) {
+    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw_indexed")) return false;
+    if (index_count == 0 || instance_count == 0) return true;
+    if (!md_vk_bind_indices(s, indices, index_type, index_count, "md_gpu_draw_indexed")) return false;
+    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
+    if (!cmd) return false;
+    vkCmdDrawIndexed(cmd, index_count, instance_count, 0, 0, 0);
+    return true;
+}
+
+static bool md_vk_resolve_cmds(md_gpu_stream_t s, md_gpu_addr_t cmds, uint32_t count, uint32_t stride,
+                               md_vk_span_t* out, const char* what) {
+    if (!cmds) return md_vk_fail("%s: null command address", what);
+    if (cmds % 4 != 0) return md_vk_fail("%s: command address must be 4-byte aligned", what);
+    return md_vk_resolve(s->device, cmds, (uint64_t)count * stride, out, what);
+}
+
+bool md_gpu_draw_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count,
+                          const void* args, size_t args_size) {
+    const char* what = "md_gpu_draw_indirect";
+    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
+    if (count == 0) return true;
+    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_cmd_t);
+    md_vk_span_t b;
+    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
+    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
+    if (!cmd) return false;
+    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
+    for (uint32_t done = 0; done < count;) {
+        const uint32_t n = count - done < max ? count - done : max;
+        vkCmdDrawIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
+        done += n;
+    }
+    return true;
+}
+
+bool md_gpu_draw_indexed_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                  md_gpu_addr_t cmds, uint32_t count, const void* args, size_t args_size) {
+    const char* what = "md_gpu_draw_indexed_indirect";
+    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
+    if (count == 0) return true;
+    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
+    md_vk_span_t b;
+    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
+    /* The index range is known only to the GPU; the address must at least
+       start a live allocation. */
+    if (!md_vk_bind_indices(s, indices, index_type, 1, what)) return false;
+    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
+    if (!cmd) return false;
+    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
+    for (uint32_t done = 0; done < count;) {
+        const uint32_t n = count - done < max ? count - done : max;
+        vkCmdDrawIndexedIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
+        done += n;
+    }
+    return true;
+}
+
+/* =========================================================================
+   13. Presentation
+   =========================================================================
+
+   One swapchain per surface, rebuilt when acquire or present reports it out
+   of date, or when the size changes. Images get the same treatment as every
+   other image -- GENERAL for their whole life in md_gpu -- with two extra
+   transitions: UNDEFINED -> GENERAL recorded at acquire (contents are
+   undefined at acquire anyway) and GENERAL -> PRESENT_SRC recorded at present.
+
+   Semaphores: acquire signals a binary semaphore that the next submission
+   of the acquiring stream waits on; present has that stream's submission
+   signal a per-image semaphore that vkQueuePresentKHR waits on. Acquire
+   semaphores are reused round robin once the submission that consumed them
+   has completed on the stream's timeline. A per-image present semaphore is
+   free again when its image is next acquired. */
+
+typedef struct md_vk_win32_surface_ci_t {
+    VkStructureType sType; const void* pNext; VkFlags flags; void* hinstance; void* hwnd;
+} md_vk_win32_surface_ci_t;
+typedef struct md_vk_xlib_surface_ci_t {
+    VkStructureType sType; const void* pNext; VkFlags flags; void* dpy; unsigned long window;
+} md_vk_xlib_surface_ci_t;
+typedef struct md_vk_wayland_surface_ci_t {
+    VkStructureType sType; const void* pNext; VkFlags flags; void* display; void* surface;
+} md_vk_wayland_surface_ci_t;
+typedef VkResult (VKAPI_PTR *md_vk_create_surface_fn)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
+
+#define MD_VK_STYPE_WIN32_SURFACE   ((VkStructureType)1000009000)
+#define MD_VK_STYPE_XLIB_SURFACE    ((VkStructureType)1000004000)
+#define MD_VK_STYPE_WAYLAND_SURFACE ((VkStructureType)1000006000)
+
+/* Every image of `sc`, and the swapchain itself, once nothing uses them. The
+   presentation engine's semaphore waits are not on any timeline, so the
+   queue that presented is idled first -- this runs on retirement, after a
+   rebuild or surface destruction, never per frame. Caller holds device_mutex. */
+static void md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc) {
+    if (sc->present_queue) {
+        md_mutex_lock(&dev->queue_mutex);
+        vkQueueWaitIdle(sc->present_queue);
+        md_mutex_unlock(&dev->queue_mutex);
+    }
+    for (uint32_t i = 0; i < sc->image_count; ++i) {
+        if (sc->textures && sc->textures[i]) md_vk_texture_free(dev, sc->textures[i]);
+        if (sc->present_sems && sc->present_sems[i]) vkDestroySemaphore(dev->device, sc->present_sems[i], NULL);
+    }
+    if (sc->textures)     md_free(dev->alloc, sc->textures, sc->image_count * sizeof(md_gpu_texture_t));
+    if (sc->present_sems) md_free(dev->alloc, sc->present_sems, sc->image_count * sizeof(VkSemaphore));
+    if (sc->swapchain) vkDestroySwapchainKHR(dev->device, sc->swapchain, NULL);
+    for (uint32_t i = 0; i < sc->extra_sem_count; ++i) if (sc->extra_sems[i]) vkDestroySemaphore(dev->device, sc->extra_sems[i], NULL);
+    if (sc->extra_sems) md_free(dev->alloc, sc->extra_sems, sc->extra_sem_count * sizeof(VkSemaphore));
+    if (sc->surface) vkDestroySurfaceKHR(dev->instance, sc->surface, NULL);
+    md_free(dev->alloc, sc, sizeof(*sc));
+}
+
+/* A texture wrapping one swapchain image. Caller holds device_mutex. */
+static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage image, uint32_t w, uint32_t h, uint32_t index) {
+    md_gpu_device_t dev = sf->device;
+    md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
+    if (!t) { md_vk_fail("out of memory"); return NULL; }
+    memset(t, 0, sizeof(*t));
+    t->device   = dev;
+    t->image    = image;
+    t->external = true;
+    t->fi       = md_vk_format_info(sf->desc.format);
+    t->desc.type            = MD_GPU_TEX_2D;
+    t->desc.format          = sf->desc.format;
+    t->desc.usage           = MD_GPU_TEX_RENDER_TARGET | sf->desc.usage;
+    t->desc.width           = w;
+    t->desc.height          = h;
+    t->desc.depth_or_layers = 1;
+    t->desc.mip_levels      = 1;
+    snprintf(t->label, sizeof(t->label), "%s[%u]", sf->label, index);
+    t->desc.label = t->label;
+
+    if (sf->desc.usage & MD_GPU_TEX_SAMPLED) {
+        t->sampled_view = md_vk_create_view(dev, t, 0, 1);
+        if (!t->sampled_view) goto fail;
+        t->sampled_slot = md_vk_alloc_slot_locked(dev);
+        if (!t->sampled_slot) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        md_vk_write_image_slot(dev, t->sampled_slot, t->sampled_view, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+    }
+    if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
+        t->storage_views = (VkImageView*)md_alloc(dev->alloc, sizeof(VkImageView));
+        if (t->storage_views) t->storage_views[0] = VK_NULL_HANDLE;
+        t->storage_slots = (uint32_t*)md_alloc(dev->alloc, sizeof(uint32_t));
+        if (t->storage_slots) t->storage_slots[0] = 0;
+        if (!t->storage_views || !t->storage_slots) { md_vk_fail("out of memory"); goto fail; }
+        t->storage_views[0] = md_vk_create_view(dev, t, 0, 1);
+        if (!t->storage_views[0]) goto fail;
+        t->storage_slots[0] = md_vk_alloc_slot_locked(dev);
+        if (!t->storage_slots[0]) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        md_vk_write_image_slot(dev, t->storage_slots[0], t->storage_views[0], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    }
+    return t;
+fail:
+    md_vk_texture_free(dev, t);
+    return NULL;
+}
+
+/* Build (or rebuild) the swapchain at the current size. *zero_size is set,
+   and nothing built, while the drawable has no area. */
+static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
+    md_gpu_device_t dev = sf->device;
+    *zero_size = false;
+    VkSurfaceCapabilitiesKHR caps;
+    if (!md_vk_check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev->phys, sf->surface, &caps),
+                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")) return false;
+
+    md_mutex_lock(&dev->device_mutex);
+    uint32_t w = sf->want_width, h = sf->want_height;
+    md_mutex_unlock(&dev->device_mutex);
+    VkExtent2D ext;
+    if (caps.currentExtent.width != UINT32_MAX) {
+        ext = caps.currentExtent;       /* the window decides */
+    } else {
+        ext.width  = w < caps.minImageExtent.width  ? caps.minImageExtent.width  : (w > caps.maxImageExtent.width  ? caps.maxImageExtent.width  : w);
+        ext.height = h < caps.minImageExtent.height ? caps.minImageExtent.height : (h > caps.maxImageExtent.height ? caps.maxImageExtent.height : h);
+        if (w == 0 || h == 0) ext.width = ext.height = 0;
+    }
+    if (ext.width == 0 || ext.height == 0) { *zero_size = true; return true; }
+
+    uint32_t count = caps.minImageCount + 1;
+    if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
+
+    VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(caps.supportedCompositeAlpha & alpha)) {
+        for (uint32_t b = 0; b < 32; ++b) {
+            if (caps.supportedCompositeAlpha & (1u << b)) { alpha = (VkCompositeAlphaFlagBitsKHR)(1u << b); break; }
+        }
+    }
+
+    VkSwapchainCreateInfoKHR sci = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    sci.surface          = sf->surface;
+    sci.minImageCount    = count;
+    sci.imageFormat      = sf->vk_format.format;
+    sci.imageColorSpace  = sf->vk_format.colorSpace;
+    sci.imageExtent      = ext;
+    sci.imageArrayLayers = 1;
+    sci.imageUsage       = sf->image_usage;
+    md_vk_set_sharing(dev, &sci.imageSharingMode, &sci.queueFamilyIndexCount, &sci.pQueueFamilyIndices);
+    sci.preTransform     = caps.currentTransform;
+    sci.compositeAlpha   = alpha;
+    sci.presentMode      = sf->present_mode;
+    sci.clipped          = VK_TRUE;
+    sci.oldSwapchain     = sf->sc ? sf->sc->swapchain : VK_NULL_HANDLE;
+
+    md_vk_swapchain_t* sc = (md_vk_swapchain_t*)md_alloc(dev->alloc, sizeof(md_vk_swapchain_t));
+    if (!sc) return md_vk_fail("out of memory");
+    memset(sc, 0, sizeof(*sc));
+    sc->width  = ext.width;
+    sc->height = ext.height;
+    if (!md_vk_check(vkCreateSwapchainKHR(dev->device, &sci, NULL, &sc->swapchain), "vkCreateSwapchainKHR")) {
+        md_free(dev->alloc, sc, sizeof(*sc));
+        return false;
+    }
+
+    uint32_t n = 0;
+    vkGetSwapchainImagesKHR(dev->device, sc->swapchain, &n, NULL);
+    VkImage images[16];
+    if (n > 16) n = 16;
+    VkResult r = vkGetSwapchainImagesKHR(dev->device, sc->swapchain, &n, images);
+    bool ok = r == VK_SUCCESS || r == VK_INCOMPLETE;
+    if (!ok) md_vk_check(r, "vkGetSwapchainImagesKHR");
+
+    md_mutex_lock(&dev->device_mutex);
+    if (ok) {
+        sc->textures     = (md_gpu_texture_t*)md_alloc(dev->alloc, n * sizeof(md_gpu_texture_t));
+        sc->present_sems = (VkSemaphore*)md_alloc(dev->alloc, n * sizeof(VkSemaphore));
+        if (!sc->textures || !sc->present_sems) {
+            if (sc->textures)     md_free(dev->alloc, sc->textures, n * sizeof(md_gpu_texture_t));
+            if (sc->present_sems) md_free(dev->alloc, sc->present_sems, n * sizeof(VkSemaphore));
+            sc->textures = NULL; sc->present_sems = NULL;
+            ok = md_vk_fail("out of memory");
+        } else {
+            sc->image_count = n;
+            memset(sc->textures, 0, n * sizeof(md_gpu_texture_t));
+            memset(sc->present_sems, 0, n * sizeof(VkSemaphore));
+        }
+    }
+    for (uint32_t i = 0; i < sc->image_count && ok; ++i) {
+        sc->textures[i] = md_vk_wrap_image_locked(sf, images[i], ext.width, ext.height, i);
+        VkSemaphoreCreateInfo semci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        ok = sc->textures[i] && md_vk_check(vkCreateSemaphore(dev->device, &semci, NULL, &sc->present_sems[i]), "vkCreateSemaphore");
+    }
+    if (!ok) {
+        md_vk_swapchain_free(dev, sc);
+        md_mutex_unlock(&dev->device_mutex);
+        return false;
+    }
+    /* The old swapchain goes once every stream has passed the work issued so
+       far; its images may still be in flight. */
+    if (sf->sc) {
+        if (!sf->sc->present_queue) sf->sc->present_queue = sf->present_queue;
+        md_vk_retire_locked(dev, MD_VK_RETIRE_SWAPCHAIN, sf->sc);
+    }
+    sf->sc    = sc;
+    sf->dirty = false;
+    md_mutex_unlock(&dev->device_mutex);
+    return true;
+}
+
+static md_gpu_format_t md_vk_surface_format_from_vk(VkFormat f) {
+    for (int i = 1; i < (int)MD_GPU_FORMAT_COUNT; ++i) {
+        if (md_vk_format_info((md_gpu_format_t)i).format == f) return (md_gpu_format_t)i;
+    }
+    return MD_GPU_FORMAT_INVALID;
+}
+
+md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface_desc_t* desc) {
+    if (!dev || !desc) { md_vk_fail("md_gpu_surface_create: null argument"); return NULL; }
+    const char* label = desc->label ? desc->label : "surface";
+    if (!dev->supports_present) {
+        md_vk_fail("surface '%s': the device cannot present (VK_KHR_surface / VK_KHR_swapchain unavailable)", label);
+        return NULL;
+    }
+    if (desc->system != MD_GPU_WINDOW_HEADLESS && !desc->window) {
+        md_vk_fail("surface '%s': no window handle", label);
+        return NULL;
+    }
+    if (desc->usage & ~(MD_GPU_TEX_SAMPLED | MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET)) {
+        md_vk_fail("surface '%s': invalid usage bits", label);
+        return NULL;
+    }
+
+    VkSurfaceKHR vs = VK_NULL_HANDLE;
+    VkResult r = VK_ERROR_EXTENSION_NOT_PRESENT;
+    const char* ext_missing = NULL;
+    switch (desc->system) {
+    case MD_GPU_WINDOW_WIN32: {
+        md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWin32SurfaceKHR");
+        if (!dev->has_win32_surface || !fn) { ext_missing = "VK_KHR_win32_surface"; break; }
+        md_vk_win32_surface_ci_t ci = {MD_VK_STYPE_WIN32_SURFACE, NULL, 0, desc->display, desc->window};
+#if defined(_WIN32)
+        if (!ci.hinstance) ci.hinstance = (void*)GetModuleHandleW(NULL);
+#endif
+        r = fn(dev->instance, &ci, NULL, &vs);
+        break;
+    }
+    case MD_GPU_WINDOW_X11: {
+        md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateXlibSurfaceKHR");
+        if (!dev->has_xlib_surface || !fn) { ext_missing = "VK_KHR_xlib_surface"; break; }
+        if (!desc->display) { md_vk_fail("surface '%s': X11 needs the Display* in `display`", label); return NULL; }
+        md_vk_xlib_surface_ci_t ci = {MD_VK_STYPE_XLIB_SURFACE, NULL, 0, desc->display, (unsigned long)(uintptr_t)desc->window};
+        r = fn(dev->instance, &ci, NULL, &vs);
+        break;
+    }
+    case MD_GPU_WINDOW_WAYLAND: {
+        md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWaylandSurfaceKHR");
+        if (!dev->has_wayland_surface || !fn) { ext_missing = "VK_KHR_wayland_surface"; break; }
+        if (!desc->display) { md_vk_fail("surface '%s': Wayland needs the wl_display* in `display`", label); return NULL; }
+        md_vk_wayland_surface_ci_t ci = {MD_VK_STYPE_WAYLAND_SURFACE, NULL, 0, desc->display, desc->window};
+        r = fn(dev->instance, &ci, NULL, &vs);
+        break;
+    }
+    case MD_GPU_WINDOW_HEADLESS: {
+        PFN_vkCreateHeadlessSurfaceEXT fn = (PFN_vkCreateHeadlessSurfaceEXT)vkGetInstanceProcAddr(dev->instance, "vkCreateHeadlessSurfaceEXT");
+        if (!dev->has_headless_surface || !fn) { ext_missing = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME; break; }
+        VkHeadlessSurfaceCreateInfoEXT ci = {VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
+        r = fn(dev->instance, &ci, NULL, &vs);
+        break;
+    }
+    case MD_GPU_WINDOW_COCOA:
+        md_vk_fail("surface '%s': COCOA windows present through the Metal backend", label);
+        return NULL;
+    default:
+        md_vk_fail("surface '%s': invalid window system %d", label, (int)desc->system);
+        return NULL;
+    }
+    if (ext_missing) { md_vk_fail("surface '%s': the Vulkan instance lacks %s", label, ext_missing); return NULL; }
+    if (!md_vk_check(r, "vkCreate*SurfaceKHR")) return NULL;
+
+    md_gpu_surface_t sf = (md_gpu_surface_t)md_alloc(dev->alloc, sizeof(md_gpu_surface));
+    if (!sf) { vkDestroySurfaceKHR(dev->instance, vs, NULL); md_vk_fail("out of memory"); return NULL; }
+    memset(sf, 0, sizeof(*sf));
+    sf->device  = dev;
+    sf->surface = vs;
+    sf->desc    = *desc;
+    snprintf(sf->label, sizeof(sf->label), "%s", label);
+    sf->desc.label = sf->label;
+    if (sf->desc.format == MD_GPU_FORMAT_INVALID) sf->desc.format = MD_GPU_FORMAT_BGRA8_UNORM;
+    sf->desc.usage &= ~MD_GPU_TEX_RENDER_TARGET;
+    sf->want_width  = desc->width;
+    sf->want_height = desc->height;
+    sf->dirty       = true;
+    const md_vk_format_info_t fi = md_vk_format_info(sf->desc.format);
+
+    VkBool32 supported = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(dev->phys, dev->graphics_family, vs, &supported);
+    if (!supported) { md_vk_fail("surface '%s': the graphics queue cannot present to it", label); goto fail; }
+
+    /* Format: exactly the one asked for, no silent substitute. */
+    {
+        uint32_t n = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, vs, &n, NULL);
+        VkSurfaceFormatKHR fmts[64];
+        if (n > 64) n = 64;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, vs, &n, fmts);
+        bool found = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (fmts[i].format != fi.format) continue;
+            if (!found || fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) sf->vk_format = fmts[i];
+            found = true;
+        }
+        if (!found || fi.format == VK_FORMAT_UNDEFINED) {
+            char avail[256] = {0};
+            size_t len = 0;
+            for (uint32_t i = 0; i < n && len < sizeof(avail) - 32; ++i) {
+                md_gpu_format_t mf = md_vk_surface_format_from_vk(fmts[i].format);
+                if (mf == MD_GPU_FORMAT_INVALID) continue;
+                len += (size_t)snprintf(avail + len, sizeof(avail) - len, "%s%s", len ? ", " : "", md_vk_format_info(mf).name);
+            }
+            md_vk_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
+            goto fail;
+        }
+    }
+
+    /* Usage: RENDER_TARGET always; transfers when offered (copies to and
+       from the image); SAMPLED and STORAGE when asked, or fail. */
+    {
+        VkSurfaceCapabilitiesKHR caps;
+        if (!md_vk_check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev->phys, vs, &caps), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")) goto fail;
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
+        sf->image_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        sf->image_usage |= caps.supportedUsageFlags & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+            md_vk_fail("surface '%s': images cannot be rendered to", label);
+            goto fail;
+        }
+        if (sf->desc.usage & MD_GPU_TEX_SAMPLED) {
+            if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
+                md_vk_fail("surface '%s': SAMPLED usage is not supported for %s", label, fi.name);
+                goto fail;
+            }
+            sf->image_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        }
+        if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
+            if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+                md_vk_fail("surface '%s': STORAGE usage is not supported for %s", label, fi.name);
+                goto fail;
+            }
+            sf->image_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+    }
+
+    /* Present mode, with the documented fallbacks. */
+    {
+        uint32_t n = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, vs, &n, NULL);
+        VkPresentModeKHR modes[16];
+        if (n > 16) n = 16;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, vs, &n, modes);
+        bool has_mailbox = false, has_immediate = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)   has_mailbox   = true;
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) has_immediate = true;
+        }
+        sf->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        if (desc->present_mode == MD_GPU_PRESENT_IMMEDIATE) {
+            sf->present_mode = has_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : (has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR);
+        } else if (desc->present_mode == MD_GPU_PRESENT_MAILBOX) {
+            sf->present_mode = has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+        }
+    }
+
+    for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) {
+        VkSemaphoreCreateInfo semci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (!md_vk_check(vkCreateSemaphore(dev->device, &semci, NULL, &sf->acquire_sems[i]), "vkCreateSemaphore")) goto fail;
+    }
+
+    /* Build now when there is a size, so that errors surface here. */
+    if (sf->want_width && sf->want_height) {
+        bool zero;
+        if (!md_vk_surface_rebuild(sf, &zero)) goto fail;
+    }
+
+    md_mutex_lock(&dev->device_mutex);
+    md_gpu_surface_t* slot = (md_gpu_surface_t*)md_vk_vec_push(&dev->surfaces, dev->alloc);
+    if (slot) *slot = sf;
+    md_mutex_unlock(&dev->device_mutex);
+    if (!slot) { md_vk_fail("out of memory"); goto fail; }
+    return sf;
+
+fail:
+    md_mutex_lock(&dev->device_mutex);
+    if (sf->sc) { md_vk_swapchain_free(dev, sf->sc); sf->sc = NULL; }
+    md_mutex_unlock(&dev->device_mutex);
+    for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) if (sf->acquire_sems[i]) vkDestroySemaphore(dev->device, sf->acquire_sems[i], NULL);
+    vkDestroySurfaceKHR(dev->instance, vs, NULL);
+    md_free(dev->alloc, sf, sizeof(*sf));
+    return NULL;
+}
+
+void md_gpu_surface_destroy(md_gpu_surface_t sf) {
+    if (!sf) return;
+    md_gpu_device_t dev = sf->device;
+    md_mutex_lock(&dev->device_mutex);
+    md_vk_vec_remove_ptr(&dev->surfaces, sf);
+    md_vk_swapchain_t* sc = sf->sc;
+    if (!sc) {
+        sc = (md_vk_swapchain_t*)md_alloc(dev->alloc, sizeof(md_vk_swapchain_t));
+        if (sc) memset(sc, 0, sizeof(*sc));
+    }
+    VkSemaphore* sems = (VkSemaphore*)md_alloc(dev->alloc, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
+    if (!sc || !sems) {
+        /* Cannot defer: idle and free now. */
+        md_vk_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
+        vkDeviceWaitIdle(dev->device);
+        if (sems) md_free(dev->alloc, sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
+        if (sc) { sc->present_queue = NULL; md_vk_swapchain_free(dev, sc); }
+        for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) vkDestroySemaphore(dev->device, sf->acquire_sems[i], NULL);
+        vkDestroySurfaceKHR(dev->instance, sf->surface, NULL);
+    } else {
+        memcpy(sems, sf->acquire_sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
+        sc->extra_sems      = sems;
+        sc->extra_sem_count = MD_VK_ACQUIRE_SEMS;
+        sc->surface         = sf->surface;
+        if (!sc->present_queue) sc->present_queue = sf->present_queue;
+        md_vk_retire_locked(dev, MD_VK_RETIRE_SWAPCHAIN, sc);
+    }
+    md_mutex_unlock(&dev->device_mutex);
+    md_free(dev->alloc, sf, sizeof(*sf));
+}
+
+void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height) {
+    if (!sf) return;
+    md_gpu_device_t dev = sf->device;
+    md_mutex_lock(&dev->device_mutex);
+    sf->want_width  = width;
+    sf->want_height = height;
+    if (!sf->sc || sf->sc->width != width || sf->sc->height != height) sf->dirty = true;
+    md_mutex_unlock(&dev->device_mutex);
+}
+
+static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImageLayout from, VkImageLayout to,
+                                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (!md_vk_stream_ensure_cmd(s)) return false;
+    VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask  = src_stage;
+    b.srcAccessMask = src_access;
+    b.dstStageMask  = dst_stage;
+    b.dstAccessMask = dst_access;
+    b.oldLayout     = from;
+    b.newLayout     = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers    = &b;
+    vkCmdPipelineBarrier2(s->open, &di);
+    s->has_work = true;
+    return true;
+}
+
+md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) {
+    if (!s || !sf) { md_vk_fail("md_gpu_surface_acquire: null argument"); return NULL; }
+    md_gpu_device_t dev = s->device;
+    if (sf->device != dev) { md_vk_fail("md_gpu_surface_acquire: surface '%s' belongs to another device", sf->label); return NULL; }
+    if (!s->can_graphics) { md_vk_fail("md_gpu_surface_acquire: stream '%s' is not a GRAPHICS stream", s->label); return NULL; }
+    if (!md_vk_not_in_pass(s, "md_gpu_surface_acquire")) return NULL;
+    if (s->upload_open) { md_vk_fail("md_gpu_surface_acquire: stream '%s' has an open upload", s->label); return NULL; }
+    if (sf->acquired) { md_vk_fail("md_gpu_surface_acquire: surface '%s' already has an acquired image; present it first", sf->label); return NULL; }
+    if (s->bin_wait_count >= 4) { md_vk_fail("md_gpu_surface_acquire: too many acquires pending on stream '%s'", s->label); return NULL; }
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (!sf->sc || sf->dirty) {
+            bool zero;
+            if (!md_vk_surface_rebuild(sf, &zero)) return NULL;
+            if (zero) return NULL;
+        }
+        const uint32_t slot = sf->acquire_next;
+        if (sf->acquire_stream[slot] && sf->acquire_value[slot] &&
+            md_vk_stream_completed(sf->acquire_stream[slot]) < sf->acquire_value[slot]) {
+            /* The semaphore's last wait has not executed yet; a stream must
+               have been left unsubmitted for many frames. Submit it and wait. */
+            md_gpu_stream_t o = sf->acquire_stream[slot];
+            if (o->submitted_value < sf->acquire_value[slot]) md_vk_stream_submit(o);
+            VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            wi.semaphoreCount = 1;
+            wi.pSemaphores    = &o->timeline;
+            wi.pValues        = &sf->acquire_value[slot];
+            vkWaitSemaphores(dev->device, &wi, UINT64_MAX);
+        }
+        const VkSemaphore sem = sf->acquire_sems[slot];
+        uint32_t index = 0;
+        VkResult r = vkAcquireNextImageKHR(dev->device, sf->sc->swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, &index);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR) { sf->dirty = true; continue; }
+        if (r == VK_SUBOPTIMAL_KHR) {
+            sf->dirty = true;       /* usable now; rebuilt at the next acquire */
+        } else if (r != VK_SUCCESS) {
+            md_vk_check(r, "vkAcquireNextImageKHR");
+            return NULL;
+        }
+        sf->acquire_next = (slot + 1) % MD_VK_ACQUIRE_SEMS;
+
+        /* Work already recorded must not wait for the image. */
+        if (s->has_work) md_vk_stream_submit(s);
+        md_gpu_texture_t tex = sf->sc->textures[index];
+        if (!md_vk_record_image_barrier(s, tex->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)) {
+            return NULL;
+        }
+        /* The next submission waits on the acquire; it signals next_value,
+           after which the semaphore is free again. */
+        s->bin_waits[s->bin_wait_count++] = sem;
+        sf->acquire_stream[slot] = s;
+        sf->acquire_value[slot]  = s->next_value;
+        sf->acquired        = true;
+        sf->image_index     = index;
+        sf->acquire_slot    = slot;
+        sf->acquired_stream = s;
+        return tex;
+    }
+    md_vk_fail("md_gpu_surface_acquire: surface '%s' stayed out of date", sf->label);
+    return NULL;
+}
+
+bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
+    if (!s || !sf) return md_vk_fail("md_gpu_surface_present: null argument");
+    if (!sf->acquired) return md_vk_fail("md_gpu_surface_present: surface '%s' has no acquired image", sf->label);
+    if (sf->acquired_stream != s) return md_vk_fail("md_gpu_surface_present: surface '%s' was acquired on another stream", sf->label);
+    if (!md_vk_not_in_pass(s, "md_gpu_surface_present")) return false;
+    if (s->upload_open) return md_vk_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
+    if (s->bin_signal_count >= 4) return md_vk_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
+
+    md_gpu_device_t dev = s->device;
+    md_vk_swapchain_t* sc = sf->sc;
+    const uint32_t index = sf->image_index;
+    sf->acquired = false;
+    sf->acquired_stream = NULL;
+    if (!md_vk_record_image_barrier(s, sc->textures[index]->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    /* Chains into the semaphore signal below,
+                                       whose stage is ALL_COMMANDS, so the
+                                       transition is inside what present waits
+                                       for. */
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0)) {
+        return false;
+    }
+    s->bin_signals[s->bin_signal_count++] = sc->present_sems[index];
+    if (!md_vk_stream_submit(s)) return false;
+
+    VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores    = &sc->present_sems[index];
+    pi.swapchainCount     = 1;
+    pi.pSwapchains        = &sc->swapchain;
+    pi.pImageIndices      = &index;
+    md_mutex_lock(&dev->queue_mutex);
+    VkResult r = vkQueuePresentKHR(s->queue, &pi);
+    md_mutex_unlock(&dev->queue_mutex);
+    sf->present_queue = s->queue;
+    sc->present_queue = s->queue;
+    if (r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) {
+        sf->dirty = true;
+        return true;
+    }
+    return md_vk_check(r, "vkQueuePresentKHR");
+}
+
+/* =========================================================================
+   14. Host callbacks and polling
    ========================================================================= */
 
 bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_host_fn fn, void* user) {
@@ -3207,6 +4861,7 @@ bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_hos
 
 bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
     if (!s || !fn) return md_vk_fail("md_gpu_launch_host_fn: null argument");
+    if (!md_vk_not_in_pass(s, "md_gpu_launch_host_fn")) return false;
     md_gpu_sync_t sync = md_gpu_stream_record(s);
     return md_gpu_sync_on_complete(s->device, sync, fn, user);
 }
@@ -3274,7 +4929,7 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 }
 
 /* =========================================================================
-   13. Device destruction
+   15. Device destruction
    ========================================================================= */
 
 void md_gpu_device_destroy(md_gpu_device_t dev) {
@@ -3285,6 +4940,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         for (size_t i = 0; i < dev->streams.count; ++i) {
             md_gpu_stream_t s = MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i);
             s->upload_open = false;
+            md_vk_abandon_pass(s);
             md_vk_stream_submit(s);
         }
         vkDeviceWaitIdle(dev->device);
@@ -3293,6 +4949,8 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         /* Everything the caller did not destroy, the device does. */
         while (dev->textures.count > 0) md_gpu_texture_destroy(MD_VK_VEC_AT(dev->textures, md_gpu_texture_t, 0));
         while (dev->kernels.count > 0) md_gpu_kernel_destroy(MD_VK_VEC_AT(dev->kernels, md_gpu_kernel_t, 0));
+        while (dev->pipelines.count > 0) md_gpu_pipeline_destroy(MD_VK_VEC_AT(dev->pipelines, md_gpu_pipeline_t, 0));
+        while (dev->surfaces.count > 0) md_gpu_surface_destroy(MD_VK_VEC_AT(dev->surfaces, md_gpu_surface_t, 0));
         if (dev->make_grid_kernel) md_vk_kernel_free(dev, dev->make_grid_kernel);
 
         md_mutex_lock(&dev->device_mutex);
@@ -3308,6 +4966,8 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         md_mutex_unlock(&dev->device_mutex);
         md_vk_vec_free(&dev->textures, alloc);
         md_vk_vec_free(&dev->kernels, alloc);
+        md_vk_vec_free(&dev->pipelines, alloc);
+        md_vk_vec_free(&dev->surfaces, alloc);
 
         for (uint32_t i = 0; i < dev->sampler_count; ++i) vkDestroySampler(dev->device, dev->samplers[i].sampler, NULL);
         if (dev->dummy_view)    vkDestroyImageView(dev->device, dev->dummy_view, NULL);
@@ -3318,6 +4978,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         md_vk_vec_free(&dev->retires,  alloc);
         md_vk_vec_free(&dev->registry, alloc);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
+        if (dev->raster_layout)   vkDestroyPipelineLayout(dev->device, dev->raster_layout, NULL);
         if (dev->desc_pool)       vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
         if (dev->set_layout)      vkDestroyDescriptorSetLayout(dev->device, dev->set_layout, NULL);
         md_mutex_destroy(&dev->queue_mutex);

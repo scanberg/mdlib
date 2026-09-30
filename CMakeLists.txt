@@ -244,7 +244,8 @@ if (MD_ENABLE_GPU)
     set(MD_GPU_BACKEND "METAL")
     find_library(METAL_FRAMEWORK Metal)
     find_library(FOUNDATION_FRAMEWORK Foundation)
-    list(APPEND MD_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+    find_library(QUARTZCORE_FRAMEWORK QuartzCore)   # CAMetalLayer, for surfaces
+    list(APPEND MD_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${QUARTZCORE_FRAMEWORK})
     list(APPEND CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
@@ -527,6 +528,21 @@ if (MD_ENABLE_GPU)
     NAMESPACE md_shader
     SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_test.slang
     ENTRIES  fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin
+  )
+  compile_gpu_shaders(gpu_render_test_shaders.inl
+    TARGET   mdlib
+    NAMESPACE md_shader
+    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_render_test.slang
+    ENTRIES  read_tex gen_pos
+    VERTEX   basic_vs indirect_vs point_vs
+    FRAGMENT color_fs mrt_fs id_fs depth_fs
+  )
+  compile_gpu_shaders(gpu_imgui_test_shaders.inl
+    TARGET   mdlib
+    NAMESPACE md_shader
+    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_imgui_test.slang
+    VERTEX   imgui_vs
+    FRAGMENT imgui_fs
   )
   compile_gpu_shaders(gpu_volume_shaders.inl
     TARGET   mdlib

@@ -63,7 +63,7 @@ if (MD_ENABLE_HDF5)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
-  set (SRC_FILES ${SRC_FILES} test_gpu.c test_gpu_tlsf.c)
+  set (SRC_FILES ${SRC_FILES} test_gpu.c test_gpu_tlsf.c test_gpu_render.c)
   # gpu_test_shaders.inl and the embedded kernel blobs are generated into
   # mdlib's gen/ directory by compile_gpu_shaders().
   target_include_directories(md_unittest PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/../gen)
