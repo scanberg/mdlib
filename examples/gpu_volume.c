@@ -130,17 +130,6 @@ int main(void) {
     md_gpu_stream_t compute  = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
     md_gpu_stream_t transfer = md_gpu_stream_default(dev, MD_GPU_STREAM_TRANSFER);
 
-    /* One pool per memory kind. Pools also group lifetimes: destroying or
-       resetting one releases everything drawn from it, textures included. */
-    md_gpu_pool_desc_t pd = {0};
-    pd.kind  = MD_GPU_MEM_DEVICE;
-    pd.label = "volume example";
-    md_gpu_pool_t pool = md_gpu_pool_create(dev, &pd);
-    pd.kind  = MD_GPU_MEM_HOST_READ;
-    pd.label = "volume example readback";
-    md_gpu_pool_t rb_pool = md_gpu_pool_create(dev, &pd);
-    CHECK(pool && rb_pool, "pool creation");
-
     /* -----------------------------------------------------------------
        Kernels. The generated descriptors carry each kernel's group size and
        argument-struct size, so nothing here repeats [numthreads].
@@ -166,19 +155,19 @@ int main(void) {
     td.usage  = MD_GPU_TEX_STORAGE;
     td.width  = DIM; td.height = DIM; td.depth_or_layers = DIM;
     td.label  = "field";
-    md_gpu_texture_t vol = md_gpu_texture_create(compute, pool, &td);
+    md_gpu_texture_t vol = md_gpu_texture_create(compute, &td);
     CHECK(vol != NULL, "texture creation");
     const md_gpu_storage_tex_t vol_h = md_gpu_texture_storage(vol, 0);
 
-    /* Stream-ordered allocation. Freeing is legal at any point, even with work
-       in flight, and the pool recycles blocks without a fence. */
-    md_gpu_addr_t count   = md_gpu_malloc(compute, pool, sizeof(uint32_t)).gpu;
-    md_gpu_addr_t grid    = md_gpu_malloc(compute, pool, 3 * sizeof(uint32_t)).gpu;
-    md_gpu_addr_t indices = md_gpu_malloc(compute, pool, VOXELS * sizeof(uint32_t)).gpu;
-    md_gpu_addr_t values  = md_gpu_malloc(compute, pool, VOXELS * sizeof(float)).gpu;
+    /* Stream-ordered allocation, by memory kind. Freeing is legal at any
+       point, even with work in flight; the memory is reused without a fence. */
+    md_gpu_addr_t count   = md_gpu_malloc(compute, MD_GPU_MEM_DEVICE, sizeof(uint32_t)).gpu;
+    md_gpu_addr_t grid    = md_gpu_malloc(compute, MD_GPU_MEM_DEVICE, 3 * sizeof(uint32_t)).gpu;
+    md_gpu_addr_t indices = md_gpu_malloc(compute, MD_GPU_MEM_DEVICE, VOXELS * sizeof(uint32_t)).gpu;
+    md_gpu_addr_t values  = md_gpu_malloc(compute, MD_GPU_MEM_DEVICE, VOXELS * sizeof(float)).gpu;
     /* Results land in host-readable memory, read through .cpu once complete. */
-    md_gpu_mem_t  rb_count  = md_gpu_malloc(compute, rb_pool, sizeof(uint32_t));
-    md_gpu_mem_t  rb_values = md_gpu_malloc(compute, rb_pool, VOXELS * sizeof(float));
+    md_gpu_mem_t  rb_count  = md_gpu_malloc(compute, MD_GPU_MEM_HOST_READ, sizeof(uint32_t));
+    md_gpu_mem_t  rb_values = md_gpu_malloc(compute, MD_GPU_MEM_HOST_READ, VOXELS * sizeof(float));
     CHECK(count && grid && indices && values && rb_count.cpu && rb_values.cpu, "allocation");
 
     /* A zero-copy upload, for data you would otherwise pack into a scratch
@@ -276,26 +265,21 @@ int main(void) {
 
     /* -----------------------------------------------------------------
        Teardown. Freeing is stream-ordered and never blocks; destroying the
-       texture and the pools is legal even with work still in flight.
+       texture is legal even with work still in flight.
        ----------------------------------------------------------------- */
-    md_gpu_pool_stats_t st;
-    md_gpu_pool_stats(pool, &st);
-    printf("pool: %llu in use, %llu reserved, peak %llu, %llu allocs (%llu from cache)\n",
-           (unsigned long long)st.bytes_in_use, (unsigned long long)st.bytes_reserved,
-           (unsigned long long)st.bytes_peak_in_use,
-           (unsigned long long)st.alloc_count, (unsigned long long)st.reuse_count);
+    md_gpu_memory_stats_t st;
+    md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st);
+    printf("device memory: %llu in use in %u allocations, %llu reserved in %u chunks, %llu in textures\n",
+           (unsigned long long)st.bytes_in_use, st.allocations,
+           (unsigned long long)st.bytes_reserved, st.chunks, (unsigned long long)st.bytes_textures);
 
-    /* One call instead of four md_gpu_free's and a texture destroy. */
-    md_gpu_pool_reset(compute, pool);
-    md_gpu_stream_sync(compute);
-    md_gpu_device_poll(dev);
-
-    md_gpu_pool_stats(pool, &st);
-    printf("after reset: %llu in use, %llu still reserved for reuse\n",
-           (unsigned long long)st.bytes_in_use, (unsigned long long)st.bytes_reserved);
-
-    md_gpu_pool_destroy(pool);
-    md_gpu_pool_destroy(rb_pool);
+    md_gpu_free(compute, count);
+    md_gpu_free(compute, grid);
+    md_gpu_free(compute, indices);
+    md_gpu_free(compute, values);
+    md_gpu_free(compute, rb_count.gpu);
+    md_gpu_free(compute, rb_values.gpu);
+    md_gpu_texture_destroy(vol);
     md_gpu_kernel_destroy(k_eval);
     md_gpu_kernel_destroy(k_compact);
     md_gpu_kernel_destroy(k_gather);

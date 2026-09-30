@@ -162,12 +162,7 @@ typedef struct {
 
 struct md_topo_gpu_context {
     md_gpu_device_t device;
-    /* One pool per memory kind: a pool maps 1:1 onto a VkDeviceMemory chain
-       or an MTLHeap only if its kind is fixed. Both are owned by the context
-       and torn down with it. */
-    md_gpu_pool_t   dev_pool;      // device-local scratch and results
-    md_gpu_pool_t   read_pool;     // host-readable mirrors
-    md_gpu_stream_t stream;        // the stream the last record used
+    md_gpu_stream_t stream;        // the stream the last record used; frees go here
     uint32_t        num_points;
     uint32_t        dim[3];
     uint32_t        vert_cap;
@@ -210,39 +205,26 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
     ctx->vert_cap = vert_cap;
     ctx->edge_cap = vert_cap * TOPO_EDGE_RATIO;
 
-    md_gpu_pool_desc_t pd = {0};
-    pd.kind  = MD_GPU_MEM_DEVICE;
-    pd.label = "md_topo device";
-    ctx->dev_pool = md_gpu_pool_create(device, &pd);
-
-    pd.kind  = MD_GPU_MEM_HOST_READ;
-    pd.label = "md_topo readback";
-    ctx->read_pool = md_gpu_pool_create(device, &pd);
-
-    if (!ctx->dev_pool || !ctx->read_pool) {
-        md_topo_gpu_context_destroy((md_topo_gpu_context_t*)ctx);
-        return NULL;
-    }
-
     md_gpu_stream_t s = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    ctx->stream = s;
     const size_t voxel_bytes = (size_t)ctx->num_points * sizeof(uint32_t);
 
-    ctx->ascending     = md_gpu_malloc(s, ctx->dev_pool, voxel_bytes).gpu;
-    ctx->descending    = md_gpu_malloc(s, ctx->dev_pool, voxel_bytes).gpu;
-    ctx->voxel_types   = md_gpu_malloc(s, ctx->dev_pool, voxel_bytes).gpu;
-    ctx->voxel_to_vert = md_gpu_malloc(s, ctx->dev_pool, voxel_bytes).gpu;
-    ctx->meta          = md_gpu_malloc(s, ctx->dev_pool, sizeof(topo_meta_t)).gpu;
-    ctx->grid_args     = md_gpu_malloc(s, ctx->dev_pool, 3 * sizeof(uint32_t)).gpu;
+    ctx->ascending     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, voxel_bytes).gpu;
+    ctx->descending    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, voxel_bytes).gpu;
+    ctx->voxel_types   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, voxel_bytes).gpu;
+    ctx->voxel_to_vert = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, voxel_bytes).gpu;
+    ctx->meta          = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(topo_meta_t)).gpu;
+    ctx->grid_args     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, 3 * sizeof(uint32_t)).gpu;
 
-    ctx->indices = md_gpu_malloc(s, ctx->dev_pool, vert_cap * sizeof(uint32_t)).gpu;
-    ctx->verts   = md_gpu_malloc(s, ctx->dev_pool, vert_cap * 4 * sizeof(float)).gpu;
-    ctx->types   = md_gpu_malloc(s, ctx->dev_pool, vert_cap * sizeof(uint32_t)).gpu;
-    ctx->edges   = md_gpu_malloc(s, ctx->dev_pool, ctx->edge_cap * 2 * sizeof(uint32_t)).gpu;
+    ctx->indices = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, vert_cap * sizeof(uint32_t)).gpu;
+    ctx->verts   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, vert_cap * 4 * sizeof(float)).gpu;
+    ctx->types   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, vert_cap * sizeof(uint32_t)).gpu;
+    ctx->edges   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, ctx->edge_cap * 2 * sizeof(uint32_t)).gpu;
 
-    ctx->host_meta  = md_gpu_malloc(s, ctx->read_pool, sizeof(topo_meta_t));
-    ctx->host_verts = md_gpu_malloc(s, ctx->read_pool, vert_cap * 4 * sizeof(float));
-    ctx->host_types = md_gpu_malloc(s, ctx->read_pool, vert_cap * sizeof(uint32_t));
-    ctx->host_edges = md_gpu_malloc(s, ctx->read_pool, ctx->edge_cap * 2 * sizeof(uint32_t));
+    ctx->host_meta  = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, sizeof(topo_meta_t));
+    ctx->host_verts = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, vert_cap * 4 * sizeof(float));
+    ctx->host_types = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, vert_cap * sizeof(uint32_t));
+    ctx->host_edges = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, ctx->edge_cap * 2 * sizeof(uint32_t));
 
     if (!ctx->ascending || !ctx->descending || !ctx->voxel_types || !ctx->voxel_to_vert ||
         !ctx->meta || !ctx->grid_args || !ctx->indices || !ctx->verts || !ctx->types || !ctx->edges ||
@@ -257,9 +239,17 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
 void md_topo_gpu_context_destroy(md_topo_gpu_context_t* context) {
     if (!context) return;
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)context;
-    // Non-blocking: the memory is released once work in flight has completed.
-    if (ctx->dev_pool)  md_gpu_pool_destroy(ctx->dev_pool);
-    if (ctx->read_pool) md_gpu_pool_destroy(ctx->read_pool);
+    // Non-blocking: freed at the end of the stream the context last recorded
+    // into, so the memory is reused only once that work has completed.
+    md_gpu_stream_t s = ctx->stream;
+    if (s) {
+        const md_gpu_addr_t all[] = {
+            ctx->ascending, ctx->descending, ctx->voxel_types, ctx->voxel_to_vert, ctx->meta, ctx->grid_args,
+            ctx->indices, ctx->verts, ctx->types, ctx->edges,
+            ctx->host_meta.gpu, ctx->host_verts.gpu, ctx->host_types.gpu, ctx->host_edges.gpu,
+        };
+        for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i) md_gpu_free(s, all[i]);
+    }
     md_free(md_get_heap_allocator(), ctx, sizeof(*ctx));
 }
 

@@ -300,12 +300,12 @@ typedef struct md_gto_gpu_basis_desc_t {
 
 // Allocate a device-local basis buffer and fully populate it from desc.
 // Ready for dispatch immediately after creation; no separate upload step required.
-// The basis is drawn from `pool` (which must serve MD_GPU_MEM_DEVICE) and
-// uploaded on `stream`. Issue dispatches into the same stream and program order
-// does the rest; another stream must md_gpu_stream_wait on it first.
-md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, md_gpu_pool_t pool, const md_gto_gpu_basis_desc_t* desc);
+// The basis lives in MD_GPU_MEM_DEVICE memory and is uploaded on `stream`.
+// Issue dispatches into the same stream and program order does the rest;
+// another stream must md_gpu_stream_wait on it first.
+md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_gpu_basis_desc_t* desc);
 
-// Stream-ordered: the memory returns to its pool at this point in `stream`.
+// Stream-ordered: the memory is freed at this point in `stream`.
 void md_gto_gpu_basis_destroy(md_gpu_stream_t stream, md_gto_gpu_basis_t basis_buf);
 
 // Return the underlying GPU basis buffer (CGTO metadata + PGTO data).

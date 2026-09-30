@@ -391,8 +391,6 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     double max_delta = DBL_MAX;
 
     md_gto_gpu_basis_t gpu_basis = NULL;
-    md_gpu_pool_t   dev_pool  = NULL;
-    md_gpu_pool_t   read_pool = NULL;
     md_gpu_addr_t    atom_buf  = 0;
     md_gpu_addr_t    coeff_buf = 0;
     md_gpu_mem_t     readback  = {0};
@@ -421,14 +419,7 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
 
     md_gto_gpu_initialize(device);
 
-    {
-        md_gpu_pool_desc_t pd = {0};
-        pd.kind = MD_GPU_MEM_DEVICE;    pd.label = "test_gto device";   dev_pool  = md_gpu_pool_create(device, &pd);
-        pd.kind = MD_GPU_MEM_HOST_READ; pd.label = "test_gto readback"; read_pool = md_gpu_pool_create(device, &pd);
-    }
-    if (!dev_pool || !read_pool) goto done;
-
-    gpu_basis = md_gto_gpu_basis_create(stream, dev_pool, &(md_gto_gpu_basis_desc_t){
+    gpu_basis = md_gto_gpu_basis_create(stream, &(md_gto_gpu_basis_desc_t){
         .basis = gto_basis,
         .cutoff = 0.0,
     });
@@ -439,10 +430,10 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     const size_t voxel_count = (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
     const size_t readback_size = sizeof(float) * voxel_count;
 
-    atom_buf  = md_gpu_malloc(stream, dev_pool, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
-    coeff_buf = md_gpu_malloc(stream, dev_pool, md_gto_gpu_coeff_size_mo(1, num_cgtos)).gpu;
-    readback  = md_gpu_malloc(stream, read_pool, readback_size);
-    out_tex   = md_gpu_texture_create(stream, dev_pool, &(md_gpu_texture_desc_t){
+    atom_buf  = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    coeff_buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(1, num_cgtos)).gpu;
+    readback  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, readback_size);
+    out_tex   = md_gpu_texture_create(stream, &(md_gpu_texture_desc_t){
         .type   = MD_GPU_TEX_3D,
         .format = MD_GPU_FORMAT_R32_FLOAT,
         .usage  = MD_GPU_TEX_STORAGE,
@@ -523,8 +514,6 @@ done:
     md_gpu_free(stream, readback.gpu);
     md_gpu_free(stream, coeff_buf);
     md_gpu_free(stream, atom_buf);
-    md_gpu_pool_destroy(read_pool);
-    md_gpu_pool_destroy(dev_pool);
     md_gto_gpu_shutdown();
 
     return max_delta;

@@ -31,13 +31,13 @@ The model, in full
     argument. Nothing blocks the calling thread unless it says so:
     md_gpu_stream_sync, md_gpu_sync_wait, md_gpu_stream_destroy (its own work
     only) and md_gpu_device_destroy. In particular, creating or destroying
-    textures, pools and kernels never waits for work in flight -- a compute
+    textures and kernels, or freeing memory, never waits for work in flight -- a compute
     job spanning many frames stalls nothing but its own stream.
 
 Correspondence with CUDA
 ------------------------
     cudaStreamCreate            md_gpu_stream_create
-    cudaMallocFromPoolAsync     md_gpu_malloc
+    cudaMallocAsync             md_gpu_malloc
     cudaFreeAsync               md_gpu_free
     cudaMemcpyAsync (H2D)       md_gpu_upload / md_gpu_upload_begin+end
     cudaMemcpyAsync (D2D)       md_gpu_copy
@@ -75,8 +75,9 @@ Threading
 ---------
   * A stream is used by one thread at a time. Different streams may be used
     concurrently from different threads.
-  * Pool, allocation, texture, sampler and kernel creation/destruction are
-    thread-safe.
+  * Allocation (md_gpu_malloc / md_gpu_free), texture, sampler and kernel
+    creation/destruction are thread-safe. Temp scopes belong to their stream
+    and follow the stream's one-thread rule.
   * Host callbacks run inside md_gpu_device_poll(), on the thread calling it.
 */
 
@@ -107,7 +108,6 @@ MD_GPU_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
 
 typedef struct md_gpu_device*  md_gpu_device_t;
 typedef struct md_gpu_stream*  md_gpu_stream_t;
-typedef struct md_gpu_pool*    md_gpu_pool_t;
 typedef struct md_gpu_texture* md_gpu_texture_t;   /* identity; host side only */
 typedef struct md_gpu_kernel*  md_gpu_kernel_t;
 
@@ -116,8 +116,8 @@ typedef struct md_gpu_kernel*  md_gpu_kernel_t;
    no casts are needed there. Zero is null. Not dereferenceable on the host. */
 typedef uint64_t md_gpu_addr_t;
 
-/* An allocation. `cpu` is non-NULL only for memory from an MD_GPU_MEM_HOST_*
-   pool, and then addresses the same bytes as `gpu`. */
+/* An allocation. `cpu` is non-NULL only for MD_GPU_MEM_HOST_* memory, and
+   then addresses the same bytes as `gpu`. */
 typedef struct md_gpu_mem_t {
     md_gpu_addr_t gpu;
     void*         cpu;
@@ -301,6 +301,10 @@ typedef struct md_gpu_device_desc_t {
        be enabled from the environment; see md_gpu_metal.m. */
     bool enable_validation;
 
+    /* Bytes of empty heap chunks each memory kind keeps for reuse rather than
+       returning them to the driver. 0 selects 256 MiB. */
+    uint64_t heap_cache_limit;
+
     const char* label;
 } md_gpu_device_desc_t;
 
@@ -317,7 +321,7 @@ typedef struct md_gpu_device_info_t {
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc);
 
 /* Waits for every stream to go idle, then destroys the device and everything
-   created from it: streams, pools, allocations, textures, samplers, kernels. */
+   created from it: streams, allocations, textures, samplers, kernels. */
 void md_gpu_device_destroy(md_gpu_device_t device);
 
 bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* out_info);
@@ -424,62 +428,96 @@ typedef enum md_gpu_mem_kind_t {
                                 where the platform allows (UMA / ReBAR):
                                 uploads and per-frame data                   */
     MD_GPU_MEM_HOST_READ,    /* CPU-cached: readback destinations            */
+    MD_GPU_MEM_KIND_COUNT,
 } md_gpu_mem_kind_t;
 
-/* A pool is the space allocations are drawn from. It serves exactly one kind
-   of memory, and it groups lifetimes: destroying or resetting it releases
-   everything drawn from it, textures included. */
-typedef struct md_gpu_pool_desc_t {
-    md_gpu_mem_kind_t kind;
-    /* Bytes a pool keeps cached after md_gpu_free for reuse without a new
-       device allocation. 0 means no limit: cached memory is only returned to
-       the driver by md_gpu_pool_trim or md_gpu_pool_destroy. */
-    uint64_t          cache_limit;
-    const char*       label;
-} md_gpu_pool_desc_t;
+/* Two lifetimes, two pairs of calls:
 
-md_gpu_pool_t     md_gpu_pool_create(md_gpu_device_t device, const md_gpu_pool_desc_t* desc);
-md_gpu_mem_kind_t md_gpu_pool_kind(md_gpu_pool_t pool);
+     persistent   md_gpu_malloc / md_gpu_free. Freed one at a time; drawn from
+                  a device-wide heap per memory kind.
+     temporary    md_gpu_temp_alloc between md_gpu_temp_begin and
+                  md_gpu_temp_end. Bump-allocated from the stream's own arena
+                  and released together when the scope ends.
 
-/* Never blocks. Every allocation and texture drawn from the pool is released
-   once every stream has completed the work issued before this call. Work
-   issued afterwards that still references the pool is a caller error. */
-void md_gpu_pool_destroy(md_gpu_pool_t pool);
+   Both are stream-ordered, like everything else. Memory is usable by work
+   issued into the stream after it was allocated, and a free (or scope end)
+   takes effect when the GPU reaches that point in the stream. The CPU never
+   waits: memory freed at a point the GPU has not yet reached is reused only
+   when that is safe (see md_gpu_free).
 
-/* Free everything the pool has handed out, in one call, without returning its
-   memory to the driver -- the CPU arena-reset pattern. Allocations become
-   reusable at this point in `stream`, exactly like md_gpu_free; textures are
-   released like md_gpu_texture_destroy. Every address and texture previously
-   obtained from the pool dangles once this returns. */
-void md_gpu_pool_reset(md_gpu_stream_t stream, md_gpu_pool_t pool);
+   Every allocation is 256-byte aligned. Allocations made before the device
+   is destroyed are released with it. */
 
-/* Release cached (free and idle) memory down to `keep_bytes`. */
-void md_gpu_pool_trim(md_gpu_pool_t pool, uint64_t keep_bytes);
+/* cudaMallocAsync. `.gpu == 0` on failure; `.cpu` is non-NULL for the HOST_*
+   kinds. The heap carves allocations out of large chunks, so small
+   allocations are cheap and do not count against the driver's allocation
+   limit. */
+md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_t size);
 
-typedef struct md_gpu_pool_stats_t {
-    uint64_t bytes_in_use;      /* handed out right now                       */
-    uint64_t bytes_reserved;    /* committed by the pool, in use or cached    */
-    uint64_t bytes_cached;      /* reserved - in_use                          */
-    uint64_t bytes_peak_in_use; /* high-water mark, for sizing                */
-    uint32_t blocks_in_use;
-    uint32_t blocks_cached;
-    uint64_t alloc_count;       /* md_gpu_malloc calls served                 */
-    uint64_t reuse_count;       /* of those, served from cache. A ratio near
-                                   1 means the pool is doing its job          */
-} md_gpu_pool_stats_t;
-
-void md_gpu_pool_stats(md_gpu_pool_t pool, md_gpu_pool_stats_t* out_stats);
-
-/* cudaMallocFromPoolAsync. The allocation is usable by work issued into
-   `stream` after this call. `.gpu == 0` on failure. Never waits on another
-   stream: a cached block freed elsewhere is reused only once its free point
-   has completed. */
-md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_pool_t pool, size_t size);
-
-/* cudaFreeAsync. The memory returns to its pool at this point in `stream`, so
-   later work in the same stream may reuse it with no synchronisation. A zero
-   address is a no-op; `stream` is required. */
+/* cudaFreeAsync. The memory is released at this point in `stream`. Later
+   MD_GPU_MEM_DEVICE allocations on the same stream may reuse it at once,
+   because stream order already puts their work after the free (in EXPLICIT
+   mode md_gpu inserts a barrier when it does this). Host-visible memory, which
+   the CPU writes the moment it is handed out, and every allocation on other
+   streams reuse it only once the GPU has passed the free. `addr` must be the
+   start of a live allocation. A zero address is a no-op; `stream` is
+   required. */
 void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
+
+/* ---- Temporary memory -------------------------------------------------------
+   The GPU form of a CPU temp arena. Allocation bumps a pointer; there is no
+   per-allocation free. The free is md_gpu_temp_end, and like md_gpu_free it
+   is recorded on the stream: everything allocated since the matching begin
+   is reclaimed once the GPU passes that point. The CPU never waits for it.
+   Allocations after the end go into other memory until then, so double or
+   triple buffering falls out without the caller counting frames.
+
+       md_gpu_temp_t frame = md_gpu_temp_begin(gfx);
+       md_gpu_mem_t v = md_gpu_temp_alloc(gfx, MD_GPU_MEM_HOST_WRITE, bytes);
+       memcpy(v.cpu, verts, bytes);
+       ... work that reads v.gpu ...
+       md_gpu_temp_end(gfx, frame);
+
+   Scopes nest, and must end in reverse order of beginning, exactly as CPU temp
+   arenas do. That lets a library take temp memory inside its caller's scope
+   without touching the caller's allocations. md_gpu_temp_alloc outside any
+   scope fails.
+
+   Rules:
+     * Temp memory belongs to its stream. Another stream that reads it must be
+       joined before the scope ends, e.g.
+       md_gpu_stream_wait(s, md_gpu_stream_record(other)), as for md_gpu_free.
+     * Only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE. Readback memory is
+       read by host callbacks, which run at md_gpu_device_poll -- possibly
+       after a later scope has already reused the memory -- so readbacks use
+       md_gpu_malloc / md_gpu_free.
+     * Scratch whose lifetime is not nested in anything on the stream (say, a
+       compute job spanning many frames) belongs in md_gpu_malloc.
+     * Bounds are checked per arena chunk, not per temp allocation. */
+
+typedef struct md_gpu_temp_t {
+    md_gpu_stream_t stream;
+    uint32_t        depth;
+} md_gpu_temp_t;
+
+md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream);
+md_gpu_mem_t  md_gpu_temp_alloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_t size);
+void          md_gpu_temp_end(md_gpu_stream_t stream, md_gpu_temp_t scope);
+
+/* ---- Statistics -------------------------------------------------------------- */
+
+typedef struct md_gpu_memory_stats_t {
+    uint64_t bytes_in_use;       /* live md_gpu_malloc allocations              */
+    uint64_t bytes_peak_in_use;  /* high-water mark of bytes_in_use             */
+    uint64_t bytes_reserved;     /* heap chunks held from the driver, in use
+                                    or not                                      */
+    uint64_t bytes_temp;         /* held by temp arenas, over all streams       */
+    uint64_t bytes_textures;     /* textures; MD_GPU_MEM_DEVICE only            */
+    uint32_t allocations;        /* live md_gpu_malloc allocations              */
+    uint32_t chunks;             /* heap chunks                                 */
+} md_gpu_memory_stats_t;
+
+bool md_gpu_memory_stats(md_gpu_device_t device, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out_stats);
 
 /* ---- Copies ------------------------------------------------------------------
    The direction is in the name and in the types; nothing is inferred from
@@ -583,10 +621,9 @@ typedef struct md_gpu_texture_desc_t {
 
 /* Stream-ordered creation, exactly like md_gpu_malloc: the texture is usable
    by work issued into `stream` after this call (other streams join with
-   md_gpu_stream_wait). Never blocks. `pool` must be an MD_GPU_MEM_DEVICE pool;
-   it owns the texture's lifetime. Returns NULL on failure. */
-md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, md_gpu_pool_t pool,
-                                       const md_gpu_texture_desc_t* desc);
+   md_gpu_stream_wait). Never blocks. Textures are device-local. Returns NULL
+   on failure. */
+md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc);
 
 /* Deferred and non-blocking: the texture and its handles are released once
    every stream has completed the work issued before this call. */

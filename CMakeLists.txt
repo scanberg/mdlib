@@ -255,6 +255,9 @@ if (MD_ENABLE_GPU)
     list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
 
+  # Backend-independent sub-allocator behind md_gpu_malloc.
+  list(APPEND CORE_FILES src/core/md_gpu_tlsf.c)
+
   include(cmake/ResolveSlang.cmake)
   resolve_slang(VERSION 2026.8.1)
   message(STATUS "mdlib: GPU backend = ${MD_GPU_BACKEND}")

@@ -1273,13 +1273,12 @@ static md_gto_basis_layout_t gto_basis_layout_compute(uint32_t num_cgtos, uint32
 // ---------------------------------------------------------------------------
 
 typedef struct md_gto_gpu_basis {
-    md_gpu_pool_t         pool;
     md_gpu_addr_t         buffer;
     md_gto_basis_layout_t layout;
 } md_gto_gpu_basis;
 
-md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, md_gpu_pool_t pool, const md_gto_gpu_basis_desc_t* desc) {
-    ASSERT(pool && stream);
+md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_gpu_basis_desc_t* desc) {
+    ASSERT(stream);
     ASSERT(desc && desc->basis);
     const md_gto_basis_t* basis = desc->basis;
 
@@ -1289,7 +1288,7 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, md_gpu_pool_t
 
     md_gto_basis_layout_t layout = gto_basis_layout_compute(num_cgtos, num_pgtos, num_atoms);
 
-    md_gpu_addr_t buf = md_gpu_malloc(stream, pool, (size_t)layout.total_size).gpu;
+    md_gpu_addr_t buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, (size_t)layout.total_size).gpu;
     if (!buf) {
         MD_LOG_ERROR("md_gto_gpu_basis_create: failed to allocate %zu bytes: %s",
                      (size_t)layout.total_size, md_gpu_last_error());
@@ -1298,7 +1297,6 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, md_gpu_pool_t
 
     md_gto_gpu_basis* gb = (md_gto_gpu_basis*)calloc(1, sizeof(md_gto_gpu_basis));
     if (!gb) { md_gpu_free(stream, buf); return NULL; }
-    gb->pool   = pool;
     gb->buffer = buf;
     gb->layout = layout;
 
