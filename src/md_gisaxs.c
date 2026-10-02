@@ -14,6 +14,8 @@
 #define GISAXS_MAX_CLASSES 4
 #define GISAXS_DEFAULT_MAX_SLICES 1024
 #define GISAXS_DEFAULT_OVERSAMPLING 2.0
+#define GISAXS_DEFAULT_RING_REL_WIDTH 0.1
+#define GISAXS_SHELL_TOL 1.0e-9      // Relative |q| tolerance for points of the same lattice shell
 
 // ------------------------------------------------------------------------------------------------
 // Small helpers
@@ -135,8 +137,10 @@ struct md_gisaxs_t {
     size_t packed_size;
 
     size_t    num_rings;
-    double    dq;
-    double*   ring_q;
+    double    dq;               // Maximum ring width: max(2 pi / box_x, 2 pi / box_y)
+    double    q_par_min;        // Smallest sampled |q_par|: min(2 pi / box_x, 2 pi / box_y)
+    double*   ring_q;           // Mean |q_par| of the points in each ring
+    double*   ring_edge;        // num_rings + 1 ring boundaries in |q_par|
     unsigned* ring_count;
     uint32_t* ring_offset;      // num_rings + 1, offsets into points
 
@@ -151,6 +155,19 @@ struct md_gisaxs_t {
     size_t spectra_bytes;
     size_t matrix_bytes;
 };
+
+typedef struct lattice_point_t {
+    double  q;      // |q_par|
+    int     kx, ky;
+} lattice_point_t;
+
+static int cmp_lattice_point(const void* a, const void* b) {
+    const lattice_point_t* pa = (const lattice_point_t*)a;
+    const lattice_point_t* pb = (const lattice_point_t*)b;
+    if (pa->q != pb->q) return (pa->q > pb->q) - (pa->q < pb->q);
+    if (pa->kx != pb->kx) return (pa->kx > pb->kx) - (pa->kx < pb->kx);
+    return (pa->ky > pb->ky) - (pa->ky < pb->ky);
+}
 
 static int cmp_particle(const void* a, const void* b) {
     const float ua = ((const particle_t*)a)->u;
@@ -369,9 +386,26 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     ctx->kx_count = MIN(kx_max + 1, ctx->nkx);
 
     // --- Rings ---
+    // The half plane lattice points (kx > 0: all ky, kx == 0: ky > 0, each representing itself and its conjugate
+    // mirror) within q_max are sorted by |q| and grouped into rings of consecutive |q|. Points of equal |q| (a lattice
+    // shell) always share a ring. A ring starting at q0 takes all following shells with q - q0 < min(rel_w * q0, dq).
+    // At low q this keeps every shell as its own ring (|q| is sampled at the exact lattice values, no binning), at
+    // intermediate q the ring width is relative (logarithmic spacing) and at high q it is the uniform lattice spacing
+    // dq = max(2 pi / box_x, 2 pi / box_y).
     ctx->dq = MAX(dqx, dqy);
-    ctx->num_rings = (size_t)floor(q_max / ctx->dq + 0.5);
-    if (ctx->num_rings == 0) {
+    const double rel_w = params->ring_rel_width > 0.0 ? params->ring_rel_width : GISAXS_DEFAULT_RING_REL_WIDTH;
+
+    size_t num_points = 0;
+    for (int kx = 0; kx <= kx_max && kx < ctx->nkx; ++kx) {
+        for (int ky = -ky_max; ky <= ky_max; ++ky) {
+            if (kx == 0 && ky <= 0) continue;
+            if (ky <= -(ctx->ny / 2) || ky >= ctx->ny / 2) continue;
+            const double qx = kx * dqx, qy = ky * dqy;
+            if (sqrt(qx * qx + qy * qy) > q_max) continue;
+            num_points += 1;
+        }
+    }
+    if (num_points == 0) {
         MD_LOG_ERROR("GISAXS: q_par_max is smaller than the reciprocal grid spacing of the box");
         free(include);
         free(cls);
@@ -379,74 +413,83 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
         return NULL;
     }
 
-    // Half plane points: kx > 0 (all ky), kx == 0 (ky > 0). Each represents itself and its conjugate mirror.
-    // Count per ring
-    const size_t R = ctx->num_rings;
-    ctx->ring_offset = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * (R + 1));
-    ctx->ring_count  = (unsigned*)md_alloc(alloc, sizeof(unsigned) * R);
-    ctx->ring_q      = (double*)md_alloc(alloc, sizeof(double) * R);
-    MEMSET(ctx->ring_offset, 0, sizeof(uint32_t) * (R + 1));
-    MEMSET(ctx->ring_count, 0, sizeof(unsigned) * R);
-    MEMSET(ctx->ring_q, 0, sizeof(double) * R);
-
-#define RING_OF(kx, ky, out_q, out_r) do { \
-        const double _qx = (kx) * dqx, _qy = (ky) * dqy; \
-        out_q = sqrt(_qx * _qx + _qy * _qy); \
-        long _r = (long)floor(out_q / ctx->dq + 0.5); \
-        if (_r < 1) _r = 1; \
-        out_r = _r - 1; \
-    } while(0)
-
-    size_t num_points = 0;
-    for (int kx = 0; kx <= kx_max && kx < ctx->nkx; ++kx) {
-        for (int ky = -ky_max; ky <= ky_max; ++ky) {
-            if (kx == 0 && ky <= 0) continue;
-            if (ky <= -(ctx->ny / 2) || ky >= ctx->ny / 2) continue;
-            double q; long r;
-            RING_OF(kx, ky, q, r);
-            if (q > q_max || r >= (long)R) continue;
-            ctx->ring_offset[r + 1] += 1;
-            ctx->ring_q[r] += q;
-            num_points += 1;
-        }
-    }
-    for (size_t r = 0; r < R; ++r) {
-        ctx->ring_count[r] = 2 * ctx->ring_offset[r + 1];
-        ctx->ring_q[r] = ctx->ring_offset[r + 1] ? ctx->ring_q[r] / ctx->ring_offset[r + 1] : (r + 1) * ctx->dq;
-        ctx->ring_offset[r + 1] += ctx->ring_offset[r];
-    }
-    ctx->num_points = num_points;
-
-    const size_t C = ctx->num_classes;
-    ctx->point_index = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * MAX(num_points, 1));
-    ctx->point_k     = (int16_t*) md_alloc(alloc, sizeof(int16_t) * 2 * MAX(num_points, 1));
-    ctx->point_scale = (float*)   md_alloc(alloc, sizeof(float) * C * MAX(num_points, 1));
+    lattice_point_t* lp = (lattice_point_t*)malloc(sizeof(lattice_point_t) * num_points);
     {
-        uint32_t* fill = (uint32_t*)malloc(sizeof(uint32_t) * R);
-        MEMCPY(fill, ctx->ring_offset, sizeof(uint32_t) * R);
+        size_t n = 0;
         for (int kx = 0; kx <= kx_max && kx < ctx->nkx; ++kx) {
             for (int ky = -ky_max; ky <= ky_max; ++ky) {
                 if (kx == 0 && ky <= 0) continue;
                 if (ky <= -(ctx->ny / 2) || ky >= ctx->ny / 2) continue;
-                double q; long r;
-                RING_OF(kx, ky, q, r);
-                if (q > q_max || r >= (long)R) continue;
-                const uint32_t p = fill[r]++;
-                const int ky_idx = ky < 0 ? ky + ctx->ny : ky;
-                ctx->point_index[p] = (uint32_t)(ky_idx * ctx->nkx + kx);
-                ctx->point_k[2 * p + 0] = (int16_t)kx;
-                ctx->point_k[2 * p + 1] = (int16_t)ky;
-                const double wx = bspline4_window(PI * kx / ctx->nx);
-                const double wy = bspline4_window(PI * ky / ctx->ny);
-                for (size_t c = 0; c < C; ++c) {
-                    const double s = ctx->class_sigma[c];
-                    ctx->point_scale[p * C + c] = (float)(exp(-0.5 * q * q * s * s) / (wx * wy));
-                }
+                const double qx = kx * dqx, qy = ky * dqy;
+                const double q = sqrt(qx * qx + qy * qy);
+                if (q > q_max) continue;
+                lp[n].q  = q;
+                lp[n].kx = kx;
+                lp[n].ky = ky;
+                n += 1;
             }
         }
-        free(fill);
+        ASSERT(n == num_points);
+        qsort(lp, num_points, sizeof(lattice_point_t), cmp_lattice_point);
     }
-#undef RING_OF
+
+    // Ring start indices into lp (at most one ring per point)
+    uint32_t* ring_beg = (uint32_t*)malloc(sizeof(uint32_t) * (num_points + 1));
+    size_t R = 0;
+    for (size_t i = 0; i < num_points;) {
+        ring_beg[R++] = (uint32_t)i;
+        const double q0  = lp[i].q;
+        const double w   = MIN(rel_w * q0, ctx->dq);
+        const double tol = GISAXS_SHELL_TOL * q0;
+        size_t j = i + 1;
+        while (j < num_points && (lp[j].q - q0 < w || lp[j].q - q0 <= tol)) ++j;
+        // Never split a shell
+        while (j < num_points && lp[j].q - lp[j - 1].q <= GISAXS_SHELL_TOL * lp[j].q) ++j;
+        i = j;
+    }
+    ring_beg[R] = (uint32_t)num_points;
+
+    ctx->num_rings   = R;
+    ctx->num_points  = num_points;
+    ctx->q_par_min   = lp[0].q;
+    ctx->ring_offset = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * (R + 1));
+    ctx->ring_count  = (unsigned*)md_alloc(alloc, sizeof(unsigned) * R);
+    ctx->ring_q      = (double*)  md_alloc(alloc, sizeof(double) * R);
+    ctx->ring_edge   = (double*)  md_alloc(alloc, sizeof(double) * (R + 1));
+    for (size_t r = 0; r < R; ++r) {
+        const uint32_t b = ring_beg[r], e = ring_beg[r + 1];
+        double sum = 0.0;
+        for (uint32_t p = b; p < e; ++p) sum += lp[p].q;
+        ctx->ring_offset[r] = b;
+        ctx->ring_count[r]  = 2 * (e - b);
+        ctx->ring_q[r]      = sum / (double)(e - b);
+        // Boundaries halfway between the outermost shell of a ring and the innermost shell of the next
+        ctx->ring_edge[r]   = r == 0 ? 0.5 * lp[0].q : 0.5 * (lp[b - 1].q + lp[b].q);
+    }
+    ctx->ring_offset[R] = (uint32_t)num_points;
+    ctx->ring_edge[R]   = MAX(q_max, lp[num_points - 1].q);
+    free(ring_beg);
+
+    const size_t C = ctx->num_classes;
+    ctx->point_index = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * num_points);
+    ctx->point_k     = (int16_t*) md_alloc(alloc, sizeof(int16_t) * 2 * num_points);
+    ctx->point_scale = (float*)   md_alloc(alloc, sizeof(float) * C * num_points);
+    for (size_t p = 0; p < num_points; ++p) {
+        const int kx = lp[p].kx;
+        const int ky = lp[p].ky;
+        const double q = lp[p].q;
+        const int ky_idx = ky < 0 ? ky + ctx->ny : ky;
+        ctx->point_index[p] = (uint32_t)(ky_idx * ctx->nkx + kx);
+        ctx->point_k[2 * p + 0] = (int16_t)kx;
+        ctx->point_k[2 * p + 1] = (int16_t)ky;
+        const double wx = bspline4_window(PI * kx / ctx->nx);
+        const double wy = bspline4_window(PI * ky / ctx->ny);
+        for (size_t c = 0; c < C; ++c) {
+            const double s = ctx->class_sigma[c];
+            ctx->point_scale[p * C + c] = (float)(exp(-0.5 * q * q * s * s) / (wx * wy));
+        }
+    }
+    free(lp);
 
     // --- Particles (sorted by u) ---
     ctx->particles  = (particle_t*)md_alloc(alloc, sizeof(particle_t) * num_incl);
@@ -504,6 +547,7 @@ void md_gisaxs_destroy(md_gisaxs_t* ctx) {
     if (ctx->ring_offset) md_free(alloc, ctx->ring_offset, sizeof(uint32_t) * (R + 1));
     if (ctx->ring_count)  md_free(alloc, ctx->ring_count,  sizeof(unsigned) * R);
     if (ctx->ring_q)      md_free(alloc, ctx->ring_q,      sizeof(double) * R);
+    if (ctx->ring_edge)   md_free(alloc, ctx->ring_edge,   sizeof(double) * (R + 1));
     if (ctx->point_index) md_free(alloc, ctx->point_index, sizeof(uint32_t) * P);
     if (ctx->point_k)     md_free(alloc, ctx->point_k,     sizeof(int16_t) * 2 * P);
     if (ctx->point_scale) md_free(alloc, ctx->point_scale, sizeof(float) * ctx->num_classes * P);
@@ -526,6 +570,7 @@ void md_gisaxs_get_info(const md_gisaxs_t* ctx, md_gisaxs_info_t* info) {
     info->z0 = ctx->z0;
     info->num_rings = ctx->num_rings;
     info->dq_ring = ctx->dq;
+    info->q_par_min = ctx->q_par_min;
     info->num_points = ctx->num_points;
     info->num_classes = ctx->num_classes;
     for (size_t c = 0; c < ctx->num_classes && c < 4; ++c) info->class_sigma[c] = ctx->class_sigma[c];
@@ -717,6 +762,7 @@ bool md_gisaxs_compute(md_gisaxs_t* ctx) {
 size_t md_gisaxs_num_rings(const md_gisaxs_t* ctx)            { return ctx ? ctx->num_rings : 0; }
 const double* md_gisaxs_ring_q(const md_gisaxs_t* ctx)         { return ctx ? ctx->ring_q : NULL; }
 const unsigned* md_gisaxs_ring_count(const md_gisaxs_t* ctx)   { return ctx ? ctx->ring_count : NULL; }
+const double* md_gisaxs_ring_edges(const md_gisaxs_t* ctx)     { return ctx ? ctx->ring_edge : NULL; }
 size_t md_gisaxs_num_slices(const md_gisaxs_t* ctx)           { return ctx ? ctx->num_slices : 0; }
 const double* md_gisaxs_slice_z(const md_gisaxs_t* ctx)        { return ctx ? ctx->slice_z : NULL; }
 const double* md_gisaxs_slice_profile(const md_gisaxs_t* ctx)  { return ctx ? ctx->profile : NULL; }
