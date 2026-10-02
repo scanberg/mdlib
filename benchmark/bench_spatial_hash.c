@@ -31,7 +31,7 @@ UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = arena };
-    md_spatial_acc_init(&acc, &stream, RADIUS, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = RADIUS, .unitcell = &sys_state.unitcell });
 
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {

@@ -244,7 +244,7 @@ UTEST(spatial_hash, small_periodic) {
 
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, 10);
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, &stream, 10.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &cell });
     
     uint32_t count = 0;
     double p0[3] = {5, 0, 0};
@@ -270,7 +270,7 @@ UTEST(spatial_hash, aabb_periodic_ortho) {
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, ARRAY_SIZE(x));
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
 
     spatial_acc_point_collect_t data = {
         .idx = NULL,
@@ -316,7 +316,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic) {
 
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, 3);
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
 
     spatial_acc_point_collect_t data = {
         .idx = NULL,
@@ -361,7 +361,7 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
 
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = alloc };
     uint8_t* seen = (uint8_t*)md_temp_alloc(temp, N);
@@ -447,7 +447,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
 
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
 
     spatial_acc_point_collect_t got = { .idx = NULL, .alloc = alloc };
     uint8_t* seen = (uint8_t*)md_temp_alloc(temp, N);
@@ -597,7 +597,7 @@ static void point_query_coordinates(int* utest_result, const double A[3][3]) {
 
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, N);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 4.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 4.0, .unitcell = &cell });
 
     spatial_acc_point_coord_collect_t got = { .alloc = alloc };
     size_t total = 0;
@@ -731,7 +731,7 @@ UTEST(spatial_hash, n2) {
 
         md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, TEST_COUNT);
         md_spatial_acc_t sa = { .alloc = alloc };
-		md_spatial_acc_init(&sa, &stream, 6.0, &test_cell, 0);
+		md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 6.0, .unitcell = &test_cell });
 
         EXPECT_EQ(sa.G00, (float)G[0][0]);
         EXPECT_EQ(sa.G11, (float)G[1][1]);
@@ -829,7 +829,7 @@ UTEST(spatial_hash, n2) {
     start = md_tick_now();
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
-    md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 5.0, .unitcell = &cell });
     md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 5.0, spatial_acc_neighbor_callback, &count);
 	//md_spatial_acc_for_each_pair_within_cutoff(&acc, 5.0, spatial_acc_cutoff_callback, &count);
     end = md_tick_now();
@@ -895,7 +895,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
     
     srand(31);
 
@@ -956,7 +956,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     srand(31);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract_double(G, &sys_state.unitcell);
@@ -1010,7 +1010,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract_double(G, &sys_state.unitcell);
@@ -1067,7 +1067,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract_double(G, &sys_state.unitcell);
@@ -1132,7 +1132,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
-    md_spatial_acc_init(&acc, &stream, 10.0, &sys_state.unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
     double G[3][3], A[3][3], I[3][3];
     md_unitcell_G_extract_double(G, &sys_state.unitcell);
@@ -1358,9 +1358,9 @@ UTEST(spatial_acc_cells, matches_reference_randomized) {
         const double cutoff = rnd_rng(1.5, 9.5);
         // At least three cutoffs across, so the minimum image is the only image within the cutoff
         const double ext[3] = { rnd_rng(30, 200), rnd_rng(30, 200), rnd_rng(30, 400) };
-        // Mostly cells of the cutoff, sometimes down to half of it (two cells of reach), sometimes chosen by the structure
-        const int cell_choice = (int)rnd_rng(0, 3);
-        const double cell_ext = cell_choice == 0 ? cutoff : cell_choice == 1 ? cutoff * rnd_rng(0.51, 1.0) : 0.0;
+        // Mostly built for the cutoff of the query, sometimes for down to about half of it: the query then reaches
+        // further than the structure was built for, through two cells when they come out smaller than the query
+        const double build_cutoff = rnd_rng(0, 1) < 0.6 ? cutoff : cutoff * rnd_rng(0.51, 1.0);
         const bool clustered = rnd_rng(0, 1) < 0.5;
         const bool tri = rnd_rng(0, 1) < 0.25;
         const double sk[3] = { tri ? rnd_rng(-0.2, 0.2) * ext[1] : 0, tri ? rnd_rng(-0.2, 0.2) * ext[2] : 0, tri ? rnd_rng(-0.2, 0.2) * ext[2] : 0 };
@@ -1402,12 +1402,12 @@ UTEST(spatial_acc_cells, matches_reference_randomized) {
 
         md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, subset ? idx : NULL, num);
         md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-        md_spatial_acc_desc_t desc = { .coords = &stream, .cell_ext = cell_ext, .cutoff = cutoff, .unitcell = cell_ptr,
+        md_spatial_acc_desc_t desc = { .coords = &stream, .cutoff = build_cutoff, .unitcell = cell_ptr,
                                        .flags = stream_idx ? MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX : 0 };
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
         const bool ok = cell_matches_reference(&stream, &acc, cutoff, cell_ptr, stream_idx);
         if (!ok) {
-            printf("iteration %d: %zu points, extent %.1f %.1f %.1f, %s, pbc %d, cutoff %.2f, cell %.2f\n", iter, num, ext[0], ext[1], ext[2], tri ? "triclinic" : "orthorhombic", cell_ptr ? pbc : -1, cutoff, cell_ext);
+            printf("iteration %d: %zu points, extent %.1f %.1f %.1f, %s, pbc %d, cutoff %.2f, built for %.2f\n", iter, num, ext[0], ext[1], ext[2], tri ? "triclinic" : "orthorhombic", cell_ptr ? pbc : -1, cutoff, build_cutoff);
         }
         EXPECT_TRUE(ok);
         md_spatial_acc_free(&acc);
@@ -1419,8 +1419,8 @@ UTEST(spatial_acc_cells, matches_reference_randomized) {
     free(idx);
 }
 
-// A handful of clusters in a box of 3000 A with 5 A cells: as a dense grid 216 million cells, of which the index
-// stores the few thousand occupied ones
+// A handful of clusters in a box of 3000 A with a cutoff of 5 A: as a dense grid of the cutoff 216 million cells, of
+// which the index stores the few thousand occupied ones
 UTEST(spatial_acc_cells, clustered_large_box) {
     srand(4711);
     const size_t count = 6000;
@@ -1437,8 +1437,9 @@ UTEST(spatial_acc_cells, clustered_large_box) {
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, count);
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, &stream, 5.0, &cell, 0);
-    EXPECT_EQ(600u, acc.cell_dim[0]);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 5.0, .unitcell = &cell });
+    EXPECT_GE(acc.cell_dim[0], 3000u / 20u);     // Cells of 5 to 20 A
+    EXPECT_LE(acc.cell_dim[0], 3000u / 5u);
     EXPECT_LE(acc.num_cells, count);
     EXPECT_TRUE(cell_matches_reference(&stream, &acc, 5.0, &cell, false));
     md_spatial_acc_free(&acc);
@@ -1448,7 +1449,7 @@ UTEST(spatial_acc_cells, clustered_large_box) {
     free(z);
 }
 
-// Far more cells than a dense grid could hold: 2 x 2 x 8 um with 3 A cells
+// Far more cells than a dense grid could hold: 2 x 2 x 8 um with a cutoff of 3 A
 UTEST(spatial_acc_cells, micrometre_box) {
     srand(1234);
     const size_t count = 10000;
@@ -1469,9 +1470,10 @@ UTEST(spatial_acc_cells, micrometre_box) {
     md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, count);
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
-    md_spatial_acc_init(&acc, &stream, 3.0, &cell, 0);
-    EXPECT_EQ(6666u, acc.cell_dim[0]);
-    EXPECT_EQ(26666u, acc.cell_dim[2]);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
+    // Sparse as this is, the cells come out at the largest the cutoff allows (4 x 3 A), still a thousand and more per axis
+    EXPECT_GE(acc.cell_dim[0], 20000u / 12u);
+    EXPECT_GE(acc.cell_dim[2], 80000u / 12u);
     EXPECT_LE(acc.num_cells, count);
 
     cell_pairs_t p = cell_collect_pairs(&acc, 2.5);
@@ -1510,7 +1512,7 @@ UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
 
         md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
         md_spatial_acc_desc_t desc = { .coords = &stream, .cutoff = cutoff, .unitcell = &cell };
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
         const double cell_ext = ext / acc.cell_dim[0];
         if (pass == 0) {
             EXPECT_LT(cell_ext, cutoff * 1.1);
@@ -1523,6 +1525,44 @@ UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
         md_spatial_acc_free(&acc);
     }
 
+    free(x);
+    free(y);
+    free(z);
+}
+
+// An AABB which reaches past a thin layer of points along an axis that is not periodic: the box extends beyond the
+// frame there (which is just the extent of the points), and has to keep every point within it rather than being cut
+// to half the frame, as it is along a periodic axis
+UTEST(spatial_acc_cells, aabb_beyond_thin_nonperiodic_layer) {
+    srand(99);
+    const size_t count = 2000;
+    float* x = (float*)malloc(count * sizeof(float));
+    float* y = (float*)malloc(count * sizeof(float));
+    float* z = (float*)malloc(count * sizeof(float));
+    for (size_t i = 0; i < count; ++i) {
+        x[i] = (float)rnd_rng(0, 100);
+        y[i] = (float)rnd_rng(0, 100);
+        z[i] = (float)rnd_rng(0, 2);      // A layer 2 A thick
+    }
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, count);
+    md_unitcell_t cell = md_unitcell_from_extent(100, 100, 0);   // Periodic in x and y only
+    for (int periodic = 0; periodic < 2; ++periodic) {
+        md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = periodic ? &cell : NULL });
+        for (int q = 0; q < 20; ++q) {
+            // Half extents along z of up to 20 A, against a frame of a cell or so (the points are within 2 A)
+            const double cen[3] = { rnd_rng(10, 90), rnd_rng(10, 90), rnd_rng(-10, 12) };
+            const double rad[3] = { rnd_rng(1, 8), rnd_rng(1, 8), rnd_rng(4, 20) };
+            uint32_t got = 0;
+            md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_count_callback, &got);
+            uint32_t ref = 0;
+            for (size_t i = 0; i < count; ++i) {
+                if (fabs(x[i] - cen[0]) <= rad[0] && fabs(y[i] - cen[1]) <= rad[1] && fabs(z[i] - cen[2]) <= rad[2]) ref += 1;
+            }
+            EXPECT_EQ(ref, got);
+        }
+        md_spatial_acc_free(&acc);
+    }
     free(x);
     free(y);
     free(z);

@@ -54,23 +54,21 @@ typedef struct md_spatial_acc_t {
     struct md_allocator_i* alloc;
 } md_spatial_acc_t;
 
-// Description used to initialize a spatial acceleration structure.
-// Zero initialize and fill in the fields of interest, the zero value is a valid default for every optional field.
+// Description of a spatial acceleration structure, the only way to initialize one. Zero initialize and fill in what
+// applies: zero is a valid default for every field but the coordinates, so fields can be added without touching
+// callers which do not need them.
 typedef struct md_spatial_acc_desc_t {
-    // Input positions of the points, in cartesian coordinates. Required.
+    // The points, in cartesian coordinates. Required.
     const struct md_coord_stream_t* coords;
 
-    // Cell extent for the spatial acceleration structure. If 0, it is determined from cutoff (below) when one is
-    // given, and is a fixed default otherwise.
-    double cell_ext;
-
-    // Optional: the cutoff the structure will be queried with. With cell_ext 0, the cell extent is chosen from it and
-    // from how the points are distributed: the cutoff where the cells around a point hold enough points to keep the
-    // queries busy, larger where they are sparse (up to 4 times the cutoff). The caller needs to know nothing about
-    // the cells.
+    // The largest cutoff the structure will be queried with. The cells follow from it and from how the points are
+    // spread: as large as the cutoff where the points are dense, larger (up to 4 times the cutoff) where they are
+    // sparse, which keeps the queries busy rather than visiting cells with a point or two. Any query up to this cutoff
+    // works; up to twice it still works, at a cost. 0 means 6 A. Point queries (AABB) take any cutoff of the scale of
+    // their boxes.
     double cutoff;
 
-    // Unit cell information for periodic boundary conditions. If NULL, no unit cell is used.
+    // Periodic boundary conditions. NULL for none.
     const struct md_unitcell_t* unitcell;
 
     md_spatial_acc_flags_t flags;
@@ -91,19 +89,9 @@ typedef void (*md_spatial_acc_point_callback_t)(const uint32_t* idx, const float
 // Callback for pairwise interactions
 typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param);
 
-// Initialize a spatial acceleration structure
-// - in_x, in_y, in_z:  Input positions of points. They are expected to be in cartesian coordinates.
-// - in_idx (optional): Input indices for points to extract. If NULL, it is assumed to be a dense range of 0..count-1.
-// If not NULL, the supplied indices are used for the callback if the flag MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX is set, otherwise the linear idx is used for the callback.
-// - count: Number of points OR number of indices if in_idx is not NULL.
-// - cell_ext (optional): Cell extent for the spatial acceleration structure. If 0, it is automatically determined.
-// - unitcell (optional): Unit cell information for periodic boundary conditions. If NULL, no unit cell is used.
-// - flags: (optional) Flags to control the behavior of the spatial acceleration structure. See md_spatial_acc_init_flags_t for details.
-void md_spatial_acc_init(md_spatial_acc_t* acc, const struct md_coord_stream_t* coords, double cell_ext, const struct md_unitcell_t* unitcell, md_spatial_acc_flags_t flags);
-
-// Initialize a spatial acceleration structure from a description, which additionally allows the cell extent to be
-// chosen from the cutoff of the queries (see md_spatial_acc_desc_t::cutoff).
-void md_spatial_acc_init_desc(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc);
+// Initialize a spatial acceleration structure from its description. Builds from scratch: call again to rebuild for
+// new coordinates. acc->alloc has to be set.
+void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc);
 
 // Free the data allocated for the spatial acceleration structure. This should be called when the spatial acceleration structure is no longer needed to free the allocated memory.
 void md_spatial_acc_free(md_spatial_acc_t* acc);

@@ -174,7 +174,7 @@ UBENCH_EX(coords, spatial_acc_build_and_pairs) {
         UBENCH_DO_BENCHMARK() {
             md_allocator_i* tmp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
             md_spatial_acc_t acc = { .alloc = tmp };
-            md_spatial_acc_init(&acc, &stream, 3.0, &st.unitcell, 0);
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &st.unitcell });
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 3.0, count_pairs, &count);
             md_arena_allocator_destroy(tmp);
             UBENCH_DO_NOTHING(&count);

@@ -332,7 +332,7 @@ typedef struct eval_context_t {
     // It contains all atoms within the dataset and the cells are at a default resolution ~6Å
     // Will be rebuilt and scaled up if required
     md_spatial_acc_t spatial_acc;
-	double spatial_acc_cell_ext;
+	double spatial_acc_cutoff;     // The cutoff spatial_acc was built for, 0 if it is not built
 
     // During evaluations, whenever we hit a array subscript operator, we store the indices
     // In order to propagate what will be visible and or used by the array subscript operator
@@ -5990,7 +5990,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
 		MEMSET(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
-        ctx.spatial_acc_cell_ext = 0.0;
+        ctx.spatial_acc_cutoff = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
             if (!evaluate_node_alloc(&data[i], expr[i], &ctx, temp_alloc)) {

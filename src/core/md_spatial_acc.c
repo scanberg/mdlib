@@ -419,6 +419,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
 #define SPATIAL_ACC_TARGET_OCCUPANCY 10.0
 #endif
 #define SPATIAL_ACC_MAX_CELL_SCALE   4.0
+#define SPATIAL_ACC_DEFAULT_CUTOFF   6.0     // For a description without a cutoff
 #define SPATIAL_ACC_OCCUPANCY_SAMPLES 16384
 
 static inline uint64_t occupancy_hash(uint64_t x) {
@@ -549,7 +550,7 @@ static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], v
     acc->flags = flags;
 }
 
-static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cell_ext, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
+static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
     ASSERT(acc);
     ASSERT(coords);
 
@@ -573,18 +574,10 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         return;
     }
 
-    if (in_cell_ext <= 0.0 && in_cutoff > 0.0) {
-        in_cell_ext = cell_ext_from_occupancy(coords, in_cutoff, acc->alloc);
-    }
-    if (in_cell_ext <= 0.0) {
-        // Fallback to some default value
-        in_cell_ext = 6.0;
-    }
-
-    // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
-    // Using ~cutoff-ish spacing gives good pruning.
-    // We protect against too small cell_ext to avoid excessive memory usage and slowdown from too many cells.
-    const double CELL_EXT = MAX(in_cell_ext, 3.0);
+    // The cells: at least the cutoff, so a query up to it reaches one cell around, larger where the points are sparse.
+    // Never below 3 A, which would only multiply the cells to visit.
+    const double cutoff   = in_cutoff > 0.0 ? in_cutoff : SPATIAL_ACC_DEFAULT_CUTOFF;
+    const double CELL_EXT = MAX(cell_ext_from_occupancy(coords, cutoff, acc->alloc), 3.0);
 
     double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double I[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -709,13 +702,14 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     build_cells(acc, coords, in_flags);
 }
 
-void md_spatial_acc_init(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double cell_ext, const md_unitcell_t* unitcell, md_spatial_acc_flags_t flags) {
-    spatial_acc_init_internal(acc, coords, cell_ext, 0.0, unitcell, flags);
-}
-
-void md_spatial_acc_init_desc(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc) {
+void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc) {
+    ASSERT(acc);
     ASSERT(desc);
-    spatial_acc_init_internal(acc, desc->coords, desc->cell_ext, desc->cutoff, desc->unitcell, desc->flags);
+    if (!desc->coords) {
+        MD_LOG_ERROR("md_spatial_acc_init: the description has no coordinates");
+        return;
+    }
+    spatial_acc_init_internal(acc, desc->coords, desc->cutoff, desc->unitcell, desc->flags);
 }
 
 // Generate forward neighbor offsets for a 3D grid cell
@@ -1218,7 +1212,7 @@ static FORCE_INLINE cell_range_t cell_at(const md_spatial_acc_t* acc, node_cache
 
 static bool neighbor_stencil_fits(const int ncell[3], const char* caller) {
     if (2 * ncell[0] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[1] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS || 2 * ncell[2] + 1 > SPATIAL_ACC_MAX_NEIGHBOR_CELLS) {
-        MD_LOG_ERROR("%s: cutoff too large for cell size", caller);
+        MD_LOG_ERROR("%s: the cutoff is more than twice the cutoff the structure was built for", caller);
         return false;
     }
     return true;
@@ -1528,7 +1522,9 @@ static FORCE_INLINE void points_in_aabb(const md_spatial_acc_t* acc, const doubl
     md_256 v_min[3], v_max[3];
     if (!tri) {
         for (int a = 0; a < 3; ++a) {
-            const double r = MIN(frad[a], 0.5);
+            // Along a periodic axis half a period already reaches every image; along one which is not, the frame is
+            // only the extent of the points, and the box may well reach past it
+            const double r = pbc[a] ? MIN(frad[a], 0.5) : frad[a];
             v_min[a] = md_mm256_set1_ps((float)(fcen[a] - r));
             v_max[a] = md_mm256_set1_ps((float)(fcen[a] + r));
         }
