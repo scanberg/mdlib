@@ -139,18 +139,18 @@ static inline double qm_test_orthonormality(const qm_test_t* t, str_t coefficien
     size_t num_ao = 0, dim = 0;
     const md_attribute_t* ca = md_attributes_find(&t->sys.attributes, coefficient_path);
     if (!ca || ca->format.rank != 2) {
-        return INFINITY;
+        return HUGE_VAL;
     }
     const size_t num_mo = ca->format.shape[0];
     double* C = qm_test_matrix(t, coefficient_path, &num_ao);
     double* S = qm_test_matrix(t, STR_LIT("basis/overlap"), &dim);
     if (!C || !S || dim != num_ao) {
-        return INFINITY;
+        return HUGE_VAL;
     }
 
     double* SC = (double*)md_alloc(t->alloc, sizeof(double) * num_mo * num_ao);
     if (!SC) {
-        return INFINITY;
+        return HUGE_VAL;
     }
     for (size_t m = 0; m < num_mo; ++m) {
         for (size_t a = 0; a < num_ao; ++a) {
