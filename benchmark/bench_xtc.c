@@ -207,10 +207,9 @@ UBENCH_EX(xtc, xtc_catalyst) {
 			md_file_offset_t frame_beg = frame_offsets[i];
 			md_file_offset_t frame_end = frame_offsets[i + 1];
 			size_t frame_size = frame_end - frame_beg;
-			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
-            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -250,10 +249,9 @@ UBENCH_EX(xtc, xtc_amyloid) {
 			md_file_offset_t frame_beg = frame_offsets[i];
 			md_file_offset_t frame_end = frame_offsets[i + 1];
 			size_t frame_size = frame_end - frame_beg;
-			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
-            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -292,10 +290,9 @@ UBENCH_EX(xtc, xtc_aspirin) {
 			md_file_offset_t frame_beg = frame_offsets[i];
 			md_file_offset_t frame_end = frame_offsets[i + 1];
 			size_t frame_size = frame_end - frame_beg;
-			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
-            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 
@@ -334,10 +331,9 @@ UBENCH_EX(xtc, xtc_ion_channel) {
 			md_file_offset_t frame_beg = frame_offsets[i];
 			md_file_offset_t frame_end = frame_offsets[i + 1];
 			size_t frame_size = frame_end - frame_beg;
-			md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+			md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
 			md_file_read_at(file, frame_beg, frame_data, frame_size);
-			//md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
-            md_xtc_decode_frame_data_soa(frame_data, frame_size, &xtc_header, coords, coords + num_atoms, coords + 2 * num_atoms, num_atoms);
+			md_xtc_decode_frame_data(frame_data, frame_size, &xtc_header, coords, num_atoms);
         }
     }
 

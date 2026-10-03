@@ -322,7 +322,7 @@ UTEST(xtc, catalyst) {
         size_t frame_size = frame_end - frame_beg;
         md_file_seek(file, frame_beg, MD_FILE_BEG);
 
-        md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+        md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
         size_t read_bytes = md_file_read_at(file, frame_beg, frame_data, frame_size);
         EXPECT_TRUE(md_xtc_decode_frame_data(frame_data, read_bytes, &xtc_header, xyz, num_atoms));
 
@@ -385,7 +385,7 @@ UTEST(xtc, big) {
         size_t frame_size = frame_end - frame_beg;
         md_file_seek(file, frame_beg, MD_FILE_BEG);
 
-        md_array_ensure(frame_data, ALIGN_TO(frame_size, 16), arena);
+        md_array_ensure(frame_data, frame_size + MD_XTC_DECODE_PADDING, arena);
         size_t read_bytes = md_file_read_at(file, frame_beg, frame_data, frame_size);
         EXPECT_TRUE(md_xtc_decode_frame_data(frame_data, read_bytes, &xtc_header, xyz, num_atoms));
 
