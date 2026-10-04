@@ -516,6 +516,8 @@ typedef struct md_vk_dev_caps_t {
     bool dynamic_storage_image;
     bool dynamic_sampled_image;
     bool shader_int64;
+    bool storage_read_without_format;    /* device-wide; otherwise per format */
+    bool storage_write_without_format;
 } md_vk_dev_caps_t;
 
 typedef struct md_gpu_device {
@@ -594,6 +596,7 @@ typedef struct md_gpu_device {
 
     bool            is_discrete;
     uint32_t        adapter_index;
+    uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
@@ -1144,9 +1147,14 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     if (has13) {
         MD_VK_REQUIRE(f13.synchronization2,      "synchronization2");
     }
-    /* The heap arrays carry no format qualifier. */
-    MD_VK_REQUIRE(f2.features.shaderStorageImageReadWithoutFormat,  "shaderStorageImageReadWithoutFormat");
-    MD_VK_REQUIRE(f2.features.shaderStorageImageWriteWithoutFormat, "shaderStorageImageWriteWithoutFormat");
+    /* The heap arrays carry no format qualifier. The device-wide features say
+       "every format in the storage-without-format list"; from Vulkan 1.3 on the
+       SPIR-V capabilities are allowed without them and support is per format
+       (VK_FORMAT_FEATURE_2_STORAGE_{READ,WRITE}_WITHOUT_FORMAT_BIT), which
+       md_gpu_texture_create checks. Older Intel drivers (Gen9 on Windows) lack
+       the device-wide read feature but can read R32 formats. */
+    out_caps->storage_read_without_format  = f2.features.shaderStorageImageReadWithoutFormat;
+    out_caps->storage_write_without_format = f2.features.shaderStorageImageWriteWithoutFormat;
 #undef MD_VK_REQUIRE
 #undef MD_VK_MISSING
     if (!ok) return false;
@@ -1534,8 +1542,8 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.depthBiasClamp            = (caps.graphics && caps.depth_bias_clamp) ? VK_TRUE : VK_FALSE;
     f2.features.largePoints               = VK_FALSE;
     /* Slang's heap arrays carry no format qualifier. */
-    f2.features.shaderStorageImageReadWithoutFormat    = VK_TRUE;
-    f2.features.shaderStorageImageWriteWithoutFormat   = VK_TRUE;
+    f2.features.shaderStorageImageReadWithoutFormat    = caps.storage_read_without_format  ? VK_TRUE : VK_FALSE;
+    f2.features.shaderStorageImageWriteWithoutFormat   = caps.storage_write_without_format ? VK_TRUE : VK_FALSE;
     f2.features.shaderStorageImageArrayDynamicIndexing = caps.dynamic_storage_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderSampledImageArrayDynamicIndexing = caps.dynamic_sampled_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderInt64                            = caps.shader_int64          ? VK_TRUE : VK_FALSE;
@@ -3093,6 +3101,27 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
                        (d.usage & MD_GPU_TEX_SAMPLED) ? " SAMPLED" : "",
                        (d.usage & MD_GPU_TEX_RENDER_TARGET) ? " RENDER_TARGET" : "");
             return NULL;
+        }
+        /* Storage access goes through descriptors without a format qualifier.
+           Where the device-wide features are missing, it is up to the format:
+           writes are essential; a format that can only be written still works
+           for kernels that do not read it, so that is a warning, once per format. */
+        if ((d.usage & MD_GPU_TEX_STORAGE) &&
+            !(dev->caps.storage_read_without_format && dev->caps.storage_write_without_format)) {
+            VkFormatProperties3 fp3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+            VkFormatProperties2 fp2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &fp3};
+            vkGetPhysicalDeviceFormatProperties2(dev->phys, ici.format, &fp2);
+            const VkFormatFeatureFlags2 ff = fp3.optimalTilingFeatures;
+            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
+                md_vk_fail("texture '%s': the device cannot write %s storage images without a format qualifier", label, fi.name);
+                return NULL;
+            }
+            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) && (uint32_t)d.format < 64u &&
+                !(dev->warned_storage_read & (1ull << (uint32_t)d.format))) {
+                dev->warned_storage_read |= 1ull << (uint32_t)d.format;
+                MD_LOG_INFO("md_gpu: this device cannot read %s storage images without a format qualifier; "
+                            "kernels may write '%s' but reads of it through a storage handle are undefined", fi.name, label);
+            }
         }
         if (d.width > ifp.maxExtent.width || d.height > ifp.maxExtent.height || ici.extent.depth > ifp.maxExtent.depth ||
             d.mip_levels > ifp.maxMipLevels || ici.arrayLayers > ifp.maxArrayLayers) {
