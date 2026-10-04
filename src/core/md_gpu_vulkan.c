@@ -108,7 +108,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_HEAP_CACHE_DEFAULT (256ull << 20)
 #define MD_VK_TEMP_CHUNK_MIN     (4ull << 20)
 #define MD_VK_TEMP_KINDS            2u              /* DEVICE, HOST_WRITE                    */
-#define MD_VK_ERROR_BUF           512u
+#define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
 
 #if defined(_MSC_VER)
 #define MD_VK_THREAD_LOCAL __declspec(thread)
@@ -1087,44 +1087,69 @@ static bool md_vk_ext_available(const char* name) {
 }
 
 
-/* On failure *out_missing names the first unmet requirement. It is always a
-   string literal, so the caller may keep it. */
+/* On failure, `missing` lists every unmet requirement (comma separated), so a
+   device can be judged in one go rather than one feature at a time. */
 static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc,
-                               md_vk_dev_caps_t* out_caps, const char** out_missing)
+                               md_vk_dev_caps_t* out_caps, char* missing, size_t missing_cap)
 {
     memset(out_caps, 0, sizeof(*out_caps));
-    *out_missing = NULL;
+    missing[0] = 0;
+    size_t missing_len = 0;
+    bool ok = true;
+#define MD_VK_MISSING(name) do {                                                              \
+        ok = false;                                                                            \
+        if (missing_len + 1 < missing_cap) {                                                   \
+            int w_ = snprintf(missing + missing_len, missing_cap - missing_len, "%s%s",        \
+                              missing_len ? ", " : "", (name));                                \
+            if (w_ > 0) missing_len = MIN(missing_len + (size_t)w_, missing_cap - 1);           \
+        }                                                                                      \
+    } while (0)
+#define MD_VK_REQUIRE(cond, name) do { if (!(cond)) MD_VK_MISSING(name); } while (0)
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(pd, &props);
     /* We call the core 1.3 synchronization2 and dynamic-rendering entry points
        directly rather than their KHR aliases. */
-    if (props.apiVersion < VK_API_VERSION_1_3) { *out_missing = "Vulkan 1.3"; return false; }
+    if (props.apiVersion < VK_API_VERSION_1_3) {
+        char v[64];
+        snprintf(v, sizeof(v), "Vulkan 1.3 (driver has %u.%u.%u)", VK_API_VERSION_MAJOR(props.apiVersion),
+                 VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion));
+        MD_VK_MISSING(v);
+    }
 
     /* No device extensions are required: everything md_gpu uses is core 1.3. */
     (void)alloc;
 
+    /* The 1.2 / 1.3 feature structs may only be chained on devices of that version. */
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
-    VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
+    VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    const bool has12 = props.apiVersion >= VK_API_VERSION_1_2;
+    const bool has13 = props.apiVersion >= VK_API_VERSION_1_3;
+    if (has12) { f2.pNext = &f12; if (has13) f12.pNext = &f13; }
     vkGetPhysicalDeviceFeatures2(pd, &f2);
 
-#define MD_VK_REQUIRE(cond, name) do { if (!(cond)) { *out_missing = (name); return false; } } while (0)
-    MD_VK_REQUIRE(f12.bufferDeviceAddress,   "bufferDeviceAddress");
-    MD_VK_REQUIRE(f12.timelineSemaphore,     "timelineSemaphore");
-    MD_VK_REQUIRE(f12.descriptorIndexing,    "descriptorIndexing");
-    MD_VK_REQUIRE(f12.runtimeDescriptorArray,"runtimeDescriptorArray");
-    MD_VK_REQUIRE(f12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
-    /* One per binding in the bindless set, which is UPDATE_AFTER_BIND. */
-    MD_VK_REQUIRE(f12.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
-    MD_VK_REQUIRE(f12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
-    /* Slang emits scalar layout for the pointer-reached argument struct. */
-    MD_VK_REQUIRE(f12.scalarBlockLayout,     "scalarBlockLayout");
-    MD_VK_REQUIRE(f13.synchronization2,      "synchronization2");
+    if (has12) {
+        MD_VK_REQUIRE(f12.bufferDeviceAddress,   "bufferDeviceAddress");
+        MD_VK_REQUIRE(f12.timelineSemaphore,     "timelineSemaphore");
+        MD_VK_REQUIRE(f12.descriptorIndexing,    "descriptorIndexing");
+        MD_VK_REQUIRE(f12.runtimeDescriptorArray,"runtimeDescriptorArray");
+        MD_VK_REQUIRE(f12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
+        /* One per binding in the bindless set, which is UPDATE_AFTER_BIND. */
+        MD_VK_REQUIRE(f12.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
+        MD_VK_REQUIRE(f12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
+        /* Slang emits scalar layout for the pointer-reached argument struct. */
+        MD_VK_REQUIRE(f12.scalarBlockLayout,     "scalarBlockLayout");
+    }
+    if (has13) {
+        MD_VK_REQUIRE(f13.synchronization2,      "synchronization2");
+    }
     /* The heap arrays carry no format qualifier. */
     MD_VK_REQUIRE(f2.features.shaderStorageImageReadWithoutFormat,  "shaderStorageImageReadWithoutFormat");
     MD_VK_REQUIRE(f2.features.shaderStorageImageWriteWithoutFormat, "shaderStorageImageWriteWithoutFormat");
 #undef MD_VK_REQUIRE
+#undef MD_VK_MISSING
+    if (!ok) return false;
 
     /* Rendering: optional as a whole. Vertex pulling needs draw parameters
        (Slang's SV_VertexID subtracts the base vertex), multi-draw indirect
@@ -1220,9 +1245,8 @@ static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_
         info->device_id = p.deviceID;
         info->type      = md_vk_device_type(p.deviceType);
         md_vk_driver_string(pds[i], &p, info->driver, sizeof(info->driver));
-        const char* missing = NULL;
-        info->usable = md_vk_probe_device(pds[i], alloc, &ad[i].caps, &missing);
-        if (!info->usable) snprintf(info->missing, sizeof(info->missing), "%s", missing ? missing : "?");
+        info->usable = md_vk_probe_device(pds[i], alloc, &ad[i].caps, info->missing, sizeof(info->missing));
+        if (!info->usable && !info->missing[0]) snprintf(info->missing, sizeof(info->missing), "?");
     }
     md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
     *out = ad;
@@ -1365,7 +1389,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         MD_LOG_DEBUG("md_gpu: adapter [%u] '%s' (%s)%s%s", i, infos[i].name, md_gpu_sel_type_str(infos[i].type),
                      infos[i].usable ? "" : " — lacks ", infos[i].usable ? "" : infos[i].missing);
     }
-    char why[1024];
+    char why[2048];
     const int pick = md_gpu_sel_pick(infos, adapter_count, desc, why, sizeof(why));
     md_free(alloc, infos, adapter_count * sizeof(md_gpu_adapter_info_t));
 

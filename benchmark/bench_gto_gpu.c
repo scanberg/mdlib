@@ -1219,7 +1219,7 @@ int main(int argc, char** argv) {
     ctx.dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = device_sel, .preference = preference, .label = "md_bench_gto_gpu" });
     md_gpu_device_info_t info = {0};
     if (!ctx.dev) {
-        char err[2048];   // copied first: the system description enumerates adapters, which resets it
+        char err[2560];   // copied first: the system description enumerates adapters, which resets it
         snprintf(err, sizeof(err), "%s", md_gpu_last_error() ? md_gpu_last_error() : "unknown error");
         snprintf(info.name, sizeof(info.name), "none");
         print_system_info(argc, argv, &info, "-");

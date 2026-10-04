@@ -119,7 +119,7 @@ destruction.
 /* Bytes each thread of the built-in byte kernel handles. */
 #define MD_MTL_BYTE_OP_SPAN       16u
 #define MD_MTL_MAX_SAMPLERS      256u
-#define MD_MTL_ERROR_BUF         512u
+#define MD_MTL_ERROR_BUF         2560u
 
 /* The root buffer index is NOT fixed, and it is NOT always 0.
 
@@ -3470,7 +3470,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
                                    (desc && desc->preference != MD_GPU_DEVICE_PREFER_DEFAULT);
         id<MTLDevice> mtl = nil;
         if (explicit_pick) {
-            char why[1024];
+            char why[2048];
             const int pick = md_gpu_sel_pick(infos, n_all, desc, why, sizeof(why));
             if (pick < 0) {
                 md_mtl_fail("md_gpu_device_create: %s", why);

@@ -316,7 +316,7 @@ typedef struct md_gpu_adapter_info_t {
     uint32_t             device_id;     /* PCI device id, 0 unknown */
     md_gpu_device_type_t type;
     bool                 usable;        /* has everything md_gpu needs */
-    char                 missing[128];  /* when !usable: what it lacks */
+    char                 missing[512];  /* when !usable: everything it lacks, comma separated */
 } md_gpu_adapter_info_t;
 
 /* Lists the adapters of the active backend, in the order that a numeric
