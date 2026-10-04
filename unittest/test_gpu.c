@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #if MD_ENABLE_GPU
 
@@ -210,6 +211,65 @@ UTEST(gpu, device_create_destroy) {
     ASSERT_TRUE(md_gpu_device_info(dev, &info));
     ASSERT_TRUE(info.name[0] != '\0');
     ASSERT_GT(info.max_threads_per_group, 0u);
+    md_gpu_device_destroy(dev);
+}
+
+UTEST(gpu, adapter_selection) {
+    md_gpu_adapter_info_t list[16];
+    const uint32_t n = md_gpu_enumerate_adapters(list, 16);
+    if (n == 0) UTEST_SKIP("no adapters");
+    ASSERT_EQ(n, md_gpu_enumerate_adapters(NULL, 0));
+
+    uint32_t usable = 0;
+    for (uint32_t i = 0; i < n && i < 16; ++i) {
+        ASSERT_TRUE(list[i].name[0] != '\0');
+        if (!list[i].usable) { ASSERT_TRUE(list[i].missing[0] != '\0'); continue; }
+        ++usable;
+
+        // By index.
+        char sel[16];
+        snprintf(sel, sizeof(sel), "%u", i);
+        md_gpu_device_t dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = sel });
+        ASSERT_TRUE(dev != NULL);
+        md_gpu_device_info_t info;
+        ASSERT_TRUE(md_gpu_device_info(dev, &info));
+        EXPECT_EQ(i, info.adapter_index);
+        EXPECT_STREQ(list[i].name, info.name);
+        EXPECT_EQ(list[i].type, info.type);
+
+        // Enumerating while a device lives must leave it working.
+        ASSERT_EQ(n, md_gpu_enumerate_adapters(NULL, 0));
+        md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+        md_gpu_mem_t m = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, 256);
+        ASSERT_TRUE(m.gpu != 0);
+        md_gpu_memset(s, m.gpu, 0x5A, 256);
+        md_gpu_stream_sync(s);
+        EXPECT_EQ(0x5A, ((const uint8_t*)m.cpu)[255]);
+        md_gpu_free(s, m.gpu);
+        md_gpu_device_destroy(dev);
+
+        // By name, in another case: some adapter with that name is chosen.
+        char upper[256];
+        size_t k = 0;
+        for (; list[i].name[k] && k + 1 < sizeof(upper); ++k) upper[k] = (char)toupper((unsigned char)list[i].name[k]);
+        upper[k] = 0;
+        dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = upper });
+        ASSERT_TRUE(dev != NULL);
+        ASSERT_TRUE(md_gpu_device_info(dev, &info));
+        EXPECT_STREQ(list[i].name, info.name);
+        md_gpu_device_destroy(dev);
+    }
+    if (usable == 0) UTEST_SKIP("no usable adapter");
+
+    // A selector that matches nothing fails, and says so, instead of falling back.
+    EXPECT_TRUE(md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = "no-such-gpu-1234" }) == NULL);
+    ASSERT_TRUE(md_gpu_last_error() != NULL);
+    EXPECT_TRUE(strstr(md_gpu_last_error(), "no-such-gpu-1234") != NULL);
+    EXPECT_TRUE(md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = "999" }) == NULL);
+
+    // Preferences always find something when an adapter is usable.
+    md_gpu_device_t dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .preference = MD_GPU_DEVICE_PREFER_LOW_POWER });
+    ASSERT_TRUE(dev != NULL);
     md_gpu_device_destroy(dev);
 }
 

@@ -105,8 +105,10 @@ void fill_D_tile(uint tile_i, uint tile_j, uint num_cgtos, uint tid) {
 
         float value = 0.0;
         if (slot_i < num_cgtos && slot_j < num_cgtos) {
-            uint gi = screened_cgtos[slot_i];
-            uint gj = screened_cgtos[slot_j];
+            // Indices are clamped so that inactive lanes never form out-of-range
+            // addresses (llvmpipe evaluates their loads).
+            uint gi = min(screened_cgtos[slot_i], args.num_cgtos - 1u);
+            uint gj = min(screened_cgtos[slot_j], args.num_cgtos - 1u);
             value = args.D_matrix[get_index(gi, gj, args.num_cgtos)];
         }
         D_tile[row][col] = value;
@@ -144,7 +146,7 @@ void fill_cgtos_tile(uint tile_offset, uint num_cgtos, uint tid) {
         float3 center = float3(0.0f);
 
         if (slot < num_cgtos) {
-            uint gi = screened_cgtos[slot];
+            uint gi = min(screened_cgtos[slot], args.num_cgtos - 1u);
             uint2 off_len = args.cgto_off_len[gi];
             src = off_len.x;
             len = off_len.y;
@@ -273,9 +275,9 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
         bool passed = false;
         if (i < args.num_cgtos) {
-            float r = args.cgto_r[i];
+            float r = args.cgto_r[min(i, args.num_cgtos - 1u)];
             if (r != 0.0) {
-                uint   atom_idx  = args.cgto_atom_idx[i];
+                uint   atom_idx  = args.cgto_atom_idx[min(i, args.num_cgtos - 1u)];
                 float3 center    = args.atom_xyz[atom_idx].xyz;
                 float3 model_xyz = mul(args.world_to_model, float4(center, 1.0)).xyz;
                 float  r2        = r * r;

@@ -235,6 +235,21 @@ set(TOPO_SLANG_FILES
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
   src/shaders/gto/eval_gto_mo.slang
+  src/shaders/gto/eval_gto_density_tiled_32x16_v1.slang
+  src/shaders/gto/eval_gto_density_gemm2_64x32.slang
+  src/shaders/gto/eval_gto_density_gemm2_64x64.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x32.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x64.slang
+  src/shaders/gto/eval_gto_density_gemm2_256x32.slang
+  src/shaders/gto/eval_gto_density_gemm2_256x64.slang
+  src/shaders/gto/eval_gto_mo_shell_v1_m1.slang
+  src/shaders/gto/eval_gto_mo_shell_v1_m8.slang
+  src/shaders/gto/eval_gto_mo_shell_v2_m1.slang
+  src/shaders/gto/eval_gto_mo_shell_v2_m8.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x64.slang
 )
 
 set(GEN_FILES)
@@ -467,7 +482,10 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES})
+set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES}
+    src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_tiled.slang src/shaders/gto/gto_common.slang
+    src/shaders/gto/eval_gto_density_gemm2.slang src/shaders/gto/gto_gemm_args.slang
+    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang)
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -512,6 +530,15 @@ if (MD_ENABLE_GPU)
   # md_topo.c includes one aggregate header rather than six.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/topo_gpu_shaders.inl
                  ${GEN_DIR}/topo_gpu_shaders.inl COPYONLY)
+  # Sources #included by the GTO kernels; slangc does not report includes.
+  set(GTO_SLANG_INCLUDES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_tiled.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
+  )
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
     compile_gpu_shaders(${GTO_STEM}_shaders.inl
@@ -519,8 +546,16 @@ if (MD_ENABLE_GPU)
       NAMESPACE md_shader
       SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${GTO_SRC}
       ENTRIES   main
+      DEPENDS   ${GTO_SLANG_INCLUDES}
     )
   endforeach()
+  compile_gpu_shaders(eval_gto_density_gemm_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
+    ENTRIES   count_main phi_main dgather_main gemm_main gemm_sg_main
+    DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
                  ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)

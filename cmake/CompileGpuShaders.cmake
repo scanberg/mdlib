@@ -16,6 +16,7 @@
 #       ENTRIES  <entry> [<entry> ...]     # compute kernels
 #       VERTEX   <entry> [<entry> ...]     # vertex stages
 #       FRAGMENT <entry> [<entry> ...]     # fragment stages
+#       DEPENDS  <file> [<file> ...]       # optional: files the source #includes
 #   )
 #
 # At least one of ENTRIES / VERTEX / FRAGMENT is required. Produces, for each
@@ -119,7 +120,7 @@ endif()
 
 function(compile_gpu_shaders OUT_HEADER)
     set(oneValueArgs TARGET NAMESPACE SOURCE)
-    set(multiValueArgs ENTRIES VERTEX FRAGMENT)
+    set(multiValueArgs ENTRIES VERTEX FRAGMENT DEPENDS)
     cmake_parse_arguments(G2 "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if (NOT G2_TARGET OR NOT G2_NAMESPACE OR NOT G2_SOURCE)
@@ -181,7 +182,7 @@ function(compile_gpu_shaders OUT_HEADER)
             --namespace ${G2_NAMESPACE}
             ${ABS_SRC} ${G2_ENTRIES} ${STAGE_ARGS}
         COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
-        DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_SCRIPT}
+        DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_SCRIPT}
         COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
         VERBATIM
     )
@@ -201,7 +202,7 @@ function(compile_gpu_shaders OUT_HEADER)
                     -bindless-space-index ${MD_GPU_BINDLESS_SPACE}
                     -entry ${ENTRY}
                     -o ${BIN}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_STAMP}
+                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP}
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.spv"
             )
         elseif (MD_GPU_BACKEND STREQUAL "METAL")
@@ -214,7 +215,7 @@ function(compile_gpu_shaders OUT_HEADER)
                     -target metal
                     -entry ${ENTRY}
                     -o ${MSL}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${LINT_STAMP}
+                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP}
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.metal"
             )
             if (MD_GPU_METAL_COMPILER)

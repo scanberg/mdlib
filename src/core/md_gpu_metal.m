@@ -79,6 +79,9 @@ destruction.
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <TargetConditionals.h>
+
+#include "md_gpu_select.inl"
+#include <TargetConditionals.h>
 #import <Foundation/Foundation.h>
 #include <objc/message.h>
 
@@ -462,6 +465,7 @@ typedef struct md_gpu_device {
     md_gpu_kernel_t make_grid_kernel;
     md_gpu_kernel_t byte_op_kernel;   /* unaligned copies and fills */
     bool            is_discrete;
+    uint32_t        adapter_index;
 } md_gpu_device;
 
 static bool     md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t align, uint64_t* out_addr, void** out_host, id<MTLBuffer>* out_buf, uint64_t* out_off);
@@ -3348,6 +3352,70 @@ static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
     return dev->make_grid_kernel != NULL && dev->byte_op_kernel != NULL;
 }
 
+/* Every Metal device. Call inside an @autoreleasepool. macOS can have several
+   (Intel Macs with a discrete GPU, eGPUs); elsewhere only the default one. */
+static NSArray* md_mtl_all_devices(void) {
+#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
+#  if __has_feature(objc_arc)
+    return MTLCopyAllDevices();
+#  else
+    return [MTLCopyAllDevices() autorelease];
+#  endif
+#else
+    id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+    if (!d) return @[];
+    NSArray* a = @[d];
+#  if !__has_feature(objc_arc)
+    [d release];
+#  endif
+    return a;
+#endif
+}
+
+/* Metal has no PCI ids; the name tells the vendor. */
+static uint32_t md_mtl_vendor_id(const char* name) {
+    char low[256];
+    size_t i = 0;
+    for (; name[i] && i + 1 < sizeof(low); ++i) low[i] = (char)tolower((unsigned char)name[i]);
+    low[i] = 0;
+    if (strstr(low, "apple"))                           return 0x106B;
+    if (strstr(low, "amd") || strstr(low, "radeon"))    return 0x1002;
+    if (strstr(low, "intel"))                           return 0x8086;
+    if (strstr(low, "nvidia") || strstr(low, "geforce")) return 0x10DE;
+    return 0;
+}
+
+static md_gpu_device_type_t md_mtl_device_type(id<MTLDevice> d) {
+    if ([d hasUnifiedMemory]) return MD_GPU_DEVICE_TYPE_INTEGRATED;
+#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
+    if ([d isLowPower]) return MD_GPU_DEVICE_TYPE_INTEGRATED;
+#endif
+    return MD_GPU_DEVICE_TYPE_DISCRETE;
+}
+
+static void md_mtl_adapter_info(id<MTLDevice> d, md_gpu_adapter_info_t* out) {
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", [[d name] UTF8String]);
+    snprintf(out->driver, sizeof(out->driver), "Metal, %s",
+             [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
+    out->vendor_id = md_mtl_vendor_id(out->name);
+    out->type      = md_mtl_device_type(d);
+    out->usable    = true;
+}
+
+uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
+    uint32_t n = 0;
+    @autoreleasepool {
+        NSArray* all = md_mtl_all_devices();
+        n = (uint32_t)[all count];
+        for (uint32_t i = 0; i < n && i < max; ++i) {
+            id<MTLDevice> d = all[i];
+            md_mtl_adapter_info(d, &out[i]);
+        }
+    }
+    return n;
+}
+
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_mtl_has_error = false;
     struct md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
@@ -3387,10 +3455,41 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_mutex_init(&dev->device_mutex);
 
     @autoreleasepool {
-        id<MTLDevice> mtl = MTLCreateSystemDefaultDevice();
-        if (!mtl) {
-            md_mtl_fail("MTLCreateSystemDefaultDevice returned nil");
+        /* Adapter: the system default unless an adapter or a preference is
+           given (md_gpu_device_desc_t.adapter, MD_GPU_DEVICE). */
+        NSArray* all = md_mtl_all_devices();
+        enum { MD_MTL_MAX_ADAPTERS = 16 };
+        md_gpu_adapter_info_t infos[MD_MTL_MAX_ADAPTERS];
+        const uint32_t n_all = (uint32_t)MIN([all count], (NSUInteger)MD_MTL_MAX_ADAPTERS);
+        for (uint32_t i = 0; i < n_all; ++i) {
+            id<MTLDevice> d = all[i];
+            md_mtl_adapter_info(d, &infos[i]);
+        }
+        char sel[128];
+        const bool explicit_pick = md_gpu_sel_get(desc, sel, sizeof(sel)) ||
+                                   (desc && desc->preference != MD_GPU_DEVICE_PREFER_DEFAULT);
+        id<MTLDevice> mtl = nil;
+        if (explicit_pick) {
+            char why[1024];
+            const int pick = md_gpu_sel_pick(infos, n_all, desc, why, sizeof(why));
+            if (pick < 0) {
+                md_mtl_fail("md_gpu_device_create: %s", why);
+            } else {
+                mtl = all[(NSUInteger)pick];
+#if !__has_feature(objc_arc)
+                [mtl retain];   /* owned like the result of MTLCreateSystemDefaultDevice */
+#endif
+                dev->adapter_index = (uint32_t)pick;
+            }
         } else {
+            mtl = MTLCreateSystemDefaultDevice();
+            if (!mtl) md_mtl_fail("MTLCreateSystemDefaultDevice returned nil");
+            for (uint32_t i = 0; mtl && i < n_all; ++i) {
+                id<MTLDevice> d = all[i];
+                if ([d registryID] == [mtl registryID]) dev->adapter_index = i;
+            }
+        }
+        if (mtl) {
             MD_MTL_OWN(mtl);
             dev->device      = mtl;
             dev->is_discrete = ![mtl hasUnifiedMemory];
@@ -3442,6 +3541,11 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->supports_graphics        = true;
     info->supports_present         = dev->can_present;
     snprintf(info->name, sizeof(info->name), "%s", [[dev->device name] UTF8String]);
+    info->vendor_id                = md_mtl_vendor_id(info->name);
+    info->type                     = md_mtl_device_type(dev->device);
+    info->adapter_index            = dev->adapter_index;
+    snprintf(info->driver, sizeof(info->driver), "Metal, %s",
+             [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
     return true;
 }
 

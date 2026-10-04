@@ -293,10 +293,54 @@ const char* md_gpu_last_error(void);
    Device
    ========================================================================= */
 
+typedef enum md_gpu_device_type_t {
+    MD_GPU_DEVICE_TYPE_OTHER = 0,
+    MD_GPU_DEVICE_TYPE_DISCRETE,
+    MD_GPU_DEVICE_TYPE_INTEGRATED,
+    MD_GPU_DEVICE_TYPE_VIRTUAL,
+    MD_GPU_DEVICE_TYPE_CPU,             /* software implementation (llvmpipe, SwiftShader) */
+} md_gpu_device_type_t;
+
+/* How md_gpu_device_create picks among the adapters when no adapter is named. */
+typedef enum md_gpu_device_preference_t {
+    MD_GPU_DEVICE_PREFER_DEFAULT = 0,   /* = HIGH_PERFORMANCE */
+    MD_GPU_DEVICE_PREFER_HIGH_PERFORMANCE,  /* discrete, then integrated, then the rest */
+    MD_GPU_DEVICE_PREFER_LOW_POWER,     /* integrated, then discrete, then the rest */
+} md_gpu_device_preference_t;
+
+/* One adapter (physical device) as the backend sees it. */
+typedef struct md_gpu_adapter_info_t {
+    char                 name[256];
+    char                 driver[256];   /* driver name and version, when known */
+    uint32_t             vendor_id;     /* PCI vendor id, 0 unknown */
+    uint32_t             device_id;     /* PCI device id, 0 unknown */
+    md_gpu_device_type_t type;
+    bool                 usable;        /* has everything md_gpu needs */
+    char                 missing[128];  /* when !usable: what it lacks */
+} md_gpu_adapter_info_t;
+
+/* Lists the adapters of the active backend, in the order that a numeric
+   md_gpu_device_desc_t.adapter selector refers to. Writes up to `max` entries
+   to `out` (which may be NULL when `max` is 0) and returns the total number of
+   adapters. Independent of any device; may be called before creating one. */
+uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max);
+
 typedef struct md_gpu_device_desc_t {
     /* Allocator for host-side allocations. NULL selects the default heap
        allocator. Must outlive the device. */
     struct md_allocator_i* alloc;
+
+    /* Names the adapter to use: either a decimal index into the list of
+       md_gpu_enumerate_adapters ("1"), or a case-insensitive substring of the
+       adapter name ("intel", "1060"). Among several matches, `preference`
+       decides. A selector that matches no usable adapter makes device creation
+       fail instead of silently falling back to another GPU.
+       NULL or "" falls back to the MD_GPU_DEVICE environment variable (same
+       syntax), and without it every usable adapter is a candidate. */
+    const char* adapter;
+
+    /* Ranking of the candidate adapters. */
+    md_gpu_device_preference_t preference;
 
     /* Request backend validation (Vulkan validation layers). On Metal it must
        be enabled from the environment; see md_gpu_metal.m. */
@@ -316,7 +360,13 @@ typedef struct md_gpu_device_info_t {
     uint32_t preferred_group_multiple;   /* warp / SIMD width */
     bool     supports_graphics;          /* GRAPHICS streams and rendering */
     bool     supports_present;           /* surfaces can be created        */
+    uint32_t vendor_id;                  /* PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD,
+                                            0x8086 Intel, 0x106B Apple; 0 unknown */
+    uint32_t device_id;                  /* PCI device id, 0 unknown */
+    md_gpu_device_type_t type;
+    uint32_t adapter_index;              /* index in md_gpu_enumerate_adapters */
     char     name[256];
+    char     driver[256];                /* driver name and version, for logs */
 } md_gpu_device_info_t;
 
 /* `desc` may be NULL for defaults. Returns NULL on failure; see

@@ -68,6 +68,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #include <volk.h>
 
 #include "md_gpu_builtin_spv.inl"
+#include "md_gpu_select.inl"
 
 /* =========================================================================
    1. Configuration, error handling, utilities
@@ -117,6 +118,10 @@ written on one and read on another needs no queue-family ownership transfer.
 
 static MD_VK_THREAD_LOCAL char md_vk_error_buf[MD_VK_ERROR_BUF];
 static MD_VK_THREAD_LOCAL bool md_vk_has_error;
+
+/* The instance whose entry points volk holds while a device using it is alive
+   (VK_NULL_HANDLE otherwise), so md_gpu_enumerate_adapters can put them back. */
+static VkInstance md_vk_live_instance = VK_NULL_HANDLE;
 
 static bool md_vk_fail(const char* fmt, ...) {
     va_list ap;
@@ -522,6 +527,7 @@ typedef struct md_gpu_device {
     VkPhysicalDeviceMemoryProperties mem_props;
     VkPhysicalDeviceProperties       props;
     uint32_t                         subgroup_size;
+    char                             driver_desc[256];
 
     uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
     bool     transfer_can_compute;
@@ -587,6 +593,7 @@ typedef struct md_gpu_device {
     md_vk_dev_caps_t caps;
 
     bool            is_discrete;
+    uint32_t        adapter_index;
     bool            validation;
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
@@ -1158,6 +1165,100 @@ static bool md_vk_create_dummies(md_gpu_device_t dev);
 static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default);
 static bool md_vk_create_builtin_kernels(md_gpu_device_t dev);
 
+typedef struct md_vk_adapter_t {
+    VkPhysicalDevice      pd;
+    md_vk_dev_caps_t      caps;
+    md_gpu_adapter_info_t info;
+} md_vk_adapter_t;
+
+static md_gpu_device_type_t md_vk_device_type(VkPhysicalDeviceType t) {
+    switch (t) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return MD_GPU_DEVICE_TYPE_DISCRETE;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return MD_GPU_DEVICE_TYPE_INTEGRATED;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return MD_GPU_DEVICE_TYPE_VIRTUAL;
+    case VK_PHYSICAL_DEVICE_TYPE_CPU:            return MD_GPU_DEVICE_TYPE_CPU;
+    default:                                     return MD_GPU_DEVICE_TYPE_OTHER;
+    }
+}
+
+static void md_vk_driver_string(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p, char* out, size_t cap) {
+    if (p->apiVersion >= VK_API_VERSION_1_2) {
+        VkPhysicalDeviceDriverProperties drv = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
+        vkGetPhysicalDeviceProperties2(pd, &p2);
+        snprintf(out, cap, "%s %s (Vulkan %u.%u.%u)", drv.driverName, drv.driverInfo,
+                 VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
+    } else {
+        snprintf(out, cap, "driver version 0x%08X (Vulkan %u.%u.%u)", p->driverVersion,
+                 VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
+    }
+}
+
+/* Every physical device of `instance`, probed. The caller frees *out with
+   md_free(alloc, *out, count * sizeof(md_vk_adapter_t)). Needs the instance's
+   functions loaded through volk. */
+static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_i* alloc, md_vk_adapter_t** out) {
+    *out = NULL;
+    uint32_t n = 0;
+    if (vkEnumeratePhysicalDevices(instance, &n, NULL) != VK_SUCCESS || n == 0) return 0;
+    VkPhysicalDevice* pds = (VkPhysicalDevice*)md_alloc(alloc, n * sizeof(VkPhysicalDevice));
+    md_vk_adapter_t*  ad  = (md_vk_adapter_t*)md_alloc(alloc, n * sizeof(md_vk_adapter_t));
+    if (!pds || !ad) {
+        if (pds) md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
+        if (ad)  md_free(alloc, ad,  n * sizeof(md_vk_adapter_t));
+        return 0;
+    }
+    vkEnumeratePhysicalDevices(instance, &n, pds);
+    memset(ad, 0, n * sizeof(md_vk_adapter_t));
+    for (uint32_t i = 0; i < n; ++i) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pds[i], &p);
+        md_gpu_adapter_info_t* info = &ad[i].info;
+        ad[i].pd = pds[i];
+        snprintf(info->name, sizeof(info->name), "%s", p.deviceName);
+        info->vendor_id = p.vendorID;
+        info->device_id = p.deviceID;
+        info->type      = md_vk_device_type(p.deviceType);
+        md_vk_driver_string(pds[i], &p, info->driver, sizeof(info->driver));
+        const char* missing = NULL;
+        info->usable = md_vk_probe_device(pds[i], alloc, &ad[i].caps, &missing);
+        if (!info->usable) snprintf(info->missing, sizeof(info->missing), "%s", missing ? missing : "?");
+    }
+    md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
+    *out = ad;
+    return n;
+}
+
+uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
+    md_vk_has_error = false;
+    if (volkInitialize() != VK_SUCCESS) {
+        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        return 0;
+    }
+    VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    ai.pApplicationName = "mdlib";
+    ai.apiVersion       = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ici.pApplicationInfo = &ai;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (!md_vk_check(vkCreateInstance(&ici, NULL, &instance), "vkCreateInstance")) return 0;
+
+    /* volk keeps one set of instance-level entry points; put back those of a
+       live device once done. */
+    const VkInstance prev = md_vk_live_instance;
+    volkLoadInstanceOnly(instance);
+
+    struct md_allocator_i* alloc = md_get_heap_allocator();
+    md_vk_adapter_t* ad = NULL;
+    const uint32_t n = md_vk_collect_adapters(instance, alloc, &ad);
+    for (uint32_t i = 0; i < n && i < max; ++i) out[i] = ad[i].info;
+    if (ad) md_free(alloc, ad, n * sizeof(md_vk_adapter_t));
+
+    vkDestroyInstance(instance, NULL);
+    if (prev) volkLoadInstanceOnly(prev);
+    return n;
+}
+
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_vk_has_error = false;
 
@@ -1239,6 +1340,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
     volkLoadInstance(dev->instance);
+    md_vk_live_instance = dev->instance;
 
     if (want_debug && vkCreateDebugUtilsMessengerEXT) {
         VkDebugUtilsMessengerCreateInfoEXT dci = {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
@@ -1251,52 +1353,32 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
 
     /* ---- physical device ---- */
-    uint32_t pd_count = 0;
-    vkEnumeratePhysicalDevices(dev->instance, &pd_count, NULL);
-    if (pd_count == 0) {
+    md_vk_adapter_t* adapters = NULL;
+    const uint32_t adapter_count = md_vk_collect_adapters(dev->instance, alloc, &adapters);
+    if (adapter_count == 0) {
         md_vk_fail("no Vulkan physical devices");
         goto fail_instance;
     }
-    VkPhysicalDevice* pds = (VkPhysicalDevice*)md_alloc(alloc, pd_count * sizeof(VkPhysicalDevice));
-    vkEnumeratePhysicalDevices(dev->instance, &pd_count, pds);
+    md_gpu_adapter_info_t* infos = (md_gpu_adapter_info_t*)md_alloc(alloc, adapter_count * sizeof(md_gpu_adapter_info_t));
+    for (uint32_t i = 0; i < adapter_count; ++i) {
+        infos[i] = adapters[i].info;
+        MD_LOG_DEBUG("md_gpu: adapter [%u] '%s' (%s)%s%s", i, infos[i].name, md_gpu_sel_type_str(infos[i].type),
+                     infos[i].usable ? "" : " — lacks ", infos[i].usable ? "" : infos[i].missing);
+    }
+    char why[1024];
+    const int pick = md_gpu_sel_pick(infos, adapter_count, desc, why, sizeof(why));
+    md_free(alloc, infos, adapter_count * sizeof(md_gpu_adapter_info_t));
 
     VkPhysicalDevice chosen = VK_NULL_HANDLE;
     md_vk_dev_caps_t caps = {0};
-    int best_score = -1;
-    /* Kept so that a total failure can name what the best candidate lacked
-       rather than saying only that nothing matched. */
-    const char* first_missing = NULL;
-    char first_missing_dev[256] = {0};
-
-    for (uint32_t i = 0; i < pd_count; ++i) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(pds[i], &p);
-
-        md_vk_dev_caps_t c;
-        const char* missing = NULL;
-        if (!md_vk_probe_device(pds[i], alloc, &c, &missing)) {
-            MD_LOG_DEBUG("md_gpu: skipping '%s' — no %s", p.deviceName, missing ? missing : "?");
-            if (!first_missing) {
-                first_missing = missing;
-                snprintf(first_missing_dev, sizeof(first_missing_dev), "%s", p.deviceName);
-            }
-            continue;
-        }
-
-        int score = 0;
-        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score += 100;
-        else if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score += 50;
-        else score += 10;
-        if (score > best_score) { best_score = score; chosen = pds[i]; caps = c; }
+    if (pick >= 0) {
+        chosen = adapters[pick].pd;
+        caps   = adapters[pick].caps;
+        dev->adapter_index = (uint32_t)pick;
     }
-    md_free(alloc, pds, pd_count * sizeof(VkPhysicalDevice));
-
+    md_free(alloc, adapters, adapter_count * sizeof(md_vk_adapter_t));
     if (!chosen) {
-        if (first_missing) {
-            md_vk_fail("no usable Vulkan device: '%s' lacks %s", first_missing_dev, first_missing);
-        } else {
-            md_vk_fail("no usable Vulkan device");
-        }
+        md_vk_fail("md_gpu_device_create: %s", why);
         goto fail_instance;
     }
     dev->phys = chosen;
@@ -1308,6 +1390,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &sgp};
         vkGetPhysicalDeviceProperties2(dev->phys, &p2);
         dev->subgroup_size = sgp.subgroupSize ? sgp.subgroupSize : 32;
+        md_vk_driver_string(dev->phys, &dev->props, dev->driver_desc, sizeof(dev->driver_desc));
     }
 
     /* ---- queue families ---- */
@@ -1517,6 +1600,7 @@ fail_device:
 
 fail_instance:
     if (dev->messenger && vkDestroyDebugUtilsMessengerEXT) vkDestroyDebugUtilsMessengerEXT(dev->instance, dev->messenger, NULL);
+    if (dev->instance && dev->instance == md_vk_live_instance) md_vk_live_instance = VK_NULL_HANDLE;
     if (dev->instance) vkDestroyInstance(dev->instance, NULL);
     md_free(alloc, dev, sizeof(*dev));
     return NULL;
@@ -1530,6 +1614,11 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->subgroup_size;
     info->supports_graphics        = dev->supports_graphics;
     info->supports_present         = dev->supports_present;
+    info->vendor_id                = dev->props.vendorID;
+    info->device_id                = dev->props.deviceID;
+    info->type                     = md_vk_device_type(dev->props.deviceType);
+    info->adapter_index            = dev->adapter_index;
+    snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
     snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
     return true;
 }
@@ -4988,6 +5077,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     if (dev->messenger && vkDestroyDebugUtilsMessengerEXT) {
         vkDestroyDebugUtilsMessengerEXT(dev->instance, dev->messenger, NULL);
     }
+    if (dev->instance && dev->instance == md_vk_live_instance) md_vk_live_instance = VK_NULL_HANDLE;
     if (dev->instance) vkDestroyInstance(dev->instance, NULL);
     md_free(alloc, dev, sizeof(*dev));
 }
