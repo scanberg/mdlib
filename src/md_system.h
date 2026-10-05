@@ -188,32 +188,6 @@ typedef struct md_structure_data_t {
     int32_t* atom_slot;  // [global atom index] -> slot. Length is the system atom count
 } md_structure_data_t;
 
-typedef struct md_hydrogen_bond_candidates_t {
-    struct {
-        size_t count;
-        md_atom_idx_t* idx;
-        int* num_lone_pairs;
-    } acceptor;
-   
-    struct {
-        size_t count;
-        md_atom_idx_t* d_idx;
-        md_atom_idx_t* h_idx;
-    } donor;
-} md_hydrogen_bond_candidates_t;
-
-typedef struct md_hydrogen_bond_pair_t {
-	uint32_t don_idx; // Index into hydrogen bond candidate donors
-	uint32_t acc_idx; // Index into hydrogen bond candidate acceptors
-} md_hydrogen_bond_pair_t;
-
-typedef struct md_hydrogen_bond_data_t {
-    md_hydrogen_bond_candidates_t candidate;
-
-    size_t num_bonds;
-    md_hydrogen_bond_pair_t* bonds;
-} md_hydrogen_bond_data_t;
-
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
 //
 // The FIELDS hold exactly what shares one interpolation contract - same type in and out, periodic
@@ -300,7 +274,6 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     
     md_bond_data_t              bond;               // Persistent covalent bonds
-    md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
@@ -1181,38 +1154,6 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
         md_bond_iter_next(&it);
     }
     return found;
-}
-
-static inline md_atom_idx_t md_hydrogen_bond_donor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t don_idx) {
-	ASSERT(hbond_cand);
-    if (don_idx < hbond_cand->donor.count) {
-        return hbond_cand->donor.d_idx[don_idx];
-	}
-    return -1;
-}
-
-static inline md_atom_idx_t md_hydrogen_bond_donor_hydrogen_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t don_idx) {
-    ASSERT(hbond_cand);
-    if (don_idx < hbond_cand->donor.count) {
-        return hbond_cand->donor.h_idx[don_idx];
-    }
-    return -1;
-}
-
-static inline md_atom_idx_t md_hydrogen_bond_acceptor_atom_idx(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acc_idx) {
-    ASSERT(hbond_cand);
-    if (acc_idx < hbond_cand->acceptor.count) {
-        return hbond_cand->acceptor.idx[acc_idx];
-    }
-    return -1;
-}
-
-static inline int md_hydrogen_bond_acceptor_num_lone_pairs(const md_hydrogen_bond_candidates_t* hbond_cand, size_t acc_idx) {
-    ASSERT(hbond_cand);
-    if (acc_idx < hbond_cand->acceptor.count) {
-        return hbond_cand->acceptor.num_lone_pairs[acc_idx];
-    }
-    return 0;
 }
 
 

@@ -21,7 +21,7 @@ typedef enum {
     MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
     //MD_UTIL_INFER_ORDER_BIT           = 0x0200,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
-    MD_UTIL_INFER_HBOND_BIT           = 1u << 6,
+    MD_UTIL_INFER_HBOND_BIT           = 1u << 6,     // Hydrogen bond roles as atom flags (MD_FLAG_HBOND_DONOR / _ACCEPTOR), see md_hbond.h
 	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
 
     MD_UTIL_INFER_ALL                 = -1,
@@ -91,16 +91,6 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_sta
 // Infer rings formed by covalent bonds
 bool md_util_system_infer_rings(md_system_t* sys);
 
-void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const struct md_system_t* sys, md_allocator_i* alloc);
-
-// Attempts to infer hydrogen bonds based on distance and angle criteria
-// The identified hydrogen bonds are stored in hbond_data
-// atom_xyz: packed atom coordinates
-// unitcell: Periodic boundary conditions, (optional, can be NULL for non-periodic systems)
-// desc: Descriptor for the hydrogen bond calculation (optional, can be NULL for default values)
-void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const vec3_t* atom_xyz,
-                                 const md_unitcell_t* unitcell, double max_dist, double min_angle);
-
 // Identify isolated structures by covalent bonds.
 // For coarse grained systems (any atom type flagged MD_FLAG_COARSE_GRAINED), beads the bonds leave disconnected are
 // joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
@@ -119,7 +109,7 @@ void md_util_system_augment_atom_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 // Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
-// bonds) from the supplied state, and records that state as sys->reference.
+// bond roles) from the supplied state, and records that state as sys->reference.
 //
 // The state is an explicit parameter rather than read off the system so that the recorded
 // reference is by construction the input which produced the topology. Requires coordinates for

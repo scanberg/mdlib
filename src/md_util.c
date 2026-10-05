@@ -2,6 +2,7 @@
 
 #include <md_system.h>
 #include <md_smiles.h>
+#include <md_hbond.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_compiler.h>
@@ -4464,217 +4465,6 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
     
     md_temp_end(temp);
     return true;
-}
-
-void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const md_system_t* sys, md_allocator_i* alloc) {
-    ASSERT(hbond_data);
-    ASSERT(sys);
-    ASSERT(alloc);
-
-    if (sys->bond.count == 0) {
-        return;
-    }
-
-    hbond_data->candidate.donor.count = 0;
-    md_array_shrink(hbond_data->candidate.donor.d_idx, 0);
-    md_array_shrink(hbond_data->candidate.donor.h_idx, 0);
-
-    hbond_data->candidate.acceptor.count = 0;
-    md_array_shrink(hbond_data->candidate.acceptor.idx, 0);
-    md_array_shrink(hbond_data->candidate.acceptor.num_lone_pairs, 0);
-    size_t num_atoms = md_system_atom_count(sys);
-
-    // Identify donors and acceptors
-    for (size_t i = 0; i < num_atoms; ++i) {
-        int max_conn = 0;
-        int num_lone_pairs = 2;
-        md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, i);
-        switch (z_i) {
-        case MD_Z_N:
-        case MD_Z_S:
-            max_conn = 3;
-            break;
-        case MD_Z_O:
-            max_conn = 2;
-            break;
-        default:
-            continue;
-        }
-        
-        md_bond_iter_t it = md_bond_iter(&sys->bond, i);
-        while (md_bond_iter_has_next(&it)) {
-            md_atom_idx_t j = md_bond_iter_atom_index(&it);
-            md_atomic_number_t z_j = md_atom_atomic_number(&sys->atom, j);
-            if (z_j== MD_Z_H) {
-                md_atom_idx_t d_idx = (md_atom_idx_t)i;
-                md_atom_idx_t h_idx = j;
-                md_array_push(hbond_data->candidate.donor.d_idx, d_idx, alloc);
-                md_array_push(hbond_data->candidate.donor.h_idx, h_idx, alloc);
-                hbond_data->candidate.donor.count += 1;
-            }
-            md_bond_iter_next(&it);
-        }
-        
-        int num_conn = (int)md_bond_conn_count(&sys->bond, i);
-        if (num_conn <= max_conn) {
-            if (z_i == MD_Z_S) {
-                num_lone_pairs = MAX(0, 4 - num_conn);
-            }
-
-            md_atom_idx_t acc_idx = (md_atom_idx_t)i;
-            md_array_push(hbond_data->candidate.acceptor.idx, acc_idx, alloc);
-            md_array_push(hbond_data->candidate.acceptor.num_lone_pairs, num_lone_pairs, alloc);
-            hbond_data->candidate.acceptor.count += 1;
-        }
-    }
-
-    md_array_ensure(hbond_data->bonds, 2 * hbond_data->candidate.donor.count, alloc);
-}
-
-typedef struct hbond_donor_energy_t {
-    int acc_idx;
-    float score;
-} hbond_donor_energy_t;
-
-typedef struct hbond_candidate_callback_data_t {
-    const vec4_t* don_xyz;
-    const vec4_t* hyd_xyz;
-    const vec4_t* acc_xyz;
-    const md_hydrogen_bond_candidates_t* hbond_candidate_data;
-    hbond_donor_energy_t* donor_energies; // Pre-allocated, one per donor
-    float min_angle_in_radians;
-} hbond_candidate_callback_data_t;
-
-static inline void spatial_acc_hbond_candidate_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t count, void* user_data) {
-	(void)ij_dist2;
-    hbond_candidate_callback_data_t* data = (hbond_candidate_callback_data_t*)user_data;
-    const float min_angle = data->min_angle_in_radians;
-
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t d_idx = i_idx[i];
-        uint32_t a_idx = j_idx[i];
-        vec4_t d_xyz = data->don_xyz[d_idx];
-        vec4_t h_xyz = data->hyd_xyz[d_idx];
-        vec4_t a_xyz = data->acc_xyz[a_idx];
-        float angle  = vec4_angle (vec4_sub(d_xyz, h_xyz), vec4_sub(a_xyz, h_xyz));
-        float h_dist = vec4_length(vec4_sub(h_xyz, a_xyz));
-        if (angle > min_angle) {
-            float score = cosf((float)PI - angle) / h_dist;
-            if (score > data->donor_energies[d_idx].score) {
-                data->donor_energies[d_idx].score = score;
-                data->donor_energies[d_idx].acc_idx = (int)a_idx;
-            }
-        }
-    }
-}
-
-void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const vec3_t* atom_xyz,
-                                 const md_unitcell_t* unitcell, double max_dist, double min_angle) {
-    ASSERT(hbond_data);
-    ASSERT(atom_xyz);
-
-    hbond_data->num_bonds = 0;
-    md_array_shrink(hbond_data->bonds, 0);
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-
-    // Clamp to some form of reasonable value range
-    max_dist  = CLAMP(max_dist, 1.0, 7.0);
-    min_angle = CLAMP(min_angle, 100.0, 180.0);
-
-    size_t num_acc = hbond_data->candidate.acceptor.count;
-    vec4_t*  acc_xyz = md_temp_alloc_array(temp, vec4_t, num_acc);
-    int32_t* acc_idx = md_temp_alloc_array(temp, int32_t, num_acc);
-
-    for (size_t i = 0; i < num_acc; ++i) {
-        int idx = hbond_data->candidate.acceptor.idx[i];
-        acc_idx[i] = idx;
-        acc_xyz[i] = vec4_from_vec3(atom_xyz[idx], 0);
-    }
-
-    size_t num_don = hbond_data->candidate.donor.count;
-    vec4_t*  don_xyz = md_temp_alloc_array(temp, vec4_t, num_don);
-    vec4_t*  hyd_xyz = md_temp_alloc_array(temp, vec4_t, num_don);
-    int32_t* don_idx = md_temp_alloc_array(temp, int32_t, num_don);
-    hbond_donor_energy_t* donor_energies = md_temp_alloc_zero_array(temp, hbond_donor_energy_t, num_don);
-    
-    for (size_t i = 0; i < num_don; ++i) {
-        int d_idx = hbond_data->candidate.donor.d_idx[i];
-        int h_idx = hbond_data->candidate.donor.h_idx[i];
-        don_idx[i] = d_idx;
-        don_xyz[i] = vec4_from_vec3(atom_xyz[d_idx], 0);
-        hyd_xyz[i] = vec4_from_vec3(atom_xyz[h_idx], 0);
-    }
-
-    hbond_candidate_callback_data_t payload = {
-        .don_xyz = don_xyz,
-        .hyd_xyz = hyd_xyz,
-        .acc_xyz = acc_xyz,
-        .hbond_candidate_data = &hbond_data->candidate,
-        .donor_energies = donor_energies,
-        .min_angle_in_radians = (float)DEG_TO_RAD(min_angle),
-    };
-
-    const double cutoff = MAX(3.0, max_dist);
-
-    md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), acc_idx, num_acc);
-    md_spatial_acc_t acc = { .alloc = temp_arena };
-    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &acc_stream, .cutoff = cutoff, .unitcell = unitcell });
-
-    md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), don_idx, num_don);
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cutoff, spatial_acc_hbond_candidate_callback, &payload, 0);
-
-    typedef struct {
-        float score[4];
-        int don_idx[4];
-    } acceptor_assignment_t;
-
-    acceptor_assignment_t* assignments = md_temp_alloc_zero_array(temp, acceptor_assignment_t, num_acc);
-
-    // Try to assign donors to acceptors based on the best score, respecting acceptor capacities
-    for (size_t i = 0; i < num_don; ++i) {
-        float score = donor_energies[i].score;
-        int   a_idx = donor_energies[i].acc_idx;
-        acceptor_assignment_t* assignment = &assignments[a_idx];
-
-        // Insertion sort into the acceptor's assigned donors if score is good enough
-        if (score > assignment->score[3]) {
-            assignment->score[3] = score;
-            for (int j = 3; j > 0; --j) {
-                if (assignment->score[j] > assignment->score[j - 1]) {
-                    // Swap
-                    float temp_score = assignment->score[j - 1];
-                    int temp_don_idx = assignment->don_idx[j - 1];
-                    assignment->score[j - 1] = assignment->score[j];
-                    assignment->don_idx[j - 1] = assignment->don_idx[j];
-                    assignment->score[j] = temp_score;
-                    assignment->don_idx[j] = temp_don_idx;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    // Now create bonds for the top-scoring donors for each acceptor, respecting capacity
-    for (size_t i = 0; i < num_acc; ++i) {
-        acceptor_assignment_t* assignment = &assignments[i];
-        int capacity = hbond_data->candidate.acceptor.num_lone_pairs[i];
-        for (int j = 0; j < capacity; ++j) {
-            if (assignment->score[j] == 0.f) {
-                break;
-            }
-            md_hydrogen_bond_pair_t pair = {
-                .acc_idx = (uint32_t)i,
-                .don_idx = assignment->don_idx[j],
-            };
-            md_array_push_no_grow(hbond_data->bonds, pair);
-            hbond_data->num_bonds += 1;
-        }
-    }
-
-    md_temp_end(temp);
 }
 
 // Excel-style chain-id generator: A..Z, AA..ZZ, AAA..
@@ -10026,15 +9816,11 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_HBOND_BIT) {
-#if 0
+        // Roles only: they depend on the topology (and on the reference geometry for planar N). The bonds themselves
+        // depend on the frame and are evaluated with md_hbond_query_eval.
         if (sys->atom.count > 0 && sys->bond.count > 0) {
-            md_util_hydrogen_bond_init (&sys->hydrogen_bond, sys, alloc);
-            // Candidates above are derived from bonds and elements; the pairs below need geometry.
-            if (md_system_state_has_coords(state)) {
-                md_util_hydrogen_bond_infer(&sys->hydrogen_bond, state->xyz, &state->unitcell, 3.0, 150.0);
-            }
+            md_hbond_infer_atom_flags(sys, state);
         }
-#endif
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {

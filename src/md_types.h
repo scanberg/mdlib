@@ -67,8 +67,9 @@ typedef enum {
     MD_FLAG_SP3                 = 0x4000000,
     MD_FLAG_AROMATIC            = 0x8000000,
 
-//    MD_FLAG_HBOND_DONOR         = 0x1000000,
-//    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
+    // Hydrogen bond roles, see md_hbond.h (md_hbond_infer_atom_flags)
+    MD_FLAG_HBOND_DONOR         = 0x10000000,
+    MD_FLAG_HBOND_ACCEPTOR      = 0x20000000,
 } md_flags_t;
 
 ENUM_FLAGS(md_flags_t)

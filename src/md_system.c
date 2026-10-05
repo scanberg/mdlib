@@ -88,12 +88,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->bond.conn.bond_idx, alloc);
     md_array_free(sys->bond.conn.offset, alloc);
 
-    // HYDROGEN BONDS
-    md_array_free(sys->hydrogen_bond.candidate.acceptor.idx, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.acceptor.num_lone_pairs, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.donor.d_idx, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.donor.h_idx, alloc);
-
     md_index_data_free(&sys->ring);
 
     md_array_free(sys->structure.offset, alloc);

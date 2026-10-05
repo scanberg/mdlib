@@ -17,6 +17,7 @@ set (SRC_FILES
     test_grid.c
     test_bitfield.c
     test_contact.c
+    test_hbond.c
     test_nonbonded.c
     test_infer_atomic_number.c
     test_str.c

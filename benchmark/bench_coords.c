@@ -8,6 +8,7 @@
 #include <md_trr.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_hbond.h>
 #include <md_script.h>
 #include <core/md_coord_stream.h>
 #include <core/md_spatial_acc.h>
@@ -195,7 +196,7 @@ UBENCH_EX(coords, infer_covalent_bonds) {
     md_vm_arena_destroy(arena);
 }
 
-UBENCH_EX(coords, protein_backbone_and_hbonds) {
+UBENCH_EX(coords, protein_backbone) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
@@ -207,7 +208,6 @@ UBENCH_EX(coords, protein_backbone_and_hbonds) {
         UBENCH_DO_BENCHMARK() {
             md_util_backbone_secondary_structure_infer(ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
             md_util_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
-            md_util_hydrogen_bond_infer(&sys.hydrogen_bond, st.xyz, &st.unitcell, 3.0, 120.0);
             UBENCH_DO_NOTHING(ss);
         }
     } else {
@@ -215,6 +215,38 @@ UBENCH_EX(coords, protein_backbone_and_hbonds) {
     }
     md_vm_arena_destroy(arena);
 }
+
+// Hydrogen bonds of one frame of the big system: the query is prepared once, the evaluation is what a frame costs.
+static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_preset_t preset, bool selection) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_system_t sys = {0}; md_system_state_t st = {0};
+    if (load_big(&sys, &st, arena) && md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL)) {
+        md_hbond_params_t params = md_hbond_params_preset(preset);
+        // Selection: the bonds within the first 40 residues, a small part of the system
+        md_bitfield_t few = md_bitfield_create(arena);
+        for (size_t c = 0; c < MIN(sys.component.count, 40); ++c) {
+            const md_urange_t r = md_system_component_atom_range(&sys, c);
+            md_bitfield_set_range(&few, r.beg, r.end);
+        }
+        md_hbond_desc_t desc = { .params = &params, .set_a = selection ? &few : NULL };
+        md_hbond_query_t q;
+        if (md_hbond_query_init(&q, &desc, &sys, arena)) {
+            md_allocator_i* out_arena = md_vm_arena_create(GIGABYTES(1));
+            UBENCH_DO_BENCHMARK() {
+                md_hbond_set_t set;
+                md_hbond_query_eval(&set, &q, &st, out_arena);
+                UBENCH_DO_NOTHING(&set);
+                md_vm_arena_reset(out_arena);
+            }
+            md_vm_arena_destroy(out_arena);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
+UBENCH_EX(coords, hbonds_realistic)           { bench_hbonds(ubench_run_state, MD_HBOND_PRESET_REALISTIC, false); }
+UBENCH_EX(coords, hbonds_gromacs)             { bench_hbonds(ubench_run_state, MD_HBOND_PRESET_GROMACS, false); }
+UBENCH_EX(coords, hbonds_realistic_selection) { bench_hbonds(ubench_run_state, MD_HBOND_PRESET_REALISTIC, true); }
 
 // Script evaluation over a run: extraction of each frame and the coordinate kernels behind the
 // properties. The TRR is uncompressed, so decoding is a small part of it.

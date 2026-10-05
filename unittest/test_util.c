@@ -131,27 +131,6 @@ UTEST_F_TEARDOWN(util) {
     md_vm_arena_destroy(utest_fixture->alloc);
 }
 
-UTEST(util, hbonds) {
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* arena = md_temp_allocator(temp);
-
-    md_system_t sys = { .alloc = arena };
-    md_system_state_t sys_state = { .alloc = arena };
-    md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
-    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
-
-    md_hydrogen_bond_data_t hbond_data = {0};
-    md_util_hydrogen_bond_init(&hbond_data, &sys, arena);
-
-    EXPECT_LT(0, hbond_data.candidate.donor.count);
-    EXPECT_LT(0, hbond_data.candidate.acceptor.count);
-
-    md_util_hydrogen_bond_infer(&hbond_data, sys_state.xyz, &sys_state.unitcell, 3.0, 150.0);
-    EXPECT_LT(0, hbond_data.num_bonds);
-
-    md_temp_end(temp);
-} 
-
 UTEST_F(util, bonds) {
     EXPECT_EQ(152,      utest_fixture->mol_ala.bond.count);
     EXPECT_EQ(55,       utest_fixture->mol_pftaa.bond.count);
