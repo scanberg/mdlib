@@ -146,8 +146,9 @@ From tightest to loosest binding:
 | 12 | `=` | |
 
 Arithmetic (`+ - * /`) works on `int`, `float`, and their arrays, element-wise; a scalar is broadcast over an
-array. `distribution` and `volume` values can be added, subtracted, multiplied and divided with each other or
-with a scalar. Comparisons work on `float`s and arrays of them (a scalar is compared with every element) and give a
+array. `volume` values can be added, subtracted, multiplied and divided with each other or with a scalar. A
+`distribution` can only be scaled by a number (`2.0 * g`, `g / 2.0`) and combined with another by
+[`pool`](#pool); see [Distributions](#distributions) for why. Comparisons work on `float`s and arrays of them (a scalar is compared with every element) and give a
 `bool` or an array of `bool`. `and`, `or`, `xor`, `not` combine **bitfields** (atom selections) and, separately,
 `bool`s and arrays of `bool` element by element. A `bool` value cannot be published as a property, so comparisons are
 building blocks for other expressions rather than results in their own right.
@@ -190,7 +191,7 @@ n = count(sel=protein(), unit="residue");
 | `T[n]` | An array of `n` elements of type `T`. `bitfield[n]` is *n* selections, typically *n* residues or chains. |
 | `float[2]`, `float[3]`, `float[4]`, `float[4][4]` | Vectors and matrices (`vec2`, `vec3`, `vec4`, 4×4 matrix). |
 | `position` | Not a real type: the argument of a geometric procedure. It accepts atom indices or ranges (`1:3`), bitfields (their centre of mass is used), or `float[3]` vectors. See [Coordinate arguments](#coordinate-arguments). |
-| `distribution` | `float[1024]` histogram (for example `rdf`, `density_x`). |
+| `distribution` | A 1024-bin histogram (for example `rdf`, `density_x`), with a weight per bin; see [Distributions](#distributions). `distribution[n]` is *n* of them, e.g. `rdf(...) in residue(1:3)`. |
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
@@ -264,7 +265,7 @@ The keyword `of` is reserved for future use.
 Assignments compile to *values*. Only some of them are published as **properties** and can be plotted or exported:
 
 - a result that varies with the frame (**temporal**): `distance`, `angle`, `count(within(...))`, `com`, ...
-- a `distribution` (`rdf`, `density_x/y/z`), accumulated over all frames,
+- a `distribution` (`rdf`, `density_x/y/z`), accumulated over all frames, or an array of them,
 - a `volume` (`sdf`), accumulated over all frames.
 
 Constants, plain selections (a `bitfield`), strings and ranges are *not* properties; they exist to be used by other
@@ -272,8 +273,17 @@ statements. The engine publishes each property under the attribute `script/<name
 all (`a = count(protein());`, which is constant) cannot be evaluated and reports "no properties".
 
 Some values have no property form yet: `float[2]`/`float[3]` arrays (`coord`, `coord_xy`, `shape_weights` without
-destructuring) and the combined `density(...)` cannot be plotted directly — use them as inputs to other procedures
-or [destructure](#statements-and-comments) them.
+destructuring) cannot be plotted directly — use them as inputs to other procedures or
+[destructure](#statements-and-comments) them. An array of distributions (`density(...)`, `rdf(...) in residue(1:3)`)
+is published, as `[n][1024]`, but not yet plotted.
+
+### Distributions
+
+A bin of a distribution is a value and a weight, and what it shows is the value divided by the weight: for `rdf` the
+pair count of a shell over what a uniform distribution would put there. Both are sums, over the frames and over bins
+merged for display, so the estimate is the ratio of the sums. That is also why a distribution only scales and
+pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a + b` of the estimates. Scaling
+(the values, not the weights) and pooling (both, see [`pool`](#pool)) come out the same either way.
 
 ---
 
@@ -285,7 +295,7 @@ or [destructure](#statements-and-comments) them.
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
-| [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
+| [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
 | [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
@@ -995,14 +1005,33 @@ rho_water = density_z(water());
 <!-- proc name=density category=property -->
 
 ```text
-density(sel: bitfield[]) -> float[3][2][1024]
+density(sel: bitfield[]) -> distribution[3] [kg/m³]
 ```
 
-The three axis profiles of the selection in a single value. It is not published as a property; use
-[`density_x`](#density_x), [`density_y`](#density_y) and [`density_z`](#density_z) instead.
+The three axis profiles (x, y, z) of the selection in a single value. It is published as an array of distributions,
+which is not plotted yet; [`density_x`](#density_x), [`density_y`](#density_y) and [`density_z`](#density_z) give
+one axis each.
 
 ```mdscript
 rho = density(all());
+```
+
+### pool
+
+<!-- proc name=pool category=property -->
+
+```text
+pool(a: distribution[], b: distribution[]) -> distribution[]
+```
+
+**Parameters:** `a`, `b` (both required, the same length and bins).
+
+The two distributions as one: values and weights added bin by bin, as if their samples had been taken together. Of
+two `rdf` over different reference groups, it is the `rdf` over both. It is not the sum of the two curves, which a
+distribution cannot give (see [Distributions](#distributions)).
+
+```mdscript
+g_ab = pool(rdf(element("C"), element("O"), 10.0), rdf(element("N"), element("O"), 10.0));
 ```
 
 ### sdf

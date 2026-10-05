@@ -188,6 +188,8 @@ typedef enum base_type_t {
     TYPE_STRING,
     TYPE_COORDINATE,    // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
     TYPE_CONTACT,       // Opaque: a set of group pairs in contact (md_contact_set_t). Its arrays live in the evaluation's allocator.
+    TYPE_DISTRIBUTION,  // A bin of a histogram: a float. Shaped [n][bins], one distribution per row. The weight of each bin,
+                        // what normalizes it, is not part of the value: it sits beside it in data_t.weight.
 } base_type_t;
 
 typedef enum flags_t {
@@ -265,6 +267,11 @@ struct data_t {
 
     frange_t    value_range;
     md_unit_t   unit[2];
+
+    // TYPE_DISTRIBUTION only: the weight of every bin, element for element beside ptr, so at the same byte offsets.
+    // A bin is shown as value / weight. Both are additive (over frames, over merged bins, over pooled distributions),
+    // which is why the weight is kept rather than divided in: the ratio of sums is the estimate, not the sum of ratios.
+    float*      weight;
 };
 
 // This is data stored directly in the nodes of the AST tree
@@ -849,6 +856,7 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_BITFIELD: return sizeof(md_bitfield_t);
     case TYPE_STRING:   return sizeof(str_t);
     case TYPE_CONTACT:  return sizeof(md_contact_set_t);
+    case TYPE_DISTRIBUTION: return sizeof(float);
     case TYPE_UNDEFINED:
     default:            return 0;
     }
@@ -1032,7 +1040,39 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
         }
     }
 
+    data->weight = NULL;
+    if (type.base_type == TYPE_DISTRIBUTION && bytes > 0) {
+        // Weights of 1: a plain histogram, unless the producer says otherwise
+        const size_t count = (size_t)bytes / sizeof(float);
+        data->weight = md_alloc(alloc, (size_t)bytes);
+        if (!data->weight) {
+            MD_LOG_ERROR("Failed to allocate data in script!");
+            return false;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            data->weight[i] = 1.0f;
+        }
+    }
+
     return true;
+}
+
+// The weights of the elements of d from byte_offset on: at the same offset as their values (data_t.weight)
+static inline float* data_weight_at(const data_t* d, size_t byte_offset) {
+    return d->weight ? (float*)((char*)d->weight + byte_offset) : NULL;
+}
+
+// Copies bytes of values from src at src_offset to dst at dst_offset, and the weights beside them
+static void copy_data_block(data_t* dst, size_t dst_offset, const data_t* src, size_t src_offset, size_t bytes) {
+    MEMCPY((char*)dst->ptr + dst_offset, (const char*)src->ptr + src_offset, bytes);
+    if (dst->weight) {
+        float* w = data_weight_at(dst, dst_offset);
+        if (src->weight) {
+            MEMCPY(w, data_weight_at(src, src_offset), bytes);
+        } else {
+            for (size_t i = 0; i < bytes / sizeof(float); ++i) w[i] = 1.0f;
+        }
+    }
 }
 
 static void free_data(data_t* data, md_allocator_i* alloc) {
@@ -1047,8 +1087,12 @@ static void free_data(data_t* data, md_allocator_i* alloc) {
             }
         }
         md_free(alloc, data->ptr, data->size);
+        if (data->weight) {
+            md_free(alloc, data->weight, data->size);
+        }
     }
     data->ptr = 0;
+    data->weight = 0;
     data->size = 0;
 }
 
@@ -1079,7 +1123,7 @@ static void copy_data(data_t* dst, const data_t* src) {
             md_bitfield_copy(&dst_bf[i], &src_bf[i]);
         }
     } else {
-        MEMCPY(dst->ptr, src->ptr, src->size);
+        copy_data_block(dst, 0, src, 0, src->size);
     }
 }
 
@@ -1215,6 +1259,7 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_STRING: return "string";
     case TYPE_BITFIELD: return "bitfield";
     case TYPE_CONTACT: return "contact";
+    case TYPE_DISTRIBUTION: return "distribution";
     default: return "type out of range";
     }
 }
@@ -1970,6 +2015,7 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
                     .ptr = (char*)data.ptr + stride * i,
                     .size = data.size,
                     .type = type,
+                    .weight = data_weight_at(&data, stride * i),
                 };
                 len += print_data_value(buf + len, cap - MIN(len, cap), elem_data);
                 if (i < arr_len - 1) PRINT(",");
@@ -2025,6 +2071,13 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
             {
                 str_t str = *(str_t*)data.ptr;
                 PRINT(STR_FMT, STR_ARG(str));
+                break;
+            }
+            case TYPE_DISTRIBUTION:
+            {
+                const float v = *(const float*)data.ptr;
+                const float w = data.weight ? *data.weight : 1.0f;
+                PRINT("%.3f", w != 0.0f ? v / w : 0.0f);
                 break;
             }
             default:
@@ -3197,6 +3250,7 @@ static bool evaluate_identifier_element(data_t* dst, const identifier_t* decl, c
                 .type = dst->type,
                 .ptr  = (char*)whole.ptr + stride * decl->elem_idx,
                 .size = stride,
+                .weight = data_weight_at(&whole, stride * decl->elem_idx),
             };
             copy_data(dst, &elem);
         } else {
@@ -3327,6 +3381,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                 if (dst && dst->ptr) {
                     *id.data = child->data;
                     id.data->ptr = (char*)dst->ptr + stride * i;
+                    id.data->weight = data_weight_at(dst, stride * i);
                     id.data->size = stride;
                 }
                 md_array_push(ctx->identifiers, id, ctx->alloc);
@@ -3392,7 +3447,8 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
             data_t data = {
                 .type = type,
                 .ptr = (char*)dst->ptr + byte_offset,
-                .size = type_info_total_byte_size(type)
+                .size = type_info_total_byte_size(type),
+                .weight = data_weight_at(dst, byte_offset),
             };
             md_script_vis_t* vis = ctx->vis;
             if (ranges && !index_in_range((int)i, ranges[0])) {
@@ -3497,7 +3553,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                             md_bitfield_copy(&dst_bf[k], &src_bf[k]);
                         }
                     } else {
-                        MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                        copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                     }
                     write_offset += block_bytes;
                 }
@@ -3522,7 +3578,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                     md_bitfield_copy(&dst_bf[k], &src_bf[k]);
                                 }
                             } else {
-                                MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                                copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                             }
                             write_offset += block_bytes;
                         }
@@ -3551,7 +3607,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                         md_bitfield_copy(&dst_bf[m], &src_bf[m]);
                                     }
                                 } else {
-                                    MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                                    copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                                 }
                                 write_offset += block_bytes;
                             }
@@ -3582,7 +3638,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                             md_bitfield_copy(&dst_bf[n], &src_bf[n]);
                                         }
                                     } else {
-                                        MEMCPY((char*)dst->ptr + write_offset, (char*)arr_data.ptr + read_offset, block_bytes);
+                                        copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                                     }
                                     write_offset += block_bytes;
                                 }
@@ -3676,6 +3732,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             const size_t elem_size = type_info_element_byte_stride(dst->type);
             data.type = lhs_types[i];
             data.ptr = (char*)dst->ptr + elem_size * dst_idx;
+            data.weight = data_weight_at(dst, elem_size * dst_idx);
             data.size = type_info_total_byte_size(lhs_types[i]);
 
             int64_t offset = type_info_array_len(lhs_types[i]);
@@ -5107,6 +5164,11 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 		}
     }
 
+    // Distributions keep their count: [1][bins] for one, never [bins], which would read as that many of them
+    if (result_type.base_type == TYPE_DISTRIBUTION && dim_ndims(result_type.dim) == 1) {
+        dim_shift_right(result_type.dim);
+    }
+
     // SUCCESS!
     // @NOTE Subscript dim is not just the number of args supplied,
     // It is the number of dimensions
@@ -5241,6 +5303,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     // A constant right hand side was evaluated at compile time: the identifier is its i-th element.
                     // Without this, references to a constant identifier would read through a null pointer.
                     ident->data->ptr = (rhs->data.ptr && (rhs->flags & FLAG_CONSTANT)) ? (uint8_t*)rhs->data.ptr + (size_t)i * stride : 0;
+                    ident->data->weight = ident->data->ptr ? data_weight_at(&rhs->data, (size_t)i * stride) : NULL;
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;
@@ -5691,8 +5754,9 @@ static inline bool is_temporal_type(type_info_t ti) {
     return ti.base_type == TYPE_FLOAT && ti.dim[0] != -1 && (ndim == 1 || (ndim == 2 && ti.dim[1] == 1));
 }
 
+// One or more distributions: [n][bins]
 static inline bool is_distribution_type(type_info_t ti) {
-    return ti.dim[0] != -1 && is_type_directly_compatible(ti, (type_info_t)TI_DISTRIBUTION);
+    return ti.base_type == TYPE_DISTRIBUTION && ti.dim[0] > 0 && ti.dim[1] > 0 && ti.dim[2] == 0;
 }
 
 static inline bool is_volume_type(type_info_t ti) {
@@ -5949,21 +6013,21 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, st
             break;
         }
         case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
-            // The evaluated type is [1][2][num_bins]: the values followed by their weights.
-            if (dim_ndims(type.dim) < 3) {
-                dim_shift_right(type.dim);
-            }
-            // @NOTE: Multidimensional distributions are not supported yet
-            ASSERT(type.dim[0] == 1);
-            const uint32_t bins[1] = { (uint32_t)type.dim[2] };
+            // The evaluated type is [n][bins]: n distributions over the same bins, their weights beside them.
+            // Published as {bins} for one, {n, bins} for more; the weights in the same shape.
+            const uint32_t num = (uint32_t)type.dim[0];
+            const uint32_t bins[1] = { (uint32_t)type.dim[1] };
+            const uint32_t shape[2] = { num, bins[0] };
+            const uint32_t rank = num > 1 ? 2 : 1;
+            const uint32_t* dims = num > 1 ? shape : bins;
             prop->count      = bins[0];
-            prop->num_values = bins[0];
-            prop->values  = script_attr_storage(attributes, alloc, ident, NULL,      value_unit,    MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins);
-            prop->weights = script_attr_storage(attributes, alloc, ident, "/weight", md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, 1, bins);
+            prop->num_values = (size_t)num * bins[0];
+            prop->values  = script_attr_storage(attributes, alloc, ident, NULL,      value_unit,    MD_ATTRIBUTE_FLAG_NONE, 1, rank, dims);
+            prop->weights = script_attr_storage(attributes, alloc, ident, "/weight", md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, rank, dims);
             prop->range   = (vec2_t*)script_attr_storage(attributes, alloc, ident, "/range", coord_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
-            prop->sum_values  = md_alloc(alloc, bins[0] * sizeof(double));
-            prop->sum_weights = md_alloc(alloc, bins[0] * sizeof(double));
-            for (uint32_t i = 0; i < bins[0]; ++i) {
+            prop->sum_values  = md_alloc(alloc, prop->num_values * sizeof(double));
+            prop->sum_weights = md_alloc(alloc, prop->num_values * sizeof(double));
+            for (size_t i = 0; i < prop->num_values; ++i) {
                 prop->weights[i] = 1.0f;
             }
 
@@ -6053,9 +6117,9 @@ static void clear_property(eval_property_t* prop) {
     }
     if (prop->sum_values) {
         // Distribution: nothing accumulated. The weights go back to their 1.0 default, not 0, so values / weights is 0
-        MEMSET(prop->sum_values,  0, prop->count * sizeof(double));
-        MEMSET(prop->sum_weights, 0, prop->count * sizeof(double));
-        fill_float(prop->weights, prop->count, 1.0f);
+        MEMSET(prop->sum_values,  0, prop->num_values * sizeof(double));
+        MEMSET(prop->sum_weights, 0, prop->num_values * sizeof(double));
+        fill_float(prop->weights, prop->num_values, 1.0f);
     }
     if (prop->range) {
         *prop->range = (vec2_t){0, 0};
@@ -6253,12 +6317,15 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 break;
             }
             case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
-                const size_t num_bins = prop->count;
+                // Every bin of every distribution in it
+                const size_t num_bins = prop->num_values;
+                ASSERT(ident->data->type.base_type == TYPE_DISTRIBUTION);
+                ASSERT(type_info_total_element_count(ident->data->type) == num_bins);
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, num_bins);
 
-                // The evaluated weights sit directly behind the values
-                const float* weights = values + num_bins;
+                const float* weights = ident->data->weight;
+                ASSERT(weights);
 
                 md_mutex_lock(&prop->accum_mutex);
                 {

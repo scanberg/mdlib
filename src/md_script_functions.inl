@@ -26,8 +26,9 @@
 #define TI_FLOAT44      {TYPE_FLOAT, {4,4}}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {ANY_LENGTH,4,4}}
 
-// The second dimension in the distribution encodes weights for each bin
-#define TI_DISTRIBUTION {TYPE_FLOAT, {2,MD_DIST_BINS}}
+// One distribution, and any number of them, over MD_DIST_BINS bins. The weights are not in the type (data_t.weight).
+#define TI_DISTRIBUTION     {TYPE_DISTRIBUTION, {1,MD_DIST_BINS}}
+#define TI_DISTRIBUTION_ARR {TYPE_DISTRIBUTION, {ANY_LENGTH,MD_DIST_BINS}}
 #define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM}}
 
 #define TI_INT          {TYPE_INT, {1}}
@@ -411,6 +412,9 @@ static int _rdf_frng(data_t*, data_t[], eval_context_t*); // (position[], positi
 
 // Density along the axis of the unit cell
 static int _density  (data_t*, data_t[], eval_context_t*);
+static int _dist_scale(data_t*, data_t[], eval_context_t*); // (distribution[], float) -> distribution[]
+static int _dist_div  (data_t*, data_t[], eval_context_t*); // (distribution[], float) -> distribution[]
+static int _dist_pool (data_t*, data_t[], eval_context_t*); // (distribution[], distribution[]) -> distribution[]
 static int _density_x(data_t*, data_t[], eval_context_t*);
 static int _density_y(data_t*, data_t[], eval_context_t*);
 static int _density_z(data_t*, data_t[], eval_context_t*);
@@ -556,8 +560,6 @@ static procedure_t operators[] = {
     {STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     {STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
     {STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
@@ -571,7 +573,6 @@ static procedure_t operators[] = {
     {STR_INIT("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
     {STR_INIT("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     // Binary sub
@@ -579,8 +580,6 @@ static procedure_t operators[] = {
     {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
     {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
@@ -594,8 +593,8 @@ static procedure_t operators[] = {
     {STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul1arr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     {STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul1arr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    // A distribution only scales (its values, not its weights): other arithmetic on it is not defined (see pool)
+    {STR_INIT("*"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_scale,           FLAG_QUERYABLE_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
     {STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
@@ -609,8 +608,7 @@ static procedure_t operators[] = {
     {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("/"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_div,             FLAG_QUERYABLE_LENGTH},
     
     {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
     {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
@@ -739,10 +737,11 @@ static procedure_t procedures[] = {
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("density"),   {TYPE_FLOAT, {3,2,MD_DIST_BINS}}, 1, {TI_BITFIELD_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("density"),   {TYPE_DISTRIBUTION, {3,MD_DIST_BINS}}, 1, {TI_BITFIELD_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {STR_INIT("density_x"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {STR_INIT("density_y"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {STR_INIT("density_z"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("pool"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_DISTRIBUTION_ARR}, _dist_pool, FLAG_QUERYABLE_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
     {STR_INIT("sdf"),       TI_VOLUME, 3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
 
@@ -4932,14 +4931,16 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         // Set the distribution weight vector for each dimension
         // And zero the contributuion of each bin
+        ASSERT(dst->weight);
         if (axis == -1) {
+            // Three distributions: x, y, z
             float* ptr = dst->ptr;
             density[0] = ptr + MD_DIST_BINS * 0;
-            weight[0]  = ptr + MD_DIST_BINS * 1;
-            density[1] = ptr + MD_DIST_BINS * 2;
-            weight[1]  = ptr + MD_DIST_BINS * 3;
-            density[2] = ptr + MD_DIST_BINS * 4;
-            weight[2]  = ptr + MD_DIST_BINS * 5;
+            weight[0]  = dst->weight + MD_DIST_BINS * 0;
+            density[1] = ptr + MD_DIST_BINS * 1;
+            weight[1]  = dst->weight + MD_DIST_BINS * 1;
+            density[2] = ptr + MD_DIST_BINS * 2;
+            weight[2]  = dst->weight + MD_DIST_BINS * 2;
 
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
                 weight [0][i] = 1.0f;
@@ -4950,9 +4951,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
                 density[2][i] = 0.0f;
             }
         } else {
-            float* ptr = dst->ptr;
-            density[axis] = ptr + MD_DIST_BINS * 0;
-            weight[axis]  = ptr + MD_DIST_BINS * 1;
+            density[axis] = (float*)dst->ptr;
+            weight[axis]  = dst->weight;
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
                 weight [axis][i] = 1.0f;
                 density[axis][i] = 0.0f;
@@ -5462,15 +5462,82 @@ static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff
 }
 #endif
 
+// ### DISTRIBUTIONS ###
+// A bin is shown as value / weight, and the evaluation sums both over frames. Only operations which give the same
+// result whether they are applied per frame or to those sums are defined: scaling, which scales the values and
+// leaves the weights, and pooling, which adds both.
+
+static size_t dist_bin_count(const data_t* d) {
+    return type_info_total_element_count(d->type);
+}
+
+static float dist_weight(const data_t* d, size_t i) {
+    return d->weight ? d->weight[i] : 1.0f;
+}
+
+// The number of distributions in the result: as many as in the first argument. Asked for with dst NULL (the
+// length is not deduced from the arguments' dimensions, which would take [1][bins] for a leading one to replicate).
+static int dist_count(const data_t arg[]) {
+    return arg[0].type.dim[0];
+}
+
+static int dist_scaled(data_t* dst, data_t arg[], float scl) {
+    if (!dst) {
+        return dist_count(arg);
+    }
+    {
+        ASSERT(dst->weight);
+        const size_t n = dist_bin_count(&arg[0]);
+        ASSERT(n == dist_bin_count(dst));
+        const float* v = (const float*)arg[0].ptr;
+        float* out = (float*)dst->ptr;
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = v[i] * scl;
+            dst->weight[i] = dist_weight(&arg[0], i);
+        }
+    }
+    return 0;
+}
+
+static int _dist_scale(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    return dist_scaled(dst, arg, as_float(arg[1]));
+}
+
+static int _dist_div(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    return dist_scaled(dst, arg, dst ? 1.0f / as_float(arg[1]) : 0.0f);
+}
+
+static int _dist_pool(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    if (!dst) {
+        return dist_count(arg);
+    }
+    {
+        ASSERT(dst->weight);
+        const size_t n = dist_bin_count(&arg[0]);
+        ASSERT(n == dist_bin_count(&arg[1]) && n == dist_bin_count(dst));
+        const float* a = (const float*)arg[0].ptr;
+        const float* b = (const float*)arg[1].ptr;
+        float* out = (float*)dst->ptr;
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = a[i] + b[i];
+            dst->weight[i] = dist_weight(&arg[0], i) + dist_weight(&arg[1], i);
+        }
+    }
+    return 0;
+}
+
 static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     if (dst || ctx->vis) {
         const int num_bins = MD_DIST_BINS;
        
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_DISTRIBUTION));
-            ASSERT(dst->ptr);
-            float* bins    = as_float_arr(*dst);
-            float* weights = as_float_arr(*dst) + num_bins;
+            ASSERT(dst->ptr && dst->weight);
+            float* bins    = (float*)dst->ptr;
+            float* weights = dst->weight;
             compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, ctx);
         }
         if (ctx->vis) {

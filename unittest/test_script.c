@@ -4546,3 +4546,125 @@ UTEST_F(script, frame_sets) {
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
+
+// ### DISTRIBUTIONS ###
+// A distribution is its own type, [n][bins], with the weight of every bin beside its value rather than in the type
+
+static bool floats_near(const float* a, const float* b, size_t n, float rel) {
+    for (size_t i = 0; i < n; ++i) {
+        if (fabsf(a[i] - b[i]) > rel * MAX(1.0f, fabsf(b[i]))) return false;
+    }
+    return true;
+}
+
+UTEST_F(script, distribution_type) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    #define RDF_CO "rdf(element('C'), element('O'), 6.0)"
+    // Scaled, and pooled, it is a distribution
+    EXPECT_TRUE(compiles(ir, "g = " RDF_CO ";", mol));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION, md_script_ir_property_flags(ir, STR_LIT("g")));
+    EXPECT_TRUE(compiles(ir, "g = 2.0 * " RDF_CO ";", mol));
+    EXPECT_TRUE(compiles(ir, "g = " RDF_CO " * 2.0;", mol));
+    EXPECT_TRUE(compiles(ir, "g = " RDF_CO " / 2.0;", mol));
+    EXPECT_TRUE(compiles(ir, "g = pool(" RDF_CO ", " RDF_CO ");", mol));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION, md_script_ir_property_flags(ir, STR_LIT("g")));
+
+    // Nothing else: per frame it would not be what it is over the frames
+    EXPECT_FALSE(compiles(ir, "g = " RDF_CO " + " RDF_CO ";", mol));
+    EXPECT_FALSE(compiles(ir, "g = " RDF_CO " - " RDF_CO ";", mol));
+    EXPECT_FALSE(compiles(ir, "g = " RDF_CO " * " RDF_CO ";", mol));
+    EXPECT_FALSE(compiles(ir, "g = " RDF_CO " / " RDF_CO ";", mol));
+    EXPECT_FALSE(compiles(ir, "g = " RDF_CO " + 1.0;", mol));
+    EXPECT_FALSE(compiles(ir, "g = -" RDF_CO ";", mol));
+    EXPECT_FALSE(compiles(ir, "g = 2.0 / " RDF_CO ";", mol));
+
+    // An array of them is one too
+    EXPECT_TRUE(compiles(ir, "g = " RDF_CO " in residue(1:3);", mol));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION, md_script_ir_property_flags(ir, STR_LIT("g")));
+    EXPECT_TRUE(compiles(ir, "g = pool(" RDF_CO " in residue(1:3), " RDF_CO " in residue(4:6));", mol));
+    EXPECT_FALSE(compiles(ir, "g = pool(" RDF_CO " in residue(1:3), " RDF_CO " in residue(4:5));", mol));
+    #undef RDF_CO
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Scaling scales the values and leaves the weights; pooling adds both; an array is per element, published [n][bins]
+UTEST_F(script, distribution_ops_and_arrays) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 0u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "a  = rdf(element('C'), element('O'), 6.0);"
+        "b  = rdf(element('N'), element('O'), 6.0);"
+        "s  = 2.0 * a;"
+        "h  = a / 4.0;"
+        "p  = pool(a, b);"
+        "ga = rdf(element('C'), element('O'), 6.0) in residue(1:3);"
+        "g2 = ga[2];"
+        "r2 = rdf(element('C'), element('O'), 6.0) in residue(2);"
+    ), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(n, ir, alloc);
+    ASSERT_TRUE(eval);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+
+    const eval_property_t* a  = find_eval_property(eval, STR_LIT("a"));
+    const eval_property_t* bb = find_eval_property(eval, STR_LIT("b"));
+    const eval_property_t* s  = find_eval_property(eval, STR_LIT("s"));
+    const eval_property_t* h  = find_eval_property(eval, STR_LIT("h"));
+    const eval_property_t* p  = find_eval_property(eval, STR_LIT("p"));
+    const eval_property_t* ga = find_eval_property(eval, STR_LIT("ga"));
+    const eval_property_t* g2 = find_eval_property(eval, STR_LIT("g2"));
+    const eval_property_t* r2 = find_eval_property(eval, STR_LIT("r2"));
+    ASSERT_TRUE(a && bb && s && h && p && ga && g2 && r2);
+    const size_t bins = a->count;
+    ASSERT_EQ((size_t)a->num_values, bins);
+
+    float* tmp = md_alloc(alloc, bins * sizeof(float));
+
+    // Scaled: values times 2, weights as they were
+    for (size_t i = 0; i < bins; ++i) tmp[i] = 2.0f * a->values[i];
+    EXPECT_TRUE(floats_near(s->values,  tmp, bins, 1e-5f));
+    EXPECT_TRUE(floats_near(s->weights, a->weights, bins, 1e-5f));
+    for (size_t i = 0; i < bins; ++i) tmp[i] = a->values[i] / 4.0f;
+    EXPECT_TRUE(floats_near(h->values,  tmp, bins, 1e-5f));
+    EXPECT_TRUE(floats_near(h->weights, a->weights, bins, 1e-5f));
+
+    // Pooled: both added
+    for (size_t i = 0; i < bins; ++i) tmp[i] = a->values[i] + bb->values[i];
+    EXPECT_TRUE(floats_near(p->values, tmp, bins, 1e-4f));
+    for (size_t i = 0; i < bins; ++i) tmp[i] = a->weights[i] + bb->weights[i];
+    EXPECT_TRUE(floats_near(p->weights, tmp, bins, 1e-4f));
+
+    // An array: one distribution per element, each with its own weights, published as [3][bins]
+    EXPECT_EQ((size_t)3 * bins, (size_t)ga->num_values);
+    const md_attributes_t* table = md_script_eval_attributes(eval);
+    const md_attribute_t* attr = md_attributes_find(table, STR_LIT("script/ga"));
+    const md_attribute_t* wttr = md_attributes_find(table, STR_LIT("script/ga/weight"));
+    ASSERT_TRUE(attr && wttr);
+    EXPECT_EQ(2u, (uint32_t)attr->format.rank);
+    EXPECT_EQ(3u, attr->format.shape[0]);
+    EXPECT_EQ((uint32_t)bins, attr->format.shape[1]);
+    EXPECT_EQ(2u, (uint32_t)wttr->format.rank);
+    const md_attribute_t* single = md_attributes_find(table, STR_LIT("script/a"));
+    ASSERT_TRUE(single);
+    EXPECT_EQ(1u, (uint32_t)single->format.rank);
+
+    // Its second element is the distribution over residue 2 alone, whether taken by subscript or evaluated so
+    EXPECT_TRUE(floats_near(ga->values  + bins, r2->values,  bins, 1e-5f));
+    EXPECT_TRUE(floats_near(ga->weights + bins, r2->weights, bins, 1e-5f));
+    EXPECT_TRUE(floats_near(g2->values,  r2->values,  bins, 1e-5f));
+    EXPECT_TRUE(floats_near(g2->weights, r2->weights, bins, 1e-5f));
+    // and not the same as the first
+    EXPECT_FALSE(floats_near(ga->weights, ga->weights + bins, bins, 1e-5f) && floats_near(ga->values, ga->values + bins, bins, 1e-5f));
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
