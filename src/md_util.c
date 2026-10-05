@@ -574,7 +574,7 @@ static const char* acidic[] = { "ASP", "GLU" };
 static const char* basic[] = { "ARG", "HIS", "LYS" };
 
 static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET", "TRP", "ASX", "GLX", "PCA", "HYP" };
-static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "TIP5", "W", "DOD", "D30", "SPC" };
+static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "TIP5", "TIP4P", "TIP5P", "TP3", "TP4", "TP5", "T3P", "T4P", "T5P", "T4E", "OPC", "W", "DOD", "D30", "SPC" };
 static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
 
 static const char* common_ions[] = { "NA", "K", "CA", "MG", "ZN", "CL", "F", "MN", "FE", "CU", "CO", "NI", "CD", "BR", "I", "CS", "SR"};
@@ -3764,6 +3764,19 @@ static inline md_flags_t atom_flags_with_type(const md_system_t* sys, size_t ato
     return flags;
 }
 
+// A water molecule whose atoms beyond its O and two H are virtual sites (4 and 5 site models)
+static bool water_with_virtual_sites(const md_system_t* sys, md_urange_t range) {
+    uint32_t num_o = 0, num_h = 0, num_vs = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
+        if (z == MD_Z_O) num_o += 1;
+        else if (z == MD_Z_H) num_h += 1;
+        else if (atom_flags_with_type(sys, i) & MD_FLAG_VIRTUAL_SITE) num_vs += 1;
+        else return false;
+    }
+    return num_o == 1 && num_h == 2 && num_vs > 0;
+}
+
 static bool system_is_coarse_grained(const md_system_t* sys) {
     for (size_t i = 0; i < sys->atom.type.count; ++i) {
         if (md_atom_type_flags(&sys->atom.type, i) & MD_FLAG_COARSE_GRAINED) {
@@ -3915,9 +3928,11 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         md_flags_t* comp_flags = md_temp_alloc_array(temp_scope, md_flags_t, num_comp);
         for (size_t i = 0; i < num_comp; ++i) {
             comp_flags[i] = md_component_flags(&sys->component, i);
-            // Check if water component (2 hydrogen + 1 oxygen)
+            // Check if water component (2 hydrogen + 1 oxygen, and possibly virtual sites)
             size_t comp_len = md_component_atom_count(&sys->component, i);
-            if (comp_len == 3) {
+            if (comp_len > 3 && water_with_virtual_sites(sys, md_component_atom_range(&sys->component, i))) {
+                comp_flags[i] |= MD_FLAG_WATER;
+            } else if (comp_len == 3) {
                 uint32_t h_count = 0;
                 uint32_t o_count = 0;
                 md_urange_t atom_range = md_component_atom_range(&sys->component, i);
@@ -3966,6 +3981,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         for (size_t i = 0; i < num_candidates; ++i) {
             int ai = candidates[i].atom_i;
             int aj = candidates[i].atom_j;
+            // Virtual sites sit within bonding distance of their parent atom (the lone pairs of TIP5P at 0.7 Å)
+            // but are not bonded to anything
+            if ((atom_flags_with_type(sys, ai) | atom_flags_with_type(sys, aj)) & MD_FLAG_VIRTUAL_SITE) continue;
             float d = candidates[i].dist;
             int ei = atomic_nr[ai];
             int ej = atomic_nr[aj];
@@ -4420,6 +4438,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         }
 
         if (((len == 1 || len == 3) && md_util_resname_water(comp_name)) ||
+           (len > 3 && md_util_resname_water(comp_name) && water_with_virtual_sites(sys, comp_range)) ||
            (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, comp_range.beg))))
         {
             sys->component.flags[comp_idx] |= MD_FLAG_WATER;
@@ -5167,6 +5186,39 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     return links;
 }
 
+// Virtual sites (the M site of TIP4P, the lone pairs of TIP5P) have no bonds, but unwrapping must keep them with their
+// molecule. Each unbonded virtual site hangs off its component's first heavy atom (else first real atom). Like the
+// hierarchy links above these shape the structure forest only; they are not bonds.
+static md_array(md_atom_pair_t) synthesize_virtual_site_links(const md_system_t* sys, md_allocator_i* alloc) {
+    md_array(md_atom_pair_t) links = 0;
+    const size_t atom_count = md_system_atom_count(sys);
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        md_urange_t range = md_component_atom_range(&sys->component, ci);
+        if (range.end > atom_count) range.end = (uint32_t)atom_count;
+        int32_t anchor = -1, first_real = -1;
+        bool has_site = false;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (atom_flags_with_type(sys, i) & MD_FLAG_VIRTUAL_SITE) {
+                has_site = true;
+                continue;
+            }
+            if (first_real < 0) first_real = (int32_t)i;
+            if (anchor < 0 && md_atom_atomic_number(&sys->atom, i) > MD_Z_H) anchor = (int32_t)i;
+        }
+        if (!has_site) continue;
+        if (anchor < 0) anchor = first_real;
+        if (anchor < 0) continue;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const bool bonded = sys->bond.conn.offset && md_bond_conn_count(&sys->bond, i) > 0;
+            if ((atom_flags_with_type(sys, i) & MD_FLAG_VIRTUAL_SITE) && !bonded) {
+                md_atom_pair_t pair = {{ anchor, (int32_t)i }};
+                md_array_push(links, pair, alloc);
+            }
+        }
+    }
+    return links;
+}
+
 bool md_util_system_infer_structures(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);
@@ -5206,11 +5258,12 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_fifo_t parent_queue = md_fifo_create(1024, temp_arena);
 
     // The traversal runs over bonds, plus hierarchy links for coarse grained systems where bonds leave beads
-    // disconnected (see synthesize_hierarchy_links). The links only shape the forest; sys->bond is untouched.
+    // disconnected (see synthesize_hierarchy_links), and links for virtual sites which have no bonds (see
+    // synthesize_virtual_site_links). The links only shape the forest; sys->bond is untouched.
     const md_bond_data_t* graph = &sys->bond;
     md_bond_data_t link_graph = {0};
-    if (system_is_coarse_grained(sys)) {
-        md_array(md_atom_pair_t) links = synthesize_hierarchy_links(sys, temp_arena);
+    {
+        md_array(md_atom_pair_t) links = system_is_coarse_grained(sys) ? synthesize_hierarchy_links(sys, temp_arena) : synthesize_virtual_site_links(sys, temp_arena);
         const size_t num_links = md_array_size(links);
         if (num_links > 0) {
             link_graph.count = sys->bond.count + num_links;
@@ -5476,6 +5529,12 @@ static const atom_type_t predefined_atom_types[] = {
 	// Depending on the Martini version, water can be represented as a single bead or as 4-to-1 mapping
 	{ "W", "W",     0,  18.015f,     2.3f, MD_FLAG_COARSE_GRAINED | MD_FLAG_WATER },
 
+    // The massless charge sites of 4 and 5 site water models: M of TIP4P and its variants and OPC (MW in GROMACS, OM
+    // in CHARMM, EPW in AMBER, M in OpenMM) and the two lone pairs of TIP5P (LP1 LP2, EP1 EP2, M1 M2). These are all
+    // atom models of a single molecule, NOT coarse grained: the coarse grained flag would turn off covalent bond and
+    // hydrogen bond inference for the whole system. No element, no mass, no radius, and no bonds.
+    { "SOL|WAT|HOH|H2O|TIP4|TIP5|TIP4P|TIP5P|TP4|TP5|T4P|T5P|T4E|OPC", "MW|M|OM|EPW|EP|EP#|LP#|M#", 0, 0.0f, 0.0f, MD_FLAG_VIRTUAL_SITE },
+
     { "ION", "CL",  17, 35.45f,     1.8f, MD_FLAG_ION },
     { "ION", "NA",  11, 22.99f,     2.3f, MD_FLAG_ION },
     { "ION", "K",   19, 39.10f,     2.7f, MD_FLAG_ION },
@@ -5506,6 +5565,7 @@ static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
 // * is supported to match any sequence of characters
 // ? is supported to match any single character
 // # is supported to match any single digit
+// | separates alternatives
 
 static inline bool pattern_match(const char* pattern, const char* str) {
     while (*pattern && *str) {
@@ -5534,10 +5594,28 @@ static inline bool pattern_match(const char* pattern, const char* str) {
     return !*pattern && !*str;
 }
 
+// Alternatives separated by '|': "SOL|WAT" matches either
+static bool pattern_match_any(const char* patterns, const char* str) {
+    char buf[128];
+    const char* beg = patterns;
+    for (;;) {
+        const char* end = beg;
+        while (*end && *end != '|') ++end;
+        const size_t len = (size_t)(end - beg);
+        if (len < sizeof(buf)) {
+            MEMCPY(buf, beg, len);
+            buf[len] = '\0';
+            if (pattern_match(buf, str)) return true;
+        }
+        if (!*end) return false;
+        beg = end + 1;
+    }
+}
+
 static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) {
     for (size_t i = 0; i < ARRAY_SIZE(predefined_atom_types); ++i) {
         atom_type_t type = predefined_atom_types[i];
-        if (pattern_match(type.comp, comp_name.ptr) && pattern_match(type.atom, atom_name.ptr)) {
+        if (pattern_match_any(type.comp, comp_name.ptr) && pattern_match_any(type.atom, atom_name.ptr)) {
             return (atom_type_t*)&predefined_atom_types[i];
         }
     }
@@ -5582,7 +5660,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 if (cached_type) {
                     md_atom_type_idx_t atom_type = (md_atom_type_idx_t)*cached_type;
                     sys->atom.type_idx[i] = atom_type;
-                    comp_flags |= sys->atom.type.flags[atom_type];
+                    comp_flags |= sys->atom.type.flags[atom_type] & ~MD_FLAG_VIRTUAL_SITE;
                 } else {
                     str_t atom_name = atom_labels[i];
                     md_atomic_number_t z = 0;
@@ -5607,7 +5685,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                         flags   = 0;
                     }
 
-                    comp_flags |= flags;
+                    comp_flags |= flags & ~MD_FLAG_VIRTUAL_SITE;   // Describes a particle, not its component
 
                     md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_name, z, mass, radius, color, flags, alloc);
                     sys->atom.type_idx[i] = type;
@@ -5661,7 +5739,7 @@ void md_util_system_augment_atom_types(md_system_t* sys) {
 
             sys->atom.type.flags[t] |= entry->flags;
             if (sys->atom.flags) sys->atom.flags[i] |= entry->flags;
-            comp_flags |= entry->flags;
+            comp_flags |= entry->flags & ~MD_FLAG_VIRTUAL_SITE;
         }
         sys->component.flags[comp_idx] |= comp_flags;
     }

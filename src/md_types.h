@@ -70,6 +70,10 @@ typedef enum {
     // Hydrogen bond roles, see md_hbond.h (md_hbond_infer_atom_flags)
     MD_FLAG_HBOND_DONOR         = 0x10000000,
     MD_FLAG_HBOND_ACCEPTOR      = 0x20000000,
+
+    // A massless interaction site without an element: the M site of 4 site water models (TIP4P, OPC), the lone pairs
+    // of 5 site models (TIP5P). It belongs to its molecule but forms no covalent bonds. Set on the atom type.
+    MD_FLAG_VIRTUAL_SITE        = 0x40000000,
 } md_flags_t;
 
 ENUM_FLAGS(md_flags_t)
