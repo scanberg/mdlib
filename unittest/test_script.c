@@ -258,6 +258,7 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_s
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
+            .compile_ir = ir,
             .sys = sys,
             .cur_state = &sys->reference,
             .ref_state = &sys->reference,
@@ -1869,11 +1870,11 @@ UTEST_F(script, visualize) {
             .state = &mol->reference,
         };
         
-        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)x->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, x->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
         EXPECT_EQ(mol->atom.count, md_bitfield_popcount(&vis.atom_mask));
         
         md_script_vis_clear(&vis);
-        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, sx->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
         size_t res_atom_count = md_component_atom_count(&mol->component, 4);
         size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
@@ -2132,6 +2133,7 @@ UTEST_F(script, named_args_binding) {
     md_script_ir_t* ir = create_ir(alloc);
     eval_context_t ctx = {
         .ir = ir,
+        .compile_ir = ir,     // Binding arguments is part of a compilation
         .sys = &utest_fixture->ala,
         .temp_alloc = alloc,
         .alloc = alloc,
@@ -3039,7 +3041,7 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
         md_script_vis_t vis = {0};
         md_script_vis_init(&vis, alloc);
         md_script_vis_ctx_t vctx = { .ir = ir, .sys = sys, .state = &sys->reference };
-        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)ident->node, -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
         // What is shown are the groups
         EXPECT_EQ(sys->atom.count, md_bitfield_popcount(&vis.atom_mask));
         md_script_vis_free(&vis);
@@ -4078,4 +4080,469 @@ UTEST(script, completion_attribute_paths) {
     md_script_ir_free(ir);
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A compiled IR is read-only to evaluations and visualizations: one IR is shared by the evaluations of frame
+// ranges running on worker threads, and by visualizations requested while they run.
+
+// Everything an evaluation could write to in an IR: its own arrays, and the AST nodes and what they hold
+static uint64_t ir_snapshot(const md_script_ir_t* ir) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+#define SNAP_MIX(v) (h = (h ^ (uint64_t)(v)) * 0x100000001b3ULL)
+    SNAP_MIX(md_array_size(ir->errors));
+    SNAP_MIX(md_array_size(ir->warnings));
+    SNAP_MIX(md_array_size(ir->identifiers));
+    SNAP_MIX(md_array_size(ir->contact_queries));
+    SNAP_MIX(md_array_size(ir->nodes));
+    SNAP_MIX(ir->flags);
+    for (size_t i = 0; i < md_array_size(ir->identifiers); ++i) {
+        SNAP_MIX((uintptr_t)ir->identifiers[i].node);
+        SNAP_MIX((uintptr_t)ir->identifiers[i].data);
+    }
+    for (size_t i = 0; i < md_array_size(ir->nodes); ++i) {
+        const ast_node_t* node = ir->nodes[i];
+        SNAP_MIX(node->type);
+        SNAP_MIX(node->flags);
+        SNAP_MIX(md_array_size(node->children));
+        SNAP_MIX((uintptr_t)node->children);
+        SNAP_MIX(node->data.type.base_type);
+        for (int d = 0; d < MAX_NUM_DIMS; ++d) SNAP_MIX((uint32_t)node->data.type.dim[d]);
+        SNAP_MIX((uintptr_t)node->data.ptr);
+        SNAP_MIX(node->data.size);
+        if (node->data.ptr && node->data.size) {
+            if (node->data.type.base_type == TYPE_BITFIELD) {
+                const md_bitfield_t* bf = (const md_bitfield_t*)node->data.ptr;
+                for (size_t k = 0; k < node->data.size / sizeof(md_bitfield_t); ++k) {
+                    SNAP_MIX(md_bitfield_hash64(&bf[k], 0));
+                }
+            } else {
+                const uint8_t* bytes = (const uint8_t*)node->data.ptr;
+                for (size_t k = 0; k < node->data.size; ++k) SNAP_MIX(bytes[k]);
+            }
+        }
+    }
+#undef SNAP_MIX
+    return h;
+}
+
+UTEST_F(script, evaluation_does_not_write_ir) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GT(num_frames, 0u);
+
+    // Contexts, subscripts of selections, identifiers and prepared contact queries
+    str_t src = STR_LIT(
+        "sel = residue(:);"
+        "sub = sel[2:4];"
+        "d   = distance(com(sub[1]), com(sub[2]));"
+        "x   = coord(1) in residue(1:3);"
+        "c   = contacts(residue(:), cutoff=4.5);"
+        "n   = count(c);"
+    );
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, src, mol, NULL));
+    ASSERT_TRUE(md_script_ir_valid(ir));
+    const uint64_t compiled = ir_snapshot(ir);
+
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
+    EXPECT_EQ(compiled, ir_snapshot(ir));
+
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    const md_script_vis_ctx_t vis_ctx = { .ir = ir, .sys = mol, .state = &mol->reference };
+    const md_script_vis_token_t* tokens = md_script_ir_vis_tokens(ir);
+    for (size_t i = 0; i < md_script_ir_num_vis_tokens(ir); ++i) {
+        for (int subidx = -1; subidx < 2; ++subidx) {
+            md_script_vis_clear(&vis);
+            md_script_vis_eval_ref(&vis, tokens[i].ref, subidx, &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT);
+        }
+    }
+    EXPECT_EQ(compiled, ir_snapshot(ir));
+
+    // A visualization of an expression compiles one of its own, against the IR as context
+    md_script_vis_clear(&vis);
+    EXPECT_TRUE(md_script_vis_eval_string(&vis, STR_LIT("dd = distance(com(sub[1]), com(sub[2]));"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ(compiled, ir_snapshot(ir));
+
+    md_script_vis_free(&vis);
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// The diagnostics of an evaluation go to its own log, never into the IR. Only a compilation records them there.
+UTEST_F(script, evaluation_diagnostics_go_to_its_log) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_script_ir_t* ir = create_ir(alloc);
+    const token_t tok = {0};
+
+    eval_log_t log = { .alloc = alloc };
+    eval_context_t ctx = { .ir = ir, .log = &log };
+    EVAL_LOG_WARNING(&ctx, tok, "a warning %d", 1);
+    EVAL_LOG_ERROR(&ctx, tok, "first error");
+    EVAL_LOG_ERROR(&ctx, tok, "second error");   // As in a compilation, only the first error is kept
+    EXPECT_EQ(0, (int)md_array_size(ir->errors));
+    EXPECT_EQ(0, (int)md_array_size(ir->warnings));
+    ASSERT_EQ(1, (int)md_array_size(log.warnings));
+    ASSERT_EQ(1, (int)md_array_size(log.errors));
+    EXPECT_TRUE(str_eq(log.warnings[0].text, STR_LIT("a warning 1")));
+    EXPECT_TRUE(str_eq(log.errors[0].text, STR_LIT("first error")));
+
+    // Without a log they go to md_log, and still not into the IR
+    ctx.log = NULL;
+    EVAL_LOG_ERROR(&ctx, tok, "unlogged");
+    EXPECT_EQ(0, (int)md_array_size(ir->errors));
+
+    // A compilation records them in the IR, which is how they reach the editor
+    ir->record_log = true;
+    ctx.compile_ir = ir;
+    EVAL_LOG_ERROR(&ctx, tok, "compile error");
+    ASSERT_EQ(1, (int)md_array_size(ir->errors));
+    EXPECT_TRUE(str_eq(ir->errors[0].text, STR_LIT("compile error")));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// A visualization of an expression reports whether it produced one, and marks the atoms involved
+UTEST_F(script, vis_eval_string_reports_success) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    const md_script_vis_ctx_t vis_ctx = { .sys = mol, .state = &mol->reference };
+
+    EXPECT_TRUE(md_script_vis_eval_string(&vis, STR_LIT("d = distance(1, 2);"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ(2, (int)md_bitfield_popcount(&vis.atom_mask));
+
+    md_script_vis_clear(&vis);
+    EXPECT_FALSE(md_script_vis_eval_string(&vis, STR_LIT("d = distance(1,;"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+
+    md_script_vis_free(&vis);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A visualization reference names a part of one compilation. It resolves in that IR only: not in another, not
+// in one compiled later from the same source, and not in its own IR once that has been recompiled.
+UTEST_F(script, vis_ref_resolves_in_its_own_compilation_only) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    const str_t src = STR_LIT(
+        "sel = residue(1:4);"
+        "d   = distance(com(sel[1]), com(sel[2]));"
+        "x   = coord(1) in residue(1:3);"
+    );
+
+    md_script_ir_t* a = md_script_ir_create(alloc);
+    md_script_ir_t* b = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(a, src, mol, NULL));
+    ASSERT_TRUE(md_script_ir_compile_from_source(b, src, mol, NULL));
+
+    const md_script_vis_ref_t none = {0};
+    EXPECT_TRUE(md_script_vis_ref_empty(none));
+    EXPECT_FALSE(md_script_vis_ref_valid(a, none));
+    EXPECT_TRUE(md_script_vis_ref_empty(md_script_ir_property_vis_ref(a, STR_LIT("no_such_property"))));
+    EXPECT_TRUE(md_script_vis_ref_empty(md_script_ir_property_vis_ref(NULL, STR_LIT("d"))));
+
+    const md_script_vis_ref_t ref_a = md_script_ir_property_vis_ref(a, STR_LIT("d"));
+    const md_script_vis_ref_t ref_b = md_script_ir_property_vis_ref(b, STR_LIT("d"));
+    ASSERT_FALSE(md_script_vis_ref_empty(ref_a));
+    ASSERT_FALSE(md_script_vis_ref_empty(ref_b));
+    EXPECT_FALSE(md_script_vis_ref_equal(ref_a, ref_b));
+    EXPECT_TRUE (md_script_vis_ref_valid(a, ref_a));
+    EXPECT_FALSE(md_script_vis_ref_valid(b, ref_a));
+    EXPECT_TRUE (md_script_vis_ref_valid(b, ref_b));
+    EXPECT_FALSE(md_script_vis_ref_valid(a, ref_b));
+    EXPECT_FALSE(md_script_vis_ref_valid(NULL, ref_a));
+
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    md_script_vis_ctx_t ctx = { .ir = a, .sys = mol, .state = &mol->reference };
+    // A distance is shown as geometry
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, ref_a, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_GT(md_array_size(vis.points) + md_array_size(vis.lines), (size_t)0);
+    md_script_vis_clear(&vis);
+    EXPECT_FALSE(md_script_vis_eval_ref(&vis, ref_b, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ((size_t)0, md_array_size(vis.points) + md_array_size(vis.lines));
+    EXPECT_EQ((size_t)0, md_bitfield_popcount(&vis.atom_mask));
+
+    // The editor's tokens resolve in the compilation they came from
+    const md_script_vis_token_t* tokens = md_script_ir_vis_tokens(a);
+    ASSERT_GT(md_script_ir_num_vis_tokens(a), (size_t)0);
+    for (size_t i = 0; i < md_script_ir_num_vis_tokens(a); ++i) {
+        EXPECT_TRUE (md_script_vis_ref_valid(a, tokens[i].ref));
+        EXPECT_FALSE(md_script_vis_ref_valid(b, tokens[i].ref));
+    }
+
+    // Recompiled, its own IR does not take an old reference for one of its own
+    md_script_ir_clear(a);
+    ASSERT_TRUE(md_script_ir_compile_from_source(a, src, mol, NULL));
+    EXPECT_FALSE(md_script_vis_ref_valid(a, ref_a));
+    EXPECT_TRUE(str_empty(md_script_vis_ref_ident(a, ref_a)));
+    EXPECT_EQ(0, md_script_vis_ref_dim(a, ref_a));
+    EXPECT_TRUE(md_script_vis_ref_valid(a, md_script_ir_property_vis_ref(a, STR_LIT("d"))));
+
+    // The array 'x' in residue(1:3) has one element per context
+    const md_script_vis_ref_t ref_x = md_script_ir_property_vis_ref(a, STR_LIT("x"));
+    if (!md_script_vis_ref_empty(ref_x)) {
+        EXPECT_EQ(3, md_script_vis_ref_dim(a, ref_x));
+    }
+
+    md_script_vis_free(&vis);
+    md_script_ir_free(a);
+    md_script_ir_free(b);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A node is referred to by its position in the IR: that has to hold for every node, also those the parser and
+// the static check make by copying another (subscripts, casts)
+UTEST_F(script, node_index_is_position_in_ir) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "sel = residue(:);"
+        "sub = sel[2:4];"
+        "xyz = coord(1:8);"
+        "xs  = xyz[1:2:7,1];"
+        "f   = 1 + 2.5;"
+        "d   = distance(com(sub[1]), com(sub[2])) * 2;"
+    ), mol, NULL));
+    for (size_t i = 0; i < md_array_size(ir->nodes); ++i) {
+        EXPECT_EQ((uint32_t)i, ir->nodes[i]->index);
+    }
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+static const eval_property_t* find_set_property(const md_script_eval_t* eval, size_t set, str_t ident) {
+    const eval_frame_set_t* s = &eval->sets[set];
+    for (size_t i = 0; i < md_array_size(s->props); ++i) {
+        if (str_eq(s->props[i].ident, ident)) return &s->props[i];
+    }
+    return NULL;
+}
+
+static const eval_property_t* find_eval_property(const md_script_eval_t* eval, str_t ident) {
+    return find_set_property(eval, 0, ident);
+}
+
+// A distribution is shown as values / weights, also with bins merged (sum of values / sum of weights). Over several
+// frames that has to be sum(values) / sum(weights) over the frames evaluated so far: the weights of an rdf differ
+// between frames (it normalizes by the pair count of its frame), so those of any one frame will not do.
+UTEST_F(script, distribution_weights_accumulate) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GT(num_frames, 2u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("r = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    ASSERT_EQ(MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION, md_script_ir_property_flags(ir, STR_LIT("r")));
+
+    // Each frame on its own: its values (counts) and weights
+    size_t num_bins = 0;
+    double* sum_v = NULL;
+    double* sum_w = NULL;
+    float* first_w = NULL;
+    bool weights_differ = false;
+    for (uint32_t f = 0; f < num_frames; ++f) {
+        md_script_eval_t* single = md_script_eval_create(num_frames, ir, alloc);
+        ASSERT_TRUE(md_script_eval_frame_range(single, ir, mol, SCRIPT_RUN, f, f + 1));
+        const eval_property_t* p = find_eval_property(single, STR_LIT("r"));
+        ASSERT_TRUE(p);
+        if (!sum_v) {
+            num_bins = p->count;
+            sum_v   = md_alloc(alloc, num_bins * sizeof(double));
+            sum_w   = md_alloc(alloc, num_bins * sizeof(double));
+            first_w = md_alloc(alloc, num_bins * sizeof(float));
+            MEMSET(sum_v, 0, num_bins * sizeof(double));
+            MEMSET(sum_w, 0, num_bins * sizeof(double));
+            MEMCPY(first_w, p->weights, num_bins * sizeof(float));
+        }
+        for (size_t i = 0; i < num_bins; ++i) {
+            sum_v[i] += p->values[i];
+            sum_w[i] += p->weights[i];
+            weights_differ |= fabsf(p->weights[i] - first_w[i]) > 1.0e-6f * MAX(1.0f, fabsf(first_w[i]));
+        }
+        md_script_eval_free(single);
+    }
+    // Otherwise the test shows nothing
+    ASSERT_TRUE(weights_differ);
+
+    // All frames, in two ranges: evaluated in either order, and as the frames come in
+    for (int order = 0; order < 2; ++order) {
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        const uint32_t mid = num_frames / 2;
+        if (order == 0) {
+            ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, mid));
+            ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, mid, num_frames));
+        } else {
+            ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, mid, num_frames));
+            ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, mid));
+        }
+        const eval_property_t* p = find_eval_property(eval, STR_LIT("r"));
+        ASSERT_TRUE(p);
+        ASSERT_EQ(num_bins, (size_t)p->count);
+
+        int mismatches = 0;
+        for (size_t i = 0; i < num_bins; ++i) {
+            if (sum_w[i] <= 0.0) continue;
+            const double expected = sum_v[i] / sum_w[i];
+            const double shown    = p->weights[i] > 0.0f ? (double)p->values[i] / (double)p->weights[i] : 0.0;
+            if (fabs(shown - expected) > 1.0e-4 * MAX(1.0, fabs(expected))) {
+                mismatches += 1;
+            }
+        }
+        EXPECT_EQ(0, mismatches);
+
+        // Merged into a quarter of the bins, as the viewer resamples: still the ratio of the sums
+        const size_t factor = 4;
+        int merged_mismatches = 0;
+        for (size_t d = 0; d < num_bins / factor; ++d) {
+            double v = 0, w = 0, ev = 0, ew = 0;
+            for (size_t k = 0; k < factor; ++k) {
+                const size_t i = d * factor + k;
+                v += p->values[i]; w += p->weights[i];
+                ev += sum_v[i];    ew += sum_w[i];
+            }
+            if (w <= 0.0 || ew <= 0.0) continue;
+            if (fabs(v / w - ev / ew) > 1.0e-4 * MAX(1.0, fabs(ev / ew))) {
+                merged_mismatches += 1;
+            }
+        }
+        EXPECT_EQ(0, merged_mismatches);
+
+        // Cleared, nothing is shown, and the weights are back to their default
+        md_script_eval_clear_data(eval);
+        for (size_t i = 0; i < num_bins; ++i) {
+            if (p->values[i] != 0.0f || p->weights[i] != 1.0f) { EXPECT_TRUE(false); break; }
+        }
+        md_script_eval_free(eval);
+    }
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+static bool bits_equal(const md_bitfield_t* a, const md_bitfield_t* b) {
+    const uint64_t end = MAX(md_bitfield_end_bit(a), md_bitfield_end_bit(b));
+    for (uint64_t i = 0; i < end; ++i) {
+        if (md_bitfield_test_bit(a, i) != md_bitfield_test_bit(b, i)) return false;
+    }
+    return true;
+}
+
+// The ratio values / weights of every bin of a distribution, as shown
+static bool dist_same(const eval_property_t* a, const eval_property_t* b) {
+    if (!a || !b || a->count != b->count) return false;
+    for (size_t i = 0; i < a->count; ++i) {
+        const double ra = a->weights[i] > 0 ? (double)a->values[i] / a->weights[i] : 0.0;
+        const double rb = b->weights[i] > 0 ? (double)b->values[i] / b->weights[i] : 0.0;
+        if (fabs(ra - rb) > 1.0e-4 * MAX(1.0, fabs(rb))) return false;
+    }
+    return true;
+}
+
+// A distribution evaluated on its own, over the given frames only
+static md_script_eval_t* eval_over(const md_script_ir_t* ir, md_system_t* sys, uint32_t num_frames, const md_bitfield_t* frames, md_allocator_i* alloc) {
+    const md_bitfield_t* sets[1] = { frames };
+    const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 1, .frame_sets = sets };
+    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+    if (eval) md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames);
+    return eval;
+}
+
+// Several evaluations in one: frames evaluated once over their union, temporal values shared, and each set
+// with aggregates of its own frames only
+UTEST_F(script, frame_sets) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "d = distance(1, 10);"
+        "r = rdf(element('C'), element('O'), 6.0);"
+    ), mol, NULL));
+
+    md_bitfield_t sub = md_bitfield_create(alloc);
+    md_bitfield_set_range(&sub, 2, n - 2);
+    const md_bitfield_t* sets[2] = { NULL, &sub };
+    const md_script_eval_desc_t desc = { .num_frames = n, .num_frame_sets = 2, .frame_sets = sets };
+    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+    ASSERT_TRUE(eval);
+    EXPECT_EQ((size_t)2, md_script_eval_frame_set_count(eval));
+
+    md_bitfield_t pending = md_bitfield_create(alloc);
+    EXPECT_EQ((size_t)n, md_script_eval_pending_frames(eval, &pending));
+
+    // Each frame once, though most are in both sets
+    test_hook_proc_eval.proc_ptr = _rdf_flt;
+    test_hook_proc_eval.count = 0;
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    EXPECT_EQ((size_t)n, test_hook_proc_eval.count);
+    EXPECT_EQ((size_t)0, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_EQ((size_t)n, md_bitfield_popcount(md_script_eval_frame_mask(eval)));
+    EXPECT_EQ((size_t)n, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 0)));
+    EXPECT_TRUE(bits_equal(&sub, md_script_eval_frame_set_completed(eval, 1)));
+
+    // Evaluating again does nothing
+    test_hook_proc_eval.count = 0;
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    EXPECT_EQ((size_t)0, test_hook_proc_eval.count);
+
+    // Temporal values are published once, in set 0; aggregates in each set's own table
+    const md_attributes_t* t0 = md_script_eval_frame_set_attributes(eval, 0);
+    const md_attributes_t* t1 = md_script_eval_frame_set_attributes(eval, 1);
+    EXPECT_TRUE(t0 == md_script_eval_attributes(eval));
+    EXPECT_TRUE(md_attributes_find(t0, STR_LIT("script/d")));
+    EXPECT_TRUE(md_attributes_find(t0, STR_LIT("script/r")));
+    EXPECT_FALSE(md_attributes_find(t1, STR_LIT("script/d")));
+    EXPECT_TRUE(md_attributes_find(t1, STR_LIT("script/r")));
+
+    // Each set's distribution is the one over its frames alone
+    md_script_eval_t* all  = eval_over(ir, mol, n, NULL, alloc);
+    md_script_eval_t* part = eval_over(ir, mol, n, &sub, alloc);
+    ASSERT_TRUE(all && part);
+    EXPECT_TRUE(bits_equal(&sub, md_script_eval_frame_mask(part)));   // the union only
+    EXPECT_TRUE(dist_same(find_set_property(eval, 0, STR_LIT("r")), find_eval_property(all,  STR_LIT("r"))));
+    EXPECT_TRUE(dist_same(find_set_property(eval, 1, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
+    EXPECT_FALSE(dist_same(find_eval_property(all, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
+
+    // Moved: only the frames the set has not added are evaluated, and it starts over
+    md_bitfield_t moved = md_bitfield_create(alloc);
+    md_bitfield_set_range(&moved, 0, 3);
+    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &moved));
+    EXPECT_EQ((size_t)0, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 1)));
+    EXPECT_EQ((size_t)3, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_TRUE(bits_equal(&moved, &pending));
+
+    // Interrupted, nothing is added, and nothing is lost
+    md_script_eval_interrupt(eval);
+    md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n);
+    EXPECT_EQ((size_t)3, md_script_eval_pending_frames(eval, &pending));
+    md_script_eval_reset_interrupt(eval);
+
+    test_hook_proc_eval.count = 0;
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    EXPECT_EQ((size_t)3, test_hook_proc_eval.count);
+    test_hook_proc_eval.proc_ptr = NULL;
+    test_hook_proc_eval.count = 0;
+
+    md_script_eval_t* moved_alone = eval_over(ir, mol, n, &moved, alloc);
+    EXPECT_TRUE(dist_same(find_set_property(eval, 1, STR_LIT("r")), find_eval_property(moved_alone, STR_LIT("r"))));
+    // Set 0 untouched
+    EXPECT_TRUE(dist_same(find_set_property(eval, 0, STR_LIT("r")), find_eval_property(all, STR_LIT("r"))));
+
+    md_script_eval_free(moved_alone);
+    md_script_eval_free(part);
+    md_script_eval_free(all);
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
 }

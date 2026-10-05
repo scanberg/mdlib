@@ -1270,12 +1270,12 @@ static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const 
     const int ctx_size = ctx_range.end - ctx_range.beg;
     const int32_t ctx_idx = remap_index_to_context(in_idx, ctx_range);
     if (ctx_idx < ctx_range.beg || ctx_idx >= ctx_range.end) {
-        LOG_ERROR(ctx->ir, token, "supplied index (%i) is not within range of its context (%i:%i)", in_idx, 1, ctx_size);
+        EVAL_LOG_ERROR(ctx, token, "supplied index (%i) is not within range of its context (%i:%i)", in_idx, 1, ctx_size);
         return false;
     }
     if (ctx->mol_ctx) {
         if (!md_bitfield_test_bit(ctx->mol_ctx, ctx_idx)) {
-            LOG_ERROR(ctx->ir, token, "supplied index (%i) is not represented within the supplied context", in_idx);
+            EVAL_LOG_ERROR(ctx, token, "supplied index (%i) is not represented within the supplied context", in_idx);
             return false;
         }
     }
@@ -1288,12 +1288,12 @@ static bool validate_atom_range_in_context(irange_t in_range, token_t token, con
     const int ctx_size = ctx_range.end - ctx_range.beg;
     const irange_t range = remap_range_to_context(in_range, ctx_range);
     if (!range_in_range(range, ctx_range)) {
-        LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not within range of its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+        EVAL_LOG_ERROR(ctx, token, "supplied range (%i:%i) is not within range of its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
         return false;
     }
     if (ctx->mol_ctx) {
         if (!range_in_range(range, ctx_range)) {
-            LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+            EVAL_LOG_ERROR(ctx, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
             return false;
         }
     }
@@ -2321,7 +2321,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We are only validating the arguments here, making sure that they are represented within the potential context
         for (size_t j = 0; j < num_str; ++j) {
             if (!validate_query(str[j])) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
                 return -1;
             }
             bool match = false;
@@ -2334,7 +2334,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any atom label within the structure", str[j].len, str[j].ptr);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' did not match any atom label within the structure", str[j].len, str[j].ptr);
                 return -1;
             }
         }
@@ -2357,13 +2357,13 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (z)
             md_array_push(query_z, z, ctx->temp_alloc);
         else if (!dst) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
             return -1;
         }
     }
     const size_t num_query_z = md_array_size(query_z);
     if (!dst && num_query_z == 0) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No valid arguments in Element");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "No valid arguments in Element");
         return -1;
     }
 
@@ -2398,7 +2398,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!found) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Element '" STR_FMT "' was not found within structure.", STR_ARG(str[j]));
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Element '" STR_FMT "' was not found within structure.", STR_ARG(str[j]));
                 return -1;
             }
         }
@@ -2450,7 +2450,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No element within range (%i:%i) was found within structure.", ranges[j].beg, ranges[j].end);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "No element within range (%i:%i) was found within structure.", ranges[j].beg, ranges[j].end);
                 return -1;
             }
         }
@@ -2595,7 +2595,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         if (coordinate_validate(arg[1], 1, ctx) < 0) return -1;
         if (radius <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius is negative or zero, please supply a positive value");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
         }
     }
@@ -2647,11 +2647,11 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     else {
         if (radius <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
         }
         if (!ctx->mol_ctx) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The operation is missing its context");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -2720,7 +2720,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         if (coordinate_validate(arg[1], 1, ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius range is invalid, ");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "The supplied radius range is invalid, ");
             return -1;
         }
     }
@@ -2775,11 +2775,11 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_temp_end(temp);
     } else {
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
             return -1;
         }
         if (!ctx->mol_ctx) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The operation is missing its context");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -2832,7 +2832,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (is_type_directly_compatible(arg[3].type, (type_info_t)TI_INT)) {
 		path_length = as_int(arg[3]);
         if (path_length < 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[3], "The minimum path length cannot be negative");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[3], "The minimum path length cannot be negative");
             return STATIC_VALIDATION_ERROR;
 		}
     }
@@ -2848,7 +2848,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             int dst_len = type_info_array_len(dst->type);
             if (dst_len != dim_a) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Mismatching size in dst array");
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Mismatching size in dst array");
                 return -1;
             } 
             out_counts = (float*)dst->ptr;
@@ -2925,7 +2925,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         // Validation
         if (cutoff <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The cutoff distance must be positive.");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The cutoff distance must be positive.");
             return -1;
         }
         return dim_a;
@@ -3161,7 +3161,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
     }
     else {
         if (!ctx->sys->component.count) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any components");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "The system does not contain any components");
             return -1;
         }
 
@@ -3423,7 +3423,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (!ctx->sys->component.name) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any residue names");
         return -1;
     }
 
@@ -3466,7 +3466,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (size_t j = 0; j < num_queries; ++j) {
             if (!validate_query(queries[j])) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", queries[j].len, queries[j].ptr);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", queries[j].len, queries[j].ptr);
                 return -1;
             }
             bool match = false;
@@ -3478,7 +3478,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", queries[j].len, queries[j].ptr);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", queries[j].len, queries[j].ptr);
                 return -1;
             }
         }
@@ -3500,7 +3500,7 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (!ctx->sys->component.seq_id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
         return -1;
     }
 
@@ -3559,7 +3559,7 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             if (!match) {
                 // @TODO: Should this just be a soft warning instead?
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No matching seq id was found within the range (%i:%i)", rid[j].beg, rid[j].end);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "No matching seq id was found within the range (%i:%i)", rid[j].beg, rid[j].end);
                 return -1;
             }
         }
@@ -3578,7 +3578,7 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     if (inst_indices == NULL) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
@@ -3639,7 +3639,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int32_t* chain_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     if (chain_indices == NULL) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
@@ -3728,7 +3728,7 @@ static int inst_id(md_bitfield_t* out_bf_arr, size_t out_bf_dim, const idx_str_p
         int count = 0;
         for (size_t j = 0; j < num_str; ++j) {
             if (!validate_query(str[j])) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '" STR_FMT "' is not a valid query", STR_ARG(str[j]));
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' is not a valid query", STR_ARG(str[j]));
                 return -1;
             }
             int pre_count = count;
@@ -3739,7 +3739,7 @@ static int inst_id(md_bitfield_t* out_bf_arr, size_t out_bf_dim, const idx_str_p
                 }
             }
             if (pre_count == count) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '" STR_FMT "' did not match any instance within the structure", STR_ARG(str[j]));
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' did not match any instance within the structure", STR_ARG(str[j]));
                 return -1;
             }
         }
@@ -3755,7 +3755,7 @@ static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
@@ -3786,7 +3786,7 @@ static int _inst_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
@@ -3817,7 +3817,7 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
@@ -3848,7 +3848,7 @@ static int _chain_auth_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any instances");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any instances");
         return -1;
     }
 
@@ -4122,7 +4122,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         size_t count = (size_t)res0 * (size_t)res1;
         if (count > 1000000) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %zu, which exceeds the upper limit of 1'000'000", count);
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "The size produced by the operation is %zu, which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
         result = (int)count;
@@ -4687,7 +4687,7 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         // Static check, return number of bitfields returned
         if (in_N <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Split count must be greater than zero");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Split count must be greater than zero");
             return STATIC_VALIDATION_ERROR;
 		}
 		return in_N;
@@ -4744,23 +4744,23 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
 
-        LOG_ERROR_STR(ctx->ir, ctx->arg_tokens[1], md_strb_to_str(sb));
+        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_strb_to_str(sb));
         return STATIC_VALIDATION_ERROR;
     }
 
     if (split == RES) {
         if (ctx->sys->comp.count == 0 || !ctx->sys->atom.res_idx) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "Missing residue information, cannot perform split");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "Missing residue information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
     } else if (split == CHAIN) {
         if (ctx->sys->chain.count == 0 || !ctx->sys->atom.chain_idx) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "Missing chain information, cannot perform split");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "Missing chain information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
     } else if (split == STRUCT) {
         if (md_index_data_num_ranges(ctx->sys->structure) == 0) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "Missing struct information, cannot perform split");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "Missing struct information, cannot perform split");
             return STATIC_VALIDATION_ERROR;
         }
     }
@@ -4915,7 +4915,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = coordinate_validate(arg[0], 0, ctx);
         if (count < 0) return -1;
         if (count < 3) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
             return -1;
         }
     }
@@ -5052,7 +5052,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         if (axis == -1) {
             if (unit_cell->flags == 0) {
-                LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
+                EVAL_LOG_ERROR(ctx, ctx->op_token, "The unitcell is not defined");
                 return STATIC_VALIDATION_ERROR;
             }
         } else {
@@ -5062,7 +5062,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             else if (axis == 2) required_flags = MD_UNITCELL_PBC_Z;
 
             if (!(ctx->cur_state->unitcell.flags & required_flags)) {
-                LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined along the given axis");
+                EVAL_LOG_ERROR(ctx, ctx->op_token, "The unitcell is not defined along the given axis");
                 return STATIC_VALIDATION_ERROR;
             }
         }
@@ -5484,19 +5484,19 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
 
         // Validate input
         if (ref_len <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "empty reference positions");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "empty reference positions");
             return STATIC_VALIDATION_ERROR;
         }
         if (trg_len <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "empty target positions");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "empty target positions");
             return STATIC_VALIDATION_ERROR;
         }
         if (min_cutoff < 0.0f || max_cutoff <= min_cutoff) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[2], "Invalid cutoff");
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->arg_flags[2] & FLAG_DYNAMIC) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "Cutoff needs to have a static value in order to determine the upper bound if the distribution");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[2], "Cutoff needs to have a static value in order to determine the upper bound if the distribution");
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->backchannel) {
@@ -5646,7 +5646,7 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
                 md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
             return -1;
         }
     }
@@ -5942,25 +5942,25 @@ done:
     } else {
         // Validation
         if (num_ref_bitfields < 1) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Number of bitfields which serve as reference frame must be 1 or more");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Number of bitfields which serve as reference frame must be 1 or more");
             return -1;
         }
 
         const size_t ref_bit_count = md_bitfield_popcount(ref_bf);
         if (ref_bit_count == 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
             return -1;
         }
 
         // Test for equivalence
         if (!are_bitfields_equivalent(ref_bf_arr, num_ref_bitfields, ctx->sys)) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
             return -1;
         }
 
         const size_t target_bit_count = md_bitfield_popcount(trg_bf);
         if (target_bit_count == 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "The supplied target bitfield is empty");
             return -1;
         }
 
@@ -5993,7 +5993,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     // Only support orthogonal cells for now
     if (ctx->cur_state->unitcell.flags & MD_UNITCELL_TRICLINIC) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "void_ratio: triclinic unit cells not supported yet");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "void_ratio: triclinic unit cells not supported yet");
         *(float*)dst->ptr = 0.0f;
         return 0;
     }
@@ -6014,7 +6014,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     *out = 0.0f;
 
     if (count == 0) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "void_ratio: empty selection");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "void_ratio: empty selection");
         goto done;
     }
 
@@ -6113,7 +6113,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Compute void ratio e = V_void / V_solid
     if (set_bits == 0) {
         // No solid found in ROI — undefined e; report 0 and warn
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "void_ratio: zero occupied volume in ROI");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "void_ratio: zero occupied volume in ROI");
         *out = 0.0f;
     } else {
         const double v_void  = (double)num_bits - set_bits;
@@ -6341,7 +6341,7 @@ static bool contacts_prepare(md_contact_query_t* q, const data_t arg[], const ev
 }
 
 static const md_contact_query_t* contacts_find_query(const eval_context_t* ctx) {
-    if (!ctx->op_node) return NULL;
+    if (!ctx->op_node || !ctx->ir) return NULL;
     for (size_t i = 0; i < md_array_size(ctx->ir->contact_queries); ++i) {
         const contact_query_entry_t* e = &ctx->ir->contact_queries[i];
         if (e->node == ctx->op_node && e->sys == ctx->sys) {
@@ -6359,39 +6359,40 @@ static int _contacts(data_t* dst, data_t arg[], eval_context_t* ctx) {
         static const char* names[] = { "a", "b", "cutoff", "exclude_bonds", "min_separation", "parent", "exclude_within" };
         for (int i = 0; i < 7; ++i) {
             if (!is_absent_type(arg[i].type) && (ctx->arg_flags[i] & FLAG_DYNAMIC)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[i], "contacts: '%s' cannot depend on the frame, the groups and their parameters have to be fixed", names[i]);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[i], "contacts: '%s' cannot depend on the frame, the groups and their parameters have to be fixed", names[i]);
                 return STATIC_VALIDATION_ERROR;
             }
         }
         if (!(as_float(arg[2]) > 0.0f)) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "contacts: the cutoff has to be positive");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[2], "contacts: the cutoff has to be positive");
             return STATIC_VALIDATION_ERROR;
         }
         if (as_int(arg[3]) < 0 || as_int(arg[4]) < 0) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "contacts: exclude_bonds and min_separation cannot be negative");
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "contacts: exclude_bonds and min_separation cannot be negative");
             return STATIC_VALIDATION_ERROR;
         }
         // A plain selection is one group. Legal, but rarely what is meant, and the result looks broken
         const size_t num_a = element_count(arg[0]);
         const size_t num_b = is_absent_type(arg[1].type) ? 0 : element_count(arg[1]);
         if (is_absent_type(arg[1].type) && num_a <= 1) {
-            LOG_WARNING(ctx->ir, ctx->arg_tokens[0], "contacts: 'a' is a single group, and a group is never in contact with itself, so there are no contacts. "
+            EVAL_LOG_WARNING(ctx, ctx->arg_tokens[0], "contacts: 'a' is a single group, and a group is never in contact with itself, so there are no contacts. "
                 "Give the groups as an array, e.g. residue(...), or a second set as 'b'");
         } else if (!is_absent_type(arg[1].type) && num_a == 1 && num_b == 1) {
-            LOG_WARNING(ctx->ir, ctx->op_token, "contacts: 'a' and 'b' are single groups, so at most one pair of groups is in contact and count(c) is 0 or 1. "
+            EVAL_LOG_WARNING(ctx, ctx->op_token, "contacts: 'a' and 'b' are single groups, so at most one pair of groups is in contact and count(c) is 0 or 1. "
                 "count(c, 'atom') counts the particle pairs; groups are given as arrays, e.g. residue(...)");
         }
         if (ctx->backchannel) {
             ctx->backchannel->unit[1] = md_unit_none();
         }
-        // Prepare the call site, once
-        if (ctx->op_node && !contacts_find_query(ctx)) {
+        // Prepare the call site, once, when compiling. An evaluation does not write to the IR: one which finds
+        // no prepared query makes one for its call only (below).
+        if (ctx->compile_ir && ctx->op_node && !contacts_find_query(ctx)) {
             contact_query_entry_t entry = { .node = ctx->op_node, .sys = ctx->sys };
-            if (!contacts_prepare(&entry.query, arg, ctx, ctx->ir->arena)) {
-                LOG_ERROR(ctx->ir, ctx->op_token, "contacts: failed to prepare the query");
+            if (!contacts_prepare(&entry.query, arg, ctx, ctx->compile_ir->arena)) {
+                EVAL_LOG_ERROR(ctx, ctx->op_token, "contacts: failed to prepare the query");
                 return STATIC_VALIDATION_ERROR;
             }
-            md_array_push(ctx->ir->contact_queries, entry, ctx->ir->arena);
+            md_array_push(ctx->compile_ir->contact_queries, entry, ctx->compile_ir->arena);
         }
         return 0;
     }
@@ -6482,7 +6483,7 @@ static int _count_contact_unit(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const bool group = str_eq(unit, STR_LIT("group"));
     if (!dst) {
         if (!atom && !group) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "count: the unit of a contact set is 'group' (pairs of groups) or 'atom' (pairs of particles)");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "count: the unit of a contact set is 'group' (pairs of groups) or 'atom' (pairs of particles)");
             return STATIC_VALIDATION_ERROR;
         }
         return 0;
@@ -6528,7 +6529,7 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t num_src = element_count(arg[0]);
     const int size = as_int(arg[1]);
     if (size <= 0) {
-        LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "chunks: the size has to be positive");
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "chunks: the size has to be positive");
         return STATIC_VALIDATION_ERROR;
     }
 
