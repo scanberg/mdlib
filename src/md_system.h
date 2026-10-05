@@ -4,8 +4,10 @@
 #include <stdbool.h>
 
 #include <md_types.h>
+#include <md_unitcell.h>
 #include <core/md_unit.h>
 #include <core/md_os.h>
+#include <core/md_vec_math.h>
 
 #include <md_attributes.h>
 

@@ -173,6 +173,8 @@ set(SRC_FILES
   src/md_types.h
   src/md_util.c
   src/md_util.h
+  src/md_unitcell.h
+  src/md_unitcell.c
   src/md_vector_graphics.c
   src/md_vector_graphics.h
   src/md_xtc.c

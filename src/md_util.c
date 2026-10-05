@@ -2146,7 +2146,7 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(vec3_t), NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
-    md_spatial_acc_init(&acc, &stream, 9.0, cell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 9.0, .unitcell = cell });
 
     dssp_hbond_energy_user_param_t user_param = {
 		.res_range_id = res_range_id,
@@ -3944,15 +3944,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 .alloc      = temp_arena,
             };
 
-            // Compute a cell size based on the max cov radius within the set
-            const double cell_ext = MAX(6.0, 2.0 * max_atom_rad * k_coord);
+            // Candidates within reach of the largest covalent radius of the set
+            const double cutoff = MAX(6.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &coords, cell_ext, &state->unitcell, 0);
-            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cell_ext, test_cov_bond_pair_callback, &param);
-            //MD_LOG_DEBUG("Constructed candidate bond list with cell size of %f in %f ms", cell_ext, dt_ms);
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
+            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, test_cov_bond_pair_callback, &param);
         }
 
         size_t num_candidates = md_array_size(candidates);
@@ -4617,14 +4616,14 @@ void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* hbond_data, const vec3
         .min_angle_in_radians = (float)DEG_TO_RAD(min_angle),
     };
 
-    const double cell_ext = MAX(3.0, max_dist); // Avoid too small values for the cells
-    
+    const double cutoff = MAX(3.0, max_dist);
+
     md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), acc_idx, num_acc);
     md_spatial_acc_t acc = { .alloc = temp_arena };
-    md_spatial_acc_init(&acc, &acc_stream, cell_ext, unitcell, 0);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &acc_stream, .cutoff = cutoff, .unitcell = unitcell });
 
     md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)atom_xyz, sizeof(vec3_t), don_idx, num_don);
-    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cell_ext, spatial_acc_hbond_candidate_callback, &payload, 0);
+    md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &don_stream, cutoff, spatial_acc_hbond_candidate_callback, &payload, 0);
 
     typedef struct {
         float score[4];
@@ -5982,9 +5981,8 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* s
 
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            double cutoff = MAX(radius, 6.0); // Avoid small cells
             md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), viable_indices, viable_count);
-            md_spatial_acc_init(&acc, &stream, cutoff, &state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = radius, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
             md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);

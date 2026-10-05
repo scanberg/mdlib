@@ -866,18 +866,18 @@ static const param_domain_t param_domains[] = {
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
     ASSERT(ctx);
     
-    if (ctx->spatial_acc_cell_ext < 2.0 * max_cutoff) {
-		// REBUIDD SPATIAL ACC
+    // Built for a cutoff at least as large as asked for: reused, otherwise rebuilt
+    if (ctx->spatial_acc_cutoff < max_cutoff) {
         if (ctx->spatial_acc.alloc) {
 			md_spatial_acc_free(&ctx->spatial_acc);
         }
         ctx->spatial_acc.alloc = ctx->temp_alloc;
 
-        // Round up to nearest multiple of 6.0 as it seems like a good granularity for typical molecular configurations.
-		double cell_ext = ceil(max_cutoff / 6.0) * 6.0;
+        // Rounded up to a multiple of 6 A, so a few different cutoffs within one evaluation share a structure
+		const double cutoff = ceil(max_cutoff / 6.0) * 6.0;
         md_coord_stream_t coords = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), NULL, ctx->sys->atom.count);
-        md_spatial_acc_init(&ctx->spatial_acc, &coords, cell_ext, &ctx->cur_state->unitcell, 0);
-		ctx->spatial_acc_cell_ext = cell_ext;
+        md_spatial_acc_init(&ctx->spatial_acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell });
+		ctx->spatial_acc_cutoff = cutoff;
     }
 
     return &ctx->spatial_acc;
@@ -2870,7 +2870,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, &stream, cutoff, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+		md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
 		md_array(int32_t) a_indices = 0;
 
@@ -5393,7 +5393,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
 
     {
         md_spatial_acc_t sa = { .alloc = ctx->temp_alloc };
-        md_spatial_acc_init(&sa, &trg_stream, max_cutoff, &ctx->cur_state->unitcell, trg_flags);
+        md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .coords = &trg_stream, .cutoff = max_cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = trg_flags });
 
         rdf_payload_t payload = {
             .exclusion_masks = as_bitfield(arg[0]),
@@ -5844,10 +5844,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
 
-        const double cell_ext = cutoff;
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = temp.arena };
-        md_spatial_acc_init(&spatial_acc, &stream, cell_ext, &ctx->cur_state->unitcell, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+        md_spatial_acc_init(&spatial_acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));

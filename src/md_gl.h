@@ -13,6 +13,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 #include <md_types.h>
 
 // Forward declarations
@@ -121,8 +122,6 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint3
 void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const vec3_t* xyz);
 void md_gl_mol_set_atom_radius  (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* radius,  uint32_t byte_stride);
 void md_gl_mol_set_atom_flags   (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
-
-
 
 // Call this function after setting new atomic positions to update velocities
 // It will compute a new velocity as the difference between new and old atomic positions

@@ -91,6 +91,26 @@ static bool gpu_open(gpu_fixture_t* f) {
            f->k_bump && f->k_layout && f->k_tex_probe && f->k_sample && f->k_spin;
 }
 
+static bool gpu_is_software(md_gpu_device_t dev) {
+    md_gpu_device_info_t info;
+    md_gpu_device_info(dev, &info);
+
+    static const char* software_drivers[] = {
+        "llvmpipe",
+        "softpipe",
+        "swrast",
+        "lavapipe",
+        "Apple Paravirtual"
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(software_drivers); ++i) {
+        if (strstr(info.name, software_drivers[i]) != NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Why the fixture could not be opened -- no Vulkan loader, no driver (ICD), no
    compute queue, a kernel that failed to build. Without this a CI log shows
    only "skipped" and gives no way to tell a missing GPU from a broken build. */
@@ -1772,14 +1792,12 @@ UTEST(gpu, object_lifetime_calls_do_not_wait_for_other_streams) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
-    /* Lavapipe creates pipelines and image views under the same lock its queue
+    /* Software renderers like Lavapipe creates pipelines and image views under the same lock its queue
        thread holds while executing, so on it vkCreateComputePipelines and
        vkCreateImageView themselves wait for running work -- a driver artefact
        that says nothing about md_gpu. Creation is therefore checked on real
        devices only; destruction and memory everywhere. */
-    md_gpu_device_info_t info;
-    ASSERT_TRUE(md_gpu_device_info(f.dev, &info));
-    const bool software = strstr(info.name, "llvmpipe") != NULL;
+    const bool software = gpu_is_software(f.dev);
 
     md_gpu_stream_t busy = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "long job");
     ASSERT_TRUE(busy != NULL);

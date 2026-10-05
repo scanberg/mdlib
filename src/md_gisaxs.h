@@ -19,6 +19,11 @@
 //      cross spectral matrix
 //          S_mn(ring) = < Re( A_m(q_par) conj(A_n(q_par)) ) >_{q_par in ring}
 //      which corresponds to a full in-plane (azimuthal) rotational average. S is real symmetric.
+//      The in-plane periodicity restricts q_par to the reciprocal lattice (2 pi i / box_x, 2 pi j / box_y). The rings
+//      are non-uniform groups of lattice shells (points of equal |q_par|): at low q every shell is its own ring, so
+//      |q_par| is sampled at the exact lattice values, the ring width then grows relative to q (ring_rel_width * q)
+//      and is capped at the lattice spacing max(2 pi / box_x, 2 pi / box_y). Use md_gisaxs_ring_q for the actual
+//      |q_par| of each ring, rings are not equidistant.
 //   4. Any scattering model where the amplitude is a linear combination of terms exp(-i Q z), i.e.
 //          F(q_par) = sum_m c_m A_m(q_par),  c_m = sum_t coef_t * exp(-i Q_t z_k) * exp(-Q_t^2 sigma_c^2 / 2) / W(Q_t dz)
 //      gives the rotationally averaged intensity as I = c^H S c. This includes the Born approximation
@@ -67,6 +72,9 @@ typedef struct md_gisaxs_params_t {
     double z_min;           // Particle z range to include (Å), if z_max <= z_min all particles are included
     double z_max;
     size_t max_slices;      // Upper limit on the number of slices, 0 -> 1024. dz is increased if required.
+    double ring_rel_width;  // Ring width relative to |q_par| (0 -> 0.1). Lattice shells closer than this are merged
+                            // into one ring. Rings are never wider than max(2 pi / box_x, 2 pi / box_y).
+                            // Smaller values give finer |q_par| sampling, but more rings (memory) with fewer points.
 } md_gisaxs_params_t;
 
 typedef struct md_gisaxs_info_t {
@@ -76,7 +84,8 @@ typedef struct md_gisaxs_info_t {
     double dz;              // Slice spacing (Å)
     double z0;              // z of first slice (Å)
     size_t num_rings;
-    double dq_ring;         // Ring width (1/Å)
+    double dq_ring;         // Maximum ring width, the lattice spacing max(2 pi / box_x, 2 pi / box_y) (1/Å)
+    double q_par_min;       // Smallest sampled |q_par| (first lattice shell), min(2 pi / box_x, 2 pi / box_y) (1/Å)
     size_t num_points;      // Number of (half plane) q_par grid points within q_par_max
     size_t num_classes;     // Number of distinct Gaussian widths (classes)
     double class_sigma[4];  // Gaussian width per class (Å)
@@ -141,7 +150,11 @@ void md_gisaxs_release_spectra(md_gisaxs_t* ctx);
 
 // --- Results ---
 size_t        md_gisaxs_num_rings(const md_gisaxs_t* ctx);
-const double* md_gisaxs_ring_q(const md_gisaxs_t* ctx);           // Mean |q_par| per ring (1/Å)
+const double* md_gisaxs_ring_q(const md_gisaxs_t* ctx);           // Mean |q_par| per ring (1/Å), increasing, non-uniform
+// num_rings + 1 ring boundaries in |q_par| (1/Å). Ring r holds the lattice points with edges[r] <= |q_par| < edges[r+1].
+// Inner boundaries lie halfway between the outermost shell of a ring and the innermost shell of the next one,
+// edges[0] is half the first shell and edges[num_rings] is q_par_max.
+const double* md_gisaxs_ring_edges(const md_gisaxs_t* ctx);
 const unsigned* md_gisaxs_ring_count(const md_gisaxs_t* ctx);     // Number of q_par grid points (full plane) per ring
 size_t        md_gisaxs_num_slices(const md_gisaxs_t* ctx);
 const double* md_gisaxs_slice_z(const md_gisaxs_t* ctx);          // z per slice (Å)

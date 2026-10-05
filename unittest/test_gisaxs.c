@@ -138,10 +138,90 @@ UTEST(gisaxs, born_matches_direct_sum) {
         max_rel = MAX(max_rel, err);
     }
     printf("born vs direct sum: max relative error %.3e\n", max_rel);
-    EXPECT_LT(max_rel, 2.0e-2);
+    // The lowest rings are single lattice points (no averaging of the z B-spline aliasing error, largest at q_z_max)
+    EXPECT_LT(max_rel, 4.0e-2);
 
     free(I);
     free(ref);
+    md_gisaxs_destroy(ctx);
+    free_system(&sys);
+}
+
+UTEST(gisaxs, rings_lattice_shells) {
+    // Square box: the lowest rings are the exact lattice shells |k| = 1, sqrt(2), 2, sqrt(5) (x 2 pi / L)
+    const double L = 200.0;
+    test_system_t sys = make_system(20, L, L, 10.0, 40.0, false);
+    md_gisaxs_input_t input = {
+        .count = sys.count,
+        .x = sys.x, .y = sys.y, .z = sys.z,
+        .sigma_uniform = 2.0f,
+        .box_x = L, .box_y = L,
+    };
+    md_gisaxs_params_t params = { .q_par_max = 0.6, .q_z_max = 0.2 };
+    md_gisaxs_t* ctx = md_gisaxs_create(&input, &params, md_get_heap_allocator());
+    ASSERT_TRUE(ctx != NULL);
+
+    const double dq = 2.0 * PI / L;
+    const size_t R = md_gisaxs_num_rings(ctx);
+    const double* rq = md_gisaxs_ring_q(ctx);
+    const double* edges = md_gisaxs_ring_edges(ctx);
+    const unsigned* count = md_gisaxs_ring_count(ctx);
+    md_gisaxs_info_t info;
+    md_gisaxs_get_info(ctx, &info);
+
+    ASSERT_GE(R, (size_t)4);
+    const double shells[4] = {1.0, sqrt(2.0), 2.0, sqrt(5.0)};
+    const unsigned shell_count[4] = {4, 4, 4, 8};
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_NEAR(rq[i], shells[i] * dq, 1.0e-9);
+        EXPECT_EQ(count[i], shell_count[i]);
+    }
+    EXPECT_NEAR(info.q_par_min, dq, 1.0e-12);
+    EXPECT_NEAR(info.dq_ring, dq, 1.0e-12);
+
+    // Increasing, inside the edges, no ring wider than the lattice spacing, every lattice point within q_par_max in a ring
+    size_t total = 0;
+    for (size_t r = 0; r < R; ++r) {
+        EXPECT_LT(edges[r], rq[r]);
+        EXPECT_LE(rq[r], edges[r + 1]);
+        if (r > 0) EXPECT_LT(rq[r - 1], rq[r]);
+        total += count[r];
+    }
+    EXPECT_NEAR(edges[R], params.q_par_max, 1.0e-12);
+    size_t expected = 0;
+    const int km = (int)floor(params.q_par_max / dq);
+    for (int kx = -km; kx <= km; ++kx) {
+        for (int ky = -km; ky <= km; ++ky) {
+            if ((kx || ky) && sqrt((double)(kx * kx + ky * ky)) * dq <= params.q_par_max) expected += 1;
+        }
+    }
+    EXPECT_EQ(total, expected);
+    // Fewer rings than lattice shells, but more than a uniform binning with the lattice spacing
+    EXPECT_GT(R, (size_t)floor(params.q_par_max / dq + 0.5));
+
+    md_gisaxs_destroy(ctx);
+    free_system(&sys);
+}
+
+UTEST(gisaxs, rings_rectangular_box) {
+    // The lowest ring is the first lattice point along the long box axis, below the lattice spacing max(dqx, dqy)
+    const double bx = 300.0, by = 180.0;
+    test_system_t sys = make_system(20, bx, by, 10.0, 40.0, false);
+    md_gisaxs_input_t input = {
+        .count = sys.count,
+        .x = sys.x, .y = sys.y, .z = sys.z,
+        .sigma_uniform = 2.0f,
+        .box_x = bx, .box_y = by,
+    };
+    md_gisaxs_params_t params = { .q_par_max = 0.3, .q_z_max = 0.2, .ring_rel_width = 0.05 };
+    md_gisaxs_t* ctx = md_gisaxs_create(&input, &params, md_get_heap_allocator());
+    ASSERT_TRUE(ctx != NULL);
+    const double* rq = md_gisaxs_ring_q(ctx);
+    const unsigned* count = md_gisaxs_ring_count(ctx);
+    EXPECT_NEAR(rq[0], 2.0 * PI / bx, 1.0e-9);
+    EXPECT_EQ(count[0], 2u);
+    EXPECT_NEAR(rq[1], 2.0 * PI / by, 1.0e-9);
+    EXPECT_EQ(count[1], 2u);
     md_gisaxs_destroy(ctx);
     free_system(&sys);
 }
@@ -317,11 +397,10 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
     md_gisaxs_evaluate(ctx, &model, qz, N, I);
 
     // Reference, reusing the ring point definition from the Born reference by evaluating each term separately is not
-    // possible (cross terms), so the ring points are reconstructed here from the same rules.
-    md_gisaxs_info_t info;
-    md_gisaxs_get_info(ctx, &info);
+    // possible (cross terms), so the ring points are reconstructed here from the ring edges.
+    const double* edges = md_gisaxs_ring_edges(ctx);
+    const unsigned* ring_count = md_gisaxs_ring_count(ctx);
     const double dqx = 2.0 * PI / bx, dqy = 2.0 * PI / by;
-    const double dq = MAX(dqx, dqy);
     double* ref = (double*)calloc(N * R, sizeof(double));
     double* cnt = (double*)calloc(R, sizeof(double));
     const int kxm = (int)floor(params.q_par_max / dqx), kym = (int)floor(params.q_par_max / dqy);
@@ -331,9 +410,8 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
             const double qx = kx * dqx, qy = ky * dqy;
             const double qp = sqrt(qx*qx + qy*qy);
             if (qp > params.q_par_max) continue;
-            long r = (long)floor(qp / dq + 0.5);
-            if (r < 1) r = 1;
-            r -= 1;
+            long r = 0;
+            while (r < (long)R && qp >= edges[r + 1]) ++r;
             if (r >= (long)R) continue;
             cnt[r] += 1.0;
             for (int iq = 0; iq < N; ++iq) {
@@ -357,6 +435,9 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
                 ref[iq * R + r] += F.re*F.re + F.im*F.im;
             }
         }
+    }
+    for (size_t r = 0; r < R; ++r) {
+        EXPECT_EQ((unsigned)cnt[r], ring_count[r]);
     }
     double max_ref = 0.0;
     for (size_t i = 0; i < N * R; ++i) {

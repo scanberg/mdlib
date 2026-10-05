@@ -21,11 +21,15 @@ typedef struct md_xtc_header_t {
 
 size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, struct md_allocator_i* alloc);
 
+// Bytes past the end of a frame that the decoder may read (and never uses): a buffer holding a frame
+// of frame_bytes must be readable up to frame_ptr + frame_bytes + MD_XTC_DECODE_PADDING.
+#define MD_XTC_DECODE_PADDING 16
+
 // This is an internal procedure exposed to enable testing and profiling.
-// Returns the number of atoms decoded, or zero if the frame could not be decoded. The frame should be decoded into `out_header` and `out_xyz`, which should have capacity for at least three floats per atom.
+// Returns true if the frame was decoded into `out_header` and `out_xyz`, which has room for three floats per atom.
+// The frame buffer must carry MD_XTC_DECODE_PADDING readable bytes past frame_bytes.
 // Note that the data is only decoded and length units are typically nm.
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_xyz, size_t num_atoms);
-bool md_xtc_decode_frame_data_soa(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, size_t num_atoms);
 
 // RUN
 // Publishes the file as a run in the system's attribute table (see RUNS in md_system.h):
