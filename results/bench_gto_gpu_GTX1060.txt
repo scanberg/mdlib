@@ -1,0 +1,463 @@
+﻿# bench_gto_gpu.ps1, 2026-10-06 12:54:34 +02:00, PowerShell 5.1.19041.5369
+# display adapter: NVIDIA GeForce GTX 1060 6GB, driver 32.0.15.8266, 06/09/2026 02:00:00
+# display adapter: Intel(R) HD Graphics 530, driver 31.0.101.2111, 07/19/2022 02:00:00
+# nvidia-smi: NVIDIA GeForce GTX 1060 6GB, 582.66, 6144 MiB, 1911 MHz
+# ---------------------------------------------------------------------------
+# md_bench_gto_gpu
+# date:      2026-10-06 10:54:35 UTC
+# host:      DESKTOP-R0DUSR2
+# os:        Windows 10 Pro 22H2 (build 19045.5371)
+# cpu:       Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz, 4 cores, 8 logical processors
+# memory:    31.9 GiB
+# compiler:  MSVC 1951 (_MSC_FULL_VER 195136260), 64-bit
+# build:     Release (NDEBUG), mdlib e3272b3e31 (with local changes)
+# gpu:       NVIDIA GeForce GTX 1060 6GB (vendor 0x10DE NVIDIA, device 0x1C03, discrete)
+# gpu info:  subgroup 32, max 1536 threads per group
+# driver:    NVIDIA 582.66 (Vulkan 1.4.312)
+# adapter 0: NVIDIA GeForce GTX 1060 6GB (0x10DE:0x1C03, discrete)  <-- used
+# adapter 1: Intel(R) HD Graphics 530 (0x8086:0x1912, integrated)
+# command:   E:\git\viamd\ext\mdlib\build-bench\bin\Release\md_bench_gto_gpu.exe
+# ---------------------------------------------------------------------------
+# algorithms: reference mo-reference tiled gemm-v1 gemm gemm-64x32 gemm-64x64 gemm-64x64-s32 gemm-128x32 gemm-128x64 gemm-128x64-s32 gemm-256x32 gemm-256x64 gemm-256x64-s32 mo mo-shell-v1 mo-shell-v2 mo-shell-v4 mo-shell-v2-exact mo-gemm-32 mo-gemm-64
+
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                 13.94      10.53    1.00x     10     3.17e-06     0.00e+00
+  tiled                     21.34      19.28    0.65x     10     3.44e-06     9.11e-07
+  gemm-v1                    9.54       9.11    1.46x     10     3.41e-06     5.01e-07
+  gemm                       9.22       8.82    1.51x     10     3.41e-06     5.01e-07
+  gemm-64x32                 8.49       8.13    1.64x     10     3.09e-06     4.55e-07
+  gemm-64x64                 9.51       9.23    1.47x     10     3.41e-06     5.01e-07
+  gemm-64x64-s32             9.11       8.82    1.53x     10     3.41e-06     5.01e-07
+  gemm-128x32                7.93       7.61    1.76x     10     3.09e-06     4.55e-07
+  gemm-128x64                9.68       9.28    1.44x     10     3.41e-06     5.01e-07
+  gemm-128x64-s32            9.13       8.79    1.53x     10     3.41e-06     5.01e-07
+  gemm-256x32                8.15       7.85    1.71x     10     3.09e-06     4.55e-07
+  gemm-256x64               10.49      10.18    1.33x     10     3.41e-06     5.01e-07
+  gemm-256x64-s32            9.82       9.43    1.42x     10     3.41e-06     5.01e-07
+  (errors relative to max |value| = 12.19; CPU reference without screening)
+  fastest: gemm-128x32, 7.93 ms, 1.76x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               2.48       2.19    1.00x     10     5.25e-06     0.00e+00
+  mo                         1.43       1.27    1.74x     10     5.41e-06     3.64e-06
+  mo-shell-v1                2.06       1.98    1.20x     10     5.41e-06     3.64e-06
+  mo-shell-v2                1.29       1.25    1.93x     10     5.41e-06     3.64e-06
+  mo-shell-v4                1.02       0.98    2.43x     10     5.41e-06     3.64e-06
+  mo-shell-v2-exact          1.61       1.52    1.53x     10     5.33e-06     2.89e-07
+  mo-gemm-32                 5.38       5.00    0.46x     10     5.33e-06     2.89e-07
+  mo-gemm-64                 6.17       5.94    0.40x     10     5.33e-06     2.89e-07
+  (errors relative to max |value| = 0.3622; CPU reference without screening)
+  fastest: mo-shell-v4, 1.02 ms, 2.43x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               2.51       2.21    1.00x     10     7.27e-06     0.00e+00
+  mo                         1.31       1.25    1.91x     10     6.91e-06     8.45e-07
+  mo-shell-v1                2.23       2.00    1.13x     10     6.91e-06     8.45e-07
+  mo-shell-v2                1.36       1.25    1.84x     10     6.91e-06     8.45e-07
+  mo-shell-v4                0.99       0.98    2.53x     10     6.91e-06     8.45e-07
+  mo-shell-v2-exact          1.85       1.50    1.36x     10     6.91e-06     3.11e-07
+  mo-gemm-32                 5.27       4.94    0.48x     10     6.91e-06     3.11e-07
+  mo-gemm-64                 6.20       5.92    0.40x     10     6.91e-06     3.11e-07
+  (errors relative to max |value| = 0.3305; CPU reference without screening)
+  fastest: mo-shell-v4, 0.99 ms, 2.53x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              27.10      25.03    1.00x     10     6.23e-06     0.00e+00
+  mo                         5.50       5.10    4.92x     10     6.23e-06     2.40e-07
+  mo-shell-v1               16.87      15.71    1.61x     10     6.08e-06     2.00e-07
+  mo-shell-v2               11.14      10.64    2.43x     10     6.08e-06     2.00e-07
+  mo-shell-v4                6.49       6.24    4.18x     10     6.08e-06     2.00e-07
+  mo-shell-v2-exact         10.82      10.30    2.50x     10     6.08e-06     2.00e-07
+  mo-gemm-32                 5.40       5.10    5.02x     10     6.23e-06     2.40e-07
+  mo-gemm-64                 6.31       6.13    4.30x     10     6.30e-06     2.40e-07
+  (errors relative to max |value| = 3.253; CPU reference without screening)
+  fastest: mo-gemm-32, 5.40 ms, 5.02x vs reference
+
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                 53.83      52.85    1.00x     10     6.07e-06     0.00e+00
+  tiled                    115.32     114.90    0.47x      9     5.89e-06     5.16e-07
+  gemm-v1                   76.03      75.30    0.71x     10     5.48e-06     3.09e-07
+  gemm                      72.90      71.60    0.74x     10     5.48e-06     3.09e-07
+  gemm-64x32                68.41      67.17    0.79x     10     5.53e-06     4.12e-07
+  gemm-64x64                76.61      75.56    0.70x     10     5.48e-06     3.09e-07
+  gemm-64x64-s32            73.22      72.06    0.74x     10     5.48e-06     3.09e-07
+  gemm-128x32               65.84      64.79    0.82x     10     5.53e-06     4.12e-07
+  gemm-128x64               77.84      76.22    0.69x     10     5.48e-06     3.09e-07
+  gemm-128x64-s32           72.94      72.00    0.74x     10     5.48e-06     3.09e-07
+  gemm-256x32               66.98      66.22    0.80x     10     5.53e-06     4.12e-07
+  gemm-256x64               83.24      82.35    0.65x     10     5.48e-06     3.09e-07
+  gemm-256x64-s32           77.84      76.04    0.69x     10     5.48e-06     3.09e-07
+  (errors relative to max |value| = 20.91; CPU reference without screening)
+  fastest: reference, 53.83 ms, 1.00x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              14.74      13.74    1.00x     10     3.15e-06     0.00e+00
+  mo                         8.20       7.75    1.80x     10     2.95e-06     2.96e-06
+  mo-shell-v1               12.92      12.61    1.14x     10     2.95e-06     2.96e-06
+  mo-shell-v2                8.04       7.78    1.83x     10     2.95e-06     2.96e-06
+  mo-shell-v4                6.09       5.97    2.42x     10     2.95e-06     2.96e-06
+  mo-shell-v2-exact          9.76       9.46    1.51x     10     3.28e-06     3.28e-07
+  mo-gemm-32                50.87      49.14    0.29x     10     3.28e-06     3.28e-07
+  mo-gemm-64                58.13      56.14    0.25x     10     3.28e-06     3.28e-07
+  (errors relative to max |value| = 0.907; CPU reference without screening)
+  fastest: mo-shell-v4, 6.09 ms, 2.42x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              14.75      13.59    1.00x     10     3.69e-06     0.00e+00
+  mo                         8.11       7.79    1.82x     10     2.97e-06     1.19e-06
+  mo-shell-v1               12.94      12.62    1.14x     10     2.97e-06     1.19e-06
+  mo-shell-v2                8.08       7.76    1.82x     10     2.97e-06     1.19e-06
+  mo-shell-v4                6.28       5.96    2.35x     10     2.97e-06     1.19e-06
+  mo-shell-v2-exact          9.81       9.46    1.50x     10     3.98e-06     2.38e-07
+  mo-gemm-32                52.16      50.24    0.28x     10     3.98e-06     2.38e-07
+  mo-gemm-64                57.85      56.69    0.25x     10     3.98e-06     2.38e-07
+  (errors relative to max |value| = 0.8226; CPU reference without screening)
+  fastest: mo-shell-v4, 6.28 ms, 2.35x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             162.33     160.15    1.00x      7     5.51e-06     0.00e+00
+  mo                        51.68      50.66    3.14x     10     5.57e-06     1.89e-07
+  mo-shell-v1              108.70     108.21    1.49x     10     5.51e-06     2.83e-07
+  mo-shell-v2               74.09      73.52    2.19x     10     5.51e-06     2.83e-07
+  mo-shell-v4               43.36      42.77    3.74x     10     5.51e-06     2.83e-07
+  mo-shell-v2-exact         71.00      70.32    2.29x     10     5.44e-06     2.83e-07
+  mo-gemm-32                52.01      50.72    3.12x     10     5.57e-06     1.89e-07
+  mo-gemm-64                58.84      57.87    2.76x     10     5.57e-06     1.89e-07
+  (errors relative to max |value| = 6.968; CPU reference without screening)
+  fastest: mo-shell-v4, 43.36 ms, 3.74x vs reference
+
+=== case c60: 60 atoms, 360 shells, 900 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 112, max 430, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                145.79     140.04    1.00x      7     6.36e-06     0.00e+00
+  tiled                    175.26     171.09    0.83x      6     5.62e-06     1.44e-06
+  gemm-v1                   87.23      86.00    1.67x     10     6.68e-06     5.28e-07
+  gemm                      88.64      87.67    1.64x     10     6.68e-06     5.28e-07
+  gemm-64x32                85.70      85.20    1.70x     10     6.90e-06     5.76e-07
+  gemm-64x64                88.39      87.29    1.65x     10     6.68e-06     5.28e-07
+  gemm-64x64-s32            88.10      86.55    1.65x     10     6.68e-06     5.28e-07
+  gemm-128x32               81.03      80.31    1.80x     10     6.90e-06     5.76e-07
+  gemm-128x64               90.11      88.06    1.62x     10     6.68e-06     5.28e-07
+  gemm-128x64-s32           89.26      87.43    1.63x     10     6.68e-06     5.28e-07
+  gemm-256x32               83.63      82.40    1.74x     10     6.90e-06     5.76e-07
+  gemm-256x64               94.93      93.86    1.54x     10     6.68e-06     5.28e-07
+  gemm-256x64-s32           94.84      93.29    1.54x     10     6.68e-06     5.28e-07
+  (errors relative to max |value| = 17.92; CPU reference without screening)
+  fastest: gemm-128x32, 81.03 ms, 1.80x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              13.26      12.08    1.00x     10     2.89e-06     0.00e+00
+  mo                         6.03       6.01    2.20x     10     3.16e-06     3.46e-06
+  mo-shell-v1                9.18       8.84    1.44x     10     3.16e-06     3.46e-06
+  mo-shell-v2                6.39       6.01    2.07x     10     3.16e-06     3.46e-06
+  mo-shell-v4                4.79       4.72    2.77x     10     3.16e-06     3.46e-06
+  mo-shell-v2-exact          7.59       7.43    1.75x     10     2.89e-06     2.21e-07
+  mo-gemm-32                42.17      41.06    0.31x     10     2.89e-06     2.21e-07
+  mo-gemm-64                47.98      47.39    0.28x     10     2.89e-06     2.21e-07
+  (errors relative to max |value| = 0.4707; CPU reference without screening)
+  fastest: mo-shell-v4, 4.79 ms, 2.77x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              13.19      12.08    1.00x     10     3.74e-06     0.00e+00
+  mo                         6.09       6.01    2.17x     10     3.48e-06     5.41e-07
+  mo-shell-v1                9.27       8.88    1.42x     10     3.48e-06     5.41e-07
+  mo-shell-v2                6.07       6.03    2.17x     10     3.48e-06     5.41e-07
+  mo-shell-v4                4.78       4.74    2.76x     10     3.48e-06     5.41e-07
+  mo-shell-v2-exact          7.86       7.49    1.68x     10     3.74e-06     2.67e-07
+  mo-gemm-32                42.48      40.88    0.31x     10     3.74e-06     2.67e-07
+  mo-gemm-64                48.25      47.05    0.27x     10     3.74e-06     2.67e-07
+  (errors relative to max |value| = 0.8946; CPU reference without screening)
+  fastest: mo-shell-v4, 4.78 ms, 2.76x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             160.71     155.68    1.00x      7     2.87e-06     0.00e+00
+  mo                        43.51      41.06    3.69x     10     2.99e-06     3.67e-07
+  mo-shell-v1               81.00      80.07    1.98x     10     3.07e-06     3.15e-07
+  mo-shell-v2               59.31      56.81    2.71x     10     3.07e-06     3.15e-07
+  mo-shell-v4               37.46      35.77    4.29x     10     3.07e-06     3.15e-07
+  mo-shell-v2-exact         59.25      57.13    2.71x     10     2.95e-06     3.15e-07
+  mo-gemm-32                42.63      41.83    3.77x     10     2.99e-06     3.67e-07
+  mo-gemm-64                48.96      48.25    3.28x     10     3.03e-06     3.67e-07
+  (errors relative to max |value| = 5.716; CPU reference without screening)
+  fastest: mo-shell-v4, 37.46 ms, 4.29x vs reference
+
+-- grid 249 x 255 x 256 (0.098 bohr), screened AOs per non-empty 8^3 block: avg 97, max 386, 91% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                786.19     781.53    1.00x      2     4.71e-06     0.00e+00
+  tiled                   1038.77    1028.38    0.76x      2     5.20e-06     6.79e-07
+  gemm-v1                  462.88     461.39    1.70x      3     4.85e-06     7.25e-07
+  gemm                     470.24     467.64    1.67x      3     4.85e-06     7.25e-07
+  gemm-64x32               449.69     449.62    1.75x      3     4.80e-06     7.70e-07
+  gemm-64x64               470.59     468.96    1.67x      3     4.85e-06     7.25e-07
+  gemm-64x64-s32           465.67     465.50    1.69x      3     4.85e-06     7.25e-07
+  gemm-128x32              416.92     416.85    1.89x      3     4.80e-06     7.70e-07
+  gemm-128x64              473.63     473.08    1.66x      3     4.85e-06     7.25e-07
+  gemm-128x64-s32          469.48     467.23    1.67x      3     4.85e-06     7.25e-07
+  gemm-256x32              436.38     436.31    1.80x      3     4.80e-06     7.70e-07
+  gemm-256x64              514.31     512.97    1.53x      2     4.85e-06     7.25e-07
+  gemm-256x64-s32          509.83     509.24    1.54x      2     4.85e-06     7.25e-07
+  (errors relative to max |value| = 38.61; CPU reference without screening)
+  fastest: gemm-128x32, 416.92 ms, 1.89x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              81.69      81.06    1.00x     10     3.51e-06     0.00e+00
+  mo                        40.81      40.63    2.00x     10     4.01e-06     4.77e-06
+  mo-shell-v1               60.32      59.59    1.35x     10     4.01e-06     4.77e-06
+  mo-shell-v2               40.99      40.48    1.99x     10     4.01e-06     4.77e-06
+  mo-shell-v4               32.51      32.40    2.51x     10     4.01e-06     4.77e-06
+  mo-shell-v2-exact         51.45      50.72    1.59x     10     3.51e-06     4.74e-07
+  mo-gemm-32               184.18     182.63    0.44x      6     3.51e-06     4.74e-07
+  mo-gemm-64               222.97     220.98    0.37x      5     3.51e-06     4.74e-07
+  (errors relative to max |value| = 0.6284; CPU reference without screening)
+  fastest: mo-shell-v4, 32.51 ms, 2.51x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              81.84      81.01    1.00x     10     1.96e-06     0.00e+00
+  mo                        40.95      40.61    2.00x     10     2.19e-06     1.53e-06
+  mo-shell-v1               60.38      59.60    1.36x     10     2.19e-06     1.53e-06
+  mo-shell-v2               40.98      40.68    2.00x     10     2.19e-06     1.53e-06
+  mo-shell-v4               32.43      31.50    2.52x     10     2.19e-06     1.53e-06
+  mo-shell-v2-exact         51.40      50.92    1.59x     10     2.19e-06     6.17e-07
+  mo-gemm-32               183.10     182.25    0.45x      6     2.19e-06     6.17e-07
+  mo-gemm-64               221.33     220.44    0.37x      5     2.19e-06     6.17e-07
+  (errors relative to max |value| = 0.7734; CPU reference without screening)
+  fastest: mo-shell-v4, 32.43 ms, 2.52x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference            1022.32    1010.10    1.00x      2     4.18e-06     0.00e+00
+  mo                       188.03     186.53    5.44x      6     4.18e-06     5.82e-07
+  mo-shell-v1              527.68     527.40    1.94x      2     4.23e-06     3.32e-07
+  mo-shell-v2              397.34     396.17    2.57x      3     4.23e-06     3.32e-07
+  mo-shell-v4              257.73     254.57    3.97x      4     4.23e-06     3.32e-07
+  mo-shell-v2-exact        387.12     386.17    2.64x      3     4.18e-06     3.74e-07
+  mo-gemm-32               187.22     185.74    5.46x      6     4.18e-06     5.82e-07
+  mo-gemm-64               228.37     226.73    4.48x      5     4.18e-06     3.32e-07
+  (errors relative to max |value| = 10.32; CPU reference without screening)
+  fastest: mo-gemm-32, 187.22 ms, 5.46x vs reference
+
+=== case c60f: 60 atoms, 480 shells, 1860 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 173, max 750, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                472.07     471.34    1.00x      3     2.19e-06     0.00e+00
+  tiled                    512.50     494.22    0.92x      2     2.32e-06     1.07e-06
+  gemm-v1                  191.92     188.78    2.46x      6     2.19e-06     5.61e-07
+  gemm                     196.30     193.69    2.40x      6     2.19e-06     5.61e-07
+  gemm-64x32               198.51     195.92    2.38x      6     2.19e-06     5.61e-07
+  gemm-64x64               194.20     192.81    2.43x      6     2.19e-06     5.61e-07
+  gemm-64x64-s32           194.34     192.84    2.43x      5     2.19e-06     5.61e-07
+  gemm-128x32              186.94     184.68    2.53x      6     2.19e-06     5.61e-07
+  gemm-128x64              198.34     195.97    2.38x      6     2.19e-06     5.61e-07
+  gemm-128x64-s32          197.48     194.63    2.39x      6     2.19e-06     5.61e-07
+  gemm-256x32              193.61     192.97    2.44x      6     2.19e-06     5.61e-07
+  gemm-256x64              210.15     209.54    2.25x      5     2.19e-06     5.61e-07
+  gemm-256x64-s32          210.04     209.19    2.25x      5     2.19e-06     5.61e-07
+  (errors relative to max |value| = 37.44; CPU reference without screening)
+  fastest: gemm-128x32, 186.94 ms, 2.53x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              19.52      17.87    1.00x     10     4.11e-06     0.00e+00
+  mo                         9.06       8.67    2.16x     10     4.89e-06     4.28e-06
+  mo-shell-v1               12.81      12.34    1.52x     10     4.89e-06     4.28e-06
+  mo-shell-v2                9.07       8.64    2.15x     10     4.89e-06     4.28e-06
+  mo-shell-v4                7.36       6.90    2.65x     10     4.89e-06     4.28e-06
+  mo-shell-v2-exact         11.06      10.30    1.76x     10     4.11e-06     4.33e-07
+  mo-gemm-32                56.61      54.66    0.34x     10     4.11e-06     4.33e-07
+  mo-gemm-64                65.43      63.63    0.30x     10     4.11e-06     4.33e-07
+  (errors relative to max |value| = 0.347; CPU reference without screening)
+  fastest: mo-shell-v4, 7.36 ms, 2.65x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              19.06      17.85    1.00x     10     1.63e-06     0.00e+00
+  mo                         9.02       8.62    2.11x     10     3.64e-06     1.27e-06
+  mo-shell-v1               12.74      12.33    1.50x     10     3.64e-06     1.27e-06
+  mo-shell-v2                9.08       8.63    2.10x     10     3.64e-06     1.27e-06
+  mo-shell-v4                7.33       6.90    2.60x     10     3.64e-06     1.27e-06
+  mo-shell-v2-exact         10.83      10.30    1.76x     10     2.50e-06     8.74e-07
+  mo-gemm-32                55.79      54.48    0.34x     10     2.50e-06     8.74e-07
+  mo-gemm-64                64.76      63.43    0.29x     10     2.50e-06     8.74e-07
+  (errors relative to max |value| = 0.369; CPU reference without screening)
+  fastest: mo-shell-v4, 7.33 ms, 2.60x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             264.29     262.71    1.00x      4     7.52e-06     0.00e+00
+  mo                        56.24      54.78    4.70x     10     7.78e-06     2.16e-07
+  mo-shell-v1              112.23     110.78    2.35x      9     7.78e-06     2.52e-07
+  mo-shell-v2               80.54      78.69    3.28x     10     7.78e-06     2.52e-07
+  mo-shell-v4               55.36      53.75    4.77x     10     7.78e-06     2.52e-07
+  mo-shell-v2-exact         81.88      79.14    3.23x     10     7.85e-06     2.16e-07
+  mo-gemm-32                56.79      55.32    4.65x     10     7.78e-06     2.16e-07
+  mo-gemm-64                67.16      65.24    3.94x     10     7.78e-06     2.52e-07
+  (errors relative to max |value| = 7.417; CPU reference without screening)
+  fastest: mo-shell-v4, 55.36 ms, 4.77x vs reference
+
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                 90.74      82.47    1.00x     10     1.75e-05     0.00e+00
+  tiled                    105.45     103.37    0.86x     10     1.75e-05     5.76e-07
+  gemm-v1                   44.86      44.20    2.02x     10     1.76e-05     4.74e-07
+  gemm                      45.34      45.03    2.00x     10     1.76e-05     4.74e-07
+  gemm-64x32                44.63      43.38    2.03x     10     1.75e-05     4.06e-07
+  gemm-64x64                45.78      45.15    1.98x     10     1.76e-05     4.74e-07
+  gemm-64x64-s32            45.34      44.76    2.00x     10     1.76e-05     4.74e-07
+  gemm-128x32               41.46      40.34    2.19x     10     1.75e-05     4.06e-07
+  gemm-128x64               46.23      45.49    1.96x     10     1.76e-05     4.74e-07
+  gemm-128x64-s32           45.51      45.08    1.99x     10     1.76e-05     4.74e-07
+  gemm-256x32               42.71      42.09    2.12x     10     1.75e-05     4.06e-07
+  gemm-256x64               49.50      48.81    1.83x     10     1.76e-05     4.74e-07
+  gemm-256x64-s32           49.62      48.04    1.83x     10     1.76e-05     4.74e-07
+  (errors relative to max |value| = 12; CPU reference without screening)
+  fastest: gemm-128x32, 41.46 ms, 2.19x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               8.37       7.65    1.00x     10     2.68e-06     0.00e+00
+  mo                         5.39       5.28    1.55x     10     4.65e-06     3.29e-06
+  mo-shell-v1                7.17       6.88    1.17x     10     4.65e-06     3.29e-06
+  mo-shell-v2                5.32       5.29    1.57x     10     4.65e-06     3.29e-06
+  mo-shell-v4                5.75       5.46    1.45x     10     4.65e-06     3.29e-06
+  mo-shell-v2-exact          5.07       5.01    1.65x     10     2.68e-06     2.53e-07
+  mo-gemm-32                32.76      30.49    0.26x     10     2.68e-06     2.53e-07
+  mo-gemm-64                35.75      35.13    0.23x     10     2.68e-06     2.53e-07
+  (errors relative to max |value| = 0.1567; CPU reference without screening)
+  fastest: mo-shell-v2-exact, 5.07 ms, 1.65x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               8.33       7.64    1.00x     10     2.72e-05     0.00e+00
+  mo                         5.37       5.27    1.55x     10     2.70e-05     1.47e-06
+  mo-shell-v1                7.21       6.88    1.16x     10     2.70e-05     1.47e-06
+  mo-shell-v2                5.33       5.28    1.56x     10     2.70e-05     1.47e-06
+  mo-shell-v4                5.51       5.45    1.51x     10     2.70e-05     1.47e-06
+  mo-shell-v2-exact          5.16       5.04    1.62x     10     2.72e-05     2.34e-07
+  mo-gemm-32                32.53      31.38    0.26x     10     2.72e-05     2.34e-07
+  mo-gemm-64                35.85      34.22    0.23x     10     2.72e-05     2.34e-07
+  (errors relative to max |value| = 0.02734; CPU reference without screening)
+  fastest: mo-shell-v2-exact, 5.16 ms, 1.62x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              98.42      94.87    1.00x     10     7.15e-06     0.00e+00
+  mo                        33.29      31.95    2.96x     10     7.45e-06     1.95e-07
+  mo-shell-v1               63.95      61.44    1.54x     10     7.75e-06     2.93e-07
+  mo-shell-v2               61.08      58.14    1.61x     10     7.75e-06     2.93e-07
+  mo-shell-v4               55.98      53.18    1.76x     10     7.75e-06     2.93e-07
+  mo-shell-v2-exact         36.55      33.86    2.69x     10     7.45e-06     2.93e-07
+  mo-gemm-32                33.33      31.66    2.95x     10     7.45e-06     1.95e-07
+  mo-gemm-64                36.54      35.46    2.69x     10     7.45e-06     2.44e-07
+  (errors relative to max |value| = 1.185; CPU reference without screening)
+  fastest: mo, 33.29 ms, 2.96x vs reference
+
+# GEMM path phase breakdown (MD_GTO_GEMM_PROFILE=1, synchronises between passes)
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 6.16 ms, phi+dgather 3.35 ms, gemm[v1 64x64] 6.53 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.41 ms, phi+dgather 3.36 ms, gemm[v1 64x64] 6.18 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.21 ms, phi+dgather 3.73 ms, gemm[v1 64x64] 6.59 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.54 ms, phi+dgather 3.36 ms, gemm[128x64, 128x32 for n<=32] 6.04 ms | 1 batches, avg 40 AOs per non-empty block, 56% small
+  GEMM profile: count+plan 0.22 ms, phi+dgather 3.55 ms, gemm[128x64, 128x32 for n<=32] 6.29 ms | 1 batches, avg 40 AOs per non-empty block, 56% small
+  GEMM profile: count+plan 0.21 ms, phi+dgather 3.36 ms, gemm[128x64, 128x32 for n<=32] 6.29 ms | 1 batches, avg 40 AOs per non-empty block, 56% small
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 3.04 ms, phi+dgather 22.89 ms, gemm[v1 64x64] 38.04 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.20 ms, phi+dgather 22.33 ms, gemm[v1 64x64] 38.55 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.11 ms, phi+dgather 23.66 ms, gemm[v1 64x64] 37.90 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.74 ms, phi+dgather 22.43 ms, gemm[128x64, 128x32 for n<=32] 34.12 ms | 5 batches, avg 34 AOs per non-empty block, 62% small
+  GEMM profile: count+plan 2.05 ms, phi+dgather 22.61 ms, gemm[128x64, 128x32 for n<=32] 35.73 ms | 5 batches, avg 34 AOs per non-empty block, 62% small
+  GEMM profile: count+plan 2.27 ms, phi+dgather 22.87 ms, gemm[128x64, 128x32 for n<=32] 34.92 ms | 5 batches, avg 34 AOs per non-empty block, 62% small
+=== case c60f: 60 atoms, 480 shells, 1860 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 173, max 750, 95% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 2.95 ms, phi+dgather 61.92 ms, gemm[v1 64x64] 120.98 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.58 ms, phi+dgather 62.39 ms, gemm[v1 64x64] 118.84 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.26 ms, phi+dgather 57.60 ms, gemm[v1 64x64] 119.59 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.44 ms, phi+dgather 58.68 ms, gemm[128x64, 128x32 for n<=32] 124.21 ms | 9 batches, avg 173 AOs per non-empty block, 22% small
+  GEMM profile: count+plan 1.38 ms, phi+dgather 58.56 ms, gemm[128x64, 128x32 for n<=32] 123.79 ms | 9 batches, avg 173 AOs per non-empty block, 22% small
+  GEMM profile: count+plan 1.29 ms, phi+dgather 60.31 ms, gemm[128x64, 128x32 for n<=32] 124.30 ms | 9 batches, avg 173 AOs per non-empty block, 22% small
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 1.73 ms, phi+dgather 16.59 ms, gemm[v1 64x64] 29.02 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.75 ms, phi+dgather 15.67 ms, gemm[v1 64x64] 28.60 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.64 ms, phi+dgather 16.86 ms, gemm[v1 64x64] 29.30 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.98 ms, phi+dgather 15.68 ms, gemm[128x64, 128x32 for n<=32] 29.74 ms | 3 batches, avg 88 AOs per non-empty block, 45% small
+  GEMM profile: count+plan 0.74 ms, phi+dgather 15.73 ms, gemm[128x64, 128x32 for n<=32] 30.55 ms | 3 batches, avg 88 AOs per non-empty block, 45% small
+  GEMM profile: count+plan 0.66 ms, phi+dgather 16.11 ms, gemm[128x64, 128x32 for n<=32] 30.36 ms | 3 batches, avg 88 AOs per non-empty block, 45% small
+
+# GEMM path phase breakdown, orbitals (mo-gemm)
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 2.53 ms, phi 2.95 ms, gemm[mo 128x32] 2.47 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.39 ms, phi 2.93 ms, gemm[mo 128x32] 2.12 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.24 ms, phi 3.36 ms, gemm[mo 128x32] 2.81 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 0.56 ms, phi 3.24 ms, gemm[mo 128x32] 2.05 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.21 ms, phi 3.12 ms, gemm[mo 128x32] 2.65 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.62 ms, phi 2.94 ms, gemm[mo 128x32] 2.07 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 0.34 ms, phi 2.90 ms, gemm[mo 128x32] 2.88 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.21 ms, phi 3.35 ms, gemm[mo 128x32] 2.39 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.28 ms, phi 3.43 ms, gemm[mo 128x32] 2.49 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 3.00 ms, phi 18.99 ms, gemm[mo 128x32] 13.91 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.07 ms, phi 19.19 ms, gemm[mo 128x32] 13.82 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.03 ms, phi 19.84 ms, gemm[mo 128x32] 14.19 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 2.97 ms, phi 18.85 ms, gemm[mo 128x32] 13.55 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.22 ms, phi 20.17 ms, gemm[mo 128x32] 13.34 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.71 ms, phi 19.67 ms, gemm[mo 128x32] 13.39 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 2.81 ms, phi 18.84 ms, gemm[mo 128x32] 14.68 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.12 ms, phi 18.92 ms, gemm[mo 128x32] 15.56 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.33 ms, phi 20.02 ms, gemm[mo 128x32] 14.39 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 2.00 ms, phi 9.73 ms, gemm[mo 128x32] 5.52 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.72 ms, phi 9.13 ms, gemm[mo 128x32] 5.35 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.63 ms, phi 10.02 ms, gemm[mo 128x32] 6.07 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 0.99 ms, phi 9.69 ms, gemm[mo 128x32] 5.27 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.84 ms, phi 9.64 ms, gemm[mo 128x32] 5.31 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.64 ms, phi 9.71 ms, gemm[mo 128x32] 6.05 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 0.87 ms, phi 9.13 ms, gemm[mo 128x32] 5.55 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.86 ms, phi 8.81 ms, gemm[mo 128x32] 5.97 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 0.79 ms, phi 10.52 ms, gemm[mo 128x32] 6.30 ms | 2 batches, avg 88 AOs per non-empty block, 0% small

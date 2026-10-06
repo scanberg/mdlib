@@ -1,0 +1,876 @@
+﻿# bench_gto_gpu.ps1, 2026-10-06 12:58:31 +02:00, PowerShell 5.1.19041.5369
+# display adapter: NVIDIA GeForce GTX 1060 6GB, driver 32.0.15.8266, 06/09/2026 02:00:00
+# display adapter: Intel(R) HD Graphics 530, driver 31.0.101.2111, 07/19/2022 02:00:00
+# nvidia-smi: NVIDIA GeForce GTX 1060 6GB, 582.66, 6144 MiB, 1911 MHz
+# ---------------------------------------------------------------------------
+# md_bench_gto_gpu
+# date:      2026-10-06 10:58:32 UTC
+# host:      DESKTOP-R0DUSR2
+# os:        Windows 10 Pro 22H2 (build 19045.5371)
+# cpu:       Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz, 4 cores, 8 logical processors
+# memory:    31.9 GiB
+# compiler:  MSVC 1951 (_MSC_FULL_VER 195136260), 64-bit
+# build:     Release (NDEBUG), mdlib e3272b3e31 (with local changes)
+# gpu:       Intel(R) HD Graphics 530 (vendor 0x8086 Intel, device 0x1912, integrated)
+# gpu info:  subgroup 32, max 1024 threads per group
+# driver:    Intel Corporation Intel driver (Vulkan 1.3.215)
+# adapter 0: NVIDIA GeForce GTX 1060 6GB (0x10DE:0x1C03, discrete)
+# adapter 1: Intel(R) HD Graphics 530 (0x8086:0x1912, integrated)  <-- used
+# command:   E:\git\viamd\ext\mdlib\build-bench\bin\Release\md_bench_gto_gpu.exe --device intel
+# ---------------------------------------------------------------------------
+# algorithms: reference mo-reference tiled gemm-v1 gemm gemm-64x32 gemm-64x64 gemm-64x64-s32 gemm-128x32 gemm-128x64 gemm-128x64-s32 gemm-256x32 gemm-256x64 gemm-256x64-s32 mo mo-shell-v1 mo-shell-v2 mo-shell-v4 mo-shell-v2-exact mo-gemm-32 mo-gemm-64
+
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                196.57     196.33    1.00x      6     6.57e-06     0.00e+00
+  tiled                    187.46     186.84    1.05x      6     6.57e-06     4.10e-07
+  gemm-v1                  142.75     141.43    1.38x      8     6.18e-06     8.20e-07
+  gemm                     127.42     125.72    1.54x      8     6.18e-06     8.20e-07
+  gemm-64x32               127.86     126.31    1.54x      8     6.18e-06     8.20e-07
+  gemm-64x64               131.92     129.93    1.49x      8     6.18e-06     8.20e-07
+  gemm-64x64-s32           124.85     122.83    1.57x      9     6.18e-06     8.20e-07
+  gemm-128x32              122.49     120.68    1.60x      9     6.18e-06     8.20e-07
+  gemm-128x64              114.47     113.78    1.72x      9     6.18e-06     8.20e-07
+  gemm-128x64-s32          110.20     109.65    1.78x     10     6.18e-06     8.20e-07
+  gemm-256x32              114.07     112.86    1.72x      9     6.18e-06     8.20e-07
+  gemm-256x64              292.62     291.21    0.67x      4     6.18e-06     8.20e-07
+  gemm-256x64-s32          247.83     246.96    0.79x      5     6.18e-06     8.20e-07
+  (errors relative to max |value| = 12.19; CPU reference without screening)
+  fastest: gemm-128x64-s32, 110.20 ms, 1.78x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              21.67      21.62    1.00x     10     4.97e-06     0.00e+00
+  mo                        29.70      29.65    0.73x     10     4.72e-06     3.64e-06
+  mo-shell-v1               29.73      29.66    0.73x     10     4.72e-06     3.64e-06
+  mo-shell-v2               14.77      14.73    1.47x     10     5.50e-06     3.64e-06
+  mo-shell-v4               15.44      15.34    1.40x     10     5.50e-06     3.64e-06
+  mo-shell-v2-exact         17.95      17.82    1.21x     10     5.41e-06     3.46e-06
+  mo-gemm-32                81.12      80.28    0.27x     10     4.55e-06     5.77e-07
+  mo-gemm-64                91.47      90.73    0.24x     10     4.55e-06     5.77e-07
+  (errors relative to max |value| = 0.3622; CPU reference without screening)
+  fastest: mo-shell-v2, 14.77 ms, 1.47x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference              21.66      21.61    1.00x     10     2.37e-06     0.00e+00
+  mo                        29.71      29.60    0.73x     10     2.48e-06     1.09e-06
+  mo-shell-v1               29.68      29.64    0.73x     10     2.48e-06     1.09e-06
+  mo-shell-v2               14.74      14.72    1.47x     10     6.64e-06     7.15e-06
+  mo-shell-v4               15.41      15.32    1.41x     10     7.09e-06     7.15e-06
+  mo-shell-v2-exact         17.96      17.91    1.21x     10     6.64e-06     7.15e-06
+  mo-gemm-32                81.29      79.80    0.27x     10     2.43e-06     1.09e-06
+  mo-gemm-64                91.41      90.40    0.24x     10     2.43e-06     1.09e-06
+  (errors relative to max |value| = 0.3305; CPU reference without screening)
+  fastest: mo-shell-v2, 14.74 ms, 1.47x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             250.10     250.05    1.00x      4     5.73e-06     0.00e+00
+  mo                        85.53      84.13    2.92x     10     5.80e-06     2.40e-07
+  mo-shell-v1              323.12     323.00    0.77x      4     5.73e-06     1.60e-07
+  mo-shell-v2              295.44     294.82    0.85x      4     5.93e-06     5.04e-06
+  mo-shell-v4              117.25     117.12    2.13x      9     6.02e-06     5.04e-06
+  mo-shell-v2-exact        313.59     312.83    0.80x      4     5.93e-06     5.04e-06
+  mo-gemm-32                84.87      84.23    2.95x     10     5.80e-06     2.40e-07
+  mo-gemm-64                96.47      95.05    2.59x     10     5.73e-06     2.00e-07
+  (errors relative to max |value| = 3.253; CPU reference without screening)
+  fastest: mo-gemm-32, 84.87 ms, 2.95x vs reference
+
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference               1189.58    1188.97    1.00x      2     4.94e-06     0.00e+00
+  tiled                   1210.37    1209.52    0.98x      2     4.66e-06     3.09e-07
+  gemm-v1                  942.61     937.57    1.26x      2     5.12e-06     2.32e-07
+  gemm                     841.50     832.23    1.41x      2     5.03e-06     2.06e-07
+  gemm-64x32               831.12     825.64    1.43x      2     5.03e-06     2.06e-07
+  gemm-64x64               871.10     863.21    1.37x      2     5.12e-06     2.32e-07
+  gemm-64x64-s32           808.85     806.16    1.47x      2     5.12e-06     2.32e-07
+  gemm-128x32              782.77     782.03    1.52x      2     5.03e-06     2.06e-07
+  gemm-128x64              751.99     747.59    1.58x      2     5.12e-06     2.32e-07
+  gemm-128x64-s32          716.75     716.29    1.66x      2     5.12e-06     2.32e-07
+  gemm-256x32              733.87     733.41    1.62x      2     5.03e-06     2.06e-07
+  gemm-256x64             1904.49    1895.04    0.62x      2     5.12e-06     2.32e-07
+  gemm-256x64-s32         1535.65    1533.37    0.77x      2     5.12e-06     2.32e-07
+  (errors relative to max |value| = 20.91; CPU reference without screening)
+  fastest: gemm-128x64-s32, 716.75 ms, 1.66x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             138.22     138.11    1.00x      8     1.57e-06     0.00e+00
+  mo                       192.87     192.48    0.72x      6     2.18e-06     2.96e-06
+  mo-shell-v1              192.82     192.46    0.72x      6     2.18e-06     2.96e-06
+  mo-shell-v2               93.51      93.37    1.48x     10     2.93e-06     2.96e-06
+  mo-shell-v4               96.69      96.54    1.43x     10     2.99e-06     2.96e-06
+  mo-shell-v2-exact        116.09     115.70    1.19x      9     3.34e-06     2.44e-06
+  mo-gemm-32               626.38     617.12    0.22x      2     1.37e-06     3.57e-07
+  mo-gemm-64               685.14     680.06    0.20x      2     1.37e-06     3.57e-07
+  (errors relative to max |value| = 0.907; CPU reference without screening)
+  fastest: mo-shell-v2, 93.51 ms, 1.48x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             138.22     138.16    1.00x      8     2.35e-06     0.00e+00
+  mo                       192.95     192.48    0.72x      6     3.22e-06     1.67e-06
+  mo-shell-v1              192.79     192.43    0.72x      6     3.22e-06     1.67e-06
+  mo-shell-v2               93.63      93.24    1.48x     10     2.75e-06     3.10e-06
+  mo-shell-v4               96.72      96.47    1.43x     10     2.62e-06     3.16e-06
+  mo-shell-v2-exact        116.20     115.74    1.19x      9     3.69e-06     3.99e-06
+  mo-gemm-32               592.66     585.87    0.23x      2     2.13e-06     4.76e-07
+  mo-gemm-64               652.81     648.17    0.21x      2     2.13e-06     4.76e-07
+  (errors relative to max |value| = 0.8226; CPU reference without screening)
+  fastest: mo-shell-v2, 93.63 ms, 1.48x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference            1589.16    1584.84    1.00x      2     4.96e-06     0.00e+00
+  mo                       604.69     599.65    2.63x      2     5.03e-06     1.89e-07
+  mo-shell-v1             2098.03    2097.85    0.76x      2     5.10e-06     1.18e-07
+  mo-shell-v2             1914.30    1913.69    0.83x      2     5.51e-06     2.78e-06
+  mo-shell-v4              758.38     758.33    2.10x      2     5.51e-06     2.74e-06
+  mo-shell-v2-exact       2034.57    2033.92    0.78x      2     5.44e-06     2.88e-06
+  mo-gemm-32               605.72     600.16    2.62x      2     5.03e-06     1.89e-07
+  mo-gemm-64               675.47     675.30    2.35x      2     5.03e-06     1.89e-07
+  (errors relative to max |value| = 6.968; CPU reference without screening)
+  fastest: mo, 604.69 ms, 2.63x vs reference
+
+=== case c60: 60 atoms, 360 shells, 900 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 112, max 430, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference               2303.72    2298.48    1.00x      2     4.37e-06     0.00e+00
+  tiled                   1516.95    1516.82    1.52x      2     4.26e-06     1.06e-06
+  gemm-v1                 1178.31    1148.79    1.96x      2     4.48e-06     2.88e-07
+  gemm                    1204.74    1202.24    1.91x      2     4.58e-06     3.36e-07
+  gemm-64x32              1194.16    1189.53    1.93x      2     4.58e-06     3.36e-07
+  gemm-64x64              1066.91    1040.93    2.16x      2     4.48e-06     2.88e-07
+  gemm-64x64-s32          1062.27    1059.20    2.17x      2     4.48e-06     2.88e-07
+  gemm-128x32             1122.01    1119.92    2.05x      2     4.58e-06     3.36e-07
+  gemm-128x64              897.16     891.46    2.57x      2     4.48e-06     2.88e-07
+  gemm-128x64-s32          891.81     888.62    2.58x      2     4.48e-06     2.88e-07
+  gemm-256x32             1006.12    1005.51    2.29x      2     4.58e-06     3.36e-07
+  gemm-256x64             2469.12    2462.43    0.93x      2     4.48e-06     2.88e-07
+  gemm-256x64-s32         2432.77    2416.50    0.95x      2     4.48e-06     2.88e-07
+  (errors relative to max |value| = 17.92; CPU reference without screening)
+  fastest: gemm-128x64-s32, 891.81 ms, 2.58x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             115.16     115.06    1.00x      9     2.19e-06     0.00e+00
+  mo                       133.05     132.59    0.87x      8     3.16e-06     3.46e-06
+  mo-shell-v1              133.28     132.79    0.86x      8     3.16e-06     3.46e-06
+  mo-shell-v2               74.28      73.95    1.55x     10     3.16e-06     6.11e-06
+  mo-shell-v4               81.17      80.74    1.42x     10     3.16e-06     6.11e-06
+  mo-shell-v2-exact         91.94      91.27    1.25x     10     2.89e-06     6.24e-06
+  mo-gemm-32               390.88     390.71    0.29x      3     2.29e-06     1.89e-07
+  mo-gemm-64               432.35     432.05    0.27x      3     2.29e-06     1.89e-07
+  (errors relative to max |value| = 0.4707; CPU reference without screening)
+  fastest: mo-shell-v2, 74.28 ms, 1.55x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             115.09     115.05    1.00x      9     8.52e-06     0.00e+00
+  mo                       132.89     132.57    0.87x      8     8.92e-06     5.54e-07
+  mo-shell-v1              133.04     132.85    0.87x      8     8.92e-06     5.54e-07
+  mo-shell-v2               74.40      74.00    1.55x     10     3.74e-06     1.23e-05
+  mo-shell-v4               81.13      80.81    1.42x     10     3.74e-06     1.23e-05
+  mo-shell-v2-exact         91.92      90.90    1.25x     10     3.94e-06     1.25e-05
+  mo-gemm-32               390.08     389.74    0.30x      3     8.65e-06     2.00e-07
+  mo-gemm-64               434.03     432.74    0.27x      3     8.65e-06     2.00e-07
+  (errors relative to max |value| = 0.8946; CPU reference without screening)
+  fastest: mo-shell-v2, 74.40 ms, 1.55x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference            1386.93    1386.64    1.00x      2     3.56e-06     0.00e+00
+  mo                       406.54     404.61    3.41x      3     3.56e-06     2.10e-07
+  mo-shell-v1             1566.26    1565.59    0.89x      2     3.56e-06     2.10e-07
+  mo-shell-v2             1514.38    1513.83    0.92x      2     3.07e-06     6.08e-06
+  mo-shell-v4              625.45     625.39    2.22x      2     3.07e-06     6.13e-06
+  mo-shell-v2-exact       1700.27    1696.89    0.82x      2     2.91e-06     6.03e-06
+  mo-gemm-32               406.20     405.81    3.41x      3     3.56e-06     2.10e-07
+  mo-gemm-64               446.89     446.79    3.10x      3     3.56e-06     2.10e-07
+  (errors relative to max |value| = 5.716; CPU reference without screening)
+  fastest: mo-gemm-32, 406.20 ms, 3.41x vs reference
+
+-- grid 249 x 255 x 256 (0.098 bohr), screened AOs per non-empty 8^3 block: avg 97, max 386, 91% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference              13569.90   13563.73    1.00x      2     2.46e-06     0.00e+00
+  tiled                   9294.43    9285.99    1.46x      2     2.45e-06     8.15e-07
+  gemm-v1                 7065.72    7020.37    1.92x      2     2.30e-06     8.15e-07
+  gemm                    7219.09    7179.08    1.88x      2     2.40e-06     9.06e-07
+  gemm-64x32              7221.70    7167.15    1.88x      2     2.40e-06     9.06e-07
+  gemm-64x64              6441.42    6407.00    2.11x      2     2.30e-06     8.15e-07
+  gemm-64x64-s32          6342.30    6341.75    2.14x      2     2.30e-06     8.15e-07
+  gemm-128x32             6727.58    6712.11    2.02x      2     2.40e-06     9.06e-07
+  gemm-128x64             5420.08    5419.63    2.50x      2     2.30e-06     8.15e-07
+  gemm-128x64-s32         5404.05    5397.45    2.51x      2     2.30e-06     8.15e-07
+  gemm-256x32             6046.42    6042.58    2.24x      2     2.40e-06     9.06e-07
+  gemm-256x64            14983.73   14974.66    0.91x      2     2.30e-06     8.15e-07
+  gemm-256x64-s32        14597.28   14596.70    0.93x      2     2.30e-06     8.15e-07
+  (errors relative to max |value| = 38.61; CPU reference without screening)
+  fastest: gemm-128x64-s32, 5404.05 ms, 2.51x vs reference
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             756.51     756.32    1.00x      2     2.18e-06     0.00e+00
+  mo                       877.73     877.46    0.86x      2     3.31e-06     4.77e-06
+  mo-shell-v1              879.75     879.51    0.86x      2     3.31e-06     4.77e-06
+  mo-shell-v2              487.87     487.23    1.55x      3     4.01e-06     5.56e-06
+  mo-shell-v4              534.62     531.80    1.42x      2     3.96e-06     5.49e-06
+  mo-shell-v2-exact        620.19     617.38    1.22x      2     3.61e-06     5.56e-06
+  mo-gemm-32              2620.12    2585.70    0.29x      2     1.80e-06     3.73e-07
+  mo-gemm-64              2893.74    2889.80    0.26x      2     1.80e-06     3.73e-07
+  (errors relative to max |value| = 0.6284; CPU reference without screening)
+  fastest: mo-shell-v2, 487.87 ms, 1.55x vs reference
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference             756.44     756.32    1.00x      2     1.66e-06     0.00e+00
+  mo                       878.72     878.60    0.86x      2     1.58e-06     1.72e-06
+  mo-shell-v1              877.29     877.29    0.86x      2     1.58e-06     1.72e-06
+  mo-shell-v2              489.31     487.22    1.55x      3     2.27e-06     7.94e-06
+  mo-shell-v4              535.35     533.11    1.41x      2     2.43e-06     7.86e-06
+  mo-shell-v2-exact        621.05     619.09    1.22x      2     2.27e-06     7.94e-06
+  mo-gemm-32              2588.21    2582.58    0.29x      2     1.58e-06     3.85e-07
+  mo-gemm-64              2886.31    2881.74    0.26x      2     1.58e-06     3.85e-07
+  (errors relative to max |value| = 0.7734; CPU reference without screening)
+  fastest: mo-shell-v2, 489.31 ms, 1.55x vs reference
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference            9049.24    9046.79    1.00x      2     1.79e-06     0.00e+00
+[13:09:28][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:28][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo                      2166.00      27.56    4.18x      2     1.69e-06     3.32e-07
+  mo-shell-v1                0.01       0.01 807968.16x     10     1.69e-06     3.32e-07
+  mo-shell-v2                0.01       0.01 1371097.48x     10     1.69e-06     3.32e-07
+  mo-shell-v4                0.01       0.01 845723.68x     10     1.69e-06     3.32e-07
+  mo-shell-v2-exact          0.01       0.01 1371097.48x     10     1.69e-06     3.32e-07
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 3.74       3.21 2416.55x     10     1.69e-06     3.32e-07
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:29][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:30][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:30][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:30][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 3.81       3.38 2372.70x     10     1.69e-06     3.32e-07
+  (errors relative to max |value| = 10.32; CPU reference without screening)
+  fastest: mo-shell-v2, 0.01 ms, 1371097.48x vs reference
+
+=== case c60f: 60 atoms, 480 shells, 1860 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 173, max 750, 95% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  reference                  0.01       0.01    1.00x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+  tiled                      0.01       0.01    1.06x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-v1                    0.34       0.24    0.03x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm                       0.34       0.27    0.03x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x32                 0.38       0.26    0.02x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x64                 0.41       0.34    0.02x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x64-s32             0.44       0.38    0.02x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x32                0.45       0.31    0.02x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x64                0.48       0.37    0.02x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x64-s32            0.79       0.68    0.01x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x32                0.69       0.58    0.01x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x64                0.64       0.51    0.01x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:31][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x64-s32            0.65       0.57    0.01x     10     7.57e-01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 37.44; CPU reference without screening)
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.01       0.01    1.00x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  mo                         0.01       0.01    1.17x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.01       0.01    0.78x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.02       0.01    0.62x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.01       0.01    0.70x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.01       0.01    1.28x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 0.72       0.56    0.01x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.61       0.52    0.02x     10     1.54e+01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 0.347; CPU reference without screening)
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.02       0.01    1.00x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  mo                         0.01       0.01    1.30x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.01       0.01    1.97x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.01       0.01    2.19x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.01       0.01    1.34x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.01       0.01    2.16x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 0.65       0.55    0.03x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:32][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.83       0.64    0.02x     10     2.02e+01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 0.369; CPU reference without screening)
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.01       0.01    1.00x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo                         0.95       0.79    0.01x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.02       0.01    0.62x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.02       0.01    0.60x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.02       0.01    0.66x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.01       0.01    1.22x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 1.00       0.60    0.01x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:33][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.60       0.53    0.02x     10     2.21e-01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 7.417; CPU reference without screening)
+
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+
+  [density]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  reference                  0.02       0.01    1.00x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+  tiled                      0.02       0.01    0.71x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-v1                    0.59       0.25    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm                       0.38       0.29    0.04x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x32                 0.50       0.28    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x64                 0.46       0.32    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-64x64-s32             0.62       0.53    0.02x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x32                0.53       0.48    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x64                0.48       0.39    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-128x64-s32            0.53       0.42    0.03x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x32                0.23       0.19    0.07x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x64                0.26       0.19    0.06x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:34][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  gemm-256x64-s32            0.32       0.20    0.05x     10     1.00e+00     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 12; CPU reference without screening)
+
+  [1 orbital, psi]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.01       0.01    1.00x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  mo                         0.01       0.01    1.73x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.01       0.01    1.57x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.01       0.01    1.84x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.01       0.01    1.89x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.01       0.01    1.86x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 0.40       0.23    0.04x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.50       0.37    0.03x     10     1.04e+01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 0.1567; CPU reference without screening)
+
+  [1 orbital, psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.01       0.01    1.00x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  mo                         0.01       0.01    1.02x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.01       0.01    0.99x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.01       0.01    0.65x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.01       0.01    1.04x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.02       0.01    0.53x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 0.61       0.52    0.01x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:35][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.46       0.42    0.02x     10     6.61e+00     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 0.02734; CPU reference without screening)
+
+  [32 orbitals, sum of psi^2]
+  algorithm             median ms     min ms  speedup  iters   err vs CPU  diff vs ref
+  mo-reference               0.01       0.01    1.00x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo                         0.44       0.39    0.02x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v1                0.01       0.01    0.99x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2                0.01       0.01    0.89x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v4                0.01       0.01    1.01x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+  mo-shell-v2-exact          0.01       0.01    0.95x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-32                 0.54       0.40    0.02x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+[13:09:36][error]: md_gpu: vkQueueSubmit2 failed: VK_ERROR_DEVICE_LOST (-4) [md_vk_fail:132]
+  mo-gemm-64                 0.44       0.39    0.02x     10     9.99e-01     0.00e+00  <-- WRONG RESULT
+  (errors relative to max |value| = 1.185; CPU reference without screening)
+
+# GEMM path phase breakdown (MD_GTO_GEMM_PROFILE=1, synchronises between passes)
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 17.17 ms, phi+dgather 19.09 ms, gemm[v1 64x64] 119.20 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.20 ms, phi+dgather 19.13 ms, gemm[v1 64x64] 122.16 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.18 ms, phi+dgather 19.12 ms, gemm[v1 64x64] 120.67 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.47 ms, phi+dgather 19.05 ms, gemm[64x32] 105.06 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.23 ms, phi+dgather 19.20 ms, gemm[64x32] 107.68 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.19 ms, phi+dgather 19.15 ms, gemm[64x32] 105.99 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 10.88 ms, phi+dgather 123.66 ms, gemm[v1 64x64] 769.88 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.18 ms, phi+dgather 123.65 ms, gemm[v1 64x64] 777.83 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.17 ms, phi+dgather 123.46 ms, gemm[v1 64x64] 780.99 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 10.84 ms, phi+dgather 123.75 ms, gemm[64x32] 661.24 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.38 ms, phi+dgather 123.70 ms, gemm[64x32] 668.96 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.16 ms, phi+dgather 123.49 ms, gemm[64x32] 672.85 ms | 5 batches, avg 34 AOs per non-empty block, 0% small
+=== case c60f: 60 atoms, 480 shells, 1860 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 125 x 128 x 128 (0.196 bohr), screened AOs per non-empty 8^3 block: avg 173, max 750, 95% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 3.30 ms, phi+dgather 307.60 ms, gemm[v1 64x64] 2429.14 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.61 ms, phi+dgather 306.98 ms, gemm[v1 64x64] 2422.23 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.61 ms, phi+dgather 307.69 ms, gemm[v1 64x64] 2424.59 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.18 ms, phi+dgather 307.95 ms, gemm[64x32] 2690.07 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.64 ms, phi+dgather 308.53 ms, gemm[64x32] 2673.15 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 2.61 ms, phi+dgather 308.09 ms, gemm[64x32] 2660.86 ms | 9 batches, avg 173 AOs per non-empty block, 0% small
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+  [density]
+  GEMM profile: count+plan 4.09 ms, phi+dgather 80.54 ms, gemm[v1 64x64] 590.17 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.27 ms, phi+dgather 80.30 ms, gemm[v1 64x64] 600.72 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.28 ms, phi+dgather 80.64 ms, gemm[v1 64x64] 591.27 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.78 ms, phi+dgather 80.62 ms, gemm[64x32] 611.62 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.27 ms, phi+dgather 80.11 ms, gemm[64x32] 595.99 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.26 ms, phi+dgather 80.54 ms, gemm[64x32] 623.53 ms | 3 batches, avg 88 AOs per non-empty block, 0% small
+
+# GEMM path phase breakdown, orbitals (mo-gemm)
+=== case mol: 26 atoms, 111 shells, 240 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 92 x 80 (0.226 bohr), screened AOs per non-empty 8^3 block: avg 40, max 174, 97% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 1.97 ms, phi 18.37 ms, gemm[mo 128x32] 63.47 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.48 ms, phi 18.38 ms, gemm[mo 128x32] 63.80 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.26 ms, phi 17.91 ms, gemm[mo 128x32] 61.22 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 1.39 ms, phi 17.57 ms, gemm[mo 128x32] 60.74 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.23 ms, phi 17.57 ms, gemm[mo 128x32] 61.07 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.19 ms, phi 17.55 ms, gemm[mo 128x32] 61.06 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 1.39 ms, phi 17.60 ms, gemm[mo 128x32] 64.12 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.20 ms, phi 17.55 ms, gemm[mo 128x32] 64.56 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 1.16 ms, phi 17.55 ms, gemm[mo 128x32] 64.53 ms | 1 batches, avg 40 AOs per non-empty block, 0% small
+-- grid 256 x 183 x 159 (0.113 bohr), screened AOs per non-empty 8^3 block: avg 34, max 165, 95% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 11.20 ms, phi 114.19 ms, gemm[mo 128x32] 414.86 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.36 ms, phi 114.16 ms, gemm[mo 128x32] 415.03 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.39 ms, phi 114.15 ms, gemm[mo 128x32] 414.45 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 10.94 ms, phi 114.50 ms, gemm[mo 128x32] 414.45 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.35 ms, phi 114.02 ms, gemm[mo 128x32] 414.47 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.36 ms, phi 114.38 ms, gemm[mo 128x32] 413.16 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 10.89 ms, phi 114.06 ms, gemm[mo 128x32] 437.86 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.48 ms, phi 114.11 ms, gemm[mo 128x32] 438.76 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 8.37 ms, phi 114.50 ms, gemm[mo 128x32] 437.59 ms | 4 batches, avg 34 AOs per non-empty block, 0% small
+=== case c240: 240 atoms, 1440 shells, 3600 Cartesian AOs, D synthetic, orbitals synthetic ===
+-- grid 128 x 118 x 123 (0.454 bohr), screened AOs per non-empty 8^3 block: avg 88, max 447, 69% of blocks non-empty
+  [1 orbital, psi]
+  GEMM profile: count+plan 4.53 ms, phi 52.32 ms, gemm[mo 128x32] 164.93 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.26 ms, phi 52.49 ms, gemm[mo 128x32] 164.49 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.25 ms, phi 52.38 ms, gemm[mo 128x32] 164.14 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  [1 orbital, psi^2]
+  GEMM profile: count+plan 3.84 ms, phi 52.62 ms, gemm[mo 128x32] 165.16 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.28 ms, phi 52.52 ms, gemm[mo 128x32] 164.77 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.24 ms, phi 52.64 ms, gemm[mo 128x32] 166.71 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  [32 orbitals, sum of psi^2]
+  GEMM profile: count+plan 3.79 ms, phi 52.40 ms, gemm[mo 128x32] 173.00 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.27 ms, phi 52.58 ms, gemm[mo 128x32] 173.99 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
+  GEMM profile: count+plan 3.25 ms, phi 52.26 ms, gemm[mo 128x32] 173.31 ms | 2 batches, avg 88 AOs per non-empty block, 0% small
