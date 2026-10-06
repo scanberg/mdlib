@@ -68,6 +68,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #include <volk.h>
 
 #include "md_gpu_builtin_spv.inl"
+#include "md_gpu_select.inl"
 
 /* =========================================================================
    1. Configuration, error handling, utilities
@@ -107,7 +108,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_HEAP_CACHE_DEFAULT (256ull << 20)
 #define MD_VK_TEMP_CHUNK_MIN     (4ull << 20)
 #define MD_VK_TEMP_KINDS            2u              /* DEVICE, HOST_WRITE                    */
-#define MD_VK_ERROR_BUF           512u
+#define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
 
 #if defined(_MSC_VER)
 #define MD_VK_THREAD_LOCAL __declspec(thread)
@@ -117,6 +118,10 @@ written on one and read on another needs no queue-family ownership transfer.
 
 static MD_VK_THREAD_LOCAL char md_vk_error_buf[MD_VK_ERROR_BUF];
 static MD_VK_THREAD_LOCAL bool md_vk_has_error;
+
+/* The instance whose entry points volk holds while a device using it is alive
+   (VK_NULL_HANDLE otherwise), so md_gpu_enumerate_adapters can put them back. */
+static VkInstance md_vk_live_instance = VK_NULL_HANDLE;
 
 static bool md_vk_fail(const char* fmt, ...) {
     va_list ap;
@@ -511,6 +516,8 @@ typedef struct md_vk_dev_caps_t {
     bool dynamic_storage_image;
     bool dynamic_sampled_image;
     bool shader_int64;
+    bool storage_read_without_format;    /* device-wide; otherwise per format */
+    bool storage_write_without_format;
 } md_vk_dev_caps_t;
 
 typedef struct md_gpu_device {
@@ -522,6 +529,7 @@ typedef struct md_gpu_device {
     VkPhysicalDeviceMemoryProperties mem_props;
     VkPhysicalDeviceProperties       props;
     uint32_t                         subgroup_size;
+    char                             driver_desc[256];
 
     uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
     bool     transfer_can_compute;
@@ -587,6 +595,8 @@ typedef struct md_gpu_device {
     md_vk_dev_caps_t caps;
 
     bool            is_discrete;
+    uint32_t        adapter_index;
+    uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
@@ -1080,44 +1090,74 @@ static bool md_vk_ext_available(const char* name) {
 }
 
 
-/* On failure *out_missing names the first unmet requirement. It is always a
-   string literal, so the caller may keep it. */
+/* On failure, `missing` lists every unmet requirement (comma separated), so a
+   device can be judged in one go rather than one feature at a time. */
 static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc,
-                               md_vk_dev_caps_t* out_caps, const char** out_missing)
+                               md_vk_dev_caps_t* out_caps, char* missing, size_t missing_cap)
 {
     memset(out_caps, 0, sizeof(*out_caps));
-    *out_missing = NULL;
+    missing[0] = 0;
+    size_t missing_len = 0;
+    bool ok = true;
+#define MD_VK_MISSING(name) do {                                                              \
+        ok = false;                                                                            \
+        if (missing_len + 1 < missing_cap) {                                                   \
+            int w_ = snprintf(missing + missing_len, missing_cap - missing_len, "%s%s",        \
+                              missing_len ? ", " : "", (name));                                \
+            if (w_ > 0) missing_len = MIN(missing_len + (size_t)w_, missing_cap - 1);           \
+        }                                                                                      \
+    } while (0)
+#define MD_VK_REQUIRE(cond, name) do { if (!(cond)) MD_VK_MISSING(name); } while (0)
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(pd, &props);
     /* We call the core 1.3 synchronization2 and dynamic-rendering entry points
        directly rather than their KHR aliases. */
-    if (props.apiVersion < VK_API_VERSION_1_3) { *out_missing = "Vulkan 1.3"; return false; }
+    if (props.apiVersion < VK_API_VERSION_1_3) {
+        char v[64];
+        snprintf(v, sizeof(v), "Vulkan 1.3 (driver has %u.%u.%u)", VK_API_VERSION_MAJOR(props.apiVersion),
+                 VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion));
+        MD_VK_MISSING(v);
+    }
 
     /* No device extensions are required: everything md_gpu uses is core 1.3. */
     (void)alloc;
 
+    /* The 1.2 / 1.3 feature structs may only be chained on devices of that version. */
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
-    VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
+    VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    const bool has12 = props.apiVersion >= VK_API_VERSION_1_2;
+    const bool has13 = props.apiVersion >= VK_API_VERSION_1_3;
+    if (has12) { f2.pNext = &f12; if (has13) f12.pNext = &f13; }
     vkGetPhysicalDeviceFeatures2(pd, &f2);
 
-#define MD_VK_REQUIRE(cond, name) do { if (!(cond)) { *out_missing = (name); return false; } } while (0)
-    MD_VK_REQUIRE(f12.bufferDeviceAddress,   "bufferDeviceAddress");
-    MD_VK_REQUIRE(f12.timelineSemaphore,     "timelineSemaphore");
-    MD_VK_REQUIRE(f12.descriptorIndexing,    "descriptorIndexing");
-    MD_VK_REQUIRE(f12.runtimeDescriptorArray,"runtimeDescriptorArray");
-    MD_VK_REQUIRE(f12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
-    /* One per binding in the bindless set, which is UPDATE_AFTER_BIND. */
-    MD_VK_REQUIRE(f12.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
-    MD_VK_REQUIRE(f12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
-    /* Slang emits scalar layout for the pointer-reached argument struct. */
-    MD_VK_REQUIRE(f12.scalarBlockLayout,     "scalarBlockLayout");
-    MD_VK_REQUIRE(f13.synchronization2,      "synchronization2");
-    /* The heap arrays carry no format qualifier. */
-    MD_VK_REQUIRE(f2.features.shaderStorageImageReadWithoutFormat,  "shaderStorageImageReadWithoutFormat");
-    MD_VK_REQUIRE(f2.features.shaderStorageImageWriteWithoutFormat, "shaderStorageImageWriteWithoutFormat");
+    if (has12) {
+        MD_VK_REQUIRE(f12.bufferDeviceAddress,   "bufferDeviceAddress");
+        MD_VK_REQUIRE(f12.timelineSemaphore,     "timelineSemaphore");
+        MD_VK_REQUIRE(f12.descriptorIndexing,    "descriptorIndexing");
+        MD_VK_REQUIRE(f12.runtimeDescriptorArray,"runtimeDescriptorArray");
+        MD_VK_REQUIRE(f12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
+        /* One per binding in the bindless set, which is UPDATE_AFTER_BIND. */
+        MD_VK_REQUIRE(f12.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
+        MD_VK_REQUIRE(f12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
+        /* Slang emits scalar layout for the pointer-reached argument struct. */
+        MD_VK_REQUIRE(f12.scalarBlockLayout,     "scalarBlockLayout");
+    }
+    if (has13) {
+        MD_VK_REQUIRE(f13.synchronization2,      "synchronization2");
+    }
+    /* The heap arrays carry no format qualifier. The device-wide features say
+       "every format in the storage-without-format list"; from Vulkan 1.3 on the
+       SPIR-V capabilities are allowed without them and support is per format
+       (VK_FORMAT_FEATURE_2_STORAGE_{READ,WRITE}_WITHOUT_FORMAT_BIT), which
+       md_gpu_texture_create checks. Older Intel drivers (Gen9 on Windows) lack
+       the device-wide read feature but can read R32 formats. */
+    out_caps->storage_read_without_format  = f2.features.shaderStorageImageReadWithoutFormat;
+    out_caps->storage_write_without_format = f2.features.shaderStorageImageWriteWithoutFormat;
 #undef MD_VK_REQUIRE
+#undef MD_VK_MISSING
+    if (!ok) return false;
 
     /* Rendering: optional as a whole. Vertex pulling needs draw parameters
        (Slang's SV_VertexID subtracts the base vertex), multi-draw indirect
@@ -1157,6 +1197,99 @@ static void md_vk_record_to_general(VkCommandBuffer cmd, void* user);
 static bool md_vk_create_dummies(md_gpu_device_t dev);
 static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default);
 static bool md_vk_create_builtin_kernels(md_gpu_device_t dev);
+
+typedef struct md_vk_adapter_t {
+    VkPhysicalDevice      pd;
+    md_vk_dev_caps_t      caps;
+    md_gpu_adapter_info_t info;
+} md_vk_adapter_t;
+
+static md_gpu_device_type_t md_vk_device_type(VkPhysicalDeviceType t) {
+    switch (t) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return MD_GPU_DEVICE_TYPE_DISCRETE;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return MD_GPU_DEVICE_TYPE_INTEGRATED;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return MD_GPU_DEVICE_TYPE_VIRTUAL;
+    case VK_PHYSICAL_DEVICE_TYPE_CPU:            return MD_GPU_DEVICE_TYPE_CPU;
+    default:                                     return MD_GPU_DEVICE_TYPE_OTHER;
+    }
+}
+
+static void md_vk_driver_string(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p, char* out, size_t cap) {
+    if (p->apiVersion >= VK_API_VERSION_1_2) {
+        VkPhysicalDeviceDriverProperties drv = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
+        vkGetPhysicalDeviceProperties2(pd, &p2);
+        snprintf(out, cap, "%s %s (Vulkan %u.%u.%u)", drv.driverName, drv.driverInfo,
+                 VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
+    } else {
+        snprintf(out, cap, "driver version 0x%08X (Vulkan %u.%u.%u)", p->driverVersion,
+                 VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
+    }
+}
+
+/* Every physical device of `instance`, probed. The caller frees *out with
+   md_free(alloc, *out, count * sizeof(md_vk_adapter_t)). Needs the instance's
+   functions loaded through volk. */
+static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_i* alloc, md_vk_adapter_t** out) {
+    *out = NULL;
+    uint32_t n = 0;
+    if (vkEnumeratePhysicalDevices(instance, &n, NULL) != VK_SUCCESS || n == 0) return 0;
+    VkPhysicalDevice* pds = (VkPhysicalDevice*)md_alloc(alloc, n * sizeof(VkPhysicalDevice));
+    md_vk_adapter_t*  ad  = (md_vk_adapter_t*)md_alloc(alloc, n * sizeof(md_vk_adapter_t));
+    if (!pds || !ad) {
+        if (pds) md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
+        if (ad)  md_free(alloc, ad,  n * sizeof(md_vk_adapter_t));
+        return 0;
+    }
+    vkEnumeratePhysicalDevices(instance, &n, pds);
+    memset(ad, 0, n * sizeof(md_vk_adapter_t));
+    for (uint32_t i = 0; i < n; ++i) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pds[i], &p);
+        md_gpu_adapter_info_t* info = &ad[i].info;
+        ad[i].pd = pds[i];
+        snprintf(info->name, sizeof(info->name), "%s", p.deviceName);
+        info->vendor_id = p.vendorID;
+        info->device_id = p.deviceID;
+        info->type      = md_vk_device_type(p.deviceType);
+        md_vk_driver_string(pds[i], &p, info->driver, sizeof(info->driver));
+        info->usable = md_vk_probe_device(pds[i], alloc, &ad[i].caps, info->missing, sizeof(info->missing));
+        if (!info->usable && !info->missing[0]) snprintf(info->missing, sizeof(info->missing), "?");
+    }
+    md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
+    *out = ad;
+    return n;
+}
+
+uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
+    md_vk_has_error = false;
+    if (volkInitialize() != VK_SUCCESS) {
+        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        return 0;
+    }
+    VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    ai.pApplicationName = "mdlib";
+    ai.apiVersion       = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ici.pApplicationInfo = &ai;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (!md_vk_check(vkCreateInstance(&ici, NULL, &instance), "vkCreateInstance")) return 0;
+
+    /* volk keeps one set of instance-level entry points; put back those of a
+       live device once done. */
+    const VkInstance prev = md_vk_live_instance;
+    volkLoadInstanceOnly(instance);
+
+    struct md_allocator_i* alloc = md_get_heap_allocator();
+    md_vk_adapter_t* ad = NULL;
+    const uint32_t n = md_vk_collect_adapters(instance, alloc, &ad);
+    for (uint32_t i = 0; i < n && i < max; ++i) out[i] = ad[i].info;
+    if (ad) md_free(alloc, ad, n * sizeof(md_vk_adapter_t));
+
+    vkDestroyInstance(instance, NULL);
+    if (prev) volkLoadInstanceOnly(prev);
+    return n;
+}
 
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_vk_has_error = false;
@@ -1239,6 +1372,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
     volkLoadInstance(dev->instance);
+    md_vk_live_instance = dev->instance;
 
     if (want_debug && vkCreateDebugUtilsMessengerEXT) {
         VkDebugUtilsMessengerCreateInfoEXT dci = {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
@@ -1251,52 +1385,32 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
 
     /* ---- physical device ---- */
-    uint32_t pd_count = 0;
-    vkEnumeratePhysicalDevices(dev->instance, &pd_count, NULL);
-    if (pd_count == 0) {
+    md_vk_adapter_t* adapters = NULL;
+    const uint32_t adapter_count = md_vk_collect_adapters(dev->instance, alloc, &adapters);
+    if (adapter_count == 0) {
         md_vk_fail("no Vulkan physical devices");
         goto fail_instance;
     }
-    VkPhysicalDevice* pds = (VkPhysicalDevice*)md_alloc(alloc, pd_count * sizeof(VkPhysicalDevice));
-    vkEnumeratePhysicalDevices(dev->instance, &pd_count, pds);
+    md_gpu_adapter_info_t* infos = (md_gpu_adapter_info_t*)md_alloc(alloc, adapter_count * sizeof(md_gpu_adapter_info_t));
+    for (uint32_t i = 0; i < adapter_count; ++i) {
+        infos[i] = adapters[i].info;
+        MD_LOG_DEBUG("md_gpu: adapter [%u] '%s' (%s)%s%s", i, infos[i].name, md_gpu_sel_type_str(infos[i].type),
+                     infos[i].usable ? "" : " — lacks ", infos[i].usable ? "" : infos[i].missing);
+    }
+    char why[2048];
+    const int pick = md_gpu_sel_pick(infos, adapter_count, desc, why, sizeof(why));
+    md_free(alloc, infos, adapter_count * sizeof(md_gpu_adapter_info_t));
 
     VkPhysicalDevice chosen = VK_NULL_HANDLE;
     md_vk_dev_caps_t caps = {0};
-    int best_score = -1;
-    /* Kept so that a total failure can name what the best candidate lacked
-       rather than saying only that nothing matched. */
-    const char* first_missing = NULL;
-    char first_missing_dev[256] = {0};
-
-    for (uint32_t i = 0; i < pd_count; ++i) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(pds[i], &p);
-
-        md_vk_dev_caps_t c;
-        const char* missing = NULL;
-        if (!md_vk_probe_device(pds[i], alloc, &c, &missing)) {
-            MD_LOG_DEBUG("md_gpu: skipping '%s' — no %s", p.deviceName, missing ? missing : "?");
-            if (!first_missing) {
-                first_missing = missing;
-                snprintf(first_missing_dev, sizeof(first_missing_dev), "%s", p.deviceName);
-            }
-            continue;
-        }
-
-        int score = 0;
-        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score += 100;
-        else if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score += 50;
-        else score += 10;
-        if (score > best_score) { best_score = score; chosen = pds[i]; caps = c; }
+    if (pick >= 0) {
+        chosen = adapters[pick].pd;
+        caps   = adapters[pick].caps;
+        dev->adapter_index = (uint32_t)pick;
     }
-    md_free(alloc, pds, pd_count * sizeof(VkPhysicalDevice));
-
+    md_free(alloc, adapters, adapter_count * sizeof(md_vk_adapter_t));
     if (!chosen) {
-        if (first_missing) {
-            md_vk_fail("no usable Vulkan device: '%s' lacks %s", first_missing_dev, first_missing);
-        } else {
-            md_vk_fail("no usable Vulkan device");
-        }
+        md_vk_fail("md_gpu_device_create: %s", why);
         goto fail_instance;
     }
     dev->phys = chosen;
@@ -1308,6 +1422,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &sgp};
         vkGetPhysicalDeviceProperties2(dev->phys, &p2);
         dev->subgroup_size = sgp.subgroupSize ? sgp.subgroupSize : 32;
+        md_vk_driver_string(dev->phys, &dev->props, dev->driver_desc, sizeof(dev->driver_desc));
     }
 
     /* ---- queue families ---- */
@@ -1427,8 +1542,8 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.depthBiasClamp            = (caps.graphics && caps.depth_bias_clamp) ? VK_TRUE : VK_FALSE;
     f2.features.largePoints               = VK_FALSE;
     /* Slang's heap arrays carry no format qualifier. */
-    f2.features.shaderStorageImageReadWithoutFormat    = VK_TRUE;
-    f2.features.shaderStorageImageWriteWithoutFormat   = VK_TRUE;
+    f2.features.shaderStorageImageReadWithoutFormat    = caps.storage_read_without_format  ? VK_TRUE : VK_FALSE;
+    f2.features.shaderStorageImageWriteWithoutFormat   = caps.storage_write_without_format ? VK_TRUE : VK_FALSE;
     f2.features.shaderStorageImageArrayDynamicIndexing = caps.dynamic_storage_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderSampledImageArrayDynamicIndexing = caps.dynamic_sampled_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderInt64                            = caps.shader_int64          ? VK_TRUE : VK_FALSE;
@@ -1517,6 +1632,7 @@ fail_device:
 
 fail_instance:
     if (dev->messenger && vkDestroyDebugUtilsMessengerEXT) vkDestroyDebugUtilsMessengerEXT(dev->instance, dev->messenger, NULL);
+    if (dev->instance && dev->instance == md_vk_live_instance) md_vk_live_instance = VK_NULL_HANDLE;
     if (dev->instance) vkDestroyInstance(dev->instance, NULL);
     md_free(alloc, dev, sizeof(*dev));
     return NULL;
@@ -1530,6 +1646,11 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->subgroup_size;
     info->supports_graphics        = dev->supports_graphics;
     info->supports_present         = dev->supports_present;
+    info->vendor_id                = dev->props.vendorID;
+    info->device_id                = dev->props.deviceID;
+    info->type                     = md_vk_device_type(dev->props.deviceType);
+    info->adapter_index            = dev->adapter_index;
+    snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
     snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
     return true;
 }
@@ -2981,6 +3102,27 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
                        (d.usage & MD_GPU_TEX_RENDER_TARGET) ? " RENDER_TARGET" : "");
             return NULL;
         }
+        /* Storage access goes through descriptors without a format qualifier.
+           Where the device-wide features are missing, it is up to the format:
+           writes are essential; a format that can only be written still works
+           for kernels that do not read it, so that is a warning, once per format. */
+        if ((d.usage & MD_GPU_TEX_STORAGE) &&
+            !(dev->caps.storage_read_without_format && dev->caps.storage_write_without_format)) {
+            VkFormatProperties3 fp3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+            VkFormatProperties2 fp2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &fp3};
+            vkGetPhysicalDeviceFormatProperties2(dev->phys, ici.format, &fp2);
+            const VkFormatFeatureFlags2 ff = fp3.optimalTilingFeatures;
+            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
+                md_vk_fail("texture '%s': the device cannot write %s storage images without a format qualifier", label, fi.name);
+                return NULL;
+            }
+            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) && (uint32_t)d.format < 64u &&
+                !(dev->warned_storage_read & (1ull << (uint32_t)d.format))) {
+                dev->warned_storage_read |= 1ull << (uint32_t)d.format;
+                MD_LOG_INFO("md_gpu: this device cannot read %s storage images without a format qualifier; "
+                            "kernels may write '%s' but reads of it through a storage handle are undefined", fi.name, label);
+            }
+        }
         if (d.width > ifp.maxExtent.width || d.height > ifp.maxExtent.height || ici.extent.depth > ifp.maxExtent.depth ||
             d.mip_levels > ifp.maxMipLevels || ici.arrayLayers > ifp.maxArrayLayers) {
             md_vk_fail("texture '%s': %ux%ux%u with %u mips and %u layers exceeds the device limits for %s",
@@ -3444,6 +3586,15 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     cpci.stage.pName  = desc->entry_point ? desc->entry_point : "main";
     cpci.layout       = dev->pipeline_layout;
     if (!md_vk_check(vkCreateComputePipelines(dev->device, VK_NULL_HANDLE, 1, &cpci, NULL, &k->pipeline), "vkCreateComputePipelines")) {
+        md_vk_kernel_free(dev, k);
+        return NULL;
+    }
+    /* Some drivers (Intel Gen9 on Windows) report VK_SUCCESS but hand back no
+       pipeline when their shader compiler rejects the module; binding that
+       later faults inside the driver, so treat it as the failure it is. */
+    if (k->pipeline == VK_NULL_HANDLE) {
+        md_vk_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
+                   "(the driver could not compile the shader)", label);
         md_vk_kernel_free(dev, k);
         return NULL;
     }
@@ -4988,6 +5139,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     if (dev->messenger && vkDestroyDebugUtilsMessengerEXT) {
         vkDestroyDebugUtilsMessengerEXT(dev->instance, dev->messenger, NULL);
     }
+    if (dev->instance && dev->instance == md_vk_live_instance) md_vk_live_instance = VK_NULL_HANDLE;
     if (dev->instance) vkDestroyInstance(dev->instance, NULL);
     md_free(alloc, dev, sizeof(*dev));
 }
