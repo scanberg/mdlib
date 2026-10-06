@@ -169,6 +169,10 @@ function(compile_gpu_shaders OUT_HEADER)
                             "structs and to generate kernel descriptors")
     endif()
     set(LINT_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py)
+    # Post-pass on every SPIR-V binary: Slang forward-declares each buffer-pointer
+    # type, which some drivers (Intel Gen9 on Windows) cannot compile when the
+    # pointer comes out of an access chain. See the script for details.
+    set(DEFORWARD_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/spirv_deforward.py)
     set(LINT_STAMP  ${GEN_DIR}/${STEM}.arglayout.stamp)
     # Kernel descriptors: one md_gpu_kernel_desc_t per entry point, with the
     # group size and argument-struct size read from the compiled shader.
@@ -202,7 +206,8 @@ function(compile_gpu_shaders OUT_HEADER)
                     -bindless-space-index ${MD_GPU_BINDLESS_SPACE}
                     -entry ${ENTRY}
                     -o ${BIN}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP}
+                COMMAND ${Python3_EXECUTABLE} ${DEFORWARD_SCRIPT} ${BIN} ${BIN}
+                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP} ${DEFORWARD_SCRIPT}
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.spv"
             )
         elseif (MD_GPU_BACKEND STREQUAL "METAL")

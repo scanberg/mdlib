@@ -3589,6 +3589,15 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
         md_vk_kernel_free(dev, k);
         return NULL;
     }
+    /* Some drivers (Intel Gen9 on Windows) report VK_SUCCESS but hand back no
+       pipeline when their shader compiler rejects the module; binding that
+       later faults inside the driver, so treat it as the failure it is. */
+    if (k->pipeline == VK_NULL_HANDLE) {
+        md_vk_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
+                   "(the driver could not compile the shader)", label);
+        md_vk_kernel_free(dev, k);
+        return NULL;
+    }
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_vk_vec_push(&dev->kernels, dev->alloc);
