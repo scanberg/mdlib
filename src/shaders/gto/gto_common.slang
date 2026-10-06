@@ -106,9 +106,29 @@ float gto_aabb_dist2(float3 p, float3 mn, float3 mx) {
 groupshared uint2 gto_scan_wave[GTO_SCAN_MAX_WAVES];
 groupshared uint2 gto_scan_total;
 
+// Index of the calling subgroup in the workgroup, and the number of subgroups.
+// tid / WaveGetLaneCount() is not that index on Vulkan: without
+// REQUIRE_FULL_SUBGROUPS a subgroup may run with only some of its SubgroupSize
+// lanes populated. Intel Gen9 does exactly that for kernels it compiles at SIMD16
+// (SubgroupSize 32, 16 invocations per subgroup), and two subgroups then shared
+// one slot of gto_scan_wave. SPIR-V has the real index; Metal fills simdgroups
+// linearly, so the division is exact there.
+uint gto_wave_index(uint tid, uint lane_count) {
+    __target_switch {
+    case spirv: return spirv_asm { result:$$uint = OpLoad builtin(SubgroupId:uint); };
+    default:    return tid / lane_count;
+    }
+}
+uint gto_num_waves(uint lane_count) {
+    __target_switch {
+    case spirv: return spirv_asm { result:$$uint = OpLoad builtin(NumSubgroups:uint); };
+    default:    return (GTO_SCAN_WG_SIZE + lane_count - 1u) / lane_count;
+    }
+}
+
 uint2 gto_wg_exclusive_scan(uint2 v, uint tid, out uint2 total) {
     uint lane_count = WaveGetLaneCount();
-    uint wave_idx   = tid / lane_count;
+    uint wave_idx   = gto_wave_index(tid, lane_count);
     uint2 wave_excl = uint2(WavePrefixSum(v.x), WavePrefixSum(v.y));
     uint2 wave_sum  = uint2(WaveActiveSum(v.x), WaveActiveSum(v.y));
     if (WaveIsFirstLane()) {
@@ -116,7 +136,7 @@ uint2 gto_wg_exclusive_scan(uint2 v, uint tid, out uint2 total) {
     }
     GroupMemoryBarrierWithGroupSync();
     if (tid == 0u) {
-        uint num_waves = (GTO_SCAN_WG_SIZE + lane_count - 1u) / lane_count;
+        uint num_waves = gto_num_waves(lane_count);
         uint2 run = uint2(0u, 0u);
         for (uint w = 0u; w < num_waves; ++w) {
             uint2 t = gto_scan_wave[w];
