@@ -1036,7 +1036,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     h5md_read_bonds(&bonds, file, p, scratch);
     for (size_t i = 0; i < md_array_size(bonds); ++i) {
         md_array_push(sys->bond.pairs, bonds[i], alloc);
-        md_array_push(sys->bond.flags, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_TOPOLOGY, alloc);
+        md_array_push(sys->bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY), alloc);
     }
     sys->bond.count = md_array_size(bonds);
     if (sys->bond.count) {

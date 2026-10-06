@@ -252,7 +252,7 @@ static inline md_tpr_lj_t md_tpr_lj_pair(const md_tpr_data_t* data, size_t type_
 // only ever between atoms of the same molecule, and an atom is excluded from itself.
 bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom_b);
 
-// Builds a system from the tpr: atoms, residues, bonds (flagged MD_BOND_FLAG_TOPOLOGY), coordinates
+// Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
 // and box. Residues are numbered the way gmx numbers them when it writes the system out (single
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.

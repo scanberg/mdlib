@@ -34,7 +34,7 @@ enum {
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 typedef enum {
     MD_FLAG_NONE                = 0,
-    MD_FLAG_COARSE_GRAINED      = 0x1,      // Coarse grained representation
+    MD_FLAG_COARSE_GRAINED      = 0x1,      // Coarse grained
 
     MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
     MD_FLAG_BACKBONE            = 0x4,      // Backbone atoms
@@ -61,7 +61,8 @@ typedef enum {
     MD_FLAG_ISOMER_L            = 0x100000,
     MD_FLAG_ISOMER_D            = 0x200000,
 
-    // Experimental
+    // Chemistry of an atom, see md_chem.h. Hybridization of heavy atoms: SP2 includes the N and O whose lone pair
+    // takes part in a pi system (amide and aniline N, pyrrole N, furan O). AROMATIC: in an aromatic ring.
     MD_FLAG_SP                  = 0x1000000,
     MD_FLAG_SP2                 = 0x2000000,
     MD_FLAG_SP3                 = 0x4000000,
@@ -78,26 +79,78 @@ typedef enum {
 
 ENUM_FLAGS(md_flags_t)
 
-// Bond flags. The low byte describes the bond chemically (order, aromatic, coordinate, metal); the bits above it
-// record where the bond came from. Only the low byte is part of a bond's identity when comparing structures.
+// Bond flags, on two axes: the low byte describes the bond chemically, the bits above it where the bond and its order
+// came from. Only the low byte is part of a bond's identity when comparing structures. Each field is either one bit or
+// one value, so every combination describes a case (AROMATIC with DELOCALIZED aside, which never occur together).
+//
+// CHEMISTRY
+//   ORDER        A value in bits 0-2, not a set of bits: read it with md_bond_order and write it with
+//                md_bond_flags_set_order. 0 is unknown (not perceived, and not given by the file), which is not the
+//                same as single.
+//   AROMATIC     In an aromatic ring.
+//   DELOCALIZED  Resonance outside of rings: carboxylate, guanidinium, nitro, phosphate, ... AROMATIC and DELOCALIZED
+//                come on top of an order which holds one Kekule structure: a benzene bond is AROMATIC with order 1 or
+//                2, the two C-O of a carboxylate are DELOCALIZED with orders 2 and 1.
+//   COORDINATE   A coordination (dative) bond, which counts towards the valence of neither atom: every bond between a
+//                metal and a non-metal, whatever its origin (md_util_system_infer_coordination), and any other bond a
+//                file says is one. A bond without it is covalent, or metallic between two metals: whether a bond
+//                involves a metal is a question for the elements of its atoms.
+//
+// PROVENANCE
+//   ORIGIN           A value in bits 8-9 (md_bond_origin_t): read it with md_bond_origin and write it with
+//                    md_bond_flags_set_origin.
+//   ORDER_PERCEIVED  The order, AROMATIC and DELOCALIZED were perceived (md_chem_perceive), not given. A known order
+//                    without it was given, by the file or by hand, and stays as it is when the chemistry is perceived
+//                    again; one with it is perceived anew.
 typedef enum {
-	MD_BOND_FLAG_NONE           = 0,
-    MD_BOND_FLAG_COVALENT       = 0x1,
-    MD_BOND_FLAG_DOUBLE         = 0x2,
-    MD_BOND_FLAG_TRIPLE         = 0x4,
-    MD_BOND_FLAG_QUADRUPLE      = 0x8,
-    MD_BOND_FLAG_AROMATIC       = 0x10,
-    MD_BOND_FLAG_COORDINATE     = 0x20, // Coordinate / Dative
-    MD_BOND_FLAG_METAL          = 0x40, // Involves a metal atom
+    MD_BOND_FLAG_NONE            = 0,
+    MD_BOND_FLAG_ORDER_MASK      = 0x7,     // See md_bond_order
+    MD_BOND_FLAG_AROMATIC        = 0x8,     // In an aromatic ring
+    MD_BOND_FLAG_DELOCALIZED     = 0x10,    // Resonance outside of rings
+    MD_BOND_FLAG_COORDINATE      = 0x20,    // Coordination (dative), always between a metal and a non-metal
 
-    MD_BOND_FLAG_INFERRED       = 0x100, // Inferred from the structure, not explicitly defined in the topology
-	MD_BOND_FLAG_USER_DEFINED   = 0x200, // User defined bond
-    MD_BOND_FLAG_TOPOLOGY       = 0x400, // Defined by a force field topology, not inferred
-
-    MD_BOND_FLAG_ORIGIN_MASK    = MD_BOND_FLAG_INFERRED | MD_BOND_FLAG_USER_DEFINED | MD_BOND_FLAG_TOPOLOGY,
+    MD_BOND_FLAG_ORIGIN_MASK     = 0x300,   // See md_bond_origin
+    MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order (and AROMATIC, DELOCALIZED) was perceived, not given
 } md_bond_flags_t;
 
 ENUM_FLAGS(md_bond_flags_t)
+
+enum {
+    MD_BOND_ORDER_UNKNOWN   = 0,
+    MD_BOND_ORDER_SINGLE    = 1,
+    MD_BOND_ORDER_DOUBLE    = 2,
+    MD_BOND_ORDER_TRIPLE    = 3,
+    MD_BOND_ORDER_QUADRUPLE = 4,
+};
+
+// Where a bond came from. FILE is 0, so a bond added without saying where it came from counts as given.
+typedef enum md_bond_origin_t {
+    MD_BOND_ORIGIN_FILE     = 0,    // Given by the file, for some of its atoms (CONECT records, a component's bonds)
+    MD_BOND_ORIGIN_TOPOLOGY = 1,    // A force field topology: all of the bonds of the atoms it covers
+    MD_BOND_ORIGIN_USER     = 2,    // Added by hand
+    MD_BOND_ORIGIN_INFERRED = 3,    // Inferred from the geometry, and replaced when inferred again
+} md_bond_origin_t;
+
+#define MD_BOND_ORDER_SHIFT  0
+#define MD_BOND_ORIGIN_SHIFT 8
+
+static inline int md_bond_order(md_bond_flags_t flags) {
+    return (int)((flags & MD_BOND_FLAG_ORDER_MASK) >> MD_BOND_ORDER_SHIFT);
+}
+
+static inline md_bond_flags_t md_bond_flags_set_order(md_bond_flags_t flags, int order) {
+    const unsigned int value = (order < 0 ? 0u : (order > 4 ? 4u : (unsigned int)order)) << MD_BOND_ORDER_SHIFT;
+    return (md_bond_flags_t)(((unsigned int)flags & ~(unsigned int)MD_BOND_FLAG_ORDER_MASK) | value);
+}
+
+static inline md_bond_origin_t md_bond_origin(md_bond_flags_t flags) {
+    return (md_bond_origin_t)(((unsigned int)flags & (unsigned int)MD_BOND_FLAG_ORIGIN_MASK) >> MD_BOND_ORIGIN_SHIFT);
+}
+
+static inline md_bond_flags_t md_bond_flags_set_origin(md_bond_flags_t flags, md_bond_origin_t origin) {
+    const unsigned int value = ((unsigned int)origin << MD_BOND_ORIGIN_SHIFT) & (unsigned int)MD_BOND_FLAG_ORIGIN_MASK;
+    return (md_bond_flags_t)(((unsigned int)flags & ~(unsigned int)MD_BOND_FLAG_ORIGIN_MASK) | value);
+}
 
 // Atomic number constants for all elements (Z values)
 enum {

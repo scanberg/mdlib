@@ -261,6 +261,15 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
             completion_add_value(&values, &seen, count_type_str[i], alloc);
         }
         break;
+    case DOMAIN_MATCH_LEVEL:
+        for (size_t i = 0; i < ARRAY_SIZE(match_levels); ++i) completion_add_value(&values, &seen, match_levels[i].name, alloc);
+        break;
+    case DOMAIN_MATCH_MODE:
+        for (size_t i = 0; i < ARRAY_SIZE(match_modes); ++i) completion_add_value(&values, &seen, match_modes[i].name, alloc);
+        break;
+    case DOMAIN_MATCH_LABEL:
+        for (size_t i = 0; i < ARRAY_SIZE(match_labels); ++i) completion_add_value(&values, &seen, match_labels[i].name, alloc);
+        break;
     case DOMAIN_ATTR_PATH:
         if (sys) {
             completion_attr_paths(&values, &seen, &sys->attributes, typed, alloc);

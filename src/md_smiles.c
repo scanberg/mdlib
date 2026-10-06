@@ -1,394 +1,499 @@
-#include "md_smiles.h"
+#include <md_smiles.h>
 
-#if defined(_MSC_VER)
-#pragma warning(disable: 4295)
-#endif
+#include <core/md_allocator.h>
+#include <core/md_array.h>
+#include <core/md_common.h>
+#include <core/md_str.h>
 
-#include <core/md_log.h>
-#include <stdbool.h>
+#include <stdarg.h>
+#include <stdio.h>
 
-typedef struct parse_state_t {
-    const char* c;
+// OpenSMILES reader. The grammar is followed with two liberties, both unambiguous: ring bonds may follow a branch as
+// well as the atom (C(C)1CCCCC1), and a '.' may open a branch ('(.C)'), as the grammar allows but most readers do not.
+// See md_smiles.h for what is kept and what is not.
+
+#define NUM_RING_NUMBERS 100
+
+typedef struct ring_bond_t {
+    int32_t  atom;          // The atom which opened it, -1 when not open
+    uint8_t  order;
+    uint8_t  flags;
+    uint32_t offset;
+} ring_bond_t;
+
+typedef struct branch_t {
+    int32_t  atom;          // The atom the branch hangs from
+    uint32_t num_atoms;     // Number of atoms when the branch was opened, to tell an empty branch
+    uint32_t offset;
+} branch_t;
+
+typedef struct parser_t {
+    const char* str;        // The string as given, offsets are relative to it
+    const char* cur;
     const char* end;
-    md_smiles_node_t* nodes;
-    size_t node_len;
-    size_t node_cap;
-    bool dot;
-    bool abort;
-} parse_state_t;
 
-typedef struct symbol_t {
-    char symbol[2];
-    uint8_t element;
-    uint8_t flags;
-} symbol_t;
+    md_array(md_smiles_atom_t) atoms;
+    md_array(md_smiles_bond_t) bonds;
+    md_array(branch_t)         branches;
+    struct md_allocator_i*     alloc;
 
+    // The atom the next atom, ring bond or branch attaches to. -1 at the start and after a '.'
+    int32_t prev;
 
-// The matching table is segmented to first accomodate shortcuts (B, C, N, O, P, S, F, Cl, Br, and I)
-// Then the rest of the elements follow
-static const symbol_t table[] = {
-    { "b", 5, MD_SMILES_FLAG_AROMATIC }, { "c", 6, MD_SMILES_FLAG_AROMATIC }, { "n", 7, MD_SMILES_FLAG_AROMATIC }, { "o", 8, MD_SMILES_FLAG_AROMATIC }, { "p", 15, MD_SMILES_FLAG_AROMATIC }, { "s", 16, MD_SMILES_FLAG_AROMATIC },
-    { "B", 5 }, { "C", 6 }, { "N", 7 }, { "O", 8 }, { "P", 15 }, { "S", 16 }, { "F", 9 }, { "I", 53 },
-    { "Cl", 17 }, { "Br", 35 },
-    { "H", 1 }, { "K", 19 }, { "P", 15 }, { "U", 92 }, { "V", 23 }, { "W", 74 }, { "Y", 39 },
-	{ "Ac", 89 }, { "Ag", 47 }, { "Al", 13 }, { "Am", 95 }, { "Ar", 18 }, { "As", 33 }, { "At", 85 }, { "Au", 79 },
-	{ "Ba", 56 }, { "Be", 4 }, { "Bh", 107 }, { "Bi", 83 }, { "Bk", 97 },
-    { "Ca", 20 }, { "Cd", 48 }, { "Ce", 58 }, { "Cf", 98 }, {"Cm", 96 }, { "Co", 27 }, { "Cr", 24 }, { "Cs", 55 }, { "Cu", 29 },
-	{ "Db", 105 }, { "Ds", 110 }, { "Dy", 66 },
-	{ "Er", 68 }, { "Es", 99 }, { "Eu", 63 },
-	{ "Fe", 26 }, { "Fl", 114 }, { "Fm", 100 }, { "Fr", 87 },
-	{ "Ga", 31 }, { "Gd", 64 }, { "Ge", 32 },
-	{ "He", 2 }, { "Hf", 72 }, { "Hg", 80 }, { "Ho", 67 }, { "Hs", 108 },
-	{ "In", 49 }, { "Ir", 77 },
-	{ "Kr", 36 },
-	{ "La", 57 }, { "Li", 3 }, { "Lr", 103 }, { "Lu", 71 }, { "Lv", 116 },
-	{ "Mc", 115 }, { "Mg", 12 }, { "Mn", 25 }, { "Mo", 42 }, { "Mt", 109 },
-	{ "Na", 11 }, { "Nb", 41 }, { "Nd", 60 }, { "Ne", 10 }, { "Nh", 113 }, { "Ni", 28 }, { "No", 102 }, { "Np", 93 },
-	{ "Og", 118 }, { "Os", 76 },
-	{ "Pa", 91 }, { "Pb", 82 }, { "Pd", 46 }, { "Pm", 61 }, { "Po", 84 }, { "Pr", 59 }, { "Pt", 78 }, { "Pu", 94 },
-	{ "Ra", 88 }, { "Rb", 37 }, { "Re", 75 }, { "Rf", 104 }, { "Rg", 111 }, { "Rh", 45 }, { "Rn", 86 }, { "Ru", 44 },
-	{ "Sb", 51 }, { "Sc", 21 }, { "Se", 34 }, { "Sg", 106 }, { "Si", 14 }, { "Sm", 62 }, { "Sn", 50 }, { "Sr", 38 },
-	{ "Ta", 73 }, { "Tb", 65 }, { "Tc", 43 }, { "Te", 52 }, { "Th", 90 }, { "Ti", 22 }, { "Tl", 81 }, { "Tm", 69 }, { "Ts", 117 },
-	{ "Xe", 54 }, { "Yb", 70 }, { "Zn", 30 }, { "Zr", 40 },
-};
+    // A bond symbol waiting for the atom (or ring number) which follows it
+    bool     bond_pending;
+    uint8_t  bond_order;
+    uint8_t  bond_flags;
+    uint32_t bond_offset;
 
-static const symbol_t* shortcut_end = table + 16;
-static const symbol_t* single_char_end = table + 23;
+    ring_bond_t ring[NUM_RING_NUMBERS];
 
-static inline bool is_digit(int c) { return '0' <= c && c <= '9'; }
-static inline bool is_alpha(int c) { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
-static inline bool is_lower(int c) { return 'a' <= c && c <= 'z'; }
-static inline bool is_upper(int c) { return 'A' <= c && c <= 'Z'; }
-static inline bool is_whitespace(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+    md_smiles_error_t* err;
+    bool failed;
+} parser_t;
 
-static bool is_valid(parse_state_t* s) {
-    return s->c != s->end;
-}
-
-static void terminate(parse_state_t* s) {
-    s->abort = true;
-    s->c = s->end;
-}
-
-static char peek_char(parse_state_t* s) {
-    return s->c != s->end ? *s->c : 0;
-}
-
-static char consume_char(parse_state_t* s) {
-    return s->c != s->end ? *s->c++ : 0;
-}
-
-static bool parse_integer(int* result, parse_state_t* s) {
-    char c = peek_char(s);
-    if (!is_digit(c)) return false;
-
-    int val = 0;
-    while (c = peek_char(s), is_digit(c)) {
-        val = val * 10 + ((int)c - '0');
-        consume_char(s);
-    }
-    *result = val;
-
-    return true;
-}
-
-static const symbol_t* match_symbol(bool shortcut, parse_state_t* s) {
-    if (!is_alpha(peek_char(s))) {
-        return NULL;
-    }
-    char c0 = consume_char(s);
-    char c1 = peek_char(s);
-    const char str[2] = {c0, (is_upper(c0) && is_lower(c1)) ? c1 : '\0'};
-
-    const symbol_t* sym = table;
-    const symbol_t* end = shortcut ? shortcut_end : (str[1] ? table + ARRAY_SIZE(table) : single_char_end);
-    const symbol_t* match1 = NULL;
-
-	while (sym != end) {
-        if (sym->symbol[1] == '\0' && sym->symbol[0] == str[0]) {
-        	match1 = sym;
-            if (str[1] == '\0') {
-                return match1;
-            }
-        }
-		if (sym->symbol[0] == str[0] && sym->symbol[1] == str[1]) {
-			consume_char(s);
-            return sym;
-		}
-		++sym;
-	}
-	return match1;
-}
-
-static bool parse_shortcut(md_smiles_node_t* node, parse_state_t* s) {
-    const symbol_t* sym = match_symbol(true, s);
-    if (!sym) {
-		return false;
-	}
-    node->atom.element = sym->element;
-	node->atom.flags  |= sym->flags;
-
-	return true;
-}
-
-static bool parse_bracket(md_smiles_node_t* node, parse_state_t* s) {
-    if (peek_char(s) != '[') {
-        return false;
-    }
-    consume_char(s);
-
-    // Parse isotope
-    int iso;
-    if (parse_integer(&iso, s)) {
-        node->atom.isotope = (uint8_t)iso;
-    }
-
-    // Parse symbol
-    const symbol_t* sym = match_symbol(false, s);
-    if (!sym) {
-        return false;
-    }
-
-    node->atom.element = sym->element;
-    node->atom.flags  |= sym->flags;
-
-    // Parse chirality
-    if (peek_char(s) == '@') {
-        node->atom.flags |= MD_SMILES_FLAG_CHIRAL_1;
-        consume_char(s);
-        if (peek_char(s) == '@') {
-            node->atom.flags |= MD_SMILES_FLAG_CHIRAL_2;
-            consume_char(s);
+static bool fail(parser_t* p, const char* at, const char* fmt, ...) {
+    if (!p->failed) {
+        p->failed = true;
+        if (p->err) {
+            p->err->offset = (size_t)(at - p->str);
+            va_list args;
+            va_start(args, fmt);
+            vsnprintf(p->err->message, sizeof(p->err->message), fmt, args);
+            va_end(args);
         }
     }
-
-    // Parse h_count
-    if (peek_char(s) == 'H') {
-        consume_char(s);
-        if (is_digit(peek_char(s))) {
-            int h_count;
-            if (parse_integer(&h_count, s)) {
-                node->atom.hydrogen_count = (uint8_t)h_count;
-            }
-        } else {
-            node->atom.hydrogen_count = 1;
-        }
-    }
-
-    // Parse charge
-    if (peek_char(s) == '+' || peek_char(s) == '-') {
-        node->atom.charge = consume_char(s) == '+' ? 1 : -1;
-        if (is_digit(peek_char(s))) {
-            int magnitude;
-            parse_integer(&magnitude, s);
-            if (magnitude > 15) {
-                return false;
-            }
-            node->atom.charge = (int8_t)(node->atom.charge * magnitude);
-        }
-    }
-
-    // Parse atom_class
-    if (peek_char(s) == ':') {
-        consume_char(s);
-        if (is_digit(peek_char(s))) {
-            int atom_class;
-            if (parse_integer(&atom_class, s)) {
-                node->atom.atom_class = (uint8_t)atom_class;
-            }
-        }
-    }
-
-    if (consume_char(s) != ']') {
-        // Hard error
-        MD_LOG_ERROR("Expected termination character ']' in atom entry\n");
-        terminate(s);
-        return false;
-    }
-
-    return true;
-}
-
-static bool push_node(parse_state_t* s, md_smiles_node_t node) {
-    if (s->node_len < s->node_cap) {
-		s->nodes[s->node_len++] = node;
-		return true;
-	}
-	return false;
-}
-
-static bool parse_bond(parse_state_t* s) {
-    char c = peek_char(s);
-
-    const char bond_symbol[] = "-=:#$/\\";
-    for (int i = 0; i < (int)ARRAY_SIZE(bond_symbol); ++i) {
-        if (c == bond_symbol[i]) {
-            consume_char(s);
-            md_smiles_node_t node = { .type = MD_SMILES_NODE_BOND };
-            node.bond.symbol = c;
-            node.bond.flags |= (c == ':')  ? MD_SMILES_FLAG_AROMATIC : 0;
-            node.bond.flags |= (c == '/')  ? MD_SMILES_FLAG_UP : 0;
-            node.bond.flags |= (c == '\\') ? MD_SMILES_FLAG_DOWN : 0;
-            return push_node(s, node);
-        }
-    }
-
     return false;
 }
 
-static bool parse_dot(parse_state_t* s) {
-    char c = peek_char(s);
+static inline uint32_t offset_of(const parser_t* p, const char* at) {
+    return (uint32_t)(at - p->str);
+}
 
-    if (c == '.') {
-        consume_char(s);
-        //md_smiles_node_t node = { .type = MD_SMILES_NODE_BOND };
-        // Dot is not supported yet, so now we just ignore it and set the state flag
-        s->dot = true;
+static inline char peek(const parser_t* p) {
+    return p->cur < p->end ? *p->cur : '\0';
+}
+
+static inline char peek_at(const parser_t* p, size_t i) {
+    return p->cur + i < p->end ? p->cur[i] : '\0';
+}
+
+// is_digit and is_whitespace come from md_str.h
+static inline bool is_upper(char c) { return 'A' <= c && c <= 'Z'; }
+static inline bool is_lower(char c) { return 'a' <= c && c <= 'z'; }
+
+// Reads up to max_digits digits. Returns false if there is none.
+static bool parse_uint(uint32_t* out, parser_t* p, int max_digits) {
+    if (!is_digit(peek(p))) return false;
+    uint32_t val = 0;
+    int n = 0;
+    while (n < max_digits && is_digit(peek(p))) {
+        val = val * 10 + (uint32_t)(*p->cur - '0');
+        p->cur++;
+        n++;
+    }
+    *out = val;
+    return true;
+}
+
+static md_atomic_number_t element_from_symbol(const char* sym, size_t len) {
+    str_t s = {sym, len};
+    return md_atomic_number_from_symbol(s, false);
+}
+
+// ### ATOMS ###
+
+static bool parse_organic(parser_t* p, md_smiles_atom_t* atom) {
+    const char c  = peek(p);
+    const char c1 = peek_at(p, 1);
+    md_atomic_number_t z = 0;
+    size_t len = 1;
+    uint8_t flags = 0;
+
+    switch (c) {
+    case 'B': if (c1 == 'r') { z = 35; len = 2; } else { z = 5; } break;
+    case 'C': if (c1 == 'l') { z = 17; len = 2; } else { z = 6; } break;
+    case 'N': z = 7;  break;
+    case 'O': z = 8;  break;
+    case 'P': z = 15; break;
+    case 'S': z = 16; break;
+    case 'F': z = 9;  break;
+    case 'I': z = 53; break;
+    case 'b': z = 5;  flags = MD_SMILES_ATOM_AROMATIC; break;
+    case 'c': z = 6;  flags = MD_SMILES_ATOM_AROMATIC; break;
+    case 'n': z = 7;  flags = MD_SMILES_ATOM_AROMATIC; break;
+    case 'o': z = 8;  flags = MD_SMILES_ATOM_AROMATIC; break;
+    case 'p': z = 15; flags = MD_SMILES_ATOM_AROMATIC; break;
+    case 's': z = 16; flags = MD_SMILES_ATOM_AROMATIC; break;
+    case '*': z = 0;  break;
+    default:
+        if (is_upper(c) || is_lower(c)) {
+            return fail(p, p->cur, "'%c' is not an atom of the organic subset, write it in brackets: [%c...]", c, c);
+        }
+        return fail(p, p->cur, "Expected an atom");
+    }
+
+    atom->z = z;
+    atom->flags = flags;
+    p->cur += len;
+    return true;
+}
+
+static bool parse_bracket(parser_t* p, md_smiles_atom_t* atom) {
+    const char* open = p->cur;
+    ASSERT(peek(p) == '[');
+    p->cur++;
+
+    atom->flags = MD_SMILES_ATOM_BRACKET;
+
+    uint32_t isotope;
+    if (parse_uint(&isotope, p, 5)) {
+        if (isotope > UINT16_MAX) return fail(p, open + 1, "Isotope out of range");
+        atom->isotope = (uint16_t)isotope;
+    }
+
+    // Symbol
+    const char* sym = p->cur;
+    const char c0 = peek(p);
+    const char c1 = peek_at(p, 1);
+    if (c0 == '*') {
+        atom->z = 0;
+        p->cur += 1;
+    } else if (is_lower(c0)) {
+        // Aromatic: se, as, te before the single letter ones
+        if ((c0 == 's' && c1 == 'e') || (c0 == 'a' && c1 == 's') || (c0 == 't' && c1 == 'e')) {
+            const char up[2] = {(char)(c0 - 'a' + 'A'), c1};
+            atom->z = element_from_symbol(up, 2);
+            p->cur += 2;
+        } else if (c0 == 'b' || c0 == 'c' || c0 == 'n' || c0 == 'o' || c0 == 'p' || c0 == 's') {
+            const char up = (char)(c0 - 'a' + 'A');
+            atom->z = element_from_symbol(&up, 1);
+            p->cur += 1;
+        } else {
+            return fail(p, sym, "Unknown aromatic element in brackets");
+        }
+        atom->flags |= MD_SMILES_ATOM_AROMATIC;
+    } else if (is_upper(c0)) {
+        md_atomic_number_t z = 0;
+        if (is_lower(c1)) {
+            z = element_from_symbol(sym, 2);
+            if (z) p->cur += 2;
+        }
+        if (!z) {
+            z = element_from_symbol(sym, 1);
+            if (!z) {
+                return fail(p, sym, is_lower(c1) ? "Unknown element '%c%c'" : "Unknown element '%c'", c0, c1);
+            }
+            p->cur += 1;
+        }
+        atom->z = z;
+    } else {
+        return fail(p, sym, "Expected an element symbol after '['");
+    }
+
+    // Chirality
+    if (peek(p) == '@') {
+        p->cur++;
+        if (peek(p) == '@') {
+            p->cur++;
+            atom->flags |= MD_SMILES_ATOM_CHIRAL_CW;
+        } else {
+            const char a = peek(p), b = peek_at(p, 1);
+            const bool ext = (a == 'T' && b == 'H') || (a == 'A' && b == 'L') || (a == 'S' && b == 'P') || (a == 'T' && b == 'B') || (a == 'O' && b == 'H');
+            if (ext) {
+                const char* at = p->cur;
+                p->cur += 2;
+                uint32_t num;
+                if (!parse_uint(&num, p, 2)) return fail(p, at, "Expected a number after the chirality class");
+                atom->flags |= MD_SMILES_ATOM_CHIRAL_EXT;
+                atom->chiral_class = (uint8_t)num;
+            } else {
+                atom->flags |= MD_SMILES_ATOM_CHIRAL_CCW;
+            }
+        }
+    }
+
+    // Hydrogen count
+    if (peek(p) == 'H') {
+        p->cur++;
+        uint32_t h = 1;
+        parse_uint(&h, p, 2);
+        if (h > UINT8_MAX) return fail(p, p->cur, "Hydrogen count out of range");
+        atom->h_count = (uint8_t)h;
+    }
+
+    // Charge: +, ++, +n and the same for -
+    const char sign = peek(p);
+    if (sign == '+' || sign == '-') {
+        const char* at = p->cur;
+        p->cur++;
+        int32_t magnitude = 1;
+        uint32_t num;
+        if (parse_uint(&num, p, 2)) {
+            magnitude = (int32_t)num;
+        } else {
+            while (peek(p) == sign) {
+                p->cur++;
+                magnitude++;
+            }
+        }
+        if (magnitude > 15) return fail(p, at, "Charge out of range");
+        atom->charge = (int8_t)(sign == '+' ? magnitude : -magnitude);
+    }
+
+    // Atom class
+    if (peek(p) == ':') {
+        const char* at = p->cur;
+        p->cur++;
+        uint32_t cls;
+        if (!parse_uint(&cls, p, 5) || cls > UINT16_MAX) return fail(p, at, "Expected an atom class after ':'");
+        atom->atom_class = (uint16_t)cls;
+    }
+
+    if (peek(p) != ']') {
+        if (p->cur >= p->end) return fail(p, open, "Unclosed '['");
+        return fail(p, p->cur, "Unexpected '%c' in bracket atom", peek(p));
+    }
+    p->cur++;
+    return true;
+}
+
+// ### BONDS ###
+
+static bool has_bond(const parser_t* p, int32_t a, int32_t b) {
+    const size_t n = md_array_size(p->bonds);
+    for (size_t i = 0; i < n; ++i) {
+        const md_smiles_bond_t* bond = &p->bonds[i];
+        if (((int32_t)bond->a == a && (int32_t)bond->b == b) || ((int32_t)bond->a == b && (int32_t)bond->b == a)) return true;
+    }
+    return false;
+}
+
+static void push_bond(parser_t* p, int32_t a, int32_t b, uint8_t order, uint8_t flags) {
+    md_smiles_bond_t bond = {.a = (uint32_t)a, .b = (uint32_t)b, .order = order, .flags = flags};
+    md_array_push(p->bonds, bond, p->alloc);
+}
+
+static bool bond_symbol(uint8_t* order, uint8_t* flags, char c) {
+    *flags = 0;
+    switch (c) {
+    case '-':  *order = MD_SMILES_BOND_SINGLE;    return true;
+    case '=':  *order = MD_SMILES_BOND_DOUBLE;    return true;
+    case '#':  *order = MD_SMILES_BOND_TRIPLE;    return true;
+    case '$':  *order = MD_SMILES_BOND_QUADRUPLE; return true;
+    case ':':  *order = MD_SMILES_BOND_AROMATIC;  return true;
+    case '/':  *order = MD_SMILES_BOND_SINGLE; *flags = MD_SMILES_BOND_UP;   return true;
+    case '\\': *order = MD_SMILES_BOND_SINGLE; *flags = MD_SMILES_BOND_DOWN; return true;
+    default: return false;
+    }
+}
+
+static bool parse_ring_bond(parser_t* p) {
+    const char* at = p->cur;
+    uint32_t num;
+    if (peek(p) == '%') {
+        p->cur++;
+        if (!is_digit(peek(p)) || !is_digit(peek_at(p, 1))) return fail(p, at, "Expected two digits after '%%'");
+        parse_uint(&num, p, 2);
+    } else {
+        parse_uint(&num, p, 1);
+    }
+    ASSERT(num < NUM_RING_NUMBERS);
+
+    if (p->prev < 0) return fail(p, at, "Ring bond without an atom before it");
+
+    ring_bond_t* ring = &p->ring[num];
+    const uint8_t order = p->bond_pending ? p->bond_order : (uint8_t)MD_SMILES_BOND_IMPLICIT;
+    const uint8_t flags = p->bond_pending ? p->bond_flags : 0;
+    p->bond_pending = false;
+
+    if (ring->atom < 0) {
+        ring->atom   = p->prev;
+        ring->order  = order;
+        ring->flags  = flags;
+        ring->offset = offset_of(p, at);
         return true;
     }
-    return false;
-}
 
-static bool parse_rnum(parse_state_t* s) {
-    if (is_digit(peek_char(s))) {
-        char c = consume_char(s);
-        int num = c - '0';
-        md_smiles_node_t node = { .type = MD_SMILES_NODE_BRIDGE };
-        node.bridge.index = num;
-        return push_node(s, node);
+    // Closing
+    if (ring->atom == p->prev) return fail(p, at, "Ring bond %u bonds an atom to itself", num);
+    if (has_bond(p, ring->atom, p->prev)) return fail(p, at, "Ring bond %u duplicates a bond", num);
+    if (ring->order != MD_SMILES_BOND_IMPLICIT && order != MD_SMILES_BOND_IMPLICIT && ring->order != order) {
+        return fail(p, at, "The two ends of ring bond %u give different bonds", num);
     }
-
-    if (peek_char(s) == '%') {
-        consume_char(s);
-        char c[2] = { consume_char(s), consume_char(s) };
-        if (!is_digit(c[0]) || !is_digit(c[1])) {
-            MD_LOG_ERROR("Expected ring number after '%%'\n");
-            terminate(s);
-            return false;
-        }
-        int num = (c[0] - '0') * 10 + (c[1] - '0');
-        md_smiles_node_t node = { .type = MD_SMILES_NODE_BRIDGE };
-        node.bridge.index = num;
-        return push_node(s, node);
-    }
-
-    return false;
-}
-
-static bool parse_line(parse_state_t*);
-
-static bool parse_branch(parse_state_t* s) {
-    if (peek_char(s) != '(') {
-        return false;
-    }
-    consume_char(s);
-
-    md_smiles_node_t node = { .type = MD_SMILES_NODE_BRANCH_OPEN };
-    if (!push_node(s, node)) {
-        return false;
-    }
-
-    int num = 0;
-    while (peek_char(s) != ')') {
-        parse_bond(s);
-        parse_dot(s);
-        if (!parse_line(s)) {
-            MD_LOG_ERROR("Failed to parse line in branch\n");
-            terminate(s);
-            return false;
-        }
-        num += 1;
-    }
-
-    if (num < 1) {
-        MD_LOG_ERROR("Expected at least one entry in branch\n");
-        terminate(s);
-        return false;
-    }
-
-    if (is_valid(s) && consume_char(s) != ')') {
-        MD_LOG_ERROR("Expected termination character ')' in branch entry\n");
-        terminate(s);
-        return false;
-    }
-
-    node.type = MD_SMILES_NODE_BRANCH_CLOSE;
-    return push_node(s, node);
-}
-
-static bool parse_star(md_smiles_node_t* node, parse_state_t* s) {
-    if (peek_char(s) != '*') {
-        return false;
-    }
-    consume_char(s);
-    node->atom.element = 0;
+    const uint8_t ring_order = ring->order != MD_SMILES_BOND_IMPLICIT ? ring->order : order;
+    const uint8_t ring_flags = (flags ? flags : ring->flags) | MD_SMILES_BOND_RING;
+    push_bond(p, ring->atom, p->prev, ring_order, ring_flags);
+    ring->atom = -1;
     return true;
 }
 
-static bool parse_atom(parse_state_t* s) {
-    md_smiles_node_t node = { .type = MD_SMILES_NODE_ATOM };
-    if (parse_star(&node, s) || parse_shortcut(&node, s) || parse_bracket(&node, s)) {
-        s->dot = false;
-        return push_node(s, node);
+// ### LINE ###
+
+static bool parse_atom(parser_t* p) {
+    const char* at = p->cur;
+    md_smiles_atom_t atom = {0};
+    if (peek(p) == '[') {
+        if (!parse_bracket(p, &atom)) return false;
+    } else {
+        if (!parse_organic(p, &atom)) return false;
     }
-    return false;
+    atom.offset = offset_of(p, at);
+
+    const int32_t idx = (int32_t)md_array_size(p->atoms);
+    md_array_push(p->atoms, atom, p->alloc);
+
+    if (p->prev >= 0) {
+        const uint8_t order = p->bond_pending ? p->bond_order : (uint8_t)MD_SMILES_BOND_IMPLICIT;
+        const uint8_t flags = p->bond_pending ? p->bond_flags : 0;
+        push_bond(p, p->prev, idx, order, flags);
+    }
+    p->bond_pending = false;
+    p->prev = idx;
+    return true;
 }
 
-static bool parse_chain(parse_state_t* s) {
-    int num = 0;
-    while (is_valid(s)) {
-        if (parse_dot(s) && parse_atom(s)) {
-            num += 1;
-            continue;
+static bool parse_line(parser_t* p) {
+    while (p->cur < p->end) {
+        const char c = peek(p);
+        uint8_t order, flags;
+
+        if (c == '[' || c == '*' || is_upper(c) || is_lower(c)) {
+            if (!parse_atom(p)) return false;
         }
-        parse_bond(s);
-        if (parse_atom(s) || parse_rnum(s)) {
-            num += 1;
-            continue;
+        else if (bond_symbol(&order, &flags, c)) {
+            if (p->prev < 0) return fail(p, p->cur, "Bond without an atom before it");
+            if (p->bond_pending) return fail(p, p->cur, "Two bonds in a row");
+            p->bond_pending = true;
+            p->bond_order   = order;
+            p->bond_flags   = flags;
+            p->bond_offset  = offset_of(p, p->cur);
+            p->cur++;
         }
-        break;
+        else if (is_digit(c) || c == '%') {
+            if (!parse_ring_bond(p)) return false;
+        }
+        else if (c == '(') {
+            if (p->prev < 0) return fail(p, p->cur, "Branch without an atom before it");
+            if (p->bond_pending) return fail(p, p->cur, "A bond before a branch goes inside it: C(=O)");
+            branch_t branch = {.atom = p->prev, .num_atoms = (uint32_t)md_array_size(p->atoms), .offset = offset_of(p, p->cur)};
+            md_array_push(p->branches, branch, p->alloc);
+            p->cur++;
+        }
+        else if (c == ')') {
+            if (md_array_size(p->branches) == 0) return fail(p, p->cur, "Unbalanced ')'");
+            if (p->bond_pending) return fail(p, p->str + p->bond_offset, "Bond without an atom after it");
+            const branch_t branch = md_array_back(p->branches);
+            if (branch.num_atoms == md_array_size(p->atoms)) return fail(p, p->cur, "Empty branch");
+            if (p->prev < 0) return fail(p, p->cur - 1, "'.' without an atom after it");
+            md_array_pop(p->branches);
+            p->prev = branch.atom;
+            p->cur++;
+        }
+        else if (c == '.') {
+            if (p->prev < 0) return fail(p, p->cur, "'.' without an atom before it");
+            if (p->bond_pending) return fail(p, p->str + p->bond_offset, "Bond without an atom after it");
+            p->prev = -1;
+            p->cur++;
+        }
+        else if (is_whitespace(c)) {
+            return fail(p, p->cur, "Unexpected whitespace");
+        }
+        else {
+            return fail(p, p->cur, "Unexpected '%c'", c);
+        }
     }
-    if (num < 1) {
-        return false;
+
+    if (p->bond_pending) return fail(p, p->str + p->bond_offset, "Bond without an atom after it");
+    if (md_array_size(p->branches)) return fail(p, p->str + md_array_back(p->branches).offset, "Unclosed '('");
+    if (p->prev < 0 && md_array_size(p->atoms)) return fail(p, p->cur - 1, "'.' without an atom after it");
+    for (uint32_t i = 0; i < NUM_RING_NUMBERS; ++i) {
+        if (p->ring[i].atom >= 0) return fail(p, p->str + p->ring[i].offset, "Ring bond %u is never closed", i);
     }
     return true;
 }
 
-static bool parse_line(parse_state_t* s) {
-    if (!parse_atom(s)) {
-        return false;
+static uint32_t find_root(uint32_t* parent, uint32_t i) {
+    while (parent[i] != i) {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
     }
-    while (parse_chain(s) || parse_branch(s));
-    return true;
+    return i;
 }
 
-size_t md_smiles_parse(md_smiles_node_t* out_nodes, size_t in_cap, const char* in_str, size_t in_len) {
-    if (!in_str || in_len <= 0) {
-        MD_LOG_ERROR("Smiles: Invalid input string");
-        return 0;
+static size_t count_components(size_t num_atoms, const md_smiles_bond_t* bonds, size_t num_bonds, struct md_allocator_i* alloc) {
+    if (num_atoms == 0) return 0;
+    uint32_t* parent = md_alloc(alloc, sizeof(uint32_t) * num_atoms);
+    for (uint32_t i = 0; i < (uint32_t)num_atoms; ++i) parent[i] = i;
+    size_t count = num_atoms;
+    for (size_t i = 0; i < num_bonds; ++i) {
+        const uint32_t a = find_root(parent, bonds[i].a);
+        const uint32_t b = find_root(parent, bonds[i].b);
+        if (a != b) {
+            parent[a] = b;
+            count--;
+        }
     }
+    md_free(alloc, parent, sizeof(uint32_t) * num_atoms);
+    return count;
+}
 
-    const char* beg = in_str;
-    const char* end = in_str + in_len;
+bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
+    ASSERT(out);
+    ASSERT(alloc);
+    MEMSET(out, 0, sizeof(md_smiles_t));
+    if (err) MEMSET(err, 0, sizeof(md_smiles_error_t));
 
-    // Do some trimming
-    while (beg < end && is_whitespace(*beg)) {
-        beg++;
-    }
-
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) {
-		end--;
-	}
-
-    parse_state_t state = {
-        .c = beg,
-        .end = end,
-        .nodes = out_nodes,
-        .node_len = 0,
-        .node_cap = in_cap
+    parser_t p = {
+        .str   = str.ptr,
+        .cur   = str.ptr,
+        .end   = str.ptr + str.len,
+        .alloc = alloc,
+        .prev  = -1,
+        .err   = err,
     };
+    for (size_t i = 0; i < NUM_RING_NUMBERS; ++i) {
+        p.ring[i].atom = -1;
+    }
 
-    while (parse_chain(&state) || parse_branch(&state));
+    if (!str.ptr) {
+        fail(&p, p.cur, "Empty SMILES");
+        return false;
+    }
 
-    return state.node_len;
+    // Leading and trailing whitespace (and a terminating null) is not part of the pattern
+    while (p.cur < p.end && is_whitespace(*p.cur)) p.cur++;
+    while (p.end > p.cur && (is_whitespace(p.end[-1]) || p.end[-1] == '\0')) p.end--;
+
+    bool ok = false;
+    if (p.cur == p.end) {
+        fail(&p, p.cur, "Empty SMILES");
+    } else {
+        ok = parse_line(&p);
+    }
+
+    md_array_free(p.branches, alloc);
+
+    if (!ok) {
+        md_array_free(p.atoms, alloc);
+        md_array_free(p.bonds, alloc);
+        return false;
+    }
+
+    out->num_atoms = md_array_size(p.atoms);
+    out->atoms     = p.atoms;
+    out->num_bonds = md_array_size(p.bonds);
+    out->bonds     = p.bonds;
+    out->num_components = count_components(out->num_atoms, out->bonds, out->num_bonds, alloc);
+    out->alloc = alloc;
+    return true;
+}
+
+void md_smiles_free(md_smiles_t* smiles) {
+    ASSERT(smiles);
+    if (smiles->alloc) {
+        md_array_free(smiles->atoms, smiles->alloc);
+        md_array_free(smiles->bonds, smiles->alloc);
+    }
+    MEMSET(smiles, 0, sizeof(md_smiles_t));
 }

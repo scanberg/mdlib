@@ -31,6 +31,8 @@ void md_system_free(md_system_t* sys) {
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
     md_array_free(sys->atom.flags, alloc);
+    md_array_free(sys->atom.formal_charge, alloc);
+    md_array_free(sys->atom.hydrogen_count, alloc);
 
     // ATOM TYPE
     md_array_free(sys->atom.type.name, alloc);

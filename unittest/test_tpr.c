@@ -145,7 +145,7 @@ UTEST(tpr, system_tip3p) {
     EXPECT_EQ(2u + 509u + 4u, sys.component.count);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     for (size_t i = 0; i < sys.bond.count; ++i) {
-        EXPECT_TRUE(sys.bond.flags[i] & MD_BOND_FLAG_TOPOLOGY);
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
     }
 
     // Every atom has its element from the topology
@@ -210,18 +210,24 @@ UTEST(tpr, virtual_sites) {
 
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.tpr")));
     EXPECT_EQ(2074u, sys.atom.count);
-    // TIP4P: the two O-H bonds of the SETTLE, and the virtual site to the oxygen it hangs off
-    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 3, sys.bond.count);
+    // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.bond.count);
 
-    // The first water: OW HW1 HW2 MW, the virtual site with no element
+    // The first water: OW HW1 HW2 MW, the virtual site with no element, no radius and no bond
     const size_t ow = PEPTIDE_ATOMS;
     EXPECT_EQ(8, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow]));
     EXPECT_EQ(0, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
-    bool found = false;
+    EXPECT_TRUE(sys.atom.type.flags[sys.atom.type_idx[ow + 3]] & MD_FLAG_VIRTUAL_SITE);
+    EXPECT_FALSE(sys.atom.type.flags[sys.atom.type_idx[ow + 3]] & MD_FLAG_COARSE_GRAINED);
+    EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, ow + 3));
     for (size_t i = 0; i < sys.bond.count; ++i) {
-        if (sys.bond.pairs[i].idx[0] == (md_atom_idx_t)ow && sys.bond.pairs[i].idx[1] == (md_atom_idx_t)(ow + 3)) found = true;
+        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.bond.pairs[i].idx[0]);
+        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.bond.pairs[i].idx[1]);
     }
-    EXPECT_TRUE(found);
+
+    // The site still belongs to its water's structure: one per molecule
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    EXPECT_EQ(1u + 506u + 4u, md_structure_count(&sys.structure));
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.gro"));
     md_arena_allocator_destroy(arena);

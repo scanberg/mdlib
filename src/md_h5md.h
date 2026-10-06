@@ -47,8 +47,8 @@ struct md_system_state_t;
 // between frames), and positions in other than three dimensions.
 //
 // SYSTEM. With the GROMACS module the system is the molecule types laid out by the blocks, built
-// the way md_tpr.h builds one - same atom types, same residue numbering, the bonds complete (flagged
-// MD_BOND_FLAG_TOPOLOGY) - so a system read from the trajectory and one read from the run input it
+// the way md_tpr.h builds one - same atom types, same residue numbering, the bonds complete (of origin
+// MD_BOND_ORIGIN_TOPOLOGY) - so a system read from the trajectory and one read from the run input it
 // was simulated from agree. What the module does not carry is missing: force field type names,
 // non-bonded parameters and particle types (an atom without mass is taken as a virtual site).
 // Without the module the core elements are all there is: species names the atom types (the names

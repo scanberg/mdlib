@@ -1553,6 +1553,9 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                 // A virtual site without Lennard-Jones is a charge site (TIP4P's M), not a bead
                 if (atom->ptype != MD_TPR_PTYPE_VSITE || lj_radius > 0.0f) {
                     flags |= MD_FLAG_COARSE_GRAINED;
+                } else {
+                    flags |= MD_FLAG_VIRTUAL_SITE;
+                    radius = 0.0f;
                 }
             }
 
@@ -1632,7 +1635,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_resize(sys->bond.pairs, count, alloc);
         md_array_resize(sys->bond.flags, count, alloc);
 
-        const md_bond_flags_t flags = MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_TOPOLOGY;
+        const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
         size_t bi = 0;
         md_atom_idx_t offset = 0;
         for (size_t b = 0; b < data->num_molblocks; ++b) {
@@ -1651,7 +1654,23 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             sys->bond.flags[bi] = flags;
         }
         ASSERT(bi == count);
-        sys->bond.count = count;
+
+        // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
+        // same as when the system is read from coordinates. md_util_system_infer_structures keeps it with its
+        // molecule. Sites that interact (coarse grained beads) keep theirs.
+        size_t kept = 0;
+        for (size_t k = 0; k < count; ++k) {
+            const md_atom_pair_t pair = sys->bond.pairs[k];
+            const md_flags_t fa = sys->atom.type.flags[sys->atom.type_idx[pair.idx[0]]];
+            const md_flags_t fb = sys->atom.type.flags[sys->atom.type_idx[pair.idx[1]]];
+            if ((fa | fb) & MD_FLAG_VIRTUAL_SITE) continue;
+            sys->bond.pairs[kept] = pair;
+            sys->bond.flags[kept] = sys->bond.flags[k];
+            kept += 1;
+        }
+        md_array_shrink(sys->bond.pairs, kept);
+        md_array_shrink(sys->bond.flags, kept);
+        sys->bond.count = kept;
         md_bond_build_connectivity(&sys->bond, num_atoms, alloc);
     }
 

@@ -19,10 +19,10 @@ typedef enum {
     MD_UTIL_INFER_INSTANCE_BIT        = 1u << 3,
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
-    //MD_UTIL_INFER_ORDER_BIT           = 0x0200,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
     MD_UTIL_INFER_HBOND_BIT           = 1u << 6,     // Hydrogen bond roles as atom flags (MD_FLAG_HBOND_DONOR / _ACCEPTOR), see md_hbond.h
 	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
+    MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
 
     MD_UTIL_INFER_ALL                 = -1,
 } md_infer_flags_t;
@@ -79,6 +79,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_stat
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
+
+// Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, and returns how many
+// it marked. md_util_system_infer does it for each system; a bond added afterwards (by hand) wants it too.
+size_t md_util_system_infer_coordination(md_system_t* sys);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -272,45 +276,6 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 // Sort array of uint32_t by producing a remapping array of source indices
 // The source_indices represents the indices of the sorted array, i.e. source_indices[0] is the index of the smallest element in data
 void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* key, size_t count);
-
-// Structure matching operations
-// In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
-// This is due to the symmetry of extremities found in molecules.
-
-typedef enum {
-    MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
-    MD_UTIL_MATCH_LEVEL_COMPONENT,      // Match within components
-    MD_UTIL_MATCH_LEVEL_INSTANCE,       // Match within assymetric instances
-} md_util_match_level_t;
-
-typedef enum {
-    MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
-    MD_UTIL_MATCH_MODE_FIRST,           // Store the first match
-    MD_UTIL_MATCH_MODE_ALL,		        // Store all matches
-} md_util_match_mode_t;
-
-typedef enum {
-    MD_UTIL_MATCH_FLAGS_NO_H  = 1,              // Disregard hydrogen
-    MD_UTIL_MATCH_FLAGS_NO_CH = 2,              // Disregard hydrogen connected to carbon
-    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT = 4,  // Enforce a strict edge count for each matched atom pair
-    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_TYPE  = 8,  // Enforce a matching edge type between matches
-} md_util_match_flags_t;
-
-// Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
-md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
-
-// Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-// The matcing results are stored into supplied idx_data
-// The returned value is the number of matches found
-size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_system_t* sys, md_allocator_i* alloc);
-
-// Computes the maximum common subgraph between two structures
-// The indices which maps from the source structure to the target structure is written to dst_idx_map
-// The returned value is the number of common atoms
-// It is assumed that the dst_idx_map has the same length as src_count
-size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
-size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

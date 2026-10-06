@@ -967,7 +967,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				(uint32_t)(MIN(atom_id0, atom_id1) - 1),
 				(uint32_t)(MAX(atom_id0, atom_id1) - 1),
 			};
-			md_bond_flags_t flag = 0;
+			md_bond_flags_t flag = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
             md_array_push_no_grow(sys->bond.pairs, pair);
             md_array_push_no_grow(sys->bond.flags, flag);
 

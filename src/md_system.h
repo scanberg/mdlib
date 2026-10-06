@@ -35,6 +35,11 @@ typedef struct md_atom_data_t {
     md_atom_type_idx_t* type_idx;
     md_flags_t* flags;
 
+    // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
+    // and not per type, as atom types are shared by name (the OD1 of Asp and of Asn).
+    int8_t*  formal_charge;     // [count]
+    uint8_t* hydrogen_count;    // [count] Hydrogens attached, explicit (bonded H atoms) and implicit
+
     md_atom_type_data_t type;
 } md_atom_data_t;
 
@@ -514,6 +519,18 @@ static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
         return md_atom_type_name(&atom->type, atom->type_idx[atom_idx]);
     }
     return STR_LIT("");
+}
+
+// Formal charge of the atom, 0 when unknown
+static inline int md_atom_formal_charge(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    return (atom->formal_charge && atom_idx < atom->count) ? atom->formal_charge[atom_idx] : 0;
+}
+
+// Hydrogens attached to the atom, explicit and implicit; -1 when unknown
+static inline int md_atom_hydrogen_count(const md_atom_data_t* atom, size_t atom_idx) {
+    ASSERT(atom);
+    return (atom->hydrogen_count && atom_idx < atom->count) ? atom->hydrogen_count[atom_idx] : -1;
 }
 
 static inline md_flags_t md_atom_flags(const md_atom_data_t* atom, size_t atom_idx) {

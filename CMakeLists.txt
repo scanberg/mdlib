@@ -114,6 +114,8 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_chem.c
+  src/md_chem.h
   src/md_contact.c
   src/md_contact.h
   src/md_hbond.c
@@ -145,6 +147,8 @@ set(SRC_FILES
   src/md_dcd.h
   src/md_lammps.c
   src/md_lammps.h
+  src/md_match.c
+  src/md_match.h
   src/md_mmcif.c
   src/md_mmcif.h
   src/md_molden.c

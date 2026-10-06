@@ -1,8 +1,8 @@
 ﻿#include <md_util.h>
 
 #include <md_system.h>
-#include <md_smiles.h>
 #include <md_hbond.h>
+#include <md_chem.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_compiler.h>
@@ -468,9 +468,10 @@ static const uint64_t element_alkali_mask[2] = {
     0x0000000000800000,
 };
 
+// Groups 3-12: Sc-Zn, Y-Cd, Hf-Hg, Rf-Cn
 static const uint64_t element_transition_metal_mask[2] = {
-    0x00007FC0001FF800ULL,
-    0x0000000001FF01FFULL,
+    0x0001FF807FE00000ULL,
+    0x0001FF000001FF00ULL,
 };
 
 #if 0
@@ -667,21 +668,6 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
-static void sort_arr_masked64(uint64_t* arr, size_t n, uint64_t mask) {
-    bool swapped = true;
-    while (swapped) {
-        swapped = false;
-        for (size_t i = 0; i < n - 1; ++i) {
-            if ((arr[i] & mask) > (arr[i + 1] & mask)) {
-                uint64_t tmp = arr[i];
-                arr[i] = arr[i + 1];
-                arr[i + 1] = tmp;
-                swapped = true;
-            }
-        }
-    }
-}
-
 static inline void radix_pass_8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
     int bitoff = pass * 8;
     for (size_t i = 0; i < count; ++i) {
@@ -833,36 +819,9 @@ static md_array(uint64_t) make_bitfield(size_t num_bits, md_allocator_i* alloc) 
     return bits;
 }
 
-static inline md_array(uint64_t) bitfield_copy(const md_array(uint64_t) src, md_allocator_i* alloc) {
-    md_array(uint64_t) copy = md_array_create(uint64_t, md_array_size(src), alloc);
-    MEMCPY(copy, src, md_array_bytes(src));
-    return copy;
-}
-
-static inline void bitfield_copy_inplace(md_array(uint64_t) dst, const md_array(uint64_t) src) {
-    MEMCPY(dst, src, md_array_bytes(src));
-}
-
-static inline void bitfield_clear_all(uint64_t* bits, size_t num_bits) {
-    size_t num_bytes = DIV_UP(num_bits, 8);
-    MEMSET(bits, 0, num_bytes);
-}
-
 static void bitfield_set_all(uint64_t* bits, size_t num_bits) {
     size_t num_bytes = DIV_UP(num_bits, 8);
     MEMSET(bits, 0xFF, num_bytes);
-}
-
-static bool bitfield_find_first_bit_set(int* out_idx, const uint64_t* bits, size_t num_bits) {
-    ASSERT(out_idx);
-    size_t num_elem = DIV_UP(num_bits, 64);
-    for (size_t i = 0; i < num_elem; ++i) {
-        if (bits[i]) {
-            *out_idx = (int)ctz64(bits[i]);
-            return true;
-        }
-    }
-    return false;
 }
 
 static inline bool bitfield_test_bit(const uint64_t* bits, int64_t idx) {
@@ -891,281 +850,6 @@ static inline size_t bitfield_popcount(const uint64_t* bits, size_t num_bits) {
     const uint64_t mask = (1ULL << (num_bits & 63)) - 1;
     count += (size_t)popcnt64(*end & mask);
     return count;
-}
-
-typedef struct graph_t {
-    size_t    vertex_count;
-    uint8_t*  vertex_type;
-    uint32_t* edge_offset;  // offset, length is implicitly encoded by the next offset, last offset is the total number of edges and therefore length is count + 1
-    uint32_t* edge_data;    // packed 32-bit data consiting of (from hi to low) type : 8, index : 24      
-
-    // These map the graphs internal indices to the provided indices from which the graph was constructed
-    md_atom_idx_t* atom_idx_map;
-    md_bond_idx_t* bond_idx_map;
-} graph_t;
-
-static inline size_t graph_vertex_count(const graph_t* g) {
-    return g->vertex_count;
-}
-
-static inline int graph_vertex_type(const graph_t* g, int64_t vidx) {
-    return g->vertex_type[vidx];
-}
-
-static inline size_t graph_vertex_edge_count(const graph_t* g, int64_t vidx) {
-    return g->edge_offset[vidx + 1] - g->edge_offset[vidx];
-}
-
-static inline int graph_edge_type(const graph_t* g, int64_t eidx) {
-    return ((g->edge_data[eidx]) >> 24) & 0xFF;
-}
-
-static inline int graph_edge_vertex_idx(const graph_t* g, int64_t eidx) {
-    return g->edge_data[eidx] & 0x00FFFFFF;
-}
-
-typedef struct graph_edge_iter_t {
-    uint32_t* cur;
-    uint32_t* end;
-} graph_edge_iter_t;
-
-static inline graph_edge_iter_t graph_edge_iter(const graph_t* g, int64_t vidx) {
-    graph_edge_iter_t it = {
-        .cur = g->edge_data + g->edge_offset[vidx],
-        .end = g->edge_data + g->edge_offset[vidx + 1]
-    };
-    return it;
-}
-
-static inline bool graph_edge_iter_has_next(graph_edge_iter_t it) {
-    return it.cur != it.end;
-}
-
-static inline bool graph_edge_iter_valid(graph_edge_iter_t it) {
-    return it.cur != 0;
-}
-
-static inline void graph_edge_iter_next(graph_edge_iter_t* it) {
-    ++it->cur;
-}
-
-static inline int graph_edge_iter_type(graph_edge_iter_t it) {
-    return ((*it.cur) >> 24) & 0xFF;
-}
-
-static inline int graph_edge_iter_vidx(graph_edge_iter_t it) {
-    return (*it.cur) & 0x00FFFFFF;
-}
-
-static inline bool graph_vertex_is_connected_to(const graph_t* g, int vidx, int other_vidx) {
-    graph_edge_iter_t it = graph_edge_iter(g, vidx);
-    while (graph_edge_iter_has_next(it)) {
-        if (graph_edge_iter_vidx(it) == other_vidx) return true;
-        graph_edge_iter_next(&it);
-    }
-    return false;
-}
-
-static inline bool graph_vertex_has_connection(const graph_t* g, int vidx, int other_vidx, int other_type) {
-    graph_edge_iter_t it = graph_edge_iter(g, vidx);
-    while (graph_edge_iter_has_next(it)) {
-        int evidx = graph_edge_iter_vidx(it);
-        int etype = graph_edge_iter_type(it);
-        if (evidx == other_vidx && etype == other_type) {
-            return true;
-        }
-        graph_edge_iter_next(&it);
-    }
-    return false;
-}
-
-static bool graph_equivalent(const graph_t* a, const graph_t* b) {
-    if (a->vertex_count != b->vertex_count) return false;
-    for (int64_t i = 0; i < (int64_t)a->vertex_count; ++i) {
-        if (graph_vertex_type(a, i) != graph_vertex_type(b, i)) return false;
-        if (graph_vertex_edge_count(a, i) != graph_vertex_edge_count(b, i)) return false;
-
-        graph_edge_iter_t a_it = graph_edge_iter(a, i);
-        graph_edge_iter_t b_it = graph_edge_iter(b, i);
-        while (graph_edge_iter_has_next(a_it)) {
-            bool found = false;
-            while (graph_edge_iter_has_next(b_it)) {
-                if (graph_edge_iter_vidx(a_it) == graph_edge_iter_vidx(b_it) &&
-                    graph_edge_iter_type(a_it) == graph_edge_iter_type(b_it)) {
-                    found = true;
-                    break;
-                }
-                graph_edge_iter_next(&b_it);
-            }
-            if (!found) {
-                return false;
-            }
-            graph_edge_iter_next(&a_it);
-        }
-    }
-    return true;
-}
-
-// Confusing procedure name
-// Extracts a graph from an atom index range with supplied atom types
-
-typedef enum {
-    VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER = 0,
-    VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX = 1,
-} vertex_type_mapping_mode_t;
-
-static inline uint8_t vertex_type_from_atom_idx(const md_atom_data_t* atom, size_t atom_idx, vertex_type_mapping_mode_t vertex_type_mapping) {
-    switch (vertex_type_mapping) {
-    case VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER:
-        return md_atom_atomic_number(atom, atom_idx);
-    case VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX:
-        return (uint8_t)md_atom_type_idx(atom, atom_idx);
-    default:
-        ASSERT(false);
-    }
-    return 0;
-}
-
-static graph_t extract_graph(const md_system_t* sys, const int indices[], size_t count, vertex_type_mapping_mode_t vertex_mapping, md_allocator_i* vm_arena) {
-    ASSERT(sys);
-    ASSERT(indices);
-    ASSERT(vm_arena);
-
-    // This is just an upper estimate of the number of edges that could potentially exist
-    const size_t edge_data_cap = (count * 4);
-    size_t edge_data_len = 0;
-
-    graph_t graph = {
-        .vertex_count = count,
-        .vertex_type  = md_vm_arena_push     (vm_arena, sizeof(uint8_t)  * count),
-        .edge_offset  = md_vm_arena_push_zero(vm_arena, sizeof(uint32_t) * (count + 1)),
-        .edge_data    = md_vm_arena_push     (vm_arena, sizeof(uint32_t) * edge_data_cap),
-        .atom_idx_map = md_vm_arena_push     (vm_arena, sizeof(uint32_t) * count),
-        .bond_idx_map = md_vm_arena_push     (vm_arena, sizeof(uint32_t) * edge_data_cap),
-    };
-
-    md_temp_scope_t temp = md_temp_begin_avoid(vm_arena);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
-    // Map from global indices (which the connectivity info is given in) to local (graph) indices
-    md_hashmap32_t global_to_local = { .allocator = temp_alloc };
-    md_hashmap_reserve(&global_to_local, count);
-
-    for (int i = 0; i < (int)count; ++i) {
-        int idx = indices[i];
-        md_hashmap_add(&global_to_local, (uint64_t)idx, i);
-        graph.vertex_type[i] = vertex_type_from_atom_idx(&sys->atom, idx, vertex_mapping);
-        graph.atom_idx_map[i] = idx;
-    }
-
-    // Only store edges which point to vertices within the graph as this will be used later as a traversal template
-    for (size_t i = 0; i < count; ++i) {
-        int idx = indices[i];
-        // Translate the global atom indices to local structure indices
-        uint64_t edge_data_arr[8];
-        uint32_t length = 0;
-
-        md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
-        while (md_bond_iter_has_next(&it)) {
-            uint32_t bond_idx = md_bond_iter_bond_index(&it);
-            uint32_t atom_idx = md_bond_iter_atom_index(&it);
-            // Only the chemical byte: the edge packs it into bits 24-31, directly below the bond index, and
-            // the origin bits (inferred, user, topology) would land in the index and say nothing about the match.
-            uint32_t flags    = md_bond_iter_bond_flags(&it) & 0xFF;
-            uint32_t* local_idx = md_hashmap_get(&global_to_local, atom_idx);
-            if (local_idx) {
-                // Only commit the edge if it is referring to a local index within the graph
-                edge_data_arr[length++] = ((uint64_t)bond_idx << 32) | ((uint64_t)flags << 24) | (uint32_t)(*local_idx);
-            }
-            md_bond_iter_next(&it);
-        }
-
-        if (length > 0) {
-            // Sort on indices
-            sort_arr_masked64(edge_data_arr, length, 0x00FFFFFF);
-
-            // Note that this is not the true offset yet, only the number of local edges
-            graph.edge_offset[i] = length;
-            ASSERT(edge_data_len + length < edge_data_cap);
-            for (uint32_t j = 0; j < length; ++j) {
-                uint32_t edge_data = (uint32_t)(edge_data_arr[j]);
-                uint32_t bond_idx  = (uint32_t)(edge_data_arr[j] >> 32);
-                graph.edge_data   [edge_data_len] = edge_data;
-                graph.bond_idx_map[edge_data_len] = bond_idx;
-                edge_data_len += 1;
-            }
-        }
-    }
-
-    // Perform exclusive scan to convert local edge count to global edge offsets
-    uint32_t offset = 0;
-    for (size_t i = 0; i < count + 1; ++i) {
-        uint32_t len = graph.edge_offset[i];
-        graph.edge_offset[i] = offset;
-        offset += len;
-    }
-
-    md_temp_end(temp);
-    return graph;
-}
-
-typedef bool (*solution_callback)(const int map[], size_t length, void* user);
-
-typedef struct state_t {
-    bool abort;
-    uint16_t flags;
-
-    solution_callback callback;
-    void* user_data;
-
-    md_array(int) map;
-
-    const graph_t* n_graph;
-    const graph_t* h_graph;
-
-    md_array(int) n_path;
-    md_array(int) h_path;
-
-    // Terminal sets
-    md_array(uint64_t) n_path_bits;
-    md_array(uint64_t) h_path_bits;
-    md_array(uint32_t) n_depths;
-    md_array(uint32_t) h_depths;
-} state_t;
-
-static void state_reset(state_t* state) {
-    state->abort = false;
-    md_array_shrink(state->n_path, 0);
-    md_array_shrink(state->h_path, 0);
-    MEMSET(state->map, -1, md_array_bytes(state->map));
-    bitfield_clear_all(state->n_path_bits, state->n_graph->vertex_count);
-    bitfield_clear_all(state->h_path_bits, state->h_graph->vertex_count);
-    MEMSET(state->n_depths, 0, md_array_bytes(state->n_depths));
-    MEMSET(state->h_depths, 0, md_array_bytes(state->h_depths));
-}
-
-static void state_init(state_t* state, const graph_t* n_graph, const graph_t* h_graph, md_allocator_i* alloc) {
-    state->n_graph = n_graph;
-    state->h_graph = h_graph;
-    state->map = md_array_create(int, n_graph->vertex_count, alloc);
-    state->n_path_bits = make_bitfield(n_graph->vertex_count, alloc);
-    state->h_path_bits = make_bitfield(h_graph->vertex_count, alloc);
-    state->n_depths = md_array_create(uint32_t, n_graph->vertex_count, alloc);
-    state->h_depths = md_array_create(uint32_t, h_graph->vertex_count, alloc);
-    md_array_ensure(state->n_path, n_graph->vertex_count, alloc);
-    md_array_ensure(state->h_path, h_graph->vertex_count, alloc);
-
-    state_reset(state);
-}
-
-static void state_free(state_t* state, md_allocator_i* alloc) {
-    md_array_free(state->map, alloc);
-    md_array_free(state->n_path, alloc);
-    md_array_free(state->h_path, alloc);
-    md_array_free(state->n_path_bits, alloc);
-    md_array_free(state->h_path_bits, alloc);
-    md_array_free(state->n_depths, alloc);
-    md_array_free(state->h_depths, alloc);
 }
 
 static inline bool find_str_in_str_arr(size_t* out_loc, str_t str, const str_t str_arr[], size_t arr_len) {
@@ -2870,6 +2554,9 @@ static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_ca
     return out_len;
 }
 
+// Functional group and bond order perception, disabled. It was written against the graph matcher which md_match.c
+// replaced, and md_chem.c does its job now. Kept for reference.
+#if 0
 static size_t find_isomorphisms(md_index_data_t*, const graph_t* ,const graph_t* ,md_util_match_mode_t ,int , md_allocator_i*);
 static void find_isomorphisms_callback(const graph_t*, const graph_t*, int, state_t*);
 
@@ -3137,7 +2824,6 @@ static int graph_depth(const graph_t* graph, int start_idx, md_allocator_i* temp
     return max_depth;
 }
 
-#if 0
 static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data_t* atom, const md_index_data_t* rings) {
     if (!bond || bond->count == 0 || !atom || atom->count == 0) {
         return false;
@@ -3808,6 +3494,43 @@ static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const vec3
     }
 }
 
+// The most covalent bonds an atom of the element takes, 0 for no limit. Generous: the limit is there to catch
+// atoms that clash (a hydrogen within bonding distance of two atoms), not to judge chemistry.
+static inline int max_covalent_bonds(md_atomic_number_t z) {
+    switch (z) {
+    case H: case F:                     return 1;
+    case O:                             return 3;   // Oxonium, within one molecule (see below)
+    case B: case C: case N: case Si:    return 4;
+    case Cl: case Br: case I:           return 4;   // Perchlorate and its kind
+    case P: case S: case Se: case As:   return 6;
+    default:                            return 0;
+    }
+}
+
+// The most coordination bonds a metal takes
+static inline int max_coordination(md_atomic_number_t z) {
+    if (z == Be || z == Mg || z == Al || z == Zn || z == Ga) return 6;
+    if ((z >= 57 && z <= 71) || (z >= 89 && z <= 103)) return 9;   // Lanthanides, actinides
+    return 8;   // Seven coordinate Ru, eight coordinate Ca, ...
+}
+
+// A bond in excess of what its atoms can take. Removed in order: bonds between components (residues, molecules)
+// before bonds within one, and within each the bonds whose length is furthest from the sum of the radii (a clash
+// as much as a stretch).
+typedef struct bond_excess_t {
+    uint32_t inter;
+    float    deviation;
+    uint32_t idx;
+} bond_excess_t;
+
+static int compare_bond_excess(const void* a, const void* b) {
+    const bond_excess_t* x = (const bond_excess_t*)a;
+    const bond_excess_t* y = (const bond_excess_t*)b;
+    if (x->inter != y->inter) return x->inter > y->inter ? -1 : 1;
+    if (x->deviation != y->deviation) return x->deviation > y->deviation ? -1 : 1;
+    return (x->idx > y->idx) - (x->idx < y->idx);
+}
+
 void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(state);
@@ -3817,13 +3540,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
-    // Inference only replaces what inference produced. Every bond without MD_BOND_FLAG_INFERRED (user defined,
-    // topology, or read from the file) is kept, wherever it sits in the arrays, and put back afterwards.
+    // Inference only replaces what inference produced. Every bond of another origin (user defined, topology, or read
+    // from the file) is kept, wherever it sits in the arrays, and put back afterwards.
     md_array(md_atom_pair_t)  bond_pairs = 0;
     md_array(md_bond_flags_t) bond_flags = 0;
+    const md_bond_flags_t inferred = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED);
 
     for (size_t i = 0; i < bond->count; ++i) {
-        if (!(bond->flags[i] & MD_BOND_FLAG_INFERRED)) {
+        if (md_bond_origin(bond->flags[i]) != MD_BOND_ORIGIN_INFERRED) {
             md_array_push(bond_pairs, bond->pairs[i], temp_arena);
             md_array_push(bond_flags, bond->flags[i], temp_arena);
         }
@@ -3891,16 +3615,17 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 candidates[i].atom_j,
             };
             md_array_push_no_grow(bond->pairs, pair);
-            md_array_push_no_grow(bond->flags, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_INFERRED);
+            md_array_push_no_grow(bond->flags, inferred);
             bond->count += 1;
         }
 	} else {
-        // Covalent radius sum factors
-        static const float k_min   = 0.65f;
-        static const float k_cov   = 1.15f;
-        //static const float k_tight = 1.05f;
-        static const float k_coord = 1.30f;
-        static const float k_metal = 0.90f;
+        // Factors on the sum of the covalent radii (Cordero et al. 2008, which covers metal-ligand distances too)
+        static const float k_min   = 0.65f;     // Shorter than this is a clash, not a bond
+        static const float k_cov   = 1.15f;     // Covalent bond between non-metals
+        static const float k_coord = 1.30f;     // Upper end of the candidate search
+        static const float k_ligand = 1.25f;    // Metal to a donor (N, O, S, P, halogen): 1.0-1.1 in well resolved structures
+        static const float k_carbon = 1.15f;    // Transition metal to carbon (carbenes, carbonyls, cyclopentadienyl)
+        static const float k_metal = 1.00f;     // Metal-metal
 
         double max_atom_rad = 0.0;
 
@@ -3908,7 +3633,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         md_atomic_number_t* atomic_nr = md_temp_alloc_array(temp_scope, md_atomic_number_t, num_atoms);
         for (size_t i = 0; i < num_atoms; ++i) {
             atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
-            atom_radius[i] = is_metal(atomic_nr[i]) ? element_ionic_radius(atomic_nr[i]) : element_covalent_radius(atomic_nr[i]);
+            // The covalent radius for metals too: the ionic radius of the metal plus the covalent radius of the
+            // ligand mixes two scales and comes out 0.4-0.6 Å short of real metal-ligand distances.
+            atom_radius[i] = element_covalent_radius(atomic_nr[i]);
             max_atom_rad = MAX(max_atom_rad, atom_radius[i]);
         }
 
@@ -3960,8 +3687,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 .alloc      = temp_arena,
             };
 
-            // Candidates within reach of the largest covalent radius of the set
-            const double cutoff = MAX(6.0, 2.0 * max_atom_rad * k_coord);
+            // Candidates within reach of the largest covalent radius of the set: about 2.7 Å for organic matter
+            const double cutoff = MAX(1.0, 2.0 * max_atom_rad * k_coord);
 
             // Build candidate list
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
@@ -4004,25 +3731,29 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 }
                 const float d_cov = factor * sum_r;
                 if (d < d_cov) {
-                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_INFERRED, temp_arena);
+                    md_bond_insert(&temp_bond, ai, aj, inferred, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
                 }
             } else if (mi ^ mj) { // XOR here (either is metal, but not both)
-                const float d_coord = k_coord * sum_r;
-                int non_metal_e = mi ? ej : ei;
-                bool is_water = (comp_flags_i & MD_FLAG_WATER) || (comp_flags_j & MD_FLAG_WATER);
-                if (is_metal_donor(non_metal_e) && !is_water && d < d_coord) {
-                    md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_INFERRED, temp_arena);
+                const int metal_e = mi ? ei : ej;
+                const int non_metal_e = mi ? ej : ei;
+                const bool is_water = (comp_flags_i & MD_FLAG_WATER) || (comp_flags_j & MD_FLAG_WATER);
+                // Alkali ions are free ions in solution: a coordination frozen from the reference frame would be
+                // wrong in every other. Water around metals is left out for the same reason.
+                if (is_alkali(metal_e) || is_water) continue;
+                float factor = 0.0f;
+                if (is_metal_donor(non_metal_e))                             factor = k_ligand;
+                else if (non_metal_e == C && is_transition_metal(metal_e))  factor = k_carbon;
+                if (factor > 0.0f && d < factor * sum_r) {
+                    md_bond_insert(&temp_bond, ai, aj, inferred | MD_BOND_FLAG_COORDINATE, temp_arena);
                     md_array_push(temp_bond_dist, d, temp_arena);
-                    // Potentially strong / partially covalent if d < ~1.2
-                    // Coordination bond (@TODO validate by geometrical matching)
                 }
             } else {
                 // metal-metal
                 const float d_met = k_metal * sum_r;
                 if (is_transition_metal(ei) && is_transition_metal(ej)) {
                     if (d < d_met) {
-                        md_bond_insert(&temp_bond, ai, aj, MD_BOND_FLAG_METAL | MD_BOND_FLAG_INFERRED, temp_arena);
+                        md_bond_insert(&temp_bond, ai, aj, inferred, temp_arena);
                         md_array_push(temp_bond_dist, d, temp_arena);
                     }
 				}
@@ -4036,6 +3767,80 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         // ### PRUNE ###
         // Build temporary connectivity data for pruning
         md_bond_build_connectivity(&temp_bond, sys->atom.count, temp_arena);
+
+        // Atoms with more bonds than they can take: atoms that clash (overlapping molecules in a packed starting
+        // structure, unresolved alternate conformations), most often a hydrogen within reach of two atoms. Bonds go
+        // in the order of compare_bond_excess until every atom is within its limit. Covalent bonds and coordination
+        // bonds are limited separately.
+        {
+            const size_t num_temp = temp_bond.count;
+            int* num_cov   = md_temp_alloc_zero_array(temp_scope, int, num_atoms);
+            int* num_coord = md_temp_alloc_zero_array(temp_scope, int, num_atoms);
+            int* max_cov   = md_temp_alloc_zero_array(temp_scope, int, num_atoms);
+            for (size_t b = 0; b < num_temp; ++b) {
+                const int x = temp_bond.pairs[b].idx[0];
+                const int y = temp_bond.pairs[b].idx[1];
+                int* n = (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) ? num_coord : num_cov;
+                n[x] += 1;
+                n[y] += 1;
+                // A third bond on an oxygen only within its own molecule (oxonium); one reaching into another
+                // molecule is a clash
+                if (!(temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) && comp_id[x] != comp_id[y]) {
+                    if (atomic_nr[x] == O) max_cov[x] = 2;
+                    if (atomic_nr[y] == O) max_cov[y] = 2;
+                }
+            }
+            for (size_t i = 0; i < num_atoms; ++i) {
+                if (!max_cov[i]) max_cov[i] = max_covalent_bonds(atomic_nr[i]);
+            }
+
+            md_array(bond_excess_t) over = 0;
+            for (size_t b = 0; b < num_temp; ++b) {
+                const int x = temp_bond.pairs[b].idx[0];
+                const int y = temp_bond.pairs[b].idx[1];
+                bool exceeds = false;
+                if (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) {
+                    const int metal = is_metal(atomic_nr[x]) ? x : y;
+                    exceeds = num_coord[metal] > max_coordination(atomic_nr[metal]);
+                } else {
+                    const int mx = max_cov[x];
+                    const int my = max_cov[y];
+                    exceeds = (mx && num_cov[x] > mx) || (my && num_cov[y] > my);
+                }
+                if (exceeds) {
+                    const float sum_r = atom_radius[x] + atom_radius[y];
+                    bond_excess_t e = {
+                        .inter = comp_id[x] != comp_id[y],
+                        .deviation = sum_r > 0 ? fabsf(temp_bond_dist[b] / sum_r - 1.0f) : 0.0f,
+                        .idx = (uint32_t)b,
+                    };
+                    md_array_push(over, e, temp_arena);
+                }
+            }
+
+            const size_t num_over = md_array_size(over);
+            if (num_over) {
+                qsort(over, num_over, sizeof(bond_excess_t), compare_bond_excess);
+                for (size_t k = 0; k < num_over; ++k) {
+                    const uint32_t b = over[k].idx;
+                    const int x = temp_bond.pairs[b].idx[0];
+                    const int y = temp_bond.pairs[b].idx[1];
+                    if (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) {
+                        const int metal = is_metal(atomic_nr[x]) ? x : y;
+                        if (num_coord[metal] <= max_coordination(atomic_nr[metal])) continue;
+                        num_coord[x] -= 1;
+                        num_coord[y] -= 1;
+                    } else {
+                        const int mx = max_cov[x];
+                        const int my = max_cov[y];
+                        if (!((mx && num_cov[x] > mx) || (my && num_cov[y] > my))) continue;
+                        num_cov[x] -= 1;
+                        num_cov[y] -= 1;
+                    }
+                    bitfield_clear_bit(temp_bond_valid, b);
+                }
+            }
+        }
 
 # if 0
         // @NOTE(Robin): If this is to be re-enabled, it needs to be verified as it did not produce exactly the expected results
@@ -4110,7 +3915,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 md_atom_pair_t pair = bond_pairs[i];
                 if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
                 saved_sorted[i] = pair;
-                if (bond_flags[i] & MD_BOND_FLAG_TOPOLOGY) {
+                if (md_bond_origin(bond_flags[i]) == MD_BOND_ORIGIN_TOPOLOGY) {
                     for (int k = 0; k < 2; ++k) {
                         if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
                     }
@@ -4149,10 +3954,39 @@ done:
 }
 
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
-    // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate.
-    md_bond_data_clear(&sys->bond);
+    // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
+    // added by hand, which md_util_infer_covalent_bonds keeps and reconciles with the inferred ones.
+    size_t num_user = 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) {
+            sys->bond.pairs[num_user] = sys->bond.pairs[i];
+            sys->bond.flags[num_user] = sys->bond.flags[i];
+            num_user += 1;
+        }
+    }
+    md_bond_conn_clear(&sys->bond.conn);
+    sys->bond.count = num_user;
+    md_array_shrink(sys->bond.pairs, num_user);
+    md_array_shrink(sys->bond.flags, num_user);
     md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
     md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
+}
+
+size_t md_util_system_infer_coordination(md_system_t* sys) {
+    ASSERT(sys);
+    size_t count = 0;
+    if (!sys->bond.flags) return 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        const md_atom_pair_t p = sys->bond.pairs[i];
+        if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= sys->atom.count || (size_t)p.idx[1] >= sys->atom.count) continue;
+        const bool metal_a = is_metal(md_atom_atomic_number(&sys->atom, p.idx[0]));
+        const bool metal_b = is_metal(md_atom_atomic_number(&sys->atom, p.idx[1]));
+        if (metal_a != metal_b && !(sys->bond.flags[i] & MD_BOND_FLAG_COORDINATE)) {
+            sys->bond.flags[i] |= MD_BOND_FLAG_COORDINATE;
+            count += 1;
+        }
+    }
+    return count;
 }
 
 #define MIN_RES_LEN 4
@@ -9869,6 +9703,10 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         md_util_system_infer_covalent_bonds(sys, state);
     }
 
+    // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
+    // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
+    md_util_system_infer_coordination(sys);
+
     if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
         // Coarse grained systems get a hierarchy even without bonds, see synthesize_hierarchy_links
         if (sys->bond.count || cg) {
@@ -9877,11 +9715,13 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         }
     }
     
-#if 0
-    if (flags & MD_UTIL_INFER_ORDER_BIT) {
-        compute_covalent_bond_order(&sys->bond, &sys->atom, &sys->ring);
+    if (flags & MD_UTIL_INFER_CHEMISTRY_BIT) {
+        // After the rings, before the hydrogen bond roles which read the orders. Protonation at pH 7 applies to
+        // residues without hydrogens only.
+        if (sys->bond.count) {
+            md_chem_perceive(sys, state, MD_CHEM_FLAG_PROTONATE_PH7);
+        }
     }
-#endif
 
     if (flags & MD_UTIL_INFER_INSTANCE_BIT) {
         // NOT unconditional, unlike the other bits. A loader that had auth_asym_ids in scope
@@ -10241,934 +10081,6 @@ void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, s
     uint32_t* tmp_indices = md_temp_alloc_array(temp_scope, uint32_t, count);
     sort_radix_uint32(out_indices, in_keys, count, tmp_indices);
     md_temp_end(temp_scope);
-}
-
-#define DEBUG_PRINT 0
-
-static void backtrack(state_t* state) {
-    uint32_t depth = (uint32_t)md_array_size(state->n_path);
-
-    if (md_array_size(state->n_path)) {
-        int n_idx = md_array_back(state->n_path);
-        md_array_pop(state->n_path);
-        state->map[n_idx] = -1;
-        bitfield_clear_bit(state->n_path_bits, n_idx);
-    }
-    if (md_array_size(state->h_path)) {
-        int h_idx = md_array_back(state->h_path);
-        md_array_pop(state->h_path);
-        bitfield_clear_bit(state->h_path_bits, h_idx);
-    }
-
-    for (size_t i = 0; i < md_array_size(state->n_depths); ++i) {
-        //state->n_depths[i] = (state->n_depths[i] == depth) ? 0 : state->n_depths[i];
-        if (state->n_depths[i] == depth) {
-            state->n_depths[i] = 0;
-        }
-    }
-    for (size_t i = 0; i < md_array_size(state->h_depths); ++i) {
-        //state->h_depths[i] = (state->h_depths[i] == depth) ? 0 : state->h_depths[i];
-        if (state->h_depths[i] == depth) {
-            state->h_depths[i] = 0;
-        }
-    }
-}
-
-static inline bool is_in_terminal_set(const uint32_t depths[], const uint64_t path_bits[], int64_t i) {
-    return !bitfield_test_bit(path_bits, i) && depths[i];
-    //if (bitfield_test_bit(path_bits, i)) return false;
-    //if (!depths[i]) return false;
-    //return true;
-}
-
-static inline bool check_bonds(state_t* state, int n_idx) {
-    graph_edge_iter_t it = graph_edge_iter(state->n_graph, n_idx);
-    int h_idx = state->map[n_idx];
-    while (graph_edge_iter_has_next(it)) {
-        int other_n_idx = graph_edge_iter_vidx(it);
-        int other_h_idx = state->map[other_n_idx];
-
-        if (other_h_idx != -1) {
-            int type = graph_edge_iter_type(it);
-            if (type == 0) {
-                if (!graph_vertex_is_connected_to(state->h_graph, h_idx, other_h_idx)) {
-                    return false;
-                }
-            } else {
-                if (!graph_vertex_has_connection(state->h_graph, h_idx, other_h_idx, type)) {
-                    return false;
-                }
-            }
-        }
-
-        graph_edge_iter_next(&it);
-    }
-    return true;
-}
-
-// Check for solution
-static inline bool check_map(state_t* state) {
-    if (md_array_size(state->n_path) == state->n_graph->vertex_count) {
-        return state->callback(state->map, md_array_size(state->map), state->user_data);
-    }
-    return false;
-}
-
-static inline bool test_edge_constraints(state_t* state, int n_idx, int h_idx) {
-    if (state->flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT && graph_vertex_type(state->n_graph, n_idx) > 0) {
-        size_t cn = graph_vertex_edge_count(state->n_graph, n_idx);
-        size_t ch = graph_vertex_edge_count(state->h_graph, h_idx);
-        if (cn != ch) return false;
-    }
-
-    graph_edge_iter_t it = graph_edge_iter(state->n_graph, n_idx);
-    while (graph_edge_iter_has_next(it)) {
-        int other_n_idx = graph_edge_iter_vidx(it);
-        int other_h_idx = state->map[other_n_idx];
-
-        if (other_h_idx != -1) {
-            int edge_type = graph_edge_iter_type(it);
-            if (!(state->flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_TYPE)) {
-                edge_type = 0;
-            }
-            if (edge_type == 0) {
-                if (!graph_vertex_is_connected_to(state->h_graph, h_idx, other_h_idx)) {
-                    return false;
-                }
-            } else {
-                if (!graph_vertex_has_connection(state->h_graph, h_idx, other_h_idx, edge_type)) {
-                    return false;
-                }
-            }
-        }
-
-        graph_edge_iter_next(&it);
-    }
-    return true;
-}
-
-static bool match_candidate(state_t* state, int n_idx, int h_idx) {
-    int vn = graph_vertex_type(state->n_graph, n_idx);
-    int vh = graph_vertex_type(state->h_graph, h_idx);
-    if (vn && vh && vn != vh) {
-        return false;
-    }
-
-    state->map[n_idx] = h_idx;
-
-    if (!test_edge_constraints(state, n_idx, h_idx)) {
-        state->map[n_idx] = -1;
-        return false;
-    }
-
-    md_array_push_no_grow(state->n_path, n_idx);
-    md_array_push_no_grow(state->h_path, h_idx);
-
-    bitfield_set_bit(state->n_path_bits, n_idx);
-    bitfield_set_bit(state->h_path_bits, h_idx);
-
-    // Update n_depths
-    {
-        const uint32_t d = (uint32_t)md_array_size(state->n_path);
-        state->n_depths[n_idx] = state->n_depths[n_idx] == 0 ? d : state->n_depths[n_idx];
-
-        graph_edge_iter_t it = graph_edge_iter(state->n_graph, n_idx);
-        while (graph_edge_iter_has_next(it)) {
-            int vidx = graph_edge_iter_vidx(it);
-            state->n_depths[vidx] = state->n_depths[vidx] == 0 ? d : state->n_depths[vidx];
-            graph_edge_iter_next(&it);
-        }
-    }
-
-    // Update h_depths
-    {
-        const uint32_t d = (uint32_t)md_array_size(state->h_path);
-        graph_edge_iter_t it = graph_edge_iter(state->h_graph, h_idx);
-        while (graph_edge_iter_has_next(it)) {
-            int vidx = graph_edge_iter_vidx(it);
-            if (!state->h_depths[vidx]) {
-                state->h_depths[vidx] = d;
-            }
-            graph_edge_iter_next(&it);
-        }
-    }
-
-    //if (!check_bonds(state, n_idx)) {
-    //    backtrack(state);
-    //	return false;
-    //}
-
-    // VF2 Feasability check
-    const size_t N1 = state->n_graph->vertex_count;
-    const size_t N2 = state->h_graph->vertex_count;
-
-    size_t T1 = 0;
-    for (size_t i = 0; i < N1; ++i) {
-        if (is_in_terminal_set(state->n_depths, state->n_path_bits, i)) {
-            ++T1;
-        }
-    }
-
-    size_t T2 = 0;
-    for (size_t i = 0; i < N2; ++i) {
-        if (is_in_terminal_set(state->h_depths, state->h_path_bits, i)) {
-            ++T2;
-        }
-    }
-
-    const size_t M1 = md_array_size(state->n_path);
-    const size_t M2 = md_array_size(state->h_path);
-
-    if (T1 > T2 || (N1 - M1 - T1) > (N2 - M2 - T2)) {
-        backtrack(state);
-        return false;
-    }
-
-    state->abort = check_map(state);
-    return true;
-}
-
-static inline int terminal_size(const uint32_t depths[], size_t len) {
-    int count = 0;
-    for (size_t i = 0; i < len; ++i) {
-        count += depths[i] ? 1 : 0;
-    }
-    return count;
-}
-
-static bool next_candidate(const state_t* state, int* n_idx, int* h_idx) {
-    int last_n_idx = *n_idx == -1 ? 0 : *n_idx;
-    int last_h_idx = *h_idx == -1 ? 0 : *h_idx + 1;
-
-    int n_size = (int)state->n_graph->vertex_count;
-    int h_size = (int)state->h_graph->vertex_count;
-
-    int n_term_size = terminal_size(state->n_depths, md_array_size(state->n_depths));
-    int h_term_size = terminal_size(state->h_depths, md_array_size(state->h_depths));
-
-    int map_size = (int)md_array_size(state->n_path);
-
-    if (n_term_size > map_size && h_term_size > map_size) {
-        ASSERT(state->n_depths);
-        while (last_n_idx < n_size && (bitfield_test_bit(state->n_path_bits, last_n_idx) || !state->n_depths[last_n_idx])) {
-            ++last_n_idx;
-            last_h_idx = 0;
-        }
-    } else {
-        while (last_n_idx < n_size && bitfield_test_bit(state->n_path_bits, last_n_idx)) {
-            ++last_n_idx;
-            last_h_idx = 0;
-        }
-    }
-
-    if (n_term_size > map_size && h_term_size > map_size) {
-        ASSERT(state->h_depths);
-        while (last_h_idx < h_size && (bitfield_test_bit(state->h_path_bits, last_h_idx) || !state->h_depths[last_h_idx])) {
-            last_h_idx++;
-        }
-    } else {
-        while (last_h_idx < h_size && bitfield_test_bit(state->h_path_bits, last_h_idx)) {
-            last_h_idx++;
-        }
-    }
-
-    if (last_n_idx < n_size && last_h_idx < h_size) {
-        *n_idx = last_n_idx;
-        *h_idx = last_h_idx;
-        return true;
-    }
-
-    return false;
-}
-
-static void map_next(state_t* state) {
-    // @TODO: Timeout check?
-
-    if (state->abort) {
-        return;
-    }
-
-    int n_idx = -1;
-    int h_idx = -1;
-    while (!state->abort) {
-        if (!next_candidate(state, &n_idx, &h_idx)) {
-            return;
-        }
-
-#if DEBUG_PRINT
-        const int depth = (int)md_array_size(state->n_path);
-        printf("%*s [%d, %d]\n", depth, "", n_idx, h_idx);
-#endif
-
-        if (match_candidate(state, n_idx, h_idx)) {
-            map_next(state);
-            backtrack(state);
-        }
-    }
-}
-
-typedef struct {
-    uint32_t value;
-    uint32_t index;
-} result_value_t;
-
-typedef struct MD_HASHMAP_T(result_value_t) result_map_t;
-
-typedef struct store_data_t {
-    size_t* count;
-    md_index_data_t* result;
-    md_allocator_i*  alloc;
-    // Only for unique
-    result_map_t map;
-} store_data_t;
-
-static bool store_unique_callback(const int map[], size_t length, void* user) {
-    store_data_t* data = (store_data_t*)user;
-
-    uint64_t key = 0;
-    uint32_t fit = 0;
-    for (size_t i = 0; i < length; ++i) {
-        key += map[i];
-        // The fit value is just a arbitrary metric that tells us how good of a 'fit' this mapping is
-        // It is the sum of the difference in index, this means a value of zero would correspond to an identical fit in terms of indices
-        fit += (uint32_t)map[i] * (uint32_t)i;
-    }
-    result_value_t* entry = md_hashmap_get(&data->map, key);
-    if (entry) {
-        if (entry->value < fit) {
-            // Update result if the new value is lower (more strictly sorted)
-            entry->value = fit;
-            int* ptr = md_index_range_ptr(data->result, entry->index);
-            MEMCPY(ptr, map, sizeof(int) * length);
-        }
-    } else {
-        // Store new entry if unique solution
-        uint32_t result_idx = (uint32_t)md_index_data_push_arr(data->result, map, length);
-        *data->count += 1;
-        result_value_t val = {fit, result_idx};
-        md_hashmap_add(&data->map, key, val);
-    }
-
-#if DEBUG_PRINT
-    const int depth = (int)length;
-    printf("%*sSolution found!\n", depth, "");
-#endif
-
-    return false;
-}
-
-static bool store_first_callback(const int map[], size_t length, void* user) {
-    store_data_t* data = (store_data_t*)user;
-
-    md_index_data_push_arr(data->result, map, length);
-    *data->count += 1;
-#if DEBUG_PRINT
-    const int depth = (int)length;
-    printf("%*sSolution found!\n", depth, "");
-#endif
-
-    return true;
-}
-
-static bool store_all_callback(const int map[], size_t length, void* user) {
-    store_data_t* data = (store_data_t*)user;
-
-    md_index_data_push_arr(data->result, map, length);
-    *data->count += 1;
-#if DEBUG_PRINT
-    const int depth = (int)length;
-    printf("%*sSolution found!\n", depth, "");
-#endif
-
-    return false;
-}
-
-static bool count_first_callback(const int map[], size_t length, void* user) {
-    (void)map;
-    (void)length;
-    size_t* count = (size_t*)user;
-    *count += 1;
-    return true;
-}
-
-static bool count_all_callback(const int map[], size_t length, void* user) {
-    (void)map;
-    (void)length;
-    size_t* count = (size_t*)user;
-    *count += 1;
-    return false;
-}
-
-// Attempt to find subgraphs in a larger graph (haystack) which match a reference graph (needle)
-// Returns an array of graphs which match the topologically match the reference
-// start_type is a hint of the most unusual type in the graphs and serve as good starting points
-static void find_isomorphisms_callback(const graph_t* needle, const graph_t* haystack, int start_type, state_t* state) {
-    ASSERT(needle);
-    ASSERT(haystack);
-    ASSERT(state);
-
-    // Impossible case
-    if (needle->vertex_count > haystack->vertex_count) {
-        return;
-    }
-
-    // Check for equivalence, if we have a 1:1 mapping
-    if (needle->vertex_count == haystack->vertex_count) {
-        if (graph_equivalent(needle, haystack)) {
-            size_t length = haystack->vertex_count;
-            for (int i = 0; i < (int)length; ++i) {
-                state->map[i] = i;
-            }
-            if (state->callback(state->map, length, state->user_data)) {
-                return;
-            }
-        }
-    }
-
-    // The problematic case (subgraph isomorphism)
-
-    // Create list of starting candidate pairs
-    for (int h_idx = 0; h_idx < (int)haystack->vertex_count; ++h_idx) {
-        if (graph_vertex_type(haystack, h_idx) != start_type) continue;
-        for (int n_idx = 0; n_idx < (int)needle->vertex_count; ++n_idx) {
-            if (graph_vertex_type(needle, n_idx) != start_type) continue;
-            // Set initial state
-            if (match_candidate(state, n_idx, h_idx)) {
-                map_next(state);
-            }
-
-            if (state->abort) {
-                return;
-            }
-
-            // Reset state
-            state_reset(state);
-        }
-    }
-}
-
-// Attempt to find subgraphs in a larger graph (haystack) which match a reference graph (needle)
-// Returns an array of graphs which match the topologically match the reference
-// start_type is a hint of the most unusual type in the graphs and serve as good starting points
-static size_t find_isomorphisms(md_index_data_t* mappings, const graph_t* needle, const graph_t* haystack, md_util_match_mode_t mode, int start_type, md_allocator_i* alloc) {
-    
-    // Impossible case
-    if (needle->vertex_count > haystack->vertex_count) {
-        return 0;
-    }
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-
-    size_t count = 0;
-
-    // Check for equivalence (graph isomorphism)
-    if (mode == MD_UTIL_MATCH_MODE_FIRST &&
-        needle->vertex_count == haystack->vertex_count) {
-        if (graph_equivalent(needle, haystack)) {
-            // This should be a 1:1 mapping
-            if (mappings) {
-                size_t length = haystack->vertex_count;
-                int* indices = md_temp_alloc_array(temp, int, length);
-                for (int i = 0; i < (int)length; ++i) {
-                    indices[i] = i;
-                }
-                md_index_data_push_arr(mappings, indices, length);
-            }
-            count = 1;
-            goto done;
-        }
-    }
-
-    // The problematic case (subgraph isomorphism)
-    typedef struct {
-        int n_idx;
-        int h_idx;
-    } pair_t;
-
-    // Create list of starting candidate pairs
-    md_array(pair_t) start_candidates = 0;
-    for (int i = 0; i < (int)needle->vertex_count; ++i) {
-        if (graph_vertex_type(needle, i) != start_type) continue;
-        for (int j = 0; j < (int)haystack->vertex_count; ++j) {
-            if (graph_vertex_type(haystack, j) != start_type) continue;
-            md_array_push(start_candidates, ((pair_t){i,j}), temp_arena);
-        }
-    }
-
-    if (start_candidates == 0) goto done;
-
-    state_t state = {0};
-    state_init(&state, needle, haystack, temp_arena);
-    store_data_t store_data = {
-        .count = &count,
-        .map = { .allocator = temp_arena },
-    };
-
-    if (!mappings) {
-        state.user_data = &count;
-        switch (mode) {
-        case MD_UTIL_MATCH_MODE_UNIQUE:
-            MD_LOG_ERROR("Cannot count unique occurrences without supplying mappings");
-            goto done;
-            break;
-        case MD_UTIL_MATCH_MODE_FIRST:
-            state.callback = count_first_callback;
-            break;
-        case MD_UTIL_MATCH_MODE_ALL:
-            state.callback = count_all_callback;
-            break;
-        default:
-            ASSERT(false);
-            break;
-        }
-    } else {
-        store_data.result = mappings;
-        store_data.alloc = alloc;
-        state.user_data = &store_data;
-
-        switch (mode) {
-        case MD_UTIL_MATCH_MODE_UNIQUE:
-            state.callback = store_unique_callback;
-            break;
-        case MD_UTIL_MATCH_MODE_FIRST:
-            state.callback = store_first_callback;
-            break;
-        case MD_UTIL_MATCH_MODE_ALL:
-            state.callback = store_all_callback;
-            break;
-        default:
-            ASSERT(false);
-            break;
-        }
-    }
-
-    const size_t num_candidates = md_array_size(start_candidates);
-    for (size_t i = 0; i < num_candidates; ++i) {
-        int n_idx = start_candidates[i].n_idx;
-        int h_idx = start_candidates[i].h_idx;
-
-#if DEBUG_PRINT
-        printf("STARTING ATTEMPT TO MATCH %d -> %d\n", n_idx, h_idx);
-#endif
-        // Reset state
-        state_reset(&state);
-
-        // Set initial state
-        if (match_candidate(&state, n_idx, h_idx)) {
-            map_next(&state);
-        }
-
-        if (mode == MD_UTIL_MATCH_MODE_FIRST && count > 0) {
-            goto done;
-        }
-    }
-    
-done:
-    md_temp_end(temp);
-    return count;
-}
-
-// Create a new reference structure which is pruned of certain atoms (Hydrogen) and loosely connected subcomponents
-// There are simply too many permutations to cover and the result will explode.
-static md_array(int) filter_structure_connectivity(const int* indices, size_t count, const md_index_data_t* connectivity, int min_val, md_allocator_i* alloc) {
-    md_array(int) filt = 0;
-    for (size_t i = 0; i < count; ++i) {
-        int idx = indices[i];
-        int order = (int)md_index_range_size(connectivity, idx);
-        if (order >= min_val) {
-            md_array_push(filt, idx, alloc);
-        }
-    }
-    return filt;
-}
-
-static md_array(int) filter_structure_type(const int* indices, int64_t count, const uint8_t* type, uint8_t type_to_remove, md_allocator_i* alloc) {
-    md_array(int) filt = 0;
-    for (int64_t i = 0; i < count; ++i) {
-        int idx = indices[i];
-        if (type[idx] != type_to_remove) {
-            md_array_push(filt, idx, alloc);
-        }
-    }
-    return filt;
-}
-
-static inline bool filter_atom(const md_system_t* sys, int atom_i, md_util_match_flags_t filter) {
-    md_atomic_number_t z_i = md_atom_atomic_number(&sys->atom, atom_i);
-    if (filter & MD_UTIL_MATCH_FLAGS_NO_H) {
-        return z_i != MD_Z_H;
-    } else if (filter & MD_UTIL_MATCH_FLAGS_NO_CH) {
-        if (z_i == MD_Z_H) {
-            uint32_t   conn_len = (uint32_t)md_bond_conn_count(&sys->bond, atom_i);
-            uint32_t   conn_i   = sys->bond.conn.offset[atom_i];
-            for (uint32_t i = 0; i < conn_len; ++i) {
-                int atom_j = md_bond_conn_atom_idx(&sys->bond, conn_i, i);
-                if (md_atom_atomic_number(&sys->atom, atom_j) == MD_Z_C) {
-                    return false;
-                }
-            }
-        }
-    }
-    return true;
-}
-
-typedef struct idx_range_t {
-    md_index_data_t* idx_data;
-    size_t idx_offset;
-} idx_range_t;
-
-static inline idx_range_t idx_range_create(md_index_data_t* idx_data) {
-    idx_range_t range = {idx_data, md_array_size(idx_data->indices)};
-    return range;
-}
-
-static inline void idx_range_commit(idx_range_t range) {
-    size_t cur_offset = md_array_size(range.idx_data->indices);
-
-    if (cur_offset != range.idx_offset) {
-        if (md_array_size(range.idx_data->offsets) == 0) {
-            md_array_push(range.idx_data->offsets, 0, range.idx_data->alloc);
-        }
-
-        // First insertion in this range, create a new offset pair corresponding to the new range
-        md_array_push(range.idx_data->offsets, (uint32_t)cur_offset, range.idx_data->alloc);
-    }
-}
-
-static void idx_range_push(idx_range_t range, int32_t idx) {
-    md_array_push(range.idx_data->indices, idx, range.idx_data->alloc);
-}
-
-static size_t extract_structures(md_index_data_t* out_structures, const md_system_t* sys, md_util_match_level_t level, md_util_match_flags_t filter, size_t min_size) {
-    ASSERT(out_structures);
-    size_t pre_offset = md_index_data_num_ranges(out_structures);
-
-    switch (level) {
-    case MD_UTIL_MATCH_LEVEL_STRUCTURE:
-        if (filter) {
-            for (size_t s_idx = 0; s_idx < md_structure_count(&sys->structure); ++s_idx) {
-                md_structure_t structure = {0};
-                md_structure_extract(&structure, &sys->structure, s_idx);
-                if (structure.count < min_size) {
-                    continue;
-                }
-                idx_range_t range = idx_range_create(out_structures);
-                const int* beg = structure.atom_idx;
-                const int* end = structure.atom_idx + structure.count;
-                for (const int* it = beg; it != end; ++it) {
-                    int i = *it;
-                    if (filter_atom(sys, i, filter)) {
-                        idx_range_push(range, i);
-                    }
-                }
-                idx_range_commit(range);
-            }
-        } else {
-            for (size_t s_idx = 0; s_idx < md_structure_count(&sys->structure); ++s_idx) {
-                md_structure_t structure = {0};
-                md_structure_extract(&structure, &sys->structure, s_idx);
-                if (structure.count < min_size) {
-                    continue;
-                }
-                md_index_data_push_arr(out_structures, structure.atom_idx, structure.count);
-            }
-        }
-        break;
-    case MD_UTIL_MATCH_LEVEL_COMPONENT:
-        for (size_t r_idx = 0; r_idx < sys->component.count; ++r_idx) {
-            if (md_component_atom_count(&sys->component, r_idx) < min_size) {
-                continue;
-            }
-            idx_range_t range = idx_range_create(out_structures);
-            md_urange_t comp_range = md_component_atom_range(&sys->component, r_idx);
-            for (int i = (int)comp_range.beg; i < (int)comp_range.end; ++i) {
-                if (filter_atom(sys, i, filter)) {
-                    idx_range_push(range, i);
-                }
-            }
-            idx_range_commit(range);
-        }
-        break;
-    case MD_UTIL_MATCH_LEVEL_INSTANCE:
-        for (size_t i_idx = 0; i_idx < sys->instance.count; ++i_idx) {
-            md_urange_t inst_range = md_system_instance_atom_range(sys, i_idx);
-            if (inst_range.end - inst_range.beg < min_size) {
-                continue;
-            }
-            idx_range_t range = idx_range_create(out_structures);
-            for (int i = (int)inst_range.beg; i < (int)inst_range.end; ++i) {
-                if (filter_atom(sys, i, filter)) {
-                    idx_range_push(range, i);
-                }
-            }
-            idx_range_commit(range);
-        }
-        break;
-    default:
-        ASSERT(false);
-    }
-
-    size_t post_offset = md_index_data_num_ranges(out_structures);
-
-    return post_offset - pre_offset;
-}
-
-#define MAX_TYPES 256
-md_index_data_t match_structure(const int* ref_idx, size_t ref_len, md_util_match_mode_t mode, md_util_match_level_t level, vertex_type_mapping_mode_t vertex_mapping, const md_system_t* sys, md_allocator_i* alloc) {
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-
-    graph_t ref_graph = {0};
-    md_index_data_t result = {.alloc = alloc};
-
-    size_t atom_count = md_system_atom_count(sys);
-    md_array(int) structure_idx = md_temp_alloc_array(temp_scope, int, atom_count);
-
-    for (size_t i = 0; i < md_structure_count(&sys->structure); ++i) {
-        md_structure_t structure = {0};
-        md_structure_extract(&structure, &sys->structure, i);
-        const int* beg = structure.atom_idx;
-        const int* end = structure.atom_idx + structure.count;
-        for (const int* it = beg; it != end; ++it) {
-            structure_idx[*it] = (int)i;
-        }
-    }
-
-    // Ensure that the reference indices all belong to the same structure and are not disjoint
-    int ref_structure_idx = structure_idx[ref_idx[0]];
-    for (size_t i = 1; i < ref_len; ++i) {
-        if (structure_idx[ref_idx[i]] != ref_structure_idx) {
-            MD_LOG_ERROR("Reference indices are not part of the same structure, they are disconnected");
-            goto done;
-        }
-    }
-
-    bool ref_hydro_present = false;
-    for (size_t i = 0; i < ref_len; ++i) {
-        int idx = ref_idx[i];
-        if (md_atom_atomic_number(&sys->atom, idx) == MD_Z_H) {
-            ref_hydro_present = true;
-            break;
-        }
-    }
-
-    const md_util_match_flags_t flags = ref_hydro_present ? 0 : MD_UTIL_MATCH_FLAGS_NO_H;
-
-    ref_graph = extract_graph(sys, ref_idx, ref_len, vertex_mapping, temp_arena);
-
-    int ref_type_count[MAX_TYPES] = {0};
-    for (size_t i = 0; i < ref_len; ++i) {
-        uint8_t type = (uint8_t)graph_vertex_type(&ref_graph, i);
-        ref_type_count[type]++;
-    }
-
-    md_index_data_t structures = { .alloc = temp_arena };
-    const size_t num_structures = extract_structures(&structures, sys, level, flags, ref_len);
-
-    int starting_type = -1;
-    int min_freq = INT_MAX;
-    for (int i = 0; i < MAX_TYPES; ++i) {
-        int freq = ref_type_count[i];
-        if (freq > 0 && freq < min_freq) {
-            min_freq = freq;
-            starting_type = i;
-        }
-    }
-
-    size_t result_count = 0;
-    store_data_t data = {
-        .alloc = alloc,
-        .result = &result,
-        .count = &result_count,
-        .map = {.allocator = temp_arena },
-    };
-
-
-    for (size_t i = 0; i < num_structures; ++i) {
-        md_temp_scope_t temp = md_temp_begin_in(temp_arena);
-
-        const int*   s_idx = md_index_range_beg(&structures, i);
-        const size_t s_len = md_index_range_size(&structures, i);
-
-        md_util_match_mode_t s_mode = mode;
-        if (s_len == ref_len && s_mode == MD_UTIL_MATCH_MODE_UNIQUE) {
-            s_mode = MD_UTIL_MATCH_MODE_FIRST;
-        }
-
-        solution_callback cb = 0;
-        switch (s_mode) {
-            case MD_UTIL_MATCH_MODE_UNIQUE:
-                cb = store_unique_callback;
-                break;
-            case MD_UTIL_MATCH_MODE_FIRST: 
-                cb = store_first_callback;
-                break;
-            case MD_UTIL_MATCH_MODE_ALL:
-                cb = store_all_callback;
-                break;
-            default:
-                ASSERT(false);
-        }
-        
-        int s_type_count[MAX_TYPES] = {0};
-        for (size_t j = 0; j < s_len; ++j) {
-            int idx = s_idx[j];
-            uint8_t type = vertex_type_from_atom_idx(&sys->atom, idx, vertex_mapping);
-            s_type_count[type]++;
-        }
-
-        // Sanity check
-        // The structure needs to have atleast the same amount of types as the reference
-        for (int j = 0; j < MAX_TYPES; ++j) {
-            if (ref_type_count[j] > s_type_count[j]) {
-                goto next;
-            }
-        }
-
-        graph_t graph = extract_graph(sys, s_idx, s_len, vertex_mapping, temp_arena);
-        size_t pre_count = md_index_data_num_ranges(&result);
-
-        state_t state = {0};
-        state_init(&state, &ref_graph, &graph, temp_arena);
-        state.callback = cb;
-        state.user_data = &data;
-
-        MEMSET(&data.map, 0, sizeof(result_map_t));
-        data.map.allocator = temp_arena;
-
-        find_isomorphisms_callback(&ref_graph, &graph, starting_type, &state);
-        size_t post_count = md_index_data_num_ranges(&result);
-
-        // Remap indices to global indices in result
-        for (size_t j = pre_count; j < post_count; ++j) {
-            int* beg = md_index_range_ptr(&result, j);
-            const int* end = md_index_range_end(&result, j);
-            for (int* it = beg; it != end; ++it) {
-                *it = s_idx[*it];
-            }
-        }
-    next:
-        md_temp_end(temp);
-    }
-
-done:
-    md_temp_end(temp_scope);
-    return result;
-}
-
-md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_MODE_ATOM_TYPE_IDX, sys, alloc);
-}
-
-md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_count, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc) {
-    return match_structure(ref_indices, ref_count, mode, level, VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER, sys, alloc);
-}
-
-size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_system_t* sys, md_allocator_i* alloc) {
-    ASSERT(sys);
-
-    if (idx_data && !idx_data->alloc) {
-        MD_LOG_ERROR("Incomplete idx_data structure supplied");
-        return 0;
-    }
-
-    if (!sys->atom.type_idx) {
-        MD_LOG_ERROR("Missing required atom type field");
-        return 0;
-    }
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    graph_t ref_graph = smiles_to_graph(smiles, flags, temp_alloc);
-
-    // Histogram of types present in reference structure
-    int ref_type_count[256] = {0};
-    for (size_t i = 0; i < ref_graph.vertex_count; ++i) {
-        uint8_t type = ref_graph.vertex_type[i];
-        ref_type_count[type]++;
-    }
-
-    // If there is no hydrogen present in the reference pattern, add that to filter to limit the search scope.
-    if (ref_type_count[1] == 0) {
-        flags |= MD_UTIL_MATCH_FLAGS_NO_H;
-    }
-
-    md_index_data_t structures = { .alloc = temp_alloc };
-    const size_t num_structures = extract_structures(&structures, sys, level, flags, ref_graph.vertex_count);
-
-    size_t match_count = 0;
-
-    if (num_structures == 0) {
-        goto done;
-    }
-
-    // Find most uncommon type in dataset. This will be our starting point(s)
-    int starting_type = -1;
-    int min_freq = INT_MAX;
-    // Exclude hydrogen
-    for (int i = H + 1; i < Num_Elements; ++i) {
-        int freq = ref_type_count[i];
-        if (freq > 0 && freq < min_freq) {
-            starting_type = i;
-            min_freq = freq;
-        }
-    }
-
-    size_t atom_count = md_system_atom_count(sys);
-    uint8_t* atom_types = md_temp_alloc_array(temp, uint8_t, atom_count);
-    md_atom_extract_atomic_numbers(atom_types, 0, atom_count, &sys->atom);
-
-    for (size_t i = 0; i < num_structures; ++i) {
-        md_temp_scope_t temp_inner = md_temp_begin_in(temp_alloc);
-        const size_t s_size = md_index_range_size(&structures, i);
-        const int*   s_idx  = md_index_range_beg(&structures, i);
-
-        int s_type_count[256] = {0};
-        for (size_t j = 0; j < s_size; ++j) {
-            int idx = s_idx[j];
-            md_atomic_number_t type = md_atom_atomic_number(&sys->atom, idx);
-            s_type_count[type]++;
-        }
-
-        // Sanity check
-        for (size_t j = 0; j < Num_Elements; ++j) {
-            if (ref_type_count[j] > s_type_count[j]) goto next;
-        }
-
-        graph_t s_graph = extract_graph(sys, s_idx, s_size, VERTEX_TYPE_MAPPING_MODE_ATOMIC_NUMBER, temp_alloc);
-
-        if (flags & MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT) {
-            if (s_graph.vertex_count != ref_graph.vertex_count) {
-                goto next;
-            }
-        }
-        
-        size_t pre_count = md_index_data_num_ranges(idx_data);
-        size_t count = find_isomorphisms(idx_data, &ref_graph, &s_graph, mode, starting_type, alloc);
-        size_t post_count = md_index_data_num_ranges(idx_data);
-
-        // Remap indices to global indices in result
-        if (idx_data && count > 0) {
-            ASSERT(post_count - pre_count == count);
-            for (size_t j = pre_count; j < post_count; ++j) {
-                int* beg = md_index_range_ptr(idx_data, j);
-                const int* end = md_index_range_end(idx_data, j);
-                for (int* it = beg; it != end; ++it) {
-                    *it = s_idx[*it];
-                }
-            }
-        }
-
-        match_count += count;
-    next:
-        md_temp_end(temp_inner);
-    }
-
-done:
-    md_temp_end(temp);
-
-    return match_count;
 }
 
 #ifdef __cplusplus

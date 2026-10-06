@@ -374,6 +374,10 @@ static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
+// Structure matching, see md_match.h
+static int _smiles          (data_t*, data_t[], eval_context_t*); // (str, level: str, mode: str) -> bitfield[]
+static int _match           (data_t*, data_t[], eval_context_t*); // (bitfield, by: str, level: str, mode: str) -> bitfield[]
+
 // Residue level selectors
 static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
@@ -692,6 +696,10 @@ static procedure_t procedures[] = {
     
     {STR_INIT("ring"),      TI_BITFIELD_ARR, 0, {0},                _ring,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
+    // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
+    {STR_INIT("smiles"),    TI_BITFIELD_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("match"),     TI_BITFIELD_ARR, 4, {TI_BITFIELD, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+
     // Residue level
     {STR_INIT("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
@@ -804,6 +812,7 @@ static procedure_t procedures[] = {
 #define KW_REQ(name) {STR_INIT(name), PARAM_REQUIRED | PARAM_KW_ONLY}
 #define KW_NUL(name) {STR_INIT(name), PARAM_NULLABLE | PARAM_KW_ONLY}
 #define KW_INT(name, value) {STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_INT, {._int = (value)}}
+#define KW_STR(name, value) {STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_STRING, {._string = STR_INIT(value)}}
 
 static const proc_sig_t signatures[] = {
     {STR_INIT("distance"),      2, {REQ("a"), REQ("b")}},
@@ -829,6 +838,10 @@ static const proc_sig_t signatures[] = {
     {STR_INIT("contacts"),      7, {REQ("a"), NUL("b"), KW_REQ("cutoff"), KW_INT("exclude_bonds", 3), KW_INT("min_separation", 0), KW_NUL("parent"), KW_NUL("exclude_within")}},
     {STR_INIT("degree"),        1, {REQ("c")}},
     {STR_INIT("chunks"),        2, {REQ("sel"), REQ("size")}},
+
+    // smiles(pattern, *, level = "structure", mode = "unique"), match(ref, *, by = "element", level = "structure", mode = "unique")
+    {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
+    {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
 };
 
 #undef REQ
@@ -837,6 +850,7 @@ static const proc_sig_t signatures[] = {
 #undef KW_REQ
 #undef KW_NUL
 #undef KW_INT
+#undef KW_STR
 
 // ### VALUE DOMAINS ###
 // The values that string parameters take, for completion (md_script_complete). The domains are read from the system
@@ -861,6 +875,42 @@ static const param_domain_t param_domains[] = {
     // the first argument. Counting selections is the common case.
     {STR_INIT("count"),     1, DOMAIN_COUNT_UNIT},
     {STR_INIT("attr"),      0, DOMAIN_ATTR_PATH},
+    {STR_INIT("smiles"),    0, DOMAIN_SMILES},
+    {STR_INIT("smiles"),    1, DOMAIN_MATCH_LEVEL},
+    {STR_INIT("smiles"),    2, DOMAIN_MATCH_MODE},
+    {STR_INIT("match"),     1, DOMAIN_MATCH_LABEL},
+    {STR_INIT("match"),     2, DOMAIN_MATCH_LEVEL},
+    {STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
+};
+
+// The values of the string parameters of smiles() and match()
+typedef struct match_name_t {
+    str_t name;
+    int   value;
+} match_name_t;
+
+static const match_name_t match_levels[] = {
+    {STR_INIT("structure"), MD_MATCH_LEVEL_STRUCTURE},
+    {STR_INIT("residue"),   MD_MATCH_LEVEL_COMPONENT},
+    {STR_INIT("component"), MD_MATCH_LEVEL_COMPONENT},
+    {STR_INIT("chain"),     MD_MATCH_LEVEL_INSTANCE},
+    {STR_INIT("instance"),  MD_MATCH_LEVEL_INSTANCE},
+};
+
+// 'whole' is UNIQUE with MD_MATCH_FLAG_WHOLE: a match which is all of its unit is the only one of the unit, so the
+// other modes come to the same, and ALL would only add the symmetric mappings of the same atoms to a selection.
+#define MATCH_MODE_WHOLE -1
+static const match_name_t match_modes[] = {
+    {STR_INIT("unique"),       MD_MATCH_MODE_UNIQUE},
+    {STR_INIT("all"),          MD_MATCH_MODE_ALL},
+    {STR_INIT("one_per_unit"), MD_MATCH_MODE_ONE_PER_UNIT},
+    {STR_INIT("disjoint"),     MD_MATCH_MODE_DISJOINT},
+    {STR_INIT("whole"),        MATCH_MODE_WHOLE},
+};
+
+static const match_name_t match_labels[] = {
+    {STR_INIT("element"), MD_MATCH_LABEL_ELEMENT},
+    {STR_INIT("name"),    MD_MATCH_LABEL_NAME},
 };
 
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
@@ -3003,6 +3053,157 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     return 0;
+}
+
+// ### STRUCTURE MATCHING ###
+// smiles() and match(), see md_match.h. The matches depend on the topology only, so both are static; within an 'in'
+// context only the atoms of the context are searched.
+
+static bool match_lookup(int* out, const match_name_t* table, size_t count, str_t str) {
+    for (size_t i = 0; i < count; ++i) {
+        if (str_eq(table[i].name, str)) {
+            *out = table[i].value;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void match_report_unknown(eval_context_t* ctx, int arg, const char* what, const match_name_t* table, size_t count, str_t str) {
+    md_strb_t sb = md_strb_create(ctx->temp_alloc);
+    for (size_t i = 0; i < count; ++i) {
+        md_strb_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
+    }
+    LOG_ERROR(ctx->ir, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+}
+
+// Runs the query in the context and fills dst, or returns the number of matches when validating
+static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], int level_arg, int mode_arg, uint32_t select_flags, eval_context_t* ctx) {
+    int level = 0, mode = 0;
+    if (!match_lookup(&level, match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]))) {
+        if (!dst) match_report_unknown(ctx, level_arg, "level", match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]));
+        return STATIC_VALIDATION_ERROR;
+    }
+    if (!match_lookup(&mode, match_modes, ARRAY_SIZE(match_modes), as_string(arg[mode_arg]))) {
+        if (!dst) match_report_unknown(ctx, mode_arg, "mode", match_modes, ARRAY_SIZE(match_modes), as_string(arg[mode_arg]));
+        return STATIC_VALIDATION_ERROR;
+    }
+    if (level == MD_MATCH_LEVEL_COMPONENT && ctx->sys->component.count == 0) {
+        if (!dst) LOG_ERROR(ctx->ir, ctx->arg_tokens[level_arg], "The system has no residues to match within");
+        return STATIC_VALIDATION_ERROR;
+    }
+    if (level == MD_MATCH_LEVEL_INSTANCE && ctx->sys->instance.count == 0) {
+        if (!dst) LOG_ERROR(ctx->ir, ctx->arg_tokens[level_arg], "The system has no chains to match within");
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    const md_match_desc_t desc = {
+        .query = query,
+        .level = (md_match_level_t)level,
+        .mode  = mode == MATCH_MODE_WHOLE ? MD_MATCH_MODE_UNIQUE : (md_match_mode_t)mode,
+        .flags = mode == MATCH_MODE_WHOLE ? MD_MATCH_FLAG_WHOLE : MD_MATCH_FLAG_NONE,
+        .mask  = ctx->mol_ctx,
+    };
+    md_match_result_t res = {0};
+    if (!md_match_find(&res, &desc, ctx->sys, ctx->temp_alloc)) {
+        if (!dst) LOG_ERROR(ctx->ir, ctx->op_token, "Structure matching failed, see the log");
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        if (dst->ptr && res.count > 0) {
+            md_bitfield_t* bf_arr = as_bitfield(*dst);
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 1) {
+                // Flattened: all of the matches in one
+                md_match_result_select_all(&bf_arr[0], &res, ctx->sys, select_flags);
+            } else if (cap > 1) {
+                md_match_result_select(bf_arr, (size_t)cap, &res, ctx->sys, select_flags);
+            }
+            if (ctx->mol_ctx) {
+                const int64_t n = MIN(cap, (int64_t)res.count);
+                for (int64_t i = 0; i < n; ++i) {
+                    md_bitfield_and_inplace(&bf_arr[i], ctx->mol_ctx);
+                }
+            }
+        }
+    } else {
+        result = (int)res.count;
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            result = MIN(1, result);
+        }
+    }
+
+    md_match_result_free(&res);
+    return result;
+}
+
+static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING));
+
+    const str_t pattern = as_string(arg[0]);
+    md_match_query_t query = {0};
+    md_smiles_error_t err = {0};
+    if (!md_match_query_init_smiles(&query, pattern, ctx->temp_alloc, &err)) {
+        if (!dst) {
+            // Point at the offending character when the pattern is written out as a string literal
+            token_t tok = ctx->arg_tokens[0];
+            if (tok.type == TOKEN_STRING && tok.str.len == pattern.len + 2) {
+                tok.beg = tok.beg + 1 + (int)err.offset;
+                tok.end = MIN(tok.beg + 1, tok.end - 1);
+                tok.end = MAX(tok.end, tok.beg);
+            }
+            LOG_ERROR(ctx->ir, tok, "Invalid SMILES: %s", err.message);
+        }
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    // A SMILES describes its atoms with their hydrogens: the selections have them
+    const int result = match_eval(dst, &query, arg, 1, 2, MD_MATCH_SELECT_HYDROGENS, ctx);
+    md_match_query_free(&query);
+    return result;
+}
+
+static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+
+    if (!dst && !ctx->vis && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "match: the reference cannot depend on the frame");
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    int label = 0;
+    if (!match_lookup(&label, match_labels, ARRAY_SIZE(match_labels), as_string(arg[1]))) {
+        if (!dst) match_report_unknown(ctx, 1, "label", match_labels, ARRAY_SIZE(match_labels), as_string(arg[1]));
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    const md_bitfield_t* ref = as_bitfield(arg[0]);
+    const size_t count = md_bitfield_popcount(ref);
+    if (count == 0) {
+        if (!dst) LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "match: the reference is empty");
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    // The reference in ascending order of its atoms, which is the order of the atoms of each match
+    int32_t* atom_idx = md_alloc(ctx->temp_alloc, sizeof(int32_t) * count);
+    const size_t num_idx = md_bitfield_iter_extract_indices(atom_idx, count, md_bitfield_iter_create(ref));
+
+    md_match_query_t query = {0};
+    int result = STATIC_VALIDATION_ERROR;
+    if (md_match_query_init_atoms(&query, atom_idx, num_idx, (md_match_label_t)label, ctx->sys, ctx->temp_alloc)) {
+        // The atoms the reference maps, its hydrogens if it has them, and nothing else
+        result = match_eval(dst, &query, arg, 2, 3, MD_MATCH_SELECT_NONE, ctx);
+        md_match_query_free(&query);
+    } else if (!dst) {
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "match: the reference cannot be made into a query, see the log");
+    }
+    md_free(ctx->temp_alloc, atom_idx, sizeof(int32_t) * count);
+    return result;
 }
 
 static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {

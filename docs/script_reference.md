@@ -284,6 +284,7 @@ or [destructure](#statements-and-comments) them.
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`ring`](#ring) |
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
+| [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
 | [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
@@ -674,6 +675,91 @@ identifier used by `instance` and `chain_id`. A string that matches no instance 
 
 ```mdscript
 by_author = auth_id("A");
+```
+
+### Selectors: structure matching
+
+These find where a structure occurs in the bonds of the system, written as a SMILES pattern or given as a selection
+of the system to use as a reference. They return a `bitfield[]` with one selection per occurrence. The occurrences
+depend on the bonds only, so they are found once, when the script is compiled. Inside a context only the atoms of
+the context are searched. The full semantics are in `src/md_match.h`.
+
+Both take two named arguments:
+
+- `level`: where an occurrence lies. `"structure"` (the default): within one molecule, the atoms joined by covalent
+  bonds; a metal bound to another residue (the Mg of an ATP, the Zn of a zinc finger) is a molecule of its own.
+  `"residue"` (or `"component"`): within one residue, whose bonds to its neighbours are not part of the graph, so a
+  residue pattern ends at the peptide bond. `"chain"` (or `"instance"`): within one chain.
+- `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
+  same atoms in several ways (a benzene ring in 12) and counts once. `"all"`: every way it fits. `"one_per_unit"`: the
+  first in each unit of `level`. `"disjoint"`: occurrences which share no atoms, the first found winning.
+  `"whole"`: occurrences which are all of their unit, its every atom (hydrogens aside) and no more bonds between them
+  than the pattern has. `smiles("NCC=O", level="residue", mode="whole")` is the residues which are glycine; without
+  `"whole"` every amino acid has those atoms.
+
+What a system cannot tell is not compared. Hydrogen counts, bond orders, aromaticity and formal charges come from
+the file or from the chemistry perceived when the system is loaded; a hydrogen count counts implicit hydrogens too,
+so a methyl is a methyl in a structure without hydrogen atoms as well. Such a structure does not show where its
+protons are, though, and a proton more or less is not held against an atom there: `C(=O)[OH]` and `C(=O)[O-]` both
+find the carboxyl groups of a crystal structure. A charge in a resonance group (a carboxylate, a guanidinium)
+belongs to the group, whichever of its atoms the charge was put on: `[O-]` finds both oxygens of a carboxylate.
+
+### smiles
+
+<!-- proc name=smiles category=selector.structure -->
+
+```text
+smiles(pattern: string, level: string, mode: string) -> bitfield[]
+```
+
+**Parameters:** `pattern` (required), `level` (default `"structure"`) and `mode` (default `"unique"`), given by name.
+
+One selection per occurrence of a SMILES pattern, each with the hydrogens of its atoms. The pattern is read as a
+query, the way SMARTS reads the same string:
+
+- Atoms of the organic subset (`C`, `N`, `O`, `c`, `n`, ...) leave their hydrogens and charge open; atoms in brackets
+  fix both. `CC(=O)O` finds acids, carboxylates and esters, `C(=O)[OH]` only the acids, `[NH3+]` an ammonium.
+- Bonds have the order written, single where none is: `C=O` is a double bond and `CO` a single one. Aromatic bonds
+  and resonance (a carboxylate, a guanidinium) match either, so a Kekule ring such as `C1=CC=CC=C1` finds an
+  aromatic ring as well.
+- Lowercase atoms have to be aromatic. In a pattern with lowercase atoms, the uppercase ones outside of rings have
+  to be aliphatic: `Cc1cncn1` is the side chain of a histidine, and not a part of a purine.
+- Isotopes, chirality and atom classes are read but not compared. `*` is any atom but a hydrogen. Hydrogens written
+  as atoms count towards a bracket atom: `N[C@@]([H])(C)C=O` is `N[C@@H](C)C=O`.
+
+A pattern which is not valid SMILES is a compile error, which points at the character.
+
+```mdscript
+methyls = smiles("[CH3]");
+acids   = smiles("C(=O)[OH]");
+gly     = smiles("NCC=O", level="residue", mode="whole");     # the residues which are glycine
+rings   = smiles("c1ccccc1");                                  # phenyl rings, of PHE, TYR and any ligand
+d = distance_pair(smiles("c1ccccc1"), vec3(0, 0, 0));          # centre of each ring to the origin
+```
+
+### match
+
+<!-- proc name=match category=selector.structure -->
+
+```text
+match(ref: bitfield, by: string, level: string, mode: string) -> bitfield[]
+```
+
+**Parameters:** `ref` (required), `by` (default `"element"`), `level` and `mode` as for [`smiles`](#smiles), given by
+name.
+
+One selection per occurrence of `ref`: its atoms, with the bonds between them. Each selection holds the atoms which
+take the place of those of `ref`, and no others. `by="name"` compares the atom names as well as the elements, which
+only means something between residues which name their atoms the same way.
+
+The bonds keep their order where the system knows it. Hydrogens in `ref` pin the protonation: an atom whose
+hydrogens are all in `ref` has to have as many, and the same charge. Without any hydrogens `ref` is a skeleton, and
+its atoms may have any. `ref` has to be the same for every frame.
+
+```mdscript
+like_5 = match(residue(5), level="residue", mode="one_per_unit");   # residues built like residue 5
+cbs    = match(name("CB") in residue(5), by="name");
+skel   = match(residue(5) and not element("H"));
 ```
 
 ### Selectors: spatial
@@ -1085,7 +1171,7 @@ contacts(a: bitfield[], b: bitfield[], cutoff: float, exclude_bonds: int, min_se
 **Parameters:** `a` and `cutoff` (required), `b`, `exclude_bonds` (default 3), `min_separation` (default 0),
 `parent` and `exclude_within` (optional). Everything after `a` and `b` is given by name.
 
-The groups in contact at each frame: pairs of groups with at least one pair of particles closer than `cutoff` Å.
+The groups in contact at each frame: pairs of groups with at least one pair of particles closer than `cutoff` Ã….
 A group is any selection - a residue, a chain, a slice of a fibril - and groups may overlap.
 
 - Without `b`: the pairs of distinct groups of `a`, each pair once. Particle pairs within one group never count,

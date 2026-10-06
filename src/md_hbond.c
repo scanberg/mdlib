@@ -111,10 +111,10 @@ static inline bool is_halogen(md_atomic_number_t z) {
 }
 
 // Whether the bond from an atom to a neighbour counts towards its valence: not to virtual sites (no element, such as
-// the M site of TIP4P), not to metals and not coordinate bonds, which do not take a hydrogen's place.
+// the M site of TIP4P), not to metals and not coordination bonds, which do not take a hydrogen's place.
 static inline bool counts_as_neighbour(const md_system_t* sys, md_bond_iter_t* it) {
     const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(it);
-    if (f & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_METAL)) return false;
+    if (f & MD_BOND_FLAG_COORDINATE) return false;
     const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(it));
     return z != 0 && !is_metal(z);
 }
@@ -166,7 +166,7 @@ static bool n_conjugated_by_graph(const md_system_t* sys, size_t i) {
             const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
             const size_t x = md_bond_iter_atom_index(&it);
             const md_atomic_number_t zx = md_atom_atomic_number(&sys->atom, x);
-            if (f & (MD_BOND_FLAG_DOUBLE | MD_BOND_FLAG_TRIPLE | MD_BOND_FLAG_AROMATIC)) return true;
+            if (md_bond_order(f) >= MD_BOND_ORDER_DOUBLE || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) return true;
             if (zx != MD_Z_H) {
                 const int deg = neighbour_degree(sys, x);
                 if (zx == MD_Z_C && deg <= 3) return true;
@@ -174,7 +174,8 @@ static bool n_conjugated_by_graph(const md_system_t* sys, size_t i) {
                 if ((zx == MD_Z_S || zx == MD_Z_P) && deg >= 3) return true;
                 md_bond_iter_t it2 = md_bond_iter(&sys->bond, x);
                 while (md_bond_iter_has_next(&it2)) {
-                    if (md_bond_iter_bond_flags(&it2) & (MD_BOND_FLAG_DOUBLE | MD_BOND_FLAG_TRIPLE | MD_BOND_FLAG_AROMATIC)) return true;
+                    const md_bond_flags_t f2 = (md_bond_flags_t)md_bond_iter_bond_flags(&it2);
+                    if (md_bond_order(f2) >= MD_BOND_ORDER_DOUBLE || (f2 & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) return true;
                     md_bond_iter_next(&it2);
                 }
             }
