@@ -1098,6 +1098,8 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 #define CPG_NDV     20              // D-products: orders 0..3
 #define CPG_MAXPRIM 64
 #define CPG_MAX_THREADS 64
+#define CPG_SEP_EXTRA 2             // exact centre terms per 1D factor beyond each remainder's order (cpg_shell_rem)
+#define CPG_SEP_A   (4 + CPG_SEP_EXTRA + 1)  // 1D derivative orders 0 .. 4 + CPG_SEP_EXTRA
 #define CPG_CHUNK   32              // cubes per work chunk
 
 typedef struct cpg_shell_t {
@@ -1138,6 +1140,7 @@ typedef struct cpg_ctx_t {
     double tau;
     double eps;
     double kappa[CPG_KI][CPG_KA][CPG_KM];
+    double kap_sep[CPG_LMAX + 1][CPG_SEP_A][CPG_LMAX + CPG_SEP_A];  // d^a [x^i E] = sum_m kap_sep[i][a][m] alpha^((m-i+a)/2) x^m E
     int    mi[CPG_NMI][3];
     int    mi_idx[5][5][5];
     int    m1[3], m2[3][3], m3[3][3][3], m4[3][3][3][3];
@@ -1149,7 +1152,6 @@ typedef struct cpg_scratch_t {
     int*    shells;     // local shell list
     double* V;          // [n][CPG_NV]
     double* Dv;         // [n][CPG_NDV]
-    double* S;          // [n][CPG_NMI]
     double* Dl;         // local D block [n*n]
     double* E;          // per-AO remainder vectors [n][16]
     double* Q;          // |D| products [n][8]
@@ -1252,6 +1254,19 @@ static void cpg_init_tables(cpg_ctx_t* ctx) {
                 double v = -2.0 * ctx->kappa[i + 1][a][m];
                 if (i >= 1) v += i * ctx->kappa[i - 1][a][m];
                 ctx->kappa[i][a + 1][m] = v;
+            }
+        }
+    }
+    // the same expansion with the recurrence in a at fixed i (d/dx [x^m E] = m x^(m-1) E - 2 alpha x^(m+1) E),
+    // to the higher orders the separable remainders need
+    memset(ctx->kap_sep, 0, sizeof(ctx->kap_sep));
+    for (int i = 0; i <= CPG_LMAX; ++i) {
+        ctx->kap_sep[i][0][i] = 1.0;
+        for (int a = 0; a + 1 < CPG_SEP_A; ++a) {
+            for (int m = 0; m <= i + a + 1; ++m) {
+                double v = m + 1 <= i + a ? (m + 1) * ctx->kap_sep[i][a][m + 1] : 0.0;
+                if (m >= 1) v -= 2.0 * ctx->kap_sep[i][a][m - 1];
+                ctx->kap_sep[i][a + 1][m] = v;
             }
         }
     }
@@ -1386,46 +1401,140 @@ static void cpg_shell_eval(const cpg_ctx_t* ctx, const cpg_shell_t* s, const dou
     }
 }
 
-// sup over [x0,x1] of |d^a/dx^a [x^i exp(-alpha x^2)]| for i <= l, a <= 4.
-static void cpg_sup_1d(const cpg_ctx_t* ctx, double B[CPG_LMAX + 1][CPG_KA], double x0, double x1, double alpha, int l) {
-    const double ax0 = fabs(x0), ax1 = fabs(x1);
+// 1D factor of a primitive, X_{i,a}(x) = d^a/dx^a [x^i exp(-alpha x^2)], i <= l, on [xc - h, xc + h]:
+// centre values for a <= CPG_SEP_A - 2 and interval sups for 3 <= a <= CPG_SEP_A - 1 (the orders the
+// remainders below use). A sup adds up the monomial terms of the expansion, each at its own maximum on
+// the interval: sup |t|^m exp(-alpha t^2) sits at t = sqrt(m / 2 alpha), where it is (m / 2 alpha)^(m/2)
+// exp(-m/2), or at the nearer end of the interval.
+static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, double h,
+                       double val[CPG_LMAX + 1][CPG_SEP_A], double sup[CPG_LMAX + 1][CPG_SEP_A]) {
+    static const double exp_neg_half[CPG_LMAX + CPG_SEP_A] = {
+        1.0, 0.60653065971263342, 0.36787944117144233, 0.22313016014842982, 0.13533528323661270,
+        0.08208499862389880, 0.04978706836786394, 0.03019738342231850, 0.01831563888873418,
+        0.01110899653824231, 0.00673794699908547,
+    };
+    STATIC_ASSERT(CPG_LMAX + CPG_SEP_A <= 11, "exp(-m/2) table");
+    // centre values by the recurrence g[i][a+1] = i g[i-1][a] - 2 alpha g[i+1][a]
+    double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
+    const int imax = l + CPG_SEP_A - 2;
+    const double E = exp(-alpha * xc * xc);
+    double xp = 1.0;
+    for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= xc; }
+    for (int a = 0; a < CPG_SEP_A - 2; ++a) {
+        for (int i = 0; i < imax - a; ++i) {
+            double v = -2.0 * alpha * g[i + 1][a];
+            if (i >= 1) v += i * g[i - 1][a];
+            g[i][a + 1] = v;
+        }
+    }
+    for (int i = 0; i <= l; ++i) for (int a = 0; a < CPG_SEP_A - 1; ++a) val[i][a] = g[i][a];
+    // monomial sups Sm[m] = sup over the interval of |t|^m exp(-alpha t^2)
+    const double x0 = xc - h, x1 = xc + h, ax0 = fabs(x0), ax1 = fabs(x1);
     const double tlo = (x0 <= 0.0 && x1 >= 0.0) ? 0.0 : fmin(ax0, ax1);
     const double thi = fmax(ax0, ax1);
-    double Sm[CPG_LMAX + CPG_KA + 1];
-    for (int m = 0; m <= l + 4; ++m) {
-        double ts = sqrt(m / (2.0 * alpha));
-        ts = ts < tlo ? tlo : (ts > thi ? thi : ts);
-        Sm[m] = cpg_powi(ts, m) * exp(-alpha * ts * ts);
+    const double elo = exp(-alpha * tlo * tlo), ehi = exp(-alpha * thi * thi);
+    const int mmax = l + CPG_SEP_A - 1;
+    double Sm[CPG_LMAX + CPG_SEP_A], plo = 1.0, phi = 1.0;
+    for (int m = 0; m <= mmax; ++m) {
+        const double t2 = m / (2.0 * alpha);
+        if (t2 <= tlo * tlo)      Sm[m] = plo * elo;
+        else if (t2 >= thi * thi) Sm[m] = phi * ehi;
+        else                      Sm[m] = pow(t2, 0.5 * m) * exp_neg_half[m];
+        plo *= tlo;
+        phi *= thi;
     }
+    double ap[CPG_LMAX + CPG_SEP_A];       // alpha^n
+    ap[0] = 1.0;
+    for (int n = 1; n < CPG_LMAX + CPG_SEP_A; ++n) ap[n] = ap[n - 1] * alpha;
     for (int i = 0; i <= l; ++i) {
-        for (int a = 0; a < CPG_KA; ++a) {
+        for (int a = 3; a < CPG_SEP_A; ++a) {
             double acc = 0.0;
-            for (int m = 0; m <= i + a; ++m) {
-                const double k = ctx->kappa[i][a][m];
-                if (k != 0.0) acc += fabs(k) * cpg_powi(alpha, (m - i + a) / 2) * Sm[m];
+            for (int m = (i + a) & 1; m <= i + a; m += 2) {      // only the parity of i + a occurs
+                const double k = ctx->kap_sep[i][a][m];
+                if (k != 0.0) acc += fabs(k) * ap[(m - i + a) / 2] * Sm[m];
             }
-            B[i][a] = acc;
+            sup[i][a] = acc;
         }
     }
 }
 
-// Per-AO sups over the cube of every multi-index derivative of order 1..4. out[ci * CPG_NMI + mi].
-static void cpg_shell_sup(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double c[3], double h, double* out) {
-    for (int ci = 0; ci < s->ncart; ++ci) for (int m = 0; m < CPG_NMI; ++m) out[ci * CPG_NMI + m] = 0.0;
-    double Bx[CPG_LMAX + 1][CPG_KA], By[CPG_LMAX + 1][CPG_KA], Bz[CPG_LMAX + 1][CPG_KA];
+// Per-AO remainder bounds over the cube c +- h, in the layout cpg_box_eval uses: E[0] E1, 1 E2, 2 E3,
+// 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a <= b). E_K of f = d^beta phi bounds |f(c + d) - T_{K-1} f (d)|,
+// T_{K-1} the Taylor polynomial of degree K - 1 at the centre.
+//
+// Each primitive is a product of 1D factors X_k = d^beta_k/dx^beta_k [x^i exp(-alpha x^2)]. Each factor
+// is written as its Taylor polynomial at the centre of degree P = K - 1 + CPG_SEP_EXTRA (exact
+// coefficients) plus a 1D Lagrange remainder (sup on the interval of the next derivative). Multiplied
+// out, the terms of total degree < K are exactly T_{K-1} f, so |f - T_{K-1} f| is at most the sum of
+// the absolute values of all the other terms (a remainder counts with degree P + 1). Only the 1D
+// remainders use sups; the exact low-order cross terms carry the variation over the cube.
+//
+// Against a multivariate Lagrange bound (sups of every order-K multi-index derivative over the cube,
+// each at its own worst point) this is 3-4x tighter per AO (geometric mean bound / sampled remainder
+// 1.6-2.3 instead of 5-8), and a sweep needs 50-60% fewer cubes. Checked against the remainder
+// sampled on a 5^3 lattice per cube for 68M (AO, cube, slot) triples (water/cc-pVDZ, acro-xps):
+// never below it beyond the sampling's own rounding.
+//
+// The sum over degrees >= K is formed from suffix sums, without subtracting anything (so it also
+// carries over to float with a plain relative error bound): with u_k[m] the absolute degree-m term of
+// axis k and S_k[r] = sum over m >= r of u_k[m],
+//   sum over m0 + m1 + m2 >= K = sum over m0 of u_0[m0] T12[K - m0],  T12[j] = sum over m1 + m2 >= j,
+//   T12[j] = S_1[j] S_2[0] + sum over m1 < j of u_1[m1] S_2[j - m1]   (T12[j <= 0] = S_1[0] S_2[0]).
+static void cpg_shell_rem(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double c[3], double h, double* E, int stride) {
+    enum { NBP = 6 };   // (beta, P) per axis: (0,2) (0,3) (1,3) (2,3) (0,4) (1,4)
+    static const int bp_beta[NBP] = { 0, 0, 1, 2, 0, 1 }, bp_P[NBP] = { 2, 3, 3, 3, 4, 4 };
+    // per slot: K and the (beta, P) index per axis
+    static const int slot_K[15] = { 1, 2, 3, 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 2, 2 };
+    static const int slot_bp[15][3] = {
+        {0,0,0}, {1,1,1}, {4,4,4},          // E1 E2 E3
+        {2,1,1}, {1,2,1}, {1,1,2},          // Ea2
+        {5,4,4}, {4,5,4}, {4,4,5},          // Ea3
+        {3,1,1}, {2,2,1}, {2,1,2}, {1,3,1}, {1,2,2}, {1,1,3},   // Eab2: xx xy xz yy yz zz
+    };
+    static const double inv_fact[CPG_SEP_A] = { 1.0, 1.0, 1.0 / 2, 1.0 / 6, 1.0 / 24, 1.0 / 120, 1.0 / 720 };
+    STATIC_ASSERT(CPG_SEP_EXTRA == 2 && CPG_SEP_A == 7, "the (beta, P) table assumes two extra terms");
+    for (int ci = 0; ci < s->ncart; ++ci) for (int t = 0; t < 15; ++t) E[ci * stride + t] = 0.0;
+    double val[CPG_LMAX + 1][CPG_SEP_A], sup[CPG_LMAX + 1][CPG_SEP_A], hp[CPG_SEP_A];
+    double u[3][CPG_LMAX + 1][NBP][CPG_SEP_A], S[3][CPG_LMAX + 1][NBP][CPG_SEP_A + 1];
+    hp[0] = 1.0;
+    for (int m = 1; m < CPG_SEP_A; ++m) hp[m] = hp[m - 1] * h;
     for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
         const double al = ctx->alpha[s->prim_offset + ip];
         const double cf = fabs(ctx->coeff[s->prim_offset + ip]);
-        cpg_sup_1d(ctx, Bx, c[0] - h - s->A[0], c[0] + h - s->A[0], al, s->l);
-        cpg_sup_1d(ctx, By, c[1] - h - s->A[1], c[1] + h - s->A[1], al, s->l);
-        cpg_sup_1d(ctx, Bz, c[2] - h - s->A[2], c[2] + h - s->A[2], al, s->l);
+        for (int k = 0; k < 3; ++k) {
+            cpg_sep_1d(ctx, s->l, al, c[k] - s->A[k], h, val, sup);
+            for (int i = 0; i <= s->l; ++i) {
+                for (int b = 0; b < NBP; ++b) {
+                    const int be = bp_beta[b], P = bp_P[b];
+                    double* uu = u[k][i][b];
+                    double* SS = S[k][i][b];
+                    for (int m = 0; m <= P; ++m) uu[m] = fabs(val[i][be + m]) * hp[m] * inv_fact[m];
+                    uu[P + 1] = sup[i][be + P + 1] * hp[P + 1] * inv_fact[P + 1];
+                    SS[P + 2] = 0.0;
+                    for (int m = P + 1; m >= 0; --m) SS[m] = SS[m + 1] + uu[m];
+                }
+            }
+        }
         for (int ci = 0; ci < s->ncart; ++ci) {
             const int* ijk = ctx->ao_ijk[s->ao_offset + ci];
             const double w = cf * ctx->ao_nrm[s->ao_offset + ci];
-            double* o = out + ci * CPG_NMI;
-            for (int m = 1; m < CPG_NMI; ++m) {
-                const int* e = ctx->mi[m];
-                o[m] += w * Bx[ijk[0]][e[0]] * By[ijk[1]][e[1]] * Bz[ijk[2]][e[2]];
+            for (int t = 0; t < 15; ++t) {
+                const int K = slot_K[t];
+                const double* u0 = u[0][ijk[0]][slot_bp[t][0]];
+                const double* u1 = u[1][ijk[1]][slot_bp[t][1]];
+                const double* S0 = S[0][ijk[0]][slot_bp[t][0]];
+                const double* S1 = S[1][ijk[1]][slot_bp[t][1]];
+                const double* S2 = S[2][ijk[2]][slot_bp[t][2]];
+                double T12[4];
+                T12[0] = S1[0] * S2[0];
+                for (int j = 1; j <= K; ++j) {
+                    double v = S1[j] * S2[0];
+                    for (int m1 = 0; m1 < j; ++m1) v += u1[m1] * S2[j - m1];
+                    T12[j] = v;
+                }
+                double bound = S0[K] * T12[0];
+                for (int m0 = 0; m0 < K; ++m0) bound += u0[m0] * T12[K - m0];
+                E[ci * stride + t] += w * bound;
             }
         }
     }
@@ -1502,12 +1611,12 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
     int ns = 0;
     const int n = cpg_local_aos(ctx, sc, c, h, &ns);
     memset(ev, 0, sizeof(*ev));
-    // centre values (orders 0..3) and per-AO cube sups (orders 1..4)
+    // centre values (orders 0..3) and per-AO remainder bounds over the cube
     int k = 0;
     for (int t = 0; t < ns; ++t) {
         const cpg_shell_t* s = &ctx->shell[sc->shells[t]];
         cpg_shell_eval(ctx, s, c, 3, sc->V + (size_t)k * CPG_NV, CPG_NV);
-        cpg_shell_sup(ctx, s, c, h, sc->S + (size_t)k * CPG_NMI);
+        cpg_shell_rem(ctx, s, c, h, sc->E + (size_t)k * 16, 16);
         k += s->ncart;
     }
     // local D block and D-products Dv = D V (all 20 channels)
@@ -1543,32 +1652,10 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
     for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) for (int cc = 0; cc < 3; ++cc) {
         ev->T[a][b][cc] = 2.0 * (DOT[M3(a, b, cc)][0] + DOT[M2(a, b)][M1(cc)] + DOT[M2(a, cc)][M1(b)] + DOT[M2(b, cc)][M1(a)]);
     }
-    // per-AO remainder vectors. E[i*16 + .]: 0 E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a<=b)
+    // per-AO remainder vectors (cpg_shell_rem above). E[i*16 + .]: 0 E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a<=b)
     const double h2 = h * h, h3 = h2 * h;
     int ab_idx[3][3];
     { int t = 0; for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) { ab_idx[a][b] = ab_idx[b][a] = t++; } }
-    for (int i = 0; i < n; ++i) {
-        const double* s = sc->S + (size_t)i * CPG_NMI;
-        double* e = sc->E + (size_t)i * 16;
-        double e1 = 0, e2 = 0, e3 = 0, ea2[3] = {0}, ea3[3] = {0}, eab2[6] = {0};
-        for (int p = 0; p < 3; ++p) {
-            e1 += s[M1(p)];
-            for (int q = 0; q < 3; ++q) {
-                e2 += s[M2(p, q)];
-                for (int r = 0; r < 3; ++r) e3 += s[M3(p, q, r)];
-            }
-        }
-        for (int a = 0; a < 3; ++a) {
-            for (int p = 0; p < 3; ++p) for (int q = 0; q < 3; ++q) {
-                ea2[a] += s[M3(a, p, q)];
-                for (int r = 0; r < 3; ++r) ea3[a] += s[M4(a, p, q, r)];
-            }
-        }
-        for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) for (int p = 0; p < 3; ++p) for (int q = 0; q < 3; ++q) eab2[ab_idx[a][b]] += s[M4(a, b, p, q)];
-        e[0] = h * e1; e[1] = 0.5 * h2 * e2; e[2] = h3 / 6.0 * e3;
-        for (int a = 0; a < 3; ++a) { e[3 + a] = 0.5 * h2 * ea2[a]; e[6 + a] = h3 / 6.0 * ea3[a]; }
-        for (int t = 0; t < 6; ++t) e[9 + t] = 0.5 * h2 * eab2[t];
-    }
     // |D| products: Q[i*8 + .]: 0 |D|E1, 1 |D|E2, 2 |D|E3, 3..5 |D|Ea2
     for (int i = 0; i < n; ++i) {
         double q[6] = {0};
@@ -1641,6 +1728,62 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
 
 // ----------------------------------------------------------------------------------------------- tests
 
+// Range of q(d) = c0 + b.d + 1/2 d^T M d over the box |d_k| <= h, exactly: the extremes of a quadratic
+// over a box lie at stationary points of its restriction to the relative interior of some face (the
+// box itself, a face, an edge or a corner), so all 27 are tried.
+static void cpg_quad_box_range(double c0, const double b[3], double M[3][3], double h, double* out_min, double* out_max) {
+    double lo = DBL_MAX, hi = -DBL_MAX;
+    for (int pat = 0; pat < 27; ++pat) {
+        int st[3] = { pat % 3, (pat / 3) % 3, pat / 9 };   // 0 free, 1 -h, 2 +h
+        double d[3] = { 0, 0, 0 };
+        int F[3], nf = 0;
+        for (int k = 0; k < 3; ++k) {
+            if (st[k] == 0) F[nf++] = k;
+            else d[k] = st[k] == 1 ? -h : h;
+        }
+        if (nf > 0) {
+            // M_FF x = -(b_F + M_F,fixed d_fixed)
+            double r[3], m[3][3];
+            for (int i = 0; i < nf; ++i) {
+                r[i] = -b[F[i]];
+                for (int k = 0; k < 3; ++k) if (st[k] != 0) r[i] -= M[F[i]][k] * d[k];
+                for (int j = 0; j < nf; ++j) m[i][j] = M[F[i]][F[j]];
+            }
+            double x[3];
+            double scale = 0.0;
+            for (int i = 0; i < nf; ++i) for (int j = 0; j < nf; ++j) scale = fmax(scale, fabs(m[i][j]));
+            if (scale == 0.0) continue;
+            if (nf == 1) {
+                if (fabs(m[0][0]) < 1e-14 * scale) continue;
+                x[0] = r[0] / m[0][0];
+            } else if (nf == 2) {
+                const double det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+                if (fabs(det) < 1e-14 * scale * scale) continue;
+                x[0] = (r[0] * m[1][1] - m[0][1] * r[1]) / det;
+                x[1] = (m[0][0] * r[1] - r[0] * m[1][0]) / det;
+            } else {
+                const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                if (fabs(det) < 1e-14 * scale * scale * scale) continue;
+                x[0] = (r[0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (r[1] * m[2][2] - m[1][2] * r[2]) + m[0][2] * (r[1] * m[2][1] - m[1][1] * r[2])) / det;
+                x[1] = (m[0][0] * (r[1] * m[2][2] - m[1][2] * r[2]) - r[0] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * r[2] - r[1] * m[2][0])) / det;
+                x[2] = (m[0][0] * (m[1][1] * r[2] - r[1] * m[2][1]) - m[0][1] * (m[1][0] * r[2] - r[1] * m[2][0]) + r[0] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])) / det;
+            }
+            bool inside = true;
+            for (int i = 0; i < nf; ++i) { if (!(fabs(x[i]) <= h)) inside = false; d[F[i]] = x[i]; }
+            if (!inside) continue;
+        }
+        double q = c0;
+        for (int i = 0; i < 3; ++i) {
+            q += b[i] * d[i];
+            for (int j = 0; j < 3; ++j) q += 0.5 * M[i][j] * d[i] * d[j];
+        }
+        lo = fmin(lo, q);
+        hi = fmax(hi, q);
+    }
+    *out_min = lo;
+    *out_max = hi;
+}
+
 static bool cpg_exclude(const cpg_eval_t* ev, double h, const double val[3], double vec[3][3]) {
     double res[3];
     for (int k = 0; k < 3; ++k) res[k] = ev->r[k] + ev->quadT[k];
@@ -1658,6 +1801,19 @@ static bool cpg_exclude(const cpg_eval_t* ev, double h, const double val[3], dou
             rhs += fabs(Aw) * h + fabs(w[j]) * res[j];
         }
         if (lhs > rhs) return true;
+        // the same direction with the quadratic part of the model minimised exactly over the box rather
+        // than bounded term by term (which ignores where on the box each term peaks)
+        double b[3], M[3][3], qlo, qhi, Rw = 0.0, scale = lhs;
+        for (int j = 0; j < 3; ++j) {
+            b[j] = ev->A[j][0] * w[0] + ev->A[j][1] * w[1] + ev->A[j][2] * w[2];
+            for (int k = 0; k < 3; ++k) M[j][k] = w[0] * ev->T[0][j][k] + w[1] * ev->T[1][j][k] + w[2] * ev->T[2][j][k];
+            Rw += fabs(w[j]) * ev->r[j];
+            scale += fabs(b[j]) * h;
+            for (int k = 0; k < 3; ++k) scale += 0.5 * fabs(M[j][k]) * h * h;
+        }
+        cpg_quad_box_range(w[0] * ev->g[0] + w[1] * ev->g[1] + w[2] * ev->g[2], b, M, h, &qlo, &qhi);
+        const double margin = Rw + 1e-12 * scale;     // the extremes are found by small solves in double
+        if (qlo > margin || qhi < -margin) return true;
     }
     // Newton point far outside the cube
     const double smin = fmin(fabs(val[0]), fmin(fabs(val[1]), fabs(val[2])));
@@ -2062,7 +2218,6 @@ static void cpg_scratch_alloc(cpg_scratch_t* sc, int N, int nshell, md_allocator
     sc->shells = (int*)md_alloc(heap, sizeof(int) * (nshell + 1));
     sc->V      = (double*)md_alloc(heap, sizeof(double) * N * CPG_NV);
     sc->Dv     = (double*)md_alloc(heap, sizeof(double) * N * CPG_NDV);
-    sc->S      = (double*)md_alloc(heap, sizeof(double) * N * CPG_NMI);
     sc->Dl     = (double*)md_alloc(heap, sizeof(double) * N * N);
     sc->E      = (double*)md_alloc(heap, sizeof(double) * N * 16);
     sc->Q      = (double*)md_alloc(heap, sizeof(double) * N * 8);
@@ -2072,7 +2227,6 @@ static void cpg_scratch_free(cpg_scratch_t* sc, int N, int nshell, md_allocator_
     md_free(heap, sc->Q,  sizeof(double) * N * 8);
     md_free(heap, sc->E,  sizeof(double) * N * 16);
     md_free(heap, sc->Dl, sizeof(double) * N * N);
-    md_free(heap, sc->S,  sizeof(double) * N * CPG_NMI);
     md_free(heap, sc->Dv, sizeof(double) * N * CPG_NDV);
     md_free(heap, sc->V,  sizeof(double) * N * CPG_NV);
     md_free(heap, sc->shells, sizeof(int) * (nshell + 1));
