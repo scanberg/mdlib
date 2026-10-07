@@ -61,6 +61,7 @@ set (SRC_FILES
     test_system_invariants.c
     test_run_cache.c
     test_molden.c
+    test_gto_int.c
 )
 
 if (MD_ENABLE_HDF5)

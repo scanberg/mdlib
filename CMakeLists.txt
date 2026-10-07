@@ -141,6 +141,8 @@ set(SRC_FILES
   src/md_gro.h
   src/md_gto.c
   src/md_gto.h
+  src/md_gto_int.c
+  src/md_gto_int.h
   src/md_itp.c
   src/md_itp.h
   src/md_dcd.c
@@ -481,7 +483,8 @@ endif()
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
-    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang)
+    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
+    src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang)
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -551,6 +554,16 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
+  # so each kernel is sized for its own unrolled recursion, and the resolve pass.
+  compile_gpu_shaders(eval_gto_int_potential_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential.slang
+    ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
