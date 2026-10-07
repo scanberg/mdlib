@@ -195,7 +195,7 @@ UTEST(json, rejects) {
         { "/* c */ 1",              0 },
         { "1 // c",                 2 },
         { "\xEF\xBB\xBF",           3 },
-        { "\xEF\xBB\xBF\xEF\xBB\xBF1", 3 },
+        { "\xEF\xBB\xBF\xEF\xBB\xBF" "1", 3 },
         { "\xEF\xBB" "1",           0 },
         { " \xEF\xBB\xBF" "1",      1 },
     };
