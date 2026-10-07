@@ -2745,7 +2745,7 @@ typedef struct cpg_gemm_variant_t {
     const char* name;
 } cpg_gemm_variant_t;
 static const cpg_gemm_variant_t cpg_gemm_variants[] = {
-    { 32, 1, "v0: 32 rows x 288 cols per group, 32x4 threads, 8x9 outputs per thread (default)" },
+    { 32, 1, "v0: 32 rows x 288 cols per group, 32x4 threads, 8x9 outputs per thread" },
     { 32, 3, "v1: 32 rows x 96 cols per group, 32x4 threads, 8x3 outputs per thread" },
     { 64, 3, "v2: 64 rows x 96 cols per group, 32x8 threads, 8x3 outputs per thread" },
     { 32, 1, "v3: 32 rows x 288 cols per group, 32x8 threads, 4x9 outputs per thread" },
@@ -2758,6 +2758,17 @@ static md_gpu_kernel_t k_topo_gemm_var[CPG_GEMM_NV] = {0};   // [0] unused: gemm
 
 uint32_t md_topo_gto_gpu_gemm_variant_count(void) { return CPG_GEMM_NV; }
 const char* md_topo_gto_gpu_gemm_variant_name(uint32_t v) { return v < CPG_GEMM_NV ? cpg_gemm_variants[v].name : ""; }
+
+// Per vendor, from md_topo_gto_bench --gemm-sweep. Apple M4 Pro: v2 is fastest from 73 local AOs up
+// (GEMM 1.3-1.5x, mol total 1.29x) and level with v0 on water. Others keep v0 until measured.
+uint32_t md_topo_gto_gpu_gemm_variant_auto(md_gpu_device_t device) {
+    md_gpu_device_info_t di = {0};
+    if (!device || !md_gpu_device_info(device, &di)) return 0;
+    switch (di.vendor_id) {
+    case 0x106B: return 2;      // Apple
+    default:     return 0;
+    }
+}
 
 static void topo_gto_gpu_release(void) {
     for (int i = 0; i < CPG_K_COUNT; ++i) {
@@ -2942,7 +2953,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     const cpg_ctx_t* ctx = R->ctx;
     md_allocator_i* heap = R->heap;
     const int N = ctx->nao;
-    uint32_t gv = R->desc->gpu_gemm_variant < CPG_GEMM_NV ? R->desc->gpu_gemm_variant : 0;
+    uint32_t gv = R->desc->gpu_gemm_variant ? R->desc->gpu_gemm_variant - 1 : md_topo_gto_gpu_gemm_variant_auto(dev);
+    if (gv >= CPG_GEMM_NV) gv = 0;
     md_gpu_kernel_t k_gemm = topo_gto_gemm_kernel(dev, gv);
     if (!k_gemm) { gv = 0; k_gemm = k_topo_gto[CPG_K_GEMM]; }
     const uint32_t gemm_rows = cpg_gemm_variants[gv].rows, gemm_cb = cpg_gemm_variants[gv].col_blocks;
