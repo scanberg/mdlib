@@ -31,8 +31,8 @@
 //               shadows, and the remainder vectors.                                        -> phi
 //   gemm_main   32-row tiles: D * V and |D| * (error weights, remainder vectors), over the batch's
 //               local AOs.                                                                 -> dv
-//   epi_main    one group per batch: DOT[a][b] = V_a . D V_b with its error sums (which depend on a
-//               only through its derivative order), and the AO sums of the enclosures.     -> ep
+//   epi_main    32 threads per batch: DOT[a][b] = V_a . D V_b with its error sums (which depend on
+//               a only through its derivative order), and the AO sums of the enclosures.   -> ep
 //   decide_main one thread per cube: derivatives, enclosures, tests.                       -> outcome
 //
 // Every sum runs in a fixed order, so a cube's result depends only on its batch, never on the chunk.
@@ -41,6 +41,7 @@
 // double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding noise and the
 // cube is too small for a Krawczyk proof at that noise, or h <= h_min; the CPU takes the cube and its
 // subtree in double). Bit 4: the inflated enclosure decided or was tried. Bits 8..15: which test.
+// Bits 16..23, for a split: the children that still need an evaluation (child_excluded below).
 
 #include "../md_gpu.slang"
 
@@ -88,6 +89,7 @@
 #define WHY_SPLIT    7u
 #define WHY_NOISE    8u
 #define WHY_HMIN     9u
+#define WHY_CHILDREN 11u        // split, but every child is excluded by this cube's own expansion
 
 struct GtoShell {
     float4 A_r2;                // centre (Bohr), squared screening radius (unused here)
@@ -457,20 +459,21 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // ================================================================================== gemm_main
 // dv[row][c] = sum_j X[row][j] phi[j][c] over the batch's local AOs j, X = D for the 160 columns of the
 // centre values and |D| for the 112 after them. One group per 32-row tile computes all 272 columns, so
-// each D tile is gathered once: 32 x 8 threads, thread (tx, ty) owns rows 4 ty .. 4 ty + 3 and columns
-// tx + 32 j, j = 0..8 (j < 5 with D, j >= 5 with |D|). The sum over j runs in increasing j, so the
-// result does not depend on the tiling.
+// each D tile is gathered once: 32 x 4 threads, thread (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns
+// tx + 32 j, j = 0..8 (j < 5 with D, j >= 5 with |D|): 17 groupshared reads per 72 multiply-adds. The
+// sum over j runs in increasing j, so the result does not depend on the tiling.
 
 #define GT  32                  // rows per tile
 #define GKC 16                  // j per chunk
 #define GCJ 9                   // column groups of 32: 9 * 32 = 288 >= DV_W
-#define GEMM_WG 256
+#define GR  8                   // rows per thread
+#define GEMM_WG 128
 
 groupshared float gs_A[GKC][GT];
 groupshared float gs_B[GKC][GCJ * 32];
 
 [shader("compute")]
-[numthreads(32, 8, 1)]
+[numthreads(32, 4, 1)]
 void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint rt = gid.x;
     if (rt >= args.num_row_tiles) return;   // uniform per group
@@ -480,12 +483,12 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
     const uint tx = gtid.x, ty = gtid.y;
     const uint N = args.num_ao;
 
-    float acc[4][GCJ];
-    [ForceUnroll] for (int i = 0; i < 4; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] = 0.0;
+    float acc[GR][GCJ];
+    [ForceUnroll] for (int i = 0; i < GR; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] = 0.0;
 
     for (uint k0 = 0; k0 < n; k0 += GKC) {
-        // D tile: 32 rows x 16 j, 2 per thread, j fastest (consecutive AOs are mostly consecutive in D)
-        [ForceUnroll] for (int q = 0; q < 2; ++q) {
+        // D tile: 32 rows x 16 j, 4 per thread, j fastest (consecutive AOs are mostly consecutive in D)
+        [ForceUnroll] for (int q = 0; q < (GT * GKC) / GEMM_WG; ++q) {
             const uint e = tid + uint(GEMM_WG * q);
             const uint r = e / GKC, kk = e % GKC;
             float d = 0.0;
@@ -496,8 +499,8 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
             }
             gs_A[kk][r] = d;
         }
-        // phi tile: 16 j x 288 columns, 18 per thread, columns fastest (coalesced rows)
-        [ForceUnroll] for (int q = 0; q < 18; ++q) {
+        // phi tile: 16 j x 288 columns, 36 per thread, columns fastest (coalesced rows)
+        [ForceUnroll] for (int q = 0; q < (GKC * GCJ * 32) / GEMM_WG; ++q) {
             const uint e = tid + uint(GEMM_WG * q);
             const uint kk = e / (GCJ * 32), c = e % (GCJ * 32);
             float v = 0.0;
@@ -506,15 +509,15 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
         }
         GroupMemoryBarrierWithGroupSync();
         [ForceUnroll] for (int kk = 0; kk < GKC; ++kk) {
-            float a[4], aa[4], bb[GCJ];
-            [ForceUnroll] for (int i = 0; i < 4; ++i) { a[i] = gs_A[kk][ty * 4u + uint(i)]; aa[i] = abs(a[i]); }
+            float a[GR], aa[GR], bb[GCJ];
+            [ForceUnroll] for (int i = 0; i < GR; ++i) { a[i] = gs_A[kk][ty * GR + uint(i)]; aa[i] = abs(a[i]); }
             [ForceUnroll] for (int j = 0; j < GCJ; ++j) bb[j] = gs_B[kk][tx + 32u * uint(j)];
-            [ForceUnroll] for (int i = 0; i < 4; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] += (j < 5 ? a[i] : aa[i]) * bb[j];
+            [ForceUnroll] for (int i = 0; i < GR; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] += (j < 5 ? a[i] : aa[i]) * bb[j];
         }
         GroupMemoryBarrierWithGroupSync();
     }
-    [ForceUnroll] for (int i = 0; i < 4; ++i) {
-        const uint row = r0 + ty * 4u + uint(i);
+    [ForceUnroll] for (int i = 0; i < GR; ++i) {
+        const uint row = r0 + ty * GR + uint(i);
         if (row >= n) continue;
         [ForceUnroll] for (int j = 0; j < GCJ; ++j) {
             const uint col = tx + 32u * uint(j);
@@ -524,172 +527,135 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
 }
 
 // ================================================================================== epi_main
-// One group per batch, 16 threads per child. Rows are staged IT at a time into groupshared memory.
+// Per child cube, sums over the batch's local AOs (rows) i:
 //   DOT[a][b] = sum_i V_i[a] (D V)_i[b], a = 0..19, b = 0..9, and its error sum, which depends on a only
 //   through its derivative order o: e[o][b] = sum_i EV_i[o] (|DV_i[b]| + EDV_i[ob]) + MV_i[o] EDV_i[ob]
-//                                           + (n + 1) u MV_i[o] |DV_i[b]|.
-//   The enclosure's AO sums (cube and inflated cube), one (row, child) per thread of the first 64.
+//                                           + (n + 1) u MV_i[o] |DV_i[b]|;
+//   the enclosure's AO sums for the cube and the inflated cube.
+// 32 threads per batch, two batches per group; thread (g, k), g = 0..3, k = child: DOT rows a = 5g .. 5g + 4
+// and the error sums of order g, every row in increasing order; then the AO sums of rows i = g and g + 4
+// (mod 8), each its own lane, the 8 lanes summed in lane order at the end. Rows are read straight from
+// phi and dv (consecutive children are consecutive floats); no staging and one barrier.
 
-#define EPI_WG 128
-#define IT     8
-#define T_V    0        // 20
-#define T_MV   20       // 4
-#define T_EV   24       // 4
-#define T_DV   28       // 20
-#define T_EDV  48       // 4   final: raw * safe + n 1e-36
-#define T_Q    52       // 6   raw
-#define T_QI   58       // 4   raw
-#define T_E    62       // 15
-#define T_EI   77       // 10  inflated E[1], E[3..5], E[9..14]
-#define TCH    87
+#define EPI_WG 64
 
-groupshared float gs_t[IT * TCH * 8];
+groupshared float gs_part[EPI_WG * 2][17];
 
-// source of tile channel ch: phi channel (< 64) or 64 + dv channel
-static const uint TSRC[TCH] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,              // V
-    34, 35, 36, 37,                                                                    // MV
-    38, 39, 40, 41,                                                                    // EV
-    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,    // DV
-    84, 85, 86, 87,                                                                    // EDV
-    88, 89, 90, 91, 92, 93,                                                            // Q
-    94, 95, 96, 97,                                                                    // QI
-    24, 25, 26, 27, 28, 29, 42, 43, 44, 45, 46, 47, 48, 49, 50,                        // E[0..14]
-    30, 31, 32, 33, 51, 52, 53, 54, 55, 56 };                                          // EI
+// AO sums of one (row, child) added into part[17]: cube [0..10], inflated cube Hessian [11..16].
+void epi_row_parts(uint row, uint k, float h, float hi, float h2, float safe, float fn, inout float part[17]) {
+    float* P = args.phi + row * PHI_W + k;
+    float* Q = args.dv + row * DV_W + k;
+    float edv[4];
+    [ForceUnroll] for (int o = 0; o < 4; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
+    float ad[20];
+    [ForceUnroll] for (int m = 0; m < 20; ++m) ad[m] = abs(Q[m * 8]) + edv[order_of(m)];
+    float q[6], e[15], ei[15];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) q[t] = Q[(24 + t) * 8] * safe;
+    // inflated |D| sums in the cube's slots: qs[1] = E2, qs[3 + a] = Ea2
+    float qs[6] = { 0.0, Q[30 * 8] * safe, 0.0, Q[31 * 8] * safe, Q[32 * 8] * safe, Q[33 * 8] * safe };
+    [ForceUnroll] for (int t = 0; t < 6; ++t) e[t] = P[(PC_E + t) * 8];
+    [ForceUnroll] for (int t = 0; t < 9; ++t) e[6 + t] = P[(PC_E2 + t) * 8];
+    [ForceUnroll] for (int t = 0; t < 15; ++t) ei[t] = 0.0;
+    ei[1] = P[PC_EI * 8];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ei[3 + a] = P[(PC_EI + 1 + a) * 8];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ei[9 + t] = P[(PC_EI2 + t) * 8];
+
+    float sum1 = 0.0, sum2 = 0.0;
+    [ForceUnroll] for (int p = 0; p < 3; ++p) { sum1 += ad[M1(p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) sum2 += ad[M2(p, r)]; }
+    const float W = ad[0] + h * sum1 + 0.5 * h2 * sum2;
+    const float W1 = ad[0] + h * sum1;
+    const float W1i = ad[0] + hi * sum1;
+    float Wa[3], W1a[3], W1ai[3], W1ab[6], W1abi[6];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) {
+        float t1 = 0.0, t2 = 0.0;
+        [ForceUnroll] for (int p = 0; p < 3; ++p) { t1 += ad[M2(a, p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) t2 += ad[M3(a, p, r)]; }
+        Wa[a] = ad[M1(a)] + h * t1 + 0.5 * h2 * t2;
+        W1a[a] = ad[M1(a)] + h * t1;
+        W1ai[a] = ad[M1(a)] + hi * t1;
+    }
+    [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
+        if (bq >= a) {
+            float t1 = 0.0;
+            [ForceUnroll] for (int p = 0; p < 3; ++p) t1 += ad[M3(a, bq, p)];
+            W1ab[ab_index(a, bq)] = ad[M2(a, bq)] + h * t1;
+            W1abi[ab_index(a, bq)] = ad[M2(a, bq)] + hi * t1;
+        }
+    }
+    part[0] += ad[0] * e[0];
+    part[1] += e[0] * q[0];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += e[6 + a] * W + e[2] * Wa[a] + e[6 + a] * q[2];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
+        if (bq >= a) {
+            const int t = ab_index(a, bq);
+            part[5 + t] += e[9 + t] * W1 + W1ab[t] * e[1] + e[9 + t] * q[1] + e[3 + a] * W1a[bq] + W1a[a] * e[3 + bq] + e[3 + a] * q[3 + bq];
+            part[11 + t] += ei[9 + t] * W1i + W1abi[t] * ei[1] + ei[9 + t] * qs[1] + ei[3 + a] * W1ai[bq] + W1ai[a] * ei[3 + bq] + ei[3 + a] * qs[3 + bq];
+        }
+    }
+}
 
 [shader("compute")]
 [numthreads(EPI_WG, 1, 1)]
 void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
-    const uint b = gid.x;
-    if (b >= args.num_batches) return;      // uniform per group
-    const Batch bt = args.batches[b];
+    const uint slot = tid >> 5, lane = tid & 31u;
+    const uint g = lane >> 3, k = lane & 7u;
+    const uint b = gid.x * 2u + slot;
+    const bool live = b < args.num_batches;  // not uniform per group: no early return before the barrier
+    const Batch bt = args.batches[min(b, args.num_batches - 1u)];
     const float h = bt.P_h.w, hi = 1.5 * h;
-    const uint n = bt.info.y, base = bt.info.z;
-    const float fn = float(n);
+    const uint n = live ? bt.info.y : 0u, base = bt.info.z;
+    const float fn = float(bt.info.y);
     const float safe = 1.001 + (fn + 64.0) * UF;
-    const float h2 = h * h, hi2 = hi * hi;
+    const float h2 = h * h;
 
-    // DOT role: child kd, a = sd and sd + 16, error pairs sd, sd + 16, sd + 32
-    const uint kd = tid >> 4, sd = tid & 15u;
-    float s0[10], s1[10], eo[3];
-    [ForceUnroll] for (int j = 0; j < 10; ++j) { s0[j] = 0.0; s1[j] = 0.0; }
-    [ForceUnroll] for (int q = 0; q < 3; ++q) eo[q] = 0.0;
-    // row role (tid < 64): child kr, row il of each tile
-    const uint kr = tid & 7u, ilr = tid >> 3;
-    float part[17];
-    [ForceUnroll] for (int t = 0; t < 17; ++t) part[t] = 0.0;
-
-    for (uint i0 = 0; i0 < n; i0 += IT) {
-        // ---- stage rows i0 .. i0 + IT - 1
-        for (uint e = tid; e < IT * TCH * 8u; e += EPI_WG) {
-            const uint kk = e & 7u, ch = (e >> 3) % TCH, il = (e >> 3) / TCH;
-            float v = 0.0;
-            if (i0 + il < n) {
-                const uint row = base + i0 + il, src = TSRC[ch];
-                if (src < 64u) v = args.phi[row * PHI_W + src * 8u + kk];
-                else           v = args.dv[row * DV_W + (src - 64u) * 8u + kk];
-                if (ch >= T_EDV && ch < T_EDV + 4) v = v * safe + fn * 1e-36;
-            }
-            gs_t[e] = v;
+    // ---- DOT rows 5g .. 5g + 4 and the error sums of order g, rows in increasing order
+    float s[5][10], eo[10];
+    [ForceUnroll] for (int a = 0; a < 5; ++a) [ForceUnroll] for (int j = 0; j < 10; ++j) s[a][j] = 0.0;
+    [ForceUnroll] for (int j = 0; j < 10; ++j) eo[j] = 0.0;
+    for (uint i = 0; i < n; ++i) {
+        float* P = args.phi + (base + i) * PHI_W + k;
+        float* Q = args.dv + (base + i) * DV_W + k;
+        float dvb[10], edv[3];
+        [ForceUnroll] for (int j = 0; j < 10; ++j) dvb[j] = Q[j * 8];
+        [ForceUnroll] for (int o = 0; o < 3; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
+        [ForceUnroll] for (int a = 0; a < 5; ++a) {
+            const float va = P[(PC_V + 5u * g + uint(a)) * 8u];
+            [ForceUnroll] for (int j = 0; j < 10; ++j) s[a][j] += va * dvb[j];
         }
-        GroupMemoryBarrierWithGroupSync();
-
-        // ---- DOT and its error sums, rows in increasing order
-        for (uint il = 0; il < IT; ++il) {
-            if (i0 + il >= n) break;
-            const uint tb = il * TCH * 8u + kd;
-            const float va0 = gs_t[tb + (T_V + sd) * 8u];
-            const float va1 = sd < 4u ? gs_t[tb + (T_V + 16u + sd) * 8u] : 0.0;
-            [ForceUnroll] for (int j = 0; j < 10; ++j) {
-                const float dvb = gs_t[tb + (T_DV + uint(j)) * 8u];
-                s0[j] += va0 * dvb;
-                s1[j] += va1 * dvb;
-            }
-            [ForceUnroll] for (int q = 0; q < 3; ++q) {
-                const uint idx = sd + 16u * uint(q);
-                if (idx < 40u) {
-                    const uint o = idx / 10u, bb = idx % 10u, ob = uint(order_of(int(bb)));
-                    const float ea = gs_t[tb + (T_EV + o) * 8u], ma = gs_t[tb + (T_MV + o) * 8u];
-                    const float dv = gs_t[tb + (T_DV + bb) * 8u], edv = gs_t[tb + (T_EDV + ob) * 8u], adv = abs(dv);
-                    eo[q] += ea * (adv + edv) + ma * edv + (fn + 1.0) * UF * ma * adv;
-                }
-            }
+        const float ea = P[(PC_EV + g) * 8u], ma = P[(PC_MV + g) * 8u];
+        [ForceUnroll] for (int j = 0; j < 10; ++j) {
+            const float adv = abs(dvb[j]), ed = edv[order_of(j)];
+            eo[j] += ea * (adv + ed) + ma * ed + (fn + 1.0) * UF * ma * adv;
         }
+    }
 
-        // ---- enclosure AO sums, one (row, child) per thread
-        if (tid < 64u && i0 + ilr < n) {
-            const uint tb = ilr * TCH * 8u + kr;
-            float ad[20];
-            [ForceUnroll] for (int m = 0; m < 20; ++m) ad[m] = abs(gs_t[tb + uint(T_DV + m) * 8u]) + gs_t[tb + uint(T_EDV + order_of(m)) * 8u];
-            float q[6], qi[4], e[15], ei[15];
-            [ForceUnroll] for (int t = 0; t < 6; ++t) q[t] = gs_t[tb + uint(T_Q + t) * 8u] * safe;
-            [ForceUnroll] for (int t = 0; t < 4; ++t) qi[t] = gs_t[tb + uint(T_QI + t) * 8u] * safe;
-            [ForceUnroll] for (int t = 0; t < 15; ++t) { e[t] = gs_t[tb + uint(T_E + t) * 8u]; ei[t] = 0.0; }
-            ei[1] = gs_t[tb + uint(T_EI + 0) * 8u];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) ei[3 + a] = gs_t[tb + uint(T_EI + 1 + a) * 8u];
-            [ForceUnroll] for (int t = 0; t < 6; ++t) ei[9 + t] = gs_t[tb + uint(T_EI + 4 + t) * 8u];
-            // inflated |D| sums in the cube's slots: qs[1] = E2, qs[3 + a] = Ea2
-            float qs[6] = { 0.0, qi[0], 0.0, qi[1], qi[2], qi[3] };
-
-            float sum1 = 0.0, sum2 = 0.0;
-            [ForceUnroll] for (int p = 0; p < 3; ++p) { sum1 += ad[M1(p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) sum2 += ad[M2(p, r)]; }
-            const float W = ad[0] + h * sum1 + 0.5 * h2 * sum2;
-            const float W1 = ad[0] + h * sum1;
-            const float W1i = ad[0] + hi * sum1;
-            float Wa[3], W1a[3], W1ai[3], W1ab[6], W1abi[6];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) {
-                float t1 = 0.0, t2 = 0.0;
-                [ForceUnroll] for (int p = 0; p < 3; ++p) { t1 += ad[M2(a, p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) t2 += ad[M3(a, p, r)]; }
-                Wa[a] = ad[M1(a)] + h * t1 + 0.5 * h2 * t2;
-                W1a[a] = ad[M1(a)] + h * t1;
-                W1ai[a] = ad[M1(a)] + hi * t1;
-            }
-            [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
-                if (bq >= a) {
-                    float t1 = 0.0;
-                    [ForceUnroll] for (int p = 0; p < 3; ++p) t1 += ad[M3(a, bq, p)];
-                    W1ab[ab_index(a, bq)] = ad[M2(a, bq)] + h * t1;
-                    W1abi[ab_index(a, bq)] = ad[M2(a, bq)] + hi * t1;
-                }
-            }
-            part[0] += ad[0] * e[0];
-            part[1] += e[0] * q[0];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += e[6 + a] * W + e[2] * Wa[a] + e[6 + a] * q[2];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
-                if (bq >= a) {
-                    const int t = ab_index(a, bq);
-                    part[5 + t] += e[9 + t] * W1 + W1ab[t] * e[1] + e[9 + t] * q[1] + e[3 + a] * W1a[bq] + W1a[a] * e[3 + bq] + e[3 + a] * q[3 + bq];
-                    part[11 + t] += ei[9 + t] * W1i + W1abi[t] * ei[1] + ei[9 + t] * qs[1] + ei[3 + a] * W1ai[bq] + W1ai[a] * ei[3 + bq] + ei[3 + a] * qs[3 + bq];
-                }
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
+    // ---- AO sums: lanes g and g + 4 of the rows taken 8 at a time
+    float pa[17], pb[17];
+    [ForceUnroll] for (int t = 0; t < 17; ++t) { pa[t] = 0.0; pb[t] = 0.0; }
+    for (uint i0 = 0; i0 < n; i0 += 8u) {
+        if (i0 + g < n)      epi_row_parts(base + i0 + g, k, h, hi, h2, safe, fn, pa);
+        if (i0 + g + 4u < n) epi_row_parts(base + i0 + g + 4u, k, h, hi, h2, safe, fn, pb);
     }
 
     // ---- outputs
     const uint fs = 8u * args.num_batches;
-    float* out = args.ep + b * 8u + kd;
-    [ForceUnroll] for (int j = 0; j < 10; ++j) {
-        out[(EP_DOT + sd * 10u + uint(j)) * fs] = s0[j];
-        if (sd < 4u) out[(EP_DOT + (sd + 16u) * 10u + uint(j)) * fs] = s1[j];
+    if (live) {
+        float* out = args.ep + b * 8u + k;
+        [ForceUnroll] for (int a = 0; a < 5; ++a) [ForceUnroll] for (int j = 0; j < 10; ++j) out[(EP_DOT + (5u * g + uint(a)) * 10u + uint(j)) * fs] = s[a][j];
+        [ForceUnroll] for (int j = 0; j < 10; ++j) out[(EP_EO + g * 10u + uint(j)) * fs] = eo[j];
     }
-    [ForceUnroll] for (int q = 0; q < 3; ++q) {
-        const uint idx = sd + 16u * uint(q);
-        if (idx < 40u) out[(EP_EO + idx) * fs] = eo[q];
-    }
-    // AO sums: the 8 row lanes of each child, in lane order
-    if (tid < 64u) {
-        [ForceUnroll] for (int t = 0; t < 17; ++t) gs_t[tid * 17u + uint(t)] = part[t];
+    // lane L of child k sits at gs_part[slot * 64 + L * 8 + k]
+    [ForceUnroll] for (int t = 0; t < 17; ++t) {
+        gs_part[slot * 64u + g * 8u + k][t] = pa[t];
+        gs_part[slot * 64u + (g + 4u) * 8u + k][t] = pb[t];
     }
     GroupMemoryBarrierWithGroupSync();
-    if (tid < 8u) {
+    if (live && g == 0u) {
         float tot[17];
         [ForceUnroll] for (int t = 0; t < 17; ++t) tot[t] = 0.0;
-        for (uint lane = 0; lane < 8u; ++lane) {
-            const uint src = (lane * 8u + tid) * 17u;
-            [ForceUnroll] for (int t = 0; t < 17; ++t) tot[t] += gs_t[src + uint(t)];
+        for (uint L = 0; L < 8u; ++L) {
+            [ForceUnroll] for (int t = 0; t < 17; ++t) tot[t] += gs_part[slot * 64u + L * 8u + k][t];
         }
-        float* o2 = args.ep + b * 8u + tid;
+        float* o2 = args.ep + b * 8u + k;
         [ForceUnroll] for (int t = 0; t < 11; ++t) o2[(EP_PART + t) * fs] = tot[t];
         [ForceUnroll] for (int t = 0; t < 6; ++t) o2[(EP_PI + t) * fs] = tot[11 + t];
     }
@@ -826,6 +792,56 @@ int krawczyk(Lin L, float dH[3][3], float hk) {
     return inside ? 1 : (disjoint ? -1 : 0);
 }
 
+// Whether child s (centre c + (+-h/2)^3, s & 1: + side in x, s & 2: y, s & 4: z) is excluded by this
+// cube's expansion alone: g + A d + 1/2 T[d,d] re-centred at the child's centre (with the error bounds
+// of g, A, T carried through, and the rounding of the re-centring), the quadratic term over the child,
+// and this cube's remainder bound r_up, which holds on all of the cube. Then the exclusion tests the
+// cube itself got: the seven directions and the Newton distance. Skips an evaluation for 27-38% of the
+// children on the test systems; no child it excludes was ever undecided by its own evaluation.
+bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], float h, uint s, float safe) {
+    const float hc = 0.5 * h;                   // exact; every product with it below is exact too
+    float d[3];
+    d[0] = (s & 1u) != 0u ? hc : -hc;
+    d[1] = (s & 2u) != 0u ? hc : -hc;
+    d[2] = (s & 4u) != 0u ? hc : -hc;
+    Eval C = P;
+    [ForceUnroll] for (int i = 0; i < 3; ++i) {
+        float v = P.g[i], S = abs(P.g[i]), e = P.e_g[i];
+        [ForceUnroll] for (int j = 0; j < 3; ++j) {
+            const float t = P.A[i][j] * d[j];
+            v += t; S += abs(t); e += P.e_A[i][j] * hc;
+            [ForceUnroll] for (int l = 0; l < 3; ++l) {
+                const float t2 = 0.5 * T[i][j][l] * d[j] * d[l];
+                v += t2; S += abs(t2); e += 0.5 * eT[i][j][l] * hc * hc;
+            }
+        }
+        C.g[i] = v;
+        C.e_g[i] = e * (1.0 + 16.0 * UF) + 17.0 * UF * S + 13.0e-36;
+        [ForceUnroll] for (int j = 0; j < 3; ++j) {
+            float a = P.A[i][j], Sa = abs(P.A[i][j]), ea = P.e_A[i][j];
+            [ForceUnroll] for (int l = 0; l < 3; ++l) {
+                const float t = T[i][j][l] * d[l];
+                a += t; Sa += abs(t); ea += eT[i][j][l] * hc;
+            }
+            C.A[i][j] = a;
+            C.e_A[i][j] = ea * (1.0 + 8.0 * UF) + 9.0 * UF * Sa + 4.0e-36;
+        }
+        C.q_up[i] = 0.5 * hc * hc * qT[i] * safe;
+        C.r_up[i] = P.r_up[i];
+    }
+    float val[3], vec[3][3];
+    eigen3(C.A, val, vec);
+    float3 dirs[7];
+    dirs[0] = float3(1, 0, 0); dirs[1] = float3(0, 1, 0); dirs[2] = float3(0, 0, 1);
+    int nd = 3;
+    const float gn = sqrt(C.g[0] * C.g[0] + C.g[1] * C.g[1] + C.g[2] * C.g[2]);
+    if (gn > 0.0) { dirs[nd] = float3(C.g[0], C.g[1], C.g[2]) / gn; nd++; }
+    [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
+    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t])) return true;
+    const Lin lin = linear(C, val, vec);
+    return lin.ok && newton_dist(C, lin, hc);
+}
+
 #define DEC_WG 64
 
 [shader("compute")]
@@ -858,17 +874,17 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         ev.A[a][c] = 2.0 * (x + y);
         ev.e_A[a][c] = (2.0 * (EDOT(M2(a, c), 0) + EDOT(M1(a), M1(c))) + 4.0 * UF * (abs(x) + abs(y))) * 1.001;
     }
-    // third derivatives enter only through sums of |T| + e_T
-    float qT[3], lT[6];
+    // third derivatives: kept for the children's test, and their sums of |T| + e_T for the enclosure
+    float T[3][3][3], eT[3][3][3], qT[3], lT[6];
     [ForceUnroll] for (int a = 0; a < 3; ++a) qT[a] = 0.0;
     [ForceUnroll] for (int t = 0; t < 6; ++t) lT[t] = 0.0;
     [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int c = 0; c < 3; ++c) [ForceUnroll] for (int d = 0; d < 3; ++d) {
         const float t0 = DOT(M3(a, c, d), 0), t1 = DOT(M2(a, c), M1(d)), t2 = DOT(M2(a, d), M1(c)), t3 = DOT(M2(c, d), M1(a));
-        const float T = 2.0 * (t0 + t1 + t2 + t3);
-        const float eT = (2.0 * (EDOT(M3(a, c, d), 0) + EDOT(M2(a, c), M1(d)) + EDOT(M2(a, d), M1(c)) + EDOT(M2(c, d), M1(a)))
-                          + 8.0 * UF * (abs(t0) + abs(t1) + abs(t2) + abs(t3))) * 1.001;
-        qT[a] += abs(T) + eT;                                 // sum over (c, d) of |T[a][c][d]|
-        if (a <= c) lT[ab_index(a, c)] += abs(T) + eT;        // sum over d, a <= c
+        T[a][c][d] = 2.0 * (t0 + t1 + t2 + t3);
+        eT[a][c][d] = (2.0 * (EDOT(M3(a, c, d), 0) + EDOT(M2(a, c), M1(d)) + EDOT(M2(a, d), M1(c)) + EDOT(M2(c, d), M1(a)))
+                       + 8.0 * UF * (abs(t0) + abs(t1) + abs(t2) + abs(t3))) * 1.001;
+        qT[a] += abs(T[a][c][d]) + eT[a][c][d];                               // sum over (c, d)
+        if (a <= c) lT[ab_index(a, c)] += abs(T[a][c][d]) + eT[a][c][d];      // sum over d, a <= c
     }
 
     // ---- enclosure over the cube (and the Hessian over the inflated cube)
@@ -942,8 +958,13 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         else if (h <= args.h_min) { outc = OUT_ESCALATE; why = WHY_HMIN; }
         else { outc = OUT_SPLIT; why = WHY_SPLIT; }
     }
+    uint children = 0u;
+    if (outc == OUT_SPLIT) {
+        for (uint s = 0; s < 8u; ++s) if (!child_excluded(ev, T, eT, qT, h, s, safe)) children |= 1u << s;
+        if (children == 0u) { outc = OUT_DISCARD; why = WHY_CHILDREN; }
+    }
     if (tried_infl) outc |= OUT_INFLATED;
-    args.outcome[cube] = outc | (why << 8);
+    args.outcome[cube] = outc | (why << 8) | (children << 16);
     if ((args.flags & 1u) != 0u) {
         float* dbg = args.debug + cube * 16u;
         dbg[0] = ev.rho; dbg[1] = ev.e_rho; dbg[2] = ev.rho_up;

@@ -10,7 +10,7 @@
 //   --reps <n>      timed runs per configuration, the median is reported (default 3)
 //   --threads <n>   CPU worker threads (default 0: every logical core)
 //   --cpu / --gpu   only that path (default: both, GPU when there is a device)
-//   --profile       also a GPU run that waits for every kernel to time it (per-kernel table)
+//   --profile       also a GPU run that waits for every kernel to time it (per-kernel times, GEMM FLOP/s)
 //   --data <dir>    test_data directory (default: the source tree's)
 //   --verbose       keep mdlib's info and debug log lines (default: errors only)
 //
@@ -47,15 +47,20 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define MAX_REPS 32
 
+// The .h5 inputs need a build with MD_ENABLE_HDF5=ON (which defines MD_HDF5); without it they are listed as skipped.
 static const char* builtin_datasets[] = {
     "molden/h2o_ccpvdz.molden",
-#if defined(MD_HDF5)
     "vlx/h2o.h5",
     "vlx/acro-xps.h5",
     "vlx/amide.h5",
     "vlx/mol.h5",
-#endif
 };
+
+#if defined(MD_HDF5)
+#define HAVE_H5 1
+#else
+#define HAVE_H5 0
+#endif
 
 typedef struct input_t {
     md_allocator_i*   alloc;
@@ -101,13 +106,7 @@ static bool input_load(input_t* in, const char* path) {
     }
 #endif
     else {
-        fprintf(stderr, "%s: unsupported format (.molden%s)\n", path,
-#if defined(MD_HDF5)
-            ", .h5"
-#else
-            "; .h5 needs an MD_ENABLE_HDF5 build"
-#endif
-        );
+        printf("%s: unsupported format (.molden or .h5)\n", path);
         return false;
     }
     if (!ok) { fprintf(stderr, "%s: could not be read\n", path); return false; }
@@ -305,23 +304,25 @@ int main(int argc, char** argv) {
            threads > 0 ? "threads as given" : "all used", gpu_name);
     printf("rho_min %.3g | h_min 1e-4 | separatrices traced | %d timed run%s per configuration (GPU after one warm-up), median shown\n",
            rho_min, reps, reps == 1 ? "" : "s");
-    printf("data %s\n\n", data_dir);
+    printf("data %s\n", data_dir);
+    printf("formats .molden%s\n\n", HAVE_H5 ? ", .h5 (VeloxChem)" : " only: this mdlib was configured without MD_ENABLE_HDF5, so the .h5 inputs are skipped");
 
     result_t results[64];
     int num_results = 0;
 
     for (int di = 0; di < num_names; ++di) {
         char path[1024];
+        if (!HAVE_H5 && ends_with(names[di], ".h5")) { printf("%s: skipped, needs MD_ENABLE_HDF5=ON\n\n", names[di]); continue; }
         if (file_exists(names[di])) snprintf(path, sizeof(path), "%s", names[di]);
         else snprintf(path, sizeof(path), "%s/%s", data_dir, names[di]);
-        if (!file_exists(path)) { printf("%s: not found, skipped\n\n", names[di]); continue; }
+        if (!file_exists(path)) { printf("%s: not found at %s, skipped\n\n", names[di], path); continue; }
 
         input_t in;
         if (!input_load(&in, path)) { input_free(&in); printf("\n"); continue; }
         printf("%s: %zu atoms, %zu shells, %zu primitives, %zu Cartesian AOs\n", names[di], in.num_atoms,
                (size_t)in.basis.num_shells, (size_t)in.basis.num_primitives, in.num_ao);
         printf("  %-4s %10s %8s %10s %10s %8s %9s %8s %8s %7s | %9s %6s %5s | %s\n", "path", "total ms", "setup", "sweep",
-               "gpu wait", "polish", "cpu lvls", "host", "separ.", "clust.", "cubes", "escal.", "disp.", "max/bcp/rcp/ccp");
+               "gpu", "polish", "cpu lvls", "host", "separ.", "clust.", "cubes", "escal.", "disp.", "max/bcp/rcp/ccp");
 
         md_topo_gto_desc_t desc = {
             .basis = &in.basis,
@@ -358,6 +359,15 @@ int main(int argc, char** argv) {
             if (!ok) printf("       the run reported failure\n");
             if (!deterministic) printf("       NOT DETERMINISTIC: the runs differ\n");
             if (gpu && !runs[0].info.used_gpu) printf("       the GPU was not used (fell back to the CPU)\n");
+            {
+                const md_topo_gto_info_t* i0 = &runs[0].info;
+                const uint64_t ev = i0->num_box_evals, sk = i0->num_children_skipped;
+                printf("       %llu children excluded by their parent's expansion (%.0f%% of %llu)",
+                       (unsigned long long)sk, ev + sk ? 100.0 * (double)sk / (double)(ev + sk) : 0.0, (unsigned long long)(ev + sk));
+                if (gpu && i0->num_gpu_batches) printf(", %llu GPU batches, %.0f local AOs on average", (unsigned long long)i0->num_gpu_batches,
+                                                       (double)i0->num_gpu_rows / (double)i0->num_gpu_batches);
+                printf("\n");
+            }
             if (gpu) res.gpu_ms = MED(ms_total); else res.cpu_ms = MED(ms_total);
             if (!gpu) {
                 cpu_ref = runs[0];
@@ -382,10 +392,11 @@ int main(int argc, char** argv) {
             const double ao = MED(info.ms_gpu_ao), gemm = MED(info.ms_gpu_gemm), epi = MED(info.ms_gpu_epilogue), dec = MED(info.ms_gpu_decide);
             const double wait = MED(info.ms_sweep_gpu_wait);
             const double k = ao + gemm + epi + dec;
+            const double gflop = runs[0].info.gpu_gemm_flop * 1.0e-9;
             printf("  GPU kernels, each waited for (sweep %.1f ms in this mode):\n", MED(info.ms_sweep));
-            printf("       ao %.1f ms (%.0f%%) | gemm %.1f ms (%.0f%%) | epilogue %.1f ms (%.0f%%) | decide %.1f ms (%.0f%%) | uploads, readbacks, waits %.1f ms\n",
-                   ao, 100.0 * ao / (k > 0 ? k : 1), gemm, 100.0 * gemm / (k > 0 ? k : 1), epi, 100.0 * epi / (k > 0 ? k : 1),
-                   dec, 100.0 * dec / (k > 0 ? k : 1), wait - k > 0 ? wait - k : 0.0);
+            printf("       ao %.1f ms (%.0f%%) | gemm %.1f ms (%.0f%%, %.0f GFLOP/s) | epilogue %.1f ms (%.0f%%) | decide %.1f ms (%.0f%%) | uploads, readbacks, waits %.1f ms\n",
+                   ao, 100.0 * ao / (k > 0 ? k : 1), gemm, 100.0 * gemm / (k > 0 ? k : 1), gemm > 0 ? gflop / (gemm * 1.0e-3) : 0.0,
+                   epi, 100.0 * epi / (k > 0 ? k : 1), dec, 100.0 * dec / (k > 0 ? k : 1), wait - k > 0 ? wait - k : 0.0);
             for (int r = 0; r < reps; ++r) md_topo_extremum_graph_free(&runs[r].graph);
             desc.profile_gpu_kernels = false;
         }

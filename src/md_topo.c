@@ -1734,7 +1734,10 @@ static void cpg_unit_grad(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double 
 }
 
 // Follows sign * grad rho / |grad rho| from x0 + 1e-3 dir. Returns index of the CP of type 'target'
-// it ends in, or -1 (density fell below eps, or path length exhausted).
+// it ends in, or -1 (density fell below eps, or path length exhausted). Only the end point is kept,
+// and it is found within 'hit' of a CP that attracts the path, so the local error per step (1e-6)
+// and the step cap (0.25 Bohr) are loose: on every test input the end points are those of 1e-8 and
+// 0.05, at 40% fewer evaluations and a third of the longest path's time.
 static int cpg_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x0[3], const double dir[3], double sign, const cpg_cp_t* cps, int ncp, int target) {
     static const double a21 = 1.0/5;
     static const double a31 = 3.0/40, a32 = 9.0/40;
@@ -1746,7 +1749,7 @@ static int cpg_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x0[3]
     double x[3], k1[3], k2[3], k3[3], k4[3], k5[3], k6[3], k7[3], y[3], rho, gn;
     for (int k = 0; k < 3; ++k) x[k] = x0[k] + 1e-3 * dir[k];
     double step = 1e-3, len = 0.0;
-    const double tol = 1e-8, hit = 2e-3;
+    const double tol = 1e-6, hit = 2e-3;
     cpg_unit_grad(ctx, sc, x, sign, k1, &rho, &gn);
     for (int iter = 0; iter < 200000 && len < 40.0; ++iter) {
         for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a21 * k1[k]);
@@ -1788,7 +1791,7 @@ static int cpg_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x0[3]
         }
         const double fac = err > 0 ? 0.9 * pow(tol / err, 0.2) : 4.0;
         step *= fmin(4.0, fmax(0.2, fac));
-        step = fmin(step, 0.05);
+        step = fmin(step, 0.25);
         step = fmax(step, 1e-7);
     }
     return -1;
@@ -1858,31 +1861,58 @@ static int cpg_find(int* parent, int i) {
 // ----------------------------------------------------------------------------------------------- workers
 
 enum { CPG_DISCARD = 0, CPG_SPLIT = 1, CPG_UNRESOLVED = 2, CPG_ROOT = 3 };
+#define CPG_KIND(k)            ((k) & 0xFF)
+#define CPG_DISCARD_CHILDREN   (CPG_DISCARD | (1 << 16))   // split, but every child is excluded (bit 16: for the statistics)
 
 typedef struct cpg_rootrec_t {
     size_t   box;
     cpg_cp_t cp;
 } cpg_rootrec_t;
 
+// Work items handed out one at a time, in order, to whichever worker asks next: for jobs whose items
+// differ a lot in cost and are few (separatrices, polish). Every result is written to the item's own
+// slot, so which thread takes which item changes nothing.
+typedef struct cpg_queue_t {
+    md_mutex_t mutex;
+    int        next;
+    int        count;
+} cpg_queue_t;
+
+static int cpg_queue_pop(cpg_queue_t* q) {
+    md_mutex_lock(&q->mutex);
+    const int i = q->next < q->count ? q->next++ : -1;
+    md_mutex_unlock(&q->mutex);
+    return i;
+}
+
+typedef struct cpg_polish_t {
+    int      r;                         // cpg_polish_root's result
+    cpg_cp_t cp;
+} cpg_polish_t;
+
 typedef struct cpg_worker_t {
     const cpg_ctx_t* ctx;
     cpg_scratch_t sc;
     int tid, nthreads;
-    int job;                            // 0: cube sweep, 1: separatrices
+    int job;                            // 0: cube sweep, 1: separatrices, 2: polish
     volatile int32_t* cancel;
+    cpg_queue_t* queue;                 // jobs 1 and 2
     // sweep
     const cpg_box_t* boxes;
     size_t nboxes;
-    uint8_t* kind;                      // one slot per cube, written by exactly one worker
+    uint32_t* kind;                     // one slot per cube, written by exactly one worker
     double h_min;
     md_array(cpg_rootrec_t) roots;      // this worker's certified roots
     uint64_t inflated;
-    // separatrices
+    // separatrices: item t traces path traces[t] % 2 of saddle saddles[traces[t] / 2]
     const cpg_cp_t* cps;
     int ncp;
     const int* saddles;
-    int nsaddle;
+    const int* traces;
     int* ends;                          // two per saddle
+    // polish
+    const cpg_box_t* pboxes;
+    cpg_polish_t* pres;
 } cpg_worker_t;
 
 // The root of a cube Krawczyk certified (unique in the 1.5x inflated cube): double Newton from the cube
@@ -1907,7 +1937,44 @@ static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_bo
     return 1;
 }
 
-// Decides one cube. Writes the polished root when the result is CPG_ROOT.
+// Children of a cube that splits which the cube's own expansion already excludes: g + A d + 1/2 T[d,d]
+// re-centred at the child's centre, the quadratic term over the child, and the cube's remainder bound,
+// which holds on all of the cube; then the exclusion tests (directions, Newton distance). Returns the mask
+// of the children that still need an evaluation (bit s: child s, + side in x if s & 1, y if s & 2, z if
+// s & 4). On the test systems 27-38% of all children are excluded this way, and no child excluded so was
+// left undecided by its own evaluation.
+static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
+    const double hc = 0.5 * h;
+    uint32_t mask = 0;
+    for (int s = 0; s < 8; ++s) {
+        const double d[3] = { (s & 1) ? hc : -hc, (s & 2) ? hc : -hc, (s & 4) ? hc : -hc };
+        cpg_eval_t C;
+        MEMSET(&C, 0, sizeof(C));
+        for (int i = 0; i < 3; ++i) {
+            double gi = P->g[i];
+            for (int j = 0; j < 3; ++j) {
+                gi += P->A[i][j] * d[j];
+                for (int l = 0; l < 3; ++l) gi += 0.5 * P->T[i][j][l] * d[j] * d[l];
+            }
+            C.g[i] = gi;
+            for (int j = 0; j < 3; ++j) {
+                double a = P->A[i][j];
+                for (int l = 0; l < 3; ++l) a += P->T[i][j][l] * d[l];
+                C.A[i][j] = a;
+            }
+            C.quadT[i] = 0.25 * P->quadT[i];      // 1/2 sum |T| hc^2
+            C.r[i] = P->r[i];
+        }
+        double val[3], vec[3][3], M[3][3];
+        MEMCPY(M, C.A, sizeof(M));
+        cpg_eigen_sym3(val, vec, M);
+        if (!cpg_exclude(&C, hc, val, vec)) mask |= 1u << s;
+    }
+    return mask;
+}
+
+// Decides one cube. Writes the polished root when the result is CPG_ROOT. A split comes with the mask of
+// the children to evaluate in bits 8..15 (cpg_child_mask); a split with no child left is a discard.
 static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_cp) {
     const cpg_ctx_t* ctx = w->ctx;
     cpg_eval_t ev, evi;
@@ -1932,7 +1999,9 @@ static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_
         if (r == 0) return CPG_DISCARD;
         // Newton failed despite the certificate (should not happen): treat the cube as undecided
     }
-    return box->h <= w->h_min ? CPG_UNRESOLVED : CPG_SPLIT;
+    if (box->h <= w->h_min) return CPG_UNRESOLVED;
+    const uint32_t children = cpg_child_mask(&ev, box->h);
+    return children ? (int)(CPG_SPLIT | (children << 8)) : CPG_DISCARD_CHILDREN;
 }
 
 static void cpg_worker_entry(void* data) {
@@ -1946,23 +2015,27 @@ static void cpg_worker_entry(void* data) {
             for (size_t bi = chunk * CPG_CHUNK; bi < end; ++bi) {
                 cpg_rootrec_t rec;
                 const int k = cpg_process_box(w, &w->boxes[bi], &rec.cp);
-                w->kind[bi] = (uint8_t)k;
-                if (k == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
+                w->kind[bi] = (uint32_t)k;
+                if (CPG_KIND(k) == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
             }
         }
-    } else {
-        for (int i = w->tid; i < w->nsaddle; i += w->nthreads) {
+    } else if (w->job == 1) {
+        for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
             if (w->cancel && *w->cancel) return;
+            const int i = w->traces[t] / 2, e = w->traces[t] % 2;
             const cpg_cp_t* cp = &w->cps[w->saddles[i]];
             const bool bcp = cp->type == MD_TOPO_SPLIT_SADDLE;
             const int col = bcp ? 2 : 0;                    // the unique eigen-direction
             const double sign = bcp ? 1.0 : -1.0;           // ascend to maxima / descend to minima
             const int target = bcp ? MD_TOPO_MAXIMUM : MD_TOPO_MINIMUM;
-            for (int e = 0; e < 2; ++e) {
-                double dir[3];
-                for (int k = 0; k < 3; ++k) dir[k] = (e ? -1.0 : 1.0) * cp->evec[k][col];
-                w->ends[2 * i + e] = cpg_trace(w->ctx, &w->sc, cp->x, dir, sign, w->cps, w->ncp, target);
-            }
+            double dir[3];
+            for (int k = 0; k < 3; ++k) dir[k] = (e ? -1.0 : 1.0) * cp->evec[k][col];
+            w->ends[2 * i + e] = cpg_trace(w->ctx, &w->sc, cp->x, dir, sign, w->cps, w->ncp, target);
+        }
+    } else {
+        for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
+            if (w->cancel && *w->cancel) return;
+            w->pres[t].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[t], &w->pres[t].cp);
         }
     }
 }
@@ -2024,7 +2097,7 @@ typedef struct cpg_run_t {
     md_array(cpg_box_t)       cur;
     md_array(cpg_box_t)       nxt;
     md_array(cpg_box_t)       unres;
-    md_array(uint8_t)         kind;
+    md_array(uint32_t)        kind;
     md_array(cpg_rootrec_t)   roots;
     md_topo_gto_info_t        info;
 } cpg_run_t;
@@ -2219,12 +2292,16 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
 
         md_array_shrink(R->nxt, 0);
         for (size_t bi = 0; bi < nb; ++bi) {
-            if (R->kind[bi] == CPG_UNRESOLVED) {
+            const uint32_t k = R->kind[bi];
+            if (k == CPG_DISCARD_CHILDREN) {
+                R->info.num_children_skipped += 8;
+            } else if (CPG_KIND(k) == CPG_UNRESOLVED) {
                 md_array_push(R->unres, R->cur[bi], heap);
-            } else if (R->kind[bi] == CPG_SPLIT) {
+            } else if (CPG_KIND(k) == CPG_SPLIT) {
                 const cpg_box_t box = R->cur[bi];
                 const double hc = 0.5 * box.h;
                 for (int s = 0; s < 8; ++s) {
+                    if (!(k & (1u << (8 + s)))) { R->info.num_children_skipped++; continue; }
                     cpg_box_t child = { { box.c[0] + ((s & 1) ? hc : -hc), box.c[1] + ((s & 2) ? hc : -hc), box.c[2] + ((s & 4) ? hc : -hc) }, hc };
                     md_array_push(R->nxt, child, heap);
                 }
@@ -2266,16 +2343,39 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
         const int ns = (int)md_array_size(saddles);
         if (ns > 0) {
             int* ends = (int*)md_alloc(heap, sizeof(int) * 2 * ns);
+            for (int i = 0; i < 2 * ns; ++i) ends[i] = -1;
+            // One work item per path. A path can only end at a CP of its target type, so with none of
+            // that type there is nothing to trace (a molecule without cage points: every RCP descent
+            // would run out to rho_min, the longest paths of all, and give no edge). Descents first:
+            // they are the longer ones, which a queue should start early.
+            bool has_max = false, has_min = false;
+            for (int i = 0; i < ncp; ++i) {
+                has_max |= cps[i].type == MD_TOPO_MAXIMUM;
+                has_min |= cps[i].type == MD_TOPO_MINIMUM;
+            }
+            md_array(int) traces = 0;
+            for (int pass = 0; pass < 2; ++pass) {
+                for (int i = 0; i < ns; ++i) {
+                    const bool bcp = cps[saddles[i]].type == MD_TOPO_SPLIT_SADDLE;
+                    if (bcp != (pass == 1) || !(bcp ? has_max : has_min)) continue;
+                    md_array_push(traces, 2 * i, heap);
+                    md_array_push(traces, 2 * i + 1, heap);
+                }
+            }
+            cpg_queue_t queue = { .next = 0, .count = (int)md_array_size(traces) };
+            md_mutex_init(&queue.mutex);       // in place: a CRITICAL_SECTION or pthread mutex must not be copied
             for (int t = 0; t < nthreads; ++t) {
                 workers[t].job = 1;
+                workers[t].queue = &queue;
                 workers[t].cps = cps;
                 workers[t].ncp = ncp;
                 workers[t].saddles = saddles;
-                workers[t].nsaddle = ns;
+                workers[t].traces = traces;
                 workers[t].ends = ends;
             }
-            for (int i = 0; i < 2 * ns; ++i) ends[i] = -1;
-            cpg_run_workers(workers, nthreads);
+            if (queue.count > 0) cpg_run_workers(workers, MIN(nthreads, queue.count));
+            md_mutex_destroy(&queue.mutex);
+            md_array_free(traces, heap);
             cpg_run_cancelled(R);
             for (int i = 0; i < ns; ++i) {
                 for (int e = 0; e < 2; ++e) {
@@ -2468,7 +2568,7 @@ typedef struct cpg_gpu_args_t {
 #define CPG_GPU_DV_W           272             // floats per row of dv: 34 x 8
 #define CPG_GPU_EP_W           260             // floats per cube of ep
 #define CPG_GPU_TAB_CAP        4096            // floats of 1D tables per chunk of shells (ao_main)
-#define CPG_GPU_ROW_TILE       32              // rows per GEMM group
+#define CPG_GPU_ROW_TILE       32              // rows per GEMM group (288 columns, 16 AOs per step)
 #define CPG_GPU_DEC_WG         64              // decide_main group size
 
 #define CPG_GPU_SCRATCH_BUDGET (192u << 20)    // bytes of phi + dv per chunk
@@ -2477,6 +2577,7 @@ typedef struct cpg_gpu_args_t {
 #define CPG_GPU_DISPATCH_MS    20.0            // target duration of one chunk (four launches)
 #define CPG_GPU_OUT_KIND(o)    ((o) & 0xFu)
 #define CPG_GPU_OUT_INFLATED   16u
+#define CPG_GPU_WHY_CHILDREN   11u             // discarded: split, but no child survived the parent's expansion
 
 enum { CPG_K_AO, CPG_K_GEMM, CPG_K_EPI, CPG_K_DECIDE, CPG_K_COUNT };
 static md_gpu_kernel_t k_topo_gto[CPG_K_COUNT] = {0};
@@ -2541,15 +2642,18 @@ static bool cpg_gpu_reserve(md_gpu_stream_t s, md_gpu_addr_t* buf, size_t* cap, 
 }
 
 // A batch: the 8 children (c = P +- hc per axis, child s on the + side of x if s & 1, y if s & 2,
-// z if s & 4) of one cube, those in 'mask' to be evaluated. Its candidate shells are a range of the
-// previous level's pool of local shells: a child batch's union of inflated cubes, P +- 2.5 hc, lies
-// inside its parent batch's, so screening against the parent's list loses nothing.
+// z if s & 4) of one cube, those in 'mask' to be evaluated, and its local shells: a range of the
+// pool, screened when the batch is made from its parent batch's local shells. A child batch's union
+// of inflated cubes, P +- 2.5 hc, lies inside its parent batch's, so screening against the parent's
+// list loses nothing.
 typedef struct cpg_hbatch_t {
     double   P[3];
     double   hc;
     uint32_t mask;
-    uint32_t cand_off;
-    uint32_t cand_cnt;
+    uint32_t level;
+    uint32_t lsh_cnt;
+    uint32_t nao;                       // local AOs; UINT32_MAX: the kernels cannot form it, the CPU takes it
+    size_t   lsh_off;                   // first local shell, in the pool's numbering (pool index + pool base)
 } cpg_hbatch_t;
 
 static inline bool cpg_is_float(double x) { return (double)(float)x == x; }
@@ -2563,6 +2667,50 @@ static bool cpg_gpu_batch_exact(const cpg_hbatch_t* b) {
     }
     return true;
 }
+
+// Screens batch b (P, hc, mask and level set) against the candidates pool[cand_off - pool_base ...],
+// cand_cnt of them, and appends its local shells to the pool.
+static void cpg_gpu_batch_screen(const cpg_ctx_t* ctx, cpg_hbatch_t* b, md_array(uint32_t)* pool, size_t pool_base,
+                                 size_t cand_off, uint32_t cand_cnt, md_allocator_i* heap) {
+    md_array_ensure(*pool, md_array_size(*pool) + cand_cnt, heap);   // the candidates must not move below
+    b->lsh_off = pool_base + md_array_size(*pool);
+    b->lsh_cnt = 0;
+    if (!cpg_gpu_batch_exact(b)) {
+        b->nao = UINT32_MAX;
+        return;
+    }
+    const uint32_t* cand = cand_cnt ? *pool + (cand_off - pool_base) : NULL;
+    const double hs = 2.5 * b->hc;
+    uint32_t n = 0;
+    for (uint32_t c = 0; c < cand_cnt; ++c) {
+        const uint32_t s = cand[c];
+        const cpg_shell_t* cs = &ctx->shell[s];
+        double d2 = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double t = fabs(cs->A[k] - b->P[k]) - hs;
+            if (t > 0.0) d2 += t * t;
+        }
+        // a lower bound of the distance, conservatively: any shell that may reach is kept
+        if (d2 * (1.0 - 1e-12) <= cs->radius * cs->radius * (1.0 + 1e-6)) {
+            md_array_push_no_grow(*pool, s);
+            b->lsh_cnt++;
+            n += (uint32_t)cs->ncart;
+        }
+    }
+    b->nao = n;
+}
+
+// A chunk: the batches q[q0..q1), 'count' of them for the GPU (the others go to the CPU).
+typedef struct cpg_gpu_chunk_t {
+    size_t        q0, q1;
+    size_t        count;
+    bool          full;                 // as many GPU batches as the chunk size allowed
+    bool          gpu_idle;             // no other GPU work in flight when it was launched
+    int           slot;                 // its readback buffer
+    md_gpu_sync_t sync;
+    md_tick_t     t_launch;
+    double        ms_profiled;          // with profiling: its time, every kernel waited for
+} cpg_gpu_chunk_t;
 
 static inline cpg_box_t cpg_child_box(const cpg_hbatch_t* b, int s) {
     cpg_box_t box = { { b->P[0] + ((s & 1) ? b->hc : -b->hc), b->P[1] + ((s & 2) ? b->hc : -b->hc), b->P[2] + ((s & 4) ? b->hc : -b->hc) }, b->hc };
@@ -2658,20 +2806,19 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_free(heap, sh, sizeof(cpg_gpu_shell_t) * NS);
     if (!ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: GPU allocation failed: %s", md_gpu_last_error());
 
-    md_array(cpg_box_t)       esc = 0;        // cubes for the CPU, in level and cube order
-    md_array(cpg_hbatch_t)    cur = 0;        // this level's batches
-    md_array(cpg_hbatch_t)    nxt = 0;        // the next level's
-    md_array(uint32_t)        pool_prev = 0;  // local shells per batch, previous level
-    md_array(uint32_t)        pool_cur = 0;   // and this level
-    md_array(uint32_t)        lsh_off = 0;    // per batch of this level: its local shells in pool_cur,
-    md_array(uint32_t)        lsh_cnt = 0;
-    md_array(uint32_t)        lnao = 0;       // and its local AO count (UINT32_MAX: the CPU takes it)
+    md_array(cpg_box_t)       esc = 0;        // cubes for the CPU, in the order met
+    md_array(cpg_box_t)       proots = 0;     // cubes with a certified root, polished after the sweep
+    md_array(cpg_hbatch_t)    q = 0;          // batches, first in first out: level by level, each level in
+                                              // the order the previous level's outcomes made it
+    md_array(uint32_t)        pool = 0;       // local shells of the batches in q, in the same order
+    size_t                    pool_base = 0;  // pool numbering of pool[0]
     md_array(cpg_gpu_batch_t) hb = 0;
+    md_array(uint32_t)        hsh = 0;        // the chunk's local shells
     md_array(uint32_t)        hrow = 0;
-    md_array(uint32_t)        htile = 0;   // pairs (batch, first row)
-    md_array(uint32_t)        cb = 0;      // the chunk's batches (indices into cur)
+    md_array(uint32_t)        htile = 0;      // pairs (batch, first row)
 
-    // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups
+    // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups; candidates: every shell
+    for (int s = 0; s < NS; ++s) md_array_push(pool, (uint32_t)s, heap);
     {
         const size_t nr = md_array_size(R->cur);
         cpg_rootkey_t* keys = (cpg_rootkey_t*)md_alloc(heap, sizeof(cpg_rootkey_t) * MAX(nr, 1));
@@ -2695,120 +2842,100 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         if (nk > 1) qsort(keys, nk, sizeof(cpg_rootkey_t), cpg_rootkey_cmp);
         for (size_t i = 0; i < nk; ) {
             const cpg_box_t* b0 = &R->cur[keys[i].idx];
-            cpg_hbatch_t hbt = { { 0, 0, 0 }, b0->h, 0, 0, (uint32_t)NS };
+            cpg_hbatch_t hbt = { { 0, 0, 0 }, b0->h, 0, 0, 0, 0, 0 };
             for (int k = 0; k < 3; ++k) hbt.P[k] = ((double)keys[i].g[k] + 0.5) * 4.0 * b0->h;
             size_t j = i;
             while (j < nk && keys[j].g[0] == keys[i].g[0] && keys[j].g[1] == keys[i].g[1] && keys[j].g[2] == keys[i].g[2] && R->cur[keys[j].idx].h == b0->h) {
                 hbt.mask |= 1u << keys[j].bit;
                 j++;
             }
-            md_array_push(cur, hbt, heap);
+            cpg_gpu_batch_screen(ctx, &hbt, &pool, pool_base, 0, (uint32_t)NS, heap);
+            md_array_push(q, hbt, heap);
             i = j;
         }
         md_free(heap, keys, sizeof(cpg_rootkey_t) * MAX(nr, 1));
         md_array_shrink(R->cur, 0);
-        for (int s = 0; s < NS; ++s) md_array_push(pool_prev, (uint32_t)s, heap);
     }
 
-    // --- device scratch, grown on demand
+    // --- device scratch, grown on demand. One set: the stream orders a chunk's uploads and kernels after
+    //     the previous chunk's. Only the readback is double, as the host reads one chunk's outcomes
+    //     while the next chunk runs.
     md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0;
-    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_hout = 0;
-    md_gpu_mem_t h_out = {0};
+    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0;
+    md_gpu_mem_t h_out[2] = { {0}, {0} };
+    size_t c_hout[2] = { 0, 0 };
     const size_t row_cap = CPG_GPU_SCRATCH_BUDGET / ((CPG_GPU_PHI_W + CPG_GPU_DV_W) * sizeof(float));
-    const bool profile = R->desc->profile_gpu_kernels;   // wait for and time every kernel
-    size_t chunk = 16;                    // batches per chunk, adapted to CPG_GPU_DISPATCH_MS
-    // Invariant at every exit of the loop below: cur[done..] and nxt are exactly the batches not yet
-    // decided, which the CPU then takes over.
-    size_t done = 0;
+    const bool profile = R->desc->profile_gpu_kernels;   // one chunk at a time, every kernel waited for and timed
+    // Two chunks in flight: while the GPU runs one, the host reads the other's outcomes, makes and screens
+    // the batches they split into, and builds and launches the next chunk. Chunks follow q, so they run
+    // on across level boundaries. The order everything is decided in is q's, whatever the chunks.
+    const int depth = profile ? 1 : 2;
+    cpg_gpu_chunk_t fl[2];
+    int nfl = 0, slot = 0;
+    size_t chunk = 16;                    // GPU batches per chunk, adapted to CPG_GPU_DISPATCH_MS
+    size_t qd = 0, qh = 0;                // q[qd..qh) launched, not yet decided; q[qh..] not launched
+    uint32_t num_levels = 0;
+    bool have_prev_done = false;          // when the previous GPU chunk completed, if seen to the tick
+    md_tick_t t_prev_done = 0;
 
-    while (ok && md_array_size(cur) > 0) {
+    while (ok) {
         if (cpg_run_cancelled(R)) break;
-        const size_t nb = md_array_size(cur);
 
-        // --- local shells of every batch, from its candidates; batches the kernels cannot form exactly go to the CPU
-        md_array_shrink(pool_cur, 0);
-        md_array_resize(lsh_off, nb, heap);
-        md_array_resize(lsh_cnt, nb, heap);
-        md_array_resize(lnao, nb, heap);
-        for (size_t b = 0; b < nb; ++b) {
-            const cpg_hbatch_t* bt = &cur[b];
-            lsh_off[b] = (uint32_t)md_array_size(pool_cur);
-            lsh_cnt[b] = 0;
-            if (!cpg_gpu_batch_exact(bt)) {
-                lnao[b] = UINT32_MAX;
-                continue;
-            }
-            const double hs = 2.5 * bt->hc;
-            uint32_t n = 0;
-            for (uint32_t c = 0; c < bt->cand_cnt; ++c) {
-                const uint32_t s = pool_prev[bt->cand_off + c];
-                const cpg_shell_t* cs = &ctx->shell[s];
-                double d2 = 0.0;
-                for (int k = 0; k < 3; ++k) {
-                    const double t = fabs(cs->A[k] - bt->P[k]) - hs;
-                    if (t > 0.0) d2 += t * t;
-                }
-                // a lower bound of the distance, conservatively: any shell that may reach is kept
-                if (d2 * (1.0 - 1e-12) <= cs->radius * cs->radius * (1.0 + 1e-6)) {
-                    md_array_push(pool_cur, s, heap);
-                    n += (uint32_t)cs->ncart;
-                }
-            }
-            lsh_cnt[b] = (uint32_t)md_array_size(pool_cur) - lsh_off[b];
-            lnao[b] = n;
-        }
-        R->info.num_levels++;
-        const size_t npool = md_array_size(pool_cur);
-        if (!cpg_gpu_reserve(stream, &d_pool, &c_pool, npool, sizeof(uint32_t)) ||
-            (npool > 0 && !md_gpu_upload(stream, d_pool, pool_cur, npool * sizeof(uint32_t)))) { ok = false; break; }
-
-        while (ok && done < nb) {
-            if (cpg_run_cancelled(R)) break;
-            // --- the chunk: up to 'chunk' GPU batches, within the row and tile budgets
+        // --- launch while there is room in flight and batches to launch
+        while (ok && nfl < depth && qh < md_array_size(q)) {
             md_array_shrink(hb, 0);
+            md_array_shrink(hsh, 0);
             md_array_shrink(hrow, 0);
             md_array_shrink(htile, 0);
-            md_array_shrink(cb, 0);
-            size_t b = done, rows = 0, tiles = 0;
-            for (; b < nb && md_array_size(cb) < chunk && md_array_size(cb) < CPG_GPU_MAX_BATCHES; ++b) {
-                if (lnao[b] == UINT32_MAX) continue;
-                const uint32_t n = lnao[b];
+            const size_t nq = md_array_size(q);
+            size_t b = qh, rows = 0, tiles = 0, count = 0;
+            for (; b < nq && count < chunk && count < CPG_GPU_MAX_BATCHES; ++b) {
+                const cpg_hbatch_t* bt = &q[b];
+                if (bt->nao == UINT32_MAX) continue;
+                const uint32_t n = bt->nao;
                 const size_t nt = (n + CPG_GPU_ROW_TILE - 1) / CPG_GPU_ROW_TILE;
-                if (md_array_size(cb) > 0 && (rows + n > row_cap || tiles + nt > CPG_GPU_MAX_TILES)) break;
-                const cpg_hbatch_t* bt = &cur[b];
+                if (count > 0 && (rows + n > row_cap || tiles + nt > CPG_GPU_MAX_TILES)) break;
                 cpg_gpu_batch_t g = { { (float)bt->P[0], (float)bt->P[1], (float)bt->P[2], (float)bt->hc },
-                                      { bt->mask, n, (uint32_t)rows, lsh_off[b] }, { lsh_cnt[b], 0, 0, 0 } };
-                const uint32_t ci = (uint32_t)md_array_size(cb);
+                                      { bt->mask, n, (uint32_t)rows, (uint32_t)md_array_size(hsh) }, { bt->lsh_cnt, 0, 0, 0 } };
                 md_array_push(hb, g, heap);
-                md_array_push(cb, (uint32_t)b, heap);
-                for (uint32_t s = 0; s < lsh_cnt[b]; ++s) {
-                    const cpg_shell_t* cs = &ctx->shell[pool_cur[lsh_off[b] + s]];
+                const uint32_t* ls = pool + (bt->lsh_off - pool_base);
+                for (uint32_t s = 0; s < bt->lsh_cnt; ++s) {
+                    const cpg_shell_t* cs = &ctx->shell[ls[s]];
+                    md_array_push(hsh, ls[s], heap);
                     for (int c = 0; c < cs->ncart; ++c) md_array_push(hrow, cs->ao_offset + (uint32_t)c, heap);
                 }
                 for (uint32_t r0 = 0; r0 < n; r0 += CPG_GPU_ROW_TILE) {
-                    md_array_push(htile, ci, heap);
+                    md_array_push(htile, (uint32_t)count, heap);
                     md_array_push(htile, r0, heap);
                 }
                 rows += n;
                 tiles += nt;
+                count++;
+                R->info.gpu_gemm_flop += (double)nt * 2.0 * CPG_GPU_ROW_TILE * 288.0 * (double)((n + 15) / 16 * 16);
             }
-            const size_t count = md_array_size(cb);
-            const md_tick_t t0 = md_tick_now();
+            cpg_gpu_chunk_t ch = { qh, b, count, count == chunk, true, slot, md_gpu_sync_none(), 0, 0.0 };
+            for (int i = 0; i < nfl; ++i) ch.gpu_idle &= fl[i].count == 0;
             if (count > 0) {
+                R->info.num_gpu_batches += count;
+                R->info.num_gpu_rows += rows;
+                const size_t nsh = md_array_size(hsh);
                 ok = cpg_gpu_reserve(stream, &d_batches, &c_batches, count, sizeof(cpg_gpu_batch_t))
+                  && cpg_gpu_reserve(stream, &d_pool, &c_pool, MAX(nsh, 1), sizeof(uint32_t))
                   && cpg_gpu_reserve(stream, &d_row_ao, &c_row_ao, MAX(rows, 1), sizeof(uint32_t))
                   && cpg_gpu_reserve(stream, &d_tiles, &c_tiles, MAX(tiles, 1), 2 * sizeof(uint32_t))
                   && cpg_gpu_reserve(stream, &d_phi, &c_phi, MAX(rows, 1), CPG_GPU_PHI_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_dv, &c_dv, MAX(rows, 1), CPG_GPU_DV_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_ep, &c_ep, 8 * count, CPG_GPU_EP_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_out, &c_out, 8 * count, sizeof(uint32_t));
-                if (ok && (!h_out.gpu || c_hout < 8 * count)) {
-                    if (h_out.gpu) md_gpu_free(stream, h_out.gpu);
-                    c_hout = MAX(8 * count, c_hout + c_hout / 2);
-                    h_out = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, c_hout * sizeof(uint32_t));
-                    ok = h_out.gpu && h_out.cpu;
+                if (ok && (!h_out[slot].gpu || c_hout[slot] < 8 * count)) {
+                    if (h_out[slot].gpu) md_gpu_free(stream, h_out[slot].gpu);
+                    c_hout[slot] = MAX(8 * count, c_hout[slot] + c_hout[slot] / 2);
+                    h_out[slot] = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, c_hout[slot] * sizeof(uint32_t));
+                    ok = h_out[slot].gpu && h_out[slot].cpu;
                 }
+                const md_tick_t tu = md_tick_now();
                 ok = ok && md_gpu_upload(stream, d_batches, hb, count * sizeof(cpg_gpu_batch_t))
+                        && (nsh == 0 || md_gpu_upload(stream, d_pool, hsh, nsh * sizeof(uint32_t)))
                         && (rows == 0 || md_gpu_upload(stream, d_row_ao, hrow, rows * sizeof(uint32_t)))
                         && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)));
                 if (!ok) break;
@@ -2825,7 +2952,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 const md_gpu_grid_t grids[CPG_K_COUNT] = {
                     md_gpu_grid((uint32_t)count, 1, 1),
                     md_gpu_grid((uint32_t)tiles, 1, 1),
-                    md_gpu_grid((uint32_t)count, 1, 1),
+                    md_gpu_grid((uint32_t)((count + 1) / 2), 1, 1),      // two batches per group
                     md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1),
                 };
                 double* kernel_ms[CPG_K_COUNT] = { &R->info.ms_gpu_ao, &R->info.ms_gpu_gemm, &R->info.ms_gpu_epilogue, &R->info.ms_gpu_decide };
@@ -2839,95 +2966,166 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                         *kernel_ms[k] += md_tick_to_milliseconds(md_tick_now() - tk);
                     }
                 }
-                ok = ok && md_gpu_copy(stream, h_out.gpu, d_out, 8 * count * sizeof(uint32_t));
+                ok = ok && md_gpu_copy(stream, h_out[slot].gpu, d_out, 8 * count * sizeof(uint32_t));
                 if (!ok) break;
-                md_gpu_stream_sync(stream);
+                ch.sync = md_gpu_stream_record(stream);
+                if (profile) {
+                    md_gpu_sync_wait(ch.sync);
+                    ch.ms_profiled = md_tick_to_milliseconds(md_tick_now() - tu);
+                    R->info.ms_sweep_gpu_wait += ch.ms_profiled;
+                }
                 R->info.num_gpu_dispatches += 4;
             }
-            const double ms = md_tick_to_milliseconds(md_tick_now() - t0);
-            R->info.ms_sweep_gpu_wait += ms;
-            // the chunk size adapts to a target time per chunk (TDR on Windows trips at 2 s, and a long
-            // chunk starves rendering on the same GPU); results do not depend on it
-            if (count == chunk) {
-                const double f = ms > 0.0 ? CPG_GPU_DISPATCH_MS / ms : 2.0;
-                chunk = (size_t)CLAMP((double)chunk * CLAMP(f, 0.25, 2.0), 1.0, (double)CPG_GPU_MAX_BATCHES);
-            }
-
-            // --- outcomes in batch and child order: polish roots, split, hand the undecidable to the CPU
-            const uint32_t* out = (const uint32_t*)h_out.cpu;
-            size_t gi = 0;
-            for (size_t bi = done; bi < b; ++bi) {
-                const cpg_hbatch_t* bt = &cur[bi];
-                if (lnao[bi] == UINT32_MAX) {
-                    for (int s = 0; s < 8; ++s) if (bt->mask & (1u << s)) md_array_push(esc, cpg_child_box(bt, s), heap);
-                    continue;
-                }
-                ASSERT(gi < count && cb[gi] == bi);
-                for (int s = 0; s < 8; ++s) {
-                    if (!(bt->mask & (1u << s))) continue;
-                    const cpg_box_t box = cpg_child_box(bt, s);
-                    const uint32_t o = out[gi * 8 + s];
-                    R->info.num_box_evals++;
-                    R->info.num_gpu_box_evals++;
-                    if (o & CPG_GPU_OUT_INFLATED) R->info.num_inflated_evals++;
-                    switch (CPG_GPU_OUT_KIND(o)) {
-                    case 0: break;
-                    case 1: {
-                        cpg_cp_t cp;
-                        const md_tick_t tp = md_tick_now();
-                        const int r = cpg_polish_root(ctx, &R->workers[0].sc, &box, &cp);
-                        R->info.ms_sweep_polish += md_tick_to_milliseconds(md_tick_now() - tp);
-                        if (r == 1) cpg_run_accept(R, &cp);
-                        else if (r < 0) md_array_push(esc, box, heap);
-                        break;
-                    }
-                    case 2: {
-                        cpg_hbatch_t child = { { box.c[0], box.c[1], box.c[2] }, 0.5 * box.h, 0xFFu, lsh_off[bi], lsh_cnt[bi] };
-                        md_array_push(nxt, child, heap);
-                        break;
-                    }
-                    default:
-                        md_array_push(esc, box, heap);
-                        break;
-                    }
-                }
-                gi++;
-            }
-            done = b;
+            ch.t_launch = md_tick_now();
+            fl[nfl++] = ch;
+            slot ^= 1;
+            qh = b;
         }
-        if (!ok || R->info.cancelled || done < nb) break;
-        cpg_hbatch_t* tb = cur; cur = nxt; nxt = tb;
-        uint32_t* tp = pool_prev; pool_prev = pool_cur; pool_cur = tp;
-        md_array_shrink(nxt, 0);
-        done = 0;
+        if (!ok || nfl == 0) break;
+
+        // --- the oldest chunk in flight
+        const cpg_gpu_chunk_t c = fl[0];
+        if (c.count > 0) {
+            const bool was_done = md_gpu_sync_is_complete(c.sync);
+            const md_tick_t tw = md_tick_now();
+            if (!was_done) md_gpu_sync_wait(c.sync);
+            const md_tick_t t1 = md_tick_now();
+            if (!profile) R->info.ms_sweep_gpu_wait += md_tick_to_milliseconds(t1 - tw);
+            // The chunk size adapts to a target time per chunk on the GPU (TDR on Windows trips at 2 s,
+            // and a long chunk starves rendering on the same GPU); results do not depend on it. A chunk's
+            // time runs from its launch, or from the previous chunk's completion if it was queued behind
+            // it. Had it completed before the host came to wait, that is only an upper bound, enough to
+            // grow the chunk but not to shrink it.
+            if (c.full) {
+                double est;
+                bool exact;
+                if (profile) {
+                    est = c.ms_profiled;
+                    exact = true;
+                } else {
+                    md_tick_t from = c.t_launch;
+                    exact = !was_done;
+                    if (!c.gpu_idle) {
+                        if (have_prev_done && t_prev_done > from) from = t_prev_done;
+                        else if (!have_prev_done) exact = false;
+                    }
+                    est = md_tick_to_milliseconds(t1 - from);
+                }
+                const double f = est > 0.0 ? CPG_GPU_DISPATCH_MS / est : 2.0;
+                if (exact || f > 1.0) chunk = (size_t)CLAMP((double)chunk * CLAMP(f, 0.25, 2.0), 1.0, (double)CPG_GPU_MAX_BATCHES);
+            }
+            have_prev_done = !was_done && !profile;
+            t_prev_done = t1;
+        }
+
+        // --- its outcomes in batch and child order: certified roots (polished later), splits, the rest to the CPU
+        const uint32_t* out = c.count > 0 ? (const uint32_t*)h_out[c.slot].cpu : NULL;
+        size_t gi = 0;
+        for (size_t bi = c.q0; bi < c.q1; ++bi) {
+            const cpg_hbatch_t bt = q[bi];      // a copy: the children made below grow q
+            num_levels = MAX(num_levels, bt.level + 1);
+            if (bt.nao == UINT32_MAX) {
+                for (int s = 0; s < 8; ++s) if (bt.mask & (1u << s)) md_array_push(esc, cpg_child_box(&bt, s), heap);
+                continue;
+            }
+            ASSERT(gi < c.count);
+            for (int s = 0; s < 8; ++s) {
+                if (!(bt.mask & (1u << s))) continue;
+                const cpg_box_t box = cpg_child_box(&bt, s);
+                const uint32_t o = out[gi * 8 + s];
+                R->info.num_box_evals++;
+                R->info.num_gpu_box_evals++;
+                if (o & CPG_GPU_OUT_INFLATED) R->info.num_inflated_evals++;
+                switch (CPG_GPU_OUT_KIND(o)) {
+                case 0:
+                    if (((o >> 8) & 0xFFu) == CPG_GPU_WHY_CHILDREN) R->info.num_children_skipped += 8;
+                    break;
+                case 1:
+                    md_array_push(proots, box, heap);
+                    break;
+                case 2: {
+                    // the children the cube's own expansion could not exclude (topo_gto_cube.slang: child_excluded)
+                    const uint32_t cm = (o >> 16) & 0xFFu;
+                    for (int k = 0; k < 8; ++k) R->info.num_children_skipped += (cm >> k) & 1u ? 0 : 1;
+                    if (cm) {
+                        cpg_hbatch_t child = { { box.c[0], box.c[1], box.c[2] }, 0.5 * box.h, cm, bt.level + 1, 0, 0, 0 };
+                        cpg_gpu_batch_screen(ctx, &child, &pool, pool_base, bt.lsh_off, bt.lsh_cnt, heap);
+                        md_array_push(q, child, heap);
+                    }
+                    break;
+                }
+                default:
+                    md_array_push(esc, box, heap);
+                    break;
+                }
+            }
+            gi++;
+        }
+        qd = c.q1;
+        fl[0] = fl[1];
+        nfl--;
+
+        // --- drop the decided batches and their shells once they are most of q
+        if (qd >= 4096 && 2 * qd >= md_array_size(q)) {
+            const size_t nq = md_array_size(q) - qd;
+            memmove(q, q + qd, nq * sizeof(cpg_hbatch_t));
+            md_array_shrink(q, nq);
+            for (int i = 0; i < nfl; ++i) { fl[i].q0 -= qd; fl[i].q1 -= qd; }
+            qh -= qd;
+            qd = 0;
+            const size_t base = nq > 0 ? q[0].lsh_off : pool_base + md_array_size(pool);
+            const size_t drop = base - pool_base;
+            memmove(pool, pool + drop, (md_array_size(pool) - drop) * sizeof(uint32_t));
+            md_array_shrink(pool, md_array_size(pool) - drop);
+            pool_base = base;
+        }
     }
     if (!ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: GPU sweep failed, the CPU takes over: %s", md_gpu_last_error());
+    if (nfl > 0) md_gpu_stream_sync(stream);     // left with work in flight: let it end before its buffers go
+    R->info.num_levels += num_levels;
+
+    // --- the certified roots: Newton in double on every worker, then accepted in the order they were met
+    const size_t npr = md_array_size(proots);
+    if (npr > 0) {
+        const md_tick_t tp = md_tick_now();
+        cpg_polish_t* pres = (cpg_polish_t*)md_alloc(heap, sizeof(cpg_polish_t) * npr);
+        for (size_t i = 0; i < npr; ++i) pres[i].r = -1;   // left so if cancelled: the CPU takes the cube
+        cpg_queue_t queue = { .next = 0, .count = (int)npr };
+        md_mutex_init(&queue.mutex);
+        for (int t = 0; t < R->nthreads; ++t) {
+            R->workers[t].job = 2;
+            R->workers[t].queue = &queue;
+            R->workers[t].pboxes = proots;
+            R->workers[t].pres = pres;
+        }
+        cpg_run_workers(R->workers, (int)MIN((size_t)R->nthreads, npr));
+        md_mutex_destroy(&queue.mutex);
+        for (size_t i = 0; i < npr; ++i) {
+            if (pres[i].r == 1) cpg_run_accept(R, &pres[i].cp);
+            else if (pres[i].r < 0) md_array_push(esc, proots[i], heap);   // Newton failed despite the certificate
+        }
+        md_free(heap, pres, sizeof(cpg_polish_t) * npr);
+        R->info.ms_sweep_polish += md_tick_to_milliseconds(md_tick_now() - tp);
+    }
 
     // whatever is left (escalated, or not reached if the GPU failed or was cancelled) goes to the CPU loop
     R->info.num_escalated_boxes = (uint32_t)md_array_size(esc);
-    for (size_t bi = done; bi < md_array_size(cur); ++bi) {
-        for (int s = 0; s < 8; ++s) if (cur[bi].mask & (1u << s)) md_array_push(esc, cpg_child_box(&cur[bi], s), heap);
-    }
-    for (size_t bi = 0; bi < md_array_size(nxt); ++bi) {
-        for (int s = 0; s < 8; ++s) if (nxt[bi].mask & (1u << s)) md_array_push(esc, cpg_child_box(&nxt[bi], s), heap);
+    for (size_t bi = qd; bi < md_array_size(q); ++bi) {
+        for (int s = 0; s < 8; ++s) if (q[bi].mask & (1u << s)) md_array_push(esc, cpg_child_box(&q[bi], s), heap);
     }
     md_array_free(R->cur, heap);
     R->cur = esc;
 
-    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, h_out.gpu,
+    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, h_out[0].gpu, h_out[1].gpu,
                              a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.kappa };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(bufs[0]); ++i) if (bufs[i]) md_gpu_free(stream, bufs[i]);
-    md_array_free(cur, heap);
-    md_array_free(nxt, heap);
-    md_array_free(pool_prev, heap);
-    md_array_free(pool_cur, heap);
-    md_array_free(lsh_off, heap);
-    md_array_free(lsh_cnt, heap);
-    md_array_free(lnao, heap);
+    md_array_free(proots, heap);
+    md_array_free(q, heap);
+    md_array_free(pool, heap);
     md_array_free(hb, heap);
+    md_array_free(hsh, heap);
     md_array_free(hrow, heap);
     md_array_free(htile, heap);
-    md_array_free(cb, heap);
     R->info.ms_sweep += md_tick_to_milliseconds(md_tick_now() - t_start);
     return ok;
 }
