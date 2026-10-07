@@ -630,3 +630,293 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 
 	qm_test_free(&t);
 }
+
+// ---------------------------------------------------------------------------
+// POLARIZABLE EMBEDDING
+//
+// No .h5 of an embedding run is checked in, so these make one: h2o.h5 with a potential named in its
+// SCF settings exactly as VeloxChem writes it (scf/potfile, a scalar UTF-8 string holding the path the
+// run was given). It is written beside h2o.h5, where its basis set is, and removed again as soon as
+// it has been read - before any assertion that could end the test early.
+// ---------------------------------------------------------------------------
+
+#include <hdf5.h>
+#include <stdio.h>	// remove
+#include <core/md_os.h>
+#include <md_util.h>
+#include "system_invariants.h"
+
+#define VLX_PE_DIR MD_UNITTEST_DATA_DIR "/vlx/"
+
+static bool vlx_test_write_file(str_t path, const void* data, size_t size) {
+	md_file_t out = {0};
+	if (!md_file_open(&out, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
+	const bool ok = md_file_write(out, data, size) == size;
+	md_file_close(&out);
+	return ok;
+}
+
+// A copy of h2o.h5 whose SCF settings name 'potfile'
+static bool vlx_test_write_pe_h5(str_t dst, const char* potfile) {
+	md_file_t in = {0};
+	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
+	const size_t size = (size_t)md_file_size(in);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
+	const bool read = md_file_read(in, bytes, size) == size;
+	md_file_close(&in);
+	const bool written = read && vlx_test_write_file(dst, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
+	if (!written) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+	hid_t scf   = H5Gopen(file, "scf", H5P_DEFAULT);
+	hid_t type  = H5Tcopy(H5T_C_S1);
+	H5Tset_size(type, H5T_VARIABLE);
+	H5Tset_cset(type, H5T_CSET_UTF8);
+	hid_t space = H5Screate(H5S_SCALAR);
+	hid_t dset  = scf >= 0 ? H5Dcreate2(scf, "potfile", type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) : -1;
+	const bool ok = dset >= 0 && H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, &potfile) >= 0;
+	if (dset >= 0) H5Dclose(dset);
+	H5Sclose(space);
+	H5Tclose(type);
+	if (scf >= 0) H5Gclose(scf);
+	H5Fclose(file);
+	return ok;
+}
+
+// Read on the bits: the library is built with fast math, where NAN does not compare as itself
+static bool vlx_test_absent(double v) {
+	uint64_t u;
+	memcpy(&u, &v, sizeof(u));
+	return (u & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
+}
+
+// The reference potential beside h2o.h5's own folder, named relative to it the way a run directory
+// copied as a whole would name it: 50 waters, the first 39 (117 sites) polarizable.
+UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_relative.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+
+	const size_t num_qm = 3, num_mm = 150, num_atoms = num_qm + num_mm;
+	ASSERT_EQ(num_atoms, t.sys.atom.count);
+	ASSERT_EQ(num_atoms, t.state.num_atoms);
+
+	// The QM atom domain is untouched, and its atoms are still the system's first
+	EXPECT_EQ(num_qm, qm_test_count(&t, STR_LIT("qm/atom/atomic_number")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("qm/atom/system_index")));
+	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 0));
+	EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 1));
+
+	// The sites follow, with their elements, names and coordinates (already Angstrom in this file)
+	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, num_qm));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm),     STR_LIT("OW")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm + 2), STR_LIT("H2")));
+	EXPECT_NEAR(-5.672, t.state.xyz[num_qm].x, 1e-5);
+	EXPECT_NEAR( 2.390, t.state.xyz[num_qm].y, 1e-5);
+	EXPECT_NEAR(-4.911, t.state.xyz[num_qm].z, 1e-5);
+	EXPECT_NEAR(-11.932, t.state.xyz[num_qm + 117].x, 1e-5);
+	EXPECT_NEAR(-5.908, t.state.xyz[num_atoms - 1].x, 1e-5);
+
+	// One component per fragment, named for its residue and numbered by its fragment number, after
+	// one for the QM region - components cover every atom or none.
+	ASSERT_EQ(1u + 50u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 0), STR_LIT("QM")));
+	EXPECT_EQ(0, md_system_component_find_by_atom_idx(&t.sys, 0));
+	EXPECT_EQ(1, md_system_component_find_by_atom_idx(&t.sys, num_qm));
+	md_urange_t first = md_system_component_atom_range(&t.sys, 1);
+	EXPECT_EQ(num_qm, first.beg);
+	EXPECT_EQ(num_qm + 3, first.end);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("HOH")));
+	EXPECT_EQ(1, md_component_seq_id(&t.sys.component, 1));
+	const md_component_idx_t npe = md_system_component_find_by_atom_idx(&t.sys, num_qm + 117);
+	ASSERT_TRUE(npe >= 0);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, npe), STR_LIT("HOH")));
+	EXPECT_EQ(8, md_component_seq_id(&t.sys.component, npe));
+	for (size_t c = 1; c < t.sys.component.count; ++c) {
+		EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_system_component_kind(&t.sys, c));
+	}
+
+	// The parameters, per atom over the system: the type's rows by position in the fragment, and
+	// nothing at all for the QM atoms
+	double q[153], a[153];
+	ASSERT_EQ(num_atoms, qm_test_series(q, num_atoms, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(num_atoms, qm_test_series(a, num_atoms, &t, STR_LIT("atom/polarizability")));
+	for (size_t i = 0; i < num_qm; ++i) {
+		EXPECT_TRUE(vlx_test_absent(q[i]));
+		EXPECT_TRUE(vlx_test_absent(a[i]));
+	}
+	EXPECT_NEAR(-0.67444, q[num_qm + 0], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 1], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 2], 1e-8);
+	EXPECT_NEAR(-0.83400, q[num_qm + 117], 1e-8);
+	EXPECT_NEAR( 0.41700, q[num_atoms - 1], 1e-8);
+	EXPECT_NEAR(5.73935, a[num_qm + 0], 1e-8);
+	EXPECT_NEAR(2.30839, a[num_qm + 1], 1e-8);
+	EXPECT_EQ(0.0, a[num_qm + 117]);	// HOH_npe has no polarizabilities: embedded non-polarizably
+	EXPECT_EQ(0.0, a[num_atoms - 1]);
+
+	double sum = 0.0;
+	for (size_t i = num_qm; i < num_atoms; ++i) sum += q[i];
+	EXPECT_NEAR(0.0, sum, 1e-6);	// Neutral waters
+
+	const md_attribute_t* charge = qm_test_attr(&t, STR_LIT("atom/charge"));
+	ASSERT_TRUE(charge != NULL);
+	EXPECT_TRUE(md_unit_equal(charge->unit, md_unit_elementary_charge()));
+
+	// The file's own per atom columns run over the system's atoms too, with no value for the sites
+	double z[153];
+	ASSERT_EQ(num_atoms, qm_test_series(z, num_atoms, &t, STR_LIT("atom/nuclear_charges")));
+	EXPECT_EQ(8.0, z[0]);
+	EXPECT_EQ(1.0, z[2]);
+	EXPECT_TRUE(vlx_test_absent(z[num_qm]));
+	EXPECT_TRUE(vlx_test_absent(z[num_atoms - 1]));
+
+	// And what an application infers from that once it is loaded: every water an instance of its own,
+	// the QM region one more
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_EQ(1u + 50u, t.sys.instance.count);
+	EXPECT_EQ(1u + 50u, t.sys.structure.count);
+
+	qm_test_free(&t);
+}
+
+// A potential written by hand to reach what the reference file does not: atomic units, a site
+// without an element, an anisotropic tensor, and a fragment type the file lists out of order. Named
+// by an absolute path from the machine the run was on, with the file itself copied beside the .h5,
+// which is VeloxChem's own fallback.
+static const char vlx_test_custom_pot[] =
+	"@environment\n"
+	"units: au\n"
+	"xyz:\n"
+	"Na   0.0  0.0 20.0  NA_npe 7 NA\n"
+	"O    0.0  0.0 10.0  HOH_pe 5 OW\n"
+	"H    1.0  0.0 10.0  HOH_pe 5 HW1\n"
+	"H   -1.0  0.0 10.0  HOH_pe 5 HW2\n"
+	"X    0.5  0.0 10.0  HOH_pe 5 X1\n"
+	"@end\n"
+	"@charges\n"
+	"O   -0.8  HOH_pe\n"
+	"H    0.4  HOH_pe\n"
+	"Na   1.0  NA_npe\n"
+	"H    0.5  HOH_pe\n"
+	"X   -0.5  HOH_pe\n"
+	"@end\n"
+	"@polarizabilities\n"
+	"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"X   1.0 0.3 0.2 2.0 0.1 6.0  HOH_pe\n"
+	"@end\n";
+
+UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_custom.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_custom.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "/cluster/scratch/run42/unittest_pe_custom.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+
+	ASSERT_EQ(3u + 5u, t.sys.atom.count);
+
+	const double bohr = 0.5291772109029999;
+	EXPECT_NEAR(20.0 * bohr, t.state.xyz[3].z, 1e-5);
+	EXPECT_NEAR( 1.0 * bohr, t.state.xyz[5].x, 1e-5);
+
+	// The expansion point is a virtual site, not an atom of an unknown element
+	EXPECT_EQ(0, md_atom_atomic_number(&t.sys.atom, 7));
+	EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&t.sys.atom, 7));
+	EXPECT_EQ(MD_PARTICLE_ATOM, md_atom_particle_kind(&t.sys.atom, 4));
+
+	ASSERT_EQ(3u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("NA")));
+	EXPECT_EQ(7, md_component_seq_id(&t.sys.component, 1));
+	EXPECT_EQ(MD_COMPONENT_KIND_ION, md_system_component_kind(&t.sys, 1));
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("HOH")));
+
+	double q[8], a[8];
+	ASSERT_EQ(8u, qm_test_series(q, 8, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(8u, qm_test_series(a, 8, &t, STR_LIT("atom/polarizability")));
+	EXPECT_NEAR( 1.0, q[3], 1e-12);
+	EXPECT_NEAR(-0.8, q[4], 1e-12);
+	EXPECT_NEAR( 0.4, q[5], 1e-12);
+	EXPECT_NEAR( 0.5, q[6], 1e-12);	// The HOH_pe rows interleaved with NA_npe's still go in order
+	EXPECT_NEAR(-0.5, q[7], 1e-12);
+	EXPECT_EQ(0.0, a[3]);
+	EXPECT_NEAR(6.0, a[4], 1e-12);
+	EXPECT_NEAR(3.0, a[7], 1e-12);	// (1 + 2 + 6) / 3, the off diagonal plays no part
+
+	qm_test_free(&t);
+}
+
+// What VeloxChem would have refused is not the potential the calculation ran with, so none of it is
+// used. A potential that cannot be found leaves the environment out. Neither is a failed load.
+UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
+	static const char bad_pot[] =
+		"@environment\n"
+		"xyz:\n"
+		"O  0.0 0.0 0.0  HOH_pe 1 OW\n"
+		"H  1.0 0.0 0.0  HOH_pe 1 H1\n"
+		"H -1.0 0.0 0.0  HOH_pe 1 H2\n"
+		"@end\n"
+		"@charges\n"
+		"O -0.8 HOH_pe\n"
+		"H  0.4 HOH_pe\n"
+		"@end\n";
+
+	const str_t pot     = STR_LIT(VLX_PE_DIR "unittest_pe_bad.pot");
+	const str_t h5_bad  = STR_LIT(VLX_PE_DIR "unittest_pe_bad.h5");
+	const str_t h5_none = STR_LIT(VLX_PE_DIR "unittest_pe_missing.h5");
+	ASSERT_TRUE(vlx_test_write_file(pot, bad_pot, sizeof(bad_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_bad,  "unittest_pe_bad.pot"));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_none, "unittest_pe_not_there.pot"));
+
+	vlx_test_t bad = {0}, none = {0};
+	const bool loaded_bad  = vlx_test_load(&bad,  h5_bad,  MEGABYTES(64));
+	const bool loaded_none = vlx_test_load(&none, h5_none, MEGABYTES(64));
+	remove(h5_bad.ptr);
+	remove(h5_none.ptr);
+	remove(pot.ptr);
+
+	EXPECT_TRUE(loaded_bad);
+	EXPECT_TRUE(loaded_none);
+	EXPECT_EQ(3u, bad.sys.atom.count);
+	EXPECT_EQ(3u, none.sys.atom.count);
+	EXPECT_EQ(0u, bad.sys.component.count);
+	EXPECT_FALSE(qm_test_has(&bad,  STR_LIT("atom/charge")));
+	EXPECT_FALSE(qm_test_has(&none, STR_LIT("atom/charge")));
+	EXPECT_EQ(3u, qm_test_count(&none, STR_LIT("atom/nuclear_charges")));
+
+	qm_test_free(&bad);
+	qm_test_free(&none);
+}
+
+// A supplemental load leaves the atoms of the system it supplements alone, so it adds no sites
+UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_supplement.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64));
+	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5);
+	remove(h5.ptr);
+
+	EXPECT_TRUE(supplemented);
+	EXPECT_EQ(3u, t.sys.atom.count);
+	EXPECT_EQ(3u, t.state.num_atoms);
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/charge")));
+
+	qm_test_free(&t);
+}

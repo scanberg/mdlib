@@ -19,6 +19,28 @@ struct md_system_state_t;
 //
 //   ATOMS AND STATE      the system's own atom list and coordinates (md_system_t / md_system_state_t)
 //
+//   EMBEDDING            a polarizable embedding run names its potential in the SCF settings
+//                        (scf/potfile, the path it was given). Opened standalone, that .pot is looked
+//                        for beside the .h5 - the path resolved against the .h5's folder, then its
+//                        file name there, then an absolute path as written - and its sites are
+//                        APPENDED to the system's atoms, after the QM atoms: QM atom i is still system
+//                        atom i. Each fragment becomes a component named for its residue (VeloxChem's
+//                        _pe/_npe tag dropped) and numbered by its fragment number, the QM atoms one
+//                        component "QM"; a site without an element is a virtual site. Absent, or not
+//                        the potential this run used (rows that do not match its fragments), and the
+//                        environment is left out with a log line - the load itself does not fail. A
+//                        supplemental load never adds it: that system's atoms are not this reader's.
+//                        potfile_text (vlx/potfile) is NOT the .pot: current VeloxChem fills it with
+//                        the PyFraME JSON it converted the .pot into
+//
+//   atom/charge                                              {N} over the SYSTEM's atoms, when the
+//   atom/polarizability                                      embedding was added: each site's charge
+//                                                            (e) and isotropic polarizability (bohr^3,
+//                                                            a third of the trace), expanded from the
+//                                                            file's per fragment type rows; zero
+//                                                            polarizability is a non polarizable site.
+//                                                            NAN for the QM atoms, which are no sites
+//
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
@@ -58,7 +80,9 @@ struct md_system_state_t;
 //                                                            vlx/opt/irc_ts_index are rank 0
 //   vlx/density_property/<dataset name>                      {A,A} density properties as the file
 //                                                            carried them
-//   atom/<dataset name>                                      per atom properties from the file
+//   atom/<dataset name>                                      per atom properties from the file; NAN
+//                                                            for the embedding's sites when they are
+//                                                            atoms of the system
 //   orbital/{alpha,beta}/coefficient                         {M,A} MO coefficients, Cartesian AO
 //                                                            order - see the AO CONVENTION block in
 //                                                            md_gto.h

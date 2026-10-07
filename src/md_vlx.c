@@ -13,6 +13,7 @@
 #include <md_gto.h>
 #include <md_qm.h>
 #include <md_util.h>
+#include <md_pot.h>
 
 #include <hdf5.h>
 
@@ -209,6 +210,21 @@ typedef struct vlx_rsp_t {
 	vlx_2d_data_t solution_matrix;
 } vlx_rsp_t;
 
+// The classical environment of a polarizable embedding run: the sites of the potential file the SCF
+// settings name (scf/potfile), resolved once at load. Empty (count 0) when the run had no potential,
+// the file was not found beside the .h5, or this load supplements a system somebody else built.
+//
+// The charges and polarizabilities are PER SITE, already expanded from the file's per fragment TYPE
+// rows by the rule VeloxChem itself applies (see vlx_mm_resolve_parameters). A file that rule does not
+// fit is not the potential the run used, and is then not used at all - count stays 0.
+typedef struct vlx_mm_t {
+	md_pot_t pot;
+	size_t   count;				// Sites, == pot.num_sites
+	double*  charge;			// [count] e
+	double*  polarizability;	// [count] isotropic, bohr^3 - one third of the trace of the site's tensor
+	bool     in_system;			// The sites were appended to the system's atoms, after the QM atoms
+} vlx_mm_t;
+
 
 
 typedef struct vlx_t {
@@ -234,6 +250,7 @@ typedef struct vlx_t {
 	// Data blocks
 	vlx_scf_t scf;
 	vlx_rsp_t rsp;
+	vlx_mm_t  mm;
 
 	md_element_t* atomic_numbers;
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
@@ -1637,12 +1654,20 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 			continue;
 		}
 
+		// When the system holds an embedding's sites as well (vlx_system_append_mm) its atom axis runs
+		// past the file's: the QM atoms first, then the sites, which carry NAN - the table's mark for
+		// "no value for this atom". An ESP charge of a site that was never part of the fit is not
+		// zero, it is not there.
+		const size_t num_qm_atoms  = vlx->number_of_atoms;
+		const size_t num_sys_atoms = vlx->mm.in_system ? num_qm_atoms + vlx->mm.count : num_qm_atoms;
+
 		md_attribute_format_t format = {
 			.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = (uint32_t)num_dims,
 		};
 		for (int d = 0; d < num_dims; ++d) {
 			format.shape[d] = (uint32_t)dims[d];
 		}
+		format.shape[num_dims - 1] = (uint32_t)num_sys_atoms;
 
 		// The label is what the file called it for a human; when it is the dataset name there is
 		// nothing for it to add, and an absent label is a valid state.
@@ -1656,13 +1681,32 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 			continue;
 		}
 
-		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dst);
+		herr_t status = -1;
+		if (num_sys_atoms == num_qm_atoms) {
+			status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dst);
+		} else {
+			// H5S_ALL writes the whole dataset, so it is read into storage of exactly its size and
+			// spread out row by row from there.
+			md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
+			double* src = md_temp_alloc_array(temp, double, num_points);
+			status = src ? H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, src) : -1;
+			if (status >= 0) {
+				const size_t num_rows = num_points / num_qm_atoms;
+				for (size_t r = 0; r < num_rows; ++r) {
+					double* row = dst + r * num_sys_atoms;
+					MEMCPY(row, src + r * num_qm_atoms, sizeof(double) * num_qm_atoms);
+					for (size_t i = num_qm_atoms; i < num_sys_atoms; ++i) {
+						row[i] = NAN;
+					}
+				}
+			}
+			md_temp_end(temp);
+		}
 		if (status < 0) {
 			MD_LOG_ERROR("Failed to read data for atomic property dataset '%s'", name_buf);
 			md_attributes_remove(&vlx->sys->attributes, id);
 			goto done;
 		}
-		(void)num_points;
 	done:
 		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
@@ -3668,6 +3712,316 @@ static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas,
 
 	return 0;
 }
+
+// ---------------------------------------------------------------------------
+// POLARIZABLE EMBEDDING ENVIRONMENT
+//
+// A run with polarizable embedding names its potential file in the SCF settings (scf/potfile) - as
+// the path it was GIVEN, relative to wherever VeloxChem ran or absolute on that machine. The file
+// itself is not in the .h5. potfile_text at the root holds whatever pe_options['potfile'] pointed at
+// when the results were written, and current VeloxChem has by then replaced that with the PyFraME
+// JSON it converted the .pot into (pe_sanity_check -> write_pe_jsonfile). So the .pot is read from
+// disk, beside the .h5, and a .h5 opened without it is the same calculation minus its context: the
+// environment is left out and the load goes on.
+// ---------------------------------------------------------------------------
+
+// The candidates, in order: the reference resolved against the .h5's folder (a run directory copied
+// as a whole), the reference's file name in that folder (the .pot copied next to the .h5 - also
+// VeloxChem's own fallback in pe_sanity_check), and an absolute reference as written (a local run).
+static bool vlx_resolve_potfile(char* out_buf, size_t out_cap, str_t h5_filename, str_t ref) {
+	str_t folder = {0};
+	extract_folder_path(&folder, h5_filename);	// Stays empty for a bare file name, which is the cwd
+
+	str_t name = ref;
+	extract_file(&name, ref);					// Stays the whole reference when it names no folder
+
+	const bool absolute = md_path_is_absolute(ref);
+
+	char  bufs[2][2048];
+	str_t candidates[3];
+	size_t num_candidates = 0;
+	if (!absolute) {
+		snprintf(bufs[0], sizeof(bufs[0]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(ref));
+		candidates[num_candidates++] = str_from_cstr(bufs[0]);
+	}
+	if (absolute || name.len != ref.len) {
+		snprintf(bufs[1], sizeof(bufs[1]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(name));
+		candidates[num_candidates++] = str_from_cstr(bufs[1]);
+	}
+	if (absolute) {
+		candidates[num_candidates++] = ref;
+	}
+
+	for (size_t i = 0; i < num_candidates; ++i) {
+		if (md_path_is_valid(candidates[i]) && !md_path_is_directory(candidates[i])) {
+			str_copy_to_char_buf(out_buf, out_cap, candidates[i]);
+			return true;
+		}
+	}
+	return false;
+}
+
+typedef struct vlx_mm_frag_type_t {
+	const char* name;				// Interned by md_pot, so the pointer is the identity
+	md_array(uint32_t) charge_rows;
+	md_array(uint32_t) polarizability_rows;
+} vlx_mm_frag_type_t;
+
+static vlx_mm_frag_type_t* vlx_mm_frag_type(md_array(vlx_mm_frag_type_t)* types, md_hashmap32_t* map, str_t name, md_allocator_i* alloc) {
+	const uint64_t key = (uint64_t)(uintptr_t)name.ptr;
+	const uint32_t* idx = md_hashmap_get(map, key);
+	if (idx) {
+		return *types + *idx;
+	}
+	vlx_mm_frag_type_t type = { .name = name.ptr };
+	md_array_push(*types, type, alloc);
+	md_hashmap_add(map, key, (uint32_t)(md_array_size(*types) - 1));
+	return md_array_last(*types);
+}
+
+// Expands the per fragment TYPE rows of @charges and @polarizabilities into one value per site, by
+// the rule VeloxChem applies when it builds the embedding (write_pe_jsonfile): sites are grouped into
+// fragments by their fragment NUMBER, a fragment is of the type named on its first site, and its k-th
+// site takes the k-th row of that type. A type absent from a section contributes zero there - a type
+// without polarizabilities is embedded non-polarizably, which is all that absence means.
+//
+// Anything VeloxChem would have refused (a site without a fragment, a type whose rows do not match the
+// size of a fragment of it) means this is NOT the potential the calculation ran with, and then nothing
+// of it is used: its sites would be a plausible environment that was never there.
+static bool vlx_mm_resolve_parameters(vlx_mm_t* mm, md_allocator_i* alloc) {
+	const md_pot_t* pot = &mm->pot;
+	const size_t num_sites = pot->num_sites;
+
+	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+	md_allocator_i* temp_alloc = md_temp_allocator(temp);
+	bool result = false;
+
+	uint32_t* local_idx = md_temp_alloc_array(temp, uint32_t, num_sites);	// Index within its fragment
+	uint32_t* first     = md_temp_alloc_array(temp, uint32_t, num_sites);	// The first site of its fragment
+	md_hashmap32_t frag_first = { .allocator = temp_alloc };
+	md_hashmap32_t frag_size  = { .allocator = temp_alloc };
+	md_hashmap32_t type_map   = { .allocator = temp_alloc };
+	md_array(vlx_mm_frag_type_t) types = 0;
+
+	for (size_t i = 0; i < num_sites; ++i) {
+		const md_pot_site_t* site = &pot->sites[i];
+		if (site->fragment_id < 0 || str_empty(site->fragment_name)) {
+			MD_LOG_ERROR("POT: site %zu has no fragment name and number, which a VeloxChem potential requires", i + 1);
+			goto done;
+		}
+		const uint64_t key = (uint64_t)(uint32_t)site->fragment_id;
+		uint32_t* size = md_hashmap_get(&frag_size, key);
+		if (size) {
+			local_idx[i] = (*size)++;
+			first[i]     = *(const uint32_t*)md_hashmap_get(&frag_first, key);
+		} else {
+			local_idx[i] = 0;
+			first[i]     = (uint32_t)i;
+			md_hashmap_add(&frag_size,  key, 1u);
+			md_hashmap_add(&frag_first, key, (uint32_t)i);
+		}
+	}
+
+	for (size_t k = 0; k < pot->num_charges; ++k) {
+		if (str_empty(pot->charges[k].fragment_name)) {
+			MD_LOG_ERROR("POT: @charges row %zu names no fragment type", k + 1);
+			goto done;
+		}
+		vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->charges[k].fragment_name, temp_alloc);
+		md_array_push(type->charge_rows, (uint32_t)k, temp_alloc);
+	}
+	for (size_t k = 0; k < pot->num_polarizabilities; ++k) {
+		if (str_empty(pot->polarizabilities[k].fragment_name)) {
+			MD_LOG_ERROR("POT: @polarizabilities row %zu names no fragment type", k + 1);
+			goto done;
+		}
+		vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->polarizabilities[k].fragment_name, temp_alloc);
+		md_array_push(type->polarizability_rows, (uint32_t)k, temp_alloc);
+	}
+
+	// Every fragment against its type, once, from its first site
+	for (size_t i = 0; i < num_sites; ++i) {
+		if (first[i] != i) continue;
+		const md_pot_site_t* site = &pot->sites[i];
+		const size_t size = *(const uint32_t*)md_hashmap_get(&frag_size, (uint64_t)(uint32_t)site->fragment_id);
+		const vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, site->fragment_name, temp_alloc);
+		const size_t num_q = md_array_size(type->charge_rows);
+		const size_t num_a = md_array_size(type->polarizability_rows);
+		if ((num_q && num_q != size) || (num_a && num_a != size)) {
+			MD_LOG_ERROR("POT: fragment %d of type '" STR_FMT "' has %zu sites, but the type has %zu charges and %zu polarizabilities",
+				site->fragment_id, STR_ARG(site->fragment_name), size, num_q, num_a);
+			goto done;
+		}
+	}
+
+	mm->charge         = md_alloc(alloc, sizeof(double) * num_sites);
+	mm->polarizability = md_alloc(alloc, sizeof(double) * num_sites);
+	for (size_t i = 0; i < num_sites; ++i) {
+		const vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->sites[first[i]].fragment_name, temp_alloc);
+		const uint32_t k = local_idx[i];
+		mm->charge[i] = md_array_size(type->charge_rows) ? pot->charges[type->charge_rows[k]].charge : 0.0;
+
+		double iso = 0.0;
+		if (md_array_size(type->polarizability_rows)) {
+			// The trace alone, which does not depend on how the off diagonal is packed - see the
+			// warning on MD_POT_ALPHA_*
+			const double* a = pot->polarizabilities[type->polarizability_rows[k]].alpha;
+			iso = (a[MD_POT_ALPHA_XX] + a[MD_POT_ALPHA_YY] + a[MD_POT_ALPHA_ZZ]) / 3.0;
+		}
+		mm->polarizability[i] = iso;
+	}
+	result = true;
+
+done:
+	md_temp_end(temp);
+	return result;
+}
+
+// Reads the potential the SCF settings name, when they name one. Never fails the load: what went
+// wrong is logged, and the load goes on without the environment. A SUPPLEMENTAL load leaves it out
+// altogether - the sites would have to become atoms, and that system's atoms are not this reader's.
+static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename, bool supplemental) {
+	ASSERT(vlx);
+	MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+
+	if (!h5_link_exists(scf_handle, "potfile")) {
+		return;
+	}
+	str_t ref = {0};
+	if (!h5_read_str(&ref, scf_handle, "potfile", vlx->arena)) {
+		return;
+	}
+	ref = str_trim(ref);
+	if (str_empty(ref)) {
+		return;
+	}
+
+	if (supplemental) {
+		MD_LOG_INFO("VeloxChem: the embedding environment ('" STR_FMT "') is only added when the file is opened on its own", STR_ARG(ref));
+		return;
+	}
+
+	str_t ext = {0};
+	if (extract_ext(&ext, ref) && str_eq_ignore_case(ext, STR_LIT("json"))) {
+		MD_LOG_INFO("VeloxChem: the embedding potential '" STR_FMT "' is a PyFraME JSON file, which is not read; the environment is not added", STR_ARG(ref));
+		return;
+	}
+
+	char path[2048];
+	if (!vlx_resolve_potfile(path, sizeof(path), filename, ref)) {
+		MD_LOG_INFO("VeloxChem: the embedding potential '" STR_FMT "' was not found beside '" STR_FMT "'; the environment is not added", STR_ARG(ref), STR_ARG(filename));
+		return;
+	}
+
+	if (!md_pot_parse_file(&vlx->mm.pot, str_from_cstr(path), vlx->arena)) {
+		MD_LOG_ERROR("VeloxChem: failed to parse the embedding potential '%s'; the environment is not added", path);
+		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		return;
+	}
+
+	if (!vlx_mm_resolve_parameters(&vlx->mm, vlx->arena)) {
+		MD_LOG_ERROR("VeloxChem: '%s' is not the potential this calculation ran with; the environment is not added", path);
+		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		return;
+	}
+
+	vlx->mm.count = vlx->mm.pot.num_sites;
+	MD_LOG_INFO("VeloxChem: %zu embedding sites read from '%s'", vlx->mm.count, path);
+}
+
+// The fragment's residue. VeloxChem names the fragments it writes '<residue>_pe' and '<residue>_npe'
+// (EnsembleDriver.write_pot_files): the tag says HOW a fragment is embedded, which the polarizability
+// column carries, not WHAT it is, which is what a component's name says - and a label holds 6
+// characters, so 'HOH_npe' would not survive anyway. A name without the tag is used as written.
+static str_t vlx_mm_residue_name(str_t fragment_name) {
+	if (str_ends_with(fragment_name, STR_LIT("_npe")) && fragment_name.len > 4) {
+		return str_substr(fragment_name, 0, fragment_name.len - 4);
+	}
+	if (str_ends_with(fragment_name, STR_LIT("_pe")) && fragment_name.len > 3) {
+		return str_substr(fragment_name, 0, fragment_name.len - 3);
+	}
+	return fragment_name;
+}
+
+// The sites as atoms of the system, from atom index 'offset' on: AFTER the QM atoms, so a QM atom's
+// index is its system index and the standalone identity between the two spaces still holds (see
+// vlx_publish_atom_system_index). A fragment is a component, named for its residue and numbered by its
+// fragment number. A site without an element is an expansion point of the potential rather than an
+// atom (a LoProp bond midpoint): a virtual site, which belongs to its fragment and forms no bonds.
+//
+// Components cover every atom from the first or there are none (system_invariants.h), so the QM
+// atoms become one as well: "QM", the region as a whole. The file says nothing finer about them - no
+// residues, no names - and the region is the thing one wants to select against its environment.
+static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t offset) {
+	md_system_t* sys = vlx->sys;
+	const md_pot_t* pot = &vlx->mm.pot;
+	const double to_angstrom = md_pot_unit_to_angstrom(pot->unit);
+	const md_atom_type_flags_t vsite = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, MD_PARTICLE_VIRTUAL_SITE);
+
+	ASSERT(sys->component.count == 0);
+	md_array_push(sys->component.atom_offset, 0u, sys->alloc);
+	md_array_push(sys->component.name,   make_label(STR_LIT("QM")), sys->alloc);
+	md_array_push(sys->component.seq_id, (md_sequence_id_t)0, sys->alloc);
+	md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+	sys->component.count += 1;
+
+	for (size_t i = 0; i < pot->num_sites; ++i) {
+		const md_pot_site_t* site = &pot->sites[i];
+		const size_t atom_idx = offset + i;
+
+		const str_t sym  = str_from_cstr(site->element);
+		const str_t name = str_empty(site->atom_name) ? sym : site->atom_name;
+		const md_atomic_number_t z = md_atomic_number_from_symbol(sym, true);
+
+		md_atom_type_idx_t type_idx = z ?
+			md_atom_type_find_or_add(&sys->atom.type, name, z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc) :
+			md_atom_type_find_or_add(&sys->atom.type, name, 0, 0.0f, 0.0f, 0, vsite, sys->alloc);
+		sys->atom.type_idx[atom_idx] = type_idx;
+
+		state->xyz[atom_idx] = vec3_set((float)(site->coord[0] * to_angstrom), (float)(site->coord[1] * to_angstrom), (float)(site->coord[2] * to_angstrom));
+
+		// Every site has a fragment number, vlx_mm_resolve_parameters made sure of it
+		if (i == 0 || site->fragment_id != pot->sites[i - 1].fragment_id) {
+			md_array_push(sys->component.atom_offset, (uint32_t)atom_idx, sys->alloc);
+			md_array_push(sys->component.name,   make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
+			md_array_push(sys->component.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
+			md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+			sys->component.count += 1;
+		}
+	}
+	md_array_push(sys->component.atom_offset, (uint32_t)(offset + pot->num_sites), sys->alloc);	// Sentinel
+
+	vlx->mm.in_system = true;
+}
+
+// The embedding parameters as columns over the SYSTEM's atoms - the domain atom/ is, and where every
+// other loader puts its force field's charges - so colouring by them and summing them need nothing
+// that knows about embedding. The QM atoms are not sites of the potential and carry NAN, the table's
+// mark for "no value for this atom": a QM atom's classical charge is not zero, there is no such thing.
+static void vlx_publish_mm(const vlx_t* vlx) {
+	if (!vlx->mm.in_system || !vlx->mm.charge || !vlx->mm.polarizability) {
+		return;
+	}
+	md_system_t* sys = vlx->sys;
+	const size_t num_qm    = vlx->number_of_atoms;
+	const size_t num_atoms = num_qm + vlx->mm.count;
+
+	md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
+	double* charge = md_temp_alloc_array(temp, double, num_atoms);
+	double* polar  = md_temp_alloc_array(temp, double, num_atoms);
+	for (size_t i = 0; i < num_qm; ++i) {
+		charge[i] = NAN;
+		polar[i]  = NAN;
+	}
+	MEMCPY(charge + num_qm, vlx->mm.charge,         sizeof(double) * vlx->mm.count);
+	MEMCPY(polar  + num_qm, vlx->mm.polarizability, sizeof(double) * vlx->mm.count);
+
+	md_qm_publish_series(sys, STR_LIT("atom/charge"),         STR_LIT("Embedding Charge"),         md_unit_elementary_charge(),               charge, num_atoms);
+	md_qm_publish_series(sys, STR_LIT("atom/polarizability"), STR_LIT("Embedding Polarizability"), md_unit_pow(md_unit_bohr_radius(), 3),     polar,  num_atoms);
+
+	md_temp_end(temp);
+}
+
 static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* state) {
 	ASSERT(vlx);
 
@@ -3687,7 +4041,15 @@ static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* 
 
 	bool result = false;
 
-	if (!h5_read_core_data(vlx, file_id) || !vlx_system_begin(vlx, state)) {
+	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// Before the system is built: the embedding's sites become atoms of it. The SCF settings of this
+	// layout are at the root.
+	vlx_read_mm_environment(vlx, file_id, filename, state == NULL);
+
+	if (!vlx_system_begin(vlx, state)) {
 		goto done;
 	}
 
@@ -3728,7 +4090,21 @@ static bool vlx_read_h5_file(vlx_t* vlx, str_t filename, md_system_state_t* stat
 	// The core block first, and the system built from it before anything else is read: from here on
 	// every reader publishes into vlx->sys as it goes, so the table has to exist and must not be
 	// reset again afterwards.
-	if (!h5_read_core_data(vlx, file_id) || !vlx_system_begin(vlx, state)) {
+	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// The embedding environment ahead of the system, as its sites become atoms of it. It is named in
+	// the SCF settings, which the SCF block below reads for everything else.
+	if (h5_link_exists(file_id, "scf")) {
+		hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
+		if (scf_id != H5I_INVALID_HID) {
+			vlx_read_mm_environment(vlx, scf_id, filename, state == NULL);
+			H5Gclose(scf_id);
+		}
+	}
+
+	if (!vlx_system_begin(vlx, state)) {
 		goto done;
 	}
 
@@ -4847,10 +5223,14 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 		MD_LOG_ERROR("State allocator not set");
 		return false;
 	}
-	md_system_reset(sys);
-	md_system_state_init(state, vlx->number_of_atoms);
 
-	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
+	// The QM atoms, then the sites of the embedding potential when there is one (vlx_system_append_mm)
+	const size_t num_atoms = vlx->number_of_atoms + vlx->mm.count;
+
+	md_system_reset(sys);
+	md_system_state_init(state, num_atoms);
+
+	size_t capacity = ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
@@ -4873,18 +5253,34 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 		sys->atom.type_idx[i] = type_idx;
 	}
 
-	sys->atom.count = vlx->number_of_atoms;
+	if (vlx->mm.count > 0) {
+		vlx_system_append_mm(vlx, state, vlx->number_of_atoms);
+	}
+
+	sys->atom.count = num_atoms;
     state->num_atoms = sys->atom.count;
 
-	return vlx_publish_core(vlx);
+	if (vlx->mm.in_system) {
+		// The fragments are residues, and what kind of residue (water, above all) is read from their
+		// atoms and bonds - the same two calls a structure file's loader ends with.
+		md_util_system_infer_covalent_bonds(sys, state);
+		md_util_system_infer_comp_flags(sys);
+	}
+
+	if (!vlx_publish_core(vlx)) {
+		return false;
+	}
+	vlx_publish_mm(vlx);
+	return true;
 }
 
 
 // Which system atom each QM atom is, or nothing at all when the two spaces coincide.
 //
 // The file cannot decide this for itself: the same h5 carries a local-to-global map whether it is
-// opened standalone - where the system IS the QM atoms and the map must NOT be applied - or against
-// a larger system, where it must. What resolves it is WHICH ENTRY POINT WAS CALLED, which is why
+// opened standalone - where the QM atoms ARE the system's first atoms (an embedding's sites, when
+// there are any, come after them) and the map must NOT be applied - or against a larger system,
+// where it must. What resolves it is WHICH ENTRY POINT WAS CALLED, which is why
 // this takes the answer as an argument rather than trying to work it out.
 //
 // Publishing nothing is not the same as leaving it alone: a stale map from a previous load would
@@ -4943,7 +5339,7 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	bool success = vlx_parse_file(vlx, filename, state);
 	if (success) {
 		vlx_publish_whole_file_attributes(sys, vlx);
-		// Standalone: the system IS the QM atoms, so the map is cleared rather than written.
+		// Standalone: the QM atoms are the system's first atoms, so the map is cleared rather than written.
 		vlx_publish_atom_system_index(sys, vlx, false);
 	}
 
