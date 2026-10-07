@@ -104,6 +104,7 @@ UTEST(unit, print_parse_roundtrip) {
 		md_unit_kelvin(), md_unit_radian(), md_unit_count(), md_unit_angstrom(), md_unit_nanometer(),
 		md_unit_picosecond(), md_unit_femtosecond(), md_unit_joule(), md_unit_electronvolt(),
 		md_unit_hertz(), md_unit_pascal(), md_unit_bar(), md_unit_degree(),
+		md_unit_hartree(), md_unit_bohr_radius(), md_unit_elementary_charge(), md_unit_calorie(), md_unit_dalton(),
 	};
 
 	// Anything we print has to read back as the same unit
@@ -123,6 +124,25 @@ UTEST(unit, print_parse_roundtrip) {
 			}
 		}
 	}
+}
+
+// Quotients and products of units with scales of their own are named by them, not by a factor on
+// the SI unit of the same dimensions
+UTEST(unit, print_scaled_pair) {
+	char buf[64];
+	const md_unit_t potential = md_unit_div(md_unit_hartree(), md_unit_elementary_charge());
+	md_unit_print(buf, sizeof(buf), potential);
+	EXPECT_STREQ("Ha/e", buf);
+	md_unit_t parsed;
+	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_equal(parsed, potential));
+
+	md_unit_print(buf, sizeof(buf), md_unit_div(md_unit_hartree(), md_unit_bohr_radius()));
+	EXPECT_STREQ("Ha/bohr", buf);
+
+	// Units the SI ones name exactly are left as they were
+	md_unit_print(buf, sizeof(buf), md_unit_div(md_unit_electronvolt(), md_unit_elementary_charge()));
+	EXPECT_STREQ("V", buf);
 }
 
 UTEST(unit, conversion_factor) {

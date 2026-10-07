@@ -517,6 +517,23 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
             }
         }
         if (prefix_term == num_terms) {
+            // The greedy split matched the dimensions with units whose scale is not the unit's. Two
+            // predefined units with scales of their own can still name it exactly, as the atomic unit
+            // of electric potential is Ha/e and not 27.2113862459812*V.
+            for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+                for (size_t j = 0; j < ARRAY_SIZE(predefined_units); ++j) {
+                    const md_unit_t a = predefined_units[i].unit;
+                    const md_unit_t b = predefined_units[j].unit;
+                    if (md_unit_equal(unit, md_unit_div(a, b))) {
+                        PRINT(STR_FMT"/"STR_FMT, STR_ARG(predefined_units[i].str), STR_ARG(predefined_units[j].str));
+                        return len;
+                    }
+                    if (j >= i && md_unit_equal(unit, md_unit_mul(a, b))) {
+                        PRINT(STR_FMT"*"STR_FMT, STR_ARG(predefined_units[i].str), STR_ARG(predefined_units[j].str));
+                        return len;
+                    }
+                }
+            }
             len += print_scale(buf, cap, leftover);
         }
     }
