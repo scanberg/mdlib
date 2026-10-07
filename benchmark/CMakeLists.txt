@@ -40,3 +40,13 @@ target_compile_definitions(md_topo_gto_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${C
 target_compile_options(md_topo_gto_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_topo_gto_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_topo_gto_bench PRIVATE mdlib)
+
+# The mdlib commit the benchmark is built from ("branch@hash", plus any locally changed tracked files),
+# refreshed on every build and printed in the header, so each result says which source produced it.
+add_custom_target(md_topo_gto_bench_rev
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/.. -DOUT=${CMAKE_CURRENT_BINARY_DIR}/bench_rev.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/bench_version.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/bench_rev.h
+    VERBATIM)
+add_dependencies(md_topo_gto_bench md_topo_gto_bench_rev)
+target_include_directories(md_topo_gto_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

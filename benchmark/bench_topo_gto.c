@@ -40,6 +40,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bench_rev.h"     // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
+
 #ifndef MD_BENCHMARK_DATA_DIR
 #define MD_BENCHMARK_DATA_DIR "test_data"
 #endif
@@ -300,6 +302,7 @@ int main(int argc, char** argv) {
     if (want_gpu && !stream) want_gpu = false;
 
     printf("md_topo_gto_bench: certified critical points of the GTO density\n");
+    printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("build %s | CPU %d logical cores, %s | GPU %s\n", build, si.num_virtual_cores,
            threads > 0 ? "threads as given" : "all used", gpu_name);
     printf("rho_min %.3g | h_min 1e-4 | separatrices traced | %d timed run%s per configuration (GPU after one warm-up), median shown\n",
