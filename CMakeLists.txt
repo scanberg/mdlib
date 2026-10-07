@@ -281,6 +281,16 @@ if (MD_ENABLE_GPU)
     list(APPEND MD_DEFINES MD_GPU_BACKEND_VULKAN=1)
   elseif (MD_GPU_BACKEND STREQUAL "METAL")
     list(APPEND MD_DEFINES MD_GPU_BACKEND_METAL=1)
+    # Metal compiles with fast math unless told otherwise. OFF: IEEE semantics for every Metal shader,
+    # offline (-fno-fast-math) and at runtime (MTLCompileOptions), e.g. to compare md_topo's certified
+    # kernels, whose rounding margins assume IEEE + - *, with and without it.
+    option(MD_GPU_METAL_FAST_MATH "Compile Metal shaders with fast math (Metal's default)" ON)
+    if (MD_GPU_METAL_FAST_MATH)
+      list(APPEND MD_DEFINES MD_GPU_METAL_FAST_MATH=1)
+    else()
+      list(APPEND MD_DEFINES MD_GPU_METAL_FAST_MATH=0)
+    endif()
+    message(STATUS "mdlib: Metal fast math = ${MD_GPU_METAL_FAST_MATH}")
   endif()
   list(APPEND MD_DEFINES MD_ENABLE_GPU=1)
 

@@ -225,9 +225,13 @@ function(compile_gpu_shaders OUT_HEADER)
             )
             if (MD_GPU_METAL_COMPILER)
                 set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.metallib")
+                set(METAL_MATH_FLAGS "")                    # MD_GPU_METAL_FAST_MATH, see CMakeLists.txt
+                if (DEFINED MD_GPU_METAL_FAST_MATH AND NOT MD_GPU_METAL_FAST_MATH)
+                    set(METAL_MATH_FLAGS -fno-fast-math)
+                endif()
                 add_custom_command(
                     OUTPUT ${BIN}
-                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${MSL} -o ${AIR}
+                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_MATH_FLAGS} ${MSL} -o ${AIR}
                     COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${BIN}
                     DEPENDS ${MSL}
                     COMMENT "metallib: ${STEM}_${ENTRY}.metal -> ${STEM}_${ENTRY}.metallib"

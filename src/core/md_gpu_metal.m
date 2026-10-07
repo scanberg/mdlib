@@ -2104,7 +2104,28 @@ static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void
     }
 
     NSError* err = nil;
-    id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:nil error:&err];
+    MTLCompileOptions* opts = nil;
+#if defined(MD_GPU_METAL_FAST_MATH) && !MD_GPU_METAL_FAST_MATH
+    /* Built with MD_GPU_METAL_FAST_MATH=OFF: IEEE semantics, as -fno-fast-math on the offline path. */
+    opts = [[MTLCompileOptions alloc] init];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#if defined(__MAC_15_0)
+    if (@available(macOS 15.0, *)) {
+        opts.mathMode = MTLMathModeSafe;
+        opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+    } else {
+        opts.fastMathEnabled = NO;
+    }
+#else
+    opts.fastMathEnabled = NO;
+#endif
+#pragma clang diagnostic pop
+#endif
+    id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:opts error:&err];
+#if !__has_feature(objc_arc)
+    [opts release];
+#endif
     if (!lib) {
         MD_LOG_ERROR("md_gpu: failed to compile Metal shaders at runtime.\n"
                      "Shader: %s\n\nMetal compiler error:\n%s",
