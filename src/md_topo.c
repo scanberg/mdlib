@@ -1136,6 +1136,11 @@ typedef struct cpg_ctx_t {
     int    (*ao_ijk)[3];
     double* ao_nrm;
     const double* D;
+    // D = sum_k fac_l[k] c_k c_k^T, c_k[i] = fac_C[i * fac_r + k] (cpg_factor_density); fac_r = 0: no factors
+    int     fac_r;
+    double* fac_C;
+    double* fac_l;
+    md_topo_gto_density_form_t form;
     double tail_rho, tail_g, tail_H;
     double tau;
     double eps;
@@ -1155,6 +1160,8 @@ typedef struct cpg_scratch_t {
     double* Dl;         // local D block [n*n]
     double* E;          // per-AO remainder vectors [n][16]
     double* Q;          // |D| products [n][8]
+    double* Vf;         // factor rows: c_k . V [r][CPG_NV]
+    double* Ef;         // factor rows: |c_k| . E [r][16]
 } cpg_scratch_t;
 
 typedef struct cpg_eval_t {
@@ -1607,7 +1614,18 @@ static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3]
 
 // ----------------------------------------------------------------------------------------------- cube enclosures
 
-static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, cpg_eval_t* ev) {
+// Whether the cube is evaluated with D's factors (r rows) rather than as a matrix over its n local AOs.
+// Cost per cube: factors r n (20 + 15) multiply-adds for the rows, the matrix n^2 (20 + 6) for the D
+// products. The factored remainder bounds are looser (sum_k |l_k (c_k . P)| (|c_k| . E) against
+// sum_i |(D P)_i| E_i: 5-13% more cubes on the test inputs), so auto wants a clear margin: r <= n / 3.
+static bool cpg_use_factors(const cpg_ctx_t* ctx, int n) {
+    if (ctx->fac_r == 0 || ctx->form == MD_TOPO_GTO_DENSITY_MATRIX) return false;
+    if (ctx->form == MD_TOPO_GTO_DENSITY_FACTORED) return true;
+    return 3 * ctx->fac_r <= n;
+}
+
+// Returns whether the factored form was used.
+static bool cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, cpg_eval_t* ev) {
     int ns = 0;
     const int n = cpg_local_aos(ctx, sc, c, h, &ns);
     memset(ev, 0, sizeof(*ev));
@@ -1619,27 +1637,77 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
         cpg_shell_rem(ctx, s, c, h, sc->E + (size_t)k * 16, 16);
         k += s->ncart;
     }
-    // local D block and D-products Dv = D V (all 20 channels)
-    double* Dl = sc->Dl;
-    for (int i = 0; i < n; ++i) {
-        const double* row = ctx->D + (size_t)sc->L[i] * ctx->nao;
-        for (int j = 0; j < n; ++j) Dl[(size_t)i * n + j] = row[sc->L[j]];
-    }
-    for (int i = 0; i < n; ++i) {
-        double acc[CPG_NDV] = {0};
-        const double* row = Dl + (size_t)i * n;
-        for (int j = 0; j < n; ++j) {
-            const double d = row[j];
-            const double* v = sc->V + (size_t)j * CPG_NV;
-            for (int m = 0; m < CPG_NDV; ++m) acc[m] += d * v[m];
+    // The rows of rho = sum_ab X_ab psi_a psi_b: the local AOs with X = D, or the factors psi_k = c_k . phi
+    // with X = diag(l). A factor's Taylor coefficients are c_k . V exactly, and |c_k| . E bounds each of
+    // its remainder terms, so everything below holds for either; per row: V (Vr), the remainder vector
+    // (Er), Dv = X V and Q = |X| E[0..5].
+    const bool fac = cpg_use_factors(ctx, n);
+    int nr = n;
+    const double* Vr = sc->V;
+    const double* Er = sc->E;
+    if (fac) {
+        const int r = ctx->fac_r;
+        nr = r;
+        MEMSET(sc->Vf, 0, sizeof(double) * r * CPG_NV);
+        MEMSET(sc->Ef, 0, sizeof(double) * r * 16);
+        for (int i = 0; i < n; ++i) {
+            const double* ci = ctx->fac_C + (size_t)sc->L[i] * r;
+            const double* v = sc->V + (size_t)i * CPG_NV;
+            const double* e = sc->E + (size_t)i * 16;
+            for (int k = 0; k < r; ++k) {
+                const double ck = ci[k];
+                if (ck == 0.0) continue;
+                const double ak = fabs(ck);
+                double* vf = sc->Vf + (size_t)k * CPG_NV;
+                double* ef = sc->Ef + (size_t)k * 16;
+                for (int m = 0; m < CPG_NV; ++m) vf[m] += ck * v[m];
+                for (int t = 0; t < 15; ++t) ef[t] += ak * e[t];
+            }
         }
-        memcpy(sc->Dv + (size_t)i * CPG_NDV, acc, sizeof(acc));
+        for (int k = 0; k < r; ++k) {
+            const double l = ctx->fac_l[k], al = fabs(l);
+            const double* vf = sc->Vf + (size_t)k * CPG_NV;
+            const double* ef = sc->Ef + (size_t)k * 16;
+            for (int m = 0; m < CPG_NDV; ++m) sc->Dv[(size_t)k * CPG_NDV + m] = l * vf[m];
+            for (int t = 0; t < 6; ++t) sc->Q[(size_t)k * 8 + t] = al * ef[t];
+        }
+        Vr = sc->Vf;
+        Er = sc->Ef;
+    } else {
+        // local D block and D-products Dv = D V (all 20 channels)
+        double* Dl = sc->Dl;
+        for (int i = 0; i < n; ++i) {
+            const double* row = ctx->D + (size_t)sc->L[i] * ctx->nao;
+            for (int j = 0; j < n; ++j) Dl[(size_t)i * n + j] = row[sc->L[j]];
+        }
+        for (int i = 0; i < n; ++i) {
+            double acc[CPG_NDV] = {0};
+            const double* row = Dl + (size_t)i * n;
+            for (int j = 0; j < n; ++j) {
+                const double d = row[j];
+                const double* v = sc->V + (size_t)j * CPG_NV;
+                for (int m = 0; m < CPG_NDV; ++m) acc[m] += d * v[m];
+            }
+            memcpy(sc->Dv + (size_t)i * CPG_NDV, acc, sizeof(acc));
+        }
+        // |D| products: Q[i*8 + .]: 0 |D|E1, 1 |D|E2, 2 |D|E3, 3..5 |D|Ea2
+        for (int i = 0; i < n; ++i) {
+            double q[6] = {0};
+            const double* row = Dl + (size_t)i * n;
+            for (int j = 0; j < n; ++j) {
+                const double d = fabs(row[j]);
+                const double* e = sc->E + (size_t)j * 16;
+                q[0] += d * e[0]; q[1] += d * e[1]; q[2] += d * e[2];
+                q[3] += d * e[3]; q[4] += d * e[4]; q[5] += d * e[5];
+            }
+            memcpy(sc->Q + (size_t)i * 8, q, sizeof(q));
+        }
     }
-    // DOT[a][b] = V_a . D V_b for a < 20, b < 10
+    // DOT[a][b] = V_a . X V_b for a < 20, b < 10
     double DOT[CPG_NV][10];
     memset(DOT, 0, sizeof(DOT));
-    for (int i = 0; i < n; ++i) {
-        const double* v = sc->V + (size_t)i * CPG_NV;
+    for (int i = 0; i < nr; ++i) {
+        const double* v = Vr + (size_t)i * CPG_NV;
         const double* dv = sc->Dv + (size_t)i * CPG_NDV;
         for (int a = 0; a < CPG_NV; ++a) {
             const double va = v[a];
@@ -1656,24 +1724,12 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
     const double h2 = h * h, h3 = h2 * h;
     int ab_idx[3][3];
     { int t = 0; for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) { ab_idx[a][b] = ab_idx[b][a] = t++; } }
-    // |D| products: Q[i*8 + .]: 0 |D|E1, 1 |D|E2, 2 |D|E3, 3..5 |D|Ea2
-    for (int i = 0; i < n; ++i) {
-        double q[6] = {0};
-        const double* row = Dl + (size_t)i * n;
-        for (int j = 0; j < n; ++j) {
-            const double d = fabs(row[j]);
-            const double* e = sc->E + (size_t)j * 16;
-            q[0] += d * e[0]; q[1] += d * e[1]; q[2] += d * e[2];
-            q[3] += d * e[3]; q[4] += d * e[4]; q[5] += d * e[5];
-        }
-        memcpy(sc->Q + (size_t)i * 8, q, sizeof(q));
-    }
-    // AO-sum terms
+    // row sums of the remainder terms
     double rho_lin = 0, rho_quad = 0;
     double err_g[3] = {0}, err_H[6] = {0};
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < nr; ++i) {
         const double* dv = sc->Dv + (size_t)i * CPG_NDV;
-        const double* e = sc->E + (size_t)i * 16;
+        const double* e = Er + (size_t)i * 16;
         const double* q = sc->Q + (size_t)i * 8;
         double ad[CPG_NDV];
         for (int m = 0; m < CPG_NDV; ++m) ad[m] = fabs(dv[m]);
@@ -1724,6 +1780,7 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
         ev->dH[a][b] = ev->dH[b][a] = v;
     }
     ev->rho_up = ev->rho + 2.0 * rho_lin + rho_quad + ctx->tail_rho;
+    return fac;
 }
 
 // ----------------------------------------------------------------------------------------------- tests
@@ -2060,6 +2117,7 @@ typedef struct cpg_worker_t {
     double h_min;
     md_array(cpg_rootrec_t) roots;      // this worker's certified roots
     uint64_t inflated;
+    uint64_t factored;                  // cubes evaluated in the factored form
     // separatrices: item t traces path traces[t] % 2 of saddle saddles[traces[t] / 2]
     const cpg_cp_t* cps;
     int ncp;
@@ -2135,7 +2193,7 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
 static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_cp) {
     const cpg_ctx_t* ctx = w->ctx;
     cpg_eval_t ev, evi;
-    cpg_box_eval(ctx, &w->sc, box->c, box->h, &ev);
+    if (cpg_box_eval(ctx, &w->sc, box->c, box->h, &ev)) w->factored++;
     if (ev.rho_up < ctx->eps) return CPG_DISCARD;
     double val[3], vec[3][3], Y[3][3];
     cpg_eigen_sym3(val, vec, ev.A);
@@ -2222,9 +2280,13 @@ static void cpg_scratch_alloc(cpg_scratch_t* sc, int N, int nshell, md_allocator
     sc->Dl     = (double*)md_alloc(heap, sizeof(double) * N * N);
     sc->E      = (double*)md_alloc(heap, sizeof(double) * N * 16);
     sc->Q      = (double*)md_alloc(heap, sizeof(double) * N * 8);
+    sc->Vf     = (double*)md_alloc(heap, sizeof(double) * N * CPG_NV);
+    sc->Ef     = (double*)md_alloc(heap, sizeof(double) * N * 16);
 }
 
 static void cpg_scratch_free(cpg_scratch_t* sc, int N, int nshell, md_allocator_i* heap) {
+    md_free(heap, sc->Ef, sizeof(double) * N * 16);
+    md_free(heap, sc->Vf, sizeof(double) * N * CPG_NV);
     md_free(heap, sc->Q,  sizeof(double) * N * 8);
     md_free(heap, sc->E,  sizeof(double) * N * 16);
     md_free(heap, sc->Dl, sizeof(double) * N * N);
@@ -2232,6 +2294,89 @@ static void cpg_scratch_free(cpg_scratch_t* sc, int N, int nshell, md_allocator_
     md_free(heap, sc->V,  sizeof(double) * N * CPG_NV);
     md_free(heap, sc->shells, sizeof(int) * (nshell + 1));
     md_free(heap, sc->L,  sizeof(int) * N);
+}
+
+
+// D = sum_k l_k c_k c_k^T with r <= rmax factors, by LDL^T with 1x1 diagonal pivots, the largest
+// residual diagonal first (for a positive semidefinite D: pivoted Cholesky, l_k > 0; the factors come
+// out more local than eigenvectors, which keeps the factored remainder bounds tighter: 1.2-2.1 against
+// 1.7-3.6 for sum |l||c||c|^T / sum |D| on the test inputs). Stops once every residual diagonal is at
+// rounding level, then accepts the factors only if the whole residual R = D - C diag(l) C^T is:
+//   |R_ij| <= 16 (r + 2) u (|D_ij| + sum_k |l_k c_ik c_jk|),   u = 2^-53,
+// i.e. no larger than what the double sums of rho round anyway, so the reference's guarantee (exact
+// arithmetic, evaluated in double) is unchanged. A D that is not low rank at that level (a correlated
+// density with small occupations, an indefinite one that 1x1 pivots cannot factor) is used as a matrix.
+// Returns r, 0 if not factored. Cost: N r^2 / 2 + N^2 r.
+static int cpg_factor_density(cpg_ctx_t* ctx, md_allocator_i* heap, int rmax) {
+    const int N = ctx->nao;
+    const double* D = ctx->D;
+    if (N <= 0 || rmax <= 0) return 0;
+    double dmax = 0.0;
+    for (int i = 0; i < N; ++i) dmax = fmax(dmax, fabs(D[(size_t)i * N + i]));
+    if (!(dmax > 0.0)) return 0;
+    const double u = 0.5 * DBL_EPSILON;
+    double* d   = (double*)md_alloc(heap, sizeof(double) * N);                   // residual diagonal
+    double* F   = (double*)md_alloc(heap, sizeof(double) * (size_t)N * rmax);    // c_k[i] at [i * rmax + k]
+    double* lam = (double*)md_alloc(heap, sizeof(double) * rmax);
+    double* w   = (double*)md_alloc(heap, sizeof(double) * rmax);
+    bool*   used = (bool*)md_alloc(heap, sizeof(bool) * N);
+    for (int i = 0; i < N; ++i) { d[i] = D[(size_t)i * N + i]; used[i] = false; }
+    const double tol = 64.0 * N * u * dmax;
+    int r = 0;
+    bool ok = true;
+    for (;;) {
+        int p = -1;
+        double best = tol;
+        for (int i = 0; i < N; ++i) if (!used[i] && fabs(d[i]) > best) { best = fabs(d[i]); p = i; }
+        if (p < 0) break;                                   // the rest is at rounding level
+        if (r == rmax) { ok = false; break; }               // rank too high to pay off
+        const double* fp = F + (size_t)p * rmax;
+        for (int k = 0; k < r; ++k) w[k] = lam[k] * fp[k];
+        // the pivot from scratch rather than the running diagonal
+        double dp = D[(size_t)p * N + p];
+        for (int k = 0; k < r; ++k) dp -= w[k] * fp[k];
+        used[p] = true;
+        d[p] = 0.0;
+        if (!(fabs(dp) > tol)) continue;
+        for (int i = 0; i < N; ++i) {
+            double* fi = F + (size_t)i * rmax;
+            if (i == p) { fi[r] = 1.0; continue; }
+            if (used[i]) { fi[r] = 0.0; continue; }
+            double v = D[(size_t)i * N + p];
+            for (int k = 0; k < r; ++k) v -= w[k] * fi[k];
+            fi[r] = v / dp;
+            d[i] -= dp * fi[r] * fi[r];
+        }
+        lam[r] = dp;
+        r++;
+    }
+    // the residual, everywhere (D must also be symmetric to that level)
+    if (ok && r > 0) {
+        const double fac = 16.0 * (r + 2) * u;
+        for (int i = 0; i < N && ok; ++i) {
+            const double* fi = F + (size_t)i * rmax;
+            for (int k = 0; k < r; ++k) w[k] = lam[k] * fi[k];
+            for (int j = i; j < N; ++j) {
+                const double* fj = F + (size_t)j * rmax;
+                double v = D[(size_t)i * N + j], a = fabs(v);
+                for (int k = 0; k < r; ++k) { const double t = w[k] * fj[k]; v -= t; a += fabs(t); }
+                if (fabs(v) > fac * a || fabs(D[(size_t)j * N + i] - D[(size_t)i * N + j]) > fac * a) { ok = false; break; }
+            }
+        }
+    }
+    if (ok && r > 0) {
+        ctx->fac_r = r;
+        ctx->fac_l = (double*)md_alloc(heap, sizeof(double) * r);
+        ctx->fac_C = (double*)md_alloc(heap, sizeof(double) * (size_t)N * r);
+        MEMCPY(ctx->fac_l, lam, sizeof(double) * r);
+        for (int i = 0; i < N; ++i) MEMCPY(ctx->fac_C + (size_t)i * r, F + (size_t)i * rmax, sizeof(double) * r);
+    }
+    md_free(heap, used, sizeof(bool) * N);
+    md_free(heap, w, sizeof(double) * rmax);
+    md_free(heap, lam, sizeof(double) * rmax);
+    md_free(heap, F, sizeof(double) * (size_t)N * rmax);
+    md_free(heap, d, sizeof(double) * N);
+    return ctx->fac_r;
 }
 
 // ----------------------------------------------------------------------------------------------- driver
@@ -2332,6 +2477,12 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     }
     ctx->D = desc->density_matrix;
     const int N = ctx->nao;
+    ctx->form = desc->density_form;
+    if (ok && ctx->form != MD_TOPO_GTO_DENSITY_MATRIX) {
+        // auto uses factors only where 3 r <= n (cpg_use_factors), so more than N / 3 is never used
+        const int rmax = ctx->form == MD_TOPO_GTO_DENSITY_FACTORED ? N : N / 3;
+        R->info.density_rank = (uint32_t)cpg_factor_density(ctx, heap, rmax);
+    }
 
     R->workers = (cpg_worker_t*)md_alloc(heap, sizeof(cpg_worker_t) * nthreads);
     MEMSET(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
@@ -2441,6 +2592,8 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
             md_array_push_array(R->roots, workers[t].roots, md_array_size(workers[t].roots), heap);
             R->info.num_inflated_evals += workers[t].inflated;
             workers[t].inflated = 0;
+            R->info.num_factored_evals += workers[t].factored;
+            workers[t].factored = 0;
         }
         if (md_array_size(R->roots) > 1) qsort(R->roots, md_array_size(R->roots), sizeof(cpg_rootrec_t), cpg_rootrec_cmp);
         for (size_t r = 0; r < md_array_size(R->roots); ++r) cpg_run_accept(R, &R->roots[r].cp);
@@ -2626,6 +2779,10 @@ static void cpg_run_free(cpg_run_t* R) {
     md_array_free(R->cur, heap);
     md_array_free(R->nxt, heap);
     md_array_free(R->unres, heap);
+    if (ctx->fac_r) {
+        md_free(heap, ctx->fac_C, sizeof(double) * (size_t)N * ctx->fac_r);
+        md_free(heap, ctx->fac_l, sizeof(double) * ctx->fac_r);
+    }
     md_free(heap, ctx->ao_nrm, sizeof(double) * N);
     md_free(heap, ctx->ao_ijk, sizeof(int[3]) * N);
     md_free(heap, ctx->coeff, sizeof(double) * basis->num_primitives);

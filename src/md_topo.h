@@ -123,6 +123,17 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 struct md_gto_basis_t;
 
+// How the enclosures treat rho (CPU sweep; the GPU sweep uses the matrix for now). The factored form
+// writes D = sum_k l_k c_k c_k^T (pivoted LDL^T at setup, residual checked to rounding level) and bounds
+// rho = sum_k l_k (c_k . phi)^2: per cube r factor rows instead of n local AO rows, so the D products
+// cost r n instead of n^2 (r = rank of D: the occupied orbitals of an SCF density). Its remainder bounds
+// are looser (more cubes), so it pays only when r is well below the local AO count.
+typedef enum md_topo_gto_density_form_t {
+    MD_TOPO_GTO_DENSITY_AUTO = 0,        // factored where it is cheaper, per cube
+    MD_TOPO_GTO_DENSITY_MATRIX,          // sum_ij D_ij phi_i phi_j over the local AOs
+    MD_TOPO_GTO_DENSITY_FACTORED,        // the factors wherever D factors (else the matrix)
+} md_topo_gto_density_form_t;
+
 typedef struct md_topo_gto_desc_t {
     const struct md_gto_basis_t* basis;  // Cartesian basis, md_gto conventions
     const float*  atom_xyz;              // atom positions in Bohr, indexed by shell.atom_idx
@@ -136,6 +147,7 @@ typedef struct md_topo_gto_desc_t {
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
     uint32_t      gpu_gemm_variant;      // GPU sweep only: GEMM tiling, for tuning: 0 picks one for the GPU, v + 1 forces tiling v
+    md_topo_gto_density_form_t density_form;   // see above (0 = auto)
 } md_topo_gto_desc_t;
 
 typedef struct md_topo_gto_cluster_t {
@@ -161,6 +173,8 @@ typedef struct md_topo_gto_info_t {
     bool     complete;                   // true: no unresolved cubes, the graph holds every CP with rho >= rho_min
     int32_t  poincare_hopf;              // n_max - n_bcp + n_rcp - n_ccp (1 for a complete, isolated molecule)
     double   domain_pad;                 // derived padding (Bohr) around the atoms outside which rho < rho_min
+    uint32_t density_rank;               // number of factors of D (0: D did not factor at rounding level; matrix form only)
+    uint64_t num_factored_evals;         // cube evaluations in the factored form (CPU; part of num_box_evals)
     md_topo_gto_cluster_t clusters[MD_TOPO_GTO_MAX_CLUSTERS];
     // GPU sweep only (md_topo_compute_extremum_graph_gto_gpu)
     bool     used_gpu;                   // the octree sweep ran on the GPU

@@ -186,9 +186,6 @@ UTEST(topo_gto, cancel) {
     qm_test_free(&in.t);
 }
 
-#if MD_ENABLE_GPU
-#include <core/md_gpu.h>
-
 static bool topo_gto_same_graph(const md_topo_extremum_graph_t* a, const md_topo_extremum_graph_t* b) {
     // Same CPs (matched by position: symmetry-equivalent CPs of equal density may be listed in another
     // order) and the same edges between them.
@@ -215,6 +212,63 @@ static bool topo_gto_same_graph(const md_topo_extremum_graph_t* a, const md_topo
     }
     return true;
 }
+
+// The factored form (D = sum_k l_k c_k c_k^T; rank 5 here, the occupied orbitals of RHF water) proves
+// the same topology as the matrix form, with the same CPs and edges.
+UTEST(topo_gto, factored_density_matches_matrix) {
+    topo_gto_input_t in;
+    ASSERT_TRUE(topo_gto_load_water(&in));
+    md_topo_gto_desc_t dm = topo_gto_desc(&in), df = topo_gto_desc(&in);
+    dm.density_form = MD_TOPO_GTO_DENSITY_MATRIX;
+    df.density_form = MD_TOPO_GTO_DENSITY_FACTORED;
+
+    md_topo_extremum_graph_t m = { .alloc = in.t.alloc }, f = { .alloc = in.t.alloc };
+    md_topo_gto_info_t im, inf;
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&m, &im, &dm));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&f, &inf, &df));
+    EXPECT_EQ(0u, im.density_rank);
+    EXPECT_EQ(0u, im.num_factored_evals);
+    EXPECT_EQ(5u, inf.density_rank);
+    EXPECT_EQ(inf.num_box_evals, inf.num_factored_evals);
+    EXPECT_TRUE(inf.complete);
+    EXPECT_TRUE(topo_gto_same_graph(&m, &f));
+
+    md_topo_extremum_graph_free(&m);
+    md_topo_extremum_graph_free(&f);
+    qm_test_free(&in.t);
+}
+
+// A density matrix of full rank (here water's plus 1e-3 I) is not factored by auto, where it would not
+// pay; forced, its full-rank factorization proves the same topology as the matrix.
+UTEST(topo_gto, full_rank_density) {
+    topo_gto_input_t in;
+    ASSERT_TRUE(topo_gto_load_water(&in));
+    const size_t N = md_gto_basis_num_ao(&in.basis);
+    for (size_t i = 0; i < N; ++i) in.density[i * N + i] += 1.0e-3;
+    md_topo_gto_desc_t da = topo_gto_desc(&in), dm = topo_gto_desc(&in), df = topo_gto_desc(&in);
+    da.rho_min = dm.rho_min = df.rho_min = 1.0e-3;
+    dm.density_form = MD_TOPO_GTO_DENSITY_MATRIX;
+    df.density_form = MD_TOPO_GTO_DENSITY_FACTORED;
+
+    md_topo_extremum_graph_t a = { .alloc = in.t.alloc }, m = { .alloc = in.t.alloc }, f = { .alloc = in.t.alloc };
+    md_topo_gto_info_t ia, im, inf;
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&a, &ia, &da));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&m, &im, &dm));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&f, &inf, &df));
+    EXPECT_EQ(0u, ia.density_rank);
+    EXPECT_EQ(ia.num_box_evals, im.num_box_evals);
+    EXPECT_EQ((uint32_t)N, inf.density_rank);
+    EXPECT_TRUE(inf.complete);
+    EXPECT_TRUE(topo_gto_same_graph(&m, &f));
+
+    md_topo_extremum_graph_free(&a);
+    md_topo_extremum_graph_free(&m);
+    md_topo_extremum_graph_free(&f);
+    qm_test_free(&in.t);
+}
+
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
 
 // The GPU sweep (fp32 with rounding margins; roots polished in double on the CPU) reaches the same
 // certified topology as the CPU reference, and is itself deterministic.

@@ -11,6 +11,7 @@
 //   --threads <n>   CPU worker threads (default 0: every logical core)
 //   --cpu / --gpu   only that path (default: both, GPU when there is a device)
 //   --profile       also a GPU run that waits for every kernel to time it (per-kernel times, GEMM FLOP/s)
+//   --density <f>   auto (default), matrix or factored: how the CPU enclosures treat D (desc.density_form)
 //   --gemm <v>      GPU GEMM tiling v (default: the one picked for the GPU; --gemm-sweep lists them)
 //   --gemm-sweep    per dataset, every GEMM tiling: median wall time, GEMM kernel time, and whether the
 //                   result is identical to tiling 0's (it should be: the sums run in the same order)
@@ -244,6 +245,7 @@ int main(int argc, char** argv) {
     int reps = 3, threads = 0;
     bool want_cpu = true, want_gpu = true, profile = false, verbose = false, gemm_sweep = false;
     int gemm_variant = -1;     // -1: the tiling md_topo picks for the GPU
+    md_topo_gto_density_form_t density_form = MD_TOPO_GTO_DENSITY_AUTO;
     const char* data_dir = MD_BENCHMARK_DATA_DIR;
     const char* names[64];
     int num_names = 0;
@@ -259,9 +261,16 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--profile")) profile = true;
         else if (!strcmp(a, "--gemm") && i + 1 < argc) gemm_variant = atoi(argv[++i]);
         else if (!strcmp(a, "--gemm-sweep")) gemm_sweep = true;
+        else if (!strcmp(a, "--density") && i + 1 < argc) {
+            const char* f = argv[++i];
+            if (!strcmp(f, "auto")) density_form = MD_TOPO_GTO_DENSITY_AUTO;
+            else if (!strcmp(f, "matrix")) density_form = MD_TOPO_GTO_DENSITY_MATRIX;
+            else if (!strcmp(f, "factored")) density_form = MD_TOPO_GTO_DENSITY_FACTORED;
+            else { fprintf(stderr, "--density %s: auto, matrix or factored\n", f); return 1; }
+        }
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--gemm v] [--gemm-sweep] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
+            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--density auto|matrix|factored] [--gemm v] [--gemm-sweep] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
             return 0;
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option %s (see --help)\n", a); return 1; }
@@ -324,6 +333,8 @@ int main(int argc, char** argv) {
         printf("GEMM tiling %s%s\n", md_topo_gto_gpu_gemm_variant_name(gv), gemm_variant >= 0 ? " (--gemm)" : " (picked for this GPU)");
     }
 #endif
+    printf("density %s (CPU enclosures)\n", density_form == MD_TOPO_GTO_DENSITY_MATRIX ? "matrix" :
+                                             density_form == MD_TOPO_GTO_DENSITY_FACTORED ? "factored" : "auto: factored where r <= local AOs / 3");
     printf("data %s\n", data_dir);
     printf("formats .molden%s\n\n", HAVE_H5 ? ", .h5 (VeloxChem)" : " only: this mdlib was configured without MD_ENABLE_HDF5, so the .h5 inputs are skipped");
 
@@ -353,6 +364,7 @@ int main(int argc, char** argv) {
             .trace_separatrices = true,
             .num_threads = (uint32_t)threads,
             .gpu_gemm_variant = gemm_variant >= 0 ? (uint32_t)gemm_variant + 1 : 0,
+            .density_form = density_form,
         };
 
         result_t res = { names[di], -1.0, -1.0 };
@@ -387,6 +399,11 @@ int main(int argc, char** argv) {
                        (unsigned long long)sk, ev + sk ? 100.0 * (double)sk / (double)(ev + sk) : 0.0, (unsigned long long)(ev + sk));
                 if (gpu && i0->num_gpu_batches) printf(", %llu GPU batches, %.0f local AOs on average", (unsigned long long)i0->num_gpu_batches,
                                                        (double)i0->num_gpu_rows / (double)i0->num_gpu_batches);
+                if (!gpu) {
+                    if (i0->density_rank) printf(", D of rank %u: %.0f%% of cubes factored", i0->density_rank,
+                                                 ev ? 100.0 * (double)i0->num_factored_evals / (double)ev : 0.0);
+                    else printf(", D as a matrix");
+                }
                 printf("\n");
             }
             if (gpu) res.gpu_ms = MED(ms_total); else res.cpu_ms = MED(ms_total);
