@@ -134,6 +134,7 @@ typedef struct md_topo_gto_desc_t {
     bool          trace_separatrices;    // trace separatrices to produce the graph edges
     uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
+    bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
 } md_topo_gto_desc_t;
 
 typedef struct md_topo_gto_cluster_t {
@@ -173,6 +174,12 @@ typedef struct md_topo_gto_info_t {
     double   ms_sweep_cpu;               // CPU levels: the escalated subtrees, or the whole sweep without a GPU
     double   ms_separatrices;
     double   ms_clusters;
+    // Per GPU kernel, with desc.profile_gpu_kernels (part of ms_sweep_gpu_wait): AO values and remainders,
+    // the D products, the dot products and AO sums, the tests.
+    double   ms_gpu_ao;
+    double   ms_gpu_gemm;
+    double   ms_gpu_epilogue;
+    double   ms_gpu_decide;
 } md_topo_gto_info_t;
 
 bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc);

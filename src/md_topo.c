@@ -2715,6 +2715,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_hout = 0;
     md_gpu_mem_t h_out = {0};
     const size_t row_cap = CPG_GPU_SCRATCH_BUDGET / ((CPG_GPU_PHI_W + CPG_GPU_DV_W) * sizeof(float));
+    const bool profile = R->desc->profile_gpu_kernels;   // wait for and time every kernel
     size_t chunk = 16;                    // batches per chunk, adapted to CPG_GPU_DISPATCH_MS
     // Invariant at every exit of the loop below: cur[done..] and nxt are exactly the batches not yet
     // decided, which the CPU then takes over.
@@ -2821,11 +2822,24 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 a.dv = d_dv;
                 a.ep = d_ep;
                 a.outcome = d_out;
-                ok = md_gpu_launch(stream, k_topo_gto[CPG_K_AO], md_gpu_grid((uint32_t)count, 1, 1), &a, sizeof(a))
-                  && (tiles == 0 || md_gpu_launch(stream, k_topo_gto[CPG_K_GEMM], md_gpu_grid((uint32_t)tiles, 1, 1), &a, sizeof(a)))
-                  && md_gpu_launch(stream, k_topo_gto[CPG_K_EPI], md_gpu_grid((uint32_t)count, 1, 1), &a, sizeof(a))
-                  && md_gpu_launch(stream, k_topo_gto[CPG_K_DECIDE], md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1), &a, sizeof(a))
-                  && md_gpu_copy(stream, h_out.gpu, d_out, 8 * count * sizeof(uint32_t));
+                const md_gpu_grid_t grids[CPG_K_COUNT] = {
+                    md_gpu_grid((uint32_t)count, 1, 1),
+                    md_gpu_grid((uint32_t)tiles, 1, 1),
+                    md_gpu_grid((uint32_t)count, 1, 1),
+                    md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1),
+                };
+                double* kernel_ms[CPG_K_COUNT] = { &R->info.ms_gpu_ao, &R->info.ms_gpu_gemm, &R->info.ms_gpu_epilogue, &R->info.ms_gpu_decide };
+                for (int k = 0; k < CPG_K_COUNT && ok; ++k) {
+                    if (grids[k].x == 0) continue;
+                    if (profile) md_gpu_stream_sync(stream);      // uploads and the previous kernel are not this kernel's time
+                    const md_tick_t tk = md_tick_now();
+                    ok = md_gpu_launch(stream, k_topo_gto[k], grids[k], &a, sizeof(a));
+                    if (profile && ok) {
+                        md_gpu_stream_sync(stream);
+                        *kernel_ms[k] += md_tick_to_milliseconds(md_tick_now() - tk);
+                    }
+                }
+                ok = ok && md_gpu_copy(stream, h_out.gpu, d_out, 8 * count * sizeof(uint32_t));
                 if (!ok) break;
                 md_gpu_stream_sync(stream);
                 R->info.num_gpu_dispatches += 4;
