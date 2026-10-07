@@ -25,10 +25,10 @@
 // memory (rows = local AOs of all batches in the chunk, columns = channel * 8 + child):
 //
 //   ao_main     one group per batch. Per local shell, primitive, axis and child side the 1D factors
-//               of the centre values and of the remainder sups (cube and inflated cube) are computed
-//               once into groupshared memory; they serve every Cartesian component and the 4 children
-//               on that side. Then per (AO, child) the products: centre values with magnitude and error
-//               shadows, and the remainder vectors.                                        -> phi
+//               of the centre values and of the 1D remainder sups (cube and inflated cube) are
+//               computed once into groupshared memory; they serve every Cartesian component and the
+//               4 children on that side. Then per (AO, child) the products: centre values with
+//               magnitude and error shadows, and the separable remainder bounds.           -> phi
 //   gemm_main   32-row tiles: D * V and |D| * (error weights, remainder vectors), over the batch's
 //               local AOs.                                                                 -> dv
 //   epi_main    32 threads per batch: DOT[a][b] = V_a . D V_b with its error sums (which depend on
@@ -47,7 +47,7 @@
 
 #define LMAX    4
 #define KI      (LMAX + 8)
-#define KA      5
+#define KA      7       // 1D derivative orders 0..6 (centre values to 5, sups 3..6)
 #define KM      (KI + KA + 1)
 #define UF      5.9604644775390625e-8
 
@@ -149,10 +149,6 @@ int M2(int a, int b) { return mi_index(int(a == 0) + int(b == 0), int(a == 1) + 
 int M3(int a, int b, int c) {
     return mi_index(int(a == 0) + int(b == 0) + int(c == 0), int(a == 1) + int(b == 1) + int(c == 1), int(a == 2) + int(b == 2) + int(c == 2));
 }
-int M4(int a, int b, int c, int d) {
-    return mi_index(int(a == 0) + int(b == 0) + int(c == 0) + int(d == 0), int(a == 1) + int(b == 1) + int(c == 1) + int(d == 1),
-                    int(a == 2) + int(b == 2) + int(c == 2) + int(d == 2));
-}
 
 static const uint MI[35] = {
     0x000000, 0x000001, 0x000100, 0x010000, 0x000002, 0x000101, 0x010001, 0x000200, 0x010100, 0x020000,
@@ -187,18 +183,27 @@ float exp_neg(float t) {
     return p * asfloat(uint(k + 127) << 23);
 }
 
+// An upper bound of exp(-t) that never underflows: exp_neg returns 0 beyond t = 87, and a GPU may
+// flush what would be denormal. 2^-100 > exp(-87), and products of it with any factor above 2^-26 stay
+// normal (the rest is below the absolute floors added downstream).
+#define EXP_FLOOR 7.888609052210118e-31
+float exp_neg_up(float t) { return t > 87.0 ? EXP_FLOOR : exp_neg(t); }
+
 uint3 ao_ijk(uint ao) { const uint v = args.ao_ijk[min(ao, args.num_ao - 1u)]; return uint3(v & 0xFFu, (v >> 8) & 0xFFu, (v >> 16) & 0xFFu); }
 
 // ================================================================================== ao_main
 // One group per batch. Local shells are taken in chunks whose 1D tables fit TAB_CAP floats (the host
 // guarantees that every single shell fits).
 //
-// Table entry per (shell, primitive p, axis, side), te(l) = 18 (l + 1) + 1 floats, l1 = l + 1:
-//   [a l1 + i]             a = 0..3: d^a/dx^a [x^i exp(-al x^2)] at the child centre      (i = 0..l)
-//   [4 l1 + a l1 + i]      the same on |terms| (magnitude shadow)
-//   [8 l1]                 rounding term of this axis: (2l + 20 + 8.1 t) u
-//   [8 l1 + 1 + 5 i + a]   a = 0..4: sup over the child interval of |d^a/dx^a [x^i exp(-al x^2)]|
-//   [13 l1 + 1 + 5 i + a]  the same over the inflated child interval
+// Table entry per (shell, primitive p, axis, side), te(l) = 20 (l + 1) + 2 floats, l1 = l + 1:
+//   [a l1 + i]               a = 0..5: d^a/dx^a [x^i exp(-al x^2)] at the child centre     (i = 0..l)
+//   [6 l1 + a l1 + i]        the same on |terms| (magnitude shadow)
+//   [12 l1]                  rounding term of this axis for a <= 3: (2l + 20 + 8.1 t) u
+//   [12 l1 + 1]              the same for a = 4, 5: (2l + 30 + 8.1 t) u
+//                            (both 1 where t > 87: the value is then 0 and its error its whole magnitude,
+//                            the magnitude taken with exp_neg_up)
+//   [12 l1 + 2 + 4 i + a-3]  a = 3..6: sup over the child interval of |d^a/dx^a [x^i exp(-al x^2)]|
+//   [16 l1 + 2 + 4 i + a-3]  the same over the inflated child interval
 // at offset ((p * 3 + axis) * 2 + side) * te(l) in the shell's block.
 
 #define AO_WG   128
@@ -213,9 +218,10 @@ groupshared uint  gs_cs_prod[CS_MAX + 1];
 groupshared uint  gs_cs_row[CS_MAX];
 groupshared uint  gs_ncs;
 
-uint te_size(uint l) { return 18u * (l + 1u) + 1u; }
+uint te_size(uint l) { return 20u * (l + 1u) + 2u; }
 
-// sups of |d^a/dx^a [x^i exp(-al x^2)]| over [x0, x1], a = 0..4, for i = 0..l, into gs_tab[base + 5 i + a].
+// sups of |d^a/dx^a [x^i exp(-al x^2)]| over [x0, x1], a = 3..6, for i = 0..l, into gs_tab[base + 4 i + a - 3]:
+// the monomial terms of the expansion, each at its own maximum on the interval.
 // The table of x^m exp(-al x^2) at its maximiser over the interval does not depend on i.
 void sup_tab(uint base, uint l, float x0, float x1, float al) {
     x0 -= 4.0 * UF * abs(x0) + 1e-30;    // the computed interval must contain the exact one
@@ -226,17 +232,17 @@ void sup_tab(uint base, uint l, float x0, float x1, float al) {
     float Sm[LMAX + KA], eS[LMAX + KA];
     [ForceUnroll] for (int m = 0; m < LMAX + KA; ++m) {
         Sm[m] = 0.0; eS[m] = 0.0;
-        if (m <= int(l) + 4) {
+        if (m <= int(l) + KA - 1) {
             float ts = sqrt(float(m) / (2.0 * al));
             ts = clamp(ts, tlo, thi);
             const float t = al * ts * ts;
-            Sm[m] = powi(ts, m) * exp_neg(t);
+            Sm[m] = powi(ts, m) * exp_neg_up(t);
             eS[m] = (float(2 * m + 4) + 6.0 + 8.1 * t) * UF;
         }
     }
     for (int i = 0; i <= int(l); ++i) {
         {
-            for (int a = 0; a < KA; ++a) {
+            for (int a = 3; a < KA; ++a) {
                 float acc = 0.0;
                 [ForceUnroll] for (int m = 0; m < LMAX + KA; ++m) {
                     const float kk = m <= i + a ? kappa(i, a, m) : 0.0;
@@ -245,7 +251,7 @@ void sup_tab(uint base, uint l, float x0, float x1, float al) {
                         acc += abs(kk) * powi(al, kp) * Sm[m] * (1.0 + eS[m] + float(kp + 2) * UF);
                     }
                 }
-                gs_tab[base + uint(i * KA + a)] = acc * (1.0 + float(i + a + 3) * UF);
+                gs_tab[base + uint(i * 4 + a - 3)] = acc * (1.0 + float(i + a + 3) * UF);
             }
         }
     }
@@ -255,15 +261,15 @@ void sup_tab(uint base, uint l, float x0, float x1, float al) {
 void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float x1i, float al) {
     const uint l1 = l + 1u;
     const float t = al * x * x;
-    const float E = exp_neg(t);
-    float xp[LMAX + 4], axp[LMAX + 4];
+    const float E = exp_neg(t), Eup = exp_neg_up(t);
+    float xp[LMAX + 6], axp[LMAX + 6];
     xp[0] = 1.0; axp[0] = 1.0;
-    [ForceUnroll] for (int m = 1; m < LMAX + 4; ++m) { xp[m] = xp[m - 1] * x; axp[m] = axp[m - 1] * abs(x); }
+    [ForceUnroll] for (int m = 1; m < LMAX + 6; ++m) { xp[m] = xp[m - 1] * x; axp[m] = axp[m - 1] * abs(x); }
     for (int i = 0; i <= int(l); ++i) {
         {
-            for (int a = 0; a < 4; ++a) {
+            for (int a = 0; a < 6; ++a) {
                 float v = 0.0, mg = 0.0;
-                [ForceUnroll] for (int m = 0; m < LMAX + 4; ++m) {
+                [ForceUnroll] for (int m = 0; m < LMAX + 6; ++m) {
                     const float k = m <= i + a ? kappa(i, a, m) : 0.0;
                     if (k != 0.0) {
                         const float ka = k * powi(al, (m - i + a) / 2);
@@ -272,36 +278,55 @@ void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float 
                     }
                 }
                 gs_tab[base + uint(a) * l1 + uint(i)] = v * E;
-                gs_tab[base + 4u * l1 + uint(a) * l1 + uint(i)] = mg * E;
+                gs_tab[base + 6u * l1 + uint(a) * l1 + uint(i)] = mg * Eup;
             }
         }
     }
-    gs_tab[base + 8u * l1] = (float(2u * l + 14u) + 6.0 + 8.1 * t) * UF;
-    sup_tab(base + 8u * l1 + 1u, l, x0, x1, al);
-    sup_tab(base + 13u * l1 + 1u, l, x0i, x1i, al);
+    // beyond exp_neg's range the value is set to 0: its error is then its whole magnitude
+    gs_tab[base + 12u * l1] = t > 87.0 ? 1.0 : (float(2u * l + 14u) + 6.0 + 8.1 * t) * UF;
+    gs_tab[base + 12u * l1 + 1u] = t > 87.0 ? 1.0 : (float(2u * l + 24u) + 6.0 + 8.1 * t) * UF;
+    sup_tab(base + 12u * l1 + 2u, l, x0, x1, al);
+    sup_tab(base + 16u * l1 + 2u, l, x0i, x1i, al);
 }
 
-// Remainder vector from the sups S[1..34] of the products (cube of half-width h).
-// E[0] E1, [1] E2, [2] E3, [3..5] Ea2, [6..8] Ea3, [9..14] Eab2 (a <= b).
-void rem_fold(float S[35], float h, uint np, out float E[15]) {
-    const float fs = 1.0 + float(np + 8u) * UF;
-    float e1 = 0.0, e2 = 0.0, e3 = 0.0;
-    float ea2[3] = { 0.0, 0.0, 0.0 }, ea3[3] = { 0.0, 0.0, 0.0 }, eab2[6] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-    [ForceUnroll] for (int p = 0; p < 3; ++p) {
-        e1 += S[M1(p)];
-        [ForceUnroll] for (int q = 0; q < 3; ++q) { e2 += S[M2(p, q)]; [ForceUnroll] for (int r = 0; r < 3; ++r) e3 += S[M3(p, q, r)]; }
+// Separable remainder bounds (cpg_shell_rem in md_topo.c has the derivation). For one 1D factor
+// d^be/dx^be [x^i exp(-al x^2)] of a primitive, the absolute degree-graded expansion over the cube:
+// u[m] = |value of order be + m| h^m / m! for m <= P (rounding included through the magnitude
+// shadow), u[P + 1] = sup of order be + P + 1 times h^(P+1) / (P+1)!. Returns its first terms u[0..2]
+// and suffix sums S[r] = sum over m >= r of u[m], r = 0..3, all a slot needs.
+static const float INV_FACT[7] = { 1.0, 1.0, 0.5, 1.0 / 6.0, 1.0 / 24.0, 1.0 / 120.0, 1.0 / 720.0 };
+void axis_terms(uint tb, uint l1, uint i, int be, int P, float hp[7], uint soff, out float u3[3], out float S4[4]) {
+    const float e3 = gs_tab[tb + 12u * l1], e5 = gs_tab[tb + 12u * l1 + 1u];
+    float uu[6];
+    [ForceUnroll] for (int m = 0; m < 6; ++m) {
+        uu[m] = 0.0;
+        if (m <= P) {
+            const int a = be + m;
+            const float v = gs_tab[tb + uint(a) * l1 + i], mg = gs_tab[tb + uint(6 + a) * l1 + i];
+            uu[m] = (abs(v) + (a <= 3 ? e3 : e5) * mg) * hp[m] * INV_FACT[m];
+        } else if (m == P + 1) {
+            uu[m] = gs_tab[tb + soff + 4u * i + uint(be + P + 1 - 3)] * hp[m] * INV_FACT[m];
+        }
     }
-    [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int p = 0; p < 3; ++p) [ForceUnroll] for (int q = 0; q < 3; ++q) {
-        ea2[a] += S[M3(a, p, q)];
-        [ForceUnroll] for (int r = 0; r < 3; ++r) ea3[a] += S[M4(a, p, q, r)];
+    float S[7];
+    S[6] = 0.0;
+    [ForceUnroll] for (int m = 5; m >= 0; --m) S[m] = S[m + 1] + uu[m];
+    [ForceUnroll] for (int m = 0; m < 3; ++m) u3[m] = uu[m];
+    [ForceUnroll] for (int r = 0; r < 4; ++r) S4[r] = S[r];
+}
+
+// Sum over m0 + m1 + m2 >= K of u0[m0] u1[m1] u2[m2] from the first terms and suffix sums (K <= 3).
+float sep_bound(int K, float u0[3], float S0[4], float u1[3], float S1[4], float S2[4]) {
+    float T12[4];
+    T12[0] = S1[0] * S2[0];
+    [ForceUnroll] for (int j = 1; j < 4; ++j) {
+        float v = S1[j] * S2[0];
+        [ForceUnroll] for (int m1 = 0; m1 < 3; ++m1) if (m1 < j) v += u1[m1] * S2[j - m1];
+        T12[j] = v;
     }
-    [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int b = 0; b < 3; ++b) {
-        if (b >= a) { [ForceUnroll] for (int p = 0; p < 3; ++p) [ForceUnroll] for (int q = 0; q < 3; ++q) eab2[ab_index(a, b)] += S[M4(a, b, p, q)]; }
-    }
-    const float f = fs * (1.0 + 48.0 * UF), h2 = h * h, h3 = h2 * h;
-    E[0] = h * e1 * f; E[1] = 0.5 * h2 * e2 * f; E[2] = h3 * (1.0 / 6.0) * e3 * f;
-    [ForceUnroll] for (int a = 0; a < 3; ++a) { E[3 + a] = 0.5 * h2 * ea2[a] * f; E[6 + a] = h3 * (1.0 / 6.0) * ea3[a] * f; }
-    [ForceUnroll] for (int t = 0; t < 6; ++t) E[9 + t] = 0.5 * h2 * eab2[t] * f;
+    float b = S0[K] * T12[0];
+    [ForceUnroll] for (int m0 = 0; m0 < 3; ++m0) if (m0 < K) b += u0[m0] * T12[K - m0];
+    return b;
 }
 
 // The 1D factors of one (AO, child) for primitive p: table entries per axis.
@@ -329,14 +354,14 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
         const uint bz = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
         float gx[4], gy[4], gz[4], Gx[4], Gy[4], Gz[4];
         [ForceUnroll] for (int a = 0; a < 4; ++a) {
-            gx[a] = gs_tab[bx + uint(a) * l1 + uint(e.x)]; Gx[a] = gs_tab[bx + (4u + uint(a)) * l1 + uint(e.x)];
-            gy[a] = gs_tab[by + uint(a) * l1 + uint(e.y)]; Gy[a] = gs_tab[by + (4u + uint(a)) * l1 + uint(e.y)];
-            gz[a] = gs_tab[bz + uint(a) * l1 + uint(e.z)]; Gz[a] = gs_tab[bz + (4u + uint(a)) * l1 + uint(e.z)];
+            gx[a] = gs_tab[bx + uint(a) * l1 + uint(e.x)]; Gx[a] = gs_tab[bx + (6u + uint(a)) * l1 + uint(e.x)];
+            gy[a] = gs_tab[by + uint(a) * l1 + uint(e.y)]; Gy[a] = gs_tab[by + (6u + uint(a)) * l1 + uint(e.y)];
+            gz[a] = gs_tab[bz + uint(a) * l1 + uint(e.z)]; Gz[a] = gs_tab[bz + (6u + uint(a)) * l1 + uint(e.z)];
         }
         float eps = 5.0 * UF;
-        eps += gs_tab[bx + 8u * l1];
-        eps += gs_tab[by + 8u * l1];
-        eps += gs_tab[bz + 8u * l1];
+        eps += gs_tab[bx + 12u * l1];
+        eps += gs_tab[by + 12u * l1];
+        eps += gs_tab[bz + 12u * l1];
         [ForceUnroll] for (int m = 0; m < 20; ++m) {
             const int3 d = mi_of(m);
             const float term = cfn * gx[d.x] * gy[d.y] * gz[d.z];
@@ -355,37 +380,60 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
     [ForceUnroll] for (int m = 0; m < 20; ++m) out[(PC_V + m) * 8] = V[m];
     [ForceUnroll] for (int o = 0; o < 4; ++o) { out[(PC_WV + o) * 8] = WVo[o]; out[(PC_MV + o) * 8] = MVo[o]; out[(PC_EV + o) * 8] = EVo[o]; }
 
-    // ---- remainder vectors, cube and inflated cube
+    // ---- remainder vectors, cube and inflated cube: separable bounds (cpg_shell_rem in md_topo.c).
+    //      E[0] E1, [1] E2, [2] E3, [3..5] Ea2, [6..8] Ea3, [9..14] Eab2 (a <= b); the inflated cube
+    //      needs only the K = 2 slots (E2, Ea2, Eab2). Every term is a product of non-negative upper
+    //      bounds and every sum adds non-negative terms, so the rounding of the whole chain (at most
+    //      ~40 operations, plus the sum over primitives) is covered by one relative factor.
+    const float fE = 1.0 + float(2u * np + 96u) * UF;
     [ForceUnroll] for (int pass = 0; pass < 2; ++pass) {
-        float S[35];
-        [ForceUnroll] for (int m = 0; m < 35; ++m) S[m] = 0.0;
-        const uint boff = 8u * l1 + 1u + uint(pass) * 5u * l1;
+        const float hh = pass == 0 ? h : 1.5 * h;
+        float hp[7];
+        hp[0] = 1.0;
+        [ForceUnroll] for (int m = 1; m < 7; ++m) hp[m] = hp[m - 1] * hh;
+        const uint soff = 12u * l1 + 2u + uint(pass) * 4u * l1;
+        float E[15];
+        [ForceUnroll] for (int t = 0; t < 15; ++t) E[t] = 0.0;
         for (uint p = 0; p < np; ++p) {
             const float w = abs(args.coeff[sh.info.x + p]) * nrm;
-            const uint bx = tab0 + ((p * 3u + 0u) * 2u + sx) * te + boff;
-            const uint by = tab0 + ((p * 3u + 1u) * 2u + sy) * te + boff;
-            const uint bz = tab0 + ((p * 3u + 2u) * 2u + sz) * te + boff;
-            float Bx[KA], By[KA], Bz[KA];
-            [ForceUnroll] for (int a = 0; a < KA; ++a) {
-                Bx[a] = gs_tab[bx + uint(e.x) * KA + uint(a)];
-                By[a] = gs_tab[by + uint(e.y) * KA + uint(a)];
-                Bz[a] = gs_tab[bz + uint(e.z) * KA + uint(a)];
+            uint tb[3];
+            tb[0] = tab0 + ((p * 3u + 0u) * 2u + sx) * te;
+            tb[1] = tab0 + ((p * 3u + 1u) * 2u + sy) * te;
+            tb[2] = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
+            const uint ei[3] = { uint(e.x), uint(e.y), uint(e.z) };
+            // K = 2: E2, Ea2, Eab2 from the factors (be, P) = (0,3) (1,3) (2,3) per axis
+            {
+                float u[3][3][3], S[3][3][4];
+                [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 3; ++be) axis_terms(tb[k], l1, ei[k], be, 3, hp, soff, u[k][be], S[k][be]);
+                E[1] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][0]);
+                E[3] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][0]);
+                E[4] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][0]);
+                E[5] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][1]);
+                E[9]  += w * sep_bound(2, u[0][2], S[0][2], u[1][0], S[1][0], S[2][0]);   // xx
+                E[10] += w * sep_bound(2, u[0][1], S[0][1], u[1][1], S[1][1], S[2][0]);   // xy
+                E[11] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][1]);   // xz
+                E[12] += w * sep_bound(2, u[0][0], S[0][0], u[1][2], S[1][2], S[2][0]);   // yy
+                E[13] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][1]);   // yz
+                E[14] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][2]);   // zz
             }
-            // the inflated cube only needs orders 2..4 (E2, Ea2, Eab2)
-            [ForceUnroll] for (int m = 1; m < 35; ++m) {
-                if (pass == 0 || m >= 4) {
-                    const int3 d = mi_of(m);
-                    S[m] += w * Bx[d.x] * By[d.y] * Bz[d.z];
-                }
+            if (pass == 0) {
+                // K = 1: E1 from (0,2); K = 3: E3, Ea3 from (0,4) (1,4)
+                float u[3][3], S[3][4];
+                [ForceUnroll] for (int k = 0; k < 3; ++k) axis_terms(tb[k], l1, ei[k], 0, 2, hp, soff, u[k], S[k]);
+                E[0] += w * sep_bound(1, u[0], S[0], u[1], S[1], S[2]);
+                float v[3][2][3], T[3][2][4];
+                [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 2; ++be) axis_terms(tb[k], l1, ei[k], be, 4, hp, soff, v[k][be], T[k][be]);
+                E[2] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][0]);
+                E[6] += w * sep_bound(3, v[0][1], T[0][1], v[1][0], T[1][0], T[2][0]);
+                E[7] += w * sep_bound(3, v[0][0], T[0][0], v[1][1], T[1][1], T[2][0]);
+                E[8] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][1]);
             }
         }
-        float E[15];
+        [ForceUnroll] for (int t = 0; t < 15; ++t) E[t] = E[t] * fE + float(np) * 1e-36;   // + what a flush may have lost
         if (pass == 0) {
-            rem_fold(S, h, np, E);
             [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_E + t) * 8] = E[t];
             [ForceUnroll] for (int t = 0; t < 9; ++t) out[(PC_E2 + t) * 8] = E[6 + t];
         } else {
-            rem_fold(S, 1.5 * h, np, E);
             out[(PC_EI + 0) * 8] = E[1];
             [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_EI + 1 + a) * 8] = E[3 + a];
             [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_EI2 + t) * 8] = E[9 + t];

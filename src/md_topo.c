@@ -1091,7 +1091,7 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 
 #define CPG_LMAX    MD_GTO_MAX_ANGULAR_MOMENTUM
 #define CPG_KI      (CPG_LMAX + 8)
-#define CPG_KA      5
+#define CPG_KA      7               // 1D derivative orders 0..6 (the GPU kernel's separable remainders)
 #define CPG_KM      (CPG_KI + CPG_KA + 1)
 #define CPG_NMI     35              // multi-indices of order 0..4
 #define CPG_NV      20              // centre values: orders 0..3
@@ -2902,7 +2902,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     for (int s = 0; s < NS; ++s) {
         const cpg_shell_t* cs = &ctx->shell[s];
         NP = MAX(NP, (int)(cs->prim_offset + cs->num_prims));
-        if (cs->l > 4 || (size_t)cs->num_prims * 6 * (18 * (cs->l + 1) + 1) > CPG_GPU_TAB_CAP) {
+        if (cs->l > 4 || (size_t)cs->num_prims * 6 * (20 * (cs->l + 1) + 2) > CPG_GPU_TAB_CAP) {
             MD_LOG_INFO("md_topo_compute_extremum_graph_gto_gpu: a shell (l = %d, %d primitives) exceeds the GPU kernel's tables, using the CPU", cs->l, (int)cs->num_prims);
             return false;
         }
