@@ -106,6 +106,88 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);
 #endif
 
+// ---------------------------------------------------------------------------
+// Certified critical points of a GTO electron density (CPU reference)
+// ---------------------------------------------------------------------------
+// Grid-free alternative to the volume based extraction above. Works directly on
+//     rho(r) = sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r)
+// and PROVES, cube by cube, that a region holds no critical point or exactly one (Newton then
+// polishes it to |dx| < 1e-13 Bohr). Every non-degenerate critical point with rho >= rho_min is found;
+// near-degenerate topology that cannot be resolved down to h_min is reported, never guessed.
+// Vertices are in Bohr; types follow md_topo_critical_point_type_t (SPLIT_SADDLE = bond CP (3,-1),
+// JOIN_SADDLE = ring CP (3,+1), MINIMUM = cage CP (3,+3)). Edges run from a saddle to the extremum its
+// separatrix ends in (bond paths for BCPs, ring lines for RCPs), as in the volume pipeline.
+// out_graph->alloc must be set (as for md_topo_simplify).
+// Multithreaded and deterministic: the output is bit-identical for any thread count. Blocking; run it
+// from a worker thread for interactive use and cancel through 'cancel' (returns false, info.cancelled).
+
+struct md_gto_basis_t;
+
+typedef struct md_topo_gto_desc_t {
+    const struct md_gto_basis_t* basis;  // Cartesian basis, md_gto conventions
+    const float*  atom_xyz;              // atom positions in Bohr, indexed by shell.atom_idx
+    size_t        atom_xyz_stride;       // bytes between positions, 0 = packed float[3]
+    const double* density_matrix;        // [num_ao * num_ao] row major, Cartesian AO order of the basis
+    double        rho_min;               // only critical points with rho >= rho_min are sought (0 -> 1e-4)
+    double        h_min;                 // smallest cube half-width before a cube is reported unresolved (0 -> 1e-4 Bohr)
+    double        h_root;                // root cube half-width (0 -> 1 Bohr)
+    bool          trace_separatrices;    // trace separatrices to produce the graph edges
+    uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
+    volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
+} md_topo_gto_desc_t;
+
+typedef struct md_topo_gto_cluster_t {
+    float    lo[3], hi[3];               // bounds (Bohr) of a group of adjacent unresolved cubes
+    uint32_t num_boxes;
+    int32_t  degree;                     // Brouwer degree of grad rho on the boundary = sum of sign(det H) over the
+                                         // CPs inside (max -1, BCP +1, RCP -1, CCP +1). 0: a cancelling pair or nothing
+    float    degree_residual;            // distance of the computed degree from the nearest integer
+    float    min_boundary_grad;          // smallest |grad rho| seen on the boundary
+} md_topo_gto_cluster_t;
+
+#define MD_TOPO_GTO_MAX_CLUSTERS 32
+
+typedef struct md_topo_gto_info_t {
+    uint64_t num_box_evals;
+    uint64_t num_inflated_evals;
+    uint32_t num_levels;
+    uint32_t num_threads;
+    uint32_t num_unresolved_boxes;
+    uint32_t num_clusters;
+    bool     clusters_truncated;
+    bool     cancelled;                  // stopped through desc->cancel; the graph holds what was certified so far
+    bool     complete;                   // true: no unresolved cubes, the graph holds every CP with rho >= rho_min
+    int32_t  poincare_hopf;              // n_max - n_bcp + n_rcp - n_ccp (1 for a complete, isolated molecule)
+    double   domain_pad;                 // derived padding (Bohr) around the atoms outside which rho < rho_min
+    md_topo_gto_cluster_t clusters[MD_TOPO_GTO_MAX_CLUSTERS];
+    // GPU sweep only (md_topo_compute_extremum_graph_gto_gpu)
+    bool     used_gpu;                   // the octree sweep ran on the GPU
+    uint64_t num_gpu_box_evals;          // cubes decided (or handed over) by the GPU; included in num_box_evals
+    uint32_t num_escalated_boxes;        // cubes fp32 could not decide, finished on the CPU with their subtree
+    uint32_t num_gpu_dispatches;
+    // Wall-clock milliseconds per phase. ms_sweep is the whole octree sweep; the three after it are parts of it.
+    double   ms_setup;                   // tables, screening radii, domain
+    double   ms_sweep;
+    double   ms_sweep_gpu_wait;          // waiting for GPU dispatches and readbacks
+    double   ms_sweep_polish;            // Newton polish of the roots the GPU certified (host)
+    double   ms_sweep_cpu;               // CPU levels: the escalated subtrees, or the whole sweep without a GPU
+    double   ms_separatrices;
+    double   ms_clusters;
+} md_topo_gto_info_t;
+
+bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc);
+
+#if MD_ENABLE_GPU
+// The same search with the octree sweep on the GPU, in fp32 with rigorous rounding margins (every bound
+// the tests use carries the rounding error of its own computation), so the guarantee is unchanged. The
+// CPU keeps what needs double precision or is inherently few: Newton polish of the certified roots, the
+// cubes fp32 cannot decide (with their subtree, see num_escalated_boxes), separatrices and clusters.
+// Blocking: synchronises 'stream' once per octree level. If the GPU cannot be used the whole sweep runs
+// on the CPU (info.used_gpu false). Same inputs, outputs and determinism as above.
+bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info,
+                                            const md_topo_gto_desc_t* desc, md_gpu_stream_t stream);
+#endif
+
 // Free an extremum graph structure
 void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph);
 

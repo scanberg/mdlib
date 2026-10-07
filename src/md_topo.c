@@ -68,6 +68,10 @@ static void ensure_kernel(md_gpu_device_t device, md_gpu_kernel_t* slot, md_gpu_
     if (!*slot) MD_LOG_ERROR("md_topo: failed to create kernel '%s': %s", desc.label, md_gpu_last_error());
 }
 
+// The GTO kernel, see the GPU sweep at the end of the file.
+static bool topo_gto_gpu_ensure(md_gpu_device_t device);
+static void topo_gto_gpu_release(void);
+
 void md_topo_gpu_initialize(md_gpu_device_t device) {
     if (!device) return;
     ensure_kernel(device, &k_bidirectional_manifold,    md_shader_bidirectional_manifold_main_kernel());
@@ -75,9 +79,11 @@ void md_topo_gpu_initialize(md_gpu_device_t device) {
     ensure_kernel(device, &k_critical_points,           md_shader_critical_points_main_kernel());
     ensure_kernel(device, &k_critical_point_compaction, md_shader_critical_point_compaction_main_kernel());
     ensure_kernel(device, &k_vertex_edge_extraction,    md_shader_vertex_edge_extraction_main_kernel());
+    topo_gto_gpu_ensure(device);
 }
 
 void md_topo_gpu_shutdown(void) {
+    topo_gto_gpu_release();
     if (k_bidirectional_manifold)    { md_gpu_kernel_destroy(k_bidirectional_manifold);    k_bidirectional_manifold = NULL; }
     if (k_path_compression)          { md_gpu_kernel_destroy(k_path_compression);          k_path_compression = NULL; }
     if (k_critical_points)           { md_gpu_kernel_destroy(k_critical_points);           k_critical_points = NULL; }
@@ -1034,3 +1040,1903 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
     MEMCPY(out_graph->types,    src_graph->types,    src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
     MEMCPY(out_graph->edges,    src_graph->edges,    src_graph->num_edges    * sizeof(md_topo_edge_t));
 }
+
+// =====================================================================================================
+// Certified critical points of a GTO electron density (CPU reference)
+// =====================================================================================================
+//
+// Finds every non-degenerate critical point of
+//
+//     rho(r) = sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r)
+//
+// with rho >= rho_min, without sampling the field on a grid. Space is partitioned by an octree of
+// cubes and every cube is PROVEN to contain either no critical point, or exactly one (which Newton
+// from the cube centre then converges to). Cubes that reach h_min without either proof are reported
+// as unresolved (genuinely near-degenerate topology), grouped into clusters, each with the Brouwer
+// degree of grad rho on its boundary (0: a cancelling pair or nothing, +-1: at least one CP).
+//
+// The proofs need rigorous enclosures of grad rho and of the Hessian over a cube. They are built from
+// the structure of the basis:
+//   * every AO derivative is a product of 1D factors d^a/dx^a [x^i exp(-alpha x^2)] whose supremum over
+//     an interval has a closed form (each monomial term peaks at |x| = sqrt(m / 2 alpha)),
+//   * each AO is expanded to second order at the cube centre with a rigorous per-AO remainder, and the
+//     density matrix only ever multiplies exact centre data, so its (large) core/valence cancellations
+//     survive. Only a sixth order term ever sees |D|.
+//
+// Tests per cube (centre c, half-width h; g, A, T = grad, Hessian, third derivatives of rho at c):
+//   exclusion : grad rho(c+d) in g + A d + 1/2 T[d,d] +- r. No zero if, along some direction w,
+//               |w.g| > sum_j |(A w)_j| h + sum_k |w_k| (q_k + r_k), or if the Newton point lies far
+//               enough outside the cube.
+//   Krawczyk  : K = c - A^-1 g + (I - A^-1 [H]) (X - c), [H] = A +- dH. K inside X => exactly one zero.
+//               K disjoint from X => no zero. Run on a 1.5x inflated cube so roots on faces are caught;
+//               a root is accepted by any cube that (closed, plus 1e-9) contains it and deduplicated.
+// Contributions of AOs screened away from a cube are bounded by a global tail term, so screening does
+// not break rigour. The search domain is derived from the same tail bound (rho <= rho_min outside).
+//
+// Separatrices (bond paths BCP -> 2 maxima, ring lines RCP -> CCP or infinity) are traced from the
+// saddles along their unique eigen-directions with adaptive Dormand-Prince RK45; they become the graph
+// edges (from = saddle, to = extremum), exactly the edges the voxel pipeline produces.
+//
+// Rigour holds up to floating-point rounding (no outward rounding; the enclosures carry far more slack
+// than rounding error, and mdlib builds with -ffast-math, so no infinities are used as sentinels).
+// Units: Bohr. Multithreaded over cubes (fixed interleaved chunks, results merged in cube order), so the
+// output is bit-identical for any thread count. Atomic core zones (a ~20-25% optimisation, see the design
+// notes) are not part of this reference.
+
+#include <md_gto.h>
+#include <core/md_os.h>
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define CPG_LMAX    MD_GTO_MAX_ANGULAR_MOMENTUM
+#define CPG_KI      (CPG_LMAX + 8)
+#define CPG_KA      5
+#define CPG_KM      (CPG_KI + CPG_KA + 1)
+#define CPG_NMI     35              // multi-indices of order 0..4
+#define CPG_NV      20              // centre values: orders 0..3
+#define CPG_NDV     20              // D-products: orders 0..3
+#define CPG_MAXPRIM 64
+#define CPG_MAX_THREADS 64
+#define CPG_CHUNK   32              // cubes per work chunk
+
+typedef struct cpg_shell_t {
+    double   A[3];
+    double   radius;                // screening radius: all derivatives (order <= 2) below tau beyond it
+    uint32_t prim_offset;
+    uint32_t num_prims;
+    uint32_t ao_offset;
+    int      l;
+    int      ncart;
+} cpg_shell_t;
+
+typedef struct cpg_cp_t {
+    double x[3];
+    double rho;
+    double ev[3];
+    double evec[3][3];              // columns
+    double h;                       // half-width of the owning cube
+    int    type;
+} cpg_cp_t;
+
+typedef struct cpg_box_t {
+    double c[3];
+    double h;
+} cpg_box_t;
+
+typedef struct cpg_ctx_t {
+    md_allocator_i* alloc;
+    int nao;
+    int nshell;
+    cpg_shell_t* shell;
+    double* alpha;
+    double* coeff;
+    int    (*ao_ijk)[3];
+    double* ao_nrm;
+    const double* D;
+    double tail_rho, tail_g, tail_H;
+    double tau;
+    double eps;
+    double kappa[CPG_KI][CPG_KA][CPG_KM];
+    int    mi[CPG_NMI][3];
+    int    mi_idx[5][5][5];
+    int    m1[3], m2[3][3], m3[3][3][3], m4[3][3][3][3];
+} cpg_ctx_t;
+
+// Per-thread scratch; the context above is shared and read-only once set up.
+typedef struct cpg_scratch_t {
+    int*    L;          // local AO list
+    int*    shells;     // local shell list
+    double* V;          // [n][CPG_NV]
+    double* Dv;         // [n][CPG_NDV]
+    double* S;          // [n][CPG_NMI]
+    double* Dl;         // local D block [n*n]
+    double* E;          // per-AO remainder vectors [n][16]
+    double* Q;          // |D| products [n][8]
+} cpg_scratch_t;
+
+typedef struct cpg_eval_t {
+    double rho, g[3], A[3][3], T[3][3][3];
+    double r[3];        // remainder of grad beyond g + A d + 1/2 T[d,d]
+    double quadT[3];    // bound of 1/2 T[d,d]
+    double dH[3][3];    // Hessian enclosure half-width
+    double rho_up;      // upper bound of rho over the cube
+} cpg_eval_t;
+
+// ----------------------------------------------------------------------------------------------- small math
+
+static inline double cpg_powi(double x, int n) {
+    double r = 1.0;
+    while (n > 0) { if (n & 1) r *= x; x *= x; n >>= 1; }
+    return r;
+}
+
+static inline double cpg_nrm(int i, int j, int k) {
+    double d = 1.0;
+    for (int n = 2 * i - 1; n > 1; n -= 2) d *= n;
+    for (int n = 2 * j - 1; n > 1; n -= 2) d *= n;
+    for (int n = 2 * k - 1; n > 1; n -= 2) d *= n;
+    return 1.0 / sqrt(d);
+}
+
+static inline double cpg_mono_max(int a, int b, int c) {
+    const int L = a + b + c;
+    if (L == 0) return 1.0;
+    double num = 1.0;
+    if (a) num *= pow((double)a, a);
+    if (b) num *= pow((double)b, b);
+    if (c) num *= pow((double)c, c);
+    return sqrt(num / pow((double)L, L));
+}
+
+// Jacobi eigen decomposition of a symmetric 3x3 matrix; eigenvalues ascending, eigenvectors in columns.
+static void cpg_eigen_sym3(double out_val[3], double out_vec[3][3], double M[3][3]) {
+    double a[3][3], v[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+    memcpy(a, M, sizeof(a));
+    for (int sweep = 0; sweep < 50; ++sweep) {
+        double off = fabs(a[0][1]) + fabs(a[0][2]) + fabs(a[1][2]);
+        double scale = fabs(a[0][0]) + fabs(a[1][1]) + fabs(a[2][2]);
+        if (off <= 1e-300 || off <= 1e-17 * scale) break;
+        for (int p = 0; p < 2; ++p) {
+            for (int q = p + 1; q < 3; ++q) {
+                if (a[p][q] == 0.0) continue;
+                double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                double t = (theta >= 0 ? 1.0 : -1.0) / (fabs(theta) + sqrt(theta * theta + 1.0));
+                double c = 1.0 / sqrt(t * t + 1.0), s = t * c;
+                for (int k = 0; k < 3; ++k) {
+                    double akp = a[k][p], akq = a[k][q];
+                    a[k][p] = c * akp - s * akq;
+                    a[k][q] = s * akp + c * akq;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    double apk = a[p][k], aqk = a[q][k];
+                    a[p][k] = c * apk - s * aqk;
+                    a[q][k] = s * apk + c * aqk;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    double vkp = v[k][p], vkq = v[k][q];
+                    v[k][p] = c * vkp - s * vkq;
+                    v[k][q] = s * vkp + c * vkq;
+                }
+            }
+        }
+    }
+    int idx[3] = {0, 1, 2};
+    for (int i = 0; i < 2; ++i) for (int j = i + 1; j < 3; ++j) if (a[idx[j]][idx[j]] < a[idx[i]][idx[i]]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    for (int i = 0; i < 3; ++i) {
+        out_val[i] = a[idx[i]][idx[i]];
+        for (int k = 0; k < 3; ++k) out_vec[k][i] = v[k][idx[i]];
+    }
+}
+
+// A^-1 via the eigen decomposition. Returns false if A is (numerically) singular.
+static bool cpg_inverse_sym3(double out[3][3], const double val[3], double vec[3][3]) {
+    const double amax = fmax(fabs(val[0]), fabs(val[2]));
+    for (int i = 0; i < 3; ++i) if (!(fabs(val[i]) > 1e-14 * amax) || amax == 0.0) return false;
+    for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) {
+        double s = 0.0;
+        for (int k = 0; k < 3; ++k) s += vec[r][k] * vec[c][k] / val[k];
+        out[r][c] = s;
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------------------------- setup
+
+static void cpg_init_tables(cpg_ctx_t* ctx) {
+    memset(ctx->kappa, 0, sizeof(ctx->kappa));
+    for (int i = 0; i < CPG_KI; ++i) ctx->kappa[i][0][i] = 1.0;
+    for (int a = 0; a < CPG_KA - 1; ++a) {
+        for (int i = 0; i < CPG_KI - 1 - a; ++i) {
+            for (int m = 0; m < CPG_KM; ++m) {
+                double v = -2.0 * ctx->kappa[i + 1][a][m];
+                if (i >= 1) v += i * ctx->kappa[i - 1][a][m];
+                ctx->kappa[i][a + 1][m] = v;
+            }
+        }
+    }
+    int n = 0;
+    for (int o = 0; o <= 4; ++o) {
+        for (int i = o; i >= 0; --i) {
+            for (int j = o - i; j >= 0; --j) {
+                const int k = o - i - j;
+                ctx->mi[n][0] = i; ctx->mi[n][1] = j; ctx->mi[n][2] = k;
+                ctx->mi_idx[i][j][k] = n++;
+            }
+        }
+    }
+    for (int a = 0; a < 3; ++a) {
+        int e[3] = {0, 0, 0}; e[a]++;
+        ctx->m1[a] = ctx->mi_idx[e[0]][e[1]][e[2]];
+        for (int b = 0; b < 3; ++b) {
+            int f[3] = {e[0], e[1], e[2]}; f[b]++;
+            ctx->m2[a][b] = ctx->mi_idx[f[0]][f[1]][f[2]];
+            for (int c = 0; c < 3; ++c) {
+                int g[3] = {f[0], f[1], f[2]}; g[c]++;
+                ctx->m3[a][b][c] = ctx->mi_idx[g[0]][g[1]][g[2]];
+                for (int d = 0; d < 3; ++d) {
+                    int q[3] = {g[0], g[1], g[2]}; q[d]++;
+                    ctx->m4[a][b][c][d] = ctx->mi_idx[q[0]][q[1]][q[2]];
+                }
+            }
+        }
+    }
+}
+
+#define M1(a)       (ctx->m1[a])
+#define M2(a,b)     (ctx->m2[a][b])
+#define M3(a,b,c)   (ctx->m3[a][b][c])
+#define M4(a,b,c,d) (ctx->m4[a][b][c][d])
+
+// sup over |x - centre| >= d of |d^(p,q,w) [x^i y^j z^k exp(-alpha r^2)]|, by monomial terms.
+static double cpg_tail_prim(const cpg_ctx_t* ctx, int i, int j, int k, int p, int q, int w, double alpha, double d) {
+    double acc = 0.0;
+    for (int m1 = 0; m1 <= i + p; ++m1) {
+        const double k1 = ctx->kappa[i][p][m1];
+        if (k1 == 0.0) continue;
+        for (int m2 = 0; m2 <= j + q; ++m2) {
+            const double k2 = ctx->kappa[j][q][m2];
+            if (k2 == 0.0) continue;
+            for (int m3 = 0; m3 <= k + w; ++m3) {
+                const double k3 = ctx->kappa[k][w][m3];
+                if (k3 == 0.0) continue;
+                const int M = m1 + m2 + m3;
+                const int apow = ((m1 - i + p) + (m2 - j + q) + (m3 - k + w)) / 2;
+                const double ts = fmax(d, sqrt(M / (2.0 * alpha)));
+                acc += fabs(k1 * k2 * k3) * cpg_powi(alpha, apow) * cpg_mono_max(m1, m2, m3) * cpg_powi(ts, M) * exp(-alpha * ts * ts);
+            }
+        }
+    }
+    return acc;
+}
+
+// Max over the shell's AOs and all multi-indices of order <= max_order of the tail bound at distance d.
+static double cpg_tail_shell(const cpg_ctx_t* ctx, const cpg_shell_t* s, int max_order, double d) {
+    double best = 0.0;
+    for (int ci = 0; ci < s->ncart; ++ci) {
+        const int* ijk = ctx->ao_ijk[s->ao_offset + ci];
+        const double nrm = ctx->ao_nrm[s->ao_offset + ci];
+        for (int o = 0; o <= max_order; ++o) {
+            for (int p = o; p >= 0; --p) for (int q = o - p; q >= 0; --q) {
+                const int w = o - p - q;
+                double v = 0.0;
+                for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
+                    v += fabs(ctx->coeff[s->prim_offset + ip]) * cpg_tail_prim(ctx, ijk[0], ijk[1], ijk[2], p, q, w, ctx->alpha[s->prim_offset + ip], d);
+                }
+                best = fmax(best, nrm * v);
+            }
+        }
+    }
+    return best;
+}
+
+// Same, but per AO and for exactly order o (max over multi-indices of that order).
+static double cpg_tail_ao(const cpg_ctx_t* ctx, const cpg_shell_t* s, int ci, int o, double d) {
+    const int* ijk = ctx->ao_ijk[s->ao_offset + ci];
+    double best = 0.0;
+    for (int p = o; p >= 0; --p) for (int q = o - p; q >= 0; --q) {
+        const int w = o - p - q;
+        double v = 0.0;
+        for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
+            v += fabs(ctx->coeff[s->prim_offset + ip]) * cpg_tail_prim(ctx, ijk[0], ijk[1], ijk[2], p, q, w, ctx->alpha[s->prim_offset + ip], d);
+        }
+        best = fmax(best, v);
+    }
+    return best * ctx->ao_nrm[s->ao_offset + ci];
+}
+
+// ----------------------------------------------------------------------------------------------- AO evaluation
+
+// 1D tables g[i][a] = d^a/dx^a [x^i exp(-alpha x^2)] for i <= imax - a.
+static void cpg_tables_1d(double g[CPG_LMAX + 5][4], double x, double alpha, int imax, int amax) {
+    const double E = exp(-alpha * x * x);
+    double xp = 1.0;
+    for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= x; }
+    for (int a = 0; a < amax; ++a) {
+        for (int i = 0; i < imax - a; ++i) {
+            double v = -2.0 * alpha * g[i + 1][a];
+            if (i >= 1) v += i * g[i - 1][a];
+            g[i][a + 1] = v;
+        }
+    }
+}
+
+// Values of all multi-index derivatives up to 'deriv' (<= 3) of the shell's AOs at x. out[ci * stride + mi].
+static void cpg_shell_eval(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double x[3], int deriv, double* out, int stride) {
+    const int nmi = deriv == 0 ? 1 : deriv == 1 ? 4 : deriv == 2 ? 10 : 20;
+    const double dx = x[0] - s->A[0], dy = x[1] - s->A[1], dz = x[2] - s->A[2];
+    for (int ci = 0; ci < s->ncart; ++ci) for (int m = 0; m < nmi; ++m) out[ci * stride + m] = 0.0;
+    double gx[CPG_LMAX + 5][4], gy[CPG_LMAX + 5][4], gz[CPG_LMAX + 5][4];
+    for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
+        const double al = ctx->alpha[s->prim_offset + ip];
+        const double cf = ctx->coeff[s->prim_offset + ip];
+        const int imax = s->l + deriv;
+        cpg_tables_1d(gx, dx, al, imax, deriv);
+        cpg_tables_1d(gy, dy, al, imax, deriv);
+        cpg_tables_1d(gz, dz, al, imax, deriv);
+        for (int ci = 0; ci < s->ncart; ++ci) {
+            const int* ijk = ctx->ao_ijk[s->ao_offset + ci];
+            const double c = cf * ctx->ao_nrm[s->ao_offset + ci];
+            double* o = out + ci * stride;
+            for (int m = 0; m < nmi; ++m) {
+                const int* e = ctx->mi[m];
+                o[m] += c * gx[ijk[0]][e[0]] * gy[ijk[1]][e[1]] * gz[ijk[2]][e[2]];
+            }
+        }
+    }
+}
+
+// sup over [x0,x1] of |d^a/dx^a [x^i exp(-alpha x^2)]| for i <= l, a <= 4.
+static void cpg_sup_1d(const cpg_ctx_t* ctx, double B[CPG_LMAX + 1][CPG_KA], double x0, double x1, double alpha, int l) {
+    const double ax0 = fabs(x0), ax1 = fabs(x1);
+    const double tlo = (x0 <= 0.0 && x1 >= 0.0) ? 0.0 : fmin(ax0, ax1);
+    const double thi = fmax(ax0, ax1);
+    double Sm[CPG_LMAX + CPG_KA + 1];
+    for (int m = 0; m <= l + 4; ++m) {
+        double ts = sqrt(m / (2.0 * alpha));
+        ts = ts < tlo ? tlo : (ts > thi ? thi : ts);
+        Sm[m] = cpg_powi(ts, m) * exp(-alpha * ts * ts);
+    }
+    for (int i = 0; i <= l; ++i) {
+        for (int a = 0; a < CPG_KA; ++a) {
+            double acc = 0.0;
+            for (int m = 0; m <= i + a; ++m) {
+                const double k = ctx->kappa[i][a][m];
+                if (k != 0.0) acc += fabs(k) * cpg_powi(alpha, (m - i + a) / 2) * Sm[m];
+            }
+            B[i][a] = acc;
+        }
+    }
+}
+
+// Per-AO sups over the cube of every multi-index derivative of order 1..4. out[ci * CPG_NMI + mi].
+static void cpg_shell_sup(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double c[3], double h, double* out) {
+    for (int ci = 0; ci < s->ncart; ++ci) for (int m = 0; m < CPG_NMI; ++m) out[ci * CPG_NMI + m] = 0.0;
+    double Bx[CPG_LMAX + 1][CPG_KA], By[CPG_LMAX + 1][CPG_KA], Bz[CPG_LMAX + 1][CPG_KA];
+    for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
+        const double al = ctx->alpha[s->prim_offset + ip];
+        const double cf = fabs(ctx->coeff[s->prim_offset + ip]);
+        cpg_sup_1d(ctx, Bx, c[0] - h - s->A[0], c[0] + h - s->A[0], al, s->l);
+        cpg_sup_1d(ctx, By, c[1] - h - s->A[1], c[1] + h - s->A[1], al, s->l);
+        cpg_sup_1d(ctx, Bz, c[2] - h - s->A[2], c[2] + h - s->A[2], al, s->l);
+        for (int ci = 0; ci < s->ncart; ++ci) {
+            const int* ijk = ctx->ao_ijk[s->ao_offset + ci];
+            const double w = cf * ctx->ao_nrm[s->ao_offset + ci];
+            double* o = out + ci * CPG_NMI;
+            for (int m = 1; m < CPG_NMI; ++m) {
+                const int* e = ctx->mi[m];
+                o[m] += w * Bx[ijk[0]][e[0]] * By[ijk[1]][e[1]] * Bz[ijk[2]][e[2]];
+            }
+        }
+    }
+}
+
+static inline double cpg_box_dist2(const double A[3], const double c[3], double h) {
+    double d2 = 0.0;
+    for (int k = 0; k < 3; ++k) {
+        const double t = fabs(A[k] - c[k]) - h;
+        if (t > 0.0) d2 += t * t;
+    }
+    return d2;
+}
+
+// Local AO list of the cube (shells whose screening radius reaches it). Returns count.
+static int cpg_local_aos(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, int* out_num_shells) {
+    int n = 0, ns = 0;
+    for (int si = 0; si < ctx->nshell; ++si) {
+        const cpg_shell_t* s = &ctx->shell[si];
+        if (cpg_box_dist2(s->A, c, h) < s->radius * s->radius) {
+            sc->shells[ns++] = si;
+            for (int ci = 0; ci < s->ncart; ++ci) sc->L[n++] = (int)s->ao_offset + ci;
+        }
+    }
+    *out_num_shells = ns;
+    return n;
+}
+
+// ----------------------------------------------------------------------------------------------- point field
+
+// rho, grad, Hessian at x (deriv 0..2) over all shells within their screening radius.
+static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3], int deriv, double* rho, double g[3], double H[3][3]) {
+    int ns = 0;
+    const int n = cpg_local_aos(ctx, sc, x, 0.0, &ns);
+    const int nmi = deriv == 0 ? 1 : deriv == 1 ? 4 : 10;
+    int k = 0;
+    for (int t = 0; t < ns; ++t) {
+        const cpg_shell_t* s = &ctx->shell[sc->shells[t]];
+        cpg_shell_eval(ctx, s, x, deriv, sc->V + (size_t)k * CPG_NV, CPG_NV);
+        k += s->ncart;
+    }
+    (void)nmi;
+    const int ndv = deriv >= 2 ? 4 : 1;
+    for (int i = 0; i < n; ++i) {
+        double acc[4] = {0, 0, 0, 0};
+        const double* row = ctx->D + (size_t)sc->L[i] * ctx->nao;
+        for (int j = 0; j < n; ++j) {
+            const double d = row[sc->L[j]];
+            const double* v = sc->V + (size_t)j * CPG_NV;
+            for (int m = 0; m < ndv; ++m) acc[m] += d * v[m];
+        }
+        for (int m = 0; m < ndv; ++m) sc->Dv[(size_t)i * CPG_NDV + m] = acc[m];
+    }
+    double r = 0.0, gg[3] = {0, 0, 0}, HH[3][3] = {{0}};
+    for (int i = 0; i < n; ++i) {
+        const double* v = sc->V + (size_t)i * CPG_NV;
+        const double* dv = sc->Dv + (size_t)i * CPG_NDV;
+        r += v[0] * dv[0];
+        if (deriv >= 1) for (int a = 0; a < 3; ++a) gg[a] += 2.0 * v[1 + a] * dv[0];
+        if (deriv >= 2) {
+            for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) {
+                HH[a][b] += 2.0 * (v[M2(a, b)] * dv[0] + v[1 + a] * dv[1 + b]);
+            }
+        }
+    }
+    if (rho) *rho = r;
+    if (g) for (int a = 0; a < 3; ++a) g[a] = gg[a];
+    if (H) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) H[a][b] = a <= b ? HH[a][b] : HH[b][a];
+}
+
+// ----------------------------------------------------------------------------------------------- cube enclosures
+
+static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, cpg_eval_t* ev) {
+    int ns = 0;
+    const int n = cpg_local_aos(ctx, sc, c, h, &ns);
+    memset(ev, 0, sizeof(*ev));
+    // centre values (orders 0..3) and per-AO cube sups (orders 1..4)
+    int k = 0;
+    for (int t = 0; t < ns; ++t) {
+        const cpg_shell_t* s = &ctx->shell[sc->shells[t]];
+        cpg_shell_eval(ctx, s, c, 3, sc->V + (size_t)k * CPG_NV, CPG_NV);
+        cpg_shell_sup(ctx, s, c, h, sc->S + (size_t)k * CPG_NMI);
+        k += s->ncart;
+    }
+    // local D block and D-products Dv = D V (all 20 channels)
+    double* Dl = sc->Dl;
+    for (int i = 0; i < n; ++i) {
+        const double* row = ctx->D + (size_t)sc->L[i] * ctx->nao;
+        for (int j = 0; j < n; ++j) Dl[(size_t)i * n + j] = row[sc->L[j]];
+    }
+    for (int i = 0; i < n; ++i) {
+        double acc[CPG_NDV] = {0};
+        const double* row = Dl + (size_t)i * n;
+        for (int j = 0; j < n; ++j) {
+            const double d = row[j];
+            const double* v = sc->V + (size_t)j * CPG_NV;
+            for (int m = 0; m < CPG_NDV; ++m) acc[m] += d * v[m];
+        }
+        memcpy(sc->Dv + (size_t)i * CPG_NDV, acc, sizeof(acc));
+    }
+    // DOT[a][b] = V_a . D V_b for a < 20, b < 10
+    double DOT[CPG_NV][10];
+    memset(DOT, 0, sizeof(DOT));
+    for (int i = 0; i < n; ++i) {
+        const double* v = sc->V + (size_t)i * CPG_NV;
+        const double* dv = sc->Dv + (size_t)i * CPG_NDV;
+        for (int a = 0; a < CPG_NV; ++a) {
+            const double va = v[a];
+            for (int b = 0; b < 10; ++b) DOT[a][b] += va * dv[b];
+        }
+    }
+    ev->rho = DOT[0][0];
+    for (int a = 0; a < 3; ++a) ev->g[a] = 2.0 * DOT[M1(a)][0];
+    for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) ev->A[a][b] = 2.0 * (DOT[M2(a, b)][0] + DOT[M1(a)][M1(b)]);
+    for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) for (int cc = 0; cc < 3; ++cc) {
+        ev->T[a][b][cc] = 2.0 * (DOT[M3(a, b, cc)][0] + DOT[M2(a, b)][M1(cc)] + DOT[M2(a, cc)][M1(b)] + DOT[M2(b, cc)][M1(a)]);
+    }
+    // per-AO remainder vectors. E[i*16 + .]: 0 E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a<=b)
+    const double h2 = h * h, h3 = h2 * h;
+    int ab_idx[3][3];
+    { int t = 0; for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) { ab_idx[a][b] = ab_idx[b][a] = t++; } }
+    for (int i = 0; i < n; ++i) {
+        const double* s = sc->S + (size_t)i * CPG_NMI;
+        double* e = sc->E + (size_t)i * 16;
+        double e1 = 0, e2 = 0, e3 = 0, ea2[3] = {0}, ea3[3] = {0}, eab2[6] = {0};
+        for (int p = 0; p < 3; ++p) {
+            e1 += s[M1(p)];
+            for (int q = 0; q < 3; ++q) {
+                e2 += s[M2(p, q)];
+                for (int r = 0; r < 3; ++r) e3 += s[M3(p, q, r)];
+            }
+        }
+        for (int a = 0; a < 3; ++a) {
+            for (int p = 0; p < 3; ++p) for (int q = 0; q < 3; ++q) {
+                ea2[a] += s[M3(a, p, q)];
+                for (int r = 0; r < 3; ++r) ea3[a] += s[M4(a, p, q, r)];
+            }
+        }
+        for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) for (int p = 0; p < 3; ++p) for (int q = 0; q < 3; ++q) eab2[ab_idx[a][b]] += s[M4(a, b, p, q)];
+        e[0] = h * e1; e[1] = 0.5 * h2 * e2; e[2] = h3 / 6.0 * e3;
+        for (int a = 0; a < 3; ++a) { e[3 + a] = 0.5 * h2 * ea2[a]; e[6 + a] = h3 / 6.0 * ea3[a]; }
+        for (int t = 0; t < 6; ++t) e[9 + t] = 0.5 * h2 * eab2[t];
+    }
+    // |D| products: Q[i*8 + .]: 0 |D|E1, 1 |D|E2, 2 |D|E3, 3..5 |D|Ea2
+    for (int i = 0; i < n; ++i) {
+        double q[6] = {0};
+        const double* row = Dl + (size_t)i * n;
+        for (int j = 0; j < n; ++j) {
+            const double d = fabs(row[j]);
+            const double* e = sc->E + (size_t)j * 16;
+            q[0] += d * e[0]; q[1] += d * e[1]; q[2] += d * e[2];
+            q[3] += d * e[3]; q[4] += d * e[4]; q[5] += d * e[5];
+        }
+        memcpy(sc->Q + (size_t)i * 8, q, sizeof(q));
+    }
+    // AO-sum terms
+    double rho_lin = 0, rho_quad = 0;
+    double err_g[3] = {0}, err_H[6] = {0};
+    for (int i = 0; i < n; ++i) {
+        const double* dv = sc->Dv + (size_t)i * CPG_NDV;
+        const double* e = sc->E + (size_t)i * 16;
+        const double* q = sc->Q + (size_t)i * 8;
+        double ad[CPG_NDV];
+        for (int m = 0; m < CPG_NDV; ++m) ad[m] = fabs(dv[m]);
+        double sum1 = 0, sum2 = 0;
+        for (int p = 0; p < 3; ++p) { sum1 += ad[M1(p)]; for (int r = 0; r < 3; ++r) sum2 += ad[M2(p, r)]; }
+        const double W  = ad[0] + h * sum1 + 0.5 * h2 * sum2;
+        const double W1 = ad[0] + h * sum1;
+        double Wa[3], W1a[3], W1ab[6];
+        for (int a = 0; a < 3; ++a) {
+            double s1 = 0, s2 = 0;
+            for (int p = 0; p < 3; ++p) { s1 += ad[M2(a, p)]; for (int r = 0; r < 3; ++r) s2 += ad[M3(a, p, r)]; }
+            Wa[a]  = ad[M1(a)] + h * s1 + 0.5 * h2 * s2;
+            W1a[a] = ad[M1(a)] + h * s1;
+        }
+        for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) {
+            double s1 = 0;
+            for (int p = 0; p < 3; ++p) s1 += ad[M3(a, b, p)];
+            W1ab[ab_idx[a][b]] = ad[M2(a, b)] + h * s1;
+        }
+        rho_lin  += ad[0] * e[0];
+        rho_quad += e[0] * q[0];
+        for (int a = 0; a < 3; ++a) err_g[a] += e[6 + a] * W + e[2] * Wa[a] + e[6 + a] * q[2];
+        for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) {
+            const int t = ab_idx[a][b];
+            err_H[t] += e[9 + t] * W1 + W1ab[t] * e[1] + e[9 + t] * q[1] + e[3 + a] * W1a[b] + W1a[a] * e[3 + b] + e[3 + a] * q[3 + b];
+        }
+    }
+    // polynomial terms with exact coefficients
+    for (int a = 0; a < 3; ++a) {
+        double deg3 = 0, deg4 = 0, quadT = 0;
+        for (int p = 0; p < 3; ++p) for (int q = 0; q < 3; ++q) {
+            quadT += fabs(ev->T[a][p][q]);
+            for (int r = 0; r < 3; ++r) {
+                deg3 += fabs(DOT[M3(a, p, q)][M1(r)] + DOT[M2(a, p)][M2(q, r)]);
+                for (int s = 0; s < 3; ++s) deg4 += fabs(DOT[M3(a, p, q)][M2(r, s)]);
+            }
+        }
+        ev->r[a] = h3 * deg3 + 0.5 * h2 * h2 * deg4 + 2.0 * err_g[a] + ctx->tail_g;
+        ev->quadT[a] = 0.5 * h2 * quadT;
+    }
+    for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) {
+        double lin = 0, quad = 0;
+        for (int p = 0; p < 3; ++p) {
+            lin += fabs(ev->T[a][b][p]);
+            for (int q = 0; q < 3; ++q) quad += fabs(DOT[M3(a, b, p)][M1(q)] + DOT[M2(a, p)][M2(b, q)]);
+        }
+        const double v = h * lin + 2.0 * h2 * quad + 2.0 * err_H[ab_idx[a][b]] + ctx->tail_H;
+        ev->dH[a][b] = ev->dH[b][a] = v;
+    }
+    ev->rho_up = ev->rho + 2.0 * rho_lin + rho_quad + ctx->tail_rho;
+}
+
+// ----------------------------------------------------------------------------------------------- tests
+
+static bool cpg_exclude(const cpg_eval_t* ev, double h, const double val[3], double vec[3][3]) {
+    double res[3];
+    for (int k = 0; k < 3; ++k) res[k] = ev->r[k] + ev->quadT[k];
+    double dirs[7][3] = {{1,0,0},{0,1,0},{0,0,1}};
+    int nd = 3;
+    const double gn = sqrt(ev->g[0] * ev->g[0] + ev->g[1] * ev->g[1] + ev->g[2] * ev->g[2]);
+    if (gn > 0.0) { for (int k = 0; k < 3; ++k) dirs[nd][k] = ev->g[k] / gn; nd++; }
+    for (int e = 0; e < 3; ++e) { for (int k = 0; k < 3; ++k) dirs[nd][k] = vec[k][e]; nd++; }
+    for (int t = 0; t < nd; ++t) {
+        const double* w = dirs[t];
+        const double lhs = fabs(w[0] * ev->g[0] + w[1] * ev->g[1] + w[2] * ev->g[2]);
+        double rhs = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            const double Aw = ev->A[j][0] * w[0] + ev->A[j][1] * w[1] + ev->A[j][2] * w[2];
+            rhs += fabs(Aw) * h + fabs(w[j]) * res[j];
+        }
+        if (lhs > rhs) return true;
+    }
+    // Newton point far outside the cube
+    const double smin = fmin(fabs(val[0]), fmin(fabs(val[1]), fabs(val[2])));
+    if (smin > 0.0) {
+        double dstar[3] = {0, 0, 0};
+        for (int e = 0; e < 3; ++e) {
+            const double proj = vec[0][e] * ev->g[0] + vec[1][e] * ev->g[1] + vec[2][e] * ev->g[2];
+            for (int k = 0; k < 3; ++k) dstar[k] -= vec[k][e] * proj / val[e];
+        }
+        double dist2 = 0.0;
+        for (int k = 0; k < 3; ++k) { const double t = fabs(dstar[k]) - h; if (t > 0) dist2 += t * t; }
+        const double rn = sqrt(res[0] * res[0] + res[1] * res[1] + res[2] * res[2]);
+        if (smin * sqrt(dist2) > rn) return true;
+    }
+    return false;
+}
+
+// Krawczyk on X = c +- h with Y = A^-1: returns +1 (unique zero), -1 (no zero), 0 (undecided).
+static int cpg_krawczyk(const double g[3], double Y[3][3], double dH[3][3], double h) {
+    double m[3], rad[3];
+    for (int i = 0; i < 3; ++i) {
+        m[i] = -(Y[i][0] * g[0] + Y[i][1] * g[1] + Y[i][2] * g[2]);
+        double s = 0.0;
+        for (int j = 0; j < 3; ++j) s += fabs(Y[i][j]) * (dH[j][0] + dH[j][1] + dH[j][2]) * h;
+        rad[i] = s;
+    }
+    bool inside = true, disjoint = false;
+    for (int i = 0; i < 3; ++i) {
+        if (!(fabs(m[i]) + rad[i] < h)) inside = false;
+        if (fabs(m[i]) - rad[i] > h) disjoint = true;
+    }
+    return inside ? 1 : (disjoint ? -1 : 0);
+}
+
+// ----------------------------------------------------------------------------------------------- Newton polish
+
+static bool cpg_newton(const cpg_ctx_t* ctx, cpg_scratch_t* sc, double x[3], double* out_rho, double out_val[3], double out_vec[3][3]) {
+    double rho, g[3], H[3][3], val[3], vec[3][3], Y[3][3];
+    for (int it = 0; it < 60; ++it) {
+        cpg_point(ctx, sc, x, 2, &rho, g, H);
+        cpg_eigen_sym3(val, vec, H);
+        if (!cpg_inverse_sym3(Y, val, vec)) return false;
+        double dx[3], n2 = 0.0;
+        for (int i = 0; i < 3; ++i) { dx[i] = -(Y[i][0] * g[0] + Y[i][1] * g[1] + Y[i][2] * g[2]); n2 += dx[i] * dx[i]; }
+        for (int i = 0; i < 3; ++i) x[i] += dx[i];
+        if (sqrt(n2) < 1e-13) break;
+        if (it == 59) return false;
+    }
+    cpg_point(ctx, sc, x, 2, &rho, g, H);
+    cpg_eigen_sym3(out_val, out_vec, H);
+    *out_rho = rho;
+    return true;
+}
+
+static int cpg_classify(const double val[3]) {
+    int npos = 0;
+    for (int i = 0; i < 3; ++i) npos += val[i] > 0.0;
+    switch (npos) {
+        case 0:  return MD_TOPO_MAXIMUM;
+        case 1:  return MD_TOPO_SPLIT_SADDLE;   // (3,-1) bond critical point
+        case 2:  return MD_TOPO_JOIN_SADDLE;    // (3,+1) ring critical point
+        default: return MD_TOPO_MINIMUM;        // (3,+3) cage critical point
+    }
+}
+
+// ----------------------------------------------------------------------------------------------- separatrices
+
+static void cpg_unit_grad(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3], double sign, double out[3], double* rho, double* gnorm) {
+    double g[3];
+    cpg_point(ctx, sc, x, 1, rho, g, NULL);
+    const double n = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+    *gnorm = n;
+    for (int k = 0; k < 3; ++k) out[k] = n > 0 ? sign * g[k] / n : 0.0;
+}
+
+// Follows sign * grad rho / |grad rho| from x0 + 1e-3 dir. Returns index of the CP of type 'target'
+// it ends in, or -1 (density fell below eps, or path length exhausted).
+static int cpg_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x0[3], const double dir[3], double sign, const cpg_cp_t* cps, int ncp, int target) {
+    static const double a21 = 1.0/5;
+    static const double a31 = 3.0/40, a32 = 9.0/40;
+    static const double a41 = 44.0/45, a42 = -56.0/15, a43 = 32.0/9;
+    static const double a51 = 19372.0/6561, a52 = -25360.0/2187, a53 = 64448.0/6561, a54 = -212.0/729;
+    static const double a61 = 9017.0/3168, a62 = -355.0/33, a63 = 46732.0/5247, a64 = 49.0/176, a65 = -5103.0/18656;
+    static const double b1 = 35.0/384, b3 = 500.0/1113, b4 = 125.0/192, b5 = -2187.0/6784, b6 = 11.0/84;
+    static const double e1 = 71.0/57600, e3 = -71.0/16695, e4 = 71.0/1920, e5 = -17253.0/339200, e6 = 22.0/525, e7 = -1.0/40;
+    double x[3], k1[3], k2[3], k3[3], k4[3], k5[3], k6[3], k7[3], y[3], rho, gn;
+    for (int k = 0; k < 3; ++k) x[k] = x0[k] + 1e-3 * dir[k];
+    double step = 1e-3, len = 0.0;
+    const double tol = 1e-8, hit = 2e-3;
+    cpg_unit_grad(ctx, sc, x, sign, k1, &rho, &gn);
+    for (int iter = 0; iter < 200000 && len < 40.0; ++iter) {
+        for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a21 * k1[k]);
+        cpg_unit_grad(ctx, sc, y, sign, k2, &rho, &gn);
+        for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a31 * k1[k] + a32 * k2[k]);
+        cpg_unit_grad(ctx, sc, y, sign, k3, &rho, &gn);
+        for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a41 * k1[k] + a42 * k2[k] + a43 * k3[k]);
+        cpg_unit_grad(ctx, sc, y, sign, k4, &rho, &gn);
+        for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a51 * k1[k] + a52 * k2[k] + a53 * k3[k] + a54 * k4[k]);
+        cpg_unit_grad(ctx, sc, y, sign, k5, &rho, &gn);
+        for (int k = 0; k < 3; ++k) y[k] = x[k] + step * (a61 * k1[k] + a62 * k2[k] + a63 * k3[k] + a64 * k4[k] + a65 * k5[k]);
+        cpg_unit_grad(ctx, sc, y, sign, k6, &rho, &gn);
+        double xn[3];
+        for (int k = 0; k < 3; ++k) xn[k] = x[k] + step * (b1 * k1[k] + b3 * k3[k] + b4 * k4[k] + b5 * k5[k] + b6 * k6[k]);
+        cpg_unit_grad(ctx, sc, xn, sign, k7, &rho, &gn);
+        double err = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double e = step * (e1 * k1[k] + e3 * k3[k] + e4 * k4[k] + e5 * k5[k] + e6 * k6[k] + e7 * k7[k]);
+            err = fmax(err, fabs(e));
+        }
+        if (err <= tol || step <= 1e-7) {
+            for (int k = 0; k < 3; ++k) { x[k] = xn[k]; k1[k] = k7[k]; }
+            len += step;
+            for (int i = 0; i < ncp; ++i) {
+                if (cps[i].type != target) continue;
+                const double dx = x[0] - cps[i].x[0], dy = x[1] - cps[i].x[1], dz = x[2] - cps[i].x[2];
+                if (dx * dx + dy * dy + dz * dz < hit * hit) return i;
+            }
+            if (rho < ctx->eps) return -1;
+            if (gn < 1e-14) {   // stalled on a critical point: take the nearest one of the right type
+                int best = -1; double bd = 1e-2;
+                for (int i = 0; i < ncp; ++i) {
+                    if (cps[i].type != target) continue;
+                    const double d = sqrt((x[0] - cps[i].x[0]) * (x[0] - cps[i].x[0]) + (x[1] - cps[i].x[1]) * (x[1] - cps[i].x[1]) + (x[2] - cps[i].x[2]) * (x[2] - cps[i].x[2]));
+                    if (d < bd) { bd = d; best = i; }
+                }
+                return best;
+            }
+        }
+        const double fac = err > 0 ? 0.9 * pow(tol / err, 0.2) : 4.0;
+        step *= fmin(4.0, fmax(0.2, fac));
+        step = fmin(step, 0.05);
+        step = fmax(step, 1e-7);
+    }
+    return -1;
+}
+
+// ----------------------------------------------------------------------------------------------- degree
+
+static double cpg_solid_angle(const double a[3], const double b[3], const double c[3]) {
+    const double bc[3] = { b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0] };
+    const double num = a[0] * bc[0] + a[1] * bc[1] + a[2] * bc[2];
+    const double den = 1.0 + (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) + (b[0] * c[0] + b[1] * c[1] + b[2] * c[2]) + (c[0] * a[0] + c[1] * a[1] + c[2] * a[2]);
+    return 2.0 * atan2(num, den);
+}
+
+// Brouwer degree of grad rho on the boundary of [lo,hi] (solid angle of grad/|grad| over a triangulated surface).
+static double cpg_degree(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double lo[3], const double hi[3], int n, double* out_min_grad) {
+    double total = 0.0, gmin = DBL_MAX;
+    double* grid = (double*)md_alloc(md_get_heap_allocator(), sizeof(double) * 3 * (n + 1) * (n + 1));
+    for (int axis = 0; axis < 3; ++axis) {
+        const int a = (axis + 1) % 3, b = (axis + 2) % 3;     // e_a x e_b = e_axis
+        for (int side = -1; side <= 1; side += 2) {
+            for (int u = 0; u <= n; ++u) for (int v = 0; v <= n; ++v) {
+                double x[3];
+                x[a] = lo[a] + (hi[a] - lo[a]) * u / n;
+                x[b] = lo[b] + (hi[b] - lo[b]) * v / n;
+                x[axis] = side > 0 ? hi[axis] : lo[axis];
+                double rho, g[3];
+                cpg_point(ctx, sc, x, 1, &rho, g, NULL);
+                const double gn = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                gmin = fmin(gmin, gn);
+                double* d = grid + 3 * (u * (n + 1) + v);
+                for (int k = 0; k < 3; ++k) d[k] = gn > 0 ? g[k] / gn : 0.0;
+            }
+            double face = 0.0;
+            for (int u = 0; u < n; ++u) for (int v = 0; v < n; ++v) {
+                const double* p00 = grid + 3 * (u * (n + 1) + v);
+                const double* p10 = grid + 3 * ((u + 1) * (n + 1) + v);
+                const double* p01 = grid + 3 * (u * (n + 1) + v + 1);
+                const double* p11 = grid + 3 * ((u + 1) * (n + 1) + v + 1);
+                face += cpg_solid_angle(p00, p10, p11) + cpg_solid_angle(p00, p11, p01);
+            }
+            total += side > 0 ? face : -face;
+        }
+    }
+    md_free(md_get_heap_allocator(), grid, sizeof(double) * 3 * (n + 1) * (n + 1));
+    *out_min_grad = gmin;
+    return total / (4.0 * 3.14159265358979323846);
+}
+
+// ----------------------------------------------------------------------------------------------- driver
+
+static int cpg_cp_cmp(const void* pa, const void* pb) {
+    static const int order[5] = {9, 0, 1, 3, 2};   // MAX, SPLIT(BCP), JOIN(RCP), MIN(CCP)
+    const cpg_cp_t* a = (const cpg_cp_t*)pa;
+    const cpg_cp_t* b = (const cpg_cp_t*)pb;
+    if (order[a->type] != order[b->type]) return order[a->type] < order[b->type] ? -1 : 1;
+    if (a->rho != b->rho) return a->rho > b->rho ? -1 : 1;
+    for (int k = 0; k < 3; ++k) if (a->x[k] != b->x[k]) return a->x[k] < b->x[k] ? -1 : 1;
+    return 0;
+}
+
+static int cpg_find(int* parent, int i) {
+    while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+}
+
+// ----------------------------------------------------------------------------------------------- workers
+
+enum { CPG_DISCARD = 0, CPG_SPLIT = 1, CPG_UNRESOLVED = 2, CPG_ROOT = 3 };
+
+typedef struct cpg_rootrec_t {
+    size_t   box;
+    cpg_cp_t cp;
+} cpg_rootrec_t;
+
+typedef struct cpg_worker_t {
+    const cpg_ctx_t* ctx;
+    cpg_scratch_t sc;
+    int tid, nthreads;
+    int job;                            // 0: cube sweep, 1: separatrices
+    volatile int32_t* cancel;
+    // sweep
+    const cpg_box_t* boxes;
+    size_t nboxes;
+    uint8_t* kind;                      // one slot per cube, written by exactly one worker
+    double h_min;
+    md_array(cpg_rootrec_t) roots;      // this worker's certified roots
+    uint64_t inflated;
+    // separatrices
+    const cpg_cp_t* cps;
+    int ncp;
+    const int* saddles;
+    int nsaddle;
+    int* ends;                          // two per saddle
+} cpg_worker_t;
+
+// The root of a cube Krawczyk certified (unique in the 1.5x inflated cube): double Newton from the cube
+// centre. Returns 1 if the root belongs to this cube (written to out_cp), 0 if it lies outside it or
+// below rho_min, -1 if Newton failed.
+static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_box_t* box, cpg_cp_t* out_cp) {
+    cpg_cp_t cp = {0};
+    MEMCPY(cp.x, box->c, sizeof(cp.x));
+    if (!cpg_newton(ctx, sc, cp.x, &cp.rho, cp.ev, cp.evec)) return -1;
+    // Ownership is decided on the ROOT, not per cube: a CP on a shared face or corner (common by
+    // symmetry, e.g. a ring CP at the origin) is polished by several cubes whose Newton results differ in
+    // the last bits, so a half-open test per cube can reject it everywhere. Accept it in the closed cube
+    // plus a tolerance and deduplicate afterwards. The Krawczyk certificate makes the root unique in the
+    // inflated cube, so a duplicate can only be the same CP.
+    const double tol = 1e-9;
+    bool inside = true;
+    for (int k = 0; k < 3; ++k) inside &= (cp.x[k] >= box->c[k] - box->h - tol) && (cp.x[k] <= box->c[k] + box->h + tol);
+    if (!inside || cp.rho < ctx->eps) return 0;
+    cp.h = box->h;
+    cp.type = cpg_classify(cp.ev);
+    *out_cp = cp;
+    return 1;
+}
+
+// Decides one cube. Writes the polished root when the result is CPG_ROOT.
+static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_cp) {
+    const cpg_ctx_t* ctx = w->ctx;
+    cpg_eval_t ev, evi;
+    cpg_box_eval(ctx, &w->sc, box->c, box->h, &ev);
+    if (ev.rho_up < ctx->eps) return CPG_DISCARD;
+    double val[3], vec[3][3], Y[3][3];
+    cpg_eigen_sym3(val, vec, ev.A);
+    if (cpg_exclude(&ev, box->h, val, vec)) return CPG_DISCARD;
+    const bool invertible = cpg_inverse_sym3(Y, val, vec);
+    int kr = invertible ? cpg_krawczyk(ev.g, Y, ev.dH, box->h) : 0;
+    if (kr == -1) return CPG_DISCARD;
+    if (invertible && kr == 0) {
+        const double hi = 1.5 * box->h;
+        w->inflated++;
+        cpg_box_eval(ctx, &w->sc, box->c, hi, &evi);   // centre data is identical; only the enclosure differs
+        kr = cpg_krawczyk(ev.g, Y, evi.dH, hi);
+        if (kr == -1) return CPG_DISCARD;
+    }
+    if (kr == 1) {
+        const int r = cpg_polish_root(ctx, &w->sc, box, out_cp);
+        if (r == 1) return CPG_ROOT;
+        if (r == 0) return CPG_DISCARD;
+        // Newton failed despite the certificate (should not happen): treat the cube as undecided
+    }
+    return box->h <= w->h_min ? CPG_UNRESOLVED : CPG_SPLIT;
+}
+
+static void cpg_worker_entry(void* data) {
+    cpg_worker_t* w = (cpg_worker_t*)data;
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (w->job == 0) {
+        // fixed interleaved chunks: the result of every cube is independent of which thread computed it
+        for (size_t chunk = (size_t)w->tid; chunk * CPG_CHUNK < w->nboxes; chunk += (size_t)w->nthreads) {
+            if (w->cancel && *w->cancel) return;
+            const size_t end = (chunk + 1) * CPG_CHUNK < w->nboxes ? (chunk + 1) * CPG_CHUNK : w->nboxes;
+            for (size_t bi = chunk * CPG_CHUNK; bi < end; ++bi) {
+                cpg_rootrec_t rec;
+                const int k = cpg_process_box(w, &w->boxes[bi], &rec.cp);
+                w->kind[bi] = (uint8_t)k;
+                if (k == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
+            }
+        }
+    } else {
+        for (int i = w->tid; i < w->nsaddle; i += w->nthreads) {
+            if (w->cancel && *w->cancel) return;
+            const cpg_cp_t* cp = &w->cps[w->saddles[i]];
+            const bool bcp = cp->type == MD_TOPO_SPLIT_SADDLE;
+            const int col = bcp ? 2 : 0;                    // the unique eigen-direction
+            const double sign = bcp ? 1.0 : -1.0;           // ascend to maxima / descend to minima
+            const int target = bcp ? MD_TOPO_MAXIMUM : MD_TOPO_MINIMUM;
+            for (int e = 0; e < 2; ++e) {
+                double dir[3];
+                for (int k = 0; k < 3; ++k) dir[k] = (e ? -1.0 : 1.0) * cp->evec[k][col];
+                w->ends[2 * i + e] = cpg_trace(w->ctx, &w->sc, cp->x, dir, sign, w->cps, w->ncp, target);
+            }
+        }
+    }
+}
+
+// Runs every worker; worker 0 on the calling thread. A worker whose thread cannot be created runs inline.
+static void cpg_run_workers(cpg_worker_t* workers, int n) {
+    md_thread_t* th[CPG_MAX_THREADS] = {0};
+    for (int t = 1; t < n; ++t) th[t] = md_thread_create(cpg_worker_entry, &workers[t]);
+    cpg_worker_entry(&workers[0]);
+    for (int t = 1; t < n; ++t) {
+        if (th[t]) md_thread_join(th[t]);
+        else cpg_worker_entry(&workers[t]);
+    }
+}
+
+static int cpg_rootrec_cmp(const void* pa, const void* pb) {
+    const cpg_rootrec_t* a = (const cpg_rootrec_t*)pa;
+    const cpg_rootrec_t* b = (const cpg_rootrec_t*)pb;
+    return a->box < b->box ? -1 : (a->box > b->box ? 1 : 0);
+}
+
+static void cpg_scratch_alloc(cpg_scratch_t* sc, int N, int nshell, md_allocator_i* heap) {
+    sc->L      = (int*)md_alloc(heap, sizeof(int) * N);
+    sc->shells = (int*)md_alloc(heap, sizeof(int) * (nshell + 1));
+    sc->V      = (double*)md_alloc(heap, sizeof(double) * N * CPG_NV);
+    sc->Dv     = (double*)md_alloc(heap, sizeof(double) * N * CPG_NDV);
+    sc->S      = (double*)md_alloc(heap, sizeof(double) * N * CPG_NMI);
+    sc->Dl     = (double*)md_alloc(heap, sizeof(double) * N * N);
+    sc->E      = (double*)md_alloc(heap, sizeof(double) * N * 16);
+    sc->Q      = (double*)md_alloc(heap, sizeof(double) * N * 8);
+}
+
+static void cpg_scratch_free(cpg_scratch_t* sc, int N, int nshell, md_allocator_i* heap) {
+    md_free(heap, sc->Q,  sizeof(double) * N * 8);
+    md_free(heap, sc->E,  sizeof(double) * N * 16);
+    md_free(heap, sc->Dl, sizeof(double) * N * N);
+    md_free(heap, sc->S,  sizeof(double) * N * CPG_NMI);
+    md_free(heap, sc->Dv, sizeof(double) * N * CPG_NDV);
+    md_free(heap, sc->V,  sizeof(double) * N * CPG_NV);
+    md_free(heap, sc->shells, sizeof(int) * (nshell + 1));
+    md_free(heap, sc->L,  sizeof(int) * N);
+}
+
+// ----------------------------------------------------------------------------------------------- driver
+// A run is set up once (basis, screening, search domain, root lattice), swept, then finished (order,
+// separatrices, clusters, graph). The sweep is either the CPU level loop below or the GPU one
+// (md_topo_compute_extremum_graph_gto_gpu), which hands the cubes fp32 cannot decide to the CPU loop.
+// Both feed the same root and unresolved lists, so everything after the sweep is shared.
+
+typedef struct cpg_run_t {
+    const md_topo_gto_desc_t* desc;
+    md_allocator_i*           heap;
+    cpg_ctx_t*                ctx;
+    cpg_worker_t*             workers;
+    int                       nthreads;
+    double                    h_min;
+    bool                      ok;
+    md_array(cpg_cp_t)        cps;
+    md_array(cpg_box_t)       cur;
+    md_array(cpg_box_t)       nxt;
+    md_array(cpg_box_t)       unres;
+    md_array(uint8_t)         kind;
+    md_array(cpg_rootrec_t)   roots;
+    md_topo_gto_info_t        info;
+} cpg_run_t;
+
+static bool cpg_run_cancelled(cpg_run_t* R) {
+    if (R->desc->cancel && *R->desc->cancel) R->info.cancelled = true;
+    return R->info.cancelled;
+}
+
+// Accepts a polished root unless it is one already accepted (the same CP reached from another cube).
+static void cpg_run_accept(cpg_run_t* R, const cpg_cp_t* cp) {
+    for (size_t i = 0; i < md_array_size(R->cps); ++i) {
+        const double dx = R->cps[i].x[0] - cp->x[0], dy = R->cps[i].x[1] - cp->x[1], dz = R->cps[i].x[2] - cp->x[2];
+        if (dx * dx + dy * dy + dz * dz < 1e-16) return;
+    }
+    md_array_push(R->cps, *cp, R->heap);
+}
+
+static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
+    MEMSET(R, 0, sizeof(*R));
+    R->desc = desc;
+    R->heap = md_get_heap_allocator();
+    md_allocator_i* heap = R->heap;
+    const md_gto_basis_t* basis = desc->basis;
+
+    cpg_ctx_t* ctx = (cpg_ctx_t*)md_alloc(heap, sizeof(cpg_ctx_t));
+    MEMSET(ctx, 0, sizeof(*ctx));
+    R->ctx = ctx;
+    cpg_init_tables(ctx);
+    ctx->eps = desc->rho_min > 0.0 ? desc->rho_min : 1.0e-4;
+    R->h_min = desc->h_min > 0.0 ? desc->h_min : 1.0e-4;
+    const double h_root = desc->h_root > 0.0 ? desc->h_root : 1.0;
+    const size_t stride = desc->atom_xyz_stride ? desc->atom_xyz_stride : sizeof(float) * 3;
+
+    int nthreads = (int)desc->num_threads;
+    if (nthreads <= 0) {
+        md_os_sys_info_t si = {0};
+        nthreads = md_os_sys_info_query(&si) && si.num_virtual_cores > 0 ? si.num_virtual_cores : 1;
+    }
+    if (nthreads > CPG_MAX_THREADS) nthreads = CPG_MAX_THREADS;
+    R->nthreads = nthreads;
+    R->info.num_threads = (uint32_t)nthreads;
+
+    // --- basis -> shells / AOs (double precision copies)
+    ctx->nshell = (int)basis->num_shells;
+    ctx->nao = (int)md_gto_basis_num_ao(basis);
+    ctx->shell  = (cpg_shell_t*)md_alloc(heap, sizeof(cpg_shell_t) * ctx->nshell);
+    ctx->alpha  = (double*)md_alloc(heap, sizeof(double) * basis->num_primitives);
+    ctx->coeff  = (double*)md_alloc(heap, sizeof(double) * basis->num_primitives);
+    ctx->ao_ijk = (int(*)[3])md_alloc(heap, sizeof(int[3]) * ctx->nao);
+    ctx->ao_nrm = (double*)md_alloc(heap, sizeof(double) * ctx->nao);
+    for (uint32_t p = 0; p < basis->num_primitives; ++p) { ctx->alpha[p] = basis->alpha[p]; ctx->coeff[p] = basis->coeff[p]; }
+    uint32_t ao = 0;
+    bool ok = true;
+    for (int si = 0; si < ctx->nshell; ++si) {
+        const md_gto_shell_t* bs = &basis->shells[si];
+        cpg_shell_t* s = &ctx->shell[si];
+        if (bs->l > CPG_LMAX || bs->num_primitives > CPG_MAXPRIM) { ok = false; break; }
+        const float* xyz = (const float*)((const uint8_t*)desc->atom_xyz + bs->atom_idx * stride);
+        s->A[0] = xyz[0]; s->A[1] = xyz[1]; s->A[2] = xyz[2];
+        s->l = (int)bs->l;
+        s->ncart = (int)md_gto_num_cart_ao(bs->l);
+        s->prim_offset = bs->primitive_offset;
+        s->num_prims = bs->num_primitives;
+        s->ao_offset = ao;
+        int ci = 0;
+        for (int i = s->l; i >= 0; --i) for (int j = s->l - i; j >= 0; --j) {
+            const int k = s->l - i - j;
+            ctx->ao_ijk[ao + ci][0] = i; ctx->ao_ijk[ao + ci][1] = j; ctx->ao_ijk[ao + ci][2] = k;
+            ctx->ao_nrm[ao + ci] = cpg_nrm(i, j, k);
+            ci++;
+        }
+        ao += s->ncart;
+    }
+    if (!ok) {
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gto: unsupported shell (l > %d or more than %d primitives)", CPG_LMAX, CPG_MAXPRIM);
+    }
+    ctx->D = desc->density_matrix;
+    const int N = ctx->nao;
+
+    R->workers = (cpg_worker_t*)md_alloc(heap, sizeof(cpg_worker_t) * nthreads);
+    MEMSET(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
+    for (int t = 0; t < nthreads; ++t) {
+        R->workers[t].ctx = ctx;
+        R->workers[t].tid = t;
+        R->workers[t].nthreads = nthreads;
+        R->workers[t].cancel = desc->cancel;
+        R->workers[t].h_min = R->h_min;
+        cpg_scratch_alloc(&R->workers[t].sc, N, ctx->nshell, heap);
+    }
+    R->ok = ok;
+    if (!ok) return;
+
+    // --- global AO maxima (order 0..2) and |D|-weighted row sums -> screening threshold tau
+    double* phimax = (double*)md_alloc(heap, sizeof(double) * N * 3);
+    for (int si = 0; si < ctx->nshell; ++si) {
+        const cpg_shell_t* s = &ctx->shell[si];
+        for (int ci = 0; ci < s->ncart; ++ci) for (int o = 0; o < 3; ++o) phimax[(s->ao_offset + ci) * 3 + o] = cpg_tail_ao(ctx, s, ci, o, 0.0);
+    }
+    double Rs[3] = {0, 0, 0};
+    for (int i = 0; i < N; ++i) for (int j = 0; j < N; ++j) {
+        const double d = fabs(ctx->D[(size_t)i * N + j]);
+        for (int o = 0; o < 3; ++o) Rs[o] += d * phimax[j * 3 + o];
+    }
+    md_free(heap, phimax, sizeof(double) * N * 3);
+    const double tail_target = 1.0e-12;
+    ctx->tau = tail_target / (2.0 * (Rs[0] + 2.0 * Rs[1] + Rs[2]) + 1e-300);
+    ctx->tail_rho = 2.0 * ctx->tau * Rs[0];
+    ctx->tail_g   = 2.0 * ctx->tau * (Rs[0] + Rs[1]);
+    ctx->tail_H   = 2.0 * ctx->tau * (Rs[0] + 2.0 * Rs[1] + Rs[2]);
+    for (int si = 0; si < ctx->nshell; ++si) {
+        cpg_shell_t* s = &ctx->shell[si];
+        double lo = 0.0, hi = 1.0;
+        while (cpg_tail_shell(ctx, s, 2, hi) > ctx->tau && hi < 1e3) hi *= 2.0;
+        for (int it = 0; it < 50; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            if (cpg_tail_shell(ctx, s, 2, mid) > ctx->tau) lo = mid; else hi = mid;
+        }
+        s->radius = hi;
+    }
+
+    // --- search domain: outside AABB(atoms) +- pad every point is >= pad from every centre; rho <= T^T |D| T
+    double amin[3] = { DBL_MAX, DBL_MAX, DBL_MAX }, amax[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+    for (int si = 0; si < ctx->nshell; ++si) for (int k = 0; k < 3; ++k) { amin[k] = fmin(amin[k], ctx->shell[si].A[k]); amax[k] = fmax(amax[k], ctx->shell[si].A[k]); }
+    double* T0 = (double*)md_alloc(heap, sizeof(double) * N);
+    double plo = 0.0, phi = 1.0;
+    for (;;) {
+        const double pad = phi;
+        for (int si = 0; si < ctx->nshell; ++si) { const cpg_shell_t* s = &ctx->shell[si]; for (int ci = 0; ci < s->ncart; ++ci) T0[s->ao_offset + ci] = cpg_tail_ao(ctx, s, ci, 0, pad); }
+        double b = 0.0;
+        for (int i = 0; i < N; ++i) { if (T0[i] == 0.0) continue; for (int j = 0; j < N; ++j) b += T0[i] * fabs(ctx->D[(size_t)i * N + j]) * T0[j]; }
+        if (b < ctx->eps || phi > 1e3) break;
+        plo = phi; phi *= 2.0;
+    }
+    for (int it = 0; it < 40; ++it) {
+        const double mid = 0.5 * (plo + phi);
+        for (int si = 0; si < ctx->nshell; ++si) { const cpg_shell_t* s = &ctx->shell[si]; for (int ci = 0; ci < s->ncart; ++ci) T0[s->ao_offset + ci] = cpg_tail_ao(ctx, s, ci, 0, mid); }
+        double b = 0.0;
+        for (int i = 0; i < N; ++i) { if (T0[i] == 0.0) continue; for (int j = 0; j < N; ++j) b += T0[i] * fabs(ctx->D[(size_t)i * N + j]) * T0[j]; }
+        if (b < ctx->eps) phi = mid; else plo = mid;
+    }
+    md_free(heap, T0, sizeof(double) * N);
+    const double pad = phi;
+    R->info.domain_pad = pad;
+
+    // --- root lattice, anchored to world multiples of 2 h_root
+    const double w = 2.0 * h_root;
+    int64_t i0[3], cnt[3];
+    for (int k = 0; k < 3; ++k) {
+        i0[k] = (int64_t)floor((amin[k] - pad) / w);
+        const int64_t i1 = (int64_t)ceil((amax[k] + pad) / w);
+        cnt[k] = i1 - i0[k];
+    }
+    for (int64_t z = 0; z < cnt[2]; ++z) for (int64_t y = 0; y < cnt[1]; ++y) for (int64_t x = 0; x < cnt[0]; ++x) {
+        cpg_box_t b = { { (i0[0] + x + 0.5) * w, (i0[1] + y + 0.5) * w, (i0[2] + z + 0.5) * w }, h_root };
+        md_array_push(R->cur, b, heap);
+    }
+}
+
+// Level-synchronous sweep of R->cur on the CPU: cubes in parallel, results merged in cube order.
+// The cubes need not share a size (the GPU sweep hands over cubes from several levels).
+static void cpg_run_sweep_cpu(cpg_run_t* R) {
+    md_allocator_i* heap = R->heap;
+    cpg_worker_t* workers = R->workers;
+    const int nthreads = R->nthreads;
+    const md_tick_t t_start = md_tick_now();
+    while (md_array_size(R->cur) > 0) {
+        if (cpg_run_cancelled(R)) break;
+        const size_t nb = md_array_size(R->cur);
+        md_array_resize(R->kind, nb, heap);
+        R->info.num_levels++;
+        R->info.num_box_evals += nb;
+        for (int t = 0; t < nthreads; ++t) {
+            workers[t].job = 0;
+            workers[t].boxes = R->cur;
+            workers[t].nboxes = nb;
+            workers[t].kind = R->kind;
+            md_array_shrink(workers[t].roots, 0);
+        }
+        cpg_run_workers(workers, nthreads);
+        if (cpg_run_cancelled(R)) break;
+
+        // roots, in cube order, deduplicated against everything accepted so far
+        md_array_shrink(R->roots, 0);
+        for (int t = 0; t < nthreads; ++t) {
+            md_array_push_array(R->roots, workers[t].roots, md_array_size(workers[t].roots), heap);
+            R->info.num_inflated_evals += workers[t].inflated;
+            workers[t].inflated = 0;
+        }
+        if (md_array_size(R->roots) > 1) qsort(R->roots, md_array_size(R->roots), sizeof(cpg_rootrec_t), cpg_rootrec_cmp);
+        for (size_t r = 0; r < md_array_size(R->roots); ++r) cpg_run_accept(R, &R->roots[r].cp);
+
+        md_array_shrink(R->nxt, 0);
+        for (size_t bi = 0; bi < nb; ++bi) {
+            if (R->kind[bi] == CPG_UNRESOLVED) {
+                md_array_push(R->unres, R->cur[bi], heap);
+            } else if (R->kind[bi] == CPG_SPLIT) {
+                const cpg_box_t box = R->cur[bi];
+                const double hc = 0.5 * box.h;
+                for (int s = 0; s < 8; ++s) {
+                    cpg_box_t child = { { box.c[0] + ((s & 1) ? hc : -hc), box.c[1] + ((s & 2) ? hc : -hc), box.c[2] + ((s & 4) ? hc : -hc) }, hc };
+                    md_array_push(R->nxt, child, heap);
+                }
+            }
+        }
+        cpg_box_t* t = R->cur; R->cur = R->nxt; R->nxt = t;
+    }
+    const double ms = md_tick_to_milliseconds(md_tick_now() - t_start);
+    R->info.ms_sweep_cpu += ms;
+    R->info.ms_sweep += ms;
+}
+
+static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info) {
+    if (!R->ok) {
+        if (out_info) *out_info = R->info;
+        return false;
+    }
+    md_allocator_i* heap = R->heap;
+    cpg_ctx_t* ctx = R->ctx;
+    cpg_worker_t* workers = R->workers;
+    const int nthreads = R->nthreads;
+    const md_topo_gto_desc_t* desc = R->desc;
+    md_topo_gto_info_t* info = &R->info;
+    cpg_cp_t* cps = R->cps;
+    cpg_box_t* unres = R->unres;
+
+    // --- deterministic order
+    const int ncp = (int)md_array_size(cps);
+    if (ncp > 1) qsort(cps, ncp, sizeof(cpg_cp_t), cpg_cp_cmp);
+
+    // --- separatrices -> edges (from saddle to extremum), traced in parallel
+    md_array(md_topo_edge_t) edges = 0;
+    md_tick_t t_phase = md_tick_now();
+    if (desc->trace_separatrices && !info->cancelled) {
+        md_array(int) saddles = 0;
+        for (int i = 0; i < ncp; ++i) {
+            if (cps[i].type == MD_TOPO_SPLIT_SADDLE || cps[i].type == MD_TOPO_JOIN_SADDLE) md_array_push(saddles, i, heap);
+        }
+        const int ns = (int)md_array_size(saddles);
+        if (ns > 0) {
+            int* ends = (int*)md_alloc(heap, sizeof(int) * 2 * ns);
+            for (int t = 0; t < nthreads; ++t) {
+                workers[t].job = 1;
+                workers[t].cps = cps;
+                workers[t].ncp = ncp;
+                workers[t].saddles = saddles;
+                workers[t].nsaddle = ns;
+                workers[t].ends = ends;
+            }
+            for (int i = 0; i < 2 * ns; ++i) ends[i] = -1;
+            cpg_run_workers(workers, nthreads);
+            cpg_run_cancelled(R);
+            for (int i = 0; i < ns; ++i) {
+                for (int e = 0; e < 2; ++e) {
+                    const int to = ends[2 * i + e];
+                    if (to < 0) continue;
+                    if (e == 1 && to == ends[2 * i]) continue;
+                    md_topo_edge_t edge = { (uint32_t)saddles[i], (uint32_t)to };
+                    md_array_push(edges, edge, heap);
+                }
+            }
+            md_free(heap, ends, sizeof(int) * 2 * ns);
+        }
+        md_array_free(saddles, heap);
+    }
+
+    info->ms_separatrices = md_tick_to_milliseconds(md_tick_now() - t_phase);
+    t_phase = md_tick_now();
+
+    // --- unresolved cubes -> clusters with their boundary degree
+    const int nu = (int)md_array_size(unres);
+    info->num_unresolved_boxes = (uint32_t)nu;
+    if (nu > 0 && !info->cancelled) {
+        int* parent = (int*)md_alloc(heap, sizeof(int) * nu);
+        for (int i = 0; i < nu; ++i) parent[i] = i;
+        for (int i = 0; i < nu; ++i) for (int j = i + 1; j < nu; ++j) {
+            bool touch = true;
+            for (int k = 0; k < 3; ++k) touch &= fabs(unres[i].c[k] - unres[j].c[k]) <= unres[i].h + unres[j].h + 1e-12;
+            if (touch) { const int a = cpg_find(parent, i), b = cpg_find(parent, j); if (a != b) parent[b] = a; }
+        }
+        for (int i = 0; i < nu; ++i) {
+            if (cpg_find(parent, i) != i) continue;
+            if (info->num_clusters >= MD_TOPO_GTO_MAX_CLUSTERS) { info->clusters_truncated = true; break; }
+            md_topo_gto_cluster_t* cl = &info->clusters[info->num_clusters++];
+            double lo[3] = { DBL_MAX, DBL_MAX, DBL_MAX }, hi[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX }, hmax = 0.0;
+            for (int j = 0; j < nu; ++j) {
+                if (cpg_find(parent, j) != i) continue;
+                cl->num_boxes++;
+                hmax = fmax(hmax, unres[j].h);
+                for (int k = 0; k < 3; ++k) { lo[k] = fmin(lo[k], unres[j].c[k] - unres[j].h); hi[k] = fmax(hi[k], unres[j].c[k] + unres[j].h); }
+            }
+            for (int k = 0; k < 3; ++k) { lo[k] -= hmax; hi[k] += hmax; cl->lo[k] = (float)lo[k]; cl->hi[k] = (float)hi[k]; }
+            double gmin = 0.0;
+            const double deg = cpg_degree(ctx, &workers[0].sc, lo, hi, 32, &gmin);
+            cl->degree = (int32_t)lround(deg);
+            cl->degree_residual = (float)fabs(deg - (double)cl->degree);
+            cl->min_boundary_grad = (float)gmin;
+        }
+        md_free(heap, parent, sizeof(int) * nu);
+    }
+    info->ms_clusters = md_tick_to_milliseconds(md_tick_now() - t_phase);
+
+    // --- output graph (also when cancelled: what was certified so far, flagged incomplete)
+    md_allocator_i* galloc = out_graph->alloc ? out_graph->alloc : heap;
+    md_topo_extremum_graph_free(out_graph);
+    out_graph->alloc = galloc;
+    if (ncp > 0) {
+        out_graph->num_vertices = (uint32_t)ncp;
+        out_graph->vertices = (md_topo_vert_t*)md_alloc(galloc, sizeof(md_topo_vert_t) * ncp);
+        out_graph->types = (md_topo_critical_point_type_t*)md_alloc(galloc, sizeof(md_topo_critical_point_type_t) * ncp);
+        int count[5] = {0};
+        for (int i = 0; i < ncp; ++i) {
+            out_graph->vertices[i] = (md_topo_vert_t){ (float)cps[i].x[0], (float)cps[i].x[1], (float)cps[i].x[2], (float)cps[i].rho };
+            out_graph->types[i] = (md_topo_critical_point_type_t)cps[i].type;
+            count[cps[i].type]++;
+        }
+        info->poincare_hopf = count[MD_TOPO_MAXIMUM] - count[MD_TOPO_SPLIT_SADDLE] + count[MD_TOPO_JOIN_SADDLE] - count[MD_TOPO_MINIMUM];
+        const size_t ne = md_array_size(edges);
+        if (ne > 0) {
+            out_graph->num_edges = (uint32_t)ne;
+            out_graph->edges = (md_topo_edge_t*)md_alloc(galloc, sizeof(md_topo_edge_t) * ne);
+            MEMCPY(out_graph->edges, edges, sizeof(md_topo_edge_t) * ne);
+        }
+    }
+    info->complete = (nu == 0) && !info->cancelled;
+    md_array_free(edges, heap);
+    if (out_info) *out_info = *info;
+    return !info->cancelled;
+}
+
+static void cpg_run_free(cpg_run_t* R) {
+    md_allocator_i* heap = R->heap;
+    cpg_ctx_t* ctx = R->ctx;
+    const md_gto_basis_t* basis = R->desc->basis;
+    const int N = ctx->nao;
+    for (int t = 0; t < R->nthreads; ++t) {
+        md_array_free(R->workers[t].roots, heap);
+        cpg_scratch_free(&R->workers[t].sc, N, ctx->nshell, heap);
+    }
+    md_free(heap, R->workers, sizeof(cpg_worker_t) * R->nthreads);
+    md_array_free(R->roots, heap);
+    md_array_free(R->kind, heap);
+    md_array_free(R->cps, heap);
+    md_array_free(R->cur, heap);
+    md_array_free(R->nxt, heap);
+    md_array_free(R->unres, heap);
+    md_free(heap, ctx->ao_nrm, sizeof(double) * N);
+    md_free(heap, ctx->ao_ijk, sizeof(int[3]) * N);
+    md_free(heap, ctx->coeff, sizeof(double) * basis->num_primitives);
+    md_free(heap, ctx->alpha, sizeof(double) * basis->num_primitives);
+    md_free(heap, ctx->shell, sizeof(cpg_shell_t) * ctx->nshell);
+    md_free(heap, ctx, sizeof(cpg_ctx_t));
+}
+
+static bool cpg_check_desc(const md_topo_gto_desc_t* desc, const char* fn) {
+    if (!desc->basis || !desc->atom_xyz || !desc->density_matrix) {
+        MD_LOG_ERROR("%s: basis, atom_xyz and density_matrix are required", fn);
+        return false;
+    }
+    return true;
+}
+
+bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc) {
+    ASSERT(out_graph);
+    ASSERT(desc);
+    if (!cpg_check_desc(desc, "md_topo_compute_extremum_graph_gto")) return false;
+    cpg_run_t R;
+    const md_tick_t t_setup = md_tick_now();
+    cpg_run_init(&R, desc);
+    R.info.ms_setup = md_tick_to_milliseconds(md_tick_now() - t_setup);
+    if (R.ok) cpg_run_sweep_cpu(&R);
+    const bool res = cpg_run_finish(&R, out_graph, out_info);
+    cpg_run_free(&R);
+    return res;
+}
+
+#if MD_ENABLE_GPU
+// ----------------------------------------------------------------------------------------------- GPU sweep
+// The octree levels run on the GPU (src/shaders/topo/topo_gto_cube.slang, fp32 with rigorous rounding
+// margins), in batches of the 8 children of each cube that split; the CPU keeps the parts that need
+// double precision or are inherently few:
+//   * Newton polish and classification of the root cubes the GPU certified (tens to hundreds);
+//   * every cube fp32 cannot decide (its gradient lies inside its own rounding noise, or it reached
+//     h_min, or the kernels cannot form its coordinates exactly in float): that cube and its subtree
+//     go through the CPU level loop above, in double;
+//   * the local shell lists (screened per batch against its parent batch's list), separatrices,
+//     clusters and the graph (cpg_run_finish).
+// The batch lists live on the host and are rebuilt in batch and child order after every level, so the
+// result does not depend on scheduling or on how a level is cut into chunks.
+
+typedef struct cpg_gpu_shell_t {
+    float    A[3];
+    float    r2;            // squared screening radius, rounded up (unused by the kernels)
+    uint32_t prim_offset;
+    uint32_t num_prims;
+    uint32_t ao_offset;
+    uint32_t l_ncart;       // l | ncart << 8
+} cpg_gpu_shell_t;
+
+// Mirrors Batch in topo_gto_cube.slang.
+typedef struct cpg_gpu_batch_t {
+    float    P_h[4];        // parent centre, child half-width
+    uint32_t info[4];       // child mask, local AOs, first row, first local shell
+    uint32_t info2[4];      // number of local shells
+} cpg_gpu_batch_t;
+
+// Mirrors RootArgs in topo_gto_cube.slang.
+typedef struct cpg_gpu_args_t {
+    uint32_t num_batches;
+    uint32_t num_shells;
+    uint32_t num_ao;
+    uint32_t num_row_tiles;
+    float    eps;
+    float    h_min;
+    float    tail_rho;
+    float    tail_g;
+    float    tail_H;
+    uint32_t flags;
+    uint32_t _pad0;
+    uint32_t _pad1;
+    md_gpu_addr_t batches;
+    md_gpu_addr_t batch_shells;
+    md_gpu_addr_t row_ao;
+    md_gpu_addr_t row_tiles;
+    md_gpu_addr_t shells;
+    md_gpu_addr_t alpha;
+    md_gpu_addr_t coeff;
+    md_gpu_addr_t ao_nrm;
+    md_gpu_addr_t ao_ijk;
+    md_gpu_addr_t D;
+    md_gpu_addr_t kappa;
+    md_gpu_addr_t phi;
+    md_gpu_addr_t dv;
+    md_gpu_addr_t ep;
+    md_gpu_addr_t outcome;
+    md_gpu_addr_t debug;
+} cpg_gpu_args_t;
+
+// Layout constants shared with topo_gto_cube.slang.
+#define CPG_GPU_PHI_W          456             // floats per row of phi: 57 channels x 8 children
+#define CPG_GPU_DV_W           272             // floats per row of dv: 34 x 8
+#define CPG_GPU_EP_W           260             // floats per cube of ep
+#define CPG_GPU_TAB_CAP        4096            // floats of 1D tables per chunk of shells (ao_main)
+#define CPG_GPU_ROW_TILE       32              // rows per GEMM group
+#define CPG_GPU_DEC_WG         64              // decide_main group size
+
+#define CPG_GPU_SCRATCH_BUDGET (192u << 20)    // bytes of phi + dv per chunk
+#define CPG_GPU_MAX_BATCHES    16384u          // per chunk (grid dimensions stay below 65535)
+#define CPG_GPU_MAX_TILES      65535u
+#define CPG_GPU_DISPATCH_MS    20.0            // target duration of one chunk (four launches)
+#define CPG_GPU_OUT_KIND(o)    ((o) & 0xFu)
+#define CPG_GPU_OUT_INFLATED   16u
+
+enum { CPG_K_AO, CPG_K_GEMM, CPG_K_EPI, CPG_K_DECIDE, CPG_K_COUNT };
+static md_gpu_kernel_t k_topo_gto[CPG_K_COUNT] = {0};
+static md_gpu_device_t k_topo_gto_device = NULL;
+
+static void topo_gto_gpu_release(void) {
+    for (int i = 0; i < CPG_K_COUNT; ++i) {
+        if (k_topo_gto[i]) md_gpu_kernel_destroy(k_topo_gto[i]);
+        k_topo_gto[i] = NULL;
+    }
+    k_topo_gto_device = NULL;
+}
+
+// Created by md_topo_gpu_initialize, or on first use. Not synchronised: run one GTO search at a time
+// per process, or initialise first.
+static bool topo_gto_gpu_ensure(md_gpu_device_t device) {
+    if (k_topo_gto_device == device && k_topo_gto[CPG_K_DECIDE]) return true;
+    topo_gto_gpu_release();
+    const md_gpu_kernel_desc_t kd[CPG_K_COUNT] = {
+        md_shader_topo_gto_cube_ao_main_kernel(),
+        md_shader_topo_gto_cube_gemm_main_kernel(),
+        md_shader_topo_gto_cube_epi_main_kernel(),
+        md_shader_topo_gto_cube_decide_main_kernel(),
+    };
+    for (int i = 0; i < CPG_K_COUNT; ++i) {
+        k_topo_gto[i] = md_gpu_kernel_create(device, &kd[i]);
+        if (!k_topo_gto[i]) {
+            MD_LOG_ERROR("md_topo: failed to create kernel '%s': %s", kd[i].label, md_gpu_last_error());
+            topo_gto_gpu_release();
+            return false;
+        }
+    }
+    k_topo_gto_device = device;
+    return true;
+}
+
+static float cpg_up_f(double x) {
+    float f = (float)x;
+    if ((double)f < x) f = nextafterf(f, FLT_MAX);
+    return f;
+}
+
+// Every buffer the kernels read is padded: a compiler may issue a loop's next load ahead of the exit
+// test (llvmpipe does), which must not run off the end of an allocation.
+#define CPG_GPU_PAD 4096
+
+static bool cpg_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t* out, const void* src, size_t size) {
+    *out = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, size + CPG_GPU_PAD).gpu;
+    return *out && (size == 0 || md_gpu_upload(s, *out, src, size));
+}
+
+// Grow-only device buffer of 'need' elements of 'elem' bytes.
+static bool cpg_gpu_reserve(md_gpu_stream_t s, md_gpu_addr_t* buf, size_t* cap, size_t need, size_t elem) {
+    if (*buf && need <= *cap) return true;
+    if (*buf) md_gpu_free(s, *buf);
+    size_t c = *cap + *cap / 2;
+    if (c < need) c = need;
+    if (c < 64) c = 64;
+    *buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, c * elem + CPG_GPU_PAD).gpu;
+    *cap = *buf ? c : 0;
+    return *buf != 0;
+}
+
+// A batch: the 8 children (c = P +- hc per axis, child s on the + side of x if s & 1, y if s & 2,
+// z if s & 4) of one cube, those in 'mask' to be evaluated. Its candidate shells are a range of the
+// previous level's pool of local shells: a child batch's union of inflated cubes, P +- 2.5 hc, lies
+// inside its parent batch's, so screening against the parent's list loses nothing.
+typedef struct cpg_hbatch_t {
+    double   P[3];
+    double   hc;
+    uint32_t mask;
+    uint32_t cand_off;
+    uint32_t cand_cnt;
+} cpg_hbatch_t;
+
+static inline bool cpg_is_float(double x) { return (double)(float)x == x; }
+
+// The kernels form the children, their intervals and the inflated intervals in float: P +- j hc / 2,
+// j = -5..5, and 1.5 hc. All must be exact.
+static bool cpg_gpu_batch_exact(const cpg_hbatch_t* b) {
+    if (!cpg_is_float(b->hc) || !cpg_is_float(1.5 * b->hc)) return false;
+    for (int k = 0; k < 3; ++k) {
+        for (int j = -5; j <= 5; ++j) if (!cpg_is_float(b->P[k] + 0.5 * j * b->hc)) return false;
+    }
+    return true;
+}
+
+static inline cpg_box_t cpg_child_box(const cpg_hbatch_t* b, int s) {
+    cpg_box_t box = { { b->P[0] + ((s & 1) ? b->hc : -b->hc), b->P[1] + ((s & 2) ? b->hc : -b->hc), b->P[2] + ((s & 4) ? b->hc : -b->hc) }, b->hc };
+    return box;
+}
+
+typedef struct cpg_rootkey_t {
+    int64_t  g[3];
+    uint32_t bit;
+    uint32_t idx;
+} cpg_rootkey_t;
+
+static int cpg_rootkey_cmp(const void* pa, const void* pb) {
+    const cpg_rootkey_t* a = (const cpg_rootkey_t*)pa;
+    const cpg_rootkey_t* b = (const cpg_rootkey_t*)pb;
+    for (int k = 2; k >= 0; --k) {
+        if (a->g[k] != b->g[k]) return a->g[k] < b->g[k] ? -1 : 1;
+    }
+    return a->bit < b->bit ? -1 : (a->bit > b->bit ? 1 : 0);
+}
+
+static inline int64_t cpg_floor_div2(int64_t i) { return i >= 0 ? i / 2 : -((-i + 1) / 2); }
+
+// Sweeps R->cur on the GPU. On return R->cur holds the cubes left to the CPU (escalated ones, or, if
+// the GPU failed part way, everything not yet decided). Returns false if the GPU could not be used.
+static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
+    md_gpu_device_t dev = md_gpu_stream_device(stream);
+    if (!dev || !topo_gto_gpu_ensure(dev)) return false;
+    const md_tick_t t_start = md_tick_now();
+    const cpg_ctx_t* ctx = R->ctx;
+    md_allocator_i* heap = R->heap;
+    const int N = ctx->nao;
+    const int NS = ctx->nshell;
+    int NP = 0;
+    for (int s = 0; s < NS; ++s) {
+        const cpg_shell_t* cs = &ctx->shell[s];
+        NP = MAX(NP, (int)(cs->prim_offset + cs->num_prims));
+        if (cs->l > 4 || (size_t)cs->num_prims * 6 * (18 * (cs->l + 1) + 1) > CPG_GPU_TAB_CAP) {
+            MD_LOG_INFO("md_topo_compute_extremum_graph_gto_gpu: a shell (l = %d, %d primitives) exceeds the GPU kernel's tables, using the CPU", cs->l, (int)cs->num_prims);
+            return false;
+        }
+    }
+
+    // --- tables in float. The basis and the atom positions are float to begin with (exact); the
+    //     tails are rounded up; D and the normalisation are rounded, which the kernels' error model
+    //     accounts for.
+    cpg_gpu_shell_t* sh = (cpg_gpu_shell_t*)md_alloc(heap, sizeof(cpg_gpu_shell_t) * NS);
+    for (int s = 0; s < NS; ++s) {
+        const cpg_shell_t* cs = &ctx->shell[s];
+        for (int k = 0; k < 3; ++k) sh[s].A[k] = (float)cs->A[k];
+        sh[s].r2 = cpg_up_f(cs->radius * cs->radius * (1.0 + 1e-6));
+        sh[s].prim_offset = cs->prim_offset;
+        sh[s].num_prims = cs->num_prims;
+        sh[s].ao_offset = cs->ao_offset;
+        sh[s].l_ncart = (uint32_t)cs->l | ((uint32_t)cs->ncart << 8);
+    }
+    float* fa = (float*)md_alloc(heap, sizeof(float) * MAX(NP, 1));
+    float* fc = (float*)md_alloc(heap, sizeof(float) * MAX(NP, 1));
+    for (int p = 0; p < NP; ++p) { fa[p] = (float)ctx->alpha[p]; fc[p] = (float)ctx->coeff[p]; }
+    float* fn = (float*)md_alloc(heap, sizeof(float) * N);
+    uint32_t* ijk = (uint32_t*)md_alloc(heap, sizeof(uint32_t) * N);
+    for (int i = 0; i < N; ++i) {
+        fn[i] = (float)ctx->ao_nrm[i];
+        ijk[i] = (uint32_t)ctx->ao_ijk[i][0] | ((uint32_t)ctx->ao_ijk[i][1] << 8) | ((uint32_t)ctx->ao_ijk[i][2] << 16);
+    }
+    float* fD = (float*)md_alloc(heap, sizeof(float) * (size_t)N * N);
+    for (size_t i = 0; i < (size_t)N * N; ++i) fD[i] = (float)ctx->D[i];
+    float* fk = (float*)md_alloc(heap, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
+    for (int i = 0; i < CPG_KI; ++i) for (int a = 0; a < CPG_KA; ++a) for (int m = 0; m < CPG_KM; ++m) fk[(i * CPG_KA + a) * CPG_KM + m] = (float)ctx->kappa[i][a][m];
+
+    cpg_gpu_args_t a = {0};
+    a.num_shells = (uint32_t)NS;
+    a.num_ao = (uint32_t)N;
+    a.eps = (float)ctx->eps;            // a threshold, not a rigorous quantity
+    a.h_min = (float)R->h_min;
+    a.tail_rho = cpg_up_f(ctx->tail_rho);
+    a.tail_g = cpg_up_f(ctx->tail_g);
+    a.tail_H = cpg_up_f(ctx->tail_H);
+
+    bool ok = cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
+           && cpg_gpu_upload(stream, &a.alpha, fa, sizeof(float) * NP)
+           && cpg_gpu_upload(stream, &a.coeff, fc, sizeof(float) * NP)
+           && cpg_gpu_upload(stream, &a.ao_nrm, fn, sizeof(float) * N)
+           && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N)
+           && cpg_gpu_upload(stream, &a.D, fD, sizeof(float) * (size_t)N * N)
+           && cpg_gpu_upload(stream, &a.kappa, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
+    md_free(heap, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
+    md_free(heap, fD, sizeof(float) * (size_t)N * N);
+    md_free(heap, ijk, sizeof(uint32_t) * N);
+    md_free(heap, fn, sizeof(float) * N);
+    md_free(heap, fc, sizeof(float) * MAX(NP, 1));
+    md_free(heap, fa, sizeof(float) * MAX(NP, 1));
+    md_free(heap, sh, sizeof(cpg_gpu_shell_t) * NS);
+    if (!ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: GPU allocation failed: %s", md_gpu_last_error());
+
+    md_array(cpg_box_t)       esc = 0;        // cubes for the CPU, in level and cube order
+    md_array(cpg_hbatch_t)    cur = 0;        // this level's batches
+    md_array(cpg_hbatch_t)    nxt = 0;        // the next level's
+    md_array(uint32_t)        pool_prev = 0;  // local shells per batch, previous level
+    md_array(uint32_t)        pool_cur = 0;   // and this level
+    md_array(uint32_t)        lsh_off = 0;    // per batch of this level: its local shells in pool_cur,
+    md_array(uint32_t)        lsh_cnt = 0;
+    md_array(uint32_t)        lnao = 0;       // and its local AO count (UINT32_MAX: the CPU takes it)
+    md_array(cpg_gpu_batch_t) hb = 0;
+    md_array(uint32_t)        hrow = 0;
+    md_array(uint32_t)        htile = 0;   // pairs (batch, first row)
+    md_array(uint32_t)        cb = 0;      // the chunk's batches (indices into cur)
+
+    // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups
+    {
+        const size_t nr = md_array_size(R->cur);
+        cpg_rootkey_t* keys = (cpg_rootkey_t*)md_alloc(heap, sizeof(cpg_rootkey_t) * MAX(nr, 1));
+        size_t nk = 0;
+        for (size_t i = 0; i < nr; ++i) {
+            const cpg_box_t* b = &R->cur[i];
+            cpg_rootkey_t key = { {0, 0, 0}, 0, (uint32_t)i };
+            bool fits = true;
+            for (int k = 0; k < 3; ++k) {
+                const int64_t I = (int64_t)floor(b->c[k] / (2.0 * b->h));
+                const int64_t G = cpg_floor_div2(I);
+                const uint32_t bit = (uint32_t)(I - 2 * G);
+                const double P = ((double)G + 0.5) * 4.0 * b->h;
+                fits &= (P + (bit ? b->h : -b->h)) == b->c[k];
+                key.g[k] = G;
+                key.bit |= bit << k;
+            }
+            if (fits) keys[nk++] = key;
+            else md_array_push(esc, *b, heap);
+        }
+        if (nk > 1) qsort(keys, nk, sizeof(cpg_rootkey_t), cpg_rootkey_cmp);
+        for (size_t i = 0; i < nk; ) {
+            const cpg_box_t* b0 = &R->cur[keys[i].idx];
+            cpg_hbatch_t hbt = { { 0, 0, 0 }, b0->h, 0, 0, (uint32_t)NS };
+            for (int k = 0; k < 3; ++k) hbt.P[k] = ((double)keys[i].g[k] + 0.5) * 4.0 * b0->h;
+            size_t j = i;
+            while (j < nk && keys[j].g[0] == keys[i].g[0] && keys[j].g[1] == keys[i].g[1] && keys[j].g[2] == keys[i].g[2] && R->cur[keys[j].idx].h == b0->h) {
+                hbt.mask |= 1u << keys[j].bit;
+                j++;
+            }
+            md_array_push(cur, hbt, heap);
+            i = j;
+        }
+        md_free(heap, keys, sizeof(cpg_rootkey_t) * MAX(nr, 1));
+        md_array_shrink(R->cur, 0);
+        for (int s = 0; s < NS; ++s) md_array_push(pool_prev, (uint32_t)s, heap);
+    }
+
+    // --- device scratch, grown on demand
+    md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0;
+    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_hout = 0;
+    md_gpu_mem_t h_out = {0};
+    const size_t row_cap = CPG_GPU_SCRATCH_BUDGET / ((CPG_GPU_PHI_W + CPG_GPU_DV_W) * sizeof(float));
+    size_t chunk = 16;                    // batches per chunk, adapted to CPG_GPU_DISPATCH_MS
+    // Invariant at every exit of the loop below: cur[done..] and nxt are exactly the batches not yet
+    // decided, which the CPU then takes over.
+    size_t done = 0;
+
+    while (ok && md_array_size(cur) > 0) {
+        if (cpg_run_cancelled(R)) break;
+        const size_t nb = md_array_size(cur);
+
+        // --- local shells of every batch, from its candidates; batches the kernels cannot form exactly go to the CPU
+        md_array_shrink(pool_cur, 0);
+        md_array_resize(lsh_off, nb, heap);
+        md_array_resize(lsh_cnt, nb, heap);
+        md_array_resize(lnao, nb, heap);
+        for (size_t b = 0; b < nb; ++b) {
+            const cpg_hbatch_t* bt = &cur[b];
+            lsh_off[b] = (uint32_t)md_array_size(pool_cur);
+            lsh_cnt[b] = 0;
+            if (!cpg_gpu_batch_exact(bt)) {
+                lnao[b] = UINT32_MAX;
+                continue;
+            }
+            const double hs = 2.5 * bt->hc;
+            uint32_t n = 0;
+            for (uint32_t c = 0; c < bt->cand_cnt; ++c) {
+                const uint32_t s = pool_prev[bt->cand_off + c];
+                const cpg_shell_t* cs = &ctx->shell[s];
+                double d2 = 0.0;
+                for (int k = 0; k < 3; ++k) {
+                    const double t = fabs(cs->A[k] - bt->P[k]) - hs;
+                    if (t > 0.0) d2 += t * t;
+                }
+                // a lower bound of the distance, conservatively: any shell that may reach is kept
+                if (d2 * (1.0 - 1e-12) <= cs->radius * cs->radius * (1.0 + 1e-6)) {
+                    md_array_push(pool_cur, s, heap);
+                    n += (uint32_t)cs->ncart;
+                }
+            }
+            lsh_cnt[b] = (uint32_t)md_array_size(pool_cur) - lsh_off[b];
+            lnao[b] = n;
+        }
+        R->info.num_levels++;
+        const size_t npool = md_array_size(pool_cur);
+        if (!cpg_gpu_reserve(stream, &d_pool, &c_pool, npool, sizeof(uint32_t)) ||
+            (npool > 0 && !md_gpu_upload(stream, d_pool, pool_cur, npool * sizeof(uint32_t)))) { ok = false; break; }
+
+        while (ok && done < nb) {
+            if (cpg_run_cancelled(R)) break;
+            // --- the chunk: up to 'chunk' GPU batches, within the row and tile budgets
+            md_array_shrink(hb, 0);
+            md_array_shrink(hrow, 0);
+            md_array_shrink(htile, 0);
+            md_array_shrink(cb, 0);
+            size_t b = done, rows = 0, tiles = 0;
+            for (; b < nb && md_array_size(cb) < chunk && md_array_size(cb) < CPG_GPU_MAX_BATCHES; ++b) {
+                if (lnao[b] == UINT32_MAX) continue;
+                const uint32_t n = lnao[b];
+                const size_t nt = (n + CPG_GPU_ROW_TILE - 1) / CPG_GPU_ROW_TILE;
+                if (md_array_size(cb) > 0 && (rows + n > row_cap || tiles + nt > CPG_GPU_MAX_TILES)) break;
+                const cpg_hbatch_t* bt = &cur[b];
+                cpg_gpu_batch_t g = { { (float)bt->P[0], (float)bt->P[1], (float)bt->P[2], (float)bt->hc },
+                                      { bt->mask, n, (uint32_t)rows, lsh_off[b] }, { lsh_cnt[b], 0, 0, 0 } };
+                const uint32_t ci = (uint32_t)md_array_size(cb);
+                md_array_push(hb, g, heap);
+                md_array_push(cb, (uint32_t)b, heap);
+                for (uint32_t s = 0; s < lsh_cnt[b]; ++s) {
+                    const cpg_shell_t* cs = &ctx->shell[pool_cur[lsh_off[b] + s]];
+                    for (int c = 0; c < cs->ncart; ++c) md_array_push(hrow, cs->ao_offset + (uint32_t)c, heap);
+                }
+                for (uint32_t r0 = 0; r0 < n; r0 += CPG_GPU_ROW_TILE) {
+                    md_array_push(htile, ci, heap);
+                    md_array_push(htile, r0, heap);
+                }
+                rows += n;
+                tiles += nt;
+            }
+            const size_t count = md_array_size(cb);
+            const md_tick_t t0 = md_tick_now();
+            if (count > 0) {
+                ok = cpg_gpu_reserve(stream, &d_batches, &c_batches, count, sizeof(cpg_gpu_batch_t))
+                  && cpg_gpu_reserve(stream, &d_row_ao, &c_row_ao, MAX(rows, 1), sizeof(uint32_t))
+                  && cpg_gpu_reserve(stream, &d_tiles, &c_tiles, MAX(tiles, 1), 2 * sizeof(uint32_t))
+                  && cpg_gpu_reserve(stream, &d_phi, &c_phi, MAX(rows, 1), CPG_GPU_PHI_W * sizeof(float))
+                  && cpg_gpu_reserve(stream, &d_dv, &c_dv, MAX(rows, 1), CPG_GPU_DV_W * sizeof(float))
+                  && cpg_gpu_reserve(stream, &d_ep, &c_ep, 8 * count, CPG_GPU_EP_W * sizeof(float))
+                  && cpg_gpu_reserve(stream, &d_out, &c_out, 8 * count, sizeof(uint32_t));
+                if (ok && (!h_out.gpu || c_hout < 8 * count)) {
+                    if (h_out.gpu) md_gpu_free(stream, h_out.gpu);
+                    c_hout = MAX(8 * count, c_hout + c_hout / 2);
+                    h_out = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, c_hout * sizeof(uint32_t));
+                    ok = h_out.gpu && h_out.cpu;
+                }
+                ok = ok && md_gpu_upload(stream, d_batches, hb, count * sizeof(cpg_gpu_batch_t))
+                        && (rows == 0 || md_gpu_upload(stream, d_row_ao, hrow, rows * sizeof(uint32_t)))
+                        && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)));
+                if (!ok) break;
+                a.num_batches = (uint32_t)count;
+                a.num_row_tiles = (uint32_t)tiles;
+                a.batches = d_batches;
+                a.batch_shells = d_pool;
+                a.row_ao = d_row_ao;
+                a.row_tiles = d_tiles;
+                a.phi = d_phi;
+                a.dv = d_dv;
+                a.ep = d_ep;
+                a.outcome = d_out;
+                ok = md_gpu_launch(stream, k_topo_gto[CPG_K_AO], md_gpu_grid((uint32_t)count, 1, 1), &a, sizeof(a))
+                  && (tiles == 0 || md_gpu_launch(stream, k_topo_gto[CPG_K_GEMM], md_gpu_grid((uint32_t)tiles, 1, 1), &a, sizeof(a)))
+                  && md_gpu_launch(stream, k_topo_gto[CPG_K_EPI], md_gpu_grid((uint32_t)count, 1, 1), &a, sizeof(a))
+                  && md_gpu_launch(stream, k_topo_gto[CPG_K_DECIDE], md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1), &a, sizeof(a))
+                  && md_gpu_copy(stream, h_out.gpu, d_out, 8 * count * sizeof(uint32_t));
+                if (!ok) break;
+                md_gpu_stream_sync(stream);
+                R->info.num_gpu_dispatches += 4;
+            }
+            const double ms = md_tick_to_milliseconds(md_tick_now() - t0);
+            R->info.ms_sweep_gpu_wait += ms;
+            // the chunk size adapts to a target time per chunk (TDR on Windows trips at 2 s, and a long
+            // chunk starves rendering on the same GPU); results do not depend on it
+            if (count == chunk) {
+                const double f = ms > 0.0 ? CPG_GPU_DISPATCH_MS / ms : 2.0;
+                chunk = (size_t)CLAMP((double)chunk * CLAMP(f, 0.25, 2.0), 1.0, (double)CPG_GPU_MAX_BATCHES);
+            }
+
+            // --- outcomes in batch and child order: polish roots, split, hand the undecidable to the CPU
+            const uint32_t* out = (const uint32_t*)h_out.cpu;
+            size_t gi = 0;
+            for (size_t bi = done; bi < b; ++bi) {
+                const cpg_hbatch_t* bt = &cur[bi];
+                if (lnao[bi] == UINT32_MAX) {
+                    for (int s = 0; s < 8; ++s) if (bt->mask & (1u << s)) md_array_push(esc, cpg_child_box(bt, s), heap);
+                    continue;
+                }
+                ASSERT(gi < count && cb[gi] == bi);
+                for (int s = 0; s < 8; ++s) {
+                    if (!(bt->mask & (1u << s))) continue;
+                    const cpg_box_t box = cpg_child_box(bt, s);
+                    const uint32_t o = out[gi * 8 + s];
+                    R->info.num_box_evals++;
+                    R->info.num_gpu_box_evals++;
+                    if (o & CPG_GPU_OUT_INFLATED) R->info.num_inflated_evals++;
+                    switch (CPG_GPU_OUT_KIND(o)) {
+                    case 0: break;
+                    case 1: {
+                        cpg_cp_t cp;
+                        const md_tick_t tp = md_tick_now();
+                        const int r = cpg_polish_root(ctx, &R->workers[0].sc, &box, &cp);
+                        R->info.ms_sweep_polish += md_tick_to_milliseconds(md_tick_now() - tp);
+                        if (r == 1) cpg_run_accept(R, &cp);
+                        else if (r < 0) md_array_push(esc, box, heap);
+                        break;
+                    }
+                    case 2: {
+                        cpg_hbatch_t child = { { box.c[0], box.c[1], box.c[2] }, 0.5 * box.h, 0xFFu, lsh_off[bi], lsh_cnt[bi] };
+                        md_array_push(nxt, child, heap);
+                        break;
+                    }
+                    default:
+                        md_array_push(esc, box, heap);
+                        break;
+                    }
+                }
+                gi++;
+            }
+            done = b;
+        }
+        if (!ok || R->info.cancelled || done < nb) break;
+        cpg_hbatch_t* tb = cur; cur = nxt; nxt = tb;
+        uint32_t* tp = pool_prev; pool_prev = pool_cur; pool_cur = tp;
+        md_array_shrink(nxt, 0);
+        done = 0;
+    }
+    if (!ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: GPU sweep failed, the CPU takes over: %s", md_gpu_last_error());
+
+    // whatever is left (escalated, or not reached if the GPU failed or was cancelled) goes to the CPU loop
+    R->info.num_escalated_boxes = (uint32_t)md_array_size(esc);
+    for (size_t bi = done; bi < md_array_size(cur); ++bi) {
+        for (int s = 0; s < 8; ++s) if (cur[bi].mask & (1u << s)) md_array_push(esc, cpg_child_box(&cur[bi], s), heap);
+    }
+    for (size_t bi = 0; bi < md_array_size(nxt); ++bi) {
+        for (int s = 0; s < 8; ++s) if (nxt[bi].mask & (1u << s)) md_array_push(esc, cpg_child_box(&nxt[bi], s), heap);
+    }
+    md_array_free(R->cur, heap);
+    R->cur = esc;
+
+    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, h_out.gpu,
+                             a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.kappa };
+    for (size_t i = 0; i < sizeof(bufs) / sizeof(bufs[0]); ++i) if (bufs[i]) md_gpu_free(stream, bufs[i]);
+    md_array_free(cur, heap);
+    md_array_free(nxt, heap);
+    md_array_free(pool_prev, heap);
+    md_array_free(pool_cur, heap);
+    md_array_free(lsh_off, heap);
+    md_array_free(lsh_cnt, heap);
+    md_array_free(lnao, heap);
+    md_array_free(hb, heap);
+    md_array_free(hrow, heap);
+    md_array_free(htile, heap);
+    md_array_free(cb, heap);
+    R->info.ms_sweep += md_tick_to_milliseconds(md_tick_now() - t_start);
+    return ok;
+}
+
+bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc, md_gpu_stream_t stream) {
+    ASSERT(out_graph);
+    ASSERT(desc);
+    if (!cpg_check_desc(desc, "md_topo_compute_extremum_graph_gto_gpu")) return false;
+    cpg_run_t R;
+    const md_tick_t t_setup = md_tick_now();
+    cpg_run_init(&R, desc);
+    R.info.ms_setup = md_tick_to_milliseconds(md_tick_now() - t_setup);
+    if (R.ok) {
+        R.info.used_gpu = stream && cpg_run_sweep_gpu(&R, stream);
+        cpg_run_sweep_cpu(&R);          // escalated cubes, or everything if the GPU was unavailable
+    }
+    const bool res = cpg_run_finish(&R, out_graph, out_info);
+    cpg_run_free(&R);
+    return res;
+}
+#endif
+
+#undef M1
+#undef M2
+#undef M3
+#undef M4

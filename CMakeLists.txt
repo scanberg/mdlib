@@ -237,6 +237,8 @@ set(TOPO_SLANG_FILES
   src/shaders/topo/critical_points.slang
   src/shaders/topo/vertex_edge_extraction.slang
 )
+# The GTO critical point search: four entry points sharing one argument struct.
+set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
@@ -478,7 +480,7 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES}
+set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang)
@@ -523,6 +525,12 @@ if (MD_ENABLE_GPU)
       ENTRIES   main
     )
   endforeach()
+  compile_gpu_shaders(topo_gto_cube_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
+    ENTRIES   ao_main gemm_main epi_main decide_main
+  )
   # md_topo.c includes one aggregate header rather than six.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/topo_gpu_shaders.inl
                  ${GEN_DIR}/topo_gpu_shaders.inl COPYONLY)
