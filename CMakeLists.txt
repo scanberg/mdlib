@@ -529,7 +529,7 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
-    ENTRIES   ao_main gemm_main epi_main decide_main
+    ENTRIES   ao_main gemm_main epi_main decide_main gemm_v1 gemm_v2 gemm_v3 gemm_v4 gemm_v5 gemm_v6
   )
   # md_topo.c includes one aggregate header rather than six.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/topo_gpu_shaders.inl

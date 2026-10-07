@@ -574,6 +574,86 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
     }
 }
 
+// ---- GEMM variants, for tuning per GPU (md_topo_gto_desc_t.gpu_gemm_variant; md_topo_gto_bench
+// --gemm-sweep). The same products, each column summed over j in increasing order in chunks of GKC,
+// so the results equal gemm_main's; only the tiling differs:
+//   GT_  rows per group tile        TY_  thread rows (32 x TY_ threads), GT_ / TY_ rows per thread
+//   GCJ_ column groups of 32 per thread         NCB_ groups per row tile (columns split 288 / NCB_)
+// Columns of group c >= 5 (of 9) multiply |D|. The host's tile list (rows per tile) and grid
+// (tiles * NCB_) follow the variant (cpg_gemm_variants in md_topo.c).
+// Bit j set: column group c * GCJ_ + j of block c is one of the |D| groups (>= 5).
+#define GEMM_ABS_MASK(c, GCJ_) (0xFFFFu << uint(max(5 - (c) * (GCJ_), 0)))
+// One GKC step of products over the groupshared tiles, |D| for the columns in MASK.
+#define GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, MASK)                                                     \
+        {                                                                                               \
+        [ForceUnroll] for (int kk = 0; kk < GKC; ++kk) {                                                \
+            float a[(GT_) / (TY_)], aa[(GT_) / (TY_)], bb[GCJ_];                                        \
+            [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) { a[i] = NAME##_A[kk][ty * uint((GT_) / (TY_)) + uint(i)]; aa[i] = abs(a[i]); } \
+            [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) bb[j] = NAME##_B[kk][tx + 32u * uint(j)];    \
+            [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) \
+                acc[i][j] += ((((MASK) >> uint(j)) & 1u) != 0u ? aa[i] : a[i]) * bb[j];                 \
+        }                                                                                               \
+        }
+#define GEMM_VARIANT(NAME, GT_, TY_, GCJ_, NCB_)                                                         \
+groupshared float NAME##_A[GKC][GT_];                                                                   \
+groupshared float NAME##_B[GKC][(GCJ_) * 32];                                                           \
+[shader("compute")]                                                                                     \
+[numthreads(32, TY_, 1)]                                                                                \
+void NAME(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {            \
+    const uint rt = gid.x / uint(NCB_), cb = gid.x % uint(NCB_);                                        \
+    if (rt >= args.num_row_tiles) return;                                                               \
+    const uint2 rtd = args.row_tiles[rt];                                                               \
+    const Batch bt = args.batches[min(rtd.x, args.num_batches - 1u)];                                   \
+    const uint n = bt.info.y, base = bt.info.z, r0 = rtd.y;                                             \
+    const uint tx = gtid.x, ty = gtid.y;                                                                \
+    const uint N = args.num_ao;                                                                         \
+    const uint c0 = cb * uint((GCJ_) * 32);                                                             \
+    float acc[(GT_) / (TY_)][GCJ_];                                                                     \
+    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) acc[i][j] = 0.0; \
+    for (uint k0 = 0; k0 < n; k0 += GKC) {                                                              \
+        [ForceUnroll] for (int q = 0; q < ((GT_) * GKC) / (32 * (TY_)); ++q) {                          \
+            const uint e = tid + uint(32 * (TY_) * q);                                                  \
+            const uint r = e / GKC, kk = e % GKC;                                                       \
+            float d = 0.0;                                                                              \
+            if (r0 + r < n && k0 + kk < n) {                                                            \
+                const uint ai = min(args.row_ao[base + r0 + r], N - 1u);                                \
+                const uint aj = min(args.row_ao[base + k0 + kk], N - 1u);                               \
+                d = args.D[ai * N + aj];                                                                \
+            }                                                                                           \
+            NAME##_A[kk][r] = d;                                                                        \
+        }                                                                                               \
+        [ForceUnroll] for (int q = 0; q < (GKC * (GCJ_) * 32) / (32 * (TY_)); ++q) {                    \
+            const uint e = tid + uint(32 * (TY_) * q);                                                  \
+            const uint kk = e / uint((GCJ_) * 32), c = e % uint((GCJ_) * 32);                           \
+            float v = 0.0;                                                                              \
+            if (k0 + kk < n && c0 + c < DV_W) v = args.phi[(base + k0 + kk) * PHI_W + c0 + c];          \
+            NAME##_B[kk][c] = v;                                                                        \
+        }                                                                                               \
+        GroupMemoryBarrierWithGroupSync();                                                              \
+        /* a uniform branch per column block, so D or |D| is a compile-time choice per column */       \
+        if (cb == 0u)      GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(0, GCJ_))              \
+        else if (cb == 1u) GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(1, GCJ_))              \
+        else               GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(2, GCJ_))              \
+        GroupMemoryBarrierWithGroupSync();                                                              \
+    }                                                                                                   \
+    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) {                                             \
+        const uint row = r0 + ty * uint((GT_) / (TY_)) + uint(i);                                       \
+        if (row >= n) continue;                                                                         \
+        [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) {                                                \
+            const uint col = c0 + tx + 32u * uint(j);                                                   \
+            if (col < DV_W) args.dv[(base + row) * DV_W + col] = acc[i][j];                             \
+        }                                                                                               \
+    }                                                                                                   \
+}
+
+//            name     GT  TY GCJ NCB      threads  accumulators/thread  groupshared
+GEMM_VARIANT(gemm_v1, 32,  4,  3,  3)   // 128      24                    8 KB
+GEMM_VARIANT(gemm_v2, 64,  8,  3,  3)   // 256      24                   10 KB
+GEMM_VARIANT(gemm_v3, 32,  8,  9,  1)   // 256      36                   20 KB
+GEMM_VARIANT(gemm_v4, 64,  4,  3,  3)   // 128      48                   10 KB
+GEMM_VARIANT(gemm_v5, 16,  4,  9,  1)   // 128      36                   19 KB
+GEMM_VARIANT(gemm_v6, 64,  8,  9,  1)   // 256      72                   22 KB
+
 // ================================================================================== epi_main
 // Per child cube, sums over the batch's local AOs (rows) i:
 //   DOT[a][b] = sum_i V_i[a] (D V)_i[b], a = 0..19, b = 0..9, and its error sum, which depends on a only

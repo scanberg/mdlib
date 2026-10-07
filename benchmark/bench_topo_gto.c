@@ -11,6 +11,9 @@
 //   --threads <n>   CPU worker threads (default 0: every logical core)
 //   --cpu / --gpu   only that path (default: both, GPU when there is a device)
 //   --profile       also a GPU run that waits for every kernel to time it (per-kernel times, GEMM FLOP/s)
+//   --gemm <v>      GPU GEMM tiling (default 0; the variants are listed by --gemm-sweep)
+//   --gemm-sweep    per dataset, every GEMM tiling: median wall time, GEMM kernel time, and whether the
+//                   result is identical to tiling 0's (it should be: the sums run in the same order)
 //   --data <dir>    test_data directory (default: the source tree's)
 //   --verbose       keep mdlib's info and debug log lines (default: errors only)
 //
@@ -239,7 +242,8 @@ static void print_row(const char* mode, const run_t* runs, int nrep, bool gpu) {
 int main(int argc, char** argv) {
     double rho_min = 1.0e-4;
     int reps = 3, threads = 0;
-    bool want_cpu = true, want_gpu = true, profile = false, verbose = false;
+    bool want_cpu = true, want_gpu = true, profile = false, verbose = false, gemm_sweep = false;
+    uint32_t gemm_variant = 0;
     const char* data_dir = MD_BENCHMARK_DATA_DIR;
     const char* names[64];
     int num_names = 0;
@@ -253,9 +257,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--cpu")) { want_cpu = true; want_gpu = false; }
         else if (!strcmp(a, "--gpu")) { want_gpu = true; want_cpu = false; }
         else if (!strcmp(a, "--profile")) profile = true;
+        else if (!strcmp(a, "--gemm") && i + 1 < argc) gemm_variant = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(a, "--gemm-sweep")) gemm_sweep = true;
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
+            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--gemm v] [--gemm-sweep] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
             return 0;
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option %s (see --help)\n", a); return 1; }
@@ -307,6 +313,16 @@ int main(int argc, char** argv) {
            threads > 0 ? "threads as given" : "all used", gpu_name);
     printf("rho_min %.3g | h_min 1e-4 | separatrices traced | %d timed run%s per configuration (GPU after one warm-up), median shown\n",
            rho_min, reps, reps == 1 ? "" : "s");
+#if MD_ENABLE_GPU
+    if (want_gpu) {
+        if (gemm_variant >= md_topo_gto_gpu_gemm_variant_count()) {
+            fprintf(stderr, "--gemm %u: there are %u tilings (0..%u)\n", gemm_variant, md_topo_gto_gpu_gemm_variant_count(),
+                    md_topo_gto_gpu_gemm_variant_count() - 1);
+            return 1;
+        }
+        printf("GEMM tiling %s\n", md_topo_gto_gpu_gemm_variant_name(gemm_variant));
+    }
+#endif
     printf("data %s\n", data_dir);
     printf("formats .molden%s\n\n", HAVE_H5 ? ", .h5 (VeloxChem)" : " only: this mdlib was configured without MD_ENABLE_HDF5, so the .h5 inputs are skipped");
 
@@ -335,6 +351,7 @@ int main(int argc, char** argv) {
             .h_min = 1.0e-4,
             .trace_separatrices = true,
             .num_threads = (uint32_t)threads,
+            .gpu_gemm_variant = gemm_variant,
         };
 
         result_t res = { names[di], -1.0, -1.0 };
@@ -401,6 +418,56 @@ int main(int argc, char** argv) {
                    ao, 100.0 * ao / (k > 0 ? k : 1), gemm, 100.0 * gemm / (k > 0 ? k : 1), gemm > 0 ? gflop / (gemm * 1.0e-3) : 0.0,
                    epi, 100.0 * epi / (k > 0 ? k : 1), dec, 100.0 * dec / (k > 0 ? k : 1), wait - k > 0 ? wait - k : 0.0);
             for (int r = 0; r < reps; ++r) md_topo_extremum_graph_free(&runs[r].graph);
+            desc.profile_gpu_kernels = false;
+        }
+
+        if (gemm_sweep && want_gpu) {
+            // Per tiling: a warm-up (kernel creation, driver compilation), 'reps' normal runs for the wall
+            // time, 'reps' profiled runs for the GEMM kernel time. GFLOP/s are counted at tiling 0's
+            // operation count (the useful work; larger tiles pad more), so they compare across tilings.
+            const uint32_t nv = md_topo_gto_gpu_gemm_variant_count();
+            md_topo_extremum_graph_t ref = {0};
+            uint64_t ref_cubes = 0;
+            double ref_flop = 0.0, ref_total = 0.0, ref_gemm = 0.0;
+            printf("  GEMM tilings: median total ms | GEMM kernel ms, each waited for | vs tiling 0\n");
+            for (uint32_t v = 0; v < nv; ++v) {
+                desc.gpu_gemm_variant = v;
+                desc.profile_gpu_kernels = false;
+                run_t warm;
+                run_once(&warm, &desc, stream);
+                md_topo_extremum_graph_free(&warm.graph);
+                bool ok = true;
+                for (int r = 0; r < reps; ++r) ok &= run_once(&runs[r], &desc, stream);
+                const int nrep = reps;
+                const double total = MED(ms_total);
+                const uint64_t cubes = runs[0].info.num_box_evals;
+                bool same = true;
+                if (v == 0) {
+                    ref = runs[0].graph;
+                    runs[0].graph = (md_topo_extremum_graph_t){0};
+                    ref_cubes = cubes;
+                } else {
+                    same = cubes == ref_cubes && same_bytes(&ref, &runs[0].graph);
+                }
+                for (int r = 0; r < reps; ++r) md_topo_extremum_graph_free(&runs[r].graph);
+
+                desc.profile_gpu_kernels = true;
+                for (int r = 0; r < reps; ++r) ok &= run_once(&runs[r], &desc, stream);
+                const double gemm = MED(info.ms_gpu_gemm);
+                if (v == 0) { ref_flop = runs[0].info.gpu_gemm_flop; ref_total = total; ref_gemm = gemm; }
+                for (int r = 0; r < reps; ++r) md_topo_extremum_graph_free(&runs[r].graph);
+
+                char cmp[96];
+                if (v == 0) snprintf(cmp, sizeof(cmp), "reference");
+                else snprintf(cmp, sizeof(cmp), "total %.2fx, gemm %.2fx, %s", total > 0 ? ref_total / total : 0.0,
+                              gemm > 0 ? ref_gemm / gemm : 0.0, same ? "same result" : "RESULT DIFFERS");
+                printf("    %8.1f ms | gemm %7.1f ms %6.0f GFLOP/s | %-38s | %s%s\n", total, gemm,
+                       gemm > 0 ? ref_flop * 1.0e-9 / (gemm * 1.0e-3) : 0.0, cmp, md_topo_gto_gpu_gemm_variant_name(v),
+                       ok ? "" : " (a run reported failure)");
+                if (!same) printf("        %llu cubes (tiling 0: %llu)\n", (unsigned long long)cubes, (unsigned long long)ref_cubes);
+            }
+            md_topo_extremum_graph_free(&ref);
+            desc.gpu_gemm_variant = gemm_variant;
             desc.profile_gpu_kernels = false;
         }
 #endif

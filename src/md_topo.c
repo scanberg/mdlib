@@ -2723,7 +2723,6 @@ typedef struct cpg_gpu_args_t {
 #define CPG_GPU_DV_W           272             // floats per row of dv: 34 x 8
 #define CPG_GPU_EP_W           260             // floats per cube of ep
 #define CPG_GPU_TAB_CAP        4096            // floats of 1D tables per chunk of shells (ao_main)
-#define CPG_GPU_ROW_TILE       32              // rows per GEMM group (288 columns, 16 AOs per step)
 #define CPG_GPU_DEC_WG         64              // decide_main group size
 
 #define CPG_GPU_SCRATCH_BUDGET (192u << 20)    // bytes of phi + dv per chunk
@@ -2738,12 +2737,57 @@ enum { CPG_K_AO, CPG_K_GEMM, CPG_K_EPI, CPG_K_DECIDE, CPG_K_COUNT };
 static md_gpu_kernel_t k_topo_gto[CPG_K_COUNT] = {0};
 static md_gpu_device_t k_topo_gto_device = NULL;
 
+// GEMM tilings (topo_gto_cube.slang: gemm_main and GEMM_VARIANT). Rows per group tile and column blocks
+// (groups per row tile) shape the host's tile list and grid. Variant 0 is gemm_main.
+typedef struct cpg_gemm_variant_t {
+    uint32_t    rows;
+    uint32_t    col_blocks;
+    const char* name;
+} cpg_gemm_variant_t;
+static const cpg_gemm_variant_t cpg_gemm_variants[] = {
+    { 32, 1, "v0: 32 rows x 288 cols per group, 32x4 threads, 8x9 outputs per thread (default)" },
+    { 32, 3, "v1: 32 rows x 96 cols per group, 32x4 threads, 8x3 outputs per thread" },
+    { 64, 3, "v2: 64 rows x 96 cols per group, 32x8 threads, 8x3 outputs per thread" },
+    { 32, 1, "v3: 32 rows x 288 cols per group, 32x8 threads, 4x9 outputs per thread" },
+    { 64, 3, "v4: 64 rows x 96 cols per group, 32x4 threads, 16x3 outputs per thread" },
+    { 16, 1, "v5: 16 rows x 288 cols per group, 32x4 threads, 4x9 outputs per thread" },
+    { 64, 1, "v6: 64 rows x 288 cols per group, 32x8 threads, 8x9 outputs per thread" },
+};
+#define CPG_GEMM_NV ((uint32_t)(sizeof(cpg_gemm_variants) / sizeof(cpg_gemm_variants[0])))
+static md_gpu_kernel_t k_topo_gemm_var[CPG_GEMM_NV] = {0};   // [0] unused: gemm_main is k_topo_gto[CPG_K_GEMM]
+
+uint32_t md_topo_gto_gpu_gemm_variant_count(void) { return CPG_GEMM_NV; }
+const char* md_topo_gto_gpu_gemm_variant_name(uint32_t v) { return v < CPG_GEMM_NV ? cpg_gemm_variants[v].name : ""; }
+
 static void topo_gto_gpu_release(void) {
     for (int i = 0; i < CPG_K_COUNT; ++i) {
         if (k_topo_gto[i]) md_gpu_kernel_destroy(k_topo_gto[i]);
         k_topo_gto[i] = NULL;
     }
+    for (uint32_t v = 0; v < CPG_GEMM_NV; ++v) {
+        if (k_topo_gemm_var[v]) md_gpu_kernel_destroy(k_topo_gemm_var[v]);
+        k_topo_gemm_var[v] = NULL;
+    }
     k_topo_gto_device = NULL;
+}
+
+// The GEMM kernel of a variant, created on first use (only benchmarks pick one other than 0).
+static md_gpu_kernel_t topo_gto_gemm_kernel(md_gpu_device_t device, uint32_t v) {
+    if (v == 0 || v >= CPG_GEMM_NV) return k_topo_gto[CPG_K_GEMM];
+    if (!k_topo_gemm_var[v]) {
+        md_gpu_kernel_desc_t kd;
+        switch (v) {
+        case 1:  kd = md_shader_topo_gto_cube_gemm_v1_kernel(); break;
+        case 2:  kd = md_shader_topo_gto_cube_gemm_v2_kernel(); break;
+        case 3:  kd = md_shader_topo_gto_cube_gemm_v3_kernel(); break;
+        case 4:  kd = md_shader_topo_gto_cube_gemm_v4_kernel(); break;
+        case 5:  kd = md_shader_topo_gto_cube_gemm_v5_kernel(); break;
+        default: kd = md_shader_topo_gto_cube_gemm_v6_kernel(); break;
+        }
+        k_topo_gemm_var[v] = md_gpu_kernel_create(device, &kd);
+        if (!k_topo_gemm_var[v]) MD_LOG_ERROR("md_topo: failed to create kernel '%s': %s", kd.label, md_gpu_last_error());
+    }
+    return k_topo_gemm_var[v];
 }
 
 // Created by md_topo_gpu_initialize, or on first use. Not synchronised: run one GTO search at a time
@@ -2898,6 +2942,10 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     const cpg_ctx_t* ctx = R->ctx;
     md_allocator_i* heap = R->heap;
     const int N = ctx->nao;
+    uint32_t gv = R->desc->gpu_gemm_variant < CPG_GEMM_NV ? R->desc->gpu_gemm_variant : 0;
+    md_gpu_kernel_t k_gemm = topo_gto_gemm_kernel(dev, gv);
+    if (!k_gemm) { gv = 0; k_gemm = k_topo_gto[CPG_K_GEMM]; }
+    const uint32_t gemm_rows = cpg_gemm_variants[gv].rows, gemm_cb = cpg_gemm_variants[gv].col_blocks;
     const int NS = ctx->nshell;
     int NP = 0;
     for (int s = 0; s < NS; ++s) {
@@ -3048,8 +3096,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 const cpg_hbatch_t* bt = &q[b];
                 if (bt->nao == UINT32_MAX) continue;
                 const uint32_t n = bt->nao;
-                const size_t nt = (n + CPG_GPU_ROW_TILE - 1) / CPG_GPU_ROW_TILE;
-                if (count > 0 && (rows + n > row_cap || tiles + nt > CPG_GPU_MAX_TILES)) break;
+                const size_t nt = (n + gemm_rows - 1) / gemm_rows;
+                if (count > 0 && (rows + n > row_cap || (tiles + nt) * gemm_cb > CPG_GPU_MAX_TILES)) break;
                 cpg_gpu_batch_t g = { { (float)bt->P[0], (float)bt->P[1], (float)bt->P[2], (float)bt->hc },
                                       { bt->mask, n, (uint32_t)rows, (uint32_t)md_array_size(hsh) }, { bt->lsh_cnt, 0, 0, 0 } };
                 md_array_push(hb, g, heap);
@@ -3059,14 +3107,14 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                     md_array_push(hsh, ls[s], heap);
                     for (int c = 0; c < cs->ncart; ++c) md_array_push(hrow, cs->ao_offset + (uint32_t)c, heap);
                 }
-                for (uint32_t r0 = 0; r0 < n; r0 += CPG_GPU_ROW_TILE) {
+                for (uint32_t r0 = 0; r0 < n; r0 += gemm_rows) {
                     md_array_push(htile, (uint32_t)count, heap);
                     md_array_push(htile, r0, heap);
                 }
                 rows += n;
                 tiles += nt;
                 count++;
-                R->info.gpu_gemm_flop += (double)nt * 2.0 * CPG_GPU_ROW_TILE * 288.0 * (double)((n + 15) / 16 * 16);
+                R->info.gpu_gemm_flop += (double)nt * 2.0 * gemm_rows * 288.0 * (double)((n + 15) / 16 * 16);
             }
             cpg_gpu_chunk_t ch = { qh, b, count, count == chunk, true, slot, md_gpu_sync_none(), 0, 0.0 };
             for (int i = 0; i < nfl; ++i) ch.gpu_idle &= fl[i].count == 0;
@@ -3106,7 +3154,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 a.outcome = d_out;
                 const md_gpu_grid_t grids[CPG_K_COUNT] = {
                     md_gpu_grid((uint32_t)count, 1, 1),
-                    md_gpu_grid((uint32_t)tiles, 1, 1),
+                    md_gpu_grid((uint32_t)(tiles * gemm_cb), 1, 1),
                     md_gpu_grid((uint32_t)((count + 1) / 2), 1, 1),      // two batches per group
                     md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1),
                 };
@@ -3115,7 +3163,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                     if (grids[k].x == 0) continue;
                     if (profile) md_gpu_stream_sync(stream);      // uploads and the previous kernel are not this kernel's time
                     const md_tick_t tk = md_tick_now();
-                    ok = md_gpu_launch(stream, k_topo_gto[k], grids[k], &a, sizeof(a));
+                    ok = md_gpu_launch(stream, k == CPG_K_GEMM ? k_gemm : k_topo_gto[k], grids[k], &a, sizeof(a));
                     if (profile && ok) {
                         md_gpu_stream_sync(stream);
                         *kernel_ms[k] += md_tick_to_milliseconds(md_tick_now() - tk);

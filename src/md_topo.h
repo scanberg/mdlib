@@ -135,6 +135,7 @@ typedef struct md_topo_gto_desc_t {
     uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
+    uint32_t      gpu_gemm_variant;      // GPU sweep only: GEMM tiling, for tuning (0 = default; see md_topo_gto_gpu_gemm_variant_name)
 } md_topo_gto_desc_t;
 
 typedef struct md_topo_gto_cluster_t {
@@ -193,10 +194,15 @@ bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_
 // the tests use carries the rounding error of its own computation), so the guarantee is unchanged. The
 // CPU keeps what needs double precision or is inherently few: Newton polish of the certified roots, the
 // cubes fp32 cannot decide (with their subtree, see num_escalated_boxes), separatrices and clusters.
-// Blocking: synchronises 'stream' once per octree level. If the GPU cannot be used the whole sweep runs
-// on the CPU (info.used_gpu false). Same inputs, outputs and determinism as above.
+// Blocking: works through 'stream' in chunks, two in flight. If the GPU cannot be used the whole sweep
+// runs on the CPU (info.used_gpu false). Same inputs, outputs and determinism as above.
 bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info,
                                             const md_topo_gto_desc_t* desc, md_gpu_stream_t stream);
+
+// The GEMM tilings desc.gpu_gemm_variant can select. Each sums the same products in the same order, so
+// results are identical (md_topo_gto_bench --gemm-sweep checks); only speed differs, per GPU.
+uint32_t    md_topo_gto_gpu_gemm_variant_count(void);
+const char* md_topo_gto_gpu_gemm_variant_name(uint32_t variant);
 #endif
 
 // Free an extremum graph structure
