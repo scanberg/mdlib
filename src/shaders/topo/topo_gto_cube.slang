@@ -864,6 +864,8 @@ float quad_eval(float c0, float b[3], float M[3][3], float d[3], out float err) 
 // point, rho the residual (b + M x~)_F and l_min > 0 a lower bound of M_FF's smallest eigenvalue,
 //   q >= q(x~) - |rho|^2 / (2 l_min)   on the whole face.
 // Returns false when a face's definiteness cannot be decided in float (the test then just fails).
+// Division is only assumed accurate to 2.5 ulp (<= 5u relative, the Vulkan guarantee for OpFDiv), and
+// no square root is taken: |rho|_2 <= s = |rho|_1 serves in both the distance bound and the value bound.
 bool quad_box_min_lb(float c0, float b[3], float M[3][3], float h, out float lb) {
     lb = 3.0e38;
     for (int pat = 0; pat < 27; ++pat) {
@@ -897,7 +899,7 @@ bool quad_box_min_lb(float c0, float b[3], float M[3][3], float h, out float lb)
                 const float edet = 3.0 * UF * (abs(m[0][0] * m[1][1]) + abs(m[0][1] * m[1][0])) + 1e-36;
                 if (det < -edet) continue;
                 if (!(det > edet)) return false;
-                lmin = (det - edet) / ((m[0][0] + m[1][1]) * (1.0 + 2.0 * UF)) * (1.0 - 4.0 * UF);
+                lmin = (det - edet) / ((m[0][0] + m[1][1]) * (1.0 + 4.0 * UF)) * (1.0 - 16.0 * UF);
                 x[0] = (r[0] * m[1][1] - m[0][1] * r[1]) / det;
                 x[1] = (m[0][0] * r[1] - r[0] * m[1][0]) / det;
             } else {
@@ -916,33 +918,31 @@ bool quad_box_min_lb(float c0, float b[3], float M[3][3], float h, out float lb)
                 if (det < -edet) continue;
                 if (!(det > edet)) return false;
                 const float tr = (m[0][0] + m[1][1] + m[2][2]) * (1.0 + 2.0 * UF);
-                lmin = (det - edet) / (0.25 * tr * tr * (1.0 + 2.0 * UF)) * (1.0 - 4.0 * UF);   // l1 l2 l3 = det, l2 l3 <= (tr/2)^2
+                lmin = (det - edet) / (0.25 * tr * tr * (1.0 + 4.0 * UF)) * (1.0 - 16.0 * UF);  // l1 l2 l3 = det, l2 l3 <= (tr/2)^2
                 const float r0 = r[0], r1 = r[1], r2 = r[2];
                 x[0] = (r0 * c00 - m[0][1] * (r1 * m[2][2] - m[1][2] * r2) + m[0][2] * (r1 * m[2][1] - m[1][1] * r2)) / det;
                 x[1] = (m[0][0] * (r1 * m[2][2] - m[1][2] * r2) - r0 * c01 + m[0][2] * (m[1][0] * r2 - r1 * m[2][0])) / det;
                 x[2] = (m[0][0] * (m[1][1] * r2 - r1 * m[2][1]) - m[0][1] * (m[1][0] * r2 - r1 * m[2][0]) + r0 * c02) / det;
             }
-            if (!(lmin > 0.0)) return false;
+            if (!(lmin >= 1e-30)) return false;                     // also keeps the divisions by lmin normal
             [ForceUnroll] for (int i = 0; i < 3; ++i) if (i < nf) d[F[i]] = x[i];
-            // residual of the restricted stationarity at d, with its rounding
-            float rr = 0.0;
+            // residual of the restricted stationarity at d, with its rounding: s >= |rho|_1 >= |rho|_2
+            float sr = 0.0;
             [ForceUnroll] for (int i = 0; i < 3; ++i) {
                 if (i < nf) {
                     const int j = F[i];
                     float g = b[j], ga = abs(b[j]);
                     [ForceUnroll] for (int l = 0; l < 3; ++l) { g += M[j][l] * d[l]; ga += abs(M[j][l] * d[l]); }
-                    const float gu = abs(g) + 5.0 * UF * ga + 1e-36;
-                    rr += gu * gu;
+                    sr += abs(g) + 5.0 * UF * ga + 1e-36;
                 }
             }
-            rr *= 1.0 + 4.0 * UF;
-            const float dist = sqrt(rr) * (1.0 + 2.0 * UF) / lmin * (1.0 + 2.0 * UF);    // >= |x~ - x*|
+            const float dist = sr / lmin * (1.0 + 16.0 * UF);                  // >= |x~ - x*|
             bool outside = false;
             [ForceUnroll] for (int i = 0; i < 3; ++i) if (i < nf && abs(x[i]) - dist > h) outside = true;
             if (outside) continue;
             float eq;
             const float q = quad_eval(c0, b, M, d, eq);
-            const float v = q - eq - 0.5 * rr / lmin * (1.0 + 4.0 * UF);
+            const float v = q - eq - 0.5 * sr * dist;                            // >= |rho|^2 / (2 l_min)
             lb = min(lb, v - 4.0 * UF * abs(v) - 1e-36);
         } else {
             float eq;
