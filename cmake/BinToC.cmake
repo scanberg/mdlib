@@ -18,20 +18,10 @@ endif()
 file(READ "${INPUT}" HEX_CONTENT HEX)
 string(TOLOWER "${HEX_CONTENT}" HEX_CONTENT)
 
-# Build array data by iterating 2 hex chars (one uint8_t) at a time
-string(LENGTH "${HEX_CONTENT}" HEX_LEN)
-math(EXPR NUM_BYTES "${HEX_LEN} / 2")
-set(ARRAY_DATA "")
-set(POS 0)
-foreach(I RANGE 1 ${NUM_BYTES})
-  string(SUBSTRING "${HEX_CONTENT}" ${POS} 2 BYTE)
-  if (ARRAY_DATA)
-    string(APPEND ARRAY_DATA ",0x${BYTE}")
-  else()
-    set(ARRAY_DATA "0x${BYTE}")
-  endif()
-  math(EXPR POS "${POS} + 2")
-endforeach()
+# "0xab,0xcd,..." in one regex pass (appending byte by byte is quadratic in CMake: minutes for a large
+# SPIR-V module), without the trailing comma.
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," ARRAY_DATA "${HEX_CONTENT}")
+string(REGEX REPLACE ",$" "" ARRAY_DATA "${ARRAY_DATA}")
 
 file(WRITE "${OUTPUT}"
 "#include <stdint.h>\n#include <stddef.h>\n\n"
