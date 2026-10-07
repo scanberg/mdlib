@@ -764,6 +764,145 @@ bool excl_dir(Eval ev, float h, float3 w) {
     return lhs_lo > rhs;
 }
 
+// q(d) = c0 + b.d + 1/2 d^T M d evaluated in float, and a bound of its rounding error.
+float quad_eval(float c0, float b[3], float M[3][3], float d[3], out float err) {
+    float q = c0, qa = abs(c0);
+    [ForceUnroll] for (int j = 0; j < 3; ++j) {
+        q += b[j] * d[j]; qa += abs(b[j] * d[j]);
+        [ForceUnroll] for (int l = 0; l < 3; ++l) { const float t = 0.5 * M[j][l] * d[j] * d[l]; q += t; qa += abs(t); }
+    }
+    err = 20.0 * UF * qa + 1e-36;
+    return q;
+}
+
+// A lower bound of min over |d_k| <= h of q(d) = c0 + b.d + 1/2 d^T M d (M symmetric), in exact
+// arithmetic on the given float coefficients. The minimum lies at a stationary point of q restricted
+// to the relative interior of one of the box's 27 faces (the box, 6 faces, 12 edges, 8 corners): a
+// corner gives its value; a face whose restricted matrix M_FF is not positive definite has its
+// minimum on its own boundary (indefinite, or flat directions) and is skipped, as is a positive
+// definite one whose minimiser is certainly outside it; otherwise, with x~ the computed stationary
+// point, rho the residual (b + M x~)_F and l_min > 0 a lower bound of M_FF's smallest eigenvalue,
+//   q >= q(x~) - |rho|^2 / (2 l_min)   on the whole face.
+// Returns false when a face's definiteness cannot be decided in float (the test then just fails).
+bool quad_box_min_lb(float c0, float b[3], float M[3][3], float h, out float lb) {
+    lb = 3.0e38;
+    for (int pat = 0; pat < 27; ++pat) {
+        const int st[3] = { pat % 3, (pat / 3) % 3, pat / 9 };    // 0 free, 1 -h, 2 +h
+        float d[3];
+        int F[3] = { 0, 0, 0 }, nf = 0;
+        [ForceUnroll] for (int k = 0; k < 3; ++k) {
+            d[k] = st[k] == 1 ? -h : (st[k] == 2 ? h : 0.0);
+            if (st[k] == 0) { F[nf] = k; nf++; }
+        }
+        if (nf > 0) {
+            float m[3][3], r[3];
+            [ForceUnroll] for (int i = 0; i < 3; ++i) {
+                r[i] = 0.0;
+                [ForceUnroll] for (int j = 0; j < 3; ++j) m[i][j] = 0.0;
+                if (i < nf) {
+                    r[i] = -b[F[i]];
+                    [ForceUnroll] for (int k = 0; k < 3; ++k) if (st[k] != 0) r[i] -= M[F[i]][k] * d[k];
+                    [ForceUnroll] for (int j = 0; j < 3; ++j) if (j < nf) m[i][j] = M[F[i]][F[j]];
+                }
+            }
+            // definiteness of M_FF by its leading minors, each with a bound of its rounding
+            float lmin = 0.0, x[3] = { 0.0, 0.0, 0.0 };
+            if (nf == 1) {
+                if (!(m[0][0] > 0.0)) continue;                     // exact: not positive definite
+                lmin = m[0][0];
+                x[0] = r[0] / m[0][0];
+            } else if (nf == 2) {
+                if (!(m[0][0] > 0.0)) continue;
+                const float det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+                const float edet = 3.0 * UF * (abs(m[0][0] * m[1][1]) + abs(m[0][1] * m[1][0])) + 1e-36;
+                if (det < -edet) continue;
+                if (!(det > edet)) return false;
+                lmin = (det - edet) / ((m[0][0] + m[1][1]) * (1.0 + 2.0 * UF)) * (1.0 - 4.0 * UF);
+                x[0] = (r[0] * m[1][1] - m[0][1] * r[1]) / det;
+                x[1] = (m[0][0] * r[1] - r[0] * m[1][0]) / det;
+            } else {
+                if (!(m[0][0] > 0.0)) continue;
+                const float m2 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+                const float em2 = 3.0 * UF * (abs(m[0][0] * m[1][1]) + abs(m[0][1] * m[1][0])) + 1e-36;
+                if (m2 < -em2) continue;
+                if (!(m2 > em2)) return false;
+                const float c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+                const float c01 = m[1][0] * m[2][2] - m[1][2] * m[2][0];
+                const float c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+                const float det = m[0][0] * c00 - m[0][1] * c01 + m[0][2] * c02;
+                const float edet = 8.0 * UF * (abs(m[0][0]) * (abs(m[1][1] * m[2][2]) + abs(m[1][2] * m[2][1]))
+                                             + abs(m[0][1]) * (abs(m[1][0] * m[2][2]) + abs(m[1][2] * m[2][0]))
+                                             + abs(m[0][2]) * (abs(m[1][0] * m[2][1]) + abs(m[1][1] * m[2][0]))) + 1e-36;
+                if (det < -edet) continue;
+                if (!(det > edet)) return false;
+                const float tr = (m[0][0] + m[1][1] + m[2][2]) * (1.0 + 2.0 * UF);
+                lmin = (det - edet) / (0.25 * tr * tr * (1.0 + 2.0 * UF)) * (1.0 - 4.0 * UF);   // l1 l2 l3 = det, l2 l3 <= (tr/2)^2
+                const float r0 = r[0], r1 = r[1], r2 = r[2];
+                x[0] = (r0 * c00 - m[0][1] * (r1 * m[2][2] - m[1][2] * r2) + m[0][2] * (r1 * m[2][1] - m[1][1] * r2)) / det;
+                x[1] = (m[0][0] * (r1 * m[2][2] - m[1][2] * r2) - r0 * c01 + m[0][2] * (m[1][0] * r2 - r1 * m[2][0])) / det;
+                x[2] = (m[0][0] * (m[1][1] * r2 - r1 * m[2][1]) - m[0][1] * (m[1][0] * r2 - r1 * m[2][0]) + r0 * c02) / det;
+            }
+            if (!(lmin > 0.0)) return false;
+            [ForceUnroll] for (int i = 0; i < 3; ++i) if (i < nf) d[F[i]] = x[i];
+            // residual of the restricted stationarity at d, with its rounding
+            float rr = 0.0;
+            [ForceUnroll] for (int i = 0; i < 3; ++i) {
+                if (i < nf) {
+                    const int j = F[i];
+                    float g = b[j], ga = abs(b[j]);
+                    [ForceUnroll] for (int l = 0; l < 3; ++l) { g += M[j][l] * d[l]; ga += abs(M[j][l] * d[l]); }
+                    const float gu = abs(g) + 5.0 * UF * ga + 1e-36;
+                    rr += gu * gu;
+                }
+            }
+            rr *= 1.0 + 4.0 * UF;
+            const float dist = sqrt(rr) * (1.0 + 2.0 * UF) / lmin * (1.0 + 2.0 * UF);    // >= |x~ - x*|
+            bool outside = false;
+            [ForceUnroll] for (int i = 0; i < 3; ++i) if (i < nf && abs(x[i]) - dist > h) outside = true;
+            if (outside) continue;
+            float eq;
+            const float q = quad_eval(c0, b, M, d, eq);
+            const float v = q - eq - 0.5 * rr / lmin * (1.0 + 4.0 * UF);
+            lb = min(lb, v - 4.0 * UF * abs(v) - 1e-36);
+        } else {
+            float eq;
+            const float q = quad_eval(c0, b, M, d, eq);
+            const float v = q - eq;
+            lb = min(lb, v - 2.0 * UF * abs(v) - 1e-36);
+        }
+    }
+    return true;
+}
+
+// Exclusion along w with the quadratic part of the model minimised over the box rather than bounded
+// term by term (excl_dir). w . grad rho(c + d) >= q(d) - Etot on the cube, q built from the computed
+// g, A, T; Etot covers their errors, the rounding of q's coefficients and the remainder r_up.
+bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, float3 w) {
+    float c0 = 0.0, ec0 = 0.0, b[3], M[3][3], Etot = 0.0;
+    [ForceUnroll] for (int k = 0; k < 3; ++k) { c0 += w[k] * ev.g[k]; ec0 += abs(w[k]) * ev.e_g[k] + 3.0 * UF * abs(w[k] * ev.g[k]); }
+    Etot = ec0;
+    [ForceUnroll] for (int j = 0; j < 3; ++j) {
+        float bj = 0.0, eb = 0.0;
+        [ForceUnroll] for (int k = 0; k < 3; ++k) { bj += w[k] * ev.A[k][j]; eb += abs(w[k]) * ev.e_A[k][j] + 3.0 * UF * abs(w[k] * ev.A[k][j]); }
+        b[j] = bj;
+        Etot += eb * h;
+        [ForceUnroll] for (int l = 0; l < 3; ++l) {
+            float mj = 0.0, em = 0.0;
+            [ForceUnroll] for (int k = 0; k < 3; ++k) { mj += w[k] * T[k][j][l]; em += abs(w[k]) * eT[k][j][l] + 3.0 * UF * abs(w[k] * T[k][j][l]); }
+            M[j][l] = mj;
+            Etot += 0.5 * em * h * h;
+        }
+        Etot += abs(w[j]) * ev.r_up[j];
+    }
+    Etot *= 1.0 + 16.0 * UF;
+    float lo, lo_neg;
+    if (quad_box_min_lb(c0, b, M, h, lo) && lo > Etot) return true;
+    // the maximum: the minimum of -q
+    float nb[3], nM[3][3];
+    [ForceUnroll] for (int j = 0; j < 3; ++j) { nb[j] = -b[j]; [ForceUnroll] for (int l = 0; l < 3; ++l) nM[j][l] = -M[j][l]; }
+    return quad_box_min_lb(-c0, nb, nM, h, lo_neg) && lo_neg > Etot;
+}
+
 struct Lin {
     bool ok;
     float Y[3][3], R[3][3], eR[3][3];
@@ -885,7 +1024,7 @@ bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], fl
     const float gn = sqrt(C.g[0] * C.g[0] + C.g[1] * C.g[1] + C.g[2] * C.g[2]);
     if (gn > 0.0) { dirs[nd] = float3(C.g[0], C.g[1], C.g[2]) / gn; nd++; }
     [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t])) return true;
+    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t]) || excl_quad(C, T, eT, hc, dirs[t])) return true;
     const Lin lin = linear(C, val, vec);
     return lin.ok && newton_dist(C, lin, hc);
 }
@@ -977,7 +1116,7 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         const float gn = sqrt(ev.g[0] * ev.g[0] + ev.g[1] * ev.g[1] + ev.g[2] * ev.g[2]);
         if (gn > 0.0) { dirs[nd] = float3(ev.g[0], ev.g[1], ev.g[2]) / gn; nd++; }
         [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-        for (int t = 0; t < nd && !decided; ++t) if (excl_dir(ev, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
+        for (int t = 0; t < nd && !decided; ++t) if (excl_dir(ev, h, dirs[t]) || excl_quad(ev, T, eT, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     }
     const Lin lin = linear(ev, val, vec);
     if (!decided && lin.ok) {
