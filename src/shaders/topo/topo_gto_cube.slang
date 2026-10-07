@@ -895,8 +895,19 @@ bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, float3 w) 
         Etot += abs(w[j]) * ev.r_up[j];
     }
     Etot *= 1.0 + 16.0 * UF;
+    // The corners are candidates of both extremes: if one is within Etot of zero on a side, that
+    // side cannot succeed, and the 27-face search is skipped (it is for most cubes and directions).
+    bool try_min = true, try_max = true;
+    [ForceUnroll] for (int c = 0; c < 8; ++c) {
+        float d[3] = { (c & 1) != 0 ? h : -h, (c & 2) != 0 ? h : -h, (c & 4) != 0 ? h : -h };
+        float eq;
+        const float q = quad_eval(c0, b, M, d, eq);
+        if (q <= Etot) try_min = false;
+        if (q >= -Etot) try_max = false;
+    }
     float lo, lo_neg;
-    if (quad_box_min_lb(c0, b, M, h, lo) && lo > Etot) return true;
+    if (try_min && quad_box_min_lb(c0, b, M, h, lo) && lo > Etot) return true;
+    if (!try_max) return false;
     // the maximum: the minimum of -q
     float nb[3], nM[3][3];
     [ForceUnroll] for (int j = 0; j < 3; ++j) { nb[j] = -b[j]; [ForceUnroll] for (int l = 0; l < 3; ++l) nM[j][l] = -M[j][l]; }
@@ -1024,9 +1035,11 @@ bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], fl
     const float gn = sqrt(C.g[0] * C.g[0] + C.g[1] * C.g[1] + C.g[2] * C.g[2]);
     if (gn > 0.0) { dirs[nd] = float3(C.g[0], C.g[1], C.g[2]) / gn; nd++; }
     [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t]) || excl_quad(C, T, eT, hc, dirs[t])) return true;
+    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t])) return true;
     const Lin lin = linear(C, val, vec);
-    return lin.ok && newton_dist(C, lin, hc);
+    if (lin.ok && newton_dist(C, lin, hc)) return true;
+    for (int t = 0; t < nd; ++t) if (excl_quad(C, T, eT, hc, dirs[t])) return true;     // the costly one last
+    return false;
 }
 
 #define DEC_WG 64
@@ -1109,14 +1122,16 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     if (ev.rho_up < args.eps) { outc = OUT_DISCARD; why = WHY_RHO; decided = true; }
     float val[3], vec[3][3];
     eigen3(ev.A, val, vec);
-    if (!decided) {
-        float3 dirs[7];
-        dirs[0] = float3(1, 0, 0); dirs[1] = float3(0, 1, 0); dirs[2] = float3(0, 0, 1);
-        int nd = 3;
+    float3 dirs[7];
+    dirs[0] = float3(1, 0, 0); dirs[1] = float3(0, 1, 0); dirs[2] = float3(0, 0, 1);
+    int nd = 3;
+    {
         const float gn = sqrt(ev.g[0] * ev.g[0] + ev.g[1] * ev.g[1] + ev.g[2] * ev.g[2]);
         if (gn > 0.0) { dirs[nd] = float3(ev.g[0], ev.g[1], ev.g[2]) / gn; nd++; }
         [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-        for (int t = 0; t < nd && !decided; ++t) if (excl_dir(ev, h, dirs[t]) || excl_quad(ev, T, eT, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
+    }
+    if (!decided) {
+        for (int t = 0; t < nd && !decided; ++t) if (excl_dir(ev, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     }
     const Lin lin = linear(ev, val, vec);
     if (!decided && lin.ok) {
@@ -1132,6 +1147,10 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                 else if (ki == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
             }
         }
+    }
+    if (!decided) {
+        // the exact quadratic test, the costliest, once the cheap ones have failed
+        for (int t = 0; t < nd && !decided; ++t) if (excl_quad(ev, T, eT, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     }
     if (!decided) {
         // fp32 noise: the gradient lies inside its own rounding bound and a Krawczyk proof would need a
