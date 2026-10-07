@@ -84,6 +84,8 @@ set(CORE_FILES
   src/core/md_handle.h
   src/core/md_hash.h
   src/core/md_intrinsics.h
+  src/core/md_json.c
+  src/core/md_json.h
   src/core/md_linear_allocator.c
   src/core/md_linear_allocator.h
   src/core/md_log.c
@@ -91,6 +93,7 @@ set(CORE_FILES
   src/core/md_lru_cache.inl
   src/core/md_os.c
   src/core/md_os.h
+  src/core/md_parse.c
   src/core/md_parse.h
   src/core/md_platform.h
   src/core/md_ring_allocator.c
@@ -593,6 +596,14 @@ target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+
+# md_parse.c rounds decimal numbers exactly, which takes IEEE arithmetic: the fast math the rest of the
+# library is built with licenses dividing by multiplying with a reciprocal and dropping the sign of zero.
+if (COMPILER_TYPE STREQUAL "GCC")
+  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
+elseif (COMPILER_TYPE STREQUAL "MSVC")
+  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "/fp:precise")
+endif()
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})
 

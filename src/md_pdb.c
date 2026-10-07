@@ -40,8 +40,17 @@ static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    str_t str = str_trim(str_substr(line, beg - 1, end-beg + 1));
-    return (float)parse_float_wide(str.ptr, str.len);
+    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
+}
+
+// A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
+// occupancy and temperature factor): read without a scan when it is laid out that way, and parsed like
+// any other column when it is not
+static inline float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
+    if (line.len < end) return 0.0f;
+    const str_t field = str_substr(line, beg - 1, end-beg + 1);
+    float value;
+    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)parse_float(field);
 }
 
 static inline char extract_char(str_t line, size_t idx) {
@@ -73,11 +82,11 @@ static inline md_pdb_coordinate_t extract_coord(str_t line) {
         .chain_id = chain_id,
         .res_seq = parse_id(line, 23, 26),
         .icode = extract_char(line, 27),
-        .x = extract_float(line, 31, 38),
-        .y = extract_float(line, 39, 46),
-        .z = extract_float(line, 47, 54),
-        .occupancy = extract_float(line, 55, 60),
-        .temp_factor = extract_float(line, 61, 66),
+        .x = extract_fixed_float(line, 31, 38, 3),
+        .y = extract_fixed_float(line, 39, 46, 3),
+        .z = extract_fixed_float(line, 47, 54, 3),
+        .occupancy = extract_fixed_float(line, 55, 60, 2),
+        .temp_factor = extract_fixed_float(line, 61, 66, 2),
         .element = {0},
         .charge = {0},
     };

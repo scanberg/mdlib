@@ -52,6 +52,8 @@ set (SRC_FILES
     test_xtc.c
     test_xyz.c
     test_pot.c
+    test_parse.c
+    test_json.c
     test_vector_graphics.c
     test_flow.c
     test_gisaxs.c
