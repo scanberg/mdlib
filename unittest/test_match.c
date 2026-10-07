@@ -12,7 +12,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_os.h>
 
 #include <string.h>
@@ -542,13 +542,14 @@ UTEST(match, hydrogens) {
     ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("[CH3]"), alloc, NULL));
     desc.mode = MD_MATCH_MODE_UNIQUE;
     ASSERT_TRUE(md_match_find(&res, &desc, ala, alloc));
-    md_bitfield_t bf[2] = {md_bitfield_create(alloc), md_bitfield_create(alloc)};
-    EXPECT_EQ(2, (int)md_match_result_select(bf, 2, &res, ala, MD_MATCH_SELECT_HYDROGENS));
-    EXPECT_EQ(4, (int)md_bitfield_popcount(&bf[0]));
-    EXPECT_EQ(1, (int)md_match_result_select(bf, 1, &res, ala, MD_MATCH_SELECT_NONE));
-    EXPECT_EQ(1, (int)md_bitfield_popcount(&bf[0]));
-    md_bitfield_free(&bf[0]);
-    md_bitfield_free(&bf[1]);
+    md_bitset_t bf[2] = {0};
+    EXPECT_EQ(2, (int)md_match_result_select(bf, 2, &res, ala, MD_MATCH_SELECT_HYDROGENS, alloc));
+    EXPECT_EQ(4, (int)md_bitset_count(bf[0]));
+    EXPECT_EQ(1, (int)md_match_result_select(bf, 1, &res, ala, MD_MATCH_SELECT_NONE, alloc));
+    EXPECT_EQ(1, (int)md_bitset_count(bf[0]));
+    // The union of all of them
+    const md_bitset_t all = md_match_result_select_all(&res, ala, MD_MATCH_SELECT_NONE, alloc);
+    EXPECT_EQ((int)res.count, (int)md_bitset_count(all));
     md_match_result_free(&res);
     md_match_query_free(&q);
 }
@@ -753,17 +754,15 @@ UTEST(match, mask) {
     md_match_desc_t desc = {.query = &q};
     EXPECT_EQ(num_rings, count_matches(&desc, sys, NULL, NULL));
 
-    md_bitfield_t mask = md_bitfield_create(alloc);
-    md_bitfield_set_range(&mask, chain0.beg, chain0.end);
+    const md_bitset_t mask = md_bitset_range(chain0.beg, chain0.end);
     desc.mask = &mask;
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     EXPECT_EQ(num_rings_chain0, res.count);
     for (size_t i = 0; i < res.count * res.width; ++i) {
-        EXPECT_TRUE(md_bitfield_test_bit(&mask, res.atom_idx[i]));
+        EXPECT_TRUE(md_bitset_test(mask, res.atom_idx[i]));
     }
     md_match_result_free(&res);
-    md_bitfield_free(&mask);
     md_match_query_free(&q);
 }
 
@@ -849,15 +848,13 @@ UTEST(match, reference_identity) {
             for (int label = 0; label < 2; ++label) {
                 md_match_query_t q = {0};
                 ASSERT_TRUE(md_match_query_init_atoms(&q, ref, md_array_size(ref), (md_match_label_t)label, sys, alloc));
-                md_bitfield_t mask = md_bitfield_create(alloc);
-                md_bitfield_set_range(&mask, range.beg, range.end);
+                const md_bitset_t mask = md_bitset_range(range.beg, range.end);
                 md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_UNIQUE, .flags = MD_MATCH_FLAG_WHOLE, .mask = &mask};
                 md_match_result_t res = {0};
                 ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
                 EXPECT_EQ(1, (int)res.count);
                 for (size_t j = 0; j < res.width && res.count; ++j) EXPECT_EQ(ref[j], res.atom_idx[j]);
                 md_match_result_free(&res);
-                md_bitfield_free(&mask);
                 md_match_query_free(&q);
             }
             md_array_free(ref, alloc);
@@ -1176,12 +1173,10 @@ UTEST(match, identify) {
 
     // Within a part of the system
     const md_system_t* sys = get_sys(SYS_CENTERED);
-    md_bitfield_t mask = md_bitfield_create(alloc);
     const md_urange_t chain0 = md_system_instance_atom_range(sys, 0);
-    md_bitfield_set_range(&mask, chain0.beg, chain0.end);
+    const md_bitset_t mask = md_bitset_range(chain0.beg, chain0.end);
     desc.mask = &mask;
     check_identify(utest_result, SYS_CENTERED, &desc, true);
-    md_bitfield_free(&mask);
 
     md_match_library_destroy(lib);
 }
@@ -1230,7 +1225,7 @@ UTEST(match, identify_order) {
 
 // ### SCRIPT ###
 
-static size_t filter_count(md_array(md_bitfield_t)* arr, const char* expr, sys_id_t id, md_allocator_i* alloc) {
+static size_t filter_count(md_array(md_bitset_t)* arr, const char* expr, sys_id_t id, md_allocator_i* alloc) {
     char err[256] = {0};
     bool is_dynamic = false;
     md_array_shrink(*arr, 0);
@@ -1242,11 +1237,11 @@ static size_t filter_count(md_array(md_bitfield_t)* arr, const char* expr, sys_i
 }
 
 static bool filter_fails_with(const char* expr, const char* expected, sys_id_t id) {
-    md_bitfield_t bf = md_bitfield_create(md_get_heap_allocator());
+    md_bitset_t bf = {0};
     char err[256] = {0};
     bool is_dynamic = false;
-    const bool ok = md_filter(&bf, str_from_cstr(expr), get_sys(id), get_state(id), NULL, &is_dynamic, err, sizeof(err));
-    md_bitfield_free(&bf);
+    const bool ok = md_filter(&bf, str_from_cstr(expr), get_sys(id), get_state(id), NULL, &is_dynamic, err, sizeof(err), md_get_heap_allocator());
+    md_bitset_free(&bf, md_get_heap_allocator());
     if (ok) {
         printf("'%s' was expected to fail\n", expr);
         return false;
@@ -1260,12 +1255,12 @@ static bool filter_fails_with(const char* expr, const char* expected, sys_id_t i
 
 UTEST(match, script_smiles) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    md_array(md_bitfield_t) arr = 0;
+    md_array(md_bitset_t) arr = 0;
 
     // One selection per methyl, with its hydrogens
     ASSERT_EQ(15, (int)filter_count(&arr, "smiles('[CH3]')", SYS_ALA, alloc));
     for (size_t i = 0; i < md_array_size(arr); ++i) {
-        EXPECT_EQ(4, (int)md_bitfield_popcount(&arr[i]));
+        EXPECT_EQ(4, (int)md_bitset_count(arr[i]));
     }
 
     // Whole residues: the C terminal one has a second oxygen
@@ -1277,12 +1272,12 @@ UTEST(match, script_smiles) {
     EXPECT_EQ(3, (int)filter_count(&arr, "smiles('[CH3]') in residue(1:3)", SYS_ALA, alloc));
 
     // As one selection: the 15 carbonyl carbons and 16 oxygens, without hydrogens of their own
-    md_bitfield_t bf = md_bitfield_create(alloc);
+    md_bitset_t bf = {0};
     char err[256];
     bool is_dynamic = false;
-    EXPECT_TRUE(md_filter(&bf, STR_LIT("smiles('C=O')"), get_sys(SYS_ALA), get_state(SYS_ALA), NULL, &is_dynamic, err, sizeof(err)));
+    EXPECT_TRUE(md_filter(&bf, STR_LIT("smiles('C=O')"), get_sys(SYS_ALA), get_state(SYS_ALA), NULL, &is_dynamic, err, sizeof(err), alloc));
     EXPECT_FALSE(is_dynamic);
-    EXPECT_EQ(31, (int)md_bitfield_popcount(&bf));
+    EXPECT_EQ(31, (int)md_bitset_count(bf));
 
     EXPECT_TRUE(filter_fails_with("smiles('C1CC')", "Ring bond 1 is never closed", SYS_ALA));
     EXPECT_TRUE(filter_fails_with("smiles('CC', level='molecule')", "Unknown level", SYS_ALA));
@@ -1294,13 +1289,13 @@ UTEST(match, script_smiles) {
 
 UTEST(match, script_match) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    md_array(md_bitfield_t) arr = 0;
+    md_array(md_bitset_t) arr = 0;
 
     // The fifth residue with its hydrogens, see match.reference_hydrogens: each match has its every atom. Twice in the
     // C terminal residue, whose carboxylate shares its charge between the oxygens: either is the neutral carbonyl.
     ASSERT_EQ(15, (int)filter_count(&arr, "match(residue(5), level='residue')", SYS_ALA, alloc));
     for (size_t i = 0; i < md_array_size(arr); ++i) {
-        EXPECT_EQ(10, (int)md_bitfield_popcount(&arr[i]));
+        EXPECT_EQ(10, (int)md_bitset_count(arr[i]));
     }
     // Its heavy atoms are found in every residue, and twice in the C terminal one, either oxygen as the carbonyl
     EXPECT_EQ(15, (int)filter_count(&arr, "match(residue(5) and not element('H'), level='residue', mode='one_per_unit')", SYS_ALA, alloc));

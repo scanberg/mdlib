@@ -15,7 +15,6 @@ set (SRC_FILES
     test_atomic.c
     test_bitop.c
     test_grid.c
-    test_bitfield.c
     test_bitset.c
     test_bonds.c
     test_chem.c

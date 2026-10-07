@@ -6,7 +6,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_coord_stream.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
@@ -19,14 +19,14 @@
 // ### PARTICLE PAIRS ###
 
 // The particles of a set, ascending
-static bool extract_atoms(int32_t** out_atoms, size_t* out_count, const md_bitfield_t* set, uint32_t num_atoms, md_allocator_i* alloc) {
-    if (md_bitfield_end_bit(set) > num_atoms) {
+static bool extract_atoms(int32_t** out_atoms, size_t* out_count, const md_bitset_t* set, uint32_t num_atoms, md_allocator_i* alloc) {
+    if (set->end > num_atoms) {
         MD_LOG_ERROR("Contact set refers to particles beyond the system (%u particles)", num_atoms);
         return false;
     }
-    const size_t count = md_bitfield_popcount(set);
+    const size_t count = md_bitset_count(*set);
     int32_t* atoms = md_alloc(alloc, sizeof(int32_t) * MAX(count, 1));
-    const size_t written = count ? md_bitfield_iter_extract_indices(atoms, count, md_bitfield_iter_create(set)) : 0;
+    const size_t written = count ? md_bitset_iter_extract_indices(atoms, count, md_bitset_iter(*set)) : 0;
     ASSERT(written == count);
     (void)written;
     *out_atoms = atoms;
@@ -262,25 +262,28 @@ bool md_contact_pairs_for_each(const md_contact_pairs_t* p, const md_system_stat
 // ### GROUP CONTACTS ###
 
 // Particle to group mapping in compressed rows over all particles: the groups of particle k are grp[off[k]] .. grp[off[k+1]-1].
-// Also the union of the groups, as a bitfield allocated from temp_alloc.
-static bool build_membership(uint32_t** out_off, uint32_t** out_grp, md_bitfield_t* out_union,
-                             const md_bitfield_t* groups, size_t num_groups, uint32_t num_atoms, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+// Also the union of the groups, as a bitset allocated from temp_alloc.
+static bool build_membership(uint32_t** out_off, uint32_t** out_grp, md_bitset_t* out_union,
+                             const md_bitset_t* groups, size_t num_groups, uint32_t num_atoms, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     uint32_t* off = md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
     MEMSET(off, 0, sizeof(uint32_t) * (num_atoms + 1));
-    *out_union = md_bitfield_create(temp_alloc);
+    md_bitmask_t uni = md_bitmask_create(0, num_atoms, temp_alloc);
 
     for (size_t g = 0; g < num_groups; ++g) {
-        if (md_bitfield_end_bit(&groups[g]) > num_atoms) {
+        if (groups[g].end > num_atoms) {
             MD_LOG_ERROR("Contact group %zu refers to particles beyond the system (%u particles)", g, num_atoms);
             md_free(alloc, off, sizeof(uint32_t) * (num_atoms + 1));
+            md_bitmask_free(&uni);
             return false;
         }
-        md_bitfield_or_inplace(out_union, &groups[g]);
-        md_bitfield_iter_t it = md_bitfield_iter_create(&groups[g]);
-        while (md_bitfield_iter_next(&it)) {
-            off[md_bitfield_iter_idx(&it) + 1] += 1;
+        md_bitmask_or(&uni, groups[g]);
+        md_bitset_iter_t it = md_bitset_iter(groups[g]);
+        while (md_bitset_iter_next(&it)) {
+            off[it.idx + 1] += 1;
         }
     }
+    *out_union = md_bitmask_extract(&uni, temp_alloc);
+    md_bitmask_free(&uni);
     for (uint32_t k = 0; k < num_atoms; ++k) {
         off[k + 1] += off[k];
     }
@@ -292,9 +295,9 @@ static bool build_membership(uint32_t** out_off, uint32_t** out_grp, md_bitfield
     uint32_t* cursor = md_alloc(temp_alloc, sizeof(uint32_t) * MAX(num_atoms, 1));
     if (num_atoms) MEMCPY(cursor, off, sizeof(uint32_t) * num_atoms);
     for (size_t g = 0; g < num_groups; ++g) {
-        md_bitfield_iter_t it = md_bitfield_iter_create(&groups[g]);
-        while (md_bitfield_iter_next(&it)) {
-            grp[cursor[md_bitfield_iter_idx(&it)]++] = (uint32_t)g;
+        md_bitset_iter_t it = md_bitset_iter(groups[g]);
+        while (md_bitset_iter_next(&it)) {
+            grp[cursor[it.idx]++] = (uint32_t)g;
         }
     }
 
@@ -383,8 +386,8 @@ bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc,
         MEMCPY(q->parent, desc->group_parent, sizeof(uint32_t) * q->num_a);
     }
 
-    md_bitfield_t set_a = {0};
-    md_bitfield_t set_b = {0};
+    md_bitset_t set_a = {0};
+    md_bitset_t set_b = {0};
     if (!build_membership(&q->a_off, &q->a_grp, &set_a, desc->group_a, desc->num_a, N, alloc, temp_alloc)) goto done;
     if (!self && !build_membership(&q->b_off, &q->b_grp, &set_b, desc->group_b, desc->num_b, N, alloc, temp_alloc)) goto done;
 
@@ -622,7 +625,7 @@ static size_t sort_unique_u64(uint64_t* keys, size_t count) {
     return n;
 }
 
-bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj, const md_bitfield_t* units, size_t num_units, const md_system_t* sys, md_allocator_i* alloc) {
+bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj, const md_bitset_t* units, size_t num_units, const md_system_t* sys, md_allocator_i* alloc) {
     if (!out_off || !out_adj || (num_units && !units) || !sys || !alloc || num_units > UINT32_MAX - 1) {
         MD_LOG_ERROR("Contact unit adjacency: invalid arguments");
         return false;
@@ -635,9 +638,9 @@ bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj
     uint32_t* unit_of = md_alloc(temp_alloc, sizeof(uint32_t) * MAX(N, 1));
     for (size_t k = 0; k < N; ++k) unit_of[k] = UINT32_MAX;
     for (size_t u = 0; u < num_units; ++u) {
-        md_bitfield_iter_t it = md_bitfield_iter_create(&units[u]);
-        while (md_bitfield_iter_next(&it)) {
-            const uint64_t k = md_bitfield_iter_idx(&it);
+        md_bitset_iter_t it = md_bitset_iter(units[u]);
+        while (md_bitset_iter_next(&it)) {
+            const uint64_t k = it.idx;
             if (k < N && unit_of[k] == UINT32_MAX) unit_of[k] = (uint32_t)u;
         }
     }

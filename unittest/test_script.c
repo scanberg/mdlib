@@ -8,7 +8,7 @@
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
@@ -158,28 +158,37 @@ UTEST_F_TEARDOWN(script) {
     md_vm_arena_destroy(utest_fixture->arena);
 }
 
-static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_system_t* mol) {
-    ASSERT(bitfield);
+// The union of what expr evaluates to, allocated with alloc
+static bool eval_selection(md_bitset_t* out, str_t expr, md_system_t* mol, md_allocator_i* alloc) {
+    ASSERT(out);
     ASSERT(mol);
 
-    md_temp_scope_t temp = md_temp_begin_avoid(bitfield->alloc);
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     bool success = false;
+    *out = md_bitset_empty_set();
 
     data_t data = {0};
     if (eval_expression(&data, expr, mol, temp_arena)) {
         if (data.type.base_type == TYPE_BITFIELD) {
-            md_bitfield_t* res = (md_bitfield_t*)data.ptr;
+            md_bitset_t* res = (md_bitset_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
+            md_bitmask_t b = md_bitmask_create(0, (uint32_t)mol->atom.count, temp_arena);
             for (int64_t i = 0; i < len; ++i) {
-                md_bitfield_or_inplace(bitfield, &res[i]);
+                md_bitmask_or(&b, res[i]);
             }
+            *out = md_bitmask_extract(&b, alloc);
             success = true;
         }
     }
     md_temp_end(temp);
     return success;
+}
+
+// The first 64 members of a set as bits
+static uint64_t bitset_bits64(md_bitset_t s) {
+    return md_bitset_word(s, 0);
 }
 
 static uint64_t make_bits(const char* bit_str) {    
@@ -208,26 +217,26 @@ static bool compare_selection(const char* exprA, const char* exprB) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
     bool result = false;
-    md_bitfield_t a = {0};
-    md_bitfield_t b = {0};
-    md_bitfield_init(&a, temp_arena);
-    md_bitfield_init(&b, temp_arena);
+    md_bitset_t a = {0};
+    md_bitset_t b = {0};
 
-    if (!eval_selection(&a, str_from_cstr(exprA), &test_mol)) {
+    if (!eval_selection(&a, str_from_cstr(exprA), &test_mol, temp_arena)) {
         printf("Failed evaluation of expression: '%s'\n", exprA);
         goto done;
     }
-    if (!eval_selection(&b, str_from_cstr(exprB), &test_mol)) {
+    if (!eval_selection(&b, str_from_cstr(exprB), &test_mol, temp_arena)) {
         printf("Failed evaluation of expression: '%s'\n", exprB);
         goto done;
     }
 
-    bool cmp_res = bit_cmp((uint64_t*)a.bits, (uint64_t*)b.bits, 0, ATOM_COUNT);
+    uint64_t a_bits = bitset_bits64(a);
+    uint64_t b_bits = bitset_bits64(b);
+    bool cmp_res = bit_cmp(&a_bits, &b_bits, 0, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got (A):\n");
-        print_bits((uint64_t*)a.bits, ATOM_COUNT);
+        print_bits(&a_bits, ATOM_COUNT);
         printf("\nExpected (B)\n");
-        print_bits((uint64_t*)b.bits, ATOM_COUNT);
+        print_bits(&b_bits, ATOM_COUNT);
         printf("\n");
         goto done;
     }
@@ -1078,19 +1087,19 @@ UTEST(script, dim_op) {
 static bool test_selection(const char* expr, const char* ref_bit_str) {
     bool result = false;
     uint64_t ref = make_bits(ref_bit_str);
-    md_bitfield_t bf = {0};
+    md_bitset_t bf = {0};
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp);
-    md_bitfield_init(&bf, arena);
 
-    if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
+    if (!eval_selection(&bf, str_from_cstr(expr), &test_mol, arena)) {
         printf("Failed evaluation of expression: '%s'\n", expr);
         goto done;
     }
-    bool cmp_res = bit_cmp((uint64_t*)bf.bits, &ref, 0, ATOM_COUNT);
+    uint64_t bits = bitset_bits64(bf);
+    bool cmp_res = bit_cmp(&bits, &ref, 0, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got:\n");
-        print_bits((uint64_t*)bf.bits, ATOM_COUNT);
+        print_bits(&bits, ATOM_COUNT);
         printf("\nExpected\n");
         print_bits(&ref, ATOM_COUNT);
         printf("\n");
@@ -1190,8 +1199,8 @@ UTEST_F(script, selection_big) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->amy;
 
-    md_bitfield_t bf = md_bitfield_create(alloc);
-    EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in chain(:)"), mol));
+    md_bitset_t bf = {0};
+    EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in chain(:)"), mol, alloc));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -1228,23 +1237,23 @@ static void within_radius_sweep(int* utest_result, md_system_t* mol, const char*
         char expr[128];
         snprintf(expr, sizeof(expr), "within(%.1f, atom(1))", WITHIN_RADII[i]);
 
-        md_bitfield_t bf = md_bitfield_create(alloc);
-        const bool ok = eval_selection(&bf, str_from_cstr(expr), mol);
+        md_bitset_t bf = {0};
+        const bool ok = eval_selection(&bf, str_from_cstr(expr), mol, alloc);
         EXPECT_TRUE(ok);
         if (!ok) {
             printf("  [%s] r=%.1f: evaluation failed outright\n", tag, WITHIN_RADII[i]);
-            md_bitfield_free(&bf);
+            md_bitset_free(&bf, alloc);
             continue;
         }
 
-        const size_t count = md_bitfield_popcount(&bf);
+        const size_t count = md_bitset_count(bf);
         if (count < prev_count) {
             printf("  [%s] r=%.1f selected %zu atoms, but r=%.1f already selected %zu\n",
                    tag, WITHIN_RADII[i], count, WITHIN_RADII[i - 1], prev_count);
         }
         EXPECT_GE(count, prev_count);
         prev_count = count;
-        md_bitfield_free(&bf);
+        md_bitset_free(&bf, alloc);
     }
 
     // The last radius in the sweep dwarfs every cell in the fixture, so nothing can be outside it.
@@ -1290,20 +1299,20 @@ UTEST_F(script, within_radius_sweep_frange) {
         snprintf(expr_rng, sizeof(expr_rng), "within(0:%.1f, atom(1))", WITHIN_RADII[i]);
         snprintf(expr_flt, sizeof(expr_flt), "within(%.1f, atom(1))",   WITHIN_RADII[i]);
 
-        md_bitfield_t bf_rng = md_bitfield_create(alloc);
-        md_bitfield_t bf_flt = md_bitfield_create(alloc);
-        EXPECT_TRUE(eval_selection(&bf_rng, str_from_cstr(expr_rng), mol));
-        EXPECT_TRUE(eval_selection(&bf_flt, str_from_cstr(expr_flt), mol));
+        md_bitset_t bf_rng = {0};
+        md_bitset_t bf_flt = {0};
+        EXPECT_TRUE(eval_selection(&bf_rng, str_from_cstr(expr_rng), mol, alloc));
+        EXPECT_TRUE(eval_selection(&bf_flt, str_from_cstr(expr_flt), mol, alloc));
 
-        const size_t n_rng = md_bitfield_popcount(&bf_rng);
-        const size_t n_flt = md_bitfield_popcount(&bf_flt);
+        const size_t n_rng = md_bitset_count(bf_rng);
+        const size_t n_flt = md_bitset_count(bf_flt);
         if (n_rng != n_flt) {
             printf("  r=%.1f: within(0:r) selected %zu, within(r) selected %zu\n", WITHIN_RADII[i], n_rng, n_flt);
         }
         EXPECT_EQ(n_flt, n_rng);
 
-        md_bitfield_free(&bf_rng);
-        md_bitfield_free(&bf_flt);
+        md_bitset_free(&bf_rng, alloc);
+        md_bitset_free(&bf_flt, alloc);
     }
     md_arena_allocator_destroy(alloc);
 }
@@ -1875,12 +1884,12 @@ UTEST_F(script, visualize) {
         };
         
         EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, x->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        EXPECT_EQ(mol->atom.count, md_bitfield_popcount(&vis.atom_mask));
+        EXPECT_EQ(mol->atom.count, md_bitset_count(vis.atom_mask));
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, sx->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
         size_t res_atom_count = md_component_atom_count(&mol->component, 4);
-        size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
+        size_t pop_count = md_bitset_count(vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }
 
@@ -1975,14 +1984,13 @@ static bool named_args_same_data(const data_t* x, const data_t* y, md_allocator_
     if (!type_info_equal(x->type, y->type)) return false;
     if (x->type.base_type == TYPE_BITFIELD) {
         const int64_t len = type_info_array_len(x->type);
-        const md_bitfield_t* bx = (const md_bitfield_t*)x->ptr;
-        const md_bitfield_t* by = (const md_bitfield_t*)y->ptr;
+        const md_bitset_t* bx = (const md_bitset_t*)x->ptr;
+        const md_bitset_t* by = (const md_bitset_t*)y->ptr;
         for (int64_t i = 0; i < len; ++i) {
-            const size_t pop = md_bitfield_popcount(&bx[i]);
-            if (pop != md_bitfield_popcount(&by[i])) return false;
-            md_bitfield_t both = md_bitfield_create(alloc);
-            md_bitfield_and(&both, &bx[i], &by[i]);
-            if (md_bitfield_popcount(&both) != pop) return false;
+            const size_t pop = md_bitset_count(bx[i]);
+            if (pop != md_bitset_count(by[i])) return false;
+            md_bitset_t both = md_bitset_and(bx[i], by[i], alloc);
+            if (md_bitset_count(both) != pop) return false;
         }
         return true;
     }
@@ -2854,12 +2862,11 @@ UTEST_F(script, contacts_compile) {
 }
 
 // The same groups for md_contact, built without the script: one per residue
-static md_bitfield_t* contacts_residue_groups(size_t* out_num, const md_system_t* sys, md_allocator_i* alloc) {
-    md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * sys->component.count);
+static md_bitset_t* contacts_residue_groups(size_t* out_num, const md_system_t* sys, md_allocator_i* alloc) {
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->component.count);
     for (size_t c = 0; c < sys->component.count; ++c) {
         const md_urange_t range = md_system_component_atom_range(sys, c);
-        groups[c] = md_bitfield_create(alloc);
-        md_bitfield_set_range(&groups[c], range.beg, range.end);
+        groups[c] = md_bitset_range(range.beg, range.end);
     }
     *out_num = sys->component.count;
     return groups;
@@ -2889,7 +2896,7 @@ UTEST_F(script, contacts_matches_kernel) {
     ASSERT_TRUE(n && g && na && d);
 
     size_t num = 0;
-    md_bitfield_t* res = contacts_residue_groups(&num, sys, alloc);
+    md_bitset_t* res = contacts_residue_groups(&num, sys, alloc);
     ASSERT_EQ(md_attribute_element_count(&d->format), num_frames * num);
 
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 6.0, .exclude_bonds = 3, .min_separation = 2 };
@@ -2939,7 +2946,7 @@ UTEST_F(script, chunks) {
     ASSERT_TRUE(node);
     eval_context_t ctx = { .ir = ir, .sys = sys, .temp_alloc = temp_alloc, .alloc = temp_alloc, .cur_state = &sys->reference, .ref_state = &sys->reference };
     ASSERT_TRUE(evaluate_node_alloc(&data, node, &ctx, temp_alloc));
-    const md_bitfield_t* chunk = (const md_bitfield_t*)data.ptr;
+    const md_bitset_t* chunk = (const md_bitset_t*)data.ptr;
     const size_t num_chunks = element_count(data);
 
     size_t expected = 0;
@@ -2948,8 +2955,8 @@ UTEST_F(script, chunks) {
         for (uint32_t beg = range.beg; beg < range.end; beg += 7) {
             const uint32_t end = MIN(beg + 7, range.end);
             ASSERT_LT(expected, num_chunks);
-            EXPECT_EQ((size_t)(end - beg), md_bitfield_popcount(&chunk[expected]));
-            EXPECT_EQ((size_t)(end - beg), md_bitfield_popcount_range(&chunk[expected], beg, end));
+            EXPECT_EQ((size_t)(end - beg), md_bitset_count(chunk[expected]));
+            EXPECT_EQ((size_t)(end - beg), md_bitset_count_range(chunk[expected], beg, end));
             expected += 1;
         }
     }
@@ -2964,18 +2971,17 @@ UTEST_F(script, contacts_parent_and_exclude_within) {
     md_system_t* sys = &utest_fixture->ala;
 
     size_t num_res = 0;
-    md_bitfield_t* res = contacts_residue_groups(&num_res, sys, alloc);
+    md_bitset_t* res = contacts_residue_groups(&num_res, sys, alloc);
 
     // Chunks of 5 particles per residue, and for each the residue it is part of
-    md_array(md_bitfield_t) chunk = 0;
+    md_array(md_bitset_t) chunk = 0;
     md_array(uint32_t) parent = 0;
     uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * sys->atom.count);
     for (size_t c = 0; c < num_res; ++c) {
         const md_urange_t range = md_system_component_atom_range(sys, c);
         for (uint32_t k = range.beg; k < range.end; ++k) label[k] = (uint32_t)c;
         for (uint32_t beg = range.beg; beg < range.end; beg += 5) {
-            md_bitfield_t bf = md_bitfield_create(alloc);
-            md_bitfield_set_range(&bf, beg, MIN(beg + 5, range.end));
+            md_bitset_t bf = md_bitset_range(beg, MIN(beg + 5, range.end));
             md_array_push(chunk, bf, alloc);
             md_array_push(parent, (uint32_t)c, alloc);
         }
@@ -3047,7 +3053,7 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
         md_script_vis_ctx_t vctx = { .ir = ir, .sys = sys, .state = &sys->reference };
         EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
         // What is shown are the groups
-        EXPECT_EQ(sys->atom.count, md_bitfield_popcount(&vis.atom_mask));
+        EXPECT_EQ(sys->atom.count, md_bitset_count(vis.atom_mask));
         md_script_vis_free(&vis);
     }
     EXPECT_EQ((size_t)0, test_hook_contact_searches);
@@ -3075,26 +3081,22 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
 #define ANY_KIND -1
 
 // One group per component of the kind (or every component for ANY_KIND), as test_contact.c
-static md_bitfield_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, int kind, md_allocator_i* alloc) {
-    md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * MAX(sys->component.count, 1));
+static md_bitset_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, int kind, md_allocator_i* alloc) {
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * MAX(sys->component.count, 1));
     size_t n = 0;
     for (size_t c = 0; c < sys->component.count; ++c) {
         if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
         const md_urange_t range = md_system_component_atom_range(sys, c);
-        groups[n] = md_bitfield_create(alloc);
-        md_bitfield_set_range(&groups[n], range.beg, range.end);
+        groups[n] = md_bitset_range(range.beg, range.end);
         ++n;
     }
     *out_count = n;
     return groups;
 }
 
-static bool mirror_bitfield_equal(const md_bitfield_t* a, const md_bitfield_t* b, md_allocator_i* alloc) {
-    const size_t pa = md_bitfield_popcount(a);
-    if (pa != md_bitfield_popcount(b)) return false;
-    md_bitfield_t both = md_bitfield_create(alloc);
-    md_bitfield_and(&both, a, b);
-    return md_bitfield_popcount(&both) == pa;
+static bool mirror_bitfield_equal(const md_bitset_t* a, const md_bitset_t* b, md_allocator_i* alloc) {
+    (void)alloc;
+    return md_bitset_equal(*a, *b);
 }
 
 // The value of an identifier of a compiled script, evaluated on a state as the evaluation of a frame does it
@@ -3108,7 +3110,7 @@ static bool mirror_eval(data_t* out, md_script_ir_t* ir, const char* name, md_sy
     return evaluate_node_alloc(out, ident->node, &ctx, alloc);
 }
 
-static bool mirror_same_groups(const data_t* d, const md_bitfield_t* groups, size_t num, const char* name, md_allocator_i* alloc) {
+static bool mirror_same_groups(const data_t* d, const md_bitset_t* groups, size_t num, const char* name, md_allocator_i* alloc) {
     if (d->type.base_type != TYPE_BITFIELD) {
         printf("  '%s' is not a selection\n", name);
         return false;
@@ -3118,10 +3120,10 @@ static bool mirror_same_groups(const data_t* d, const md_bitfield_t* groups, siz
         printf("  '%s' has %zu groups, the kernel case %zu\n", name, n, num);
         return false;
     }
-    const md_bitfield_t* bf = as_bitfield(*d);
+    const md_bitset_t* bf = as_bitset(*d);
     for (size_t k = 0; k < n; ++k) {
         if (!mirror_bitfield_equal(&bf[k], &groups[k], alloc)) {
-            printf("  group %zu of '%s' differs from the kernel case (%zu vs %zu particles)\n", k, name, md_bitfield_popcount(&bf[k]), md_bitfield_popcount(&groups[k]));
+            printf("  group %zu of '%s' differs from the kernel case (%zu vs %zu particles)\n", k, name, md_bitset_count(bf[k]), md_bitset_count(groups[k]));
             return false;
         }
     }
@@ -3203,7 +3205,7 @@ UTEST_F(script, contacts_mirror_self_distance) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
     ASSERT_GT(num, (size_t)10);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 3.5 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(:); c = contacts(ga, cutoff=3.5, exclude_bonds=0);", &desc, true, NULL, alloc));
@@ -3217,7 +3219,7 @@ UTEST_F(script, contacts_mirror_between_sets) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
     ASSERT_GT(num, (size_t)10);
 
     // Overlapping sets: the first two thirds of the residues against the last two thirds
@@ -3229,7 +3231,7 @@ UTEST_F(script, contacts_mirror_between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num_prot, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num_prot, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); gb = residue(:); c = contacts(ga, gb, cutoff=3.0, exclude_bonds=0);", &desc, true, NULL, alloc));
@@ -3241,7 +3243,7 @@ UTEST_F(script, contacts_mirror_bond_exclusion_and_separation) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)3);
 
     // Three bonds is the default of the script
@@ -3277,10 +3279,10 @@ UTEST_F(script, contacts_mirror_triclinic) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->npt;
     size_t num_all = 0;
-    md_bitfield_t* all = mirror_residue_groups(&num_all, sys, ANY_KIND, alloc);
+    md_bitset_t* all = mirror_residue_groups(&num_all, sys, ANY_KIND, alloc);
     ASSERT_GT(num_all, (size_t)10);
     // Every third residue: still spread over the whole cell, at a ninth of the cost of the reference
-    md_bitfield_t* res = md_alloc(alloc, sizeof(md_bitfield_t) * num_all);
+    md_bitset_t* res = md_alloc(alloc, sizeof(md_bitset_t) * num_all);
     size_t num = 0;
     for (size_t k = 0; k < num_all; k += 3) res[num++] = all[k];
 
@@ -3303,20 +3305,18 @@ UTEST_F(script, contacts_mirror_overlapping_groups) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)6);
     // The amino acids are the leading components, so their indices are those of the components
     for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
 
     // Windows of three consecutive residues, each overlapping the next by two. In the script: an array of selections
     const size_t num_win = num - 2;
-    md_bitfield_t* win = md_alloc(alloc, sizeof(md_bitfield_t) * num_win);
+    md_bitset_t* win = md_alloc(alloc, sizeof(md_bitset_t) * num_win);
     char windows[4096];
     size_t len = snprintf(windows, sizeof(windows), "{");
     for (size_t w = 0; w < num_win; ++w) {
-        win[w] = md_bitfield_create(alloc);
-        md_bitfield_or(&win[w], &res[w], &res[w + 1]);
-        md_bitfield_or_inplace(&win[w], &res[w + 2]);
+        win[w] = md_bitset_or(md_bitset_or(res[w], res[w + 1], alloc), res[w + 2], alloc);
         if (w) len += snprintf(windows + len, sizeof(windows) - len, ", ");
         len += mirror_atom_range(windows + len, sizeof(windows) - len, sys, w, w + 3);
     }
@@ -3340,7 +3340,7 @@ UTEST_F(script, contacts_mirror_min_separation_parent) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)8);
     for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
 
@@ -3375,9 +3375,7 @@ UTEST_F(script, contacts_mirror_empty) {
     md_system_t* sys = &utest_fixture->ala;
 
     // Groups too far apart
-    md_bitfield_t g[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
-    md_bitfield_set_bit(&g[0], 0);
-    md_bitfield_set_bit(&g[1], 1);
+    md_bitset_t g[2] = { md_bitset_range(0, 1), md_bitset_range(1, 2) };
     md_contact_desc_t desc = { .group_a = g, .num_a = 2, .cutoff = 0.01 };
     md_contact_set_t set = {0};
     EXPECT_TRUE(mirror_check(sys, "ga = {atom(1), atom(2)}; c = contacts(ga, cutoff=0.01, exclude_bonds=0);", &desc, false, &set, alloc));
@@ -3385,8 +3383,8 @@ UTEST_F(script, contacts_mirror_empty) {
 
     // An empty B is an empty set: no contacts. Not the contacts within A, which is what no B means
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
-    static const md_bitfield_t no_groups = {0};
+    md_bitset_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
+    static const md_bitset_t no_groups = {0};
     desc = (md_contact_desc_t){ .group_a = res, .num_a = num, .group_b = &no_groups, .num_b = 0, .cutoff = 5.0 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(:); gb = residue(atom(1) and not atom(1)); c = contacts(ga, gb, cutoff=5.0);", &desc, false, &set, alloc));
     EXPECT_EQ(set.count, (size_t)0);
@@ -3448,7 +3446,7 @@ UTEST_F(script, contacts_mirror_query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)3);
 
     size_t num = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -3614,13 +3612,13 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
     const md_system_state_t* ref = &sys->reference;
 
     // The structure the translations are placed around: its plain centroid in the reference state
-    md_bitfield_t anchor_bf = md_bitfield_create(alloc);
-    ASSERT_TRUE(eval_selection(&anchor_bf, str_from_cstr(anchor), sys));
+    md_bitset_t anchor_bf = {0};
+    ASSERT_TRUE(eval_selection(&anchor_bf, str_from_cstr(anchor), sys, alloc));
     vec3_t c = {0};
     size_t n = 0;
-    md_bitfield_iter_t it = md_bitfield_iter_create(&anchor_bf);
-    while (md_bitfield_iter_next(&it)) {
-        c = vec3_add(c, ref->xyz[md_bitfield_iter_idx(&it)]);
+    md_bitset_iter_t it = md_bitset_iter(anchor_bf);
+    while (md_bitset_iter_next(&it)) {
+        c = vec3_add(c, ref->xyz[it.idx]);
         n += 1;
     }
     ASSERT_GT(n, (size_t)0);
@@ -3812,22 +3810,21 @@ UTEST_F(script, rmsd_per_structure) {
     md_vm_arena_destroy(alloc);
 }
 
-static bool same_atoms(const md_bitfield_t* a, const md_bitfield_t* b, md_allocator_i* alloc) {
-    md_bitfield_t ab = md_bitfield_create(alloc);
-    md_bitfield_and(&ab, a, b);
-    return md_bitfield_popcount(a) == md_bitfield_popcount(b) && md_bitfield_popcount(&ab) == md_bitfield_popcount(a);
+static bool same_atoms(const md_bitset_t* a, const md_bitset_t* b, md_allocator_i* alloc) {
+    (void)alloc;
+    return md_bitset_equal(*a, *b);
 }
 
 // The closest (farthest) approach of the atoms of selection a to the atoms of selection b, under the minimum image
 static float extent_reference(md_system_t* sys, const md_system_state_t* state, const char* a, const char* b, bool largest, md_allocator_i* alloc) {
-    md_bitfield_t bf[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
-    if (!eval_selection(&bf[0], str_from_cstr(a), sys) || !eval_selection(&bf[1], str_from_cstr(b), sys)) return -1.0f;
+    md_bitset_t bf[2] = {0};
+    if (!eval_selection(&bf[0], str_from_cstr(a), sys, alloc) || !eval_selection(&bf[1], str_from_cstr(b), sys, alloc)) return -1.0f;
     float ext = largest ? 0.0f : FLT_MAX;
-    md_bitfield_iter_t it_a = md_bitfield_iter_create(&bf[0]);
-    while (md_bitfield_iter_next(&it_a)) {
-        md_bitfield_iter_t it_b = md_bitfield_iter_create(&bf[1]);
-        while (md_bitfield_iter_next(&it_b)) {
-            vec3_t dx = vec3_sub(state->xyz[md_bitfield_iter_idx(&it_a)], state->xyz[md_bitfield_iter_idx(&it_b)]);
+    md_bitset_iter_t it_a = md_bitset_iter(bf[0]);
+    while (md_bitset_iter_next(&it_a)) {
+        md_bitset_iter_t it_b = md_bitset_iter(bf[1]);
+        while (md_bitset_iter_next(&it_b)) {
+            vec3_t dx = vec3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
             md_util_min_image_vec3(&dx, 1, &state->unitcell);
             const float d = vec3_length(dx);
             ext = largest ? MAX(ext, d) : MIN(ext, d);
@@ -3917,12 +3914,12 @@ UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
     EXPECT_LE(as_float(dyn), 5.0f + 1.0e-4f);
 
     // While a number of elements which changes from frame to frame is a result which does, as for rmsd
-    md_bitfield_t near = md_bitfield_create(alloc);
-    ASSERT_TRUE(eval_selection(&near, STR_LIT("within(3.0, residue(6)) and not residue(6)"), sys));
+    md_bitset_t near = {0};
+    ASSERT_TRUE(eval_selection(&near, STR_LIT("within(3.0, residue(6)) and not residue(6)"), sys, alloc));
     size_t num_near = 0;
     for (size_t i = 0; i < sys->component.count; ++i) {
         md_urange_t range = md_component_atom_range(&sys->component, i);
-        num_near += md_bitfield_popcount_range(&near, range.beg, range.end) > 0;
+        num_near += md_bitset_test_any_range(near, range.beg, range.end);
     }
     EXPECT_GT(num_near, (size_t)0);
     EXPECT_EQ(num_near, dl.size / sizeof(float));
@@ -3944,9 +3941,9 @@ UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
     md_script_eval_free(eval);
 
     // Shown: the closest approach of each element, or of the hovered one only
-    md_bitfield_t res[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
-    ASSERT_TRUE(eval_selection(&res[0], STR_LIT("residue(1:4) or residue(6)"), sys));
-    ASSERT_TRUE(eval_selection(&res[1], STR_LIT("residue(3) or residue(6)"), sys));
+    md_bitset_t res[2] = {0};
+    ASSERT_TRUE(eval_selection(&res[0], STR_LIT("residue(1:4) or residue(6)"), sys, alloc));
+    ASSERT_TRUE(eval_selection(&res[1], STR_LIT("residue(3) or residue(6)"), sys, alloc));
     identifier_t* ident = get_identifier(ir, STR_LIT("mn"));
     ASSERT_TRUE(ident);
     md_script_vis_ctx_t vctx = { .ir = ir, .sys = sys, .state = state };
@@ -4271,9 +4268,9 @@ static uint64_t ir_snapshot(const md_script_ir_t* ir) {
         SNAP_MIX(node->data.size);
         if (node->data.ptr && node->data.size) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
-                const md_bitfield_t* bf = (const md_bitfield_t*)node->data.ptr;
-                for (size_t k = 0; k < node->data.size / sizeof(md_bitfield_t); ++k) {
-                    SNAP_MIX(md_bitfield_hash64(&bf[k], 0));
+                const md_bitset_t* bf = (const md_bitset_t*)node->data.ptr;
+                for (size_t k = 0; k < node->data.size / sizeof(md_bitset_t); ++k) {
+                    SNAP_MIX(md_bitset_hash64(bf[k], 0));
                 }
             } else {
                 const uint8_t* bytes = (const uint8_t*)node->data.ptr;
@@ -4375,7 +4372,7 @@ UTEST_F(script, vis_eval_string_reports_success) {
     const md_script_vis_ctx_t vis_ctx = { .sys = mol, .state = &mol->reference };
 
     EXPECT_TRUE(md_script_vis_eval_string(&vis, STR_LIT("d = distance(1, 2);"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-    EXPECT_EQ(2, (int)md_bitfield_popcount(&vis.atom_mask));
+    EXPECT_EQ(2, (int)md_bitset_count(vis.atom_mask));
 
     md_script_vis_clear(&vis);
     EXPECT_FALSE(md_script_vis_eval_string(&vis, STR_LIT("d = distance(1,;"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
@@ -4426,7 +4423,7 @@ UTEST_F(script, vis_ref_resolves_in_its_own_compilation_only) {
     md_script_vis_clear(&vis);
     EXPECT_FALSE(md_script_vis_eval_ref(&vis, ref_b, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
     EXPECT_EQ((size_t)0, md_array_size(vis.points) + md_array_size(vis.lines));
-    EXPECT_EQ((size_t)0, md_bitfield_popcount(&vis.atom_mask));
+    EXPECT_EQ((size_t)0, md_bitset_count(vis.atom_mask));
 
     // The editor's tokens resolve in the compilation they came from
     const md_script_vis_token_t* tokens = md_script_ir_vis_tokens(a);
@@ -4587,12 +4584,8 @@ UTEST_F(script, distribution_weights_accumulate) {
     md_arena_allocator_destroy(alloc);
 }
 
-static bool bits_equal(const md_bitfield_t* a, const md_bitfield_t* b) {
-    const uint64_t end = MAX(md_bitfield_end_bit(a), md_bitfield_end_bit(b));
-    for (uint64_t i = 0; i < end; ++i) {
-        if (md_bitfield_test_bit(a, i) != md_bitfield_test_bit(b, i)) return false;
-    }
-    return true;
+static bool bits_equal(md_bitset_t a, md_bitset_t b) {
+    return md_bitset_equal(a, b);
 }
 
 // The ratio values / weights of every bin of a distribution, as shown
@@ -4607,8 +4600,8 @@ static bool dist_same(const eval_property_t* a, const eval_property_t* b) {
 }
 
 // A distribution evaluated on its own, over the given frames only
-static md_script_eval_t* eval_over(const md_script_ir_t* ir, md_system_t* sys, uint32_t num_frames, const md_bitfield_t* frames, md_allocator_i* alloc) {
-    const md_bitfield_t* sets[1] = { frames };
+static md_script_eval_t* eval_over(const md_script_ir_t* ir, md_system_t* sys, uint32_t num_frames, const md_bitset_t* frames, md_allocator_i* alloc) {
+    const md_bitset_t* sets[1] = { frames };
     const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 1, .frame_sets = sets };
     md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
     if (eval) md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames);
@@ -4629,26 +4622,24 @@ UTEST_F(script, frame_sets) {
         "r = rdf(element('C'), element('O'), 6.0);"
     ), mol, NULL));
 
-    md_bitfield_t sub = md_bitfield_create(alloc);
-    md_bitfield_set_range(&sub, 2, n - 2);
-    const md_bitfield_t* sets[2] = { NULL, &sub };
+    md_bitset_t sub = md_bitset_range(2, n - 2);
+    const md_bitset_t* sets[2] = { NULL, &sub };
     const md_script_eval_desc_t desc = { .num_frames = n, .num_frame_sets = 2, .frame_sets = sets };
     md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
     ASSERT_TRUE(eval);
     EXPECT_EQ((size_t)2, md_script_eval_frame_set_count(eval));
 
-    md_bitfield_t pending = md_bitfield_create(alloc);
-    EXPECT_EQ((size_t)n, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
 
     // Each frame once, though most are in both sets
     test_hook_proc_eval.proc_ptr = _rdf_flt;
     test_hook_proc_eval.count = 0;
     ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
     EXPECT_EQ((size_t)n, test_hook_proc_eval.count);
-    EXPECT_EQ((size_t)0, md_script_eval_pending_frames(eval, &pending));
-    EXPECT_EQ((size_t)n, md_bitfield_popcount(md_script_eval_frame_mask(eval)));
-    EXPECT_EQ((size_t)n, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 0)));
-    EXPECT_TRUE(bits_equal(&sub, md_script_eval_frame_set_completed(eval, 1)));
+    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
+    EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_frame_mask(eval, alloc)));
+    EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_frame_set_completed(eval, 0, alloc)));
+    EXPECT_TRUE(bits_equal(sub, md_script_eval_frame_set_completed(eval, 1, alloc)));
 
     // Evaluating again does nothing
     test_hook_proc_eval.count = 0;
@@ -4668,23 +4659,23 @@ UTEST_F(script, frame_sets) {
     md_script_eval_t* all  = eval_over(ir, mol, n, NULL, alloc);
     md_script_eval_t* part = eval_over(ir, mol, n, &sub, alloc);
     ASSERT_TRUE(all && part);
-    EXPECT_TRUE(bits_equal(&sub, md_script_eval_frame_mask(part)));   // the union only
+    EXPECT_TRUE(bits_equal(sub, md_script_eval_frame_mask(part, alloc)));   // the union only
     EXPECT_TRUE(dist_same(find_set_property(eval, 0, STR_LIT("r")), find_eval_property(all,  STR_LIT("r"))));
     EXPECT_TRUE(dist_same(find_set_property(eval, 1, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
     EXPECT_FALSE(dist_same(find_eval_property(all, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
 
     // Moved: only the frames the set has not added are evaluated, and it starts over
-    md_bitfield_t moved = md_bitfield_create(alloc);
-    md_bitfield_set_range(&moved, 0, 3);
+    md_bitset_t moved = md_bitset_range(0, 3);
     ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &moved));
-    EXPECT_EQ((size_t)0, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 1)));
-    EXPECT_EQ((size_t)3, md_script_eval_pending_frames(eval, &pending));
-    EXPECT_TRUE(bits_equal(&moved, &pending));
+    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_frame_set_completed(eval, 1, alloc)));
+    md_bitset_t pending = md_script_eval_pending_frames(eval, alloc);
+    EXPECT_EQ((size_t)3, md_bitset_count(pending));
+    EXPECT_TRUE(bits_equal(moved, pending));
 
     // Interrupted, nothing is added, and nothing is lost
     md_script_eval_interrupt(eval);
     md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n);
-    EXPECT_EQ((size_t)3, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_EQ((size_t)3, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
     md_script_eval_reset_interrupt(eval);
 
     test_hook_proc_eval.count = 0;
@@ -4850,14 +4841,12 @@ UTEST_F(script, frame_set_replace_keeps_temporal_values) {
     const float before = d->values[last];
     EXPECT_TRUE(before == before);
 
-    md_bitfield_t frames = md_bitfield_create(alloc);
-    md_bitfield_set_range(&frames, 0, 2);
+    const md_bitset_t frames = md_bitset_range(0, 2);
     ASSERT_TRUE(md_script_eval_set_frame_set(eval, 0, &frames));
     EXPECT_EQ(before, d->values[last]);
-    EXPECT_TRUE(md_bitfield_test_bit(md_script_eval_frame_mask(eval), last));
+    EXPECT_TRUE(md_bitset_test(md_script_eval_frame_mask(eval, alloc), last));
     // Its distribution starts over: those two frames are what remains to be evaluated
-    md_bitfield_t pending = md_bitfield_create(alloc);
-    EXPECT_EQ((size_t)2, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_EQ((size_t)2, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
 
     md_script_eval_free(eval);
     md_script_ir_free(ir);
@@ -4874,19 +4863,17 @@ UTEST_F(script, frame_set_without_aggregates_is_not_reevaluated) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 2);"), mol, NULL));
-    md_bitfield_t none = md_bitfield_create(alloc);
-    const md_bitfield_t* sets[2] = { NULL, &none };
+    const md_bitset_t none = md_bitset_empty_set();
+    const md_bitset_t* sets[2] = { NULL, &none };
     const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 2, .frame_sets = sets };
     md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
     ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
-    md_bitfield_t frames = md_bitfield_create(alloc);
-    md_bitfield_set_range(&frames, 1, 3);
+    const md_bitset_t frames = md_bitset_range(1, 3);
     ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &frames));
-    md_bitfield_t pending = md_bitfield_create(alloc);
-    EXPECT_EQ((size_t)0, md_script_eval_pending_frames(eval, &pending));
+    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
     // Its completed frames, the mask its temporal values are taken over, are there at once
-    EXPECT_EQ((size_t)2, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 1)));
+    EXPECT_EQ((size_t)2, md_bitset_count(md_script_eval_frame_set_completed(eval, 1, alloc)));
 
     md_script_eval_free(eval);
     md_script_ir_free(ir);

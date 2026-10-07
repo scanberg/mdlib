@@ -16,7 +16,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_str_builder.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_hash.h>
 
 #include "rmsd.h"
@@ -1970,8 +1970,8 @@ UTEST(util, topology_version) {
 
     // Read only operations leave it alone
     const uint64_t read_only = sys.topology_version;
-    md_bitfield_t mask = md_bitfield_create(alloc);
-    md_bitfield_set_bit(&mask, 0);
+    md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
+    md_bitmask_set_bit(&mask, 0);
     md_util_mask_grow_by_bonds(&mask, &sys, 2, NULL);
     EXPECT_EQ(sys.topology_version, read_only);
 
@@ -2078,8 +2078,8 @@ UTEST(util, find_by_index) {
 // allocation, so a walk which followed some other use of temp memory used to see stale depths and stop early.
 UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
     const md_system_t* sys = &utest_fixture->mol_ala;
-    md_bitfield_t mask = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_t ref  = md_bitfield_create(utest_fixture->alloc);
+    md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys->atom.count, utest_fixture->alloc);
+    md_bitmask_t ref  = md_bitmask_create(0, (uint32_t)sys->atom.count, utest_fixture->alloc);
 
     // Stale depths of 1 make every neighbour look as if it had already been reached at a lower depth
     const size_t junk_size = MEGABYTES(1);
@@ -2088,7 +2088,7 @@ UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
         memset(md_temp_alloc(temp, junk_size), 1, junk_size);
         md_temp_end(temp);
     }
-    md_bitfield_set_bit(&mask, 0);
+    md_bitmask_set_bit(&mask, 0);
     md_util_mask_grow_by_bonds(&mask, sys, 3, NULL);
 
     {
@@ -2096,11 +2096,11 @@ UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
         memset(md_temp_alloc(temp, junk_size), 0, junk_size);
         md_temp_end(temp);
     }
-    md_bitfield_set_bit(&ref, 0);
+    md_bitmask_set_bit(&ref, 0);
     md_util_mask_grow_by_bonds(&ref, sys, 3, NULL);
 
-    EXPECT_GT(md_bitfield_popcount(&ref), (size_t)1);
-    EXPECT_EQ(md_bitfield_popcount(&ref), md_bitfield_popcount(&mask));
+    EXPECT_GT(md_bitmask_count(&ref), (size_t)1);
+    EXPECT_EQ(md_bitmask_count(&ref), md_bitmask_count(&mask));
 }
 
 // An atom that crosses the cell boundary between two frames goes the short way, across the

@@ -14,7 +14,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str_builder.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
@@ -1021,15 +1021,15 @@ bool md_util_resname_nucleotide(str_t str) {
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state) {
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state) {
     ASSERT(out_xyzw);
     ASSERT(mask);
     ASSERT(sys);
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
+    md_bitset_iter_t it = md_bitset_iter(*mask);
     size_t count = 0;
-    while (md_bitfield_iter_next(&it)) {
-        size_t i = md_bitfield_iter_idx(&it);
+    while (md_bitset_iter_next(&it)) {
+        size_t i = it.idx;
         vec3_t xyz = md_state_coord(state, i);
         float mass = md_atom_mass(&sys->atom, i);
         out_xyzw[count] = vec4_from_vec3(xyz, mass);
@@ -5900,7 +5900,7 @@ void md_util_system_augment_atom_types(md_system_t* sys) {
     }
 }
 
-void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, size_t extent, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_bonds(md_bitmask_t* mask, const md_system_t* sys, size_t extent, const md_bitset_t* viable_mask) {
     ASSERT(mask);
     ASSERT(sys);
 
@@ -5911,14 +5911,14 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     // The initial depth is 1, so we need to add one.
     extent += 1;
     
-    const size_t mask_size = md_bitfield_popcount(mask);
+    const size_t mask_size = md_bitmask_count(mask);
     if (!mask_size) return;
 
-    md_temp_scope_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(mask->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     int* indices = md_alloc(temp_alloc, mask_size * sizeof(int));
-    const size_t num_indices = md_bitfield_iter_extract_indices(indices, mask_size, md_bitfield_iter_create(mask));
+    const size_t num_indices = md_bitset_iter_extract_indices(indices, mask_size, md_bitmask_iter(mask));
     ASSERT(num_indices == mask_size);
 
     md_fifo_t queue = md_fifo_create(64, temp_alloc);
@@ -5929,9 +5929,9 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
     MEMSET(depth, 0, sys->atom.count * sizeof(uint8_t));
 
     {
-        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-        while (md_bitfield_iter_next(&it)) {
-            int idx = (int)md_bitfield_iter_idx(&it);
+        md_bitset_iter_t it = md_bitmask_iter(mask);
+        while (md_bitset_iter_next(&it)) {
+            int idx = (int)it.idx;
             depth[idx] = 1;
         }
     }
@@ -5944,13 +5944,13 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
         
         while (!md_fifo_empty(&queue)) {
             int idx = md_fifo_pop(&queue);
-            md_bitfield_set_bit(mask, idx);
+            md_bitmask_set_bit(mask, (uint32_t)idx);
 
             md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
             while (md_bond_iter_has_next(&it)) {
                 int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
-                if (viable_mask && md_bitfield_test_bit(viable_mask, next) == false) {
+                if (viable_mask && md_bitset_test(*viable_mask, (uint32_t)next) == false) {
                     continue;
                 }
                 // Only explore the path if it is not already marked and it is within the extent.
@@ -5974,11 +5974,11 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_system_t* sys, siz
 static inline void spatial_acc_pair_set_bits_callback(const uint32_t* idx_i, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     (void)idx_i;
     (void)ij_dist2;
-    md_bitfield_t* mask = (md_bitfield_t*)user_param;
-    md_bitfield_set_indices_u32(mask, j_idx, num_pairs);
+    md_bitmask_t* mask = (md_bitmask_t*)user_param;
+    md_bitmask_set_indices(mask, j_idx, num_pairs);
 }
 
-void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* state, double radius, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* state, double radius, const md_bitset_t* viable_mask) {
     ASSERT(mask);
     ASSERT(state);
     
@@ -5986,20 +5986,19 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const md_system_state_t* s
     md_temp_scope_t temp = md_temp_begin_avoid(mask->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-    size_t num_indices = md_bitfield_popcount(mask);
+    size_t num_indices = md_bitmask_count(mask);
     if (num_indices > 0) {
         int32_t* indices = md_temp_alloc(temp, num_indices * sizeof(int32_t));
-        num_indices = md_bitfield_iter_extract_indices(indices, num_indices, md_bitfield_iter_create(mask));
+        num_indices = md_bitset_iter_extract_indices(indices, num_indices, md_bitmask_iter(mask));
 
         int32_t* viable_indices = 0;
         size_t viable_count = state->num_atoms;
             
         if (viable_mask) {
-            md_bitfield_t temp_mask = md_bitfield_create(temp_arena);
-            md_bitfield_andnot(&temp_mask, viable_mask, mask);
-            const size_t count = md_bitfield_popcount(&temp_mask);
+            md_bitset_t temp_mask = md_bitset_andnot(*viable_mask, md_bitmask_view(mask), temp_arena);
+            const size_t count = md_bitset_count(temp_mask);
             viable_indices = md_temp_alloc(temp, count * sizeof(int32_t));
-            viable_count = md_bitfield_iter_extract_indices(viable_indices, count, md_bitfield_iter_create(&temp_mask));
+            viable_count = md_bitset_iter_extract_indices(viable_indices, count, md_bitset_iter(temp_mask));
         }
 
         if (viable_count > 0) {

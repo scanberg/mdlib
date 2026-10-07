@@ -13,7 +13,7 @@
 #include <core/md_coord_stream.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_vec_math.h>
 
 #define BIG_GRO     MD_BENCHMARK_DATA_DIR "/centered.gro"
@@ -223,11 +223,12 @@ static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_p
     if (load_big(&sys, &st, arena) && md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL)) {
         md_hbond_params_t params = md_hbond_params_preset(preset);
         // Selection: the bonds within the first 40 residues, a small part of the system
-        md_bitfield_t few = md_bitfield_create(arena);
+        md_bitmask_t few_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, arena);
         for (size_t c = 0; c < MIN(sys.component.count, 40); ++c) {
             const md_urange_t r = md_system_component_atom_range(&sys, c);
-            md_bitfield_set_range(&few, r.beg, r.end);
+            md_bitmask_set_range(&few_mask, r.beg, r.end);
         }
+        const md_bitset_t few = md_bitmask_view(&few_mask);
         md_hbond_desc_t desc = { .params = &params, .set_a = selection ? &few : NULL };
         md_hbond_query_t q;
         if (md_hbond_query_init(&q, &desc, &sys, arena)) {

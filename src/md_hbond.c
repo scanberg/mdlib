@@ -7,7 +7,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_coord_stream.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
@@ -361,27 +361,27 @@ void md_hbond_query_free(md_hbond_query_t* q) {
     MEMSET(q, 0, sizeof(md_hbond_query_t));
 }
 
-static bool apply_override(uint8_t* role, const md_bitfield_t* set, uint8_t bit, size_t N) {
-    if (md_bitfield_end_bit(set) > N) {
+static bool apply_override(uint8_t* role, const md_bitset_t* set, uint8_t bit, size_t N) {
+    if (md_bitset_last_end(*set) > N) {
         MD_LOG_ERROR("Hydrogen bonds: role override refers to atoms beyond the system (%zu atoms)", N);
         return false;
     }
     for (size_t i = 0; i < N; ++i) role[i] &= (uint8_t)~bit;
-    md_bitfield_iter_t it = md_bitfield_iter_create(set);
-    while (md_bitfield_iter_next(&it)) {
-        role[md_bitfield_iter_idx(&it)] |= bit;
+    md_bitset_iter_t it = md_bitset_iter(*set);
+    while (md_bitset_iter_next(&it)) {
+        role[it.idx] |= bit;
     }
     return true;
 }
 
-static bool mark_selection(uint8_t* sel, const md_bitfield_t* set, uint8_t bit, size_t N) {
-    if (md_bitfield_end_bit(set) > N) {
+static bool mark_selection(uint8_t* sel, const md_bitset_t* set, uint8_t bit, size_t N) {
+    if (md_bitset_last_end(*set) > N) {
         MD_LOG_ERROR("Hydrogen bonds: selection refers to atoms beyond the system (%zu atoms)", N);
         return false;
     }
-    md_bitfield_iter_t it = md_bitfield_iter_create(set);
-    while (md_bitfield_iter_next(&it)) {
-        sel[md_bitfield_iter_idx(&it)] |= bit;
+    md_bitset_iter_t it = md_bitset_iter(*set);
+    while (md_bitset_iter_next(&it)) {
+        sel[it.idx] |= bit;
     }
     return true;
 }

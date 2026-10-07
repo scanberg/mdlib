@@ -4,14 +4,13 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <md_types.h>
 
 struct md_allocator_i;
-struct md_bitfield_t;
 struct md_system_t;
 struct md_smiles_error_t;
-struct md_bitset_t;
 
 // ### STRUCTURE MATCHING ###
 // Finds where a query structure occurs in the covalent bond graph of a system (substructure search).
@@ -321,7 +320,7 @@ typedef struct md_match_desc_t {
 
     // Optional. Only these atoms are searched: the graph is the one the bonds form between them, as for a unit.
     // This is what a script's 'in' context is.
-    const struct md_bitfield_t* mask;
+    const struct md_bitset_t* mask;
 
     // Optional. The units to match within (see UNITS), in place of those of the level, which is then not used. Each a
     // set of atoms of the system; they may overlap. The unit of a match is its index here.
@@ -367,7 +366,7 @@ typedef struct md_match_identify_desc_t {
     md_match_resolve_t bond_orders;
     md_match_resolve_t charges;
 
-    const struct md_bitfield_t* mask;   // Optional, as for md_match_desc_t
+    const struct md_bitset_t* mask;     // Optional, as for md_match_desc_t
     const struct md_bitset_t* units;    // Optional, as for md_match_desc_t
     size_t num_units;
 } md_match_identify_desc_t;
@@ -405,12 +404,12 @@ bool md_match_find(md_match_result_t* out, const md_match_desc_t* desc, const st
 
 void md_match_result_free(md_match_result_t* result);
 
-// One selection per match, written to out[0 .. min(count, cap)), which must be initialized bitfields.
+// One selection per match, written to out[0 .. min(count, cap)), allocated with alloc.
 // Returns the number written. flags is a combination of md_match_select_flags_t.
-size_t md_match_result_select(struct md_bitfield_t* out, size_t cap, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags);
+size_t md_match_result_select(struct md_bitset_t* out, size_t cap, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc);
 
-// All of the matches in one selection: out, an initialized bitfield, is cleared and set to their union.
-void md_match_result_select_all(struct md_bitfield_t* out, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags);
+// All of the matches in one selection, their union, allocated with alloc.
+struct md_bitset_t md_match_result_select_all(const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc);
 
 // ### LIBRARY ###
 

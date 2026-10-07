@@ -9,7 +9,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_vec_math.h>
 
 #include <float.h>
@@ -38,14 +38,13 @@ static bool check_against_reference(const md_contact_desc_t* desc, const md_syst
 #define ANY_KIND -1
 
 // One group per component of the kind (or every component for ANY_KIND), at most max_count
-static md_bitfield_t* make_residue_groups(size_t* out_count, const md_system_t* sys, int kind, size_t max_count, md_allocator_i* alloc) {
-    md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * sys->component.count);
+static md_bitset_t* make_residue_groups(size_t* out_count, const md_system_t* sys, int kind, size_t max_count, md_allocator_i* alloc) {
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->component.count);
     size_t n = 0;
     for (size_t c = 0; c < sys->component.count && n < max_count; ++c) {
         if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
         const md_urange_t range = md_system_component_atom_range(sys, c);
-        groups[n] = md_bitfield_create(alloc);
-        md_bitfield_set_range(&groups[n], range.beg, range.end);
+        groups[n] = md_bitset_range(range.beg, range.end);
         ++n;
     }
     *out_count = n;
@@ -81,7 +80,7 @@ UTEST_F_TEARDOWN(contact) {
 
 UTEST_F(contact, self_distance) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 3.5 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -89,7 +88,7 @@ UTEST_F(contact, self_distance) {
 
 UTEST_F(contact, between_sets) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     // Overlapping sets: the first two thirds of the residues against the last two thirds
     const size_t third = num / 3;
@@ -98,7 +97,7 @@ UTEST_F(contact, between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitfield_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -106,7 +105,7 @@ UTEST_F(contact, between_sets) {
 
 UTEST_F(contact, bond_exclusion_and_separation) {
     size_t num = 0;
-    md_bitfield_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)3);
 
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
@@ -140,7 +139,7 @@ UTEST_F(contact, bond_exclusion_and_separation) {
 
 UTEST_F(contact, radii) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .criterion = MD_CONTACT_CRITERION_RADII, .cutoff = 0.3, .exclude_bonds = 3 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
 
@@ -152,10 +151,10 @@ UTEST_F(contact, radii) {
 
 UTEST_F(contact, triclinic) {
     size_t num = 0;
-    md_bitfield_t* all = make_residue_groups(&num, &utest_fixture->npt, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* all = make_residue_groups(&num, &utest_fixture->npt, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     // Every third residue: still spread over the whole cell, at a ninth of the cost of the reference
-    md_bitfield_t* res = md_alloc(utest_fixture->alloc, sizeof(md_bitfield_t) * num);
+    md_bitset_t* res = md_alloc(utest_fixture->alloc, sizeof(md_bitset_t) * num);
     size_t n = 0;
     for (size_t k = 0; k < num; k += 3) res[n++] = all[k];
     num = n;
@@ -169,16 +168,14 @@ UTEST_F(contact, triclinic) {
 // Groups sharing atoms, and atoms belonging to no group
 UTEST_F(contact, overlapping_groups) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)6);
 
     // Windows of three consecutive residues, each overlapping the next by two
     const size_t num_win = num - 2;
-    md_bitfield_t* win = md_alloc(utest_fixture->alloc, sizeof(md_bitfield_t) * num_win);
+    md_bitset_t* win = md_alloc(utest_fixture->alloc, sizeof(md_bitset_t) * num_win);
     for (size_t w = 0; w < num_win; ++w) {
-        win[w] = md_bitfield_create(utest_fixture->alloc);
-        md_bitfield_or(&win[w], &res[w], &res[w + 1]);
-        md_bitfield_or_inplace(&win[w], &res[w + 2]);
+        win[w] = md_bitset_or(md_bitset_or(res[w], res[w + 1], utest_fixture->alloc), res[w + 2], utest_fixture->alloc);
     }
     md_contact_desc_t desc = { .group_a = win, .num_a = num_win, .cutoff = 4.0, .exclude_bonds = 3 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -196,7 +193,7 @@ UTEST_F(contact, query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)1);
 
     size_t num = 0;
-    md_bitfield_t* prot = make_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_contact_query_t query;
@@ -250,18 +247,17 @@ UTEST_F(contact, empty) {
     EXPECT_EQ(set.count, (size_t)0);
 
     // Groups too far apart
-    md_bitfield_t g[2] = { md_bitfield_create(utest_fixture->alloc), md_bitfield_create(utest_fixture->alloc) };
-    md_bitfield_set_bit(&g[0], 0);
-    md_bitfield_set_bit(&g[1], 1);
+    md_bitset_t g[2] = { md_bitset_range(0, 1), md_bitset_range(1, 2) };
     desc = (md_contact_desc_t){ .group_a = g, .num_a = 2, .cutoff = 0.01 };
     EXPECT_TRUE(md_contact_compute(&set, &desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
     EXPECT_EQ(set.count, (size_t)0);
 
     // An empty B is a set without groups, so no contacts: not the contacts within A, which is what no B means
-    static const md_bitfield_t no_groups = {0};
-    md_bitfield_t halves[2] = { md_bitfield_create(utest_fixture->alloc), md_bitfield_create(utest_fixture->alloc) };
-    md_bitfield_set_range(&halves[0], 0, (uint32_t)utest_fixture->ala.atom.count / 2);
-    md_bitfield_set_range(&halves[1], (uint32_t)utest_fixture->ala.atom.count / 2, (uint32_t)utest_fixture->ala.atom.count);
+    static const md_bitset_t no_groups = {0};
+    md_bitset_t halves[2] = {
+        md_bitset_range(0, (uint32_t)utest_fixture->ala.atom.count / 2),
+        md_bitset_range((uint32_t)utest_fixture->ala.atom.count / 2, (uint32_t)utest_fixture->ala.atom.count),
+    };
     desc = (md_contact_desc_t){ .group_a = halves, .num_a = 2, .group_b = &no_groups, .num_b = 0, .cutoff = 4.0 };
     EXPECT_TRUE(md_contact_compute(&set, &desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
     EXPECT_EQ(set.count, (size_t)0);
@@ -275,8 +271,7 @@ UTEST_F(contact, empty) {
     EXPECT_FALSE(md_contact_compute(&set, &desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
 
     // A group referring to atoms beyond the system is refused
-    md_bitfield_t bad = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_set_bit(&bad, utest_fixture->ala.atom.count + 5);
+    md_bitset_t bad = md_bitset_range((uint32_t)utest_fixture->ala.atom.count + 5, (uint32_t)utest_fixture->ala.atom.count + 6);
     desc = (md_contact_desc_t){ .group_a = &bad, .num_a = 1, .cutoff = 4.0 };
     EXPECT_FALSE(md_contact_compute(&set, &desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
 }
@@ -335,18 +330,18 @@ static bool check_pairs(const md_contact_pairs_desc_t* desc, const md_system_t* 
         if (got[k].key == got[k-1].key) { printf("Pair reported twice\n"); ok = false; break; }
     }
 
-    md_bitfield_t* excl = md_alloc(alloc, sizeof(md_bitfield_t) * sys->atom.count);
-    memset(excl, 0, sizeof(md_bitfield_t) * sys->atom.count);
-    const md_bitfield_t* set_b = self ? desc->set_a : desc->set_b;
+    md_bitmask_t* excl = md_alloc(alloc, sizeof(md_bitmask_t) * sys->atom.count);
+    memset(excl, 0, sizeof(md_bitmask_t) * sys->atom.count);
+    const md_bitset_t* set_b = self ? desc->set_a : desc->set_b;
     const float radius = (float)desc->radius;
 
     size_t required = 0, found_required = 0, shown = 0;
-    md_bitfield_iter_t ia = md_bitfield_iter_create(desc->set_a);
-    while (md_bitfield_iter_next(&ia)) {
-        const uint32_t a = (uint32_t)md_bitfield_iter_idx(&ia);
-        md_bitfield_iter_t jb = md_bitfield_iter_create(set_b);
-        while (md_bitfield_iter_next(&jb)) {
-            const uint32_t b = (uint32_t)md_bitfield_iter_idx(&jb);
+    md_bitset_iter_t ia = md_bitset_iter(*desc->set_a);
+    while (md_bitset_iter_next(&ia)) {
+        const uint32_t a = (uint32_t)ia.idx;
+        md_bitset_iter_t jb = md_bitset_iter(*set_b);
+        while (md_bitset_iter_next(&jb)) {
+            const uint32_t b = (uint32_t)jb.idx;
             if (a == b || (self && b < a)) continue;
             if (desc->particle_label && desc->particle_label[a] == desc->particle_label[b]) continue;
             const float d = ref_distance(state, a, b);
@@ -368,7 +363,7 @@ static bool check_pairs(const md_contact_pairs_desc_t* desc, const md_system_t* 
     // Everything reported must be a pair of the definition: check the other way round
     for (size_t k = 0; k < n; ++k) {
         const uint32_t a = (uint32_t)(got[k].key >> 32), b = (uint32_t)(got[k].key & 0xFFFFFFFFu);
-        const bool in_sets = md_bitfield_test_bit(desc->set_a, a) && md_bitfield_test_bit(set_b, b) && a != b;
+        const bool in_sets = md_bitset_test(*desc->set_a, a) && md_bitset_test(*set_b, b) && a != b;
         const float d = ref_distance(state, a, b);
         const bool same_label = desc->particle_label && desc->particle_label[a] == desc->particle_label[b];
         if (!in_sets || same_label || !(d < radius + REF_EPS) || ref_excluded(excl, sys, desc->exclude_bonds, a, b, alloc)) {
@@ -385,8 +380,7 @@ static bool check_pairs(const md_contact_pairs_desc_t* desc, const md_system_t* 
 
 UTEST_F(contact, pairs) {
     md_system_t* sys = &utest_fixture->ala;
-    md_bitfield_t all = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_set_range(&all, 0, sys->atom.count);
+    md_bitset_t all = md_bitset_range(0, (uint32_t)sys->atom.count);
 
     md_contact_pairs_desc_t desc = { .set_a = &all, .radius = 4.0 };
     EXPECT_TRUE(check_pairs(&desc, sys, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -394,10 +388,8 @@ UTEST_F(contact, pairs) {
     EXPECT_TRUE(check_pairs(&desc, sys, &utest_fixture->ala_state, utest_fixture->alloc));
 
     // Two overlapping sets
-    md_bitfield_t a = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_t b = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_set_range(&a, 0, sys->atom.count * 2 / 3);
-    md_bitfield_set_range(&b, sys->atom.count / 3, sys->atom.count);
+    md_bitset_t a = md_bitset_range(0, (uint32_t)(sys->atom.count * 2 / 3));
+    md_bitset_t b = md_bitset_range((uint32_t)(sys->atom.count / 3), (uint32_t)sys->atom.count);
     desc = (md_contact_pairs_desc_t){ .set_a = &a, .set_b = &b, .radius = 5.0, .exclude_bonds = 2 };
     EXPECT_TRUE(check_pairs(&desc, sys, &utest_fixture->ala_state, utest_fixture->alloc));
 }
@@ -405,8 +397,9 @@ UTEST_F(contact, pairs) {
 UTEST_F(contact, pairs_triclinic) {
     md_system_t* sys = &utest_fixture->npt;
     // Every third particle: spread over the whole cell
-    md_bitfield_t sub = md_bitfield_create(utest_fixture->alloc);
-    for (size_t k = 0; k < sys->atom.count; k += 3) md_bitfield_set_bit(&sub, k);
+    md_bitmask_t sub_b = md_bitmask_create(0, (uint32_t)sys->atom.count, utest_fixture->alloc);
+    for (size_t k = 0; k < sys->atom.count; k += 3) md_bitmask_set_bit(&sub_b, (uint32_t)k);
+    md_bitset_t sub = md_bitmask_extract(&sub_b, utest_fixture->alloc);
     md_contact_pairs_desc_t desc = { .set_a = &sub, .radius = 6.0 };
     EXPECT_TRUE(check_pairs(&desc, sys, &utest_fixture->npt_state, utest_fixture->alloc));
 }
@@ -414,7 +407,7 @@ UTEST_F(contact, pairs_triclinic) {
 // With a parent per group, only groups of the same parent are neighbours
 UTEST_F(contact, min_separation_parent) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)8);
 
     // Two 'chains': residues [0, 7) and [7, num)
@@ -442,8 +435,7 @@ UTEST_F(contact, min_separation_parent) {
 // Particles labelled by their residue: the stream only holds pairs between residues
 UTEST_F(contact, pairs_label) {
     md_system_t* sys = &utest_fixture->ala;
-    md_bitfield_t all = md_bitfield_create(utest_fixture->alloc);
-    md_bitfield_set_range(&all, 0, sys->atom.count);
+    md_bitset_t all = md_bitset_range(0, (uint32_t)sys->atom.count);
 
     uint32_t* label = md_alloc(utest_fixture->alloc, sizeof(uint32_t) * sys->atom.count);
     for (size_t c = 0; c < sys->component.count; ++c) {
@@ -457,7 +449,7 @@ UTEST_F(contact, pairs_label) {
     // Group contacts between those residues are the same with and without the labels: the labels only drop pairs the
     // groups drop anyway, earlier
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t gdesc = { .group_a = res, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
     md_contact_set_t plain = {0}, labelled = {0};
     ASSERT_TRUE(md_contact_compute(&plain, &gdesc, sys, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -484,7 +476,7 @@ UTEST_F(contact, type_pair) {
     };
 
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = {
         .group_a = res, .num_a = num,
         .criterion = MD_CONTACT_CRITERION_TYPE_PAIR, .particle_type = type, .num_types = 3, .type_cutoff = table,
@@ -703,7 +695,7 @@ UTEST(contact_regions, patterns) {
 UTEST_F(contact, regions_residues) {
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)3);
 
     uint32_t* adj_off = 0;

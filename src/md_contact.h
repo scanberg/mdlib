@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
-struct md_bitfield_t;
+struct md_bitset_t;
 struct md_system_t;
 struct md_system_state_t;
 
@@ -35,10 +35,10 @@ typedef enum md_contact_flags_t {
 // ### PARTICLE PAIRS ###
 
 typedef struct md_contact_pairs_desc_t {
-    const struct md_bitfield_t* set_a;
+    const struct md_bitset_t* set_a;
 
     // Optional. NULL for the pairs within set_a.
-    const struct md_bitfield_t* set_b;
+    const struct md_bitset_t* set_b;
 
     double radius;                      // Ångström. Pairs closer than this are reported.
 
@@ -81,7 +81,7 @@ typedef struct md_contact_pairs_t {
 typedef void (*md_contact_pair_callback_t)(const uint32_t* a, const uint32_t* b, const float* r, size_t count, void* user_param);
 
 // ### GROUP CONTACTS ###
-// A group is any set of particles (a residue, a chain, a slice, a fibril, a ligand, ...), given as a bitfield;
+// A group is any set of particles (a residue, a chain, a slice, a fibril, a ligand, ...), given as a bitset;
 // groups may overlap. Two groups are in contact when some pair of their particles satisfies the criterion. The
 // result is the sparse set of group pairs in contact, with the number of particle pairs behind each and their
 // shortest distance.
@@ -100,11 +100,11 @@ typedef enum md_contact_criterion_t {
 } md_contact_criterion_t;
 
 typedef struct md_contact_desc_t {
-    const struct md_bitfield_t* group_a;
+    const struct md_bitset_t* group_a;
     size_t num_a;
 
     // Optional. NULL for contacts within group_a. Given with num_b == 0 it is an empty set, which has no contacts.
-    const struct md_bitfield_t* group_b;
+    const struct md_bitset_t* group_b;
     size_t num_b;
 
     md_contact_criterion_t criterion;
@@ -251,7 +251,7 @@ void md_contact_set_free(md_contact_set_t* set);
 // Unit adjacency from the bonds of the system: units are neighbours when a bond joins a particle of one with a
 // particle of the other. A particle in several units counts for the first. Writes compressed rows (see
 // md_contact_units_t), each row sorted and unique, allocated from alloc: out_off [num_units + 1], out_adj [out_off[num_units]].
-bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj, const struct md_bitfield_t* units, size_t num_units, const struct md_system_t* sys, struct md_allocator_i* alloc);
+bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj, const struct md_bitset_t* units, size_t num_units, const struct md_system_t* sys, struct md_allocator_i* alloc);
 
 // The regions of a contact set between units. units_b is NULL for a contact set within one set of units.
 // reach >= 1 is the number of adjacency steps within which units count as neighbours: 1 joins contacts of adjacent

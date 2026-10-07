@@ -6,10 +6,9 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <core/md_unit.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_array.h>
 
-struct md_bitfield_t;
 struct md_attributes_t;
 struct md_system_t;
 struct md_allocator_i;
@@ -59,7 +58,7 @@ typedef struct md_script_vis_token_t {
 typedef struct md_log_token_t {
     md_script_range_marker_t range;
     str_t text;
-    md_bitfield_t* context;
+    const md_bitset_t* context;
 } md_log_token_t;
 
 // Opaque Immediate Representation (compilation result)
@@ -109,14 +108,14 @@ typedef struct md_script_vis_t {
     // in computing an SDF, therefore this requires transformation matrices as well as the involved structures
     struct {
         md_array(mat4_t) matrices;
-        md_array(struct md_bitfield_t) structures;
+        md_array(md_bitset_t) structures;   // payloads in alloc
         float extent;
     } sdf;
 
-    md_array(struct md_bitfield_t) structures;
+    md_array(md_bitset_t) structures;       // payloads in alloc
 
-    // This is an all encompassing atom mask, when there may be no real 'substructures'
-    struct md_bitfield_t atom_mask;
+    // This is an all encompassing atom mask, when there may be no real 'substructures' (payload in alloc)
+    md_bitset_t atom_mask;
 } md_script_vis_t;
 
 enum {
@@ -150,7 +149,8 @@ void md_script_ir_free(md_script_ir_t* ir);
 
 void md_script_ir_clear(md_script_ir_t* ir);
 
-bool md_script_ir_add_identifier_bitfield(md_script_ir_t* ir, str_t ident, const struct md_bitfield_t* bf);
+// Adds a constant identifier holding a set of atoms. The IR keeps its own copy.
+bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, str_t ident, md_bitset_t set);
 
 // Returns true if any expression in the script contains a reference to to an identifier by supplied name
 bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t name);
@@ -219,7 +219,7 @@ int md_script_vis_ref_dim(const md_script_ir_t* ir, md_script_vis_ref_t ref);
 typedef struct md_script_eval_desc_t {
     size_t num_frames;                          // frames the evaluation can hold
     size_t num_frame_sets;                      // 0 is one set of every frame
-    const struct md_bitfield_t* const* frame_sets;   // num_frame_sets of them, NULL for every frame
+    const md_bitset_t* const* frame_sets;       // num_frame_sets of them, NULL for every frame
 } md_script_eval_desc_t;
 
 // Allocate and initialize the data for properties within the evaluation
@@ -235,20 +235,22 @@ size_t md_script_eval_frame_set_count(const md_script_eval_t* eval);
 
 // Replaces the frames of set idx (NULL: every frame) and clears what it has aggregated. Temporal values
 // already evaluated are kept: only the frames the set has not added remain to be evaluated.
-bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const struct md_bitfield_t* frames);
+bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_bitset_t* frames);
 
-const struct md_bitfield_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval, size_t idx);
+const md_bitset_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval, size_t idx);
 
 // The frames set idx has added so far. The mask to take temporal properties over it with: each was
 // evaluated (md_script_eval_frame_mask) when it was added.
-const struct md_bitfield_t* md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx);
+// A copy allocated with alloc, taken under the lock the evaluating threads mark frames under, so it can be read
+// while the evaluation runs.
+md_bitset_t md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx, struct md_allocator_i* alloc);
 
 // The table of set idx: for set 0 the same as md_script_eval_attributes, temporal properties included.
 // Any other set publishes only its distributions and volumes, under the same paths.
 const struct md_attributes_t* md_script_eval_frame_set_attributes(const md_script_eval_t* eval, size_t idx);
 
-// The frames which remain to be evaluated, written to out. Returns their number.
-size_t md_script_eval_pending_frames(md_script_eval_t* eval, struct md_bitfield_t* out);
+// The frames which remain to be evaluated, allocated with alloc
+md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, struct md_allocator_i* alloc);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
@@ -299,7 +301,8 @@ const struct md_attributes_t* md_script_eval_attributes(const md_script_eval_t* 
 
 // The frames whose temporal values are evaluated, of any set
 size_t md_script_eval_frame_count(const md_script_eval_t* eval);
-const struct md_bitfield_t* md_script_eval_frame_mask(const md_script_eval_t* eval);
+// A copy allocated with alloc, taken under the evaluation's lock (see md_script_eval_frame_set_completed)
+md_bitset_t md_script_eval_frame_mask(const md_script_eval_t* eval, struct md_allocator_i* alloc);
 
 // Interrupt the current evaluation. It stays interrupted until reset: reset before evaluating again.
 void md_script_eval_interrupt(md_script_eval_t* eval);

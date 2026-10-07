@@ -8,7 +8,7 @@
 #include <md_util.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_vec_math.h>
 #include <float.h>
 #include <math.h>
@@ -35,20 +35,20 @@ static inline float ref_distance(const md_system_state_t* state, uint32_t a, uin
 }
 
 // Atoms within max_bonds bonds of a, using md_util_mask_grow_by_bonds
-static inline bool ref_excluded(md_bitfield_t* cache, const md_system_t* sys, uint32_t max_bonds, uint32_t a, uint32_t b, md_allocator_i* alloc) {
+static inline bool ref_excluded(md_bitmask_t* cache, const md_system_t* sys, uint32_t max_bonds, uint32_t a, uint32_t b, md_allocator_i* alloc) {
     if (max_bonds == 0) return false;
     if (!cache[a].alloc) {
-        cache[a] = md_bitfield_create(alloc);
-        md_bitfield_set_bit(&cache[a], a);
+        cache[a] = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
+        md_bitmask_set_bit(&cache[a], a);
         md_util_mask_grow_by_bonds(&cache[a], sys, max_bonds, NULL);
     }
-    return md_bitfield_test_bit(&cache[a], b);
+    return md_bitmask_test_bit(&cache[a], b);
 }
 
 static inline md_array(ref_pair_t) ref_contacts(const md_contact_desc_t* desc, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     const bool self = desc->group_b == NULL;
-    const md_bitfield_t* A = desc->group_a;
-    const md_bitfield_t* B = self ? desc->group_a : desc->group_b;
+    const md_bitset_t* A = desc->group_a;
+    const md_bitset_t* B = self ? desc->group_a : desc->group_b;
     const size_t num_b = self ? desc->num_a : desc->num_b;
 
     float* radius = NULL;
@@ -56,20 +56,20 @@ static inline md_array(ref_pair_t) ref_contacts(const md_contact_desc_t* desc, c
         radius = md_alloc(alloc, sizeof(float) * sys->atom.count);
         md_atom_extract_radii(radius, 0, sys->atom.count, &sys->atom);
     }
-    md_bitfield_t* excl = md_alloc(alloc, sizeof(md_bitfield_t) * sys->atom.count);
-    memset(excl, 0, sizeof(md_bitfield_t) * sys->atom.count);
+    md_bitmask_t* excl = md_alloc(alloc, sizeof(md_bitmask_t) * sys->atom.count);
+    memset(excl, 0, sizeof(md_bitmask_t) * sys->atom.count);
 
     md_array(ref_pair_t) result = 0;
     for (uint32_t i = 0; i < desc->num_a; ++i) {
         for (uint32_t j = self ? i + 1 : 0; j < num_b; ++j) {
             if (self && desc->min_separation > 1 && j - i < desc->min_separation && (!desc->group_parent || desc->group_parent[i] == desc->group_parent[j])) continue;
             ref_pair_t p = { i, j, 0, 0, FLT_MAX };
-            md_bitfield_iter_t ia = md_bitfield_iter_create(&A[i]);
-            while (md_bitfield_iter_next(&ia)) {
-                const uint32_t a = (uint32_t)md_bitfield_iter_idx(&ia);
-                md_bitfield_iter_t jb = md_bitfield_iter_create(&B[j]);
-                while (md_bitfield_iter_next(&jb)) {
-                    const uint32_t b = (uint32_t)md_bitfield_iter_idx(&jb);
+            md_bitset_iter_t ia = md_bitset_iter(A[i]);
+            while (md_bitset_iter_next(&ia)) {
+                const uint32_t a = (uint32_t)ia.idx;
+                md_bitset_iter_t jb = md_bitset_iter(B[j]);
+                while (md_bitset_iter_next(&jb)) {
+                    const uint32_t b = (uint32_t)jb.idx;
                     if (a == b) continue;
                     const float d = ref_distance(state, a, b);
                     if (desc->particle_label && desc->particle_label[a] == desc->particle_label[b]) continue;

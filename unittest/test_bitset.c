@@ -4,7 +4,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_bitset.h>
-#include <core/md_bitfield.h>
+#include <core/md_base64.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +12,24 @@
 // Differential tests against a plain bool-per-index reference. The reference universe is small, but the
 // sets are placed at varying offsets (including large ones and ones straddling word boundaries) so every
 // edge case of the span arithmetic is hit.
+
+
+// Counting allocator: tests assert that everything allocated is freed, with the size it was allocated with
+typedef struct { md_allocator_i iface; int64_t live_bytes; int64_t live_allocs; } count_alloc_t;
+static void* count_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
+    (void)file; (void)line;
+    count_alloc_t* c = (count_alloc_t*)inst;
+    if (ptr) { c->live_bytes -= (int64_t)old_size; c->live_allocs -= 1; }
+    if (new_size == 0) { free(ptr); return NULL; }
+    c->live_bytes += (int64_t)new_size; c->live_allocs += 1;
+    return realloc(ptr, new_size);
+}
+static md_allocator_i* count_alloc_init(count_alloc_t* c) {
+    c->live_bytes = 0; c->live_allocs = 0;
+    c->iface.inst = (struct md_allocator_o*)c;
+    c->iface.realloc = count_realloc;
+    return &c->iface;
+}
 
 #define REF_N 1536
 
@@ -74,8 +92,8 @@ static bool ref_get(const ref_t* r, uint64_t i) {
 }
 
 // Checks every observable property of s against r
-static bool matches(md_bitset_t s, const ref_t* r) {
-    if (!md_bitset_validate(s)) return false;
+static bool matches_form(md_bitset_t s, const ref_t* r, bool tidy) {
+    if (!md_bitset_validate(s, tidy)) return false;
 
     const uint32_t lo = r->base >= 128 ? r->base - 128 : 0;
     const uint32_t hi = r->base + REF_N + 128;
@@ -106,6 +124,11 @@ static bool matches(md_bitset_t s, const ref_t* r) {
     return seen == count;
 }
 
+// A set a producer returned: tidy as well
+static bool matches(md_bitset_t s, const ref_t* r) {
+    return matches_form(s, r, true);
+}
+
 static const int NUM_ROUNDS = 400;
 
 static uint32_t pick_base(void) {
@@ -114,7 +137,7 @@ static uint32_t pick_base(void) {
 }
 
 UTEST(bitset, construct) {
-    md_allocator_i* alloc = md_tracking_allocator_create(md_get_heap_allocator());
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
     static ref_t r;
     for (int round = 0; round < NUM_ROUNDS; ++round) {
         r.base = pick_base();
@@ -142,7 +165,7 @@ UTEST(bitset, construct) {
         md_bitset_free(&s3, alloc);
         EXPECT_TRUE(md_bitset_empty(s));
     }
-    md_tracking_allocator_destroy(alloc);  // reports leaks and size mismatches in md_bitset_free
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
 }
 
 UTEST(bitset, canonical_forms) {
@@ -150,7 +173,7 @@ UTEST(bitset, canonical_forms) {
 
     md_bitset_t e = md_bitset_from_indices(NULL, 0, alloc);
     EXPECT_TRUE(md_bitset_empty(e));
-    EXPECT_TRUE(md_bitset_validate(e));
+    EXPECT_TRUE(md_bitset_validate(e, true));
     EXPECT_FALSE(md_bitset_test(e, 0));
 
     // A dense set built from indices is a RUN, with no payload
@@ -173,7 +196,7 @@ UTEST(bitset, canonical_forms) {
 
     // x ^ x is EMPTY in canonical form
     md_bitset_t z = md_bitset_xor(a, a, alloc);
-    EXPECT_TRUE(md_bitset_validate(z));
+    EXPECT_TRUE(md_bitset_validate(z, true));
     EXPECT_TRUE(md_bitset_empty(z));
 
     md_bitset_free(&a, alloc);
@@ -183,7 +206,7 @@ UTEST(bitset, canonical_forms) {
 typedef md_bitset_t (*binop_fn)(md_bitset_t, md_bitset_t, md_allocator_i*);
 
 UTEST(bitset, binary_ops) {
-    md_allocator_i* alloc = md_tracking_allocator_create(md_get_heap_allocator());
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
     static ref_t ra, rb, rr;
     const binop_fn fns[4] = {md_bitset_and, md_bitset_or, md_bitset_andnot, md_bitset_xor};
     const char* names[4] = {"and", "or", "andnot", "xor"};
@@ -203,7 +226,7 @@ UTEST(bitset, binary_ops) {
             // Reference over a window covering both
             const uint32_t lo = ra.base < rb.base ? ra.base : rb.base;
             const uint32_t hi = (ra.base > rb.base ? ra.base : rb.base) + REF_N;
-            bool ok = md_bitset_validate(c);
+            bool ok = md_bitset_validate(c, true);
             uint64_t count = 0;
             for (uint32_t i = lo - 64; ok && i < hi + 64; ++i) {
                 const bool x = ref_get(&ra, i), y = ref_get(&rb, i);
@@ -231,7 +254,7 @@ UTEST(bitset, binary_ops) {
             const uint32_t dbeg = ra.base + rnd_range(0, REF_N / 2) - REF_N / 4;
             const uint32_t dend = dbeg + rnd_range(1, REF_N);
             md_bitset_t c = md_bitset_not(a, dbeg, dend, alloc);
-            bool ok = md_bitset_validate(c);
+            bool ok = md_bitset_validate(c, true);
             for (uint32_t i = dbeg - 64; ok && i < dend + 64; ++i) {
                 const bool e = i >= dbeg && i < dend && !ref_get(&ra, i);
                 ok = md_bitset_test(c, i) == e;
@@ -243,7 +266,7 @@ UTEST(bitset, binary_ops) {
         md_bitset_free(&a, alloc);
         md_bitset_free(&b, alloc);
     }
-    md_tracking_allocator_destroy(alloc);
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
 }
 
 UTEST(bitset, range_queries) {
@@ -272,26 +295,6 @@ UTEST(bitset, range_queries) {
         }
         md_bitset_free(&s, alloc);
     }
-}
-
-UTEST(bitset, bitfield_roundtrip) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    static ref_t r;
-    md_bitfield_t bf = md_bitfield_create(alloc);
-    for (int round = 0; round < NUM_ROUNDS; ++round) {
-        r.base = pick_base();
-        gen(r.ref, round % SHAPE_COUNT);
-        md_bitset_t s = make(&r, alloc);
-
-        md_bitset_to_bitfield(&bf, s);
-        EXPECT_EQ(md_bitset_count(s), md_bitfield_popcount(&bf));
-        md_bitset_t s2 = md_bitset_from_bitfield(&bf, alloc);
-        EXPECT_TRUE(md_bitset_equal(s, s2));
-
-        md_bitset_free(&s, alloc);
-        md_bitset_free(&s2, alloc);
-    }
-    md_bitfield_free(&bf);
 }
 
 UTEST(bitset, gpu_pack) {
@@ -352,7 +355,7 @@ UTEST(bitset, span_edges) {
 
             for (int v = 0; v < (has_hole ? 2 : 1); ++v) {
                 const md_bitset_t s = sets[v];
-                bool ok = md_bitset_validate(s) && (v == 0 ? md_bitset_is_run(s) : !md_bitset_is_run(s));
+                bool ok = md_bitset_validate(s, true) && (v == 0 ? md_bitset_is_run(s) : !md_bitset_is_run(s));
                 ok = ok && s.beg == b && s.end == e;
                 uint64_t n = 0;
                 for (uint32_t base = (b & ~63u) - 64; ok && base < e + 128; base += 64) {
@@ -378,131 +381,227 @@ UTEST(bitset, span_edges) {
     EXPECT_EQ(0, failures);
 }
 
-// The builder against the reference: a random sequence of set / set_range / or / and / andnot / reset over a
-// domain, members outside the domain dropped. The sets combined with it are placed at offsets of their own, so
-// they straddle the domain's edges.
-UTEST(bitset, builder) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    static ref_t expect, other;
-    int failures = 0;
-    for (int round = 0; round < NUM_ROUNDS * 4; ++round) {
-        md_temp_scope_t temp = md_temp_begin();
-        md_allocator_i* scratch = md_temp_allocator(temp);
-
-        const uint32_t base = pick_base() + 2 * REF_N;
-        const uint32_t dbeg = base + rnd_range(0, REF_N / 2);
-        const uint32_t dend = dbeg + rnd_range(1, base + REF_N - dbeg);
-        md_bitset_builder_t b;
-        md_bitset_builder_init(&b, dbeg, dend, scratch);
-
-        expect.base = base;
-        memset(expect.ref, 0, REF_N);
-        #define IN_DOM(i) ((i) >= dbeg && (i) < dend)
-
-        const int steps = 1 + rnd() % 10;
-        for (int step = 0; step < steps; ++step) {
-            switch (rnd() % 8) {
-            case 0: case 1: {
-                const uint32_t i = base - 32 + rnd_range(0, REF_N + 64);
-                md_bitset_builder_set(&b, i);
-                if (IN_DOM(i)) expect.ref[i - base] = 1;
-            } break;
-            case 2: {
-                const uint32_t rb = base - 100 + rnd_range(0, REF_N + 200);
-                const uint32_t re = rb + rnd_range(0, 400);
-                md_bitset_builder_set_range(&b, rb, re);
-                for (uint32_t i = rb; i < re; ++i) if (IN_DOM(i)) expect.ref[i - base] = 1;
-            } break;
-            case 3: case 4: case 5: case 6: {
-                other.base = base - REF_N / 2 + rnd_range(0, REF_N);
-                gen(other.ref, rnd() % SHAPE_COUNT);
-                md_bitset_t s = make(&other, alloc);
-                const int op = rnd() % 3;
-                if (op == 0) md_bitset_builder_or(&b, s);
-                if (op == 1) md_bitset_builder_and(&b, s);
-                if (op == 2) md_bitset_builder_andnot(&b, s);
-                for (uint32_t k = 0; k < REF_N; ++k) {
-                    const uint32_t i = base + k;
-                    const bool y = ref_get(&other, i);
-                    if (op == 0) expect.ref[k] |= (uint8_t)(y && IN_DOM(i));
-                    if (op == 1) expect.ref[k] &= (uint8_t)y;
-                    if (op == 2) expect.ref[k] &= (uint8_t)!y;
-                }
-                md_bitset_free(&s, alloc);
-            } break;
-            case 7:
-                if (rnd() % 3 == 0) {
-                    md_bitset_builder_reset(&b);
-                    memset(expect.ref, 0, REF_N);
-                }
-                break;
+// A mask against a reference, under a random sequence of every mutating operation. The domain is narrower than
+// what the operations reach, so the clamping to it is exercised too.
+UTEST(bitset, mask) {
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
+    enum { U = 4096 };
+    static uint8_t ref[U];
+    static ref_t rs;
+    const uint32_t base = 1u << 16;   // keeps every index well away from 0
+    for (int round = 0; round < 60; ++round) {
+        memset(ref, 0, sizeof(ref));
+        const uint32_t dlo = rnd_range(0, 200), dhi = U - rnd_range(0, 200);    // the domain, within [0, U)
+        md_bitmask_t m = md_bitmask_create(base + dlo, base + dhi, alloc);
+        for (int step = 0; step < 60; ++step) {
+            const uint32_t x = rnd_range(0, U), y = rnd_range(x, U + 1 > x + 300 ? x + 300 : U + 1);
+            const int op = rnd() % 14;
+            rs.base = base + rnd_range(0, U - REF_N);
+            gen(rs.ref, rnd() % SHAPE_COUNT);
+            md_bitset_t s = (op >= 6 && op <= 10) ? make(&rs, alloc) : md_bitset_empty_set();
+            #define IN_DOM(i) ((i) >= dlo && (i) < dhi)
+            switch (op) {
+            case 0: md_bitmask_set_bit(&m, base + x); if (IN_DOM(x)) ref[x] = 1; break;
+            case 1: md_bitmask_clear_bit(&m, base + x); ref[x] = 0; break;
+            case 2: md_bitmask_set_range(&m, base + x, base + y); for (uint32_t i = x; i < y; ++i) if (IN_DOM(i)) ref[i] = 1; break;
+            case 3: md_bitmask_clear_range(&m, base + x, base + y); for (uint32_t i = x; i < y; ++i) ref[i] = 0; break;
+            case 4: md_bitmask_invert_range(&m, base + x, base + y); for (uint32_t i = x; i < y; ++i) if (IN_DOM(i)) ref[i] ^= 1; break;
+            case 5: if (step % 17 == 0) { md_bitmask_clear(&m); memset(ref, 0, sizeof(ref)); } break;
+            case 6: md_bitmask_or(&m, s);     for (uint32_t i = 0; i < U; ++i) ref[i] |= IN_DOM(i) && ref_get(&rs, base + i); break;
+            case 7: md_bitmask_and(&m, s);    for (uint32_t i = 0; i < U; ++i) ref[i] &= ref_get(&rs, base + i); break;
+            case 8: md_bitmask_andnot(&m, s); for (uint32_t i = 0; i < U; ++i) ref[i] &= !ref_get(&rs, base + i); break;
+            case 9: md_bitmask_xor(&m, s);    for (uint32_t i = 0; i < U; ++i) ref[i] ^= IN_DOM(i) && ref_get(&rs, base + i); break;
+            case 10: md_bitmask_assign(&m, s); for (uint32_t i = 0; i < U; ++i) ref[i] = IN_DOM(i) && ref_get(&rs, base + i); break;
+            // With a view of the mask itself as the operand
+            case 11: md_bitmask_or(&m, md_bitmask_view(&m)); break;
+            case 12: md_bitmask_assign(&m, md_bitmask_view(&m)); break;
+            case 13: if (step % 13 == 0) { md_bitmask_andnot(&m, md_bitmask_view(&m)); memset(ref, 0, sizeof(ref)); } break;
             }
+            #undef IN_DOM
+            md_bitset_free(&s, alloc);
         }
-        #undef IN_DOM
-
+        // Readers, the view and the extracted set agree with the reference
+        uint64_t count = 0;
         bool ok = true;
-        for (uint32_t k = 0; ok && k < REF_N; ++k) ok = md_bitset_builder_test(&b, base + k) == (bool)expect.ref[k];
-        md_bitset_t s1 = md_bitset_builder_finish(&b, alloc);
-        md_bitset_t s2 = md_bitset_builder_finish(&b, alloc);   // finishing leaves the builder as it is
-        ok = ok && matches(s1, &expect) && md_bitset_equal(s1, s2);
-        if (!ok) {
-            if (failures < 5) printf("builder failed (round %d): domain [%u,%u) result [%u,%u) %s\n", round, dbeg, dend, s1.beg, s1.end, s1.words ? "bits" : "run");
-            ++failures;
+        for (uint32_t i = 0; i < U; ++i) {
+            count += ref[i];
+            ok = ok && md_bitmask_test_bit(&m, base + i) == (bool)ref[i];
         }
-        md_bitset_free(&s1, alloc);
-        md_bitset_free(&s2, alloc);
-        md_temp_end(temp);
+        ok = ok && !md_bitmask_test_bit(&m, base - 1) && !md_bitmask_test_bit(&m, base + U);
+        ok = ok && md_bitmask_count(&m) == count && md_bitmask_empty(&m) == (count == 0);
+        const uint32_t qb = rnd_range(0, U), qe = rnd_range(qb, U + 1);
+        uint64_t qc = 0; for (uint32_t i = qb; i < qe; ++i) qc += ref[i];
+        ok = ok && md_bitmask_count_range(&m, base + qb, base + qe) == qc;
+        ok = ok && md_bitmask_test_any_range(&m, base + qb, base + qe) == (qc > 0);
+        ok = ok && md_bitmask_test_all_range(&m, base + qb, base + qe) == (qc == qe - qb);
+
+        md_bitset_iter_t it = md_bitmask_iter(&m);
+        uint64_t seen = 0;
+        while (md_bitset_iter_next(&it)) { ok = ok && it.idx >= base && it.idx < base + U && ref[it.idx - base]; ++seen; }
+        ok = ok && seen == count;
+
+        const md_bitset_t v = md_bitmask_view(&m);
+        ok = ok && md_bitset_validate(v, false) && md_bitset_count(v) == count;
+        for (uint32_t i = 0; ok && i < U; ++i) ok = md_bitset_test(v, base + i) == (bool)ref[i];
+
+        md_bitset_t f = md_bitmask_extract(&m, alloc);
+        ok = ok && md_bitset_validate(f, true) && md_bitset_equal(f, v) && md_bitset_hash64(f, 3) == md_bitset_hash64(v, 3);
+        EXPECT_TRUE(ok);
+        md_bitset_free(&f, alloc);
+        md_bitmask_free(&m);
     }
-    EXPECT_EQ(0, failures);
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
 }
 
-// A union of many sets through one builder equals the pairwise fold, and reusing the builder after a reset
-// starts from nothing
-UTEST(bitset, builder_fold) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* scratch = md_temp_allocator(temp);
+// Words are allocated as they are first written, and not at all for what is never written. Once reserved,
+// writing within the reservation never moves them.
+UTEST(bitset, mask_allocation) {
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
+    md_bitmask_t m = md_bitmask_create(0, MD_BITSET_MAX_INDEX, alloc);
+    EXPECT_EQ(0, counter.live_allocs);
+    EXPECT_TRUE(md_bitmask_empty(&m));
+    md_bitmask_set_bit(&m, 3000000000u);
+    md_bitmask_set_bit(&m, 3000000100u);
+    EXPECT_LE(counter.live_bytes, 64 * 8);   // a few words, not 3 billion bits
+    EXPECT_EQ(2u, (unsigned)md_bitmask_count(&m));
+    md_bitset_t v = md_bitmask_view(&m);
+    EXPECT_EQ(3000000000u, v.beg);
+    EXPECT_EQ(3000000101u, v.end);
 
-    enum { NUM = 2000 };
-    md_bitset_builder_t b;
-    md_bitset_builder_init(&b, 0, NUM * 11, scratch);
-    md_bitset_t fold = md_bitset_empty_set();
-    for (uint32_t i = 0; i < NUM; ++i) {
-        const md_bitset_t r = md_bitset_range(i * 11, i * 11 + 10);   // residues with a one atom gap: not a run
-        md_bitset_builder_or(&b, r);
-        md_bitset_t next = md_bitset_or(fold, r, alloc);
-        md_bitset_free(&fold, alloc);
-        fold = next;
-    }
-    md_bitset_t built = md_bitset_builder_finish(&b, alloc);
-    EXPECT_TRUE(md_bitset_equal(built, fold));
-    EXPECT_EQ((uint64_t)NUM * 10, md_bitset_count(built));
+    // Clearing keeps the words, and is O(1): nothing is a member any more
+    md_bitmask_clear(&m);
+    EXPECT_TRUE(md_bitmask_empty(&m));
+    EXPECT_FALSE(md_bitmask_test_bit(&m, 3000000000u));
+    EXPECT_TRUE(md_bitset_empty(md_bitmask_view(&m)));
+    md_bitmask_free(&m);
+    EXPECT_EQ(0, counter.live_bytes);
 
-    // Reused for a small context: the result is that context only, and a run
-    md_bitset_builder_reset(&b);
-    md_bitset_builder_set_range(&b, 110, 120);
-    md_bitset_t small = md_bitset_builder_finish(&b, alloc);
-    EXPECT_TRUE(md_bitset_is_run(small));
-    EXPECT_EQ(110u, small.beg);
-    EXPECT_EQ(120u, small.end);
+    md_bitmask_init(&m, 0, 100000, alloc);
+    md_bitmask_reserve(&m, 0, 100000);
+    const uint64_t* words = m.words;
+    for (uint32_t i = 0; i < 100000; i += 7) md_bitmask_set_bit(&m, i);
+    md_bitmask_set_range(&m, 0, 100000);
+    md_bitmask_clear(&m);
+    md_bitmask_set_bit(&m, 99999);
+    EXPECT_TRUE(m.words == words);
+    // Outside the domain: dropped
+    md_bitmask_set_bit(&m, 100000);
+    md_bitmask_set_range(&m, 99990, 200000);
+    EXPECT_EQ(10u, (unsigned)md_bitmask_count(&m));
 
-    // Empty domain and empty builder
-    md_bitset_builder_t e;
-    md_bitset_builder_init(&e, 5, 5, scratch);
-    md_bitset_builder_set(&e, 5);
-    EXPECT_TRUE(md_bitset_empty(md_bitset_builder_finish(&e, alloc)));
-
-    md_bitset_free(&built, alloc);
-    md_bitset_free(&fold, alloc);
-    md_temp_end(temp);
+    // A narrower domain drops the members outside it
+    md_bitmask_set_domain(&m, 99995, 100000);
+    EXPECT_EQ(5u, (unsigned)md_bitmask_count(&m));
+    EXPECT_FALSE(md_bitmask_test_bit(&m, 99994));
+    md_bitmask_free(&m);
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
 }
 
-// from_words takes words only as far as MAX_INDEX: one past the last member must not wrap
-UTEST(bitset, top_window) {
+// A RUN and a BITS set with the same members are equal and hash the same: a view of a full mask is BITS
+UTEST(bitset, equality_by_members) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    uint64_t w = 1ull << 63;
-    md_bitset_t s = md_bitset_from_words(&w, 1, MD_BITSET_MAX_INDEX - 64, alloc);
-    EXPECT_TRUE(md_bitset_validate(s));
-    EXPECT_EQ(MD_BITSET_MAX_INDEX, s.end);
+    md_bitmask_t m = md_bitmask_create(0, 1000, alloc);
+    md_bitmask_set_range(&m, 100, 300);
+    const md_bitset_t v = md_bitmask_view(&m);
+    EXPECT_FALSE(md_bitset_is_run(v));
+    EXPECT_TRUE(md_bitset_validate(v, false));
+    EXPECT_FALSE(md_bitset_validate(v, true));
+    EXPECT_TRUE(md_bitset_equal(v, md_bitset_range(100, 300)));
+    EXPECT_EQ(md_bitset_hash64(v, 11), md_bitset_hash64(md_bitset_range(100, 300), 11));
+    md_bitset_t e = md_bitmask_extract(&m, alloc);
+    EXPECT_TRUE(md_bitset_is_run(e));
+    md_bitmask_clear_bit(&m, 200);
+    EXPECT_FALSE(md_bitset_equal(md_bitmask_view(&m), md_bitset_range(100, 300)));
+    EXPECT_NE(md_bitset_hash64(md_bitmask_view(&m), 11), md_bitset_hash64(md_bitset_range(100, 300), 11));
+    // Zero words at the ends of what was written are not part of the view
+    md_bitmask_clear_range(&m, 100, 299);
+    const md_bitset_t one = md_bitmask_view(&m);
+    EXPECT_EQ(299u, one.beg);
+    EXPECT_EQ(300u, one.end);
+    EXPECT_TRUE(md_bitset_validate(one, false));
+    md_bitmask_free(&m);
+}
+
+UTEST(bitset, replace_assign) {
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
+    static ref_t ra, rb;
+    for (int round = 0; round < 200; ++round) {
+        ra.base = 8192; rb.base = 8192 + rnd_range(0, 512);
+        gen(ra.ref, rnd() % SHAPE_COUNT);
+        gen(rb.ref, rnd() % SHAPE_COUNT);
+        md_bitset_t b = make(&rb, alloc);
+        md_bitset_t a = make(&ra, alloc);
+        md_bitset_t expect = md_bitset_empty_set();
+        switch (round % 3) {
+        case 0: expect = md_bitset_or(a, b, alloc);  md_bitset_replace(&a, md_bitset_or(a, b, alloc), alloc); break;
+        case 1: expect = md_bitset_copy(b, alloc);   md_bitset_assign(&a, b, alloc); md_bitset_assign(&a, a, alloc); break;
+        case 2: expect = md_bitset_copy(a, alloc);   md_bitset_replace(&a, a, alloc); break;
+        }
+        EXPECT_TRUE(md_bitset_validate(a, true));
+        EXPECT_TRUE(md_bitset_equal(a, expect));
+        md_bitset_free(&a, alloc);
+        md_bitset_free(&b, alloc);
+        md_bitset_free(&expect, alloc);
+    }
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
+}
+
+// The serialized form is the one the former md_bitfield wrote. These strings were produced by
+// md_bitfield_serialize + base64 before it was removed: they must read back, and the same sets must write
+// the same bytes (workspace files hold masks in this form).
+static bool golden_round_trip(const char* b64, md_bitset_t expected) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const size_t len = strlen(b64);
+    uint8_t raw[1024];
+    const size_t raw_len = md_base64_decode(raw, b64, len);
+    md_bitset_t s = {0};
+    bool ok = raw_len > 0 && md_bitset_deserialize(&s, raw, raw_len, alloc);
+    ok = ok && md_bitset_equal(s, expected);
+
+    uint8_t out[1024];
+    ok = ok && md_bitset_serialize_size_in_bytes(expected) <= sizeof(out);
+    const size_t out_len = ok ? md_bitset_serialize(out, expected) : 0;
+    char enc[2048];
+    const size_t enc_len = out_len ? md_base64_encode(enc, out, out_len) : 0;
+    ok = ok && enc_len == len && memcmp(enc, b64, len) == 0;
     md_bitset_free(&s, alloc);
+    return ok;
+}
+
+UTEST(bitset, serialization_matches_former_bitfield) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const uint32_t bits[] = { 0, 1, 5, 63, 64, 65, 1000, 4095 };
+    md_bitset_t a = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    EXPECT_TRUE(golden_round_trip("KQMAAAABAAcAIwBgAACAQA/gaAAAAeA0cQQAAAAAgA==", a));
+
+    EXPECT_TRUE(golden_round_trip("JAEAAAD/IAAAAOAtAAQAAAAAAA==", md_bitset_range(0, 32)));
+
+    md_bitset_t c = md_bitset_or(md_bitset_range(600, 2000), md_bitset_range(5000, 5001), alloc);
+    EXPECT_TRUE(golden_round_trip("KQQAAQACgAMACQDgAgAA/+BlAOACeeAjAA4BAAAAAAAAAAAAAAAAAAA=", c));
+
+    md_bitset_free(&a, alloc);
+    md_bitset_free(&c, alloc);
+}
+
+// Round trip over every shape and offset the format can address
+UTEST(bitset, serialization_round_trip) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    static ref_t r;
+    for (int round = 0; round < NUM_ROUNDS; ++round) {
+        r.base = pick_base() & 0xFFFFF;  // the format addresses 2^24 bits
+        gen(r.ref, round % SHAPE_COUNT);
+        md_bitset_t s = make(&r, alloc);
+        const size_t cap = md_bitset_serialize_size_in_bytes(s);
+        if (md_bitset_empty(s)) { EXPECT_EQ((size_t)0, cap); continue; }
+        uint8_t* bytes = (uint8_t*)malloc(cap);
+        const size_t n = md_bitset_serialize(bytes, s);
+        EXPECT_GT(n, (size_t)0);
+        md_bitset_t d = {0};
+        EXPECT_TRUE(md_bitset_deserialize(&d, bytes, n, alloc));
+        EXPECT_TRUE(md_bitset_equal(d, s));
+        free(bytes);
+        md_bitset_free(&s, alloc);
+        md_bitset_free(&d, alloc);
+    }
 }

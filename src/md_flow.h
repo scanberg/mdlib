@@ -16,7 +16,7 @@
 // belong to whoever draws it, so changing the zoom never triggers a relayout.
 
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 
@@ -113,7 +113,7 @@ md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps)
 // than indexing either array directly.
 
 typedef struct md_flow_cut_t {
-    md_bitfield_t expanded;                 // graph node index -> is expanded
+    md_bitmask_t expanded;                  // graph node index -> is expanded
     float threshold;                        // fold nodes below this share of their COLUMN, [0,1)
 
     // An "Others" never grows past this share of its column: folding proceeds from the smallest

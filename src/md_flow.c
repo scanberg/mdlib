@@ -232,7 +232,7 @@ void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc) {
     ASSERT(cut);
     ASSERT(alloc);
     MEMSET(cut, 0, sizeof(md_flow_cut_t));
-    md_bitfield_init(&cut->expanded, alloc);
+    md_bitmask_init(&cut->expanded, 0, MD_BITSET_MAX_INDEX, alloc);  // words are allocated as nodes are expanded
     cut->other_max = 1.0f;      // uncapped unless the caller says otherwise
     cut->alloc = alloc;
 }
@@ -240,7 +240,7 @@ void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc) {
 void md_flow_cut_free(md_flow_cut_t* cut) {
     ASSERT(cut);
     if (cut->alloc) {
-        md_bitfield_free(&cut->expanded);
+        md_bitmask_free(&cut->expanded);
         md_array_free(cut->visible, cut->alloc);
         md_array_free(cut->links,   cut->alloc);
         md_array_free(cut->other,   cut->alloc);
@@ -252,9 +252,9 @@ void md_flow_cut_free(md_flow_cut_t* cut) {
 void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expanded) {
     ASSERT(cut);
     if (expanded) {
-        md_bitfield_set_bit(&cut->expanded, node_idx);
+        md_bitmask_set_bit(&cut->expanded, node_idx);
     } else {
-        md_bitfield_clear_bit(&cut->expanded, node_idx);
+        md_bitmask_clear_bit(&cut->expanded, node_idx);
     }
 }
 
@@ -272,21 +272,19 @@ bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column) {
 
 bool md_flow_cut_is_expanded(const md_flow_cut_t* cut, uint32_t node_idx) {
     ASSERT(cut);
-    return md_bitfield_test_bit(&cut->expanded, node_idx);
+    return md_bitmask_test_bit(&cut->expanded, node_idx);
 }
 
 void md_flow_cut_collapse_all(md_flow_cut_t* cut) {
     ASSERT(cut);
-    md_bitfield_clear(&cut->expanded);
+    md_bitmask_clear(&cut->expanded);
 }
 
 void md_flow_cut_expand_all(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
     ASSERT(cut);
     ASSERT(graph);
     const size_t count = md_array_size(graph->nodes);
-    for (size_t i = 0; i < count; ++i) {
-        md_bitfield_set_bit(&cut->expanded, i);
-    }
+    if (count) md_bitmask_set_range(&cut->expanded, 0, (uint32_t)count);
 }
 
 const md_flow_node_t* md_flow_cut_node(const md_flow_cut_t* cut, const md_flow_graph_t* graph, uint32_t cut_idx) {
@@ -338,14 +336,14 @@ void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
 
         bool ancestors_expanded = true;
         for (uint32_t p = node->parent; p != MD_FLOW_INVALID_INDEX; p = graph->nodes[p].parent) {
-            if (!md_bitfield_test_bit(&cut->expanded, p)) {
+            if (!md_bitmask_test_bit(&cut->expanded, p)) {
                 ancestors_expanded = false;
                 break;
             }
         }
         if (!ancestors_expanded) continue;
 
-        const bool expanded = has_children[i] && md_bitfield_test_bit(&cut->expanded, i);
+        const bool expanded = has_children[i] && md_bitmask_test_bit(&cut->expanded, (uint32_t)i);
         if (!expanded) {
             in_cut[i] = true;
         }

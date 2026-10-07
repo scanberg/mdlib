@@ -6,7 +6,8 @@
 #include <core/md_vec_math.h>
 
 struct md_allocator_i;
-struct md_bitfield_t;
+struct md_bitset_t;
+struct md_bitmask_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,7 +54,7 @@ bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state);
+void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
 // Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion) from their names, atoms and
 // bonds. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
@@ -132,11 +133,11 @@ size_t md_util_system_infer_coordination(md_system_t* sys);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_system_t* sys, size_t extent, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_bonds(struct md_bitmask_t* mask, const struct md_system_t* sys, size_t extent, const struct md_bitset_t* viable_mask);
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_state_t* state, double radius, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_radius(struct md_bitmask_t* mask, const md_system_state_t* state, double radius, const struct md_bitset_t* viable_mask);
 
 // Infer rings formed by covalent bonds: the rings of 3 to 7 atoms which are not sums of smaller rings (sys->ring: the
 // smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags)

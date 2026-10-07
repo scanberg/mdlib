@@ -11,7 +11,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 
@@ -47,17 +47,17 @@ static bool set_is_sorted_by_key(const md_hbond_set_t* s) {
     return true;
 }
 
-static md_bitfield_t residue_set(const md_system_t* sys, const char* resname, size_t max_count, md_allocator_i* alloc) {
-    md_bitfield_t bf = md_bitfield_create(alloc);
+static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size_t max_count, md_allocator_i* alloc) {
+    md_bitmask_t bf = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
     size_t n = 0;
     for (size_t c = 0; c < sys->component.count && n < max_count; ++c) {
         str_t name = str_trim(md_component_name(&sys->component, c));
         if (resname && !str_eq_cstr(name, resname)) continue;
         md_urange_t r = md_system_component_atom_range(sys, c);
-        md_bitfield_set_range(&bf, r.beg, r.end);
+        md_bitmask_set_range(&bf, r.beg, r.end);
         n += 1;
     }
-    return bf;
+    return md_bitmask_extract(&bf, alloc);
 }
 
 static vec3_t mi_diff(const md_system_state_t* st, uint32_t from, uint32_t to) {
@@ -632,11 +632,12 @@ UTEST_F(hbond, competition_invariants) {
 UTEST_F(hbond, role_override) {
     const md_system_t* sys = &utest_fixture->npt;
     md_allocator_i* alloc = utest_fixture->alloc;
-    md_bitfield_t n_o = md_bitfield_create(alloc);
+    md_bitmask_t n_o_mask = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
     for (size_t i = 0; i < sys->atom.count; ++i) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
-        if (z == MD_Z_N || z == MD_Z_O) md_bitfield_set_bit(&n_o, i);
+        if (z == MD_Z_N || z == MD_Z_O) md_bitmask_set_bit(&n_o_mask, (uint32_t)i);
     }
+    const md_bitset_t n_o = md_bitmask_view(&n_o_mask);
     md_hbond_params_t p = md_hbond_params_preset(MD_HBOND_PRESET_MDTRAJ);
     md_hbond_desc_t desc = { .params = &p };
     md_hbond_set_t ref;
@@ -655,7 +656,7 @@ UTEST_F(hbond, role_override) {
 
 // ### SELECTIONS ###
 
-static void check_selection_independent(int* utest_result, const md_system_t* sys, const md_system_state_t* st, const md_bitfield_t* a, const md_bitfield_t* b, md_allocator_i* alloc) {
+static void check_selection_independent(int* utest_result, const md_system_t* sys, const md_system_state_t* st, const md_bitset_t* a, const md_bitset_t* b, md_allocator_i* alloc) {
     md_hbond_set_t full;
     ASSERT_TRUE(md_hbond_compute(&full, NULL, sys, st, alloc));
     md_hbond_desc_t desc = { .set_a = a, .set_b = b };
@@ -667,12 +668,12 @@ static void check_selection_independent(int* utest_result, const md_system_t* sy
     size_t expected = 0, m = 0;
     bool same = true;
     for (size_t k = 0; k < full.count; ++k) {
-        const bool da = md_bitfield_test_bit(a, full.donor[k]) || md_bitfield_test_bit(a, full.hydrogen[k]);
-        const bool aa = md_bitfield_test_bit(a, full.acceptor[k]);
+        const bool da = md_bitset_test(*a, full.donor[k]) || md_bitset_test(*a, full.hydrogen[k]);
+        const bool aa = md_bitset_test(*a, full.acceptor[k]);
         bool keep;
         if (b) {
-            const bool db = md_bitfield_test_bit(b, full.donor[k]) || md_bitfield_test_bit(b, full.hydrogen[k]);
-            const bool ab = md_bitfield_test_bit(b, full.acceptor[k]);
+            const bool db = md_bitset_test(*b, full.donor[k]) || md_bitset_test(*b, full.hydrogen[k]);
+            const bool ab = md_bitset_test(*b, full.acceptor[k]);
             keep = (da && ab) || (db && aa);
         } else {
             keep = da && aa;
@@ -694,9 +695,8 @@ UTEST_F(hbond, selection_between) {
     md_allocator_i* alloc = utest_fixture->alloc;
     const md_system_t* sys = &utest_fixture->centered;
     // A few residues against the rest: a small selection, which exercises the shell of competitors
-    md_bitfield_t few  = residue_set(sys, NULL, 60, alloc);
-    md_bitfield_t rest = md_bitfield_create(alloc);
-    md_bitfield_not(&rest, &few, 0, sys->atom.count);
+    md_bitset_t few  = residue_set(sys, NULL, 60, alloc);
+    md_bitset_t rest = md_bitset_not(few, 0, (uint32_t)sys->atom.count, alloc);
     check_selection_independent(utest_result, sys, &utest_fixture->centered_state, &few, &rest, alloc);
     // Within a small selection
     check_selection_independent(utest_result, sys, &utest_fixture->centered_state, &few, NULL, alloc);
@@ -707,8 +707,8 @@ UTEST_F(hbond, selection_between) {
 UTEST_F(hbond, selection_ligand) {
     md_allocator_i* alloc = utest_fixture->alloc;
     const md_system_t* sys = &utest_fixture->npt;
-    md_bitfield_t lys = residue_set(sys, "LYS", 1000, alloc);
-    md_bitfield_t sol = residue_set(sys, "SOL", 100000, alloc);
+    md_bitset_t lys = residue_set(sys, "LYS", 1000, alloc);
+    md_bitset_t sol = residue_set(sys, "SOL", 100000, alloc);
     check_selection_independent(utest_result, sys, &utest_fixture->npt_state, &lys, &sol, alloc);
 }
 
@@ -749,9 +749,7 @@ UTEST(hbond, selection_competitor_outside) {
     ASSERT_EQ(1, (int)full.count);
     EXPECT_EQ(3u, full.acceptor[0]);
 
-    md_bitfield_t sel = md_bitfield_create(alloc);
-    md_bitfield_set_range(&sel, 0, 3);
-    md_bitfield_set_range(&sel, 6, 9);
+    const md_bitset_t sel = md_bitset_or(md_bitset_range(0, 3), md_bitset_range(6, 9), alloc);
     desc.set_a = &sel;
     md_hbond_set_t set;
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
@@ -804,9 +802,7 @@ UTEST(hbond, selection_competitor_chain) {
     EXPECT_EQ(10u, full.hydrogen[1]);
     EXPECT_EQ(3u, full.acceptor[1]);
 
-    md_bitfield_t sel = md_bitfield_create(alloc);
-    md_bitfield_set_range(&sel, 0, 3);
-    md_bitfield_set_range(&sel, 6, 9);
+    const md_bitset_t sel = md_bitset_or(md_bitset_range(0, 3), md_bitset_range(6, 9), alloc);
     desc.set_a = &sel;
     md_hbond_set_t set;
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
@@ -835,22 +831,23 @@ UTEST_F(hbond, selection_heavy_competition) {
     uint32_t seed = 12345;
     for (int round = 0; round < 8; ++round) {
         // About 5% of the residues
-        md_bitfield_t sel = md_bitfield_create(alloc);
+        md_bitmask_t sel_mask = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
         for (size_t c = 0; c < sys->component.count; ++c) {
             seed = seed * 1664525u + 1013904223u;
             if ((seed >> 24) < 13) {
                 const md_urange_t r = md_system_component_atom_range(sys, c);
-                md_bitfield_set_range(&sel, r.beg, r.end);
+                md_bitmask_set_range(&sel_mask, r.beg, r.end);
             }
         }
+        const md_bitset_t sel = md_bitmask_view(&sel_mask);
         desc.set_a = &sel;
         md_hbond_set_t set;
         ASSERT_TRUE(md_hbond_compute(&set, &desc, sys, st, alloc));
         size_t expected = 0, m = 0;
         bool same = true;
         for (size_t k = 0; k < full.count; ++k) {
-            const bool d_in = md_bitfield_test_bit(&sel, full.donor[k]) || md_bitfield_test_bit(&sel, full.hydrogen[k]);
-            if (!(d_in && md_bitfield_test_bit(&sel, full.acceptor[k]))) continue;
+            const bool d_in = md_bitset_test(sel, full.donor[k]) || md_bitset_test(sel, full.hydrogen[k]);
+            if (!(d_in && md_bitset_test(sel, full.acceptor[k]))) continue;
             expected += 1;
             if (m < set.count && set.hydrogen[m] == full.hydrogen[k] && set.acceptor[m] == full.acceptor[k]) m += 1;
             else same = false;

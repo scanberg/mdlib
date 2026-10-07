@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
-struct md_bitfield_t;
+struct md_bitset_t;
 struct md_system_t;
 struct md_system_state_t;
 
@@ -121,14 +121,14 @@ typedef struct md_hbond_desc_t {
     // Optional. NULL for every bond of the system. Given alone: the bonds with donor and acceptor both in set_a.
     // Given with set_b: the bonds with the donor in one set and the acceptor in the other. A donor is in a set when
     // its heavy atom or its hydrogen is.
-    const struct md_bitfield_t* set_a;
-    const struct md_bitfield_t* set_b;
+    const struct md_bitset_t* set_a;
+    const struct md_bitset_t* set_b;
 
     // Optional overrides of the perceived roles. donors: the heavy atoms which donate through the hydrogens bonded to
     // them. acceptors: the atoms which accept, with their perceived capacity, or that of their element if they were
     // not perceived as acceptors.
-    const struct md_bitfield_t* donors;
-    const struct md_bitfield_t* acceptors;
+    const struct md_bitset_t* donors;
+    const struct md_bitset_t* acceptors;
 
     // Optional coordinates for perceiving the roles: whether a three connected N is planar, and thereby has no free lone
     // pair. Without them the hybridization of the perceived chemistry tells (md_chem_perceive: an sp2 N is conjugated

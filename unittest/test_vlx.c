@@ -646,7 +646,7 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 #include <md_util.h>
 #include <md_filter.h>
 #include <md_script.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <string.h>
 #include "system_invariants.h"
 
@@ -892,37 +892,37 @@ UTEST(vlx, pe_regions_are_selectable) {
 
 	char err[256] = "";
 	bool dynamic = false;
-	md_bitfield_t bf = md_bitfield_create(t.alloc);
+	md_bitset_t bf = {0};
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
-	EXPECT_EQ(3u, md_bitfield_popcount_range(&bf, 0, 3));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(3u, md_bitset_count(bf));
+	EXPECT_EQ(3u, md_bitset_count_range(bf, 0, 3));
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
-	EXPECT_EQ(5u, md_bitfield_popcount_range(&bf, 3, 8));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(5u, md_bitset_count(bf));
+	EXPECT_EQ(5u, md_bitset_count_range(bf, 3, 8));
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(5u, md_bitset_count(bf));
 
 	// One selection per fragment: NA, and HOH with its expansion point
-	md_array(md_bitfield_t) arr = 0;
+	md_array(md_bitset_t) arr = 0;
 	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
 	ASSERT_EQ(2u, md_array_size(arr));
-	EXPECT_EQ(1u, md_bitfield_popcount(&arr[0]));
-	EXPECT_EQ(4u, md_bitfield_popcount(&arr[1]));
+	EXPECT_EQ(1u, md_bitset_count(arr[0]));
+	EXPECT_EQ(4u, md_bitset_count(arr[1]));
 
 	arr = 0;
 	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
 	ASSERT_EQ(1u, md_array_size(arr));
-	EXPECT_EQ(3u, md_bitfield_popcount(&arr[0]));
+	EXPECT_EQ(3u, md_bitset_count(arr[0]));
 
 	// They compose like any other selection, and take a context like the residue selectors do
-	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
-	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(1u, md_bitfield_popcount(&bf));
-	EXPECT_TRUE(md_bitfield_test_bit(&bf, 3));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(5u, md_bitset_count(bf));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(1u, md_bitset_count(bf));
+	EXPECT_TRUE(md_bitset_test(bf, 3));
 
 	qm_test_free(&t);
 }
@@ -952,7 +952,7 @@ UTEST(vlx, pe_regions_in_a_script) {
 
 	char err[256] = "";
 	bool dynamic = false;
-	md_array(md_bitfield_t) arr = 0;
+	md_array(md_bitset_t) arr = 0;
 	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
 	EXPECT_EQ(50u, md_array_size(arr));
 
@@ -1080,11 +1080,11 @@ UTEST(vlx, qm_without_environment) {
 
 	char err[256] = "";
 	bool dynamic = false;
-	md_bitfield_t bf = md_bitfield_create(t.alloc);
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
+	md_bitset_t bf = {0};
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(3u, md_bitset_count(bf));
 
-	EXPECT_FALSE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_FALSE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
 	EXPECT_TRUE(strstr(err, "QM throughout") != NULL);
 
 	qm_test_free(&t);

@@ -16,7 +16,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_bitset.h>
 
 #include <stdio.h>
@@ -106,16 +106,16 @@ static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, cons
 // The number of selections ring() and the like give, SIZE_MAX on an error
 static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* out_atoms) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    md_array(md_bitfield_t) arr = 0;
+    md_array(md_bitset_t) arr = 0;
     char err[256] = {0};
     bool is_dynamic = false;
     size_t result = SIZE_MAX;
     if (md_filter_evaluate(&arr, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), alloc)) {
         result = md_array_size(arr);
         if (out_atoms) {
-            md_bitfield_t all = md_bitfield_create(alloc);
-            for (size_t i = 0; i < result; ++i) md_bitfield_or_inplace(&all, &arr[i]);
-            *out_atoms = md_bitfield_popcount(&all);
+            md_bitmask_t all = md_bitmask_create(0, (uint32_t)r->sys.atom.count, alloc);
+            for (size_t i = 0; i < result; ++i) md_bitmask_or(&all, arr[i]);
+            *out_atoms = md_bitmask_count(&all);
         }
     } else {
         printf("'%s': %s\n", expr, err);
@@ -125,11 +125,11 @@ static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* o
 }
 
 static bool ring_filter_fails_with(const char* expr, const char* expected, const ring_sys_t* r) {
-    md_bitfield_t bf = md_bitfield_create(md_get_heap_allocator());
+    md_bitset_t bf = {0};
     char err[256] = {0};
     bool is_dynamic = false;
-    const bool ok = md_filter(&bf, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err));
-    md_bitfield_free(&bf);
+    const bool ok = md_filter(&bf, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), md_get_heap_allocator());
+    md_bitset_free(&bf, md_get_heap_allocator());
     if (ok) {
         printf("'%s' was expected to fail\n", expr);
         return false;

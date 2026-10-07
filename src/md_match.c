@@ -6,7 +6,6 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
 #include <core/md_bitset.h>
 #include <core/md_common.h>
 #include <core/md_hash.h>
@@ -2124,7 +2123,7 @@ static void unit_search(search_t* s, bool whole_checked) {
 }
 
 static void search_init(search_t* s, const target_t* tg, md_match_level_t level, md_match_mode_t mode, uint32_t flags, md_match_resolve_t hydrogens,
-                        md_match_resolve_t bond_orders, md_match_resolve_t charges, const md_bitfield_t* mask, const md_bitset_t* units, size_t num_units,
+                        md_match_resolve_t bond_orders, md_match_resolve_t charges, const md_bitset_t* mask, const md_bitset_t* units, size_t num_units,
                         md_allocator_i* arena) {
     MEMSET(s, 0, sizeof(search_t));
     s->tg          = tg;
@@ -2145,9 +2144,9 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     s->res_cache->mol = -1;
     if (mask) {
         s->mask = bits_create(tg->num_atoms, arena);
-        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-        while (md_bitfield_iter_next(&it)) {
-            const uint64_t i = md_bitfield_iter_idx(&it);
+        md_bitset_iter_t it = md_bitset_iter(*mask);
+        while (md_bitset_iter_next(&it)) {
+            const uint64_t i = it.idx;
             if (i >= tg->num_atoms) break;
             bit_set(s->mask, i);
         }
@@ -2675,42 +2674,51 @@ void md_match_result_free(md_match_result_t* result) {
 }
 
 // The atoms of one match, with the hydrogens of its atoms when asked for
-static void select_row(md_bitfield_t* bf, const int32_t* row, size_t width, const md_system_t* sys, bool hydrogens) {
+static void select_row(md_bitmask_t* bf, const int32_t* row, size_t width, const md_system_t* sys, bool hydrogens) {
     const md_bond_conn_data_t* conn = sys ? &sys->bond.conn : NULL;
     hydrogens = hydrogens && conn && conn->offset && conn->offset_count >= sys->atom.count + 1;
     for (size_t j = 0; j < width; ++j) {
         const int32_t a = row[j];
         if (a < 0) continue;
-        md_bitfield_set_bit(bf, (uint64_t)a);
+        md_bitmask_set_bit(bf, (uint32_t)a);
         if (hydrogens && md_atom_atomic_number(&sys->atom, a) != MD_Z_H) {
             for (uint32_t c = conn->offset[a]; c < conn->offset[a + 1]; ++c) {
                 const int32_t b = conn->atom_idx[c];
-                if (md_atom_atomic_number(&sys->atom, b) == MD_Z_H) md_bitfield_set_bit(bf, (uint64_t)b);
+                if (md_atom_atomic_number(&sys->atom, b) == MD_Z_H) md_bitmask_set_bit(bf, (uint32_t)b);
             }
         }
     }
 }
 
-size_t md_match_result_select(struct md_bitfield_t* out, size_t cap, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags) {
+size_t md_match_result_select(struct md_bitset_t* out, size_t cap, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc) {
     ASSERT(result);
+    ASSERT(alloc);
     if (!out || cap == 0 || result->count == 0) return 0;
     const bool hydrogens = (flags & MD_MATCH_SELECT_HYDROGENS) != 0;
     const size_t n = MIN(cap, result->count);
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_bitmask_t mask = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
     for (size_t i = 0; i < n; ++i) {
-        md_bitfield_clear(&out[i]);
-        select_row(&out[i], result->atom_idx + i * result->width, result->width, sys, hydrogens);
+        md_bitmask_clear(&mask);
+        select_row(&mask, result->atom_idx + i * result->width, result->width, sys, hydrogens);
+        out[i] = md_bitmask_extract(&mask, alloc);
     }
+    md_temp_end(temp);
     return n;
 }
 
-void md_match_result_select_all(struct md_bitfield_t* out, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags) {
-    ASSERT(out);
+md_bitset_t md_match_result_select_all(const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc) {
     ASSERT(result);
-    md_bitfield_clear(out);
+    ASSERT(alloc);
     const bool hydrogens = (flags & MD_MATCH_SELECT_HYDROGENS) != 0;
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_bitmask_t mask = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
     for (size_t i = 0; i < result->count; ++i) {
-        select_row(out, result->atom_idx + i * result->width, result->width, sys, hydrogens);
+        select_row(&mask, result->atom_idx + i * result->width, result->width, sys, hydrogens);
     }
+    md_bitset_t all = md_bitmask_extract(&mask, alloc);
+    md_temp_end(temp);
+    return all;
 }
 
 // ### LIBRARY ###
