@@ -9,6 +9,7 @@
 #include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
+#include <core/md_hash.h>
 
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
 #define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
@@ -835,6 +836,95 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
+
+// Chemical formula in Hill order (C, H, then the other elements alphabetically), empty when an atom has no element
+static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_urange_t range) {
+	uint32_t count[256] = {0};
+	for (uint32_t i = range.beg; i < range.end; ++i) {
+		const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
+		if (z == 0) return (str_t){0};
+		count[z] += 1;
+	}
+	int len = 0;
+	const md_atomic_number_t first[2] = { MD_Z_C, MD_Z_H };
+	for (int k = 0; k < 2 && count[MD_Z_C] > 0; ++k) {
+		const md_atomic_number_t z = first[k];
+		if (count[z] == 0) continue;
+		const str_t sym = md_atomic_number_symbol(z);
+		len += snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		if (count[z] > 1 && len < (int)cap) len += snprintf(buf + len, cap - len, "%u", count[z]);
+		if (len >= (int)cap) return (str_t){0};
+		count[z] = 0;
+	}
+	for (;;) {
+		// The next element alphabetically
+		int best = -1;
+		for (int z = 1; z < 256; ++z) {
+			if (count[z] == 0) continue;
+			if (best == -1 || str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol((md_atomic_number_t)best)) < 0) best = z;
+		}
+		if (best == -1) break;
+		const str_t sym = md_atomic_number_symbol((md_atomic_number_t)best);
+		len += snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		if (count[best] > 1 && len < (int)cap) len += snprintf(buf + len, cap - len, "%u", count[best]);
+		if (len >= (int)cap) return (str_t){0};
+		count[best] = 0;
+	}
+	return (str_t){ buf, (size_t)len };
+}
+
+// The molecules of a LAMMPS data file are its components. Each is an instance, of an entity per distinct sequence of
+// atom types. What kind of molecule an entity is, LAMMPS does not say (md_util_system_infer_entity_kinds).
+// Consecutive molecules of one entity share their instance id, as single residue molecules do elsewhere.
+static void lammps_molecules_as_instances(md_system_t* sys) {
+	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+	md_hashmap32_t entity_map = { .allocator = md_temp_allocator(temp) };
+
+	size_t num_ids = 0;
+	md_entity_idx_t prev_entity = -1;
+	md_label_t inst_id = {0};
+	for (size_t c = 0; c < sys->component.count; ++c) {
+		const md_urange_t range = md_component_atom_range(&sys->component, c);
+		const uint64_t key = md_hash64(sys->atom.type_idx + range.beg, (range.end - range.beg) * sizeof(md_atom_type_idx_t), range.end - range.beg);
+
+		md_entity_idx_t entity_idx = -1;
+		const uint32_t* found = md_hashmap_get(&entity_map, key);
+		if (found) {
+			entity_idx = (md_entity_idx_t)*found;
+		} else {
+			entity_idx = (md_entity_idx_t)sys->entity.count;
+			md_hashmap_add(&entity_map, key, (uint32_t)entity_idx);
+
+			md_label_t id = {0};
+			id.len = (uint8_t)snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
+			char buf[64];
+			str_t desc = lammps_formula(buf, sizeof(buf), sys, range);
+			if (str_empty(desc)) {
+				const int len = snprintf(buf, sizeof(buf), "molecule type %i", entity_idx + 1);
+				desc = (str_t){ buf, (size_t)len };
+			}
+			md_array_push(sys->entity.id, id, sys->alloc);
+			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, sys->alloc);
+			md_array_push(sys->entity.description, str_copy(desc, sys->alloc), sys->alloc);
+			sys->entity.count += 1;
+		}
+
+		if (entity_idx != prev_entity) {
+			inst_id = md_util_instance_id_from_index(num_ids++);
+		}
+		md_array_push(sys->instance.id, inst_id, sys->alloc);
+		md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
+		md_array_push(sys->instance.comp_offset, (uint32_t)c, sys->alloc);
+		md_array_push(sys->instance.entity_idx, entity_idx, sys->alloc);
+		sys->instance.count += 1;
+		prev_entity = entity_idx;
+	}
+	if (sys->instance.count) {
+		md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, sys->alloc);
+	}
+	md_temp_end(temp);
+}
+
 bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* data) {
 	ASSERT(sys);
 	ASSERT(state);
@@ -924,7 +1014,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	if (has_resid) {
 		md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc); // Final sentinel
-		// No point in trying to infer residue flags as it uses atom names / labels and residue names as hints
+		lammps_molecules_as_instances(sys);
 	}
 
 	// The per atom charge the 'charge' and 'full' atom styles carry. It was parsed and then dropped;
@@ -973,7 +1063,12 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 			sys->bond.count += 1;
 		}
+		md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
     }
+
+	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
+	md_util_system_infer_comp_flags(sys);
+	md_util_system_infer_entity_kinds(sys);
 
 	md_temp_end(temp_scope);
 

@@ -20,7 +20,6 @@ typedef enum {
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
-    MD_UTIL_INFER_HBOND_BIT           = 1u << 6,     // Hydrogen bond roles as atom flags (MD_FLAG_HBOND_DONOR / _ACCEPTOR), see md_hbond.h
 	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
 
@@ -56,23 +55,69 @@ bool md_util_resname_nucleotide(str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
+// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion) from their names, atoms and
+// bonds. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
+// is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
+// component), is MD_COMPONENT_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
+// ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
+// (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A component which is only named like an
+// amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
+// water or ion are left alone. Requires the bonds.
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_atom_auth_asym_id[]);
+// Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
+// classified components and the bonds (see md_instance_data_t for what an instance is). opt_comp_auth_asym_id is
+// the author chain id of each component, when the format has one (a PDB file): it is kept as the instances'
+// auth_id, a change of it always ends an instance, and a polymer chain continues over gaps while it stays the same.
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_comp_auth_asym_id[]);
+
+// The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)
+md_label_t md_util_instance_id_from_index(size_t idx);
+
+// Classifies the entities of kind MD_ENTITY_KIND_UNKNOWN (which a topology names without saying what they are)
+// from the components of their first instance. Requires the components to be classified.
+void md_util_system_infer_entity_kinds(md_system_t* sys);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
-// Computes secondary structures from backbone atoms
-// Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
+// The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
+// of one entry per segment (capacity at least backbone->segment.count). They do not allocate.
+
+// Secondary structure (DSSP like) from the coordinates of a frame
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
-// Computes backbone angles from backbone atoms
-// Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
+// Backbone angles (phi, psi) from the coordinates of a frame
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
-// Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
+// Ramachandran type (General / Glycine / Proline / Preproline) from the residue names of sys->protein_backbone
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
+
+// THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the
+// state they were computed from and live in its attributes (md_system_state_t.attributes), one value per segment of
+// sys->protein_backbone:
+//   MD_BACKBONE_ANGLE_PATH                 F32 x 2 (phi, psi), radians
+//   MD_BACKBONE_SECONDARY_STRUCTURE_PATH   I32, md_secondary_structure_t
+// The same paths below a run (in the system's attributes) hold them for every frame of the run, with the frame as
+// the first axis, and md_system_extract_frame slices a frame of them into a state when asked for them.
+// A state carries them when its producer computed them, like the velocities of a TRR frame: a consumer handles their
+// absence.
+#define MD_BACKBONE_ANGLE_PATH                  "backbone/angle"
+#define MD_BACKBONE_SECONDARY_STRUCTURE_PATH    "backbone/secondary_structure"
+
+// The backbone of a state, NULL when it carries none or what it carries does not fit the backbone of sys
+const md_backbone_angles_t*     md_util_state_backbone_angles(const md_system_state_t* state, const struct md_system_t* sys);
+const md_secondary_structure_t* md_util_state_secondary_structure(const md_system_state_t* state, const struct md_system_t* sys);
+
+// Storage in the state to write the backbone into, created when missing (or of another size) and reused otherwise,
+// so that a producer which writes every frame does not allocate every frame. Each call marks the attribute as
+// changed (md_attributes_touch): call it when about to write. NULL for a state without an allocator (a view) or a
+// system without a protein backbone.
+md_backbone_angles_t*     md_util_state_backbone_angles_write(md_system_state_t* state, const struct md_system_t* sys);
+md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_state_t* state, const struct md_system_t* sys);
+
+// Computes the backbone angles and secondary structure from the state's own coordinates and stores them in it.
+// False when the state has no coordinates, or the system no protein backbone.
+bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_system_t* sys);
 
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
@@ -96,7 +141,7 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_sta
 bool md_util_system_infer_rings(md_system_t* sys);
 
 // Identify isolated structures by covalent bonds.
-// For coarse grained systems (any atom type flagged MD_FLAG_COARSE_GRAINED), beads the bonds leave disconnected are
+// For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
 // joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
 // anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
@@ -106,9 +151,10 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
 
 // Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
-// parameters of every bead). Only types without an element (z == 0) are considered. The table's
-// flags (coarse grained, backbone, side chain, amino acid) are added to the type, the atoms and their
-// component. Mass and radius are left alone: they are the loader's.
+// parameters of every bead). Only types without an element (z == 0) are considered. The table gives
+// the atoms their role (backbone, side chain), the components their kind (amino acid, water) where
+// they have none, and the types their particle kind where the loader did not say. Mass and radius
+// are left alone: they are the loader's.
 void md_util_system_augment_atom_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.

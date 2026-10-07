@@ -202,9 +202,8 @@ static void build_graph(chem_t* c) {
     c->part  = md_alloc(c->alloc, N);
     for (size_t i = 0; i < N; ++i) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
-        const md_flags_t f = md_atom_flags(&sys->atom, i) | md_atom_type_flags(&sys->atom.type, sys->atom.type_idx[i]);
         c->z[i] = (uint8_t)z;
-        c->part[i] = base_valence(z) > 0 && !(f & (MD_FLAG_VIRTUAL_SITE | MD_FLAG_COARSE_GRAINED));
+        c->part[i] = base_valence(z) > 0 && md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_ATOM;
     }
 
     c->num_bonds = sys->bond.count;
@@ -1225,6 +1224,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
         MD_LOG_ERROR("Chemistry perception: too many atoms");
         return false;
     }
+    md_system_topology_changed(sys);
 
     if (sys->bond.count && md_index_data_num_ranges(&sys->ring) == 0) {
         if (!sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
@@ -1439,26 +1439,28 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
 
     // Hybridization
     for (size_t i = 0; i < N; ++i) {
-        md_flags_t f = sys->atom.flags[i] & ~(MD_FLAG_SP | MD_FLAG_SP2 | MD_FLAG_SP3 | MD_FLAG_AROMATIC);
+        md_atom_flags_t f = sys->atom.flags[i] & ~MD_ATOM_FLAG_AROMATIC;
+        md_hybridization_t hyb = MD_HYBRIDIZATION_UNKNOWN;
         const md_atomic_number_t z = c.z[i];
         if (c.part[i] && z != MD_Z_H && !is_halogen_z(z)) {
             const int pi = pi_sum(&c, (uint32_t)i);
             const int s = sigma(&c, (uint32_t)i);
             if (atom_aromatic[i]) {
-                f |= MD_FLAG_SP2 | MD_FLAG_AROMATIC;
+                hyb = MD_HYBRIDIZATION_SP2;
+                f |= MD_ATOM_FLAG_AROMATIC;
             } else if ((z == MD_Z_P || is_heavy_chalcogen(z) || z == 33) && s >= 3) {
-                f |= MD_FLAG_SP3;                       // Tetrahedral, whatever the formal double bonds
+                hyb = MD_HYBRIDIZATION_SP3;             // Tetrahedral, whatever the formal double bonds
             } else if (pi >= 2) {
-                f |= MD_FLAG_SP;
+                hyb = MD_HYBRIDIZATION_SP;
             } else if (pi == 1 || z == MD_Z_B) {
-                f |= MD_FLAG_SP2;
+                hyb = MD_HYBRIDIZATION_SP2;
             } else if (z == MD_Z_N && adjacent_to_pi(&c, (uint32_t)i, atom_aromatic) && (s < 3 || !c.xyz || planar_angle_sum(&c, (uint32_t)i) >= 345.0f || c.off[i + 1] - c.off[i] < 3)) {
-                f |= MD_FLAG_SP2;                       // Amide, aniline, sulfonamide N: conjugated and flat
+                hyb = MD_HYBRIDIZATION_SP2;             // Amide, aniline, sulfonamide N: conjugated and flat
             } else {
-                f |= MD_FLAG_SP3;
+                hyb = MD_HYBRIDIZATION_SP3;
             }
         }
-        sys->atom.flags[i] = f;
+        sys->atom.flags[i] = md_atom_flags_set_hybridization(f, hyb);
     }
 
     md_temp_end(temp);

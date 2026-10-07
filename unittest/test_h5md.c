@@ -92,9 +92,19 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
         EXPECT_TRUE(str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
         EXPECT_EQ(md_atom_atomic_number(&tpr.atom, i), md_atom_atomic_number(&h.sys.atom, i));
         EXPECT_EQ(md_atom_mass(&tpr.atom, i), md_atom_mass(&h.sys.atom, i));
-        EXPECT_EQ(md_atom_flags(&tpr.atom, i) & MD_FLAG_COARSE_GRAINED, md_atom_flags(&h.sys.atom, i) & MD_FLAG_COARSE_GRAINED);
-        EXPECT_EQ(md_atom_flags(&tpr.atom, i) & MD_FLAG_VIRTUAL_SITE, md_atom_flags(&h.sys.atom, i) & MD_FLAG_VIRTUAL_SITE);
-        num_sites += (md_atom_flags(&tpr.atom, i) & MD_FLAG_VIRTUAL_SITE) != 0;
+        EXPECT_EQ(md_atom_particle_kind(&tpr.atom, i), md_atom_particle_kind(&h.sys.atom, i));
+        num_sites += md_atom_particle_kind(&tpr.atom, i) == MD_PARTICLE_VIRTUAL_SITE;
+    }
+
+    // The molecules are the topology's, the same as the tpr's
+    ASSERT_EQ(tpr.entity.count, h.sys.entity.count);
+    for (size_t e = 0; e < tpr.entity.count; ++e) {
+        EXPECT_EQ(md_entity_kind(&tpr.entity, e), md_entity_kind(&h.sys.entity, e));
+    }
+    ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
+    for (size_t k = 0; k < tpr.instance.count; ++k) {
+        EXPECT_EQ(md_instance_entity_idx(&tpr.instance, k), md_instance_entity_idx(&h.sys.instance, k));
+        EXPECT_EQ(md_instance_component_range(&tpr.instance, k).beg, md_instance_component_range(&h.sys.instance, k).beg);
     }
     if (vsites) {
         EXPECT_LT(0u, num_sites);
@@ -131,7 +141,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     size_t site_bonds = 0;
     for (size_t b = 0; b < h.sys.bond.count; ++b) {
         const md_atom_pair_t p = h.sys.bond.pairs[b];
-        site_bonds += ((md_atom_flags(&h.sys.atom, p.idx[0]) | md_atom_flags(&h.sys.atom, p.idx[1])) & MD_FLAG_VIRTUAL_SITE) != 0;
+        site_bonds += md_atom_particle_kind(&h.sys.atom, p.idx[0]) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&h.sys.atom, p.idx[1]) == MD_PARTICLE_VIRTUAL_SITE;
     }
     EXPECT_EQ(0u, site_bonds);
 

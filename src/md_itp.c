@@ -813,6 +813,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         sys->bond.count = count + num_user;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
         md_util_system_infer_coordination(sys);
+        md_system_topology_changed(sys);
     }
 
     // ## Charge and mass

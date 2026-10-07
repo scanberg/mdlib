@@ -65,7 +65,8 @@ static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 
 #define ENT_COUNT 3
 static md_label_t    e_id[] = {MAKE_LABEL("WAT"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT")};
-static md_flags_t e_flags[] = {MD_FLAG_WATER, MD_FLAG_AMINO_ACID, MD_FLAG_HETERO};
+// The kind is the low bits of the entity flags
+static md_entity_flags_t e_flags[] = {(md_entity_flags_t)MD_ENTITY_KIND_WATER, (md_entity_flags_t)MD_ENTITY_KIND_PEPTIDE, (md_entity_flags_t)MD_ENTITY_KIND_NON_POLYMER};
 static str_t       e_desc[] = {MAKE_LABEL("water"), MAKE_LABEL("polypeptide"), MAKE_LABEL("non-polymer")};
 
 #define INST_COUNT 4
@@ -3066,12 +3067,14 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
 
 #include "contact_reference.h"
 
-// One group per component whose flags intersect the mask (or every component if the mask is 0), as test_contact.c
-static md_bitfield_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, md_flags_t mask, md_allocator_i* alloc) {
+#define ANY_KIND -1
+
+// One group per component of the kind (or every component for ANY_KIND), as test_contact.c
+static md_bitfield_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, int kind, md_allocator_i* alloc) {
     md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * MAX(sys->component.count, 1));
     size_t n = 0;
     for (size_t c = 0; c < sys->component.count; ++c) {
-        if (mask && !(md_system_component_flags(sys, c) & mask)) continue;
+        if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
         const md_urange_t range = md_system_component_atom_range(sys, c);
         groups[n] = md_bitfield_create(alloc);
         md_bitfield_set_range(&groups[n], range.beg, range.end);
@@ -3195,7 +3198,7 @@ UTEST_F(script, contacts_mirror_self_distance) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
     ASSERT_GT(num, (size_t)10);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 3.5 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(:); c = contacts(ga, cutoff=3.5, exclude_bonds=0);", &desc, true, NULL, alloc));
@@ -3209,7 +3212,7 @@ UTEST_F(script, contacts_mirror_between_sets) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
     ASSERT_GT(num, (size_t)10);
 
     // Overlapping sets: the first two thirds of the residues against the last two thirds
@@ -3221,7 +3224,7 @@ UTEST_F(script, contacts_mirror_between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num_prot, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_bitfield_t* prot = mirror_residue_groups(&num_prot, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); gb = residue(:); c = contacts(ga, gb, cutoff=3.0, exclude_bonds=0);", &desc, true, NULL, alloc));
@@ -3233,7 +3236,7 @@ UTEST_F(script, contacts_mirror_bond_exclusion_and_separation) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)3);
 
     // Three bonds is the default of the script
@@ -3269,7 +3272,7 @@ UTEST_F(script, contacts_mirror_triclinic) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->npt;
     size_t num_all = 0;
-    md_bitfield_t* all = mirror_residue_groups(&num_all, sys, 0, alloc);
+    md_bitfield_t* all = mirror_residue_groups(&num_all, sys, ANY_KIND, alloc);
     ASSERT_GT(num_all, (size_t)10);
     // Every third residue: still spread over the whole cell, at a ninth of the cost of the reference
     md_bitfield_t* res = md_alloc(alloc, sizeof(md_bitfield_t) * num_all);
@@ -3295,10 +3298,10 @@ UTEST_F(script, contacts_mirror_overlapping_groups) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)6);
     // The amino acids are the leading components, so their indices are those of the components
-    for (size_t k = 0; k < num; ++k) ASSERT_TRUE(md_system_component_flags(sys, k) & MD_FLAG_AMINO_ACID);
+    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
 
     // Windows of three consecutive residues, each overlapping the next by two. In the script: an array of selections
     const size_t num_win = num - 2;
@@ -3332,9 +3335,9 @@ UTEST_F(script, contacts_mirror_min_separation_parent) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)8);
-    for (size_t k = 0; k < num; ++k) ASSERT_TRUE(md_system_component_flags(sys, k) & MD_FLAG_AMINO_ACID);
+    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
 
     // Two 'chains': residues [0, 7) and [7, num). In the script the parents are selections
     uint32_t* parent = md_alloc(alloc, sizeof(uint32_t) * num);
@@ -3377,7 +3380,7 @@ UTEST_F(script, contacts_mirror_empty) {
 
     // An empty B is an empty set: no contacts. Not the contacts within A, which is what no B means
     size_t num = 0;
-    md_bitfield_t* res = mirror_residue_groups(&num, sys, 0, alloc);
+    md_bitfield_t* res = mirror_residue_groups(&num, sys, ANY_KIND, alloc);
     static const md_bitfield_t no_groups = {0};
     desc = (md_contact_desc_t){ .group_a = res, .num_a = num, .group_b = &no_groups, .num_b = 0, .cutoff = 5.0 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(:); gb = residue(atom(1) and not atom(1)); c = contacts(ga, gb, cutoff=5.0);", &desc, false, &set, alloc));
@@ -3440,7 +3443,7 @@ UTEST_F(script, contacts_mirror_query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)3);
 
     size_t num = 0;
-    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, alloc);
+    md_bitfield_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_script_ir_t* ir = md_script_ir_create(alloc);

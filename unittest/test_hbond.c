@@ -330,16 +330,55 @@ UTEST(hbond, roles_planarity) {
     EXPECT_EQ(MD_HBOND_ROLE_DONOR, (int)role[4]);
     EXPECT_EQ(0, (int)cap[4]);
 
-    // The atom flags of md_util_system_infer carry the same decision to perception without coordinates
-    EXPECT_TRUE(sys.atom.flags[0] & MD_FLAG_HBOND_ACCEPTOR);
-    EXPECT_FALSE(sys.atom.flags[4] & MD_FLAG_HBOND_ACCEPTOR);
+    // Without coordinates the perceived chemistry decides, which takes a conjugated N for flat: a flat NH3, which has
+    // nothing to conjugate with, is sp3 there and keeps its lone pair
+    EXPECT_EQ(MD_HYBRIDIZATION_SP3, md_atom_hybridization(&sys.atom, 4));
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, &sys, NULL, MD_HBOND_ROLES_DEFAULT));
     EXPECT_EQ(MD_HBOND_ROLE_DONOR | MD_HBOND_ROLE_ACCEPTOR, (int)role[0]);
-    EXPECT_EQ(MD_HBOND_ROLE_DONOR, (int)role[4]);
+    EXPECT_EQ(MD_HBOND_ROLE_DONOR | MD_HBOND_ROLE_ACCEPTOR, (int)role[4]);
 
     // Every N and O
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, &sys, &st, MD_HBOND_ROLES_ALL_N_O));
     EXPECT_TRUE(role[4] & MD_HBOND_ROLE_ACCEPTOR);
+    md_vm_arena_destroy(alloc);
+}
+
+// Without coordinates the N of an amide is sp2 by the perceived chemistry and does not accept, that of an amine does
+UTEST(hbond, roles_from_chemistry) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const char* text =
+        "13\n"
+        "formamide and methylamine\n"
+        "C   0.000  0.000  0.000\n"
+        "O   1.210  0.000  0.000\n"
+        "N  -0.680  1.170  0.000\n"
+        "H  -0.550 -0.950  0.000\n"
+        "H  -1.690  1.170  0.000\n"
+        "H  -0.170  2.040  0.000\n"
+        "C  10.000  0.000  0.000\n"
+        "N  11.470  0.000  0.000\n"
+        "H   9.640  1.030  0.000\n"
+        "H   9.640 -0.510  0.890\n"
+        "H   9.640 -0.510 -0.890\n"
+        "H  11.810 -0.950  0.000\n"
+        "H  11.810  0.475  0.820\n";
+    md_system_t sys;
+    md_system_state_t st;
+    ASSERT_TRUE(load_xyz(&sys, &st, text, NULL, alloc));
+    ASSERT_EQ(11, (int)sys.bond.count);
+    EXPECT_EQ(MD_HYBRIDIZATION_SP2, md_atom_hybridization(&sys.atom, 2));
+    EXPECT_EQ(MD_HYBRIDIZATION_SP3, md_atom_hybridization(&sys.atom, 7));
+
+    uint8_t role[13];
+    ASSERT_TRUE(md_hbond_perceive_roles(role, NULL, &sys, NULL, MD_HBOND_ROLES_DEFAULT));
+    EXPECT_EQ(MD_HBOND_ROLE_ACCEPTOR, (int)role[1]);                          // O=C
+    EXPECT_EQ(MD_HBOND_ROLE_DONOR, (int)role[2]);                             // Amide N
+    EXPECT_EQ(MD_HBOND_ROLE_DONOR | MD_HBOND_ROLE_ACCEPTOR, (int)role[7]);    // Amine N
+
+    // The geometry gives the same here
+    ASSERT_TRUE(md_hbond_perceive_roles(role, NULL, &sys, &st, MD_HBOND_ROLES_DEFAULT));
+    EXPECT_EQ(MD_HBOND_ROLE_DONOR, (int)role[2]);
+    EXPECT_EQ(MD_HBOND_ROLE_DONOR | MD_HBOND_ROLE_ACCEPTOR, (int)role[7]);
     md_vm_arena_destroy(alloc);
 }
 
@@ -361,7 +400,7 @@ UTEST(hbond, no_hydrogens) {
     // Without hydrogens the standard residues still get their acceptors right: no backbone N
     for (size_t k = 0; k < q.num_acceptors; ++k) {
         const uint32_t a = q.acceptor[k];
-        if (md_atom_flags(&sys.atom, a) & MD_FLAG_AMINO_ACID) {
+        if (md_system_atom_component_kind(&sys, a) == MD_COMPONENT_KIND_AMINO_ACID) {
             EXPECT_FALSE(str_eq_cstr(str_trim(md_atom_name(&sys.atom, a)), "N"));
         }
     }
@@ -403,7 +442,7 @@ UTEST_F(hbond, roles_protein) {
         for (uint32_t i = r.beg; i < r.end; ++i) {
             const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
             const str_t name = str_trim(md_atom_name(&sys->atom, i));
-            const bool amino = (md_atom_flags(&sys->atom, i) & MD_FLAG_AMINO_ACID) != 0;
+            const bool amino = md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_AMINO_ACID;
             if (amino && z == MD_Z_N) {
                 int nh = 0;
                 md_bond_iter_t it = md_bond_iter(&sys->bond, i);

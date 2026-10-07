@@ -247,41 +247,22 @@ static inline uint8_t element_capacity(md_atomic_number_t z) {
     }
 }
 
-bool md_hbond_perceive_roles(uint8_t* out_role, uint8_t* out_cap, const md_system_t* sys, const md_system_state_t* ref, uint32_t role_flags) {
-    if (!out_role || !sys) {
-        MD_LOG_ERROR("Hydrogen bond roles: missing output or system");
-        return false;
-    }
-    const size_t N = sys->atom.count;
-    MEMSET(out_role, 0, N);
-    if (out_cap) MEMSET(out_cap, 0, N);
-    if (N == 0) return true;
-
-    const bool naive    = (role_flags & MD_HBOND_ROLES_ALL_N_O) != 0;
-    const bool have_ref = md_system_state_has_coords(ref) && ref->num_atoms == N;
-    bool have_flags = false;
-    if (!have_ref && sys->atom.flags) {
-        for (size_t i = 0; i < N; ++i) {
-            if (sys->atom.flags[i] & (MD_FLAG_HBOND_DONOR | MD_FLAG_HBOND_ACCEPTOR)) { have_flags = true; break; }
-        }
-    }
-
+// The role of one atom (md_hbond_role_t bits) and its capacity as an acceptor. have_ref: ref has coordinates for
+// every atom of the system.
+static uint8_t perceive_atom_role(uint8_t* out_cap, const md_system_t* sys, const md_system_state_t* ref, bool have_ref, size_t i, uint32_t role_flags) {
     // A three connected N with a sum of angles at least this is planar: its lone pair is in a pi system. sp3 is 328.4,
     // amides and aromatic NH sit within a few degrees of 360, anilines in between.
-    const float planar_angle_sum = 345.0f;
+    static const float planar_angle_sum = 345.0f;
 
-    size_t comp = 0;
-    const size_t num_comp = sys->component.atom_offset ? sys->component.count : 0;
+    const bool naive = (role_flags & MD_HBOND_ROLES_ALL_N_O) != 0;
+    uint8_t role = 0;
+    uint8_t cap  = 0;
 
-    for (size_t i = 0; i < N; ++i) {
-        const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
-        if (!(z == MD_Z_N || z == MD_Z_O || z == MD_Z_S || is_halogen(z))) continue;
-
+    const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
+    if (z == MD_Z_N || z == MD_Z_O || z == MD_Z_S || is_halogen(z)) {
         int nh, nx;
         count_neighbours(&nh, &nx, sys, i);
         const int deg = nh + nx;
-        uint8_t role = 0;
-        uint8_t cap  = 0;
 
         switch (z) {
         case MD_Z_O:
@@ -299,18 +280,21 @@ bool md_hbond_perceive_roles(uint8_t* out_role, uint8_t* out_cap, const md_syste
             } else if (deg <= 2) {
                 acc = true;     // Pyridine and imine type N, nitriles
             } else if (deg == 3) {
-                if (have_ref)        acc = angle_sum(sys, ref, i) < planar_angle_sum;
-                else if (have_flags) acc = (sys->atom.flags[i] & MD_FLAG_HBOND_ACCEPTOR) != 0;
-                else                 acc = !n_conjugated_by_graph(sys, i);
+                // Whether its lone pair is free: from the coordinates given, else from the perceived chemistry (an sp2
+                // N is conjugated and flat), else from the bond graph
+                const md_hybridization_t hyb = md_atom_hybridization(&sys->atom, i);
+                if (have_ref)                            acc = angle_sum(sys, ref, i) < planar_angle_sum;
+                else if (hyb != MD_HYBRIDIZATION_UNKNOWN) acc = hyb == MD_HYBRIDIZATION_SP3;
+                else                                     acc = !n_conjugated_by_graph(sys, i);
             }
             // deg >= 4: ammonium, no lone pair
             if (acc && !naive) {
-                while (comp < num_comp && sys->component.atom_offset[comp + 1] <= i) ++comp;
-                if (comp < num_comp && sys->component.atom_offset[comp] <= i) {
+                const md_component_idx_t comp = md_component_find_by_atom_idx(&sys->component, i);
+                if (comp >= 0) {
                     const str_t res = md_component_name(&sys->component, comp);
-                    const md_flags_t cf = md_component_flags(&sys->component, comp);
-                    const bool aa  = (cf & MD_FLAG_AMINO_ACID) || md_util_resname_amino_acid(res);
-                    const bool nuc = (cf & MD_FLAG_NUCLEOTIDE) || md_util_resname_nucleotide(res);
+                    const md_component_kind_t ck = md_component_kind(&sys->component, comp);
+                    const bool aa  = ck == MD_COMPONENT_KIND_AMINO_ACID || md_util_resname_amino_acid(res);
+                    const bool nuc = ck == MD_COMPONENT_KIND_NUCLEOTIDE || md_util_resname_nucleotide(res);
                     if ((aa || nuc) && standard_n_without_lone_pair(res, md_atom_name(&sys->atom, i), aa, nuc)) {
                         acc = false;
                     }
@@ -341,27 +325,23 @@ bool md_hbond_perceive_roles(uint8_t* out_role, uint8_t* out_cap, const md_syste
             }
             break;
         }
-
-        out_role[i] = role;
-        if (out_cap) out_cap[i] = cap;
     }
-    return true;
+
+    if (out_cap) *out_cap = cap;
+    return role;
 }
 
-void md_hbond_infer_atom_flags(md_system_t* sys, const md_system_state_t* ref) {
-    if (!sys || !sys->atom.flags || sys->atom.count == 0) return;
-    const size_t N = sys->atom.count;
-    md_temp_scope_t temp = md_temp_begin();
-    uint8_t* role = md_alloc(md_temp_allocator(temp), N);
-    if (md_hbond_perceive_roles(role, NULL, sys, ref, MD_HBOND_ROLES_DEFAULT | MD_HBOND_ROLES_HALIDE_IONS)) {
-        for (size_t i = 0; i < N; ++i) {
-            md_flags_t f = sys->atom.flags[i] & ~(MD_FLAG_HBOND_DONOR | MD_FLAG_HBOND_ACCEPTOR);
-            if (role[i] & MD_HBOND_ROLE_DONOR)    f |= MD_FLAG_HBOND_DONOR;
-            if (role[i] & MD_HBOND_ROLE_ACCEPTOR) f |= MD_FLAG_HBOND_ACCEPTOR;
-            sys->atom.flags[i] = f;
-        }
+bool md_hbond_perceive_roles(uint8_t* out_role, uint8_t* out_cap, const md_system_t* sys, const md_system_state_t* ref, uint32_t role_flags) {
+    if (!out_role || !sys) {
+        MD_LOG_ERROR("Hydrogen bond roles: missing output or system");
+        return false;
     }
-    md_temp_end(temp);
+    const size_t N = sys->atom.count;
+    const bool have_ref = md_system_state_has_coords(ref) && ref->num_atoms == N;
+    for (size_t i = 0; i < N; ++i) {
+        out_role[i] = perceive_atom_role(out_cap ? &out_cap[i] : NULL, sys, ref, have_ref, i, role_flags);
+    }
+    return true;
 }
 
 // ### QUERY ###

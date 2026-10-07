@@ -1166,9 +1166,9 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     return -1;
 }
 
+// A chain is an instance of a polymer (a peptide, a nucleic acid, ...)
 static inline bool is_instance_chain(const md_system_t* sys, size_t inst_idx) {
-    md_flags_t flags = md_system_instance_flags(sys, inst_idx);
-    return flags & MD_FLAG_POLYMER;
+    return md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst_idx));
 }
 
 static md_array(md_component_idx_t) get_comp_indices_in_context(const md_system_t* sys, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
@@ -3301,7 +3301,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
+static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
 
@@ -3315,13 +3315,13 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
                 uint64_t idx = md_bitfield_iter_idx(&it);
-                if (ctx->sys->atom.flags[idx] & flags) {
+                if (md_atom_flags(&ctx->sys->atom, idx) & flags) {
                     md_bitfield_set_bit(bf, idx);
                 }
             }
         } else {
             for (size_t i = 0; i < ctx->sys->atom.count; ++i) {
-                if (ctx->sys->atom.flags[i] & flags) {
+                if (md_atom_flags(&ctx->sys->atom, i) & flags) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -3331,7 +3331,7 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
     return result;
 }
 
-static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
+static int _select_components_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, md_component_kind_t kind) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
 
@@ -3352,7 +3352,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         int dst_idx = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int comp_idx = comp_indices[i];
-            if (ctx->sys->component.flags[comp_idx] & flags) {
+            if (md_component_kind(&ctx->sys->component, comp_idx) == kind) {
                 const md_urange_t range = md_component_atom_range(&ctx->sys->component, comp_idx);
                 ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
@@ -3369,7 +3369,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         int count = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int32_t comp_idx = comp_indices[i];
-            if (ctx->sys->component.flags[comp_idx] & flags) {
+            if (md_component_kind(&ctx->sys->component, comp_idx) == kind) {
                 count += 1;
             }
         }
@@ -3385,43 +3385,43 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
 }
 
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_WATER);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_WATER);
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_AMINO_ACID);
+	return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_AMINO_ACID);
 }
 
 static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEIC_ACID);
+	return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_NUCLEOTIDE);
 }
 
 static int _nucleotide(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOTIDE);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_NUCLEOTIDE);
 }
 
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_ION);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_ION);
 }
 
 static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_BACKBONE);
 }
 
 static int _side(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN | MD_FLAG_NUCLEOSIDE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE);
 }
 
 static int _sidechain(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_SIDE_CHAIN);
 }
 
 static int _nucleoside(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOSIDE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOSIDE);
 }
 
 static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOBASE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
 }
 
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {

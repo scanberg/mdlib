@@ -47,7 +47,7 @@ struct md_smiles_error_t;
 //     is not part of either molecule: the Mg between the phosphates of an ATP, the Zn of a zinc finger. One within
 //     a residue is part of it (the Fe of a heme, an iron-sulfur cluster). In a system without components every
 //     coordination bond is left out.
-//   - Virtual sites (MD_FLAG_VIRTUAL_SITE: the M site of a TIP4P water) are not atoms of the graph.
+//   - Virtual sites (MD_PARTICLE_VIRTUAL_SITE: the M site of a TIP4P water) are not atoms of the graph.
 // A MOLECULE is a connected part of this graph. Molecules are numbered in the order of their first atom, as
 // sys->structure numbers structures: in a system without coordination bonds and virtual sites, which is not coarse
 // grained, they are its structures, index for index. Otherwise a structure may hold several (an ATP and its Mg are two
@@ -87,8 +87,8 @@ struct md_smiles_error_t;
 //                carboxylate, [O-]C=[O-] neither.
 //   BOND ORDERS  Tested on every bond whose order is known: md_bond_order is not unknown, or the bond is aromatic or
 //                delocalized.
-//   AROMATICITY  Tested on atoms with at least one bond of known order. An atom is aromatic with MD_FLAG_AROMATIC or an
-//                aromatic bond.
+//   AROMATICITY  Tested on atoms with at least one bond of known order. An atom is aromatic with MD_ATOM_FLAG_AROMATIC or
+//                an aromatic bond.
 //
 // md_match_desc_t.hydrogens, .charges and .bond_orders override this per search. ALWAYS tests regardless and as the
 // system has it: an atom without a hydrogen count has the hydrogens bonded to it, an atom without a charge has none, a
@@ -111,10 +111,11 @@ struct md_smiles_error_t;
 //
 // ## LEVELS (md_match_level_t)
 //
-// Every match lies within one unit: a molecule (see THE GRAPH), a component (residue) or an instance (chain). At the
-// component and instance levels the bonds leaving the unit are not part of the graph that is searched: a residue
-// pattern ends at the peptide bonds, and MD_MATCH_FLAG_WHOLE holds a residue against its own atoms only. A query made
-// of disconnected parts (SMILES '.') has all of its parts matched within the same unit.
+// Every match lies within one unit: a molecule (see THE GRAPH), a component (residue) or an instance (a polymer chain
+// or a molecule, see md_instance_data_t). At the component and instance levels the bonds leaving the unit are not part
+// of the graph that is searched: a residue pattern ends at the peptide bonds, and MD_MATCH_FLAG_WHOLE holds a residue
+// against its own atoms only. A query made of disconnected parts (SMILES '.') has all of its parts matched within the
+// same unit.
 // The unit of a match (md_match_result_t.unit) is the index of its molecule, component or instance.
 //
 // MD_MATCH_FLAG_WHOLE: the match covers every atom of its unit, hydrogens aside, and the unit has no bonds between
@@ -276,7 +277,7 @@ typedef enum md_match_label_t {
 typedef enum md_match_level_t {
     MD_MATCH_LEVEL_STRUCTURE = 0,       // Within one molecule (see THE GRAPH)
     MD_MATCH_LEVEL_COMPONENT = 1,       // Within one component (residue)
-    MD_MATCH_LEVEL_INSTANCE  = 2,       // Within one instance (chain)
+    MD_MATCH_LEVEL_INSTANCE  = 2,       // Within one instance (polymer chain or molecule)
 } md_match_level_t;
 
 typedef enum md_match_mode_t {

@@ -13,11 +13,11 @@ struct md_system_state_t;
 // connectivity leaves implicit:
 //   - the hydrogens of each heavy atom, explicit and implicit (md_atom_data_t.hydrogen_count)
 //   - the order of each covalent bond, one Kekule structure (md_bond_order)
-//   - aromatic rings (MD_FLAG_AROMATIC on atoms, MD_BOND_FLAG_AROMATIC on bonds)
+//   - aromatic rings (MD_ATOM_FLAG_AROMATIC on atoms, MD_BOND_FLAG_AROMATIC on bonds)
 //   - delocalized groups outside rings, whose formal double bond and charge could sit on any of their atoms:
 //     carboxylate, nitro, phosphate, sulfonate, guanidinium and amidinium, azide (MD_BOND_FLAG_DELOCALIZED)
 //   - formal charges (md_atom_data_t.formal_charge)
-//   - hybridization (MD_FLAG_SP, MD_FLAG_SP2, MD_FLAG_SP3)
+//   - hybridization (md_atom_hybridization)
 // Bonds whose order it sets get MD_BOND_FLAG_ORDER_PERCEIVED. Orders a file gives (known and without that flag) are
 // kept and the rest is fitted around them, and so are the nonzero formal charges the file gives: the
 // atom/formal_charge column of sys->attributes, which the loaders publish (mmCIF).

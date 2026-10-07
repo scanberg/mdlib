@@ -220,12 +220,11 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
         if (comp_key != prev_comp_key) {
             // New residue
-            md_flags_t res_flags = 0;
             sys->component.count += 1;
             md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
             md_array_push(sys->component.name,  make_label(res_name), sys->alloc);
             md_array_push(sys->component.seq_id,    res_id, sys->alloc);
-            md_array_push(sys->component.flags,  res_flags, sys->alloc);
+            md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
 		}
 
         sys->atom.count += 1;

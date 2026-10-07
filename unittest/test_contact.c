@@ -35,12 +35,14 @@ static bool check_against_reference(const md_contact_desc_t* desc, const md_syst
     return ok;
 }
 
-// One group per component whose flags intersect the mask (or every component if the mask is 0), at most max_count
-static md_bitfield_t* make_residue_groups(size_t* out_count, const md_system_t* sys, md_flags_t mask, size_t max_count, md_allocator_i* alloc) {
+#define ANY_KIND -1
+
+// One group per component of the kind (or every component for ANY_KIND), at most max_count
+static md_bitfield_t* make_residue_groups(size_t* out_count, const md_system_t* sys, int kind, size_t max_count, md_allocator_i* alloc) {
     md_bitfield_t* groups = md_alloc(alloc, sizeof(md_bitfield_t) * sys->component.count);
     size_t n = 0;
     for (size_t c = 0; c < sys->component.count && n < max_count; ++c) {
-        if (mask && !(md_system_component_flags(sys, c) & mask)) continue;
+        if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
         const md_urange_t range = md_system_component_atom_range(sys, c);
         groups[n] = md_bitfield_create(alloc);
         md_bitfield_set_range(&groups[n], range.beg, range.end);
@@ -79,7 +81,7 @@ UTEST_F_TEARDOWN(contact) {
 
 UTEST_F(contact, self_distance) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 3.5 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -87,7 +89,7 @@ UTEST_F(contact, self_distance) {
 
 UTEST_F(contact, between_sets) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     // Overlapping sets: the first two thirds of the residues against the last two thirds
     const size_t third = num / 3;
@@ -96,7 +98,7 @@ UTEST_F(contact, between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitfield_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_FLAG_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -104,7 +106,7 @@ UTEST_F(contact, between_sets) {
 
 UTEST_F(contact, bond_exclusion_and_separation) {
     size_t num = 0;
-    md_bitfield_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_FLAG_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)3);
 
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
@@ -138,7 +140,7 @@ UTEST_F(contact, bond_exclusion_and_separation) {
 
 UTEST_F(contact, radii) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = { .group_a = res, .num_a = num, .criterion = MD_CONTACT_CRITERION_RADII, .cutoff = 0.3, .exclude_bonds = 3 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
 
@@ -150,7 +152,7 @@ UTEST_F(contact, radii) {
 
 UTEST_F(contact, triclinic) {
     size_t num = 0;
-    md_bitfield_t* all = make_residue_groups(&num, &utest_fixture->npt, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* all = make_residue_groups(&num, &utest_fixture->npt, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)10);
     // Every third residue: still spread over the whole cell, at a ninth of the cost of the reference
     md_bitfield_t* res = md_alloc(utest_fixture->alloc, sizeof(md_bitfield_t) * num);
@@ -167,7 +169,7 @@ UTEST_F(contact, triclinic) {
 // Groups sharing atoms, and atoms belonging to no group
 UTEST_F(contact, overlapping_groups) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_FLAG_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)6);
 
     // Windows of three consecutive residues, each overlapping the next by two
@@ -194,7 +196,7 @@ UTEST_F(contact, query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)1);
 
     size_t num = 0;
-    md_bitfield_t* prot = make_residue_groups(&num, sys, MD_FLAG_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* prot = make_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_contact_query_t query;
@@ -412,7 +414,7 @@ UTEST_F(contact, pairs_triclinic) {
 // With a parent per group, only groups of the same parent are neighbours
 UTEST_F(contact, min_separation_parent) {
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_FLAG_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)8);
 
     // Two 'chains': residues [0, 7) and [7, num)
@@ -455,7 +457,7 @@ UTEST_F(contact, pairs_label) {
     // Group contacts between those residues are the same with and without the labels: the labels only drop pairs the
     // groups drop anyway, earlier
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t gdesc = { .group_a = res, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
     md_contact_set_t plain = {0}, labelled = {0};
     ASSERT_TRUE(md_contact_compute(&plain, &gdesc, sys, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -482,7 +484,7 @@ UTEST_F(contact, type_pair) {
     };
 
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = {
         .group_a = res, .num_a = num,
         .criterion = MD_CONTACT_CRITERION_TYPE_PAIR, .particle_type = type, .num_types = 3, .type_cutoff = table,
@@ -701,7 +703,7 @@ UTEST(contact_regions, patterns) {
 UTEST_F(contact, regions_residues) {
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitfield_t* res = make_residue_groups(&num, sys, 0, SIZE_MAX, utest_fixture->alloc);
+    md_bitfield_t* res = make_residue_groups(&num, sys, ANY_KIND, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)3);
 
     uint32_t* adj_off = 0;

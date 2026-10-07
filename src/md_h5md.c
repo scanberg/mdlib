@@ -1006,7 +1006,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
     MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_atom_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_flags_t));
+    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // Particles of one species are identical (the specification says so), so a type is a species

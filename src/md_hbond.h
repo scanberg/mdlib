@@ -17,7 +17,9 @@ struct md_system_state_t;
 //   1. ROLES        Which atoms donate and accept, and how many bonds an acceptor can take (its free lone pairs).
 //                   By default perceived from the chemistry: an N accepts only if its lone pair is free, so amide,
 //                   guanidinium, pyrrole type and ammonium N do not. MD_HBOND_ROLES_ALL_N_O makes every N and O an
-//                   acceptor, as most analysis tools do.
+//                   acceptor, as most analysis tools do. The roles are not stored on the system: they depend on these
+//                   options, and a donor is a D-H pair rather than an atom. A query holds them (md_hbond_query_t), and
+//                   md_hbond_perceive_roles gives them on demand.
 //   2. GEOMETRY     Independent gates on distances and angles; a gate at 0 is off.
 //   3. STRENGTH     Every bond that passes the gates gets a strength in [0, 1], the product of a distance and an
 //                   angle term. Each is 1 at the ideal (H...A 1.9 Å or D...A 2.8 Å, and linear D-H...A) and falls
@@ -128,8 +130,9 @@ typedef struct md_hbond_desc_t {
     const struct md_bitfield_t* donors;
     const struct md_bitfield_t* acceptors;
 
-    // Optional coordinates for perceiving the roles (whether an N is planar, and thereby has no free lone pair).
-    // Without them the atom flags of md_util_system_infer are used where present, and the bond graph otherwise.
+    // Optional coordinates for perceiving the roles: whether a three connected N is planar, and thereby has no free lone
+    // pair. Without them the hybridization of the perceived chemistry tells (md_chem_perceive: an sp2 N is conjugated
+    // and flat), and the bond graph where the chemistry was not perceived.
     const struct md_system_state_t* reference;
 } md_hbond_desc_t;
 
@@ -187,9 +190,6 @@ const char*       md_hbond_preset_name(md_hbond_preset_t preset);
 // reference is optional, see md_hbond_desc_t.
 bool md_hbond_perceive_roles(uint8_t* out_role, uint8_t* out_capacity, const struct md_system_t* sys, const struct md_system_state_t* reference, uint32_t role_flags);
 
-// Sets MD_FLAG_HBOND_DONOR and MD_FLAG_HBOND_ACCEPTOR on the atoms of the system from the default roles
-// (MD_HBOND_ROLES_DEFAULT | MD_HBOND_ROLES_HALIDE_IONS). Called by md_util_system_infer for MD_UTIL_INFER_HBOND_BIT.
-void md_hbond_infer_atom_flags(struct md_system_t* sys, const struct md_system_state_t* reference);
 
 bool md_hbond_query_init(md_hbond_query_t* query, const md_hbond_desc_t* desc, const struct md_system_t* sys, struct md_allocator_i* alloc);
 void md_hbond_query_free(md_hbond_query_t* query);

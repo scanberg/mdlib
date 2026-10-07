@@ -496,7 +496,8 @@ is the exception and gives one value per selection).
 protein() -> bitfield[]
 ```
 
-Every residue that is part of a protein.
+Every amino acid residue: those whose backbone was found and verified by its bonds, and those which are only named
+like an amino acid (missing atoms, a coarse grained model).
 
 ```mdscript
 n_protein_atoms = count(protein());                 # the residues are flattened into one selection
@@ -513,7 +514,9 @@ nucleic()     -> bitfield[]
 nucleotide()  -> bitfield[]
 ```
 
-Every residue that is part of a nucleic acid. `nucleotide` is an alias.
+Every nucleotide residue: those whose backbone was found and verified by its bonds, and those which are only named
+like a nucleotide. A free nucleotide ligand (GTP, ATP) is not one unless it is named like a residue of a nucleic acid.
+`nucleotide` is an alias.
 
 ```mdscript
 dna = nucleic();
@@ -611,7 +614,11 @@ named = component("PFT");
 
 ### Selectors: instance level
 
-Instances are the largest building blocks in the file: chains in a PDB file, molecules in a GRO file.
+An instance is one polymer chain or one molecule: each protein or nucleic-acid chain, and each ligand, lipid, ion
+and water molecule on its own. Instances come from the file where it has them (the asyms of an mmCIF file, the
+molecules of a GROMACS topology) and are otherwise inferred from the bonds and the chain ids. The identifier is not
+unique: the small molecules of one chain share it (all waters of chain A in an mmCIF file have one label), so
+`instance("W")` gives one selection per molecule. A **chain** is an instance of a polymer.
 
 ### instance
 
@@ -689,7 +696,7 @@ Both take two named arguments:
 - `level`: where an occurrence lies. `"structure"` (the default): within one molecule, the atoms joined by covalent
   bonds; a metal bound to another residue (the Mg of an ATP, the Zn of a zinc finger) is a molecule of its own.
   `"residue"` (or `"component"`): within one residue, whose bonds to its neighbours are not part of the graph, so a
-  residue pattern ends at the peptide bond. `"chain"` (or `"instance"`): within one chain.
+  residue pattern ends at the peptide bond. `"chain"` (or `"instance"`): within one instance, a chain or a molecule.
 - `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
   same atoms in several ways (a benzene ring in 12) and counts once. `"all"`: every way it fits. `"one_per_unit"`: the
   first in each unit of `level`. `"disjoint"`: occurrences which share no atoms, the first found winning.
