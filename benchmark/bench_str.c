@@ -7,6 +7,8 @@
 #include <core/md_log.h>
 
 #include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
 
 UBENCH_EX(str, buffered_reader) {
     str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
@@ -58,26 +60,27 @@ UBENCH_EX(str, parse_int) {
     UBENCH_DO_NOTHING(&acc);
 }
 
-UBENCH_EX(str, parse_int_simd) {
-    str_t str[] = {
-        STR_INIT("19312312"),
-        STR_INIT("1123    "),
-        STR_INIT("19228123"),
-        STR_INIT("19212381"),
+// The C library on the same input, for reference
+UBENCH_EX(str, strtoll) {
+    const char* str[] = {
+        "1928123123123",
+        "1123    ",
+        "19228123",
+        "1921238123",
     };
 
     int64_t num_bytes = 0;
     for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
-        num_bytes += str[i].len;
+        num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);
 
-    size_t acc = 0;
+    long long acc = 0;
     UBENCH_DO_BENCHMARK() {
-        acc += parse_u32(str[0].ptr, str[0].len);
-        acc += parse_u32(str[1].ptr, str[1].len);
-        acc += parse_u32(str[2].ptr, str[2].len);
-        acc += parse_u32(str[3].ptr, str[3].len);
+        acc += strtoll(str[0], NULL, 10);
+        acc += strtoll(str[1], NULL, 10);
+        acc += strtoll(str[2], NULL, 10);
+        acc += strtoll(str[3], NULL, 10);
     }
     UBENCH_DO_NOTHING(&acc);
 }
@@ -106,26 +109,27 @@ UBENCH_EX(str, parse_float) {
     UBENCH_DO_NOTHING(&acc);
 }
 
-UBENCH_EX(str, parse_float_simd) {
-    str_t str[] = {
-        STR_INIT("1928123.2767    "),
-        STR_INIT("19.2            "),
-        STR_INIT("12323           "),
-        STR_INIT("0.000000        "),
+// The C library on the same input, for reference
+UBENCH_EX(str, strtod) {
+    const char* str[] = {
+        "1928123.2767",
+        "19.2    ",
+        "12323   ",
+        "0.000000",
     };
 
     int64_t num_bytes = 0;
     for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
-        num_bytes += str[i].len;
+        num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);
 
     double acc = 0;
     UBENCH_DO_BENCHMARK() {
-        acc += parse_float_wide(str[0].ptr, str[0].len);
-        acc += parse_float_wide(str[1].ptr, str[1].len);
-        acc += parse_float_wide(str[2].ptr, str[2].len);
-        acc += parse_float_wide(str[3].ptr, str[3].len);
+        acc += strtod(str[0], NULL);
+        acc += strtod(str[1], NULL);
+        acc += strtod(str[2], NULL);
+        acc += strtod(str[3], NULL);
     }
     UBENCH_DO_NOTHING(&acc);
 }

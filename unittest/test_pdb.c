@@ -190,3 +190,37 @@ UTEST(pdb, run_needs_several_models) {
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/1ala/time")) == NULL);
     md_vm_arena_destroy(arena);
 }
+
+// The columns read without a scan give what parse_float gives on them: every coordinate, occupancy
+// and temperature factor of the reference files
+#include <core/md_parse.h>
+
+static size_t pdb_test_compare_with_columns(str_t path) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_pdb_data_t pdb = {0};
+    if (!md_pdb_data_parse_file(&pdb, path, alloc)) return SIZE_MAX;
+    str_t text = load_textfile(path, alloc);
+    str_t rest = text, line;
+    size_t i = 0, mismatches = 0;
+    static const size_t cols[5][2] = { {30, 8}, {38, 8}, {46, 8}, {54, 6}, {60, 6} };
+    while (str_extract_line(&line, &rest) && i < md_array_size(pdb.atom_coordinates)) {
+        if (!(str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6))) continue;
+        const md_pdb_coordinate_t* c = &pdb.atom_coordinates[i++];
+        const float got[5] = { c->x, c->y, c->z, c->occupancy, c->temp_factor };
+        for (int k = 0; k < 5; ++k) {
+            if (line.len < cols[k][0] + cols[k][1]) continue;
+            const float want = (float)parse_float(str_substr(line, cols[k][0], cols[k][1]));
+            if (memcmp(&want, &got[k], sizeof(float)) != 0) mismatches += 1;
+        }
+    }
+    if (i != md_array_size(pdb.atom_coordinates)) mismatches += 1;
+    str_free(text, alloc);
+    md_pdb_data_free(&pdb, alloc);
+    return mismatches;
+}
+
+UTEST(pdb, columns_match_parse_float) {
+    EXPECT_EQ(0, pdb_test_compare_with_columns(STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb")));
+    EXPECT_EQ(0, pdb_test_compare_with_columns(STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb")));
+    EXPECT_EQ(0, pdb_test_compare_with_columns(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
+}

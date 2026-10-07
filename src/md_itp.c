@@ -116,12 +116,7 @@ static bool parse_i64(int64_t* out, str_t tok) {
     return true;
 }
 
-// parse_float does not take a leading '+', which is_float accepts and topologies do write
 static float parse_f32(str_t tok) {
-    if (tok.len > 1 && tok.ptr[0] == '+') {
-        tok.ptr += 1;
-        tok.len -= 1;
-    }
     return (float)parse_float(tok);
 }
 

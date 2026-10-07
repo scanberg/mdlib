@@ -51,6 +51,29 @@ static size_t extract_float_tokens(str_t* tok_arr, size_t tok_cap, str_t str) {
     return n;
 }
 
+// The columns of the coordinates, as GROMACS writes them: three fields of 'width' characters from
+// column 20, with 'decimals' decimals - "%8.3f" - and the velocities in three more with one decimal
+// more - "%8.4f" - both wider by as many decimals as were asked for beyond that. As GROMACS reads them,
+// the width is the distance between the first two decimal points of an atom line, and the decimals
+// five fewer: the point is always the fifth character of a field. False when the line does not show
+// such columns.
+static bool gro_coordinate_columns(size_t* width, size_t* decimals, str_t line) {
+    const str_t coords = str_substr(line, 20, SIZE_MAX);
+    size_t dot[3];
+    size_t from = 0;
+    for (int i = 0; i < 3; ++i) {
+        size_t loc;
+        if (!str_find_char(&loc, str_substr(coords, from, SIZE_MAX), '.')) return false;
+        dot[i] = from + loc;
+        from = dot[i] + 1;
+    }
+    const size_t w = dot[1] - dot[0];
+    if (dot[0] != 4 || w < 6 || dot[2] - dot[1] != w) return false;
+    *width = w;
+    *decimals = w - 5;
+    return true;
+}
+
 static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(reader);
@@ -79,6 +102,11 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
 
 	bool warn_about_fixed_width = false;
 
+    // The columns as the first atom line shows them. A line that keeps to them is read field by
+    // field without a scan; one that does not is read by its tokens.
+    size_t width = 0, decimals = 0;
+    bool columns = false;
+
     for (size_t i = 0; i < data->num_atoms; ++i) {
         if (!md_buffered_reader_extract_line(&line, reader)) {
             MD_LOG_ERROR("Failed to extract atom line");
@@ -86,28 +114,52 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         }
         md_gro_atom_t* atom = &data->atom_data[i];
 
-        const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
-        atom->vx = atom->vy = atom->vz = NAN;
-        if (num_tokens < 3) {
-            warn_about_fixed_width = true;
-            // Fallback to fixed width format
-			atom->x = (float)parse_float((str_t) { line.ptr + 20, 8 });
-            atom->y = (float)parse_float((str_t) { line.ptr + 28, 8 });
-            atom->z = (float)parse_float((str_t) { line.ptr + 36, 8 });
-        } else {
-            atom->x = (float)parse_float_wide(tokens[0].ptr, tokens[0].len);
-            atom->y = (float)parse_float_wide(tokens[1].ptr, tokens[1].len);
-            atom->z = (float)parse_float_wide(tokens[2].ptr, tokens[2].len);
+        if (i == 0) {
+            columns = gro_coordinate_columns(&width, &decimals, line);
+        }
 
-            // Velocities are all three or none: a line carrying only part of them is malformed, and
-            // guessing which component was meant is worse than reading none.
-            if (num_tokens >= 6) {
-                atom->vx = (float)parse_float_wide(tokens[3].ptr, tokens[3].len);
-                atom->vy = (float)parse_float_wide(tokens[4].ptr, tokens[4].len);
-                atom->vz = (float)parse_float_wide(tokens[5].ptr, tokens[5].len);
+        atom->vx = atom->vy = atom->vz = NAN;
+        bool read = false;
+        if (columns && line.len >= 20 + 3 * width) {
+            const char* f = line.ptr + 20;
+            read = md_parse_fixed_f32(&atom->x, (str_t){ f,             width }, decimals) &&
+                   md_parse_fixed_f32(&atom->y, (str_t){ f + width,     width }, decimals) &&
+                   md_parse_fixed_f32(&atom->z, (str_t){ f + 2 * width, width }, decimals);
+            // Then nothing, or the three velocities
+            if (read && !str_empty(str_trim(str_substr(line, 20 + 3 * width, SIZE_MAX)))) {
+                read = line.len >= 20 + 6 * width &&
+                       md_parse_fixed_f32(&atom->vx, (str_t){ f + 3 * width, width }, decimals + 1) &&
+                       md_parse_fixed_f32(&atom->vy, (str_t){ f + 4 * width, width }, decimals + 1) &&
+                       md_parse_fixed_f32(&atom->vz, (str_t){ f + 5 * width, width }, decimals + 1);
+                if (!read) {
+                    atom->vx = atom->vy = atom->vz = NAN;
+                }
             }
         }
-        
+
+        if (!read) {
+            const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
+            if (num_tokens < 3) {
+                warn_about_fixed_width = true;
+                // Fallback to fixed width format
+                atom->x = (float)parse_float(str_substr(line, 20, 8));
+                atom->y = (float)parse_float(str_substr(line, 28, 8));
+                atom->z = (float)parse_float(str_substr(line, 36, 8));
+            } else {
+                atom->x = (float)parse_float(tokens[0]);
+                atom->y = (float)parse_float(tokens[1]);
+                atom->z = (float)parse_float(tokens[2]);
+
+                // Velocities are all three or none: a line carrying only part of them is malformed, and
+                // guessing which component was meant is worse than reading none.
+                if (num_tokens >= 6) {
+                    atom->vx = (float)parse_float(tokens[3]);
+                    atom->vy = (float)parse_float(tokens[4]);
+                    atom->vz = (float)parse_float(tokens[5]);
+                }
+            }
+        }
+
         atom->res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
         
         str_copy_to_char_buf(atom->res_name,  sizeof(atom->res_name),  str_trim(str_substr(line,  5, 5)));

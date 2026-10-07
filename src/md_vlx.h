@@ -19,25 +19,23 @@ struct md_system_state_t;
 //
 //   ATOMS AND STATE      the system's own atom list and coordinates (md_system_t / md_system_state_t)
 //
-//   EMBEDDING            a polarizable embedding run names its potential in the SCF settings
-//                        (scf/potfile, the path it was given). Opened standalone, that .pot is looked
-//                        for beside the .h5 - the path resolved against the .h5's folder, then its
-//                        file name there, then an absolute path as written - and its sites are
+//   EMBEDDING            a polarizable embedding run keeps the potential it ran with in the file:
+//                        potfile_text, which current VeloxChem fills with PyFraME's JSON (converted
+//                        from the .pot the run was given, when it was given one). Its sites are
 //                        APPENDED to the system's atoms, after the QM atoms: QM atom i is still system
 //                        atom i. Each fragment becomes a component named for its residue (VeloxChem's
-//                        _pe/_npe tag dropped) and numbered by its fragment number, the QM atoms one
-//                        component "QM"; a site without an element is a virtual site. Absent, or not
-//                        the potential this run used (rows that do not match its fragments), and the
-//                        environment is left out with a log line - the load itself does not fail. A
-//                        supplemental load never adds it: that system's atoms are not this reader's.
-//                        potfile_text (vlx/potfile) is NOT the .pot: current VeloxChem fills it with
-//                        the PyFraME JSON it converted the .pot into
+//                        _pe/_npe tag dropped) and numbered by its fragment number - which is its
+//                        position, the JSON keeps no residue numbers - and the QM atoms one component
+//                        "QM". The JSON keeps no atom names either, so a site is named for its element;
+//                        an 'X' site is a virtual site. A potential that is not PyFraME JSON (a CPPE
+//                        era run), or not one VeloxChem could have written, leaves the environment out
+//                        with a log line - the load itself does not fail. A supplemental load never adds
+//                        it: that system's atoms are not this reader's
 //
 //   atom/charge                                              {N} over the SYSTEM's atoms, when the
 //   atom/polarizability                                      embedding was added: each site's charge
 //                                                            (e) and isotropic polarizability (bohr^3,
-//                                                            a third of the trace), expanded from the
-//                                                            file's per fragment type rows; zero
+//                                                            a third of the trace); zero
 //                                                            polarizability is a non polarizable site.
 //                                                            NAN for the QM atoms, which are no sites
 //

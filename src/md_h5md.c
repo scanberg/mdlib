@@ -11,6 +11,7 @@
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_parse.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
 #include <core/md_vec_math.h>
@@ -321,11 +322,9 @@ static bool h5md_unit_parse(md_unit_t* out, str_t str) {
 
         md_unit_t factor;
         if (is_digit(tok.ptr[0]) || tok.ptr[0] == '.') {
-            char num[64];
-            str_copy_to_char_buf(num, sizeof(num), tok);
-            char* num_end = NULL;
-            const double value = strtod(num, &num_end);
-            if (!num_end || *num_end != '\0' || value == 0.0) {
+            // Not strtod: it reads "0.1" as 0 in a decimal comma locale
+            double value = 0.0;
+            if (md_parse_f64(&value, tok) != tok.len || value == 0.0) {
                 return false;
             }
             factor = md_unit_scl(md_unit_none(), pow(value, power));
