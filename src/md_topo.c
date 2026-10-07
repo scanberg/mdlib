@@ -2121,6 +2121,7 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
             C.quadT[i] = 0.25 * P->quadT[i];      // 1/2 sum |T| hc^2
             C.r[i] = P->r[i];
         }
+        MEMCPY(C.T, P->T, sizeof(C.T));           // a quadratic re-centred: the same T (the exact quadratic test uses it)
         double val[3], vec[3][3], M[3][3];
         MEMCPY(M, C.A, sizeof(M));
         cpg_eigen_sym3(val, vec, M);
