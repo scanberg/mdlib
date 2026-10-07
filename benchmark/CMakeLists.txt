@@ -32,11 +32,3 @@ target_include_directories(md_benchmark
   gen/
   ../ext/xtc/
 )
-
-# Timings of the certified GTO critical point search, CPU and GPU, per phase (see bench_topo_gto.c).
-# Its own executable: it prints tables rather than ubench statistics, and takes options.
-add_executable(md_topo_gto_bench bench_topo_gto.c)
-target_compile_definitions(md_topo_gto_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})
-target_compile_options(md_topo_gto_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
-target_link_options(md_topo_gto_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
-target_link_libraries(md_topo_gto_bench PRIVATE mdlib)
