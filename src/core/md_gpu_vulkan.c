@@ -598,6 +598,7 @@ typedef struct md_gpu_device {
     uint32_t        adapter_index;
     uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
+    bool            debug_utils;        /* VK_EXT_debug_utils enabled: object names and labels for GPU tools */
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
     bool            depth_bias_clamp;   /* feature; otherwise the clamp must be 0 */
@@ -1344,12 +1345,18 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
     const uint32_t surface_ext_count = ext_count;
 
+    /* VK_EXT_debug_utils whenever the loader offers it, validation or not: kernels and pipelines get
+       their labels as object names and every dispatch a command-buffer label, which is what profilers
+       and capture tools (Nsight Systems / Graphics, RenderDoc) show. Nothing listens otherwise. */
+    const bool has_debug_utils = md_vk_ext_available(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (has_debug_utils) exts[ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    const uint32_t base_ext_count = ext_count;
+
     bool want_debug = dev->validation
         && md_vk_layer_available("VK_LAYER_KHRONOS_validation")
-        && md_vk_ext_available(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        && has_debug_utils;
     if (want_debug) {
         layers[layer_count++] = "VK_LAYER_KHRONOS_validation";
-        exts[ext_count++]     = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     } else if (dev->validation) {
         MD_LOG_DEBUG("md_gpu: validation requested but unavailable");
     }
@@ -1362,16 +1369,20 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     ici.ppEnabledExtensionNames = exts;
 
     if (vkCreateInstance(&ici, NULL, &dev->instance) != VK_SUCCESS) {
-        /* Retry without validation. */
+        /* Retry without validation, then without debug utils too. */
         ici.enabledLayerCount = 0;
-        ici.enabledExtensionCount = surface_ext_count;
         want_debug = false;
-        if (!md_vk_check(vkCreateInstance(&ici, NULL, &dev->instance), "vkCreateInstance")) {
-            md_free(alloc, dev, sizeof(*dev));
-            return NULL;
+        if (vkCreateInstance(&ici, NULL, &dev->instance) != VK_SUCCESS) {
+            ici.enabledExtensionCount = surface_ext_count;
+            if (!md_vk_check(vkCreateInstance(&ici, NULL, &dev->instance), "vkCreateInstance")) {
+                md_free(alloc, dev, sizeof(*dev));
+                return NULL;
+            }
         }
     }
+    dev->debug_utils = has_debug_utils && ici.enabledExtensionCount == base_ext_count;
     volkLoadInstance(dev->instance);
+    MD_LOG_DEBUG("md_gpu: VK_EXT_debug_utils %s", dev->debug_utils ? "enabled: kernels and dispatches are named for GPU tools" : "unavailable");
     md_vk_live_instance = dev->instance;
 
     if (want_debug && vkCreateDebugUtilsMessengerEXT) {
@@ -3535,6 +3546,9 @@ static void md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k) {
     md_free(dev->alloc, k, sizeof(*k));
 }
 
+static bool md_vk_debug_labels(md_gpu_device_t dev);
+static void md_vk_set_name(md_gpu_device_t dev, VkObjectType type, uint64_t handle, const char* name);
+
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
         md_vk_fail("md_gpu_kernel_create: missing code");
@@ -3598,6 +3612,8 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
         md_vk_kernel_free(dev, k);
         return NULL;
     }
+    md_vk_set_name(dev, VK_OBJECT_TYPE_SHADER_MODULE, (uint64_t)k->module, k->label);
+    md_vk_set_name(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)k->pipeline, k->label);
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_vk_vec_push(&dev->kernels, dev->alloc);
@@ -3635,6 +3651,18 @@ md_gpu_grid_t md_gpu_grid_for(md_gpu_kernel_t k, uint32_t nx, uint32_t ny, uint3
     g.y = (uint32_t)(((uint64_t)ny + k->group_size[1] - 1) / k->group_size[1]);
     g.z = (uint32_t)(((uint64_t)nz + k->group_size[2] - 1) / k->group_size[2]);
     return g;
+}
+
+/* Each dispatch inside a command-buffer label with its kernel's name, so a profiler's timeline and
+   per-dispatch tables say which kernel ran. */
+static void md_vk_dispatch_label_begin(md_gpu_device_t dev, VkCommandBuffer cmd, md_gpu_kernel_t k) {
+    if (!md_vk_debug_labels(dev)) return;
+    VkDebugUtilsLabelEXT l = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    l.pLabelName = k->label;
+    vkCmdBeginDebugUtilsLabelEXT(cmd, &l);
+}
+static void md_vk_dispatch_label_end(md_gpu_device_t dev, VkCommandBuffer cmd) {
+    if (md_vk_debug_labels(dev)) vkCmdEndDebugUtilsLabelEXT(cmd);
 }
 
 static VkCommandBuffer md_vk_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, const void* args, size_t args_size) {
@@ -3677,7 +3705,9 @@ bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, con
     }
     VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
     if (!cmd) return false;
+    md_vk_dispatch_label_begin(s->device, cmd, k);
     vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
+    md_vk_dispatch_label_end(s->device, cmd);
     md_vk_end_op(s);
     return true;
 }
@@ -3689,7 +3719,9 @@ bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t 
     if (b.offset % 4 != 0) return md_vk_fail("md_gpu_launch_indirect: grid address must be 4-byte aligned");
     VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
     if (!cmd) return false;
+    md_vk_dispatch_label_begin(s->device, cmd, k);
     vkCmdDispatchIndirect(cmd, b.buffer, b.offset);
+    md_vk_dispatch_label_end(s->device, cmd);
     md_vk_end_op(s);
     return true;
 }
@@ -3757,7 +3789,17 @@ static bool md_vk_format_is_uint(md_gpu_format_t f) {
 }
 
 static bool md_vk_debug_labels(md_gpu_device_t dev) {
-    return dev->messenger != VK_NULL_HANDLE && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT;
+    return dev->debug_utils && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT;
+}
+
+/* The label of a kernel or pipeline as its Vulkan object name, for GPU tools. */
+static void md_vk_set_name(md_gpu_device_t dev, VkObjectType type, uint64_t handle, const char* name) {
+    if (!dev->debug_utils || !vkSetDebugUtilsObjectNameEXT || !handle || !name || !name[0]) return;
+    VkDebugUtilsObjectNameInfoEXT ni = {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    ni.objectType   = type;
+    ni.objectHandle = handle;
+    ni.pObjectName  = name;
+    vkSetDebugUtilsObjectNameEXT(dev->device, &ni);
 }
 
 /* ---- Pipelines ------------------------------------------------------------ */
@@ -3993,6 +4035,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     }
     for (uint32_t i = 0; i < 2; ++i) if (modules[i]) vkDestroyShaderModule(dev->device, modules[i], NULL);
     if (!ok) { md_vk_pipeline_free(dev, p); return NULL; }
+    md_vk_set_name(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)p->pipeline, p->label);
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_pipeline_t* slot = (md_gpu_pipeline_t*)md_vk_vec_push(&dev->pipelines, dev->alloc);
