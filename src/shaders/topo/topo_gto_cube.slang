@@ -29,7 +29,7 @@
 //               computed once into groupshared memory; they serve every Cartesian component and the
 //               4 children on that side. Then per (AO, child) the products: centre values with
 //               magnitude and error shadows, and the separable remainder bounds.           -> phi
-//   gemm_main   32-row tiles: D * V and |D| * (error weights, remainder vectors), over the batch's
+//   gemm_main   64-row tiles: D * V and |D| * (error weights, remainder vectors), over the batch's
 //               local AOs.                                                                 -> dv
 //   epi_main    32 threads per batch: DOT[a][b] = V_a . D V_b with its error sums (which depend on
 //               a only through its derivative order), and the AO sums of the enclosures.   -> ep
@@ -523,22 +523,24 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 
 // ================================================================================== gemm_main
 // dv[row][c] = sum_j X[row][j] phi[j][c] over the batch's local AOs j, X = D for the 160 columns of the
-// centre values and |D| for the 112 after them. One group per 32-row tile computes all 272 columns, so
-// each D tile is gathered once: 32 x 4 threads, thread (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns
+// centre values and |D| for the 112 after them. One group per 64-row tile computes all 272 columns, so
+// each D tile is gathered once: 32 x 8 threads, thread (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns
 // tx + 32 j, j = 0..8 (j < 5 with D, j >= 5 with |D|): 17 groupshared reads per 72 multiply-adds. The
 // sum over j runs in increasing j, so the result does not depend on the tiling.
+// Of seven tilings measured (64/32/16 rows, 128/256 threads, 288 or 96 columns per group, 24-72
+// accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike.
 
-#define GT  32                  // rows per tile
+#define GT  64                  // rows per tile
 #define GKC 16                  // j per chunk
 #define GCJ 9                   // column groups of 32: 9 * 32 = 288 >= DV_W
 #define GR  8                   // rows per thread
-#define GEMM_WG 128
+#define GEMM_WG 256
 
 groupshared float gs_A[GKC][GT];
 groupshared float gs_B[GKC][GCJ * 32];
 
 [shader("compute")]
-[numthreads(32, 4, 1)]
+[numthreads(32, 8, 1)]
 void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint rt = gid.x;
     if (rt >= args.num_row_tiles) return;   // uniform per group
@@ -591,17 +593,11 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
     }
 }
 
-// ---- GEMM variants, for tuning per GPU (md_topo_gto_desc_t.gpu_gemm_variant; md_topo_gto_bench
-// --gemm-sweep). The same products, each column summed over j in increasing order in chunks of GKC,
-// so the results equal gemm_main's; only the tiling differs:
-//   GT_  rows per group tile        TY_  thread rows (32 x TY_ threads), GT_ / TY_ rows per thread
-//   GCJ_ column groups of 32 per thread         NCB_ groups per row tile (columns split 288 / NCB_)
-// Columns of group c >= 5 (of 9) multiply |D|. The host's tile list (rows per tile) and grid
-// (tiles * NCB_) follow the variant (cpg_gemm_variants in md_topo.c).
-// Bit j set: column group c * GCJ_ + j of block c is one of the |D| groups (>= 5).
+// For the column-split tilings (FGEMM): bit j set: column group c * GCJ_ + j of block c is one of the
+// |X| groups (>= 5).
 #define GEMM_ABS_MASK(c, GCJ_) (0xFFFFu << uint(max(5 - (c) * (GCJ_), 0)))
 // One GKC step of products over the groupshared tiles, |D| for the columns in MASK.
-#define GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, MASK)                                                     \
+#define GEMM_TILE_STEP(NAME, GT_, TY_, GCJ_, MASK)                                                     \
         {                                                                                               \
         [ForceUnroll] for (int kk = 0; kk < GKC; ++kk) {                                                \
             float a[(GT_) / (TY_)], aa[(GT_) / (TY_)], bb[GCJ_];                                        \
@@ -611,66 +607,6 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
                 acc[i][j] += ((((MASK) >> uint(j)) & 1u) != 0u ? aa[i] : a[i]) * bb[j];                 \
         }                                                                                               \
         }
-#define GEMM_VARIANT(NAME, GT_, TY_, GCJ_, NCB_)                                                         \
-groupshared float NAME##_A[GKC][GT_];                                                                   \
-groupshared float NAME##_B[GKC][(GCJ_) * 32];                                                           \
-[shader("compute")]                                                                                     \
-[numthreads(32, TY_, 1)]                                                                                \
-void NAME(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {            \
-    const uint rt = gid.x / uint(NCB_), cb = gid.x % uint(NCB_);                                        \
-    if (rt >= args.num_row_tiles) return;                                                               \
-    const uint2 rtd = args.row_tiles[rt];                                                               \
-    const Batch bt = args.batches[min(rtd.x, args.num_batches - 1u)];                                   \
-    const uint n = bt.info.y, base = bt.info.z, r0 = rtd.y;                                             \
-    const uint tx = gtid.x, ty = gtid.y;                                                                \
-    const uint N = args.num_ao;                                                                         \
-    const uint c0 = cb * uint((GCJ_) * 32);                                                             \
-    float acc[(GT_) / (TY_)][GCJ_];                                                                     \
-    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) acc[i][j] = 0.0; \
-    for (uint k0 = 0; k0 < n; k0 += GKC) {                                                              \
-        [ForceUnroll] for (int q = 0; q < ((GT_) * GKC) / (32 * (TY_)); ++q) {                          \
-            const uint e = tid + uint(32 * (TY_) * q);                                                  \
-            const uint r = e / GKC, kk = e % GKC;                                                       \
-            float d = 0.0;                                                                              \
-            if (r0 + r < n && k0 + kk < n) {                                                            \
-                const uint ai = min(args.row_ao[base + r0 + r], N - 1u);                                \
-                const uint aj = min(args.row_ao[base + k0 + kk], N - 1u);                               \
-                d = args.D[ai * N + aj];                                                                \
-            }                                                                                           \
-            NAME##_A[kk][r] = d;                                                                        \
-        }                                                                                               \
-        [ForceUnroll] for (int q = 0; q < (GKC * (GCJ_) * 32) / (32 * (TY_)); ++q) {                    \
-            const uint e = tid + uint(32 * (TY_) * q);                                                  \
-            const uint kk = e / uint((GCJ_) * 32), c = e % uint((GCJ_) * 32);                           \
-            float v = 0.0;                                                                              \
-            if (k0 + kk < n && c0 + c < DV_W) v = args.phi[(base + k0 + kk) * PHI_W + c0 + c];          \
-            NAME##_B[kk][c] = v;                                                                        \
-        }                                                                                               \
-        GroupMemoryBarrierWithGroupSync();                                                              \
-        /* a uniform branch per column block, so D or |D| is a compile-time choice per column */       \
-        if (cb == 0u)      GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(0, GCJ_))              \
-        else if (cb == 1u) GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(1, GCJ_))              \
-        else               GEMM_VARIANT_STEP(NAME, GT_, TY_, GCJ_, GEMM_ABS_MASK(2, GCJ_))              \
-        GroupMemoryBarrierWithGroupSync();                                                              \
-    }                                                                                                   \
-    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) {                                             \
-        const uint row = r0 + ty * uint((GT_) / (TY_)) + uint(i);                                       \
-        if (row >= n) continue;                                                                         \
-        [ForceUnroll] for (int j = 0; j < (GCJ_); ++j) {                                                \
-            const uint col = c0 + tx + 32u * uint(j);                                                   \
-            if (col < DV_W) args.dv[(base + row) * DV_W + col] = acc[i][j];                             \
-        }                                                                                               \
-    }                                                                                                   \
-}
-
-//            name     GT  TY GCJ NCB      threads  accumulators/thread  groupshared
-GEMM_VARIANT(gemm_v1, 32,  4,  3,  3)   // 128      24                    8 KB
-GEMM_VARIANT(gemm_v2, 64,  8,  3,  3)   // 256      24                   10 KB
-GEMM_VARIANT(gemm_v3, 32,  8,  9,  1)   // 256      36                   20 KB
-GEMM_VARIANT(gemm_v4, 64,  4,  3,  3)   // 128      48                   10 KB
-GEMM_VARIANT(gemm_v5, 16,  4,  9,  1)   // 128      36                   19 KB
-GEMM_VARIANT(gemm_v6, 64,  8,  9,  1)   // 256      72                   22 KB
-
 
 // ---- Factored form (md_topo.c: cpg_factor_density). Per factored batch, its factor rows
 //   fphi[k][c] = sum_j X_c[k][j] phi[j][c],   X = C~^T for the 20 centre values, |C~|^T for the rest,
@@ -718,9 +654,9 @@ void NAME(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
             NAME##_B[kk][c] = v;                                                                        \
         }                                                                                               \
         GroupMemoryBarrierWithGroupSync();                                                              \
-        if (cb == 0u)      GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(0, 3))                    \
-        else if (cb == 1u) GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(1, 3))                    \
-        else               GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(2, 3))                    \
+        if (cb == 0u)      GEMM_TILE_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(0, 3))                    \
+        else if (cb == 1u) GEMM_TILE_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(1, 3))                    \
+        else               GEMM_TILE_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(2, 3))                    \
         GroupMemoryBarrierWithGroupSync();                                                              \
     }                                                                                                   \
     [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) {                                             \

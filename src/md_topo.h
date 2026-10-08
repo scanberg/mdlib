@@ -146,8 +146,7 @@ typedef struct md_topo_gto_desc_t {
     uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
-    uint32_t      gpu_gemm_variant;      // GPU sweep only: GEMM tiling, for tuning: 0 picks one for the GPU, v + 1 forces tiling v
-    uint32_t      gpu_fgemm_variant;     // GPU sweep only: factored GEMM tiling, likewise (0 picks by the rank of D)
+    uint32_t      gpu_fgemm_variant;     // GPU sweep only: factored GEMM tiling, for tuning: 0 picks by the rank of D, v + 1 forces tiling v
     md_topo_gto_density_form_t density_form;   // see above (0 = auto)
 } md_topo_gto_desc_t;
 
@@ -215,13 +214,10 @@ bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_
 bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info,
                                             const md_topo_gto_desc_t* desc, md_gpu_stream_t stream);
 
-// The GEMM tilings desc.gpu_gemm_variant can select. Each sums the same products in the same order, so
-// results are identical (md_topo_gto_bench --gemm-sweep checks); only speed differs, per GPU.
-uint32_t    md_topo_gto_gpu_gemm_variant_count(void);
-const char* md_topo_gto_gpu_gemm_variant_name(uint32_t variant);
-// The tiling used for 'device' when desc.gpu_gemm_variant is 0 (measured per GPU vendor).
-uint32_t    md_topo_gto_gpu_gemm_variant_auto(md_gpu_device_t device);
-// The same for the factored form's GEMM (desc.gpu_fgemm_variant), whose default depends on the rank r of D.
+// The factored form's GEMM tilings desc.gpu_fgemm_variant can select (16, 32, 64 factor rows per tile).
+// Each sums the same products in the same order, so results are identical (md_topo_gto_bench
+// --fgemm-sweep checks); the default, the smallest tile that holds all r rows, was the fastest in 14 of
+// 15 measurements over three GPUs.
 uint32_t    md_topo_gto_gpu_fgemm_variant_count(void);
 const char* md_topo_gto_gpu_fgemm_variant_name(uint32_t variant);
 uint32_t    md_topo_gto_gpu_fgemm_variant_auto(uint32_t rank);
