@@ -3198,7 +3198,6 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     size_t                    pool_base = 0;  // pool numbering of pool[0]
     md_array(cpg_gpu_batch_t) hb = 0;
     md_array(uint32_t)        hsh = 0;        // the chunk's local shells
-    md_array(uint32_t)        hrow = 0;
     md_array(uint32_t)        htile = 0;      // pairs (batch, first row)
     md_array(uint32_t)        hfb = 0;        // the chunk's factored batches
 
@@ -3268,9 +3267,9 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
 
         // --- launch while there is room in flight and batches to launch
         while (ok && nfl < depth && qh < md_array_size(q)) {
+            const md_tick_t t_form = md_tick_now();
             md_array_shrink(hb, 0);
             md_array_shrink(hsh, 0);
-            md_array_shrink(hrow, 0);
             md_array_shrink(htile, 0);
             md_array_shrink(hfb, 0);
             const size_t nq = md_array_size(q);
@@ -3294,11 +3293,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                     R->info.gpu_gemm_flop += (double)fgemm_tpb * 2.0 * fgemm_rows * 480.0 * (double)((n + 15) / 16 * 16);
                 }
                 const uint32_t* ls = pool + (bt->lsh_off - pool_base);
-                for (uint32_t s = 0; s < bt->lsh_cnt; ++s) {
-                    const cpg_shell_t* cs = &ctx->shell[ls[s]];
-                    md_array_push(hsh, ls[s], heap);
-                    for (int c = 0; c < cs->ncart; ++c) md_array_push(hrow, cs->ao_offset + (uint32_t)c, heap);
-                }
+                md_array_push_array(hsh, ls, bt->lsh_cnt, heap);   // rows (AO per row) are laid out by ao_main
                 for (uint32_t r0 = 0; !fac && r0 < n; r0 += gemm_rows) {
                     md_array_push(htile, (uint32_t)count, heap);
                     md_array_push(htile, r0, heap);
@@ -3335,7 +3330,6 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 const md_tick_t tu = md_tick_now();
                 ok = ok && md_gpu_upload(stream, d_batches, hb, count * sizeof(cpg_gpu_batch_t))
                         && (nsh == 0 || md_gpu_upload(stream, d_pool, hsh, nsh * sizeof(uint32_t)))
-                        && (rows == 0 || md_gpu_upload(stream, d_row_ao, hrow, rows * sizeof(uint32_t)))
                         && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)))
                         && (nfb == 0 || md_gpu_upload(stream, d_fb, hfb, nfb * sizeof(uint32_t)));
                 if (!ok) break;
@@ -3383,6 +3377,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 }
             }
             ch.t_launch = md_tick_now();
+            R->info.ms_sweep_host_launch += md_tick_to_milliseconds(ch.t_launch - t_form) - ch.ms_profiled;
             fl[nfl++] = ch;
             slot ^= 1;
             qh = b;
@@ -3426,6 +3421,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
 
         // --- its outcomes in batch and child order: certified roots (polished later), splits, the rest to the CPU
         const uint32_t* out = c.count > 0 ? (const uint32_t*)h_out[c.slot].cpu : NULL;
+        const md_tick_t t_out = md_tick_now();
         size_t gi = 0;
         for (size_t bi = c.q0; bi < c.q1; ++bi) {
             const cpg_hbatch_t bt = q[bi];      // a copy: the children made below grow q
@@ -3467,6 +3463,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
             }
             gi++;
         }
+        R->info.ms_sweep_host_outcomes += md_tick_to_milliseconds(md_tick_now() - t_out);
         qd = c.q1;
         fl[0] = fl[1];
         nfl--;
@@ -3530,7 +3527,6 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array_free(pool, heap);
     md_array_free(hb, heap);
     md_array_free(hsh, heap);
-    md_array_free(hrow, heap);
     md_array_free(htile, heap);
     md_array_free(hfb, heap);
     R->info.ms_sweep += md_tick_to_milliseconds(md_tick_now() - t_start);

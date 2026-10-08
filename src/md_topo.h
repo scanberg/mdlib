@@ -187,6 +187,8 @@ typedef struct md_topo_gto_info_t {
     double   ms_sweep_gpu_wait;          // waiting for GPU dispatches and readbacks
     double   ms_sweep_polish;            // Newton polish of the roots the GPU certified (host)
     double   ms_sweep_cpu;               // CPU levels: the escalated subtrees, or the whole sweep without a GPU
+    double   ms_sweep_host_launch;       // GPU sweep, host: forming, uploading and launching chunks
+    double   ms_sweep_host_outcomes;     // GPU sweep, host: reading outcomes, forming and screening the child batches
     double   ms_separatrices;
     double   ms_clusters;
     // Per GPU kernel, with desc.profile_gpu_kernels (part of ms_sweep_gpu_wait): AO values and remainders,

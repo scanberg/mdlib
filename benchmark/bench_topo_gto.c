@@ -540,6 +540,8 @@ int main(int argc, char** argv) {
             printf("       ao %.1f ms (%.0f%%) | gemm %.1f ms (%.0f%%, %.0f GFLOP/s) | epilogue %.1f ms (%.0f%%) | decide %.1f ms (%.0f%%) | uploads, readbacks, waits %.1f ms\n",
                    ao, 100.0 * ao / (k > 0 ? k : 1), gemm, 100.0 * gemm / (k > 0 ? k : 1), gemm > 0 ? gflop / (gemm * 1.0e-3) : 0.0,
                    epi, 100.0 * epi / (k > 0 ? k : 1), dec, 100.0 * dec / (k > 0 ? k : 1), wait - k > 0 ? wait - k : 0.0);
+            printf("       host: forming and launching chunks %.1f ms | outcomes and child batches %.1f ms\n",
+                   MED(info.ms_sweep_host_launch), MED(info.ms_sweep_host_outcomes));
             for (int r = 0; r < reps; ++r) md_topo_extremum_graph_free(&runs[r].graph);
             desc.profile_gpu_kernels = false;
         }

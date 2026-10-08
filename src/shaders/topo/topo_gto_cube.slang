@@ -127,7 +127,7 @@ struct RootArgs {
     uint  num_fbatches;         // batches in the factored form
     Batch*    batches;
     uint*     batch_shells;     // global shell index per local shell, ascending per batch
-    uint*     row_ao;           // global AO index per row
+    uint*     row_ao;           // global AO index per row (written by ao_main)
     uint2*    row_tiles;        // (batch, first local row) per 32-row tile of the GEMM
     GtoShell* shells;
     float*    alpha;
@@ -515,7 +515,9 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             while (cs + 1u < ncs && gs_cs_prod[cs + 1u] <= f) cs++;
             const uint r = f - gs_cs_prod[cs];
             const uint ci = r / 8u, k = r % 8u;
-            ao_products(cs, ci, k, row0 + gs_cs_row[cs] + ci, h, n);
+            const uint row = row0 + gs_cs_row[cs] + ci;
+            if (k == 0u) args.row_ao[row] = args.shells[min(gs_cs_shell[cs], args.num_shells - 1u)].info.z + ci;   // for the GEMMs
+            ao_products(cs, ci, k, row, h, n);
         }
         GroupMemoryBarrierWithGroupSync();
     }
