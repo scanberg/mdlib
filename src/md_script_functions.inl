@@ -404,8 +404,8 @@ static int _chain_auth_id(data_t*, data_t[], eval_context_t*);       // (str[]) 
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
-static int _distance_min    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
-static int _distance_max    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
+static int _distance_min    (data_t*, data_t[], eval_context_t*); // (position[N], position[]) -> float[N]
+static int _distance_max    (data_t*, data_t[], eval_context_t*); // (position[N], position[]) -> float[N]
 static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (position[N], position[M]) -> float[N*M]
 
 static int _angle   (data_t*, data_t[], eval_context_t*); // (position[], position[], position[]) -> float
@@ -743,8 +743,8 @@ static procedure_t procedures[] = {
 
     // --- PROPERTY COMPUTE ---
     {STR_INIT("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
-    {STR_INIT("distance_min"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("distance_max"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {STR_INIT("distance_min"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("distance_max"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
 
     {STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
@@ -4261,84 +4261,123 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
+// distance_min and distance_max: one value per element of a, the shortest (longest) distance from the positions of that
+// element to any position of b. An element of a is a selection, an atom index, a range of atoms or a point, and is
+// measured by its atoms, not by its centre of mass. b is taken as a whole: an array of selections is merged into one.
+static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool largest) {
     ASSERT(ctx);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
+    const size_t num_elem = element_count(arg[0]);
+
     if (dst || ctx->vis) {
-        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
-        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const size_t  a_len = md_array_size(a_pos);
+        md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
+
+        data_t b = arg[1];
+        md_bitfield_t b_bf = {0};
+        if (b.type.base_type == TYPE_BITFIELD && element_count(b) > 1) {
+            b_bf = _internal_flatten_bf(as_bitfield(b), element_count(b), ctx->temp_alloc);
+            b.ptr  = &b_bf;
+            b.size = sizeof(md_bitfield_t);
+            b.type = type_info_element_type(b.type);
+        }
+        const vec3_t* b_pos = coordinate_extract(b, ctx);
         const size_t  b_len = md_array_size(b_pos);
 
-        int64_t min_i, min_j;
-        float min_dist = md_util_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
-
+        // Total count, not element_count: evaluated in a context the result is laid out as [context][N] (see rmsd)
+        float* out = NULL;
+        size_t out_len = 0;
         if (dst) {
-            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = min_dist;
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            out = as_float_arr(*dst);
+            out_len = type_info_total_element_count(dst->type);
+            MEMSET(out, 0, out_len * sizeof(float));
         }
+
+        size_t beg = 0;
+        size_t end = num_elem;
+        md_array(irange_t) subscript_ranges = ctx->subscript_ranges;
+        if (ctx->vis && subscript_ranges) {
+            // Only the elements of the result which are shown, e.g. a hovered element of its plot
+            beg = (size_t)CLAMP(subscript_ranges[0].beg, 0, (int)num_elem);
+            end = (size_t)CLAMP(subscript_ranges[0].end, (int)beg, (int)num_elem);
+            // Which is a subscript of the result, not of the single elements and of b which are visualized below
+            ctx->subscript_ranges = NULL;
+        }
+
+        const type_info_t elem_type   = type_info_element_type(arg[0].type);
+        const size_t      elem_stride = type_info_element_byte_stride(arg[0].type);
+
+        for (size_t i = beg; i < end; ++i) {
+            const data_t elem = {
+                .type = elem_type,
+                .ptr  = (char*)arg[0].ptr + i * elem_stride,
+                .size = elem_stride,
+            };
+            const vec3_t* a_pos = coordinate_extract(elem, ctx);
+            const size_t  a_len = md_array_size(a_pos);
+            if (ctx->vis) {
+                coordinate_visualize(elem, ctx);
+            }
+
+            // An empty selection - a dynamic one can be empty in some frames - has no distance to anything: 0
+            if (a_len == 0 || b_len == 0) continue;
+
+            int64_t ia = 0;
+            int64_t ib = 0;
+            const float dist = largest ?
+                md_util_max_distance(&ia, &ib, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell) :
+                md_util_min_distance(&ia, &ib, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
+
+            if (out && i < out_len) {
+                out[i] = dist;
+            }
+            if (ctx->vis) {
+                // The end in b drawn in the image it was measured in
+                vec4_t b4 = vec4_from_vec3(b_pos[ib], 0);
+                md_util_deperiodize_vec4(&b4, 1, a_pos[ia], &ctx->cur_state->unitcell);
+                draw_distance(a_pos[ia], vec3_from_vec4(b4), dist, ctx->vis, ctx->vis_flags);
+            }
+        }
+
         if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            coordinate_visualize(arg[1], ctx);
-            draw_distance(a_pos[min_i], b_pos[min_j], min_dist, ctx->vis, ctx->vis_flags);
+            coordinate_visualize(b, ctx);
+            ctx->subscript_ranges = subscript_ranges;
         }
-    }
-    else {
-        int res_a = coordinate_validate(arg[0], 0, ctx);
-        int res_b = coordinate_validate(arg[1], 1, ctx);
+
+        md_temp_end(temp);
+    } else {
+        // The positions are validated as for distance, but without its length: the length of the result is the number
+        // of elements of a, which a selection changing size from frame to frame does not change
+        static_backchannel_t* backchannel = ctx->backchannel;
+        ctx->backchannel = NULL;
+        const int res_a = coordinate_validate(arg[0], 0, ctx);
+        const int res_b = coordinate_validate(arg[1], 1, ctx);
+        ctx->backchannel = backchannel;
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
+            // Unless the number of elements of a is what changes, e.g. residue(within(...))
+            if (ctx->arg_flags && (ctx->arg_flags[0] & FLAG_DYNAMIC_LENGTH)) {
+                ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+            }
             ctx->backchannel->unit[0] = md_unit_none();
             ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
-        return 1;
+        return (int)num_elem;
     }
 
     return 0;
 }
 
+static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return distance_extent(dst, arg, ctx, false);
+}
+
 static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-
-    if (dst || ctx->vis) {
-        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
-        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const size_t  a_len = md_array_size(a_pos);
-        const size_t  b_len = md_array_size(b_pos);
-
-        int64_t max_i, max_j;
-        float dist = md_util_max_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
-
-        if (dst) {
-            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = dist;
-        }
-        if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            coordinate_visualize(arg[1], ctx);
-            draw_distance(a_pos[max_i], b_pos[max_j], dist, ctx->vis, ctx->vis_flags);
-
-        }
-    } else {
-        int res_a = coordinate_validate(arg[0], 0, ctx);
-        int res_b = coordinate_validate(arg[1], 1, ctx);
-        if (res_a < 0) return res_a;
-        if (res_b < 0) return res_b;
-        if (ctx->backchannel) {
-            ctx->backchannel->unit[0] = md_unit_none();
-            ctx->backchannel->unit[1] = md_unit_angstrom();
-            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
-        }
-        return 1;
-    }
-
-    return 0;
+    return distance_extent(dst, arg, ctx, true);
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {

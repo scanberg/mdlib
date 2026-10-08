@@ -213,7 +213,7 @@ Every procedure documented with `position` arguments (`distance`, `angle`, `dihe
 
 How a selection is turned into positions depends on the procedure, but the rule of thumb is:
 
-| Argument | `distance`, `angle`, `dihedral`, `com`, `distance_min/max` | `distance_pair`, `coord*` | `rdf`, `within`, `plane`, `shape_weights` |
+| Argument | `distance`, `angle`, `dihedral`, `com` | `distance_pair`, `coord*` | `rdf`, `within`, `plane`, `shape_weights` |
 |---|---|---|---|
 | single bitfield / index range | one point: the mass-weighted centre of mass | every atom, individually | every atom, individually (see each entry) |
 | array of bitfields (`residue(1:3)`) | see below | one centre of mass **per element** | see each entry |
@@ -223,6 +223,10 @@ centre of mass of all three residues together and `distance(residue(1:3), vec3(0
 one value per residue, use a [context](#contexts-in-and-out): `distance(1, vec3(0,0,0)) in residue(1:3)`, or use a
 procedure that keeps the elements apart such as `distance_pair(residue(1:3), vec3(0,0,0))` (three values) or
 `coord_x(residue(1:3))` (three values: the x coordinate of each residue's centre of mass).
+
+`distance_min` and `distance_max` follow a rule of their own: they measure atoms, not centres of mass, and give one
+value per element of their first argument (`distance_min(residue(1:3), residue(5))` is three values), while their
+second argument is taken as a whole.
 
 ---
 
@@ -555,7 +559,7 @@ Only a loader says which atoms are QM, nothing infers it: in a system without a 
 trajectory file), `qm` is a **compile error** ("The system has no QM region") rather than an empty selection.
 
 ```mdscript
-d = distance_min(qm(), water());
+d = distance_min(qm(), water());     # the closest water atom to each residue of the QM region
 near_qm = within(5, qm());
 ```
 
@@ -939,16 +943,26 @@ per_res = distance(1, 2) in residue(:);                         # float[num_resi
 <!-- proc name=distance_min category=property -->
 
 ```text
-distance_min(a: position[], b: position[]) -> float [Å]
+distance_min(a: position[N], b: position[]) -> float[N] [Å]
 ```
 
 **Parameters:** `a`, `b`.
 
-The shortest distance between any atom of `a` and any atom of `b` (closest approach between two groups). Unlike
-`distance`, the result is a single value even when the selections change size from frame to frame.
+One value per element of `a`: the shortest distance from any atom of that element to any atom of `b` (the closest
+approach of each element to `b`). The elements of `a` are the selections of an array of selections (`residue(1:3)`
+gives three values, `protein()` one per protein residue), the atoms of a list of indices (`{1, 5, 9}` gives three
+values) or the points of a list of `float[3]`; a single selection or index range is one element and gives a single
+value. `b` is taken as a whole: an array of selections is merged into one set of atoms. Atoms are measured, not
+centres of mass, and periodic boundary conditions are respected when the system has a unit cell.
+
+The number of values does not change when the selections change size from frame to frame (`within(...)`), and an
+element without atoms, or an empty `b`, gives 0. If the *number* of elements changes from frame to frame
+(`residue(within(...))`) the result is not published as a property.
 
 ```mdscript
-closest = distance_min(residue(1), residue(2));
+closest = distance_min(residue(1), residue(2));                 # one value
+per_res = distance_min(residue(1:10), residue(20));             # float[10]: residues 1 to 10, each to residue 20
+to_ligand = distance_min(protein(), resname("LIG"));            # one value per protein residue
 gap = distance_min(within_x(:20), within_x(30:));
 ```
 
@@ -957,15 +971,18 @@ gap = distance_min(within_x(:20), within_x(30:));
 <!-- proc name=distance_max category=property -->
 
 ```text
-distance_max(a: position[], b: position[]) -> float [Å]
+distance_max(a: position[N], b: position[]) -> float[N] [Å]
 ```
 
 **Parameters:** `a`, `b`.
 
-The largest distance between any atom of `a` and any atom of `b` (the extent between two groups).
+One value per element of `a`: the largest distance from any atom of that element to any atom of `b` (the extent of
+each element and `b` together). The elements of `a` and the handling of `b` are those of
+[`distance_min`](#distance_min).
 
 ```mdscript
-extent = distance_max(residue(1), residue(2));
+extent = distance_max(residue(1), residue(2));                  # one value
+per_res = distance_max(residue(1:10), residue(20));             # float[10]
 ```
 
 ### distance_pair

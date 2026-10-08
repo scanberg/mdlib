@@ -3807,6 +3807,159 @@ UTEST_F(script, rmsd_per_structure) {
     md_vm_arena_destroy(alloc);
 }
 
+static bool same_atoms(const md_bitfield_t* a, const md_bitfield_t* b, md_allocator_i* alloc) {
+    md_bitfield_t ab = md_bitfield_create(alloc);
+    md_bitfield_and(&ab, a, b);
+    return md_bitfield_popcount(a) == md_bitfield_popcount(b) && md_bitfield_popcount(&ab) == md_bitfield_popcount(a);
+}
+
+// The closest (farthest) approach of the atoms of selection a to the atoms of selection b, under the minimum image
+static float extent_reference(md_system_t* sys, const md_system_state_t* state, const char* a, const char* b, bool largest, md_allocator_i* alloc) {
+    md_bitfield_t bf[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
+    if (!eval_selection(&bf[0], str_from_cstr(a), sys) || !eval_selection(&bf[1], str_from_cstr(b), sys)) return -1.0f;
+    float ext = largest ? 0.0f : FLT_MAX;
+    md_bitfield_iter_t it_a = md_bitfield_iter_create(&bf[0]);
+    while (md_bitfield_iter_next(&it_a)) {
+        md_bitfield_iter_t it_b = md_bitfield_iter_create(&bf[1]);
+        while (md_bitfield_iter_next(&it_b)) {
+            vec3_t dx = vec3_sub(state->xyz[md_bitfield_iter_idx(&it_a)], state->xyz[md_bitfield_iter_idx(&it_b)]);
+            md_util_min_image_vec3(&dx, 1, &state->unitcell);
+            const float d = vec3_length(dx);
+            ext = largest ? MAX(ext, d) : MIN(ext, d);
+        }
+    }
+    return ext;
+}
+
+// distance_min and distance_max give one value per element of their first argument: the closest (farthest) approach of
+// the atoms of that element to everything in the second argument, which is taken as a whole.
+UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_system_t* sys = &utest_fixture->ala;
+    const md_system_state_t* state = &sys->reference;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_script_ir_compile_from_source(ir, STR_LIT(
+        "mn = distance_min(residue(1:4), residue(6));\n"
+        "mx = distance_max(residue(1:4), residue(6));\n"
+        "mn3 = distance_min(residue(3), residue(6));\n"
+        "mb = distance_min(residue(1), residue(5:8));\n"
+        "mi = distance_min({1, 5, 9}, residue(6));\n"
+        "mr = distance_max(1:9, residue(6));\n"
+        "mp = distance_min(vec3(0, 0, 0), residue(6));\n"
+        "mq = distance_min(residue(1:4), com(residue(6)));\n"
+        "mc = distance_min(all(), out com(residue(6))) in residue(1:4);\n"
+        "dyn = distance_min(within(5.0, residue(6)) and not residue(6), residue(6));\n"
+        "dl = distance_min(residue(within(3.0, residue(6)) and not residue(6)), residue(6));\n"), sys, NULL);
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        str_t err = md_script_ir_errors(ir)[i].text;
+        printf("  %.*s\n", (int)err.len, err.ptr);
+    }
+    ASSERT_TRUE(md_script_ir_valid(ir));
+
+    data_t mn = {0}, mx = {0}, mn3 = {0}, mb = {0}, mi = {0}, mr = {0}, mp = {0}, mq = {0}, mc = {0}, dyn = {0}, dl = {0};
+    ASSERT_TRUE(pbc_eval(&mn,  ir, "mn",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mx,  ir, "mx",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mn3, ir, "mn3", sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mb,  ir, "mb",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mi,  ir, "mi",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mr,  ir, "mr",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mp,  ir, "mp",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mq,  ir, "mq",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&mc,  ir, "mc",  sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&dyn, ir, "dyn", sys, state, alloc));
+    ASSERT_TRUE(pbc_eval(&dl,  ir, "dl",  sys, state, alloc));
+
+    // One value per residue of the first argument, measured from its atoms
+    ASSERT_EQ((size_t)4, mn.size / sizeof(float));
+    ASSERT_EQ((size_t)4, mx.size / sizeof(float));
+    for (int k = 0; k < 4; ++k) {
+        char a[32];
+        snprintf(a, sizeof(a), "residue(%i)", k + 1);
+        EXPECT_NEAR(((const float*)mn.ptr)[k], extent_reference(sys, state, a, "residue(6)", false, alloc), 1.0e-4f);
+        EXPECT_NEAR(((const float*)mx.ptr)[k], extent_reference(sys, state, a, "residue(6)", true,  alloc), 1.0e-4f);
+        EXPECT_GT(((const float*)mx.ptr)[k], ((const float*)mn.ptr)[k]);
+    }
+    // A single selection gives a single value
+    ASSERT_EQ((size_t)1, mn3.size / sizeof(float));
+    EXPECT_EQ(((const float*)mn.ptr)[2], as_float(mn3));
+
+    // The second argument is one set of atoms, not one centre of mass per residue
+    ASSERT_EQ((size_t)1, mb.size / sizeof(float));
+    EXPECT_NEAR(as_float(mb), extent_reference(sys, state, "residue(1)", "residue(5:8)", false, alloc), 1.0e-4f);
+
+    // Atom indices are one element each, a range is one element
+    ASSERT_EQ((size_t)3, mi.size / sizeof(float));
+    EXPECT_NEAR(((const float*)mi.ptr)[0], extent_reference(sys, state, "atom(1)", "residue(6)", false, alloc), 1.0e-4f);
+    EXPECT_NEAR(((const float*)mi.ptr)[1], extent_reference(sys, state, "atom(5)", "residue(6)", false, alloc), 1.0e-4f);
+    EXPECT_NEAR(((const float*)mi.ptr)[2], extent_reference(sys, state, "atom(9)", "residue(6)", false, alloc), 1.0e-4f);
+    ASSERT_EQ((size_t)1, mr.size / sizeof(float));
+    EXPECT_NEAR(as_float(mr), extent_reference(sys, state, "atom(1:9)", "residue(6)", true, alloc), 1.0e-4f);
+    ASSERT_EQ((size_t)1, mp.size / sizeof(float));
+    EXPECT_GT(as_float(mp), 0.0f);
+
+    // In a context, one value per context
+    ASSERT_EQ((size_t)4, mq.size / sizeof(float));
+    ASSERT_EQ((size_t)4, mc.size / sizeof(float));
+    for (int k = 0; k < 4; ++k) {
+        EXPECT_GT(((const float*)mq.ptr)[k], 0.0f);
+        EXPECT_NEAR(((const float*)mc.ptr)[k], ((const float*)mq.ptr)[k], 1.0e-5f);
+    }
+
+    // A selection which changes size from frame to frame is still one element
+    ASSERT_EQ((size_t)1, dyn.size / sizeof(float));
+    EXPECT_GT(as_float(dyn), 0.0f);
+    EXPECT_LE(as_float(dyn), 5.0f + 1.0e-4f);
+
+    // While a number of elements which changes from frame to frame is a result which does, as for rmsd
+    md_bitfield_t near = md_bitfield_create(alloc);
+    ASSERT_TRUE(eval_selection(&near, STR_LIT("within(3.0, residue(6)) and not residue(6)"), sys));
+    size_t num_near = 0;
+    for (size_t i = 0; i < sys->component.count; ++i) {
+        md_urange_t range = md_component_atom_range(&sys->component, i);
+        num_near += md_bitfield_popcount_range(&near, range.beg, range.end) > 0;
+    }
+    EXPECT_GT(num_near, (size_t)0);
+    EXPECT_EQ(num_near, dl.size / sizeof(float));
+    EXPECT_EQ(0u, (unsigned)md_script_ir_property_flags(ir, STR_LIT("dl")));
+
+    // Over the trajectory, as properties: four values per frame, and one for the dynamic selection
+    const uint32_t num_frames = script_frames(sys);
+    ASSERT_GT(num_frames, 0u);
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames));
+    const float* p_mn  = eval_property_data(eval, "mn");
+    const float* p_mn3 = eval_property_data(eval, "mn3");
+    const float* p_dyn = eval_property_data(eval, "dyn");
+    ASSERT_TRUE(p_mn && p_mn3 && p_dyn);
+    for (uint32_t f = 0; f < num_frames; ++f) {
+        EXPECT_EQ(p_mn3[f], p_mn[f * 4 + 2]);
+    }
+    md_script_eval_free(eval);
+
+    // Shown: the closest approach of each element, or of the hovered one only
+    md_bitfield_t res[2] = { md_bitfield_create(alloc), md_bitfield_create(alloc) };
+    ASSERT_TRUE(eval_selection(&res[0], STR_LIT("residue(1:4) or residue(6)"), sys));
+    ASSERT_TRUE(eval_selection(&res[1], STR_LIT("residue(3) or residue(6)"), sys));
+    identifier_t* ident = get_identifier(ir, STR_LIT("mn"));
+    ASSERT_TRUE(ident);
+    md_script_vis_ctx_t vctx = { .ir = ir, .sys = sys, .state = state };
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)ident->node, -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ((size_t)4, md_array_size(vis.text));
+    EXPECT_TRUE(same_atoms(&vis.atom_mask, &res[0], alloc));
+    md_script_vis_clear(&vis);
+    EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)ident->node, 2, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    ASSERT_EQ((size_t)1, md_array_size(vis.text));
+    EXPECT_NEAR((float)vis.text[0].value, ((const float*)mn.ptr)[2], 1.0e-5f);
+    EXPECT_TRUE(same_atoms(&vis.atom_mask, &res[1], alloc));
+    md_script_vis_free(&vis);
+
+    md_vm_arena_destroy(alloc);
+}
+
 // ### COMPLETION ###
 
 // Completions at the '|' in src, which is taken out
