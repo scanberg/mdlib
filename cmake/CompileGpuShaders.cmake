@@ -126,6 +126,15 @@ if (MD_GPU_BACKEND STREQUAL "METAL")
     endif()
 endif()
 
+# Debug information in every shader binary (source files, lines, names), for shader profilers and
+# debuggers: Nsight Graphics' Shader Profiler and GPU Trace source views, RenderDoc, Xcode. SPIR-V gets
+# Slang's -g (NonSemantic.Shader.DebugInfo, core with Vulkan 1.3); offline Metal also
+# -gline-tables-only -frecord-sources. Off by default: larger binaries, and nothing else changes.
+option(MD_GPU_SHADER_DEBUG_INFO "Compile GPU shaders with debug information, for shader profilers" OFF)
+if (MD_GPU_SHADER_DEBUG_INFO)
+    message(STATUS "md_gpu: shaders compiled with debug information (MD_GPU_SHADER_DEBUG_INFO)")
+endif()
+
 function(compile_gpu_shaders OUT_HEADER)
     set(oneValueArgs TARGET NAMESPACE SOURCE)
     set(multiValueArgs ENTRIES VERTEX FRAGMENT DEPENDS)
@@ -146,10 +155,13 @@ function(compile_gpu_shaders OUT_HEADER)
         list(APPEND STAGE_ARGS --fragment ${G2_FRAGMENT})
     endif()
     set(MATH_ARGS "")               # descriptors: precise_math
-    set(METAL_MATH_FLAGS "")        # offline Metal compiler
+    set(METAL_FLAGS "")             # offline Metal compiler
     if (G2_PRECISE_MATH)
         set(MATH_ARGS --precise-math)
-        set(METAL_MATH_FLAGS -fno-fast-math)
+        set(METAL_FLAGS -fno-fast-math)
+    endif()
+    if (MD_GPU_SHADER_DEBUG_INFO)
+        list(APPEND METAL_FLAGS -gline-tables-only -frecord-sources)
     endif()
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "compile_gpu_shaders: SLANG_EXECUTABLE not defined")
@@ -166,6 +178,9 @@ function(compile_gpu_shaders OUT_HEADER)
 
     # Metal reserves 'main', so Slang renames entry points; silence that note.
     set(SLANG_FLAGS "-Wno-40100")
+    if (MD_GPU_SHADER_DEBUG_INFO)
+        list(APPEND SLANG_FLAGS -g)
+    endif()
 
     # Reject argument structs whose layout differs between SPIR-V and MSL.
     # Vectors and bindless handles are the constructs that diverge, and they
@@ -242,7 +257,7 @@ function(compile_gpu_shaders OUT_HEADER)
                 set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.metallib")
                 add_custom_command(
                     OUTPUT ${BIN}
-                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_MATH_FLAGS} ${MSL} -o ${AIR}
+                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_FLAGS} ${MSL} -o ${AIR}
                     COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${BIN}
                     DEPENDS ${MSL}
                     COMMENT "metallib: ${STEM}_${ENTRY}.metal -> ${STEM}_${ENTRY}.metallib"
