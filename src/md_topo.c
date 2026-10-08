@@ -2919,6 +2919,18 @@ static const cpg_gemm_variant_t cpg_gemm_variants[] = {
 #define CPG_GEMM_NV ((uint32_t)(sizeof(cpg_gemm_variants) / sizeof(cpg_gemm_variants[0])))
 static md_gpu_kernel_t k_topo_gemm_var[CPG_GEMM_NV] = {0};   // [0] unused: gemm_main is k_topo_gto[CPG_K_GEMM]
 
+// Factored GEMM tilings (topo_gto_cube.slang: FGEMM): factor rows per tile; any r works with any of
+// them (ceil(r / rows) tiles per batch), the default takes the smallest that holds r in one tile.
+static const struct { uint32_t rows; int kernel; const char* name; } cpg_fgemm_variants[] = {
+    { 16, CPG_K_FGEMM16, "f0: 16 factor rows per group, 32x2 threads, 8x3 outputs per thread" },
+    { 32, CPG_K_FGEMM32, "f1: 32 factor rows per group, 32x4 threads, 8x3 outputs per thread" },
+    { 64, CPG_K_FGEMM64, "f2: 64 factor rows per group, 32x8 threads, 8x3 outputs per thread" },
+};
+#define CPG_FGEMM_NV ((uint32_t)(sizeof(cpg_fgemm_variants) / sizeof(cpg_fgemm_variants[0])))
+uint32_t md_topo_gto_gpu_fgemm_variant_count(void) { return CPG_FGEMM_NV; }
+const char* md_topo_gto_gpu_fgemm_variant_name(uint32_t v) { return v < CPG_FGEMM_NV ? cpg_fgemm_variants[v].name : ""; }
+uint32_t md_topo_gto_gpu_fgemm_variant_auto(uint32_t rank) { return rank <= 16 ? 0 : (rank <= 32 ? 1 : 2); }
+
 uint32_t md_topo_gto_gpu_gemm_variant_count(void) { return CPG_GEMM_NV; }
 const char* md_topo_gto_gpu_gemm_variant_name(uint32_t v) { return v < CPG_GEMM_NV ? cpg_gemm_variants[v].name : ""; }
 
@@ -3175,8 +3187,10 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     // the factors of D in float, if any batch may use them (the same rule as the CPU's, per batch)
     const uint32_t R_f = ctx->fac_r && ctx->form != MD_TOPO_GTO_DENSITY_MATRIX ? (uint32_t)ctx->fac_r : 0;
     a.fac_r = R_f;
-    const uint32_t fgemm_rows = R_f <= 16 ? 16 : (R_f <= 32 ? 32 : 64);
-    const int k_fgemm = R_f <= 16 ? CPG_K_FGEMM16 : (R_f <= 32 ? CPG_K_FGEMM32 : CPG_K_FGEMM64);
+    uint32_t fv = R->desc->gpu_fgemm_variant ? R->desc->gpu_fgemm_variant - 1 : md_topo_gto_gpu_fgemm_variant_auto(R_f);
+    if (fv >= CPG_FGEMM_NV) fv = md_topo_gto_gpu_fgemm_variant_auto(R_f);
+    const uint32_t fgemm_rows = cpg_fgemm_variants[fv].rows;
+    const int k_fgemm = cpg_fgemm_variants[fv].kernel;
     const uint32_t fgemm_tpb = R_f ? (R_f + fgemm_rows - 1) / fgemm_rows : 0;     // row tiles per batch
     float* fC = R_f ? (float*)md_alloc(heap, sizeof(float) * (size_t)N * R_f) : NULL;
     float* fL = R_f ? (float*)md_alloc(heap, sizeof(float) * R_f) : NULL;

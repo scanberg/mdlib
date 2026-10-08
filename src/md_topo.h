@@ -147,6 +147,7 @@ typedef struct md_topo_gto_desc_t {
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
     uint32_t      gpu_gemm_variant;      // GPU sweep only: GEMM tiling, for tuning: 0 picks one for the GPU, v + 1 forces tiling v
+    uint32_t      gpu_fgemm_variant;     // GPU sweep only: factored GEMM tiling, likewise (0 picks by the rank of D)
     md_topo_gto_density_form_t density_form;   // see above (0 = auto)
 } md_topo_gto_desc_t;
 
@@ -220,6 +221,10 @@ uint32_t    md_topo_gto_gpu_gemm_variant_count(void);
 const char* md_topo_gto_gpu_gemm_variant_name(uint32_t variant);
 // The tiling used for 'device' when desc.gpu_gemm_variant is 0 (measured per GPU vendor).
 uint32_t    md_topo_gto_gpu_gemm_variant_auto(md_gpu_device_t device);
+// The same for the factored form's GEMM (desc.gpu_fgemm_variant), whose default depends on the rank r of D.
+uint32_t    md_topo_gto_gpu_fgemm_variant_count(void);
+const char* md_topo_gto_gpu_fgemm_variant_name(uint32_t variant);
+uint32_t    md_topo_gto_gpu_fgemm_variant_auto(uint32_t rank);
 #endif
 
 // Free an extremum graph structure
