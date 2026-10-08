@@ -2906,6 +2906,7 @@ typedef struct cpg_gpu_args_t {
     md_gpu_addr_t fac_l;
     md_gpu_addr_t fphi;
     md_gpu_addr_t fbatches;
+    md_gpu_addr_t ao_order;
 } cpg_gpu_args_t;
 
 // Layout constants shared with topo_gto_cube.slang.
@@ -3086,6 +3087,11 @@ typedef struct cpg_rootkey_t {
     uint32_t idx;
 } cpg_rootkey_t;
 
+static int cpg_u64_cmp(const void* pa, const void* pb) {
+    const uint64_t a = *(const uint64_t*)pa, b = *(const uint64_t*)pb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
 static int cpg_rootkey_cmp(const void* pa, const void* pb) {
     const cpg_rootkey_t* a = (const cpg_rootkey_t*)pa;
     const cpg_rootkey_t* b = (const cpg_rootkey_t*)pb;
@@ -3195,6 +3201,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array(uint32_t)        hsh = 0;        // the chunk's local shells
     md_array(uint32_t)        htile = 0;      // pairs (batch, first row)
     md_array(uint32_t)        hfb = 0;        // the chunk's factored batches
+    md_array(uint64_t)        hkey = 0;       // (UINT32_MAX - local AOs) << 32 | batch
+    md_array(uint32_t)        hord = 0;       // ao_main's batch order
 
     // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups; candidates: every shell
     for (int s = 0; s < NS; ++s) md_array_push(pool, (uint32_t)s, heap);
@@ -3239,8 +3247,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     // --- device scratch, grown on demand. One set: the stream orders a chunk's uploads and kernels after
     //     the previous chunk's. Only the readback is double, as the host reads one chunk's outcomes
     //     while the next chunk runs.
-    md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0, d_fphi = 0, d_fb = 0;
-    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_fphi = 0, c_fb = 0;
+    md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0, d_fphi = 0, d_fb = 0, d_ord = 0;
+    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_fphi = 0, c_fb = 0, c_ord = 0;
     md_gpu_mem_t h_out[2] = { {0}, {0} };
     size_t c_hout[2] = { 0, 0 };
     const size_t float_cap = CPG_GPU_SCRATCH_BUDGET / sizeof(float);   // phi + dv + fphi per chunk
@@ -3306,6 +3314,13 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 R->info.num_gpu_rows += rows;
                 R->info.num_gpu_factored_batches += nfb;
                 const size_t nsh = md_array_size(hsh);
+                // ao_main's groups take the batches largest first: a dispatch lasts until its slowest
+                // group ends, and the small ones fill in behind the large ones
+                md_array_resize(hkey, count, heap);
+                md_array_resize(hord, count, heap);
+                for (size_t i = 0; i < count; ++i) hkey[i] = ((uint64_t)(UINT32_MAX - hb[i].info[1]) << 32) | (uint64_t)i;
+                qsort(hkey, count, sizeof(uint64_t), cpg_u64_cmp);
+                for (size_t i = 0; i < count; ++i) hord[i] = (uint32_t)(hkey[i] & UINT32_MAX);
                 ok = cpg_gpu_reserve(stream, &d_batches, &c_batches, count, sizeof(cpg_gpu_batch_t))
                   && cpg_gpu_reserve(stream, &d_pool, &c_pool, MAX(nsh, 1), sizeof(uint32_t))
                   && cpg_gpu_reserve(stream, &d_row_ao, &c_row_ao, MAX(rows, 1), sizeof(uint32_t))
@@ -3315,7 +3330,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                   && cpg_gpu_reserve(stream, &d_ep, &c_ep, 8 * count, CPG_GPU_EP_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_out, &c_out, 8 * count, sizeof(uint32_t))
                   && cpg_gpu_reserve(stream, &d_fphi, &c_fphi, MAX(frows, 1), CPG_GPU_PHI_W * sizeof(float))
-                  && cpg_gpu_reserve(stream, &d_fb, &c_fb, MAX(nfb, 1), sizeof(uint32_t));
+                  && cpg_gpu_reserve(stream, &d_fb, &c_fb, MAX(nfb, 1), sizeof(uint32_t))
+                  && cpg_gpu_reserve(stream, &d_ord, &c_ord, count, sizeof(uint32_t));
                 if (ok && (!h_out[slot].gpu || c_hout[slot] < 8 * count)) {
                     if (h_out[slot].gpu) md_gpu_free(stream, h_out[slot].gpu);
                     c_hout[slot] = MAX(8 * count, c_hout[slot] + c_hout[slot] / 2);
@@ -3326,7 +3342,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 ok = ok && md_gpu_upload(stream, d_batches, hb, count * sizeof(cpg_gpu_batch_t))
                         && (nsh == 0 || md_gpu_upload(stream, d_pool, hsh, nsh * sizeof(uint32_t)))
                         && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)))
-                        && (nfb == 0 || md_gpu_upload(stream, d_fb, hfb, nfb * sizeof(uint32_t)));
+                        && (nfb == 0 || md_gpu_upload(stream, d_fb, hfb, nfb * sizeof(uint32_t)))
+                        && md_gpu_upload(stream, d_ord, hord, count * sizeof(uint32_t));
                 if (!ok) break;
                 a.num_batches = (uint32_t)count;
                 a.num_row_tiles = (uint32_t)tiles;
@@ -3340,6 +3357,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 a.outcome = d_out;
                 a.fphi = d_fphi;
                 a.fbatches = d_fb;
+                a.ao_order = d_ord;
                 a.num_fbatches = (uint32_t)nfb;
                 const size_t nmb = count - nfb;           // batches in the matrix form
                 // in order; a zero grid is skipped
@@ -3514,7 +3532,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array_free(R->cur, heap);
     R->cur = esc;
 
-    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, d_fphi, d_fb, h_out[0].gpu, h_out[1].gpu,
+    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, d_fphi, d_fb, d_ord, h_out[0].gpu, h_out[1].gpu,
                              a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.fac_C, a.fac_l };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(bufs[0]); ++i) if (bufs[i]) md_gpu_free(stream, bufs[i]);
     md_array_free(proots, heap);
@@ -3524,6 +3542,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array_free(hsh, heap);
     md_array_free(htile, heap);
     md_array_free(hfb, heap);
+    md_array_free(hkey, heap);
+    md_array_free(hord, heap);
     R->info.ms_sweep += md_tick_to_milliseconds(md_tick_now() - t_start);
     return ok;
 }

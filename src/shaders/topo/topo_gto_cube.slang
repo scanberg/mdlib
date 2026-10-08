@@ -142,6 +142,7 @@ struct RootArgs {
     float*    fac_l;            // l_k
     float*    fphi;             // factor rows of the factored batches, phi's layout
     uint*     fbatches;         // the factored batches' indices
+    uint*     ao_order;         // ao_main's group -> batch, largest batches first
 };
 MD_SHADER_ARGS(RootArgs);
 #define args (*md_root.args)
@@ -500,8 +501,8 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
 [shader("compute")]
 [numthreads(AO_WG, 1, 1)]
 void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
-    const uint b = gid.x;
-    if (b >= args.num_batches) return;      // uniform per group
+    if (gid.x >= args.num_batches) return;  // uniform per group
+    const uint b = min(args.ao_order[gid.x], args.num_batches - 1u);
     const Batch bt = args.batches[b];
     const float3 P = bt.P_h.xyz;
     const float h = bt.P_h.w;
