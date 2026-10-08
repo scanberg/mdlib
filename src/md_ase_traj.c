@@ -2,494 +2,451 @@
 
 #include <md_system.h>
 #include <core/md_allocator.h>
-#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
+#include <core/md_json.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
 
-#define JSMN_STATIC
-#define JSMN_STRICT
-#define JSMN_PARENT_LINKS
-#include "../ext/jsmn/jsmn.h"
-
-#include <limits.h>
 #include <math.h>
-#include <stdlib.h>
-#include <string.h>
 
-enum { MAX_JSON_BYTES = 16 * 1024 * 1024, MAX_JSON_TOKENS = 65536 };
+// ASE trajectories are ULM files (ase/io/ulm.py, ase/io/trajectory.py). As far as they are read here:
+//
+//     0   "- of Ulm"              magic
+//     8   "ASE-Trajectory  "      tag, padded with spaces to 16 bytes
+//     24  int64                   ULM version, 3
+//     32  int64                   number of items, one per frame
+//     40  int64                   offset of the item table: an int64 offset per item
+//
+// An item is an int64 byte count followed by that many bytes of JSON, an object. Arrays are kept out
+// of the JSON: a key ending in '.' holds {"ndarray": [shape, dtype, offset]}, the data at that
+// absolute offset. All of it is little endian unless an item says "_little_endian": false, which a
+// big endian machine writes and which is refused here.
+//
+// Every frame has "positions." and "cell", whose rows are the box vectors. The first frame also has
+// the header - "version", "pbc", "numbers." - which ASE writes again only in a frame where something
+// in it changed; a frame without one has the first frame's, as ASE reads it.
+//
+// Arrays are read as the host's numbers: like the rest of mdlib this assumes a little endian host.
 
-typedef struct {
-    uint64_t offset;
-    uint8_t width;
-    bool little_endian;
-    double cell[3][3];
-    uint8_t pbc;
-} ase_frame_t;
+#define ASE_HEADER_SIZE   48
+#define ASE_MAX_ITEM_SIZE MEGABYTES(64)
+#define ASE_CELL_EPS      1.0e-6
 
-typedef struct {
-    md_allocator_i* arena;
-    size_t num_frames;
-    size_t num_atoms;
-    int32_t* numbers;
-    ase_frame_t* frames;
-    double* times;
-    md_unit_t time_unit;
-} ase_traj_t;
+typedef struct ase_index_t {
+    size_t              num_frames;
+    size_t              num_atoms;
+    md_atomic_number_t* numbers;    // num_atoms, from the first frame
+    int64_t*            offset;     // num_frames: where the positions of each frame start
+    int64_t*            size;       // num_frames: their byte size, num_atoms * 3 * (4 or 8)
+    float*              cell;       // num_frames * 9: row i box vector i, zero without periodicity
+    double*             time;       // num_frames
+    md_unit_t           time_unit;
+} ase_index_t;
 
-typedef struct {
-    char* text;
-    jsmntok_t* tok;
-    int count;
-} json_doc_t;
+// {"ndarray": [shape, dtype, offset]}
+typedef struct ase_array_t {
+    int64_t offset;
+    size_t  dim[2];
+    size_t  width;      // bytes per element
+    bool    is_float;
+} ase_array_t;
 
-typedef struct {
-    uint64_t offset;
-    size_t count;
-    uint8_t width;
-    bool is_float;
-    bool is_signed;
-} array_desc_t;
+// The array an item holds under key, of the given rank. False when it is missing, of a dtype not
+// read here, or does not fit in the file.
+static bool ase_array(ase_array_t* out, md_json_val_t item, str_t key, size_t rank, int64_t file_size) {
+    static const struct { str_t name; size_t width; bool is_float; } dtypes[] = {
+        { STR_INIT("float64"), 8, true  },
+        { STR_INIT("float32"), 4, true  },
+        { STR_INIT("int64"),   8, false },
+        { STR_INIT("int32"),   4, false },   // numpy's default integer on Windows before numpy 2
+    };
 
-static uint64_t read_integer(const uint8_t* p, uint8_t width, bool little_endian) {
-    uint64_t value = 0;
-    for (uint8_t i = 0; i < width; ++i) {
-        value = (value << 8) | p[little_endian ? width - i - 1 : i];
+    const md_json_val_t nd    = md_json_get(md_json_get(item, key), STR_LIT("ndarray"));
+    const md_json_val_t shape = md_json_at(nd, 0);
+    const md_json_val_t dtype = md_json_at(nd, 1);
+    if (md_json_type(nd) != MD_JSON_TYPE_ARRAY || md_json_count(nd) != 3 ||
+        md_json_type(shape) != MD_JSON_TYPE_ARRAY || md_json_count(shape) != rank ||
+        !md_json_i64(&out->offset, md_json_at(nd, 2))) {
+        return false;
     }
-    return value;
-}
 
-static bool read_at(md_file_t file, uint64_t file_size, uint64_t offset, void* dst, size_t size) {
-    if (offset > file_size || size > file_size - offset || offset > INT64_MAX) return false;
-    return md_file_seek(file, (md_file_offset_t)offset, MD_FILE_BEG) &&
-           md_file_read(file, dst, size) == size;
-}
-
-static bool token_eq(const json_doc_t* doc, int idx, const char* text) {
-    if (idx < 0 || idx >= doc->count) return false;
-    const jsmntok_t* t = &doc->tok[idx];
-    size_t size = strlen(text);
-    return t->type == JSMN_STRING && t->end - t->start == (int)size &&
-           memcmp(doc->text + t->start, text, size) == 0;
-}
-
-static int object_value(const json_doc_t* doc, int object, const char* key) {
-    if (object < 0 || object >= doc->count || doc->tok[object].type != JSMN_OBJECT) return -1;
-    for (int i = object + 1; i + 1 < doc->count && doc->tok[i].start < doc->tok[object].end; ++i) {
-        if (doc->tok[i].parent == object && token_eq(doc, i, key)) return i + 1;
+    out->width = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(dtypes); ++i) {
+        if (md_json_string_eq(dtype, dtypes[i].name)) {
+            out->width    = dtypes[i].width;
+            out->is_float = dtypes[i].is_float;
+            break;
+        }
     }
-    return -1;
+    if (out->width == 0) return false;
+
+    // Each dimension is held to what the file has room for, so the byte count cannot overflow
+    int64_t bytes = (int64_t)out->width;
+    size_t i = 0;
+    for (md_json_val_t d = md_json_first(shape); md_json_valid(d); d = md_json_next(d), ++i) {
+        int64_t n = 0;
+        if (!md_json_i64(&n, d) || n <= 0 || n > file_size / bytes) return false;
+        out->dim[i] = (size_t)n;
+        bytes *= n;
+    }
+    return 0 <= out->offset && out->offset <= file_size - bytes;
 }
 
-static int array_value(const json_doc_t* doc, int array, int index) {
-    if (array < 0 || array >= doc->count || doc->tok[array].type != JSMN_ARRAY || index < 0) return -1;
-    int found = 0;
-    for (int i = array + 1; i < doc->count && doc->tok[i].start < doc->tok[array].end; ++i) {
-        if (doc->tok[i].parent == array && found++ == index) return i;
+// The JSON object of the item at offset, parsed in temp along with its text. NONE when it is not one.
+static md_json_val_t ase_item(md_file_t file, int64_t file_size, int64_t offset, md_temp_scope_t temp) {
+    const md_json_val_t none = {0};
+    int64_t len = 0;
+    if (offset < ASE_HEADER_SIZE || offset > file_size - 8 || md_file_read_at(file, offset, &len, sizeof(len)) != sizeof(len) ||
+        len <= 0 || len > ASE_MAX_ITEM_SIZE || len > file_size - offset - 8) {
+        return none;
     }
-    return -1;
+    char* text = md_temp_alloc(temp, (size_t)len);
+    if (!text || md_file_read_at(file, offset + 8, text, (size_t)len) != (size_t)len) {
+        return none;
+    }
+    const md_json_val_t root = md_json_root(md_json_parse((str_t){ text, (size_t)len }, md_temp_allocator(temp), NULL));
+    return md_json_type(root) == MD_JSON_TYPE_OBJECT ? root : none;
 }
 
-static bool token_uint(const json_doc_t* doc, int idx, uint64_t* out) {
-    if (idx < 0 || idx >= doc->count || doc->tok[idx].type != JSMN_PRIMITIVE) return false;
-    const jsmntok_t* t = &doc->tok[idx];
-    if (t->start == t->end) return false;
-    uint64_t value = 0;
-    for (int i = t->start; i < t->end; ++i) {
-        char c = doc->text[i];
-        if (c < '0' || c > '9' || value > (UINT64_MAX - (uint64_t)(c - '0')) / 10) return false;
-        value = value * 10 + (uint64_t)(c - '0');
+// "numbers." of an item, num_atoms atomic numbers, into out. Scratch from temp.
+static bool ase_numbers(md_atomic_number_t* out, md_json_val_t item, size_t num_atoms, md_file_t file, int64_t file_size, md_temp_scope_t temp) {
+    ase_array_t arr;
+    if (!ase_array(&arr, item, STR_LIT("numbers."), 1, file_size) || arr.is_float || arr.dim[0] != num_atoms) {
+        return false;
     }
-    *out = value;
+    const size_t bytes = num_atoms * arr.width;
+    void* raw = md_temp_alloc(temp, bytes);
+    if (!raw || md_file_read_at(file, arr.offset, raw, bytes) != bytes) {
+        return false;
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        const int64_t z = (arr.width == 8) ? ((const int64_t*)raw)[i] : ((const int32_t*)raw)[i];
+        if (z < 0 || z >= MD_Z_Count) return false;
+        out[i] = (md_atomic_number_t)z;
+    }
     return true;
 }
 
-static bool token_double(const json_doc_t* doc, int idx, double* out) {
-    if (idx < 0 || idx >= doc->count || doc->tok[idx].type != JSMN_PRIMITIVE) return false;
-    const jsmntok_t* t = &doc->tok[idx];
-    int size = t->end - t->start;
-    if (size < 1 || size > 63) return false;
-    char text[64];
-    memcpy(text, doc->text + t->start, (size_t)size);
-    text[size] = '\0';
-    char* end = NULL;
-    double value = strtod(text, &end);
-    if (end != text + size || !isfinite(value)) return false;
-    *out = value;
+static bool ase_pbc(bool out[3], md_json_val_t pbc) {
+    if (md_json_type(pbc) != MD_JSON_TYPE_ARRAY || md_json_count(pbc) != 3) return false;
+    for (size_t i = 0; i < 3; ++i) {
+        if (!md_json_bool(&out[i], md_json_at(pbc, i))) return false;
+    }
     return true;
 }
 
-static bool token_bool(const json_doc_t* doc, int idx, bool* out) {
-    if (idx < 0 || idx >= doc->count || doc->tok[idx].type != JSMN_PRIMITIVE) return false;
-    const jsmntok_t* t = &doc->tok[idx];
-    if (t->end - t->start == 4 && memcmp(doc->text + t->start, "true", 4) == 0) {
-        *out = true;
+static bool ase_mat3(double out[3][3], md_json_val_t mat) {
+    if (md_json_type(mat) != MD_JSON_TYPE_ARRAY || md_json_count(mat) != 3) return false;
+    for (size_t i = 0; i < 3; ++i) {
+        const md_json_val_t row = md_json_at(mat, i);
+        if (md_json_type(row) != MD_JSON_TYPE_ARRAY || md_json_count(row) != 3 || md_json_extract_f64(out[i], 3, row) != 3) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The cell of a frame as a run holds it. md_unitcell_t has a along x and b in the xy plane, and is
+// periodic along every axis its diagonal is non zero along. A fully periodic cell in that orientation
+// is kept. Without periodicity the cell is dropped: the box ASE keeps around a molecule would
+// otherwise be taken to be a periodic one. Anything else - a rotated cell, or one periodic along
+// only some axes - is refused rather than shown wrong.
+static bool ase_cell(float out[9], const double A[3][3], const bool pbc[3]) {
+    MEMSET(out, 0, 9 * sizeof(float));
+    if (!pbc[0] && !pbc[1] && !pbc[2]) {
         return true;
     }
-    if (t->end - t->start == 5 && memcmp(doc->text + t->start, "false", 5) == 0) {
-        *out = false;
-        return true;
+    if (!pbc[0] || !pbc[1] || !pbc[2] ||
+        fabs(A[0][1]) > ASE_CELL_EPS || fabs(A[0][2]) > ASE_CELL_EPS || fabs(A[1][2]) > ASE_CELL_EPS ||
+        !(A[0][0] > 0.0 && A[1][1] > 0.0 && A[2][2] > 0.0)) {
+        return false;
     }
-    return false;
-}
-
-static void json_free(json_doc_t* doc, size_t text_size, unsigned token_cap) {
-    md_allocator_i* heap = md_get_heap_allocator();
-    if (doc->text) md_free(heap, doc->text, text_size);
-    if (doc->tok) md_free(heap, doc->tok, (size_t)token_cap * sizeof(jsmntok_t));
-    *doc = (json_doc_t){0};
-}
-
-static bool json_read(md_file_t file, uint64_t file_size, uint64_t offset,
-                      json_doc_t* doc, size_t* text_size, unsigned* token_cap) {
-    uint8_t size_bytes[8];
-    if (!read_at(file, file_size, offset, size_bytes, sizeof(size_bytes))) return false;
-    uint64_t json_size = read_integer(size_bytes, 8, true);
-    if (json_size == 0 || json_size > MAX_JSON_BYTES || offset + 8 > file_size ||
-        json_size > file_size - offset - 8) return false;
-    md_allocator_i* heap = md_get_heap_allocator();
-    *text_size = (size_t)json_size + 1;
-    doc->text = md_alloc(heap, *text_size);
-    if (!doc->text || !read_at(file, file_size, offset + 8, doc->text, (size_t)json_size)) return false;
-    doc->text[json_size] = '\0';
-    for (*token_cap = 256; *token_cap <= MAX_JSON_TOKENS; *token_cap *= 2) {
-        doc->tok = md_alloc(heap, (size_t)*token_cap * sizeof(jsmntok_t));
-        if (!doc->tok) return false;
-        jsmn_parser parser;
-        jsmn_init(&parser);
-        doc->count = jsmn_parse(&parser, doc->text, (size_t)json_size, doc->tok, *token_cap);
-        if (doc->count >= 1) return doc->tok[0].type == JSMN_OBJECT;
-        if (doc->count != JSMN_ERROR_NOMEM) return false;
-        md_free(heap, doc->tok, (size_t)*token_cap * sizeof(jsmntok_t));
-        doc->tok = NULL;
-    }
-    return false;
-}
-
-static bool parse_array(const json_doc_t* doc, int object, const char* key,
-                        uint8_t ndim, uint64_t file_size, array_desc_t* out,
-                        size_t* dim0, size_t* dim1) {
-    int desc = object_value(doc, object, key);
-    int array = object_value(doc, desc, "ndarray");
-    int shape = array_value(doc, array, 0);
-    int dtype = array_value(doc, array, 1);
-    int offset = array_value(doc, array, 2);
-    uint64_t n0, n1 = 1, at;
-    if (array < 0 || doc->tok[array].size != 3 || shape < 0 ||
-        doc->tok[shape].type != JSMN_ARRAY || doc->tok[shape].size != ndim ||
-        !token_uint(doc, array_value(doc, shape, 0), &n0) ||
-        (ndim == 2 && !token_uint(doc, array_value(doc, shape, 1), &n1)) ||
-        !token_uint(doc, offset, &at) || n0 == 0 || n0 > SIZE_MAX || n1 > SIZE_MAX ||
-        n0 > SIZE_MAX / n1) return false;
-    *dim0 = (size_t)n0;
-    *dim1 = (size_t)n1;
-    out->count = *dim0 * *dim1;
-    out->offset = at;
-    out->is_float = false;
-    out->is_signed = false;
-    if (token_eq(doc, dtype, "float64")) { out->width = 8; out->is_float = true; }
-    else if (token_eq(doc, dtype, "float32")) { out->width = 4; out->is_float = true; }
-    else if (token_eq(doc, dtype, "int64")) { out->width = 8; out->is_signed = true; }
-    else if (token_eq(doc, dtype, "int32")) { out->width = 4; out->is_signed = true; }
-    else if (token_eq(doc, dtype, "uint8")) { out->width = 1; }
-    else return false;
-    return out->count <= SIZE_MAX / out->width && at <= (uint64_t)INT64_MAX &&
-           out->count * out->width <= (uint64_t)INT64_MAX - at &&
-           at <= file_size && out->count * out->width <= file_size - at;
-}
-
-static bool parse_cell(const json_doc_t* doc, int root, double cell[3][3]) {
-    int matrix = object_value(doc, root, "cell");
-    if (matrix < 0 || doc->tok[matrix].type != JSMN_ARRAY || doc->tok[matrix].size != 3) return false;
-    for (int i = 0; i < 3; ++i) {
-        int row = array_value(doc, matrix, i);
-        if (row < 0 || doc->tok[row].type != JSMN_ARRAY || doc->tok[row].size != 3) return false;
-        for (int j = 0; j < 3; ++j) {
-            if (!token_double(doc, array_value(doc, row, j), &cell[i][j])) return false;
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            out[i * 3 + j] = (float)A[i][j];
         }
     }
     return true;
 }
 
-static bool parse_pbc(const json_doc_t* doc, int root, uint8_t* mask) {
-    int array = object_value(doc, root, "pbc");
-    if (array < 0) return true;
-    if (doc->tok[array].type != JSMN_ARRAY || doc->tok[array].size != 3) return false;
-    *mask = 0;
-    for (int i = 0; i < 3; ++i) {
-        bool periodic;
-        if (!token_bool(doc, array_value(doc, array, i), &periodic)) return false;
-        if (periodic) *mask |= (uint8_t)(1u << i);
+// Frame i of the index from its item: the first frame sets the atoms and the header, the others
+// must keep the atoms. What the index keeps goes in out, scratch in temp. NULL when the frame is fine,
+// otherwise what is wrong with it.
+static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item, bool pbc0[3], bool* has_time,
+                                  md_file_t file, int64_t file_size, md_temp_scope_t out, md_temp_scope_t temp) {
+    if (!md_json_valid(item)) {
+        return "not a JSON object";
     }
-    return true;
-}
-
-static bool read_numbers(md_file_t file, uint64_t file_size, const array_desc_t* desc,
-                         bool little_endian, int32_t* numbers, const int32_t* expected) {
-    size_t bytes = desc->count * desc->width;
-    uint8_t* raw = md_alloc(md_get_heap_allocator(), bytes);
-    if (!raw) return false;
-    bool ok = read_at(file, file_size, desc->offset, raw, bytes);
-    for (size_t i = 0; ok && i < desc->count; ++i) {
-        uint64_t value = read_integer(raw + i * desc->width, desc->width, little_endian);
-        if (value > 118 || (expected && expected[i] != (int32_t)value)) ok = false;
-        if (numbers) numbers[i] = (int32_t)value;
-    }
-    md_free(md_get_heap_allocator(), raw, bytes);
-    return ok;
-}
-
-static bool parse_frame(md_file_t file, uint64_t file_size, uint64_t json_offset,
-                        ase_traj_t* traj, size_t index, bool* has_time) {
-    json_doc_t doc = {0};
-    size_t text_size = 0;
-    unsigned token_cap = 0;
-    bool ok = false;
-    if (!json_read(file, file_size, json_offset, &doc, &text_size, &token_cap)) goto done;
-
-    ase_frame_t* frame = &traj->frames[index];
-    if (index) *frame = traj->frames[index - 1];
-    else {
-        uint64_t version;
-        if (!token_uint(&doc, object_value(&doc, 0, "version"), &version) || version != 1 ||
-            object_value(&doc, 0, "pbc") < 0) goto done;
-    }
-    frame->little_endian = true;
-    int endian = object_value(&doc, 0, "_little_endian");
-    if (endian >= 0 && !token_bool(&doc, endian, &frame->little_endian)) goto done;
-    if (!frame->little_endian) {
-        MD_LOG_ERROR("ASE trajectory: big-endian arrays are not supported");
-        goto done;
+    bool little_endian = true;
+    md_json_bool(&little_endian, md_json_get(item, STR_LIT("_little_endian")));
+    if (!little_endian) {
+        return "written on a big endian machine, which is not supported";
     }
 
-    array_desc_t pos = {0};
-    size_t num_atoms, width;
-    if (!parse_array(&doc, 0, "positions.", 2, file_size, &pos, &num_atoms, &width) ||
-        width != 3 || !pos.is_float || num_atoms > SIZE_MAX / 24 ||
-        (index && num_atoms != traj->num_atoms) ||
-        !parse_cell(&doc, 0, frame->cell) || !parse_pbc(&doc, 0, &frame->pbc)) goto done;
-    frame->offset = pos.offset;
-    frame->width = pos.width;
-    // mdlib stores a triangular cell and derives periodicity from its diagonal.
-    if (fabs(frame->cell[0][1]) > 1e-6 || fabs(frame->cell[0][2]) > 1e-6 ||
-        fabs(frame->cell[1][2]) > 1e-6 ||
-        (frame->pbc != 7 && (frame->pbc != 0 ||
-            fabs(frame->cell[0][0]) > 1e-6 || fabs(frame->cell[1][0]) > 1e-6 ||
-            fabs(frame->cell[1][1]) > 1e-6 || fabs(frame->cell[2][0]) > 1e-6 ||
-            fabs(frame->cell[2][1]) > 1e-6 || fabs(frame->cell[2][2]) > 1e-6)) ||
-        (frame->pbc == 7 && (frame->cell[0][0] <= 0 || frame->cell[1][1] <= 0 || frame->cell[2][2] <= 0))) {
-        MD_LOG_ERROR("ASE trajectory: rotated cells or partial periodicity are not supported");
-        goto done;
+    ase_array_t pos;
+    if (!ase_array(&pos, item, STR_LIT("positions."), 2, file_size) || !pos.is_float || pos.dim[1] != 3) {
+        return "no positions";
     }
-    if (!index) traj->num_atoms = num_atoms;
 
-    int number_field = object_value(&doc, 0, "numbers.");
-    if (index == 0 && number_field < 0) goto done;
-    if (number_field >= 0) {
-        array_desc_t nums = {0};
-        size_t count, unused;
-        if (!parse_array(&doc, 0, "numbers.", 1, file_size, &nums, &count, &unused) ||
-            nums.is_float || count != traj->num_atoms) goto done;
-        if (index == 0) {
-            traj->numbers = md_alloc(traj->arena, count * sizeof(int32_t));
-            if (!traj->numbers) goto done;
+    if (i == 0) {
+        int64_t version = 0;
+        if (!md_json_i64(&version, md_json_get(item, STR_LIT("version"))) || version != 1) {
+            return "not version 1 of the trajectory format";
         }
-        if (!read_numbers(file, file_size, &nums, frame->little_endian,
-                          index == 0 ? traj->numbers : NULL,
-                          index == 0 ? NULL : traj->numbers)) goto done;
-    }
-
-    int info = object_value(&doc, 0, "info");
-    int time = object_value(&doc, info, "time_ps");
-    *has_time = time >= 0 && token_double(&doc, time, &traj->times[index]);
-    if (time >= 0 && !*has_time) goto done;
-    ok = true;
-done:
-    json_free(&doc, text_size, token_cap);
-    return ok;
-}
-
-static double read_coordinate(const uint8_t* raw, uint8_t width, bool little_endian) {
-    uint64_t bits = read_integer(raw, width, little_endian);
-    if (width == 8) {
-        double value;
-        memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-    uint32_t bits32 = (uint32_t)bits;
-    float value;
-    memcpy(&value, &bits32, sizeof(value));
-    return value;
-}
-
-static ase_traj_t* ase_index_load(str_t filename, bool first_only) {
-    md_allocator_i* backing = md_get_heap_allocator();
-    md_allocator_i* arena = md_arena_allocator_create(backing, MEGABYTES(1));
-    if (!arena) return NULL;
-    ase_traj_t* traj = md_alloc(arena, sizeof(*traj));
-    if (!traj) { md_arena_allocator_destroy(arena); return NULL; }
-    memset(traj, 0, sizeof(*traj));
-    traj->arena = arena;
-    md_file_t file = {0};
-    bool opened = md_file_open(&file, filename, MD_FILE_READ);
-    if (!opened) goto fail;
-    int64_t file_size_signed = md_file_size(file);
-    if (file_size_signed < 56) goto fail;
-    uint64_t file_size = (uint64_t)file_size_signed;
-    uint8_t header[48];
-    if (!read_at(file, file_size, 0, header, sizeof(header)) ||
-        memcmp(header, "- of Ulm", 8) != 0 ||
-        memcmp(header + 8, "ASE-Trajectory  ", 16) != 0 ||
-        read_integer(header + 24, 8, true) != 3) goto fail;
-    uint64_t count = read_integer(header + 32, 8, true);
-    uint64_t table = read_integer(header + 40, 8, true);
-    if (count < 1 || count > SIZE_MAX / sizeof(ase_frame_t) ||
-        table > file_size || count > (file_size - table) / 8) goto fail;
-    traj->num_frames = first_only ? 1 : (size_t)count;
-    traj->frames = md_alloc(arena, traj->num_frames * sizeof(ase_frame_t));
-    traj->times = md_alloc(arena, traj->num_frames * sizeof(double));
-    if (!traj->frames || !traj->times) goto fail;
-    memset(traj->frames, 0, traj->num_frames * sizeof(ase_frame_t));
-    bool all_times = true;
-    for (size_t i = 0; i < traj->num_frames; ++i) {
-        uint8_t offset_bytes[8];
-        if (!read_at(file, file_size, table + i * 8, offset_bytes, 8)) goto fail;
-        uint64_t offset = read_integer(offset_bytes, 8, true);
-        bool has_time = false;
-        if (!parse_frame(file, file_size, offset, traj, i, &has_time)) {
-            MD_LOG_ERROR("ASE trajectory: invalid or unsupported frame %zu", i);
-            goto fail;
+        idx->num_atoms = pos.dim[0];
+        idx->numbers   = md_temp_alloc_array(out, md_atomic_number_t, idx->num_atoms);
+        if (!idx->numbers || !ase_numbers(idx->numbers, item, idx->num_atoms, file, file_size, temp)) {
+            return "no atomic numbers";
         }
-        all_times &= has_time;
+    } else if (pos.dim[0] != idx->num_atoms) {
+        return "a different number of atoms than the first frame, which a run cannot hold";
+    } else if (md_json_valid(md_json_get(item, STR_LIT("numbers.")))) {
+        md_atomic_number_t* numbers = md_temp_alloc_array(temp, md_atomic_number_t, idx->num_atoms);
+        if (!numbers || !ase_numbers(numbers, item, idx->num_atoms, file, file_size, temp)) {
+            return "malformed atomic numbers";
+        }
+        if (MEMCMP(numbers, idx->numbers, idx->num_atoms * sizeof(md_atomic_number_t)) != 0) {
+            return "different atoms than the first frame, which a run cannot hold";
+        }
     }
-    if (!all_times) {
-        for (size_t i = 0; i < traj->num_frames; ++i) traj->times[i] = (double)i;
-        traj->time_unit = md_unit_none();
-    } else {
-        traj->time_unit = md_unit_picosecond();
+
+    const md_json_val_t pbc_val = md_json_get(item, STR_LIT("pbc"));
+    bool pbc[3] = { pbc0[0], pbc0[1], pbc0[2] };
+    if ((i == 0 || md_json_valid(pbc_val)) && !ase_pbc(pbc, pbc_val)) {
+        return "no pbc";
     }
-    md_file_close(&file);
-    return traj;
-fail:
-    if (opened) md_file_close(&file);
-    MD_LOG_ERROR("ASE trajectory: cannot load '" STR_FMT "' as modern fixed-atom ULM", STR_ARG(filename));
-    md_arena_allocator_destroy(arena);
+    if (i == 0) {
+        MEMCPY(pbc0, pbc, sizeof(pbc));
+    }
+
+    double A[3][3];
+    if (!ase_mat3(A, md_json_get(item, STR_LIT("cell")))) {
+        return "no cell";
+    }
+    if (!ase_cell(idx->cell + i * 9, A, pbc)) {
+        return "a cell that is rotated or periodic along only some axes, which mdlib cannot represent";
+    }
+
+    // Not an ASE convention: some workflows keep the simulation time in info
+    *has_time = *has_time && md_json_f64(&idx->time[i], md_json_get(md_json_get(item, STR_LIT("info")), STR_LIT("time_ps")));
+
+    idx->offset[i] = pos.offset;
+    idx->size[i]   = (int64_t)(idx->num_atoms * 3 * pos.width);
     return NULL;
 }
 
-static bool decode_positions(float* dst, const uint8_t* raw, size_t count, uint8_t width) {
-    for (size_t i = 0; i < count * 3; ++i) {
-        float value = (float)read_coordinate(raw + i * width, width, true);
-        if (!isfinite(value)) return false;
-        dst[i] = value;
+// The frames of an open file, as many as max_frames. The index goes in out, scratch in temp, which
+// must be in another arena.
+static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, size_t max_frames, md_temp_scope_t out, md_temp_scope_t temp) {
+    const int64_t file_size = (int64_t)md_file_size(file);
+    uint8_t header[ASE_HEADER_SIZE];
+    if (file_size < ASE_HEADER_SIZE || md_file_read_at(file, 0, header, sizeof(header)) != sizeof(header) ||
+        MEMCMP(header, "- of Ulm", 8) != 0 || MEMCMP(header + 8, "ASE-Trajectory  ", 16) != 0) {
+        MD_LOG_ERROR("ASE: '" STR_FMT "' is not an ASE trajectory", STR_ARG(path));
+        return false;
+    }
+
+    int64_t version, num_items, table_offset;
+    MEMCPY(&version,      header + 24, sizeof(int64_t));
+    MEMCPY(&num_items,    header + 32, sizeof(int64_t));
+    MEMCPY(&table_offset, header + 40, sizeof(int64_t));
+    if (version != 3) {
+        MD_LOG_ERROR("ASE: '" STR_FMT "' is of ULM version %lld, only version 3 is supported", STR_ARG(path), (long long)version);
+        return false;
+    }
+    if (num_items <= 0 || table_offset < ASE_HEADER_SIZE || table_offset > file_size || num_items > (file_size - table_offset) / 8) {
+        MD_LOG_ERROR("ASE: '" STR_FMT "' has no frames, or a damaged table of them", STR_ARG(path));
+        return false;
+    }
+
+    const size_t F = MIN((size_t)num_items, max_frames);
+    int64_t* items  = md_temp_alloc_array(temp, int64_t, F);
+    idx->num_frames = F;
+    idx->offset     = md_temp_alloc_array(out, int64_t, F);
+    idx->size       = md_temp_alloc_array(out, int64_t, F);
+    idx->cell       = md_temp_alloc_array(out, float, F * 9);
+    idx->time       = md_temp_alloc_array(out, double, F);
+    if (!items || !idx->offset || !idx->size || !idx->cell || !idx->time ||
+        md_file_read_at(file, table_offset, items, F * sizeof(int64_t)) != F * sizeof(int64_t)) {
+        MD_LOG_ERROR("ASE: could not read the table of frames of '" STR_FMT "'", STR_ARG(path));
+        return false;
+    }
+
+    bool pbc0[3] = {0};
+    bool has_time = true;
+    for (size_t i = 0; i < F; ++i) {
+        // Each frame's text and document are let go of before the next one is read
+        md_temp_scope_t frame_temp = md_temp_begin_in(temp.arena);
+        const md_json_val_t item = ase_item(file, file_size, items[i], frame_temp);
+        const char* error = ase_frame_read(idx, i, item, pbc0, &has_time, file, file_size, out, frame_temp);
+        md_temp_end(frame_temp);
+        if (error) {
+            MD_LOG_ERROR("ASE: frame %zu of '" STR_FMT "': %s", i, STR_ARG(path), error);
+            return false;
+        }
+    }
+
+    idx->time_unit = md_unit_picosecond();
+    if (!has_time) {
+        // Nothing says when the frames are: ordinals
+        for (size_t i = 0; i < F; ++i) {
+            idx->time[i] = (double)i;
+        }
+        idx->time_unit = md_unit_none();
     }
     return true;
 }
 
-static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t* attr,
-                                    const md_attribute_slice_t* slice, void* user_data,
-                                    md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    if (!slice || slice->num_idx < 1 || slice->num_idx > 2) return 0;
-    md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
-    const size_t frame = slice->idx[0];
-    const size_t n = attr->format.shape[1];
-    if (frame >= src.num_frames || n == 0 || n > SIZE_MAX / 3) return 0;
-    const size_t first = slice->num_idx == 2 ? slice->idx[1] : 0;
-    const size_t count = slice->num_idx == 2 ? 1 : n;
-    if (first >= n || cap != count * 3 || src.size[frame] <= 0 ||
-        src.size[frame] % (int64_t)(n * 3) != 0) return 0;
-    const size_t width = (size_t)(src.size[frame] / (int64_t)(n * 3));
-    if (width != 4 && width != 8) return 0;
-    const size_t bytes = count * 3 * width;
+// The first max_frames frames of the file at path. The index goes in out, the caller's scope, and is
+// gone when it ends; what is only needed while reading comes from the other temp arena.
+static bool ase_index_read(ase_index_t* idx, str_t path, size_t max_frames, md_temp_scope_t out) {
+    MEMSET(idx, 0, sizeof(ase_index_t));
+    md_file_t file = {0};
+    if (!md_file_open(&file, path, MD_FILE_READ)) {
+        MD_LOG_ERROR("ASE: could not open '" STR_FMT "'", STR_ARG(path));
+        return false;
+    }
+    md_temp_scope_t temp = md_temp_begin_avoid(out.arena);
+    const bool result = ase_index_read_file(idx, file, path, max_frames, out, temp);
+    md_temp_end(temp);
+    md_file_close(&file);
+    return result;
+}
+
+// Bytes per coordinate of a frame of num_atoms positions with byte size: 4 or 8, 0 for anything else
+static size_t ase_frame_width(int64_t size, size_t num_atoms) {
+    if (size == (int64_t)(num_atoms * 3 * sizeof(float)))  return sizeof(float);
+    if (size == (int64_t)(num_atoms * 3 * sizeof(double))) return sizeof(double);
+    return 0;
+}
+
+// count positions stored with width bytes per coordinate, at offset in the file at path, into dst as
+// count * 3 floats: float32 straight into place, float64 through a buffer. Through io when given.
+static bool ase_positions_read(float* dst, size_t count, size_t width, md_attribute_io_t* io, str_t path, int64_t offset) {
+    const size_t n = count * 3;
+    if (width == sizeof(float)) {
+        return md_attribute_io_read_at(io, path, offset, dst, n * sizeof(float)) == n * sizeof(float);
+    }
+    if (width != sizeof(double)) {
+        return false;
+    }
     md_temp_scope_t temp = md_temp_begin();
-    uint8_t* raw = md_temp_alloc(temp, bytes);
-    size_t written = 0;
-    if (raw && md_attribute_io_read_at(io, src.path,
-                                        src.offset[frame] + (int64_t)(first * 3 * width),
-                                        raw, bytes) == bytes &&
-        decode_positions((float*)dst, raw, count, (uint8_t)width)) {
-        written = cap;
-    } else {
-        MD_LOG_ERROR("ASE trajectory: failed to read frame %zu", frame);
+    double* raw = md_temp_alloc_array(temp, double, n);
+    const bool ok = raw && md_attribute_io_read_at(io, path, offset, raw, n * sizeof(double)) == n * sizeof(double);
+    for (size_t i = 0; ok && i < n; ++i) {
+        dst[i] = (float)raw[i];
     }
     md_temp_end(temp);
-    return written;
+    return ok;
+}
+
+// <run>/atom/position: one read of the frame, or of the one atom asked for
+static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    const md_system_t* sys = (const md_system_t*)user_data;
+    ASSERT(sys);
+    if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
+
+    md_run_source_t src;
+    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+
+    const size_t frame = slice->idx[0];
+    const size_t N = attr->format.shape[1];
+    size_t first = 0, count = N;
+    if (slice->num_idx == 2) {
+        if (slice->idx[1] >= N) return 0;
+        first = slice->idx[1];
+        count = 1;
+    }
+    if (frame >= src.num_frames || cap != count * 3) return 0;
+
+    const size_t width = ase_frame_width(src.size[frame], N);
+    if (!ase_positions_read((float*)dst, count, width, io, src.path, src.offset[frame] + (int64_t)(first * 3 * width))) {
+        MD_LOG_ERROR("ASE: failed to read frame %zu of '" STR_FMT "'", frame, STR_ARG(src.path));
+        return 0;
+    }
+    return cap;
 }
 
 bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    if (!sys || !sys->alloc || !state || !state->alloc) return false;
-    // ponytail: inspect one frame here; publish_run validates the rest without scanning a large file twice.
-    ase_traj_t* traj = ase_index_load(filename, true);
-    if (!traj) return false;
-    const size_t n = traj->num_atoms;
-    const ase_frame_t* frame = &traj->frames[0];
-    const size_t bytes = n * 3 * frame->width;
-    uint8_t* raw = md_alloc(md_get_heap_allocator(), bytes);
-    md_file_t file = {0};
-    bool ok = raw && md_file_open(&file, filename, MD_FILE_READ);
-    if (ok) ok = read_at(file, (uint64_t)md_file_size(file), frame->offset, raw, bytes);
-    if (md_file_valid(file)) md_file_close(&file);
-    if (ok) {
-        md_system_reset(sys);
-        ok = md_system_state_init(state, n);
-        if (ok) ok = decode_positions((float*)state->xyz, raw, n, frame->width);
+    ASSERT(sys);
+    ASSERT(state);
+    if (!sys->alloc || !state->alloc) {
+        MD_LOG_ERROR("ASE: system or state allocator not set");
+        return false;
     }
-    if (raw) md_free(md_get_heap_allocator(), raw, bytes);
-    if (ok) {
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
-        for (size_t i = 0; i < n; ++i) {
-            const md_atomic_number_t z = (md_atomic_number_t)traj->numbers[i];
-            const md_atom_type_idx_t type = md_atom_type_find_or_add(
-                &sys->atom.type, md_atomic_number_symbol(z), z,
-                md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
-                md_atomic_number_cpk_color(z), 0, sys->alloc);
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+
+    // The first frame only, a run reads the others. All of it is read before the system is touched.
+    ase_index_t idx;
+    float* xyz = NULL;
+    bool result = ase_index_read(&idx, filename, 1, temp);
+    if (result) {
+        xyz = md_temp_alloc_array(temp, float, idx.num_atoms * 3);
+        result = xyz && ase_positions_read(xyz, idx.num_atoms, ase_frame_width(idx.size[0], idx.num_atoms), NULL, filename, idx.offset[0]);
+    }
+    if (result) {
+        md_system_reset(sys);
+        result = md_system_state_init(state, idx.num_atoms);
+    }
+    if (result) {
+        const size_t N = idx.num_atoms;
+        MEMCPY(state->xyz, xyz, N * sizeof(vec3_t));
+        state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(idx.cell));
+
+        md_array_ensure(sys->atom.type_idx, N, sys->alloc);
+        md_array_ensure(sys->atom.flags,    N, sys->alloc);
+        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+        for (size_t i = 0; i < N; ++i) {
+            const md_atomic_number_t z = idx.numbers[i];
+            const md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
+                md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc);
             md_array_push(sys->atom.type_idx, type, sys->alloc);
             md_array_push(sys->atom.flags, 0, sys->alloc);
         }
-        sys->atom.count = n;
-        state->unitcell = md_unitcell_from_matrix_double(frame->cell);
+        sys->atom.count = N;
     }
-    md_arena_allocator_destroy(traj->arena);
-    return ok;
+
+    md_temp_end(temp);
+    return result;
 }
 
 bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    (void)flags;
-    if (!sys || !sys->alloc) return false;
+    ASSERT(sys);
+    (void)flags;    // no index cache to write: the file has a table of its frames
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    if (!path_len) return false;
-    const str_t path = {path_buf, path_len};
-    ase_traj_t* traj = ase_index_load(path, false);
-    if (!traj) return false;
-    const size_t f = traj->num_frames;
-    int64_t* offsets = md_alloc(traj->arena, f * sizeof(int64_t));
-    int64_t* sizes = md_alloc(traj->arena, f * sizeof(int64_t));
-    float* cells = md_alloc(traj->arena, f * 9 * sizeof(float));
-    bool ok = offsets && sizes && cells && (!sys->atom.count || sys->atom.count == traj->num_atoms);
-    if (ok) {
-        for (size_t i = 0; i < f; ++i) {
-            const ase_frame_t* frame = &traj->frames[i];
-            offsets[i] = (int64_t)frame->offset;
-            sizes[i] = (int64_t)(traj->num_atoms * 3 * frame->width);
-            for (size_t row = 0; row < 3; ++row) {
-                for (size_t col = 0; col < 3; ++col) {
-                    cells[i * 9 + row * 3 + col] = (float)frame->cell[row][col];
-                }
-            }
-        }
-        const md_attribute_virtual_t virt = {.provider = ase_position_provider, .user_data = sys};
+    if (path_len == 0) {
+        MD_LOG_ERROR("ASE: could not resolve the path '" STR_FMT "'", STR_ARG(filename));
+        return false;
+    }
+    const str_t path = { path_buf, path_len };
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+
+    ase_index_t idx;
+    bool result = ase_index_read(&idx, path, SIZE_MAX, temp);
+    if (result && idx.num_frames < 2) {
+        // A structure, as a PDB of one model is: md_ase_traj_system_init_from_file has all of it
+        MD_LOG_INFO("ASE: '" STR_FMT "' has a single frame and is not read as a trajectory", STR_ARG(path));
+        result = false;
+    }
+    if (result) {
+        const md_attribute_virtual_t virt = { .provider = ase_position_provider, .user_data = sys };
         const md_run_desc_t desc = {
-            .num_frames = f, .num_atoms = traj->num_atoms,
-            .time = traj->times, .time_unit = traj->time_unit,
-            .unitcell = cells, .source_path = path,
-            .source_offset = offsets, .source_size = sizes,
+            .num_frames    = idx.num_frames,
+            .num_atoms     = idx.num_atoms,
+            .time          = idx.time,
+            .time_unit     = idx.time_unit,
+            .unitcell      = idx.cell,
+            .source_path   = path,
+            .source_offset = idx.offset,
+            .source_size   = idx.size,
             .position_virt = &virt,
         };
-        ok = md_run_publish(sys, run, &desc);
+        result = md_run_publish(sys, run, &desc);
     }
-    md_arena_allocator_destroy(traj->arena);
-    return ok;
+
+    md_temp_end(temp);
+    return result;
 }
