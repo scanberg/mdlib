@@ -52,9 +52,7 @@
 #include "../md_gpu.slang"
 
 #define LMAX    4
-#define KI      (LMAX + 8)
 #define KA      7       // 1D derivative orders 0..6 (centre values to 5, sups 3..6)
-#define KM      (KI + KA + 1)
 #define UF      5.9604644775390625e-8
 
 // phi channels per (row, child); column = channel * 8 + child
@@ -135,7 +133,6 @@ struct RootArgs {
     float*    ao_nrm;
     uint*     ao_ijk;           // i | j << 8 | k << 16
     float*    D;                // num_ao * num_ao
-    float*    kappa;            // [KI][KA][KM]
     float*    phi;              // rows * PHI_W
     float*    dv;               // rows * DV_W
     float*    ep;               // EP_W * 8 * num_batches, by field
@@ -176,7 +173,48 @@ int3 mi_of(int m) { const uint v = MI[m]; return int3(int(v & 0xFFu), int((v >> 
 int order_of(int m) { return m == 0 ? 0 : (m < 4 ? 1 : (m < 10 ? 2 : 3)); }
 int ab_index(int a, int b) { const int lo = min(a, b), hi = max(a, b); return lo == 0 ? hi : (lo == 1 ? 2 + hi : 5); }
 
-float kappa(int i, int a, int m) { return args.kappa[(i * KA + a) * KM + m]; }
+// kappa[i][a][m]: d^a/dx^a [x^i exp(-al x^2)] = sum over m of kappa al^((m - i + a) / 2) x^m exp(-al x^2)
+// (cpg_init_tables in md_topo.c), i <= LMAX, a < KA. Integers; compile-time constants once the loops
+// over i, a and m are unrolled, so the zero terms vanish.
+static const float KAPPA[LMAX + 1][KA][LMAX + KA] = {
+    { { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { 0, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { -2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { 0, 12, 0, -8, 0, 0, 0, 0, 0, 0, 0 },
+      { 12, 0, -48, 0, 16, 0, 0, 0, 0, 0, 0 },
+      { 0, -120, 0, 160, 0, -32, 0, 0, 0, 0, 0 },
+      { -120, 0, 720, 0, -480, 0, 64, 0, 0, 0, 0 } },
+    { { 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { 1, 0, -2, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { 0, -6, 0, 4, 0, 0, 0, 0, 0, 0, 0 },
+      { -6, 0, 24, 0, -8, 0, 0, 0, 0, 0, 0 },
+      { 0, 60, 0, -80, 0, 16, 0, 0, 0, 0, 0 },
+      { 60, 0, -360, 0, 240, 0, -32, 0, 0, 0, 0 },
+      { 0, -840, 0, 1680, 0, -672, 0, 64, 0, 0, 0 } },
+    { { 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+      { 0, 2, 0, -2, 0, 0, 0, 0, 0, 0, 0 },
+      { 2, 0, -10, 0, 4, 0, 0, 0, 0, 0, 0 },
+      { 0, -24, 0, 36, 0, -8, 0, 0, 0, 0, 0 },
+      { -24, 0, 156, 0, -112, 0, 16, 0, 0, 0, 0 },
+      { 0, 360, 0, -760, 0, 320, 0, -32, 0, 0, 0 },
+      { 360, 0, -3000, 0, 3120, 0, -864, 0, 64, 0, 0 } },
+    { { 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+      { 0, 0, 3, 0, -2, 0, 0, 0, 0, 0, 0 },
+      { 0, 6, 0, -14, 0, 4, 0, 0, 0, 0, 0 },
+      { 6, 0, -54, 0, 48, 0, -8, 0, 0, 0, 0 },
+      { 0, -120, 0, 300, 0, -144, 0, 16, 0, 0, 0 },
+      { -120, 0, 1140, 0, -1320, 0, 400, 0, -32, 0, 0 },
+      { 0, 2520, 0, -7560, 0, 5040, 0, -1056, 0, 64, 0 } },
+    { { 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0 },
+      { 0, 0, 0, 4, 0, -2, 0, 0, 0, 0, 0 },
+      { 0, 0, 12, 0, -18, 0, 4, 0, 0, 0, 0 },
+      { 0, 24, 0, -96, 0, 60, 0, -8, 0, 0, 0 },
+      { 24, 0, -336, 0, 492, 0, -176, 0, 16, 0, 0 },
+      { 0, -720, 0, 2640, 0, -2040, 0, 480, 0, -32, 0 },
+      { -720, 0, 9360, 0, -15480, 0, 7440, 0, -1248, 0, 64 } } };
+
+// al^0 .. al^(KA - 1), each by one more multiplication (the roundings of powi)
+void al_pows(float al, out float alp[KA]) { alp[0] = 1.0; [ForceUnroll] for (int k = 1; k < KA; ++k) alp[k] = alp[k - 1] * al; }
 
 float powi(float x, int n) { float r = 1.0; for (int k = 0; k < n; ++k) r *= x; return r; }
 
@@ -240,7 +278,7 @@ uint te_size(uint l) { return 20u * (l + 1u) + 2u; }
 // sups of |d^a/dx^a [x^i exp(-al x^2)]| over [x0, x1], a = 3..6, for i = 0..l, into gs_tab[base + 4 i + a - 3]:
 // the monomial terms of the expansion, each at its own maximum on the interval.
 // The table of x^m exp(-al x^2) at its maximiser over the interval does not depend on i.
-void sup_tab(uint base, uint l, float x0, float x1, float al) {
+void sup_tab(uint base, uint l, float x0, float x1, float al, float alp[KA]) {
     x0 -= 4.0 * UF * abs(x0) + 1e-30;    // the computed interval must contain the exact one
     x1 += 4.0 * UF * abs(x1) + 1e-30;
     const float ax0 = abs(x0), ax1 = abs(x1);
@@ -257,15 +295,15 @@ void sup_tab(uint base, uint l, float x0, float x1, float al) {
             eS[m] = (float(2 * m + 4) + 6.0 + 8.1 * t) * UF;
         }
     }
-    for (int i = 0; i <= int(l); ++i) {
-        {
-            for (int a = 3; a < KA; ++a) {
+    [ForceUnroll] for (int i = 0; i <= LMAX; ++i) {
+        if (i <= int(l)) {
+            [ForceUnroll] for (int a = 3; a < KA; ++a) {
                 float acc = 0.0;
                 [ForceUnroll] for (int m = 0; m < LMAX + KA; ++m) {
-                    const float kk = m <= i + a ? kappa(i, a, m) : 0.0;
+                    const float kk = m <= i + a ? KAPPA[i][a][m] : 0.0;
                     if (kk != 0.0) {
-                        const int kp = (m - i + a) / 2;
-                        acc += abs(kk) * powi(al, kp) * Sm[m] * (1.0 + eS[m] + float(kp + 2) * UF);
+                        const int kp = max(m - i + a, 0) / 2;
+                        acc += abs(kk) * alp[kp] * Sm[m] * (1.0 + eS[m] + float(kp + 2) * UF);
                     }
                 }
                 gs_tab[base + uint(i * 4 + a - 3)] = acc * (1.0 + float(i + a + 3) * UF);
@@ -282,14 +320,16 @@ void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float 
     float xp[LMAX + 6], axp[LMAX + 6];
     xp[0] = 1.0; axp[0] = 1.0;
     [ForceUnroll] for (int m = 1; m < LMAX + 6; ++m) { xp[m] = xp[m - 1] * x; axp[m] = axp[m - 1] * abs(x); }
-    for (int i = 0; i <= int(l); ++i) {
-        {
-            for (int a = 0; a < 6; ++a) {
+    float alp[KA];
+    al_pows(al, alp);
+    [ForceUnroll] for (int i = 0; i <= LMAX; ++i) {
+        if (i <= int(l)) {
+            [ForceUnroll] for (int a = 0; a < 6; ++a) {
                 float v = 0.0, mg = 0.0;
                 [ForceUnroll] for (int m = 0; m < LMAX + 6; ++m) {
-                    const float k = m <= i + a ? kappa(i, a, m) : 0.0;
+                    const float k = m <= i + a ? KAPPA[i][a][m] : 0.0;
                     if (k != 0.0) {
-                        const float ka = k * powi(al, (m - i + a) / 2);
+                        const float ka = k * alp[max(m - i + a, 0) / 2];
                         v += ka * xp[m];
                         mg += abs(ka) * axp[m];
                     }
@@ -302,8 +342,8 @@ void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float 
     // beyond exp_neg's range the value is set to 0: its error is then its whole magnitude
     gs_tab[base + 12u * l1] = t > 87.0 ? 1.0 : (float(2u * l + 14u) + 6.0 + 8.1 * t) * UF;
     gs_tab[base + 12u * l1 + 1u] = t > 87.0 ? 1.0 : (float(2u * l + 24u) + 6.0 + 8.1 * t) * UF;
-    sup_tab(base + 12u * l1 + 2u, l, x0, x1, al);
-    sup_tab(base + 16u * l1 + 2u, l, x0i, x1i, al);
+    sup_tab(base + 12u * l1 + 2u, l, x0, x1, al, alp);
+    sup_tab(base + 16u * l1 + 2u, l, x0i, x1i, al, alp);
 }
 
 // Separable remainder bounds (cpg_shell_rem in md_topo.c has the derivation). For one 1D factor
@@ -492,9 +532,10 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         if (ncs == 0) break;                // uniform
 
         // ---- 1D tables: (shell, primitive, axis, side)
+        // (a thread's f only grows, and with it its shell: the search resumes where it stopped)
         const uint nitem = gs_cs_item[ncs];
+        uint cs = 0;
         for (uint f = tid; f < nitem; f += AO_WG) {
-            uint cs = 0;
             while (cs + 1u < ncs && gs_cs_item[cs + 1u] <= f) cs++;
             const uint r = f - gs_cs_item[cs];
             const uint p = r / 6u, ax = (r % 6u) / 2u, side = r % 2u;
@@ -510,8 +551,8 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 
         // ---- products: (AO, child), children fastest
         const uint nprod = gs_cs_prod[ncs];
+        cs = 0;
         for (uint f = tid; f < nprod; f += AO_WG) {
-            uint cs = 0;
             while (cs + 1u < ncs && gs_cs_prod[cs + 1u] <= f) cs++;
             const uint r = f - gs_cs_prod[cs];
             const uint ci = r / 8u, k = r % 8u;

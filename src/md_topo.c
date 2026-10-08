@@ -2897,7 +2897,6 @@ typedef struct cpg_gpu_args_t {
     md_gpu_addr_t ao_nrm;
     md_gpu_addr_t ao_ijk;
     md_gpu_addr_t D;
-    md_gpu_addr_t kappa;
     md_gpu_addr_t phi;
     md_gpu_addr_t dv;
     md_gpu_addr_t ep;
@@ -3143,8 +3142,6 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     }
     float* fD = (float*)md_alloc(heap, sizeof(float) * (size_t)N * N);
     for (size_t i = 0; i < (size_t)N * N; ++i) fD[i] = (float)ctx->D[i];
-    float* fk = (float*)md_alloc(heap, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
-    for (int i = 0; i < CPG_KI; ++i) for (int a = 0; a < CPG_KA; ++a) for (int m = 0; m < CPG_KM; ++m) fk[(i * CPG_KA + a) * CPG_KM + m] = (float)ctx->kappa[i][a][m];
 
     cpg_gpu_args_t a = {0};
     a.num_shells = (uint32_t)NS;
@@ -3174,14 +3171,12 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
            && cpg_gpu_upload(stream, &a.ao_nrm, fn, sizeof(float) * N)
            && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N)
            && cpg_gpu_upload(stream, &a.D, fD, sizeof(float) * (size_t)N * N)
-           && cpg_gpu_upload(stream, &a.kappa, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM)
            && (!R_f || (cpg_gpu_upload(stream, &a.fac_C, fC, sizeof(float) * (size_t)N * R_f)
                         && cpg_gpu_upload(stream, &a.fac_l, fL, sizeof(float) * R_f)));
     if (R_f) {
         md_free(heap, fL, sizeof(float) * R_f);
         md_free(heap, fC, sizeof(float) * (size_t)N * R_f);
     }
-    md_free(heap, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
     md_free(heap, fD, sizeof(float) * (size_t)N * N);
     md_free(heap, ijk, sizeof(uint32_t) * N);
     md_free(heap, fn, sizeof(float) * N);
@@ -3520,7 +3515,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     R->cur = esc;
 
     md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, d_fphi, d_fb, h_out[0].gpu, h_out[1].gpu,
-                             a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.kappa, a.fac_C, a.fac_l };
+                             a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.fac_C, a.fac_l };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(bufs[0]); ++i) if (bufs[i]) md_gpu_free(stream, bufs[i]);
     md_array_free(proots, heap);
     md_array_free(q, heap);
