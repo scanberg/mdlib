@@ -2913,7 +2913,7 @@ typedef struct cpg_gpu_args_t {
 #define CPG_GPU_PHI_W          456             // floats per row of phi: 57 channels x 8 children
 #define CPG_GPU_DV_W           272             // floats per row of dv: 34 x 8
 #define CPG_GPU_EP_W           260             // floats per cube of ep
-#define CPG_GPU_TAB_CAP        4096            // floats of 1D tables per chunk of shells (ao_main)
+#define CPG_GPU_TAB_CAP        3584            // floats of 1D tables per chunk of shells (ao_main: TAB_CAP)
 #define CPG_GPU_DEC_WG         64              // decide_main group size
 
 #define CPG_GPU_SCRATCH_BUDGET (192u << 20)    // bytes of phi + dv per chunk

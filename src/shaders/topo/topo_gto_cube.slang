@@ -262,8 +262,12 @@ uint3 ao_ijk(uint ao) { const uint v = args.ao_ijk[min(ao, args.num_ao - 1u)]; r
 //   [16 l1 + 2 + 4 i + a-3]  the same over the inflated child interval
 // at offset ((p * 3 + axis) * 2 + side) * te(l) in the shell's block.
 
+// Groupshared memory and registers per group decide how many groups an SM holds. With 4096 floats of
+// tables (17.5 KB per group in all) the RTX 3080 held only 2 groups per SM (8 of 48 warps), although
+// its 136 registers per thread allow 3. 3584 floats make 15 KB in all, 16 with the 1 KB per group the
+// driver reserves.
 #define AO_WG   128
-#define TAB_CAP 4096
+#define TAB_CAP 3584    // = CPG_GPU_TAB_CAP; every single shell fits (the host checks)
 #define CS_MAX  32      // shells per chunk; TAB_CAP / 132 (one s primitive) < 32, so never the binding limit
 
 groupshared float gs_tab[TAB_CAP];
