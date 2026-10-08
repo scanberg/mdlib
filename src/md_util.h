@@ -177,6 +177,19 @@ bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* stat
 // cell:      Periodic boundary cell
 void md_util_distance_array(float* out_dist_arr, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
+// The minimum (maximum) distance between each group of points of a and the points of b, under the minimum image
+// convention of cell (NULL, or a cell without periodic axes: plain euclidean). The minimum image is exact in triclinic
+// cells too, also where distances reach past half the cell (see MINIMUM AND MAXIMUM DISTANCE BETWEEN SETS in md_util.c).
+// Group g is coord_a[a_offsets[g] .. a_offsets[g + 1]), a_offsets holds num_groups + 1 entries.
+// out_dist:   The distance per group, 0 for an empty group or an empty b
+// out_idx_a:  (optional) Per group, the index into coord_a of the nearest (farthest) pair, -1 where there is none
+// out_idx_b:  (optional) Per group, the index into coord_b of the pair, -1 where there is none
+// Each group starts from the pair of the one before, so groups which follow each other in space are cheaper.
+void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+
+// The same for a single group. The minimum is FLT_MAX and the maximum 0 when a or b is empty, and the indices are then
+// left unwritten (for the maximum also when it is 0).
 float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 

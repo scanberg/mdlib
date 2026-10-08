@@ -8530,118 +8530,434 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a
     }
 }
 
-float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
-    int64_t min_i = 0;
-    int64_t min_j = 0;
-    float min_dist = FLT_MAX;
+// ### MINIMUM AND MAXIMUM DISTANCE BETWEEN SETS ###
+//
+// For each group of points of a, the nearest (farthest) point of b under the minimum image convention.
+//
+// There is no spatial structure. The points of a group are taken eight at a time, a cluster in one SIMD register, and
+// b is streamed once per cluster, each point of b tested against the sphere which bounds the cluster: a point of b can
+// only improve on the best pair so far if it lies within best + R of the centre (beyond best - R for the farthest
+// pair). All but a handful are rejected by that one test, and those are tested against every point of the cluster.
+// The best pair is shared by the clusters of a group and starts from the pair of the previous group, which is usually
+// close, so the test is tight from the first point. A grid over b would make the cost of a cluster sublinear in b,
+// but building one costs more than the whole stream until a has a few hundred clusters, and the common case is a
+// small a (a ligand, a residue, a QM region) against a large b.
+//
+// Minimum image. A displacement is first reduced into the brick |d_x| <= x/2, |d_y| <= y/2, |d_z| <= z/2: along c,
+// then b, then a, which the lower triangular basis allows without disturbing the components already reduced. In an
+// orthorhombic cell that is the minimum image. In a triclinic one it is the minimum image whenever that is shorter
+// than R_SAFE = min(x, y, z) / 2: the brick is a fundamental domain of the lattice, the reduction returns the image
+// inside it, and a vector shorter than R_SAFE lies inside it. So a reduced length below R_SAFE is exact, and one at or
+// above it only says that the true length lies between R_SAFE and the reduced one. Where that does not decide the
+// comparison at hand, the minimum image is searched for (dist_search_d2). That takes a group about as far from b as
+// half the cell, or the farthest pair.
+//
+// The search is bounded rather than assumed: md_util_min_image_vec3 looks one lattice vector either way of the reduced
+// image, which is the minimum image for a cell of a sensible shape but not for every cell. The bound is two at most for
+// the usual cells (a reduced triclinic box, a rhombic dodecahedron, a truncated octahedron), and only a degenerate cell
+// would reach DIST_MAX_SEARCH.
 
-    if (cell->flags == 0) {
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                const float d = vec3_distance(coord_a[i], coord_b[j]);
-                if (d < min_dist) {
-                    min_dist = d;
-                    min_i = i;
-                    min_j = j;
-                }
+enum {
+    DIST_PBC_NONE      = 0,
+    DIST_PBC_ORTHO     = 1,
+    DIST_PBC_TRICLINIC = 2,
+};
+
+// The search goes no further than this many lattice vectors along an axis. A cell which needs more is degenerate.
+#define DIST_MAX_SEARCH 8
+
+typedef struct dist_cell_t {
+    // The basis, lower triangular: a = (ax, 0, 0), b = (bx, by, 0), c = (cx, cy, cz). Zero along an axis without a
+    // period, as is the inverse of its diagonal (ix, iy, iz), which leaves such an axis alone in the reduction.
+    md_256 ax, bx, by, cx, cy, cz;
+    md_256 ix, iy, iz;
+    float  basis[3][3];     // [vector][component]
+    float  dual[3];         // Lengths of the rows of the inverse basis, zero along an axis without a period
+    float  rsafe2;          // A reduced length squared below this is the minimum image
+    float  eps;             // Slack for the rounding of the coordinates in the sphere test
+    int    mode;
+} dist_cell_t;
+
+static void dist_cell_init(dist_cell_t* c, const md_unitcell_t* cell, float coord_scale) {
+    MEMSET(c, 0, sizeof(*c));
+    const uint32_t flags = cell ? (uint32_t)cell->flags : 0;
+    const bool pbc[3] = {
+        (flags & MD_UNITCELL_PBC_X) != 0,
+        (flags & MD_UNITCELL_PBC_Y) != 0,
+        (flags & MD_UNITCELL_PBC_Z) != 0,
+    };
+
+    double A[3][3] = {{0}};
+    if (cell) md_unitcell_A_extract_double(A, cell);
+    for (int i = 0; i < 3; ++i) {
+        if (!pbc[i] || A[i][i] == 0.0) {
+            A[i][0] = A[i][1] = A[i][2] = 0.0;
+        }
+    }
+
+    const bool any = A[0][0] != 0.0 || A[1][1] != 0.0 || A[2][2] != 0.0;
+    c->mode = !any ? DIST_PBC_NONE : (flags & MD_UNITCELL_TRICLINIC) ? DIST_PBC_TRICLINIC : DIST_PBC_ORTHO;
+    if (c->mode == DIST_PBC_ORTHO) {
+        A[1][0] = A[2][0] = A[2][1] = 0.0;
+    }
+
+    double extent = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            c->basis[i][j] = (float)A[i][j];
+            extent += fabs(A[i][j]);
+        }
+    }
+
+    c->ax = md_mm256_set1_ps((float)A[0][0]);
+    c->bx = md_mm256_set1_ps((float)A[1][0]);
+    c->by = md_mm256_set1_ps((float)A[1][1]);
+    c->cx = md_mm256_set1_ps((float)A[2][0]);
+    c->cy = md_mm256_set1_ps((float)A[2][1]);
+    c->cz = md_mm256_set1_ps((float)A[2][2]);
+    c->ix = md_mm256_set1_ps(A[0][0] != 0.0 ? (float)(1.0 / A[0][0]) : 0.0f);
+    c->iy = md_mm256_set1_ps(A[1][1] != 0.0 ? (float)(1.0 / A[1][1]) : 0.0f);
+    c->iz = md_mm256_set1_ps(A[2][2] != 0.0 ? (float)(1.0 / A[2][2]) : 0.0f);
+
+    // Several ulps of the largest magnitude a difference is taken between
+    c->eps = (float)((coord_scale + extent) * 4.0e-6 + 1.0e-5);
+
+    // The rows of the inverse of the basis, completed by a unit vector along each axis without a period. A lattice
+    // vector A n has n_i = r_i . A n, so |n_i| <= |r_i| |A n|.
+    double M[3][3];
+    MEMCPY(M, A, sizeof(M));
+    for (int i = 0; i < 3; ++i) {
+        if (M[i][i] == 0.0) {
+            M[i][0] = M[i][1] = M[i][2] = 0.0;
+            M[i][i] = 1.0;
+        }
+    }
+    const double x = M[0][0], xy = M[1][0], y = M[1][1], xz = M[2][0], yz = M[2][1], z = M[2][2];
+    const double r0[3] = { 1.0 / x, -xy / (x * y), (xy * yz - xz * y) / (x * y * z) };
+    const double r1[3] = { 0.0, 1.0 / y, -yz / (y * z) };
+    const double r2[3] = { 0.0, 0.0, 1.0 / z };
+    c->dual[0] = A[0][0] != 0.0 ? (float)sqrt(r0[0] * r0[0] + r0[1] * r0[1] + r0[2] * r0[2]) : 0.0f;
+    c->dual[1] = A[1][1] != 0.0 ? (float)sqrt(r1[0] * r1[0] + r1[1] * r1[1] + r1[2] * r1[2]) : 0.0f;
+    c->dual[2] = A[2][2] != 0.0 ? (float)sqrt(r2[0] * r2[0] + r2[1] * r2[1] + r2[2] * r2[2]) : 0.0f;
+
+    if (c->mode == DIST_PBC_TRICLINIC) {
+        double rsafe = DBL_MAX;
+        for (int i = 0; i < 3; ++i) {
+            if (A[i][i] != 0.0) rsafe = MIN(rsafe, 0.5 * fabs(A[i][i]));
+        }
+        rsafe = MAX(0.0, rsafe - c->eps);
+        c->rsafe2 = (float)(rsafe * rsafe);
+    } else {
+        c->rsafe2 = FLT_MAX;
+    }
+}
+
+// Into the brick, along c, then b, then a
+static FORCE_INLINE void dist_reduce(md_256* dx, md_256* dy, md_256* dz, const dist_cell_t* c, const int mode) {
+    if (mode == DIST_PBC_ORTHO) {
+        *dx = md_mm256_fnmadd_ps(md_mm256_round_ps(md_mm256_mul_ps(*dx, c->ix)), c->ax, *dx);
+        *dy = md_mm256_fnmadd_ps(md_mm256_round_ps(md_mm256_mul_ps(*dy, c->iy)), c->by, *dy);
+        *dz = md_mm256_fnmadd_ps(md_mm256_round_ps(md_mm256_mul_ps(*dz, c->iz)), c->cz, *dz);
+    } else if (mode == DIST_PBC_TRICLINIC) {
+        const md_256 nz = md_mm256_round_ps(md_mm256_mul_ps(*dz, c->iz));
+        *dx = md_mm256_fnmadd_ps(nz, c->cx, *dx);
+        *dy = md_mm256_fnmadd_ps(nz, c->cy, *dy);
+        *dz = md_mm256_fnmadd_ps(nz, c->cz, *dz);
+        const md_256 ny = md_mm256_round_ps(md_mm256_mul_ps(*dy, c->iy));
+        *dx = md_mm256_fnmadd_ps(ny, c->bx, *dx);
+        *dy = md_mm256_fnmadd_ps(ny, c->by, *dy);
+        const md_256 nx = md_mm256_round_ps(md_mm256_mul_ps(*dx, c->ix));
+        *dx = md_mm256_fnmadd_ps(nx, c->ax, *dx);
+    }
+}
+
+static FORCE_INLINE md_256 dist_length2(md_256 dx, md_256 dy, md_256 dz) {
+    return md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+}
+
+// The minimum image length squared of reduced displacements, by search. A lattice vector A n which shortens a reduced
+// d has |A n| <= |d| + |d + A n| <= 2 |d|, so |n_i| <= 2 |d| |r_i|. In a cell of a sensible shape that is one vector
+// either way along each axis, or two along a short one.
+static md_256 dist_search_d2(md_256 dx, md_256 dy, md_256 dz, const dist_cell_t* c) {
+    md_256 best = dist_length2(dx, dy, dz);
+    const float len = sqrtf(md_mm256_reduce_max_ps(best));
+    int k[3];
+    for (int i = 0; i < 3; ++i) {
+        const float n = floorf(2.0f * len * c->dual[i] * 1.0001f);
+        k[i] = (int)CLAMP(n, 0.0f, (float)DIST_MAX_SEARCH);
+    }
+    for (int nz = -k[2]; nz <= k[2]; ++nz) {
+        for (int ny = -k[1]; ny <= k[1]; ++ny) {
+            for (int nx = -k[0]; nx <= k[0]; ++nx) {
+                if (nx == 0 && ny == 0 && nz == 0) continue;
+                const float sx = nx * c->basis[0][0] + ny * c->basis[1][0] + nz * c->basis[2][0];
+                const float sy = ny * c->basis[1][1] + nz * c->basis[2][1];
+                const float sz = nz * c->basis[2][2];
+                const md_256 vx = md_mm256_add_ps(dx, md_mm256_set1_ps(sx));
+                const md_256 vy = md_mm256_add_ps(dy, md_mm256_set1_ps(sy));
+                const md_256 vz = md_mm256_add_ps(dz, md_mm256_set1_ps(sz));
+                best = md_mm256_min_ps(best, dist_length2(vx, vy, vz));
             }
         }
     }
-    else if (cell->flags & MD_UNITCELL_ORTHO) {
-        vec4_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, cell);
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                vec4_t a = vec4_from_vec3(coord_a[i], 0);
-                vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                const float d = vec4_periodic_distance(a, b, ext);
-                if (d < min_dist) {
-                    min_dist = d;
-                    min_i = i;
-                    min_j = j;
-                }
-            }
-        }
-    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        float A[3][3] = {0};
-        md_unitcell_A_extract_float(A, cell);
-        // We make the assumption that we are not beyond 1 cell unit in distance
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
-                const float d = vec3_length(dx);
-                if (d < min_dist) {
-                    min_dist = d;
-                    min_i = i;
-                    min_j = j;
-                }
+    return best;
+}
+
+// Up to eight points of a group, as one image of them: each moved next to the first. Only the size of the bounding
+// sphere depends on which image, the distances do not. Lanes past the end repeat the first point.
+typedef struct dist_cluster_t {
+    md_256  x, y, z;
+    float   cen[3];
+    float   rad;
+    int64_t idx[8];
+} dist_cluster_t;
+
+static FORCE_INLINE void dist_cluster_init(dist_cluster_t* cl, const vec3_t* a, size_t beg, size_t n, const dist_cell_t* c, const int mode) {
+    const vec3_t p0 = a[beg];
+    float x[8], y[8], z[8];
+    for (size_t i = 0; i < 8; ++i) {
+        const size_t k = beg + (i < n ? i : 0);
+        x[i] = a[k].x - p0.x;
+        y[i] = a[k].y - p0.y;
+        z[i] = a[k].z - p0.z;
+        cl->idx[i] = (int64_t)k;
+    }
+    md_256 vx = md_mm256_loadu_ps(x);
+    md_256 vy = md_mm256_loadu_ps(y);
+    md_256 vz = md_mm256_loadu_ps(z);
+    dist_reduce(&vx, &vy, &vz, c, mode);
+    cl->x = md_mm256_add_ps(vx, md_mm256_set1_ps(p0.x));
+    cl->y = md_mm256_add_ps(vy, md_mm256_set1_ps(p0.y));
+    cl->z = md_mm256_add_ps(vz, md_mm256_set1_ps(p0.z));
+    md_mm256_storeu_ps(x, cl->x);
+    md_mm256_storeu_ps(y, cl->y);
+    md_mm256_storeu_ps(z, cl->z);
+
+    float lo[3] = { x[0], y[0], z[0] };
+    float hi[3] = { x[0], y[0], z[0] };
+    for (int i = 1; i < 8; ++i) {
+        lo[0] = MIN(lo[0], x[i]); hi[0] = MAX(hi[0], x[i]);
+        lo[1] = MIN(lo[1], y[i]); hi[1] = MAX(hi[1], y[i]);
+        lo[2] = MIN(lo[2], z[i]); hi[2] = MAX(hi[2], z[i]);
+    }
+    cl->cen[0] = 0.5f * (lo[0] + hi[0]);
+    cl->cen[1] = 0.5f * (lo[1] + hi[1]);
+    cl->cen[2] = 0.5f * (lo[2] + hi[2]);
+    float r2 = 0.0f;
+    for (int i = 0; i < 8; ++i) {
+        const float dx = x[i] - cl->cen[0], dy = y[i] - cl->cen[1], dz = z[i] - cl->cen[2];
+        r2 = MAX(r2, dx * dx + dy * dy + dz * dz);
+    }
+    cl->rad = sqrtf(r2);
+}
+
+// The points of b, one array per axis, padded to a multiple of eight
+typedef struct dist_set_t {
+    const float* x;
+    const float* y;
+    const float* z;
+    size_t n;
+} dist_set_t;
+
+// The squared distances from the points of the cluster to point j of b, exact wherever that can change the
+// comparison with best2. If one improves on best2 it becomes the best pair and true is returned.
+static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* ib, const dist_cluster_t* cl, const dist_set_t* b, size_t j, const dist_cell_t* c, const int mode, const bool largest) {
+    md_256 dx = md_mm256_sub_ps(cl->x, md_mm256_set1_ps(b->x[j]));
+    md_256 dy = md_mm256_sub_ps(cl->y, md_mm256_set1_ps(b->y[j]));
+    md_256 dz = md_mm256_sub_ps(cl->z, md_mm256_set1_ps(b->z[j]));
+    dist_reduce(&dx, &dy, &dz, c, mode);
+    md_256 d2 = dist_length2(dx, dy, dz);
+    if (mode == DIST_PBC_TRICLINIC) {
+        // At or beyond R_SAFE a reduced length is an upper bound only: the true one lies in [R_SAFE, reduced]
+        const md_256 far = md_mm256_cmpge_ps(d2, md_mm256_set1_ps(c->rsafe2));
+        const int far_mask = md_mm256_movemask_ps(far);
+        if (far_mask) {
+            const bool matters = largest ? (md_mm256_movemask_ps(md_mm256_and_ps(far, md_mm256_cmpgt_ps(d2, md_mm256_set1_ps(*best2)))) != 0) : (c->rsafe2 < *best2);
+            if (matters) {
+                d2 = dist_search_d2(dx, dy, dz, c);
             }
         }
     }
-    if (min_dist < FLT_MAX) {
-        *out_idx_a = min_i;
-        *out_idx_b = min_j;
+    const float m = largest ? md_mm256_reduce_max_ps(d2) : md_mm256_reduce_min_ps(d2);
+    if (largest ? !(m > *best2) : !(m < *best2)) return false;
+    const int lane = ctz32((uint32_t)md_mm256_movemask_ps(md_mm256_cmpeq_ps(d2, md_mm256_set1_ps(m))));
+    *best2 = m;
+    *ia = cl->idx[lane];
+    *ib = (int64_t)j;
+    return true;
+}
+
+// The bound of the sphere test, squared: a point of b at a reduced distance from the centre of the cluster at or beyond
+// it (for the farthest pair: at or within it) cannot improve on best2. Negative for the farthest pair while every
+// point can.
+static FORCE_INLINE float dist_threshold2(float best2, const dist_cluster_t* cl, const dist_cell_t* c, const bool largest) {
+    if (largest) {
+        if (best2 < 0.0f) return -1.0f;
+        const float t = sqrtf(best2) - cl->rad - c->eps;
+        return t > 0.0f ? t * t : -1.0f;
     }
-    return min_dist;
+    if (best2 >= FLT_MAX) return FLT_MAX;
+    const float t = sqrtf(best2) + cl->rad + c->eps;
+    return t * t;
+}
+
+static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* a, const size_t* a_offsets, size_t num_groups,
+                                     const dist_set_t* b, const dist_cell_t* c, const int mode, const bool largest) {
+    int64_t prev = -1;
+    for (size_t g = 0; g < num_groups; ++g) {
+        const size_t beg = a_offsets[g];
+        const size_t end = a_offsets[g + 1];
+        float   best2 = largest ? -1.0f : FLT_MAX;
+        int64_t ia = -1;
+        int64_t ib = -1;
+        bool done = false;
+
+        for (size_t i = beg; i < end && !done; i += 8) {
+            dist_cluster_t cl;
+            dist_cluster_init(&cl, a, i, MIN(8, end - i), c, mode);
+
+            // The partner of the previous group: a real pair, usually close to the best one
+            if (prev >= 0) {
+                dist_cluster_test(&best2, &ia, &ib, &cl, b, (size_t)prev, c, mode, largest);
+            }
+
+            const md_256 cx = md_mm256_set1_ps(cl.cen[0]);
+            const md_256 cy = md_mm256_set1_ps(cl.cen[1]);
+            const md_256 cz = md_mm256_set1_ps(cl.cen[2]);
+            float  thr2 = dist_threshold2(best2, &cl, c, largest);
+            md_256 vthr = md_mm256_set1_ps(thr2);
+            const md_256 vrsafe2 = md_mm256_set1_ps(c->rsafe2);
+
+            for (size_t j = 0; j < b->n && !done; j += 8) {
+                md_256 dx = md_mm256_sub_ps(cx, md_mm256_loadu_ps(b->x + j));
+                md_256 dy = md_mm256_sub_ps(cy, md_mm256_loadu_ps(b->y + j));
+                md_256 dz = md_mm256_sub_ps(cz, md_mm256_loadu_ps(b->z + j));
+                dist_reduce(&dx, &dy, &dz, c, mode);
+                const md_256 d2 = dist_length2(dx, dy, dz);
+                int mask = md_mm256_movemask_ps(largest ? md_mm256_cmpgt_ps(d2, vthr) : md_mm256_cmplt_ps(d2, vthr));
+                if (mode == DIST_PBC_TRICLINIC && !largest && thr2 > c->rsafe2) {
+                    // The sphere reaches past R_SAFE: a reduced distance there may overstate the true one
+                    const int far = md_mm256_movemask_ps(md_mm256_cmpge_ps(d2, vrsafe2)) & ~mask;
+                    if (far) {
+                        mask |= md_mm256_movemask_ps(md_mm256_cmplt_ps(dist_search_d2(dx, dy, dz, c), vthr));
+                    }
+                }
+                if (j + 8 > b->n) {
+                    mask &= (1 << (b->n - j)) - 1;
+                }
+                while (mask) {
+                    const size_t k = j + ctz32((uint32_t)mask);
+                    mask &= mask - 1;
+                    if (dist_cluster_test(&best2, &ia, &ib, &cl, b, k, c, mode, largest)) {
+                        if (!largest && best2 <= 0.0f) {
+                            // Nothing is nearer than a shared point
+                            done = true;
+                            break;
+                        }
+                        thr2 = dist_threshold2(best2, &cl, c, largest);
+                        vthr = md_mm256_set1_ps(thr2);
+                    }
+                }
+            }
+        }
+
+        out_dist[g] = ib >= 0 ? sqrtf(MAX(best2, 0.0f)) : 0.0f;
+        if (out_idx_a) out_idx_a[g] = ia;
+        if (out_idx_b) out_idx_b[g] = ib;
+        if (ib >= 0) prev = ib;
+    }
+}
+
+static void dist_groups_none_min (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE,      false); }
+static void dist_groups_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO,     false); }
+static void dist_groups_tri_min  (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false); }
+static void dist_groups_none_max (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE,      true);  }
+static void dist_groups_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO,     true);  }
+static void dist_groups_tri_max  (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true);  }
+
+static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest) {
+    ASSERT(out_dist);
+    ASSERT(a_offsets || num_groups == 0);
+    if (num_groups == 0) return;
+
+    if (num_b == 0) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            out_dist[g] = 0.0f;
+            if (out_idx_a) out_idx_a[g] = -1;
+            if (out_idx_b) out_idx_b[g] = -1;
+        }
+        return;
+    }
+    ASSERT(coord_b);
+
+    md_temp_scope_t temp = md_temp_begin();
+
+    // b, one array per axis. The lanes past the end repeat the last point and are masked off.
+    const size_t cap = ALIGN_TO(num_b, 8);
+    float* bx = md_temp_alloc_array(temp, float, cap);
+    float* by = md_temp_alloc_array(temp, float, cap);
+    float* bz = md_temp_alloc_array(temp, float, cap);
+    float scale = 0.0f;
+    for (size_t i = 0; i < cap; ++i) {
+        const vec3_t p = coord_b[MIN(i, num_b - 1)];
+        bx[i] = p.x;
+        by[i] = p.y;
+        bz[i] = p.z;
+        scale = MAX(scale, MAX(fabsf(p.x), MAX(fabsf(p.y), fabsf(p.z))));
+    }
+    for (size_t g = 0; g < num_groups; ++g) {
+        for (size_t i = a_offsets[g]; i < a_offsets[g + 1]; ++i) {
+            const vec3_t p = coord_a[i];
+            scale = MAX(scale, MAX(fabsf(p.x), MAX(fabsf(p.y), fabsf(p.z))));
+        }
+    }
+
+    dist_cell_t c;
+    dist_cell_init(&c, cell, scale);
+    const dist_set_t b = { bx, by, bz, num_b };
+
+    switch (c.mode) {
+    case DIST_PBC_NONE:      (largest ? dist_groups_none_max  : dist_groups_none_min) (out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
+    case DIST_PBC_ORTHO:     (largest ? dist_groups_ortho_max : dist_groups_ortho_min)(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
+    case DIST_PBC_TRICLINIC: (largest ? dist_groups_tri_max   : dist_groups_tri_min)  (out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
+    default: ASSERT(false); break;
+    }
+
+    md_temp_end(temp);
+}
+
+void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, false);
+}
+
+void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, true);
+}
+
+float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+    if (num_a == 0 || num_b == 0) return FLT_MAX;
+    const size_t offsets[2] = { 0, num_a };
+    float   dist = 0.0f;
+    int64_t ia = -1;
+    int64_t ib = -1;
+    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, false);
+    if (out_idx_a) *out_idx_a = ia;
+    if (out_idx_b) *out_idx_b = ib;
+    return dist;
 }
 
 float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
-    int64_t max_i = 0;
-    int64_t max_j = 0;
-    float max_dist = 0;
-
-    if (cell->flags == 0) {
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                const float d = vec3_distance(coord_a[i], coord_b[j]);
-                if (d > max_dist) {
-                    max_dist = d;
-                    max_i = i;
-                    max_j = j;
-                }
-            }
-        }
+    if (num_a == 0 || num_b == 0) return 0.0f;
+    const size_t offsets[2] = { 0, num_a };
+    float   dist = 0.0f;
+    int64_t ia = -1;
+    int64_t ib = -1;
+    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, true);
+    if (dist > 0.0f) {
+        if (out_idx_a) *out_idx_a = ia;
+        if (out_idx_b) *out_idx_b = ib;
     }
-    else if (cell->flags & MD_UNITCELL_ORTHO) {
-        vec4_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, cell);
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                vec4_t a = vec4_from_vec3(coord_a[i], 0);
-                vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                const float d = vec4_periodic_distance(a, b, ext);
-                if (d > max_dist) {
-                    max_dist = d;
-                    max_i = i;
-                    max_j = j;
-                }
-            }
-        }
-    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        float A[3][3] = {0};
-        md_unitcell_A_extract_float(A, cell);
-        // We make the assumption that we are not beyond 1 cell unit in distance
-        for (int64_t i = 0; i < (int64_t)num_a; ++i) {
-            for (int64_t j = 0; j < (int64_t)num_b; ++j) {
-                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
-                const float d = vec3_length(dx);
-                if (d > max_dist) {
-                    max_dist = d;
-                    max_i = i;
-                    max_j = j;
-                }
-            }
-        }
-    }
-
-    if (max_dist > 0) {
-        if (out_idx_a) *out_idx_a = max_i;
-        if (out_idx_b) *out_idx_b = max_j;
-    }
-
-    return max_dist;
+    return dist;
 }
 
 #if MD_COMPILER_MSVC

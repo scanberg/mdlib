@@ -4309,35 +4309,49 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         const type_info_t elem_type   = type_info_element_type(arg[0].type);
         const size_t      elem_stride = type_info_element_byte_stride(arg[0].type);
 
+        // The positions of the elements one after another, all measured against b in one pass: each element starts
+        // from the pair of the one before, which is what makes it cheap (see md_util_min_distance_groups)
+        const size_t num = end - beg;
+        md_array(vec3_t) a_pos = 0;
+        size_t* a_off = md_temp_alloc_array(temp, size_t, num + 1);
         for (size_t i = beg; i < end; ++i) {
             const data_t elem = {
                 .type = elem_type,
                 .ptr  = (char*)arg[0].ptr + i * elem_stride,
                 .size = elem_stride,
             };
-            const vec3_t* a_pos = coordinate_extract(elem, ctx);
-            const size_t  a_len = md_array_size(a_pos);
+            const vec3_t* pos = coordinate_extract(elem, ctx);
+            a_off[i - beg] = md_array_size(a_pos);
+            md_array_push_array(a_pos, pos, md_array_size(pos), ctx->temp_alloc);
             if (ctx->vis) {
                 coordinate_visualize(elem, ctx);
             }
+        }
+        a_off[num] = md_array_size(a_pos);
 
+        float*   dist = md_temp_alloc_array(temp, float,   num);
+        int64_t* ia   = md_temp_alloc_array(temp, int64_t, num);
+        int64_t* ib   = md_temp_alloc_array(temp, int64_t, num);
+        if (largest) {
+            md_util_max_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+        } else {
+            md_util_min_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+        }
+
+        for (size_t k = 0; k < num; ++k) {
             // An empty selection - a dynamic one can be empty in some frames - has no distance to anything: 0
-            if (a_len == 0 || b_len == 0) continue;
+            if (ib[k] < 0) continue;
 
-            int64_t ia = 0;
-            int64_t ib = 0;
-            const float dist = largest ?
-                md_util_max_distance(&ia, &ib, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell) :
-                md_util_min_distance(&ia, &ib, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
-
+            const size_t i = beg + k;
             if (out && i < out_len) {
-                out[i] = dist;
+                out[i] = dist[k];
             }
             if (ctx->vis) {
                 // The end in b drawn in the image it was measured in
-                vec4_t b4 = vec4_from_vec3(b_pos[ib], 0);
-                md_util_deperiodize_vec4(&b4, 1, a_pos[ia], &ctx->cur_state->unitcell);
-                draw_distance(a_pos[ia], vec3_from_vec4(b4), dist, ctx->vis, ctx->vis_flags);
+                const vec3_t a = a_pos[ia[k]];
+                vec4_t b4 = vec4_from_vec3(b_pos[ib[k]], 0);
+                md_util_deperiodize_vec4(&b4, 1, a, &ctx->cur_state->unitcell);
+                draw_distance(a, vec3_from_vec4(b4), dist[k], ctx->vis, ctx->vis_flags);
             }
         }
 

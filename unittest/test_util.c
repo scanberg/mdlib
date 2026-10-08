@@ -2358,3 +2358,163 @@ UTEST(util, packed_kernels_any_alignment) {
         }
     }
 }
+
+// ---- minimum and maximum distance between sets ----------------------------------------------
+
+// The minimum image by exhaustion, in double: reduced into the brick, then every combination of up to three lattice
+// vectors either way along the periodic axes. Three is more than any of the cells below needs: a vector A n which
+// shortens a reduced d has |n_i| <= 2 |d| |r_i| (r_i a row of the inverse basis), at most 2 for these.
+static double dist_ref(vec3_t a, vec3_t b, const md_unitcell_t* cell) {
+    double d[3] = { (double)a.x - b.x, (double)a.y - b.y, (double)a.z - b.z };
+    double A[3][3] = {{0}};
+    md_unitcell_A_extract_double(A, cell);
+    int per[3] = { (cell->flags & MD_UNITCELL_PBC_X) != 0, (cell->flags & MD_UNITCELL_PBC_Y) != 0, (cell->flags & MD_UNITCELL_PBC_Z) != 0 };
+    for (int i = 0; i < 3; ++i) {
+        if (!per[i] || A[i][i] == 0.0) { A[i][0] = A[i][1] = A[i][2] = 0.0; per[i] = 0; }
+    }
+    for (int i = 2; i >= 0; --i) {
+        if (per[i]) {
+            const double n = nearbyint(d[i] / A[i][i]);
+            for (int j = 0; j < 3; ++j) d[j] -= n * A[i][j];
+        }
+    }
+    const int R = 3;
+    double best = DBL_MAX;
+    for (int nz = per[2] ? -R : 0; nz <= (per[2] ? R : 0); ++nz) {
+        for (int ny = per[1] ? -R : 0; ny <= (per[1] ? R : 0); ++ny) {
+            for (int nx = per[0] ? -R : 0; nx <= (per[0] ? R : 0); ++nx) {
+                double v[3];
+                for (int j = 0; j < 3; ++j) v[j] = d[j] + nx * A[0][j] + ny * A[1][j] + nz * A[2][j];
+                best = MIN(best, v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            }
+        }
+    }
+    return sqrt(best);
+}
+
+static uint64_t dist_rng_state;
+static double dist_rand(void) {
+    uint64_t x = dist_rng_state;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    dist_rng_state = x;
+    return (double)(x >> 11) * (1.0 / 9007199254740992.0);
+}
+
+// A point at fractional coordinates in [lo, hi) along the periodic axes - several images of the cell, as in an
+// unwrapped trajectory - and within span along the others
+static vec3_t dist_rand_point(const md_unitcell_t* cell, double span, double lo, double hi) {
+    double A[3][3] = {{0}};
+    md_unitcell_A_extract_double(A, cell);
+    double p[3] = {0};
+    for (int i = 0; i < 3; ++i) {
+        const double f = lo + (hi - lo) * dist_rand();
+        if (A[i][i] != 0.0) {
+            for (int j = 0; j < 3; ++j) p[j] += f * A[i][j];
+        } else {
+            p[i] += f * span;
+        }
+    }
+    return vec3_set((float)p[0], (float)p[1], (float)p[2]);
+}
+
+// Groups which are empty, compact, spread over several images, or share points with b, in every kind of cell -
+// including cells small enough that most distances are beyond half of them, where reducing a displacement into the
+// cell is not the minimum image, and a skewed cell which is not reduced - against the minimum image by exhaustion
+UTEST(util, min_max_distance_groups) {
+    const double s2 = sqrt(2.0), s6 = sqrt(6.0), d = 30.0, ds = 11.0;
+    const md_unitcell_t cells[] = {
+        md_unitcell_none(),
+        md_unitcell_from_extent(30, 30, 30),
+        md_unitcell_from_extent(9, 12, 10),
+        md_unitcell_from_basis_parameters(30, 40, 0, 0, 0, 0),                              // periodic in x and y only
+        md_unitcell_from_extent_and_angles(30, 30, 30, 70, 70, 70),
+        md_unitcell_from_basis_parameters(d, d, d / s2, 0, d / 2, d / 2),                   // rhombic dodecahedron
+        md_unitcell_from_basis_parameters(d, 2 * s2 * d / 3, s6 * d / 3, d / 3, -d / 3, s2 * d / 3),  // truncated octahedron
+        md_unitcell_from_basis_parameters(ds, ds, ds / s2, 0, ds / 2, ds / 2),              // small dodecahedron
+        md_unitcell_from_basis_parameters(30, 20, 25, 27, 20, 15),                          // skewed, not reduced
+        md_unitcell_from_basis_parameters(30, 30, 0, 10, 0, 0),                             // triclinic, periodic in x and y only
+    };
+
+    dist_rng_state = 0x243F6A8885A308D3ULL;
+    vec3_t  a[6 * 12];
+    vec3_t  b[60];
+    size_t  off[7];
+    float   dist[6];
+    int64_t ia[6], ib[6];
+
+    for (size_t ci = 0; ci < ARRAY_SIZE(cells); ++ci) {
+        const md_unitcell_t* cell = &cells[ci];
+        for (int trial = 0; trial < 25; ++trial) {
+            const size_t nb = trial == 0 ? 0 : (trial % 5 == 0 ? 1 + (size_t)(dist_rand() * 3) : 1 + (size_t)(dist_rand() * 59));
+            const bool blob = trial % 3 == 0;
+            const vec3_t bc = dist_rand_point(cell, 40, 0, 1);
+            for (size_t j = 0; j < nb; ++j) {
+                b[j] = blob ? vec3_add(bc, vec3_set((float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4)))
+                            : dist_rand_point(cell, 40, -1.5, 2.5);
+            }
+
+            const size_t ng = 1 + (size_t)(dist_rand() * 6);
+            size_t na = 0;
+            for (size_t g = 0; g < ng; ++g) {
+                off[g] = na;
+                const size_t n    = dist_rand() < 0.2 ? 0 : 1 + (size_t)(dist_rand() * 12);
+                const int    kind = (int)(dist_rand() * 4);
+                const vec3_t cen  = dist_rand_point(cell, 40, -1, 2);
+                for (size_t k = 0; k < n; ++k) {
+                    if (kind == 0) {
+                        a[na++] = dist_rand_point(cell, 40, -1.5, 2.5);
+                    } else if (kind == 1 && nb > 0) {
+                        a[na++] = b[(size_t)(dist_rand() * nb)];
+                    } else {
+                        a[na++] = vec3_add(cen, vec3_set((float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5)));
+                    }
+                }
+            }
+            off[ng] = na;
+
+            for (int largest = 0; largest < 2; ++largest) {
+                if (largest) {
+                    md_util_max_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
+                } else {
+                    md_util_min_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
+                }
+                for (size_t g = 0; g < ng; ++g) {
+                    if (off[g] == off[g + 1] || nb == 0) {
+                        EXPECT_EQ(0.0f, dist[g]);
+                        EXPECT_EQ(-1, ia[g]);
+                        EXPECT_EQ(-1, ib[g]);
+                        continue;
+                    }
+                    double ref = largest ? -1.0 : DBL_MAX;
+                    for (size_t i = off[g]; i < off[g + 1]; ++i) {
+                        for (size_t j = 0; j < nb; ++j) {
+                            const double r = dist_ref(a[i], b[j], cell);
+                            ref = largest ? MAX(ref, r) : MIN(ref, r);
+                        }
+                    }
+                    EXPECT_NEAR(ref, dist[g], 2.0e-3);
+                    // The pair is one which has that distance
+                    ASSERT_GE(ia[g], (int64_t)off[g]);
+                    ASSERT_LT(ia[g], (int64_t)off[g + 1]);
+                    ASSERT_GE(ib[g], 0);
+                    ASSERT_LT(ib[g], (int64_t)nb);
+                    EXPECT_NEAR(ref, dist_ref(a[ia[g]], b[ib[g]], cell), 2.0e-3);
+                }
+            }
+        }
+    }
+
+    // The single set versions: FLT_MAX and 0 for an empty set, the indices untouched then
+    const vec3_t p = vec3_set(1, 2, 3);
+    const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
+    int64_t i0 = 7, i1 = 7;
+    EXPECT_EQ(FLT_MAX, md_util_min_distance(&i0, &i1, &p, 0, &p, 1, &cell));
+    EXPECT_EQ(0.0f,    md_util_max_distance(&i0, &i1, &p, 1, &p, 0, &cell));
+    EXPECT_EQ(7, i0);
+    EXPECT_EQ(7, i1);
+    const vec3_t q = vec3_set(9.5f, 2, 3);
+    EXPECT_NEAR(1.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, &cell), 1.0e-5f);
+    EXPECT_NEAR(8.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, NULL), 1.0e-5f);
+    EXPECT_EQ(0, i0);
+    EXPECT_EQ(0, i1);
+}
