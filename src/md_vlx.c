@@ -1578,12 +1578,12 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 	}
 
 	char name_buf[256];
-	for (hsize_t i = 0; i < info.nlinks; ++i) {
-		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
+	for (hsize_t link_idx = 0; link_idx < info.nlinks; ++link_idx) {
+		ssize_t size = H5Gget_objname_by_idx(group_handle, link_idx, name_buf, sizeof(name_buf));
 		if (size < 0) {
 			continue;
 		}
-		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
+		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, link_idx);
 
 		// Ensure that the type is a dataset, if not we skip
 		if (type != H5G_DATASET) {
