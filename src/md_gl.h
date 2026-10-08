@@ -136,6 +136,12 @@ void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
+// The backbone (ribbons, cartoon) orients its cross sections with temporal coherence: each draw continues from
+// the orientation computed by the previous one, which keeps segments from flipping while the structure moves.
+// Call this when the positions jump discontinuously (e.g. seeking to a distant frame) so the next draw starts
+// from the structure alone.
+void md_gl_mol_reset_backbone_history(md_gl_mol_t mol);
+
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules

@@ -13,6 +13,11 @@
 #define USE_B_SPLINE 1
 #endif
 
+// Set by the orient pass on control point i: S[i+1] is used flipped relative to S[i]
+#define FLAG_FLIP_NEXT 16u
+// Flags passed on to the geometry (beg/end chain, beg/end secondary structure)
+#define FLAG_OUTPUT_MASK 15u
+
 uniform float u_tension = 0.5;
 
 uniform usamplerBuffer u_buf_control_point_words;                   // Interleaved gl_control_point_t as uint32 words
@@ -109,7 +114,8 @@ uint packUnorm4x8(in vec4 v) {
 }
 
 vec2 unpackSnorm2x16(uint p) {
-    ivec2 iv = ivec2(p & 0xFFFFU, p >> 16);
+    // Sign extend both 16-bit halves
+    ivec2 iv = ivec2(int(p << 16) >> 16, int(p) >> 16);
     return clamp(vec2(iv) * (1.0f / 32767.0f), -1.0f, 1.0f);
 }
 
@@ -129,6 +135,10 @@ vec3 unpack_tangent(uint w0, uint w1, uint w2) {
     vec2 zx = unpackSnorm2x16(w1);
     vec2 yz = unpackSnorm2x16(w2);
     return vec3(zx.y, yz.x, yz.y);
+}
+
+float relation(uint flags) {
+    return (flags & FLAG_FLIP_NEXT) != 0u ? -1.0 : 1.0;
 }
 
 void load_cp(uint cp_idx, out vec3 pos, out uint atom_idx, out vec3 vel, out float seg_t, out vec3 ss, out uint flags, out uvec3 svt) {
@@ -172,22 +182,25 @@ void main() {
     uint ai0, ai1;
     float seg_t0, seg_t1, seg_t2, seg_t3;
     uint fl_tmp;
-    uint fl0, fl1;
+    uint fl_prev, fl0, fl1;
     uvec3 svt0, svt1, svt2, svt3;
 
-    load_cp(cp_idx.x, cp0, ai_tmp, cv0, seg_t0, ss0, fl_tmp, svt0);
-    load_cp(cp_idx.y, cp1, ai0,    cv1, seg_t1, ss1, fl0,    svt1);
-    load_cp(cp_idx.z, cp2, ai1,    cv2, seg_t2, ss2, fl1,    svt2);
-    load_cp(cp_idx.w, cp3, ai_tmp, cv3, seg_t3, ss3, fl_tmp, svt3);
+    load_cp(cp_idx.x, cp0, ai_tmp, cv0, seg_t0, ss0, fl_prev, svt0);
+    load_cp(cp_idx.y, cp1, ai0,    cv1, seg_t1, ss1, fl0,     svt1);
+    load_cp(cp_idx.z, cp2, ai1,    cv2, seg_t2, ss2, fl1,     svt2);
+    load_cp(cp_idx.w, cp3, ai_tmp, cv3, seg_t3, ss3, fl_tmp,  svt3);
 
     vec3 sv0 = unpack_support(svt0.x, svt0.y, svt0.z);
     vec3 sv1 = unpack_support(svt1.x, svt1.y, svt1.z);
     vec3 sv2 = unpack_support(svt2.x, svt2.y, svt2.z);
     vec3 sv3 = unpack_support(svt3.x, svt3.y, svt3.z);
 
-    sv0 *= sign(dot(sv0, sv1));
-    sv2 *= sign(dot(sv1, sv2));
-    sv3 *= sign(dot(sv2, sv3));
+    // Align the support vectors to sv1 using the relations decided in the orient pass, which are
+    // temporally coherent, instead of re-deciding them here from the nearest direction.
+    // Clamped indices at the ends of a chain duplicate the end point.
+    sv2 *= relation(fl0);
+    sv0 = (cp_idx.x == cp_idx.y) ? sv1 : sv0 * relation(fl_prev);
+    sv3 = (cp_idx.w == cp_idx.z) ? sv2 : sv3 * relation(fl0) * relation(fl1);
 
     vec3 s_vec = safe_normalize(spline(sv0, sv1, sv2, sv3, t), vec3(0.0, 0.0, 1.0));
     vec3 s_tan = safe_normalize(spline_tangent(cp0, cp1, cp2, cp3, t), vec3(1.0, 0.0, 0.0));
@@ -201,7 +214,7 @@ void main() {
 
     bool first_sample = t <= (0.5 / float(NUM_SUBDIVISIONS));
     bool last_sample  = t >= (1.0 - 0.5 / float(NUM_SUBDIVISIONS));
-    uint s_flags = first_sample ? fl0 : (last_sample ? fl1 : 0U);
+    uint s_flags = (first_sample ? fl0 : (last_sample ? fl1 : 0U)) & FLAG_OUTPUT_MASK;
 
     out_position = s_pos;
     out_atom_idx = t < 0.5 ? ai0 : ai1;

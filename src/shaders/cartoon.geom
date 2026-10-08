@@ -76,7 +76,7 @@ void main() {
     vec3 n0[RES];
     vec3 n1[RES];
     
-    float flip = sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
+    float flip = dot(in_vert[0].support_vector, in_vert[1].support_vector) < 0.0 ? -1.0 : 1.0; // sign() would return 0 for perpendicular vectors
     x[0] = in_vert[0].support_vector;
     x[1] = in_vert[1].support_vector * flip;
     z[0] = in_vert[0].support_tangent;

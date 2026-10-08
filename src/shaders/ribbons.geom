@@ -65,7 +65,7 @@ void main() {
     vec4 z[2];
     uint f[2];
     
-    float flip = sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
+    float flip = dot(in_vert[0].support_vector, in_vert[1].support_vector) < 0.0 ? -1.0 : 1.0; // sign() would return 0 for perpendicular vectors
     p[0] = vec4(in_vert[0].control_point, 1);
     p[1] = vec4(in_vert[1].control_point, 1);
     x[0] = vec4(in_vert[0].support_vector, 0);
