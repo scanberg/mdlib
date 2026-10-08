@@ -647,6 +647,10 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 #include <core/md_os.h>
 #include <core/md_str_builder.h>
 #include <md_pot.h>
+#include <md_filter.h>
+#include <md_script.h>
+#include <core/md_bitfield.h>
+#include <string.h>
 #include <md_util.h>
 #include "system_invariants.h"
 
@@ -706,7 +710,9 @@ static str_t vlx_test_as_read_back(str_t json, md_allocator_i* alloc) {
 		md_strb_push_char(&sb, json.ptr[i]);
 		if (json.ptr[i] == '\n') md_strb_push_char(&sb, '\n');
 	}
-	return str_copy(md_strb_to_str(sb), alloc);
+	const str_t out = str_copy(md_strb_to_str(sb), alloc);
+	md_strb_free(&sb);
+	return out;
 }
 
 // The k-th row of a fragment type in a per type section of a .pot, or NULL
@@ -803,7 +809,9 @@ static str_t vlx_test_pe_json(const md_pot_t* pot, md_allocator_i* alloc) {
 		md_strb_push_cstr(&sb, "\n                    ]\n                }");
 	}
 	md_strb_push_cstr(&sb, "\n            ]\n        }\n    ]\n}");
-	return vlx_test_as_read_back(md_strb_to_str(sb), alloc);
+	const str_t out = vlx_test_as_read_back(md_strb_to_str(sb), alloc);
+	md_strb_free(&sb);
+	return out;
 }
 
 // Read on the bits: the library is built with fast math, where NAN does not compare as itself
@@ -1011,6 +1019,117 @@ UTEST(vlx, pe_environment_in_full) {
 
 // What write_pe_jsonfile could not have written is not the potential the calculation ran with, so
 // none of it is used, and a potential in CPPE's format is not read. Neither is a failed load.
+// The QM region and its environment as script selections: 'qm' the calculation's own atoms, 'environment'
+// the sites of the embedding, both one selection per component, and either a compile error where its
+// region is not there
+UTEST(vlx, pe_regions_are_selectable) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_regions.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, (str_t){ vlx_test_custom_json, sizeof(vlx_test_custom_json) - 1 }));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+	ASSERT_EQ(3u + 6u, t.sys.atom.count);
+
+	for (size_t i = 0; i < t.sys.atom.count; ++i) {
+		EXPECT_EQ(i < 3, (md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+	}
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_bitfield_t bf = md_bitfield_create(t.alloc);
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(3u, md_bitfield_popcount_range(&bf, 0, 3));
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(6u, md_bitfield_popcount_range(&bf, 3, 9));
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
+
+	// One selection per fragment: NA, HOH with its expansion point, CL
+	md_array(md_bitfield_t) arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_EQ(3u, md_array_size(arr));
+	EXPECT_EQ(1u, md_bitfield_popcount(&arr[0]));
+	EXPECT_EQ(4u, md_bitfield_popcount(&arr[1]));
+	EXPECT_EQ(1u, md_bitfield_popcount(&arr[2]));
+
+	arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_EQ(1u, md_array_size(arr));
+	EXPECT_EQ(3u, md_bitfield_popcount(&arr[0]));
+
+	// They compose like any other selection, and take a context like the residue selectors do
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('CL')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(1u, md_bitfield_popcount(&bf));
+	EXPECT_TRUE(md_bitfield_test_bit(&bf, 8));
+
+	qm_test_free(&t);
+}
+
+// The reference potential, 50 waters around a QM water: the examples of the script reference compile
+// against it, and the environment is one selection per water
+UTEST(vlx, pe_regions_in_a_script) {
+	md_allocator_i* heap = md_get_heap_allocator();
+	md_pot_t pot = {0};
+	ASSERT_TRUE(md_pot_parse_file(&pot, STR_LIT(MD_UNITTEST_DATA_DIR "/pot/water_pe_npe.pot"), heap));
+	const str_t json = vlx_test_pe_json(&pot, heap);
+	md_pot_free(&pot, heap);
+
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_script.h5");
+	const bool written = vlx_test_write_pe_h5(h5, json);
+	str_free(json, heap);
+	ASSERT_TRUE(written);
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+
+	md_script_ir_t* ir = md_script_ir_create(t.alloc);
+	const str_t src = STR_LIT(
+		"d = distance_min(qm(), water());\n"
+		"near_qm = within(5, qm());\n"
+		"first_shell = within(3.5, qm()) and environment();\n"
+		"n_fragments = count(environment(), \"residue\");\n");
+	EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, &t.sys, NULL));
+	EXPECT_TRUE(md_script_ir_valid(ir));
+	for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+		printf("%.*s\n", (int)md_script_ir_errors(ir)[i].text.len, md_script_ir_errors(ir)[i].text.ptr);
+	}
+	md_script_ir_free(ir);
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_array(md_bitfield_t) arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(50u, md_array_size(arr));
+
+	qm_test_free(&t);
+}
+
+// A calculation without an embedding is QM throughout: 'qm' is all of it and 'environment' is no selection at all
+UTEST(vlx, qm_without_environment) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64)));
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_bitfield_t bf = md_bitfield_create(t.alloc);
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
+
+	EXPECT_FALSE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_TRUE(strstr(err, "QM throughout") != NULL);
+
+	qm_test_free(&t);
+}
+
 UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
 	static const char* texts[] = {
 		// Not JSON, or cut short
@@ -1067,6 +1186,10 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 	EXPECT_EQ(3u, t.sys.atom.count);
 	EXPECT_EQ(3u, t.state.num_atoms);
 	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/charge")));
+	// Without a map the supplement's atoms are the system's own, and they stay its QM region
+	for (size_t i = 0; i < t.sys.atom.count; ++i) {
+		EXPECT_TRUE((md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+	}
 
 	qm_test_free(&t);
 }

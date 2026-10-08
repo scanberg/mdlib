@@ -895,6 +895,8 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
         sys->atom.type_idx[i] = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
                                                          md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
                                                          md_atomic_number_cpk_color(z), 0, sys->alloc);
+        // A QM calculation alone: every atom is in it (MD_ATOM_FLAG_QM)
+        sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
     }
 
     sys->atom.count  = num_atoms;

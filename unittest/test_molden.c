@@ -32,6 +32,10 @@ UTEST(molden, parse) {
     // The atoms land in the system itself, not in the table.
     EXPECT_EQ(3u, t.sys.atom.count);
     EXPECT_EQ(3u, t.state.num_atoms);
+    // A QM calculation alone: every atom is in its QM region
+    for (size_t i = 0; i < t.sys.atom.count; ++i) {
+        EXPECT_TRUE((md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+    }
 
     // [Atoms] was written in Angstrom and the state is in Angstrom, so this is a straight read.
     const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));

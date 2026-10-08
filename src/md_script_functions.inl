@@ -383,6 +383,10 @@ static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+
+// Regions of a QM calculation (MD_ATOM_FLAG_QM), one selection per component which has atoms in it
+static int _qm          (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _environment (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -705,6 +709,10 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+
+    // A compile error where the system has no such region: a QM region, and atoms which are not in it
+    {STR_INIT("qm"),          TI_BITFIELD_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("environment"), TI_BITFIELD_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("component"), TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -3402,6 +3410,101 @@ static int _nucleotide(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_ION);
+}
+
+// The atoms of the QM region (MD_ATOM_FLAG_QM), or of its environment: one selection per component with
+// atoms in the region, holding those atoms. A component is not assumed to lie on one side: a QM/MM
+// boundary can cut through a residue. Without components the region is a single selection.
+//
+// Whether the region exists is a property of the SYSTEM, not of the context: 'qm' needs a QM region,
+// 'environment' a QM region and atoms outside it, and without them either is a compile error rather
+// than an empty selection - an empty 'environment' would read as "nothing around the QM region", where
+// the truth is that the system does not say. Within a context ('qm in water') it is the part of the
+// region that lies there, which can be nothing.
+static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool qm) {
+    ASSERT(ctx && ctx->sys);
+    (void)arg;
+
+    const md_system_t* sys = ctx->sys;
+    const size_t num_atoms = sys->atom.count;
+
+    if (!dst) {
+        size_t num_qm = 0;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            num_qm += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) ? 1 : 0;
+        }
+        if (num_qm == 0) {
+            LOG_ERROR(ctx->ir, ctx->op_token, qm ?
+                "The system has no QM region: it was not loaded from a quantum chemistry calculation" :
+                "The system has no QM region, and so no environment of one");
+            return -1;
+        }
+        if (!qm && num_qm == num_atoms) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The system is QM throughout: it has no environment");
+            return -1;
+        }
+    }
+
+    const md_atom_flags_t want = qm ? MD_ATOM_FLAG_QM : MD_ATOM_FLAG_NONE;
+
+    // The groups: the components in the context, or the whole system as one when it has none
+    md_array(md_urange_t) groups = 0;
+    if (sys->component.count) {
+        int* comp_indices = get_comp_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc);
+        for (size_t i = 0; i < md_array_size(comp_indices); ++i) {
+            md_array_push(groups, md_component_atom_range(&sys->component, comp_indices[i]), ctx->temp_alloc);
+        }
+        md_array_free(comp_indices, ctx->temp_alloc);
+    } else if (!ctx->mol_ctx || md_bitfield_popcount_range(ctx->mol_ctx, 0, num_atoms)) {
+        md_urange_t all = {0, (uint32_t)num_atoms};
+        md_array_push(groups, all, ctx->temp_alloc);
+    }
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
+        const int cap = type_info_array_len(dst->type);
+        if (cap > 0) {
+            int dst_idx = 0;
+            for (size_t g = 0; g < md_array_size(groups); ++g) {
+                bool any = false;
+                for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
+                    if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                        ASSERT(dst_idx < cap);
+                        md_bitfield_set_bit(&bf[dst_idx], i);
+                        any = true;
+                    }
+                }
+                if (any && cap > 1) dst_idx += 1;
+            }
+        }
+    } else {
+        int count = 0;
+        for (size_t g = 0; g < md_array_size(groups); ++g) {
+            for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
+                if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                    count += 1;
+                    break;
+                }
+            }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        result = count;
+    }
+
+    md_array_free(groups, ctx->temp_alloc);
+    return result;
+}
+
+static int _qm(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_region(dst, arg, ctx, true);
+}
+
+static int _environment(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_region(dst, arg, ctx, false);
 }
 
 static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {

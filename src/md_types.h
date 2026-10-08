@@ -96,6 +96,12 @@ typedef enum {
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
     MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
 
+    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, set by its loader.
+    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
+    // QM region flagged, and the atoms without the flag are its environment. Nothing infers it: a system no
+    // loader said it of has no QM region. Selected in scripts by 'qm' and 'environment'.
+    MD_ATOM_FLAG_QM                     = 0x800,
+
     // Hydrogen bond roles are not flags: they depend on the hydrogen bond model and its options, and a donor is a
     // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
 } md_atom_flags_t;

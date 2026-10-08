@@ -282,7 +282,7 @@ or [destructure](#statements-and-comments) them.
 | Category | Procedures |
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`ring`](#ring) |
-| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
+| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
@@ -536,6 +536,44 @@ Every water molecule.
 ```mdscript
 solvent = water();
 n_waters = count(water(), "residue");
+```
+
+### qm
+
+<!-- proc name=qm category=selector.residue -->
+
+```text
+qm() -> bitfield[]
+```
+
+The QM region: the atoms of the quantum chemistry calculation the system was loaded from (VeloxChem, Molden,
+TREXIO), one selection per residue with atoms in it. A system from a QM calculation alone is QM throughout; in a
+polarizable embedding or QM/MM system it is the region the embedding surrounds. A residue need not lie wholly on one
+side: a QM/MM boundary can cut through it, and its selection then holds the QM atoms only.
+
+Only a loader says which atoms are QM, nothing infers it: in a system without a QM region (a structure or
+trajectory file), `qm` is a **compile error** ("The system has no QM region") rather than an empty selection.
+
+```mdscript
+d = distance_min(qm(), water());
+near_qm = within(5, qm());
+```
+
+### environment
+
+<!-- proc name=environment category=selector.residue -->
+
+```text
+environment() -> bitfield[]
+```
+
+The environment of the QM region: every atom which is not in it - the sites of a polarizable embedding, the MM
+atoms of a QM/MM system - one selection per residue (an embedding fragment is one). A **compile error** where the
+system has no QM region, or is QM throughout ("The system is QM throughout: it has no environment").
+
+```mdscript
+first_shell = within(3.5, qm()) and environment();
+n_fragments = count(environment(), "residue");
 ```
 
 ### resname

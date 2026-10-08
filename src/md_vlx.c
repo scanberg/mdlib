@@ -5206,6 +5206,8 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 
 		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
+		// The calculation's own atoms; the sites of an embedding, appended after them, are its environment
+		sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
 	}
 
 	if (vlx->mm.count > 0) {
@@ -5279,6 +5281,35 @@ static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bo
 	}
 }
 
+// A supplemental file's QM atoms are a region of the system it supplements (a QM/MM run against its
+// MD system): they are flagged where the local-to-global map puts them - or, without a map, where the
+// two atom spaces coincide, as the system's first atoms - and the rest of the system is their
+// environment. The flags of an earlier supplement are cleared first, as its map is (see above).
+static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) {
+	ASSERT(sys);
+	const size_t num_atoms = sys->atom.count;
+	const size_t num_qm_atoms = vlx_number_of_atoms(vlx);
+	if (num_atoms == 0 || num_qm_atoms == 0) {
+		return;
+	}
+	if (md_array_size(sys->atom.flags) < num_atoms) {
+		const size_t size = md_array_size(sys->atom.flags);
+		md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
+		MEMSET(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
+	}
+	for (size_t i = 0; i < num_atoms; ++i) {
+		sys->atom.flags[i] &= ~MD_ATOM_FLAG_QM;
+	}
+
+	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
+	for (size_t i = 0; i < num_qm_atoms; ++i) {
+		const int idx = local_to_global ? local_to_global[i] : (int)i;
+		if (idx >= 0 && (size_t)idx < num_atoms) {
+			sys->atom.flags[idx] |= MD_ATOM_FLAG_QM;
+		}
+	}
+}
+
 bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
@@ -5322,6 +5353,7 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 	if (success) {
 		vlx_publish_whole_file_attributes(sys, vlx);
 		vlx_publish_atom_system_index(sys, vlx, true);
+		vlx_flag_supplemental_qm_region(sys, vlx);
 	}
 
 	md_temp_end(temp_scope);
