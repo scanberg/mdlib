@@ -634,24 +634,20 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 // ---------------------------------------------------------------------------
 // POLARIZABLE EMBEDDING
 //
-// No .h5 of an embedding run is checked in, so these make one: a copy of h2o.h5 whose potfile_text
-// holds a potential the way VeloxChem stores it - PyFraME JSON as write_pe_jsonfile writes it
-// (json.dump with indent 4), read back through '\n'.join(f.readlines()), which doubles every
-// newline, into a fixed length string dataset of shape (1,), as np.bytes_([text]) makes it. The copy
-// is written beside h2o.h5, where its basis set is, and removed again as soon as it has been read -
-// before any assertion that could end the test early.
+// No .h5 of an embedding run is checked in, so these make one: h2o.h5 with a potential named in its
+// SCF settings exactly as VeloxChem writes it (scf/potfile, a scalar UTF-8 string holding the path the
+// run was given). It is written beside h2o.h5, where its basis set is, and removed again as soon as
+// it has been read - before any assertion that could end the test early.
 // ---------------------------------------------------------------------------
 
 #include <hdf5.h>
 #include <stdio.h>	// remove
 #include <core/md_os.h>
-#include <core/md_str_builder.h>
-#include <md_pot.h>
+#include <md_util.h>
 #include <md_filter.h>
 #include <md_script.h>
 #include <core/md_bitfield.h>
 #include <string.h>
-#include <md_util.h>
 #include "system_invariants.h"
 
 #define VLX_PE_DIR MD_UNITTEST_DATA_DIR "/vlx/"
@@ -664,154 +660,35 @@ static bool vlx_test_write_file(str_t path, const void* data, size_t size) {
 	return ok;
 }
 
-// A copy of h2o.h5 with 'text' as its potfile_text
-static bool vlx_test_write_pe_h5(str_t dst, str_t text) {
-	md_allocator_i* heap = md_get_heap_allocator();
+// A copy of h2o.h5 whose SCF settings name 'potfile'
+static bool vlx_test_write_pe_h5(str_t dst, const char* potfile) {
 	md_file_t in = {0};
 	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
 	const size_t size = (size_t)md_file_size(in);
-	void* bytes = md_alloc(heap, size);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
 	const bool read = md_file_read(in, bytes, size) == size;
 	md_file_close(&in);
 	const bool written = read && vlx_test_write_file(dst, bytes, size);
-	md_free(heap, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
 	if (!written) return false;
 
 	char path[1024];
 	str_copy_to_char_buf(path, sizeof(path), dst);
 	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
 	if (file < 0) return false;
-
-	const size_t len = text.len ? text.len : 1;
-	char* buf = md_alloc(heap, len);
-	MEMSET(buf, 0, len);
-	if (text.len) MEMCPY(buf, text.ptr, text.len);
-
-	const bool deleted = H5Lexists(file, "potfile_text", H5P_DEFAULT) <= 0 || H5Ldelete(file, "potfile_text", H5P_DEFAULT) >= 0;
-	hid_t type = H5Tcopy(H5T_C_S1);
-	H5Tset_size(type, len);
-	H5Tset_strpad(type, H5T_STR_NULLPAD);
-	const hsize_t dims[1] = { 1 };
-	hid_t space = H5Screate_simple(1, dims, NULL);
-	hid_t dset  = deleted ? H5Dcreate2(file, "potfile_text", type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) : -1;
-	const bool ok = dset >= 0 && H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf) >= 0;
+	hid_t scf   = H5Gopen(file, "scf", H5P_DEFAULT);
+	hid_t type  = H5Tcopy(H5T_C_S1);
+	H5Tset_size(type, H5T_VARIABLE);
+	H5Tset_cset(type, H5T_CSET_UTF8);
+	hid_t space = H5Screate(H5S_SCALAR);
+	hid_t dset  = scf >= 0 ? H5Dcreate2(scf, "potfile", type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) : -1;
+	const bool ok = dset >= 0 && H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, &potfile) >= 0;
 	if (dset >= 0) H5Dclose(dset);
 	H5Sclose(space);
 	H5Tclose(type);
+	if (scf >= 0) H5Gclose(scf);
 	H5Fclose(file);
-	md_free(heap, buf, len);
 	return ok;
-}
-
-// What f.readlines() joined by '\n' makes of a text: every newline doubled
-static str_t vlx_test_as_read_back(str_t json, md_allocator_i* alloc) {
-	md_strb_t sb = md_strb_create(alloc);
-	for (size_t i = 0; i < json.len; ++i) {
-		md_strb_push_char(&sb, json.ptr[i]);
-		if (json.ptr[i] == '\n') md_strb_push_char(&sb, '\n');
-	}
-	const str_t out = str_copy(md_strb_to_str(sb), alloc);
-	md_strb_free(&sb);
-	return out;
-}
-
-// The k-th row of a fragment type in a per type section of a .pot, or NULL
-static const md_pot_charge_t* vlx_test_pot_charge(const md_pot_t* pot, str_t type, size_t k) {
-	for (size_t i = 0; i < pot->num_charges; ++i) {
-		if (str_eq(pot->charges[i].fragment_name, type) && k-- == 0) return &pot->charges[i];
-	}
-	return NULL;
-}
-
-static const md_pot_polarizability_t* vlx_test_pot_polarizability(const md_pot_t* pot, str_t type, size_t k) {
-	for (size_t i = 0; i < pot->num_polarizabilities; ++i) {
-		if (str_eq(pot->polarizabilities[i].fragment_name, type) && k-- == 0) return &pot->polarizabilities[i];
-	}
-	return NULL;
-}
-
-// A .pot as write_pe_jsonfile turns it into JSON: fragments in residue number order, numbered from 1
-// and named for their residue; each site with the charge and polarizability rows of its type by its
-// position in the fragment, zero where the type has none; coordinates in bohr; the polarizability
-// behind the (0,0) and (0,1) blocks of order [1,1]; the exclusions the fragment's own sites.
-static str_t vlx_test_pe_json(const md_pot_t* pot, md_allocator_i* alloc) {
-	const double bohr_in_angstroms = 0.529177210903;	// VeloxChem's
-	const double to_angstrom = md_pot_unit_to_angstrom(pot->unit);
-
-	int max_id = 0;
-	for (size_t i = 0; i < pot->num_sites; ++i) max_id = MAX(max_id, pot->sites[i].fragment_id);
-
-	md_strb_t sb = md_strb_create(alloc);
-	md_strb_push_cstr(&sb,
-		"{\n"
-		"    \"quantum_subsystems\": [\n"
-		"        {\n"
-		"            \"nuclei\": []\n"
-		"        }\n"
-		"    ],\n"
-		"    \"classical_subsystems\": [\n"
-		"        {\n"
-		"            \"classical_fragments\": [");
-	size_t num_frag = 0, num_atoms = 0;
-	for (int id = 0; id <= max_id; ++id) {
-		size_t n = 0;
-		str_t type = {0};
-		for (size_t i = 0; i < pot->num_sites; ++i) {
-			if (pot->sites[i].fragment_id != id) continue;
-			if (n++ == 0) type = pot->sites[i].fragment_name;
-		}
-		if (n == 0) continue;
-		num_frag += 1;
-		md_strb_fmt(&sb, "%s\n                {\n                    \"index\": %zu,\n                    \"name\": \"" STR_FMT "\",\n                    \"atoms\": [",
-			num_frag > 1 ? "," : "", num_frag, STR_ARG(type));
-		const size_t first = num_atoms + 1;
-		size_t k = 0;
-		for (size_t i = 0; i < pot->num_sites; ++i) {
-			const md_pot_site_t* s = &pot->sites[i];
-			if (s->fragment_id != id) continue;
-			const md_pot_charge_t* q = vlx_test_pot_charge(pot, type, k);
-			const md_pot_polarizability_t* p = vlx_test_pot_polarizability(pot, type, k);
-			const double* a = p ? p->alpha : (const double[6]){0};
-			md_strb_fmt(&sb, "%s\n                        {\n"
-				"                            \"index\": %zu,\n"
-				"                            \"element\": \"%s\",\n"
-				"                            \"coordinate\": [\n"
-				"                                %.17g,\n"
-				"                                %.17g,\n"
-				"                                %.17g\n"
-				"                            ],\n"
-				"                            \"multipoles\": {\n"
-				"                                \"elements\": [\n"
-				"                                    %.17g\n"
-				"                                ]\n"
-				"                            },\n"
-				"                            \"exclusions\": [",
-				k ? "," : "", num_atoms + 1, s->element,
-				s->coord[0] * to_angstrom / bohr_in_angstroms, s->coord[1] * to_angstrom / bohr_in_angstroms, s->coord[2] * to_angstrom / bohr_in_angstroms,
-				q ? q->charge : 0.0);
-			for (size_t e = 0; e < n; ++e) {
-				md_strb_fmt(&sb, "%s\n                                %zu", e ? "," : "", first + e);
-			}
-			md_strb_fmt(&sb, "\n                            ],\n"
-				"                            \"polarizabilities\": {\n"
-				"                                \"elements\": [\n"
-				"                                    0.0,\n                                    0.0,\n                                    0.0,\n                                    0.0,\n"
-				"                                    %.17g,\n                                    %.17g,\n                                    %.17g,\n"
-				"                                    %.17g,\n                                    %.17g,\n                                    %.17g\n"
-				"                                ],\n"
-				"                                \"order\": [\n                                    1,\n                                    1\n                                ]\n"
-				"                            }\n"
-				"                        }",
-				a[0], a[1], a[2], a[3], a[4], a[5]);
-			num_atoms += 1;
-			k += 1;
-		}
-		md_strb_push_cstr(&sb, "\n                    ]\n                }");
-	}
-	md_strb_push_cstr(&sb, "\n            ]\n        }\n    ]\n}");
-	const str_t out = vlx_test_as_read_back(md_strb_to_str(sb), alloc);
-	md_strb_free(&sb);
-	return out;
 }
 
 // Read on the bits: the library is built with fast math, where NAN does not compare as itself
@@ -821,19 +698,13 @@ static bool vlx_test_absent(double v) {
 	return (u & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
 }
 
-// The reference potential as VeloxChem embeds it: 50 waters by residue number, 39 of them
-// polarizable (HOH_pe) and 11 not (HOH_npe), interleaved.
+// The reference potential beside h2o.h5's own folder, named relative to it the way a run directory
+// copied as a whole would name it: 50 waters, the 39 polarizable ones (117 sites) listed first and the
+// 11 non-polarizable ones after them, though numbered among them (8, 12, 16, ..., 49). As atoms they
+// follow their numbers: water n is the sites num_qm + 3 (n - 1) and on.
 UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
-	md_allocator_i* heap = md_get_heap_allocator();
-	md_pot_t pot = {0};
-	ASSERT_TRUE(md_pot_parse_file(&pot, STR_LIT(MD_UNITTEST_DATA_DIR "/pot/water_pe_npe.pot"), heap));
-	const str_t json = vlx_test_pe_json(&pot, heap);
-	md_pot_free(&pot, heap);
-
-	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_reference.h5");
-	const bool written = vlx_test_write_pe_h5(h5, json);
-	str_free(json, heap);
-	ASSERT_TRUE(written);
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_relative.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
 	remove(h5.ptr);
@@ -849,37 +720,40 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 0));
 	EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 1));
 
-	// The sites follow, named for their elements - the JSON keeps no atom names - and back in
-	// Angstrom from the bohr it stores
+	// The sites follow, with their elements, names and coordinates (already Angstrom in this file)
 	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, num_qm));
-	EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, num_qm + 2));
-	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm),     STR_LIT("O")));
-	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm + 2), STR_LIT("H")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm),     STR_LIT("OW")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm + 2), STR_LIT("H2")));
 	EXPECT_NEAR(-5.672, t.state.xyz[num_qm].x, 1e-5);
 	EXPECT_NEAR( 2.390, t.state.xyz[num_qm].y, 1e-5);
 	EXPECT_NEAR(-4.911, t.state.xyz[num_qm].z, 1e-5);
-	// Residue 50 is last in the JSON, though not in the .pot
-	EXPECT_NEAR(-8.589, t.state.xyz[num_atoms - 1].x, 1e-5);
-	EXPECT_NEAR( 1.786, t.state.xyz[num_atoms - 1].z, 1e-5);
+	EXPECT_NEAR(-11.932, t.state.xyz[num_qm + 21].x, 1e-5);	// Water 8, the file's first non-polarizable one
+	EXPECT_NEAR(-5.908, t.state.xyz[num_qm + 146].x, 1e-5);		// Water 49, the file's last site
+	EXPECT_NEAR(-8.589, t.state.xyz[num_atoms - 1].x, 1e-5);	// Water 50, polarizable
 
 	// One component per fragment, named for its residue and numbered by its fragment number, after
-	// one for the QM region - components cover every atom or none
+	// one for the QM region - components cover every atom or none.
 	ASSERT_EQ(1u + 50u, t.sys.component.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
 	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 0), STR_LIT("QM")));
 	EXPECT_EQ(0, md_system_component_find_by_atom_idx(&t.sys, 0));
 	EXPECT_EQ(1, md_system_component_find_by_atom_idx(&t.sys, num_qm));
-	const md_urange_t first = md_system_component_atom_range(&t.sys, 1);
+	md_urange_t first = md_system_component_atom_range(&t.sys, 1);
 	EXPECT_EQ(num_qm, first.beg);
 	EXPECT_EQ(num_qm + 3, first.end);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("HOH")));
+	EXPECT_EQ(1, md_component_seq_id(&t.sys.component, 1));
+	const md_component_idx_t npe = md_system_component_find_by_atom_idx(&t.sys, num_qm + 21);
+	ASSERT_TRUE(npe >= 0);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, npe), STR_LIT("HOH")));
+	EXPECT_EQ(8, md_component_seq_id(&t.sys.component, npe));
 	for (size_t c = 1; c < t.sys.component.count; ++c) {
-		EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, c), STR_LIT("HOH")));
 		EXPECT_EQ((int)c, md_component_seq_id(&t.sys.component, c));
 		EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_system_component_kind(&t.sys, c));
 	}
 
-	// The parameters, per atom over the system, and nothing at all for the QM atoms. Residue 8 is
-	// the first HOH_npe: its charges are its own, and it has no polarizabilities
+	// The parameters, per atom over the system: the type's rows by position in the fragment, and
+	// nothing at all for the QM atoms
 	double q[153], a[153];
 	ASSERT_EQ(num_atoms, qm_test_series(q, num_atoms, &t, STR_LIT("atom/charge")));
 	ASSERT_EQ(num_atoms, qm_test_series(a, num_atoms, &t, STR_LIT("atom/polarizability")));
@@ -887,29 +761,21 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 		EXPECT_TRUE(vlx_test_absent(q[i]));
 		EXPECT_TRUE(vlx_test_absent(a[i]));
 	}
-	EXPECT_NEAR(-0.67444, q[num_qm + 0], 1e-12);
-	EXPECT_NEAR( 0.33722, q[num_qm + 1], 1e-12);
-	EXPECT_NEAR( 0.33722, q[num_qm + 2], 1e-12);
-	EXPECT_NEAR(5.73935, a[num_qm + 0], 1e-12);
-	EXPECT_NEAR(2.30839, a[num_qm + 1], 1e-12);
-	const md_urange_t npe = md_system_component_atom_range(&t.sys, 8);
-	ASSERT_EQ(3, npe.end - npe.beg);
-	EXPECT_NEAR(-0.834, q[npe.beg], 1e-12);
-	EXPECT_NEAR( 0.417, q[npe.beg + 2], 1e-12);
-	EXPECT_EQ(0.0, a[npe.beg]);
-	EXPECT_EQ(0.0, a[npe.beg + 2]);
-	// Charges only: no column of dipoles or quadrupoles that would all be zero
-	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/dipole")));
-	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/quadrupole")));
+	EXPECT_NEAR(-0.67444, q[num_qm + 0], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 1], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 2], 1e-8);
+	EXPECT_NEAR(-0.83400, q[num_qm + 21], 1e-8);
+	EXPECT_NEAR( 0.41700, q[num_qm + 146], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_atoms - 1], 1e-8);
+	EXPECT_NEAR(5.73935, a[num_qm + 0], 1e-8);
+	EXPECT_NEAR(2.30839, a[num_qm + 1], 1e-8);
+	EXPECT_EQ(0.0, a[num_qm + 21]);	// HOH_npe has no polarizabilities: embedded non-polarizably
+	EXPECT_EQ(0.0, a[num_qm + 146]);
+	EXPECT_NEAR(2.30839, a[num_atoms - 1], 1e-8);
 
-	size_t num_polarizable = 0;
 	double sum = 0.0;
-	for (size_t i = num_qm; i < num_atoms; ++i) {
-		sum += q[i];
-		num_polarizable += a[i] > 0.0;
-	}
-	EXPECT_NEAR(0.0, sum, 1e-6);			// Neutral waters
-	EXPECT_EQ(39u * 3u, num_polarizable);
+	for (size_t i = num_qm; i < num_atoms; ++i) sum += q[i];
+	EXPECT_NEAR(0.0, sum, 1e-6);	// Neutral waters
 
 	const md_attribute_t* charge = qm_test_attr(&t, STR_LIT("atom/charge"));
 	ASSERT_TRUE(charge != NULL);
@@ -933,112 +799,74 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	qm_test_free(&t);
 }
 
-// Written by hand to reach what the reference does not: a site without an element, an anisotropic
-// tensor, the (1,1) block on its own, higher multipoles behind a charge, a site with neither, a
-// fragment without sites, a name without the tag, fragment numbers out of order, two classical
-// subsystems, and Windows line ends.
-static const char vlx_test_custom_json[] =
-	"{\r\n"
-	"  \"quantum_subsystems\": [{\"nuclei\": []}],\r\n"
-	"  \"classical_subsystems\": [\r\n"
-	"    {\"classical_fragments\": [\r\n"
-	"      {\"index\": 7, \"name\": \"NA_npe\", \"atoms\": [\r\n"
-	"        {\"index\": 1, \"element\": \"Na\", \"coordinate\": [0.0, 0.0, 20.0], \"multipoles\": {\"elements\": [1.0]}, \"exclusions\": [1]}\r\n"
-	"      ]},\r\n"
-	"      {\"index\": 5, \"name\": \"HOH_pe\", \"atoms\": [\r\n"
-	"        {\"index\": 2, \"element\": \"O\", \"coordinate\": [0.0, 0.0, 10.0], \"multipoles\": {\"elements\": [-0.8]},\r\n"
-	"         \"polarizabilities\": {\"elements\": [0.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 6.0, 0.0, 6.0], \"order\": [1, 1]}},\r\n"
-	"        {\"index\": 3, \"element\": \"H\", \"coordinate\": [1.0, 0.0, 10.0], \"multipoles\": {\"elements\": [0.4, 0.1, 0.2, 0.3]},\r\n"
-	"         \"polarizabilities\": {\"elements\": [2.0, 0.0, 0.0, 2.0, 0.0, 2.0]}},\r\n"
-	"        {\"index\": 4, \"element\": \"H\", \"coordinate\": [-1.0, 0.0, 10.0], \"multipoles\": {\"elements\": [0.5]},\r\n"
-	"         \"polarizabilities\": {\"elements\": [0, 0, 0, 0, 2, 0, 0, 2, 0, 2], \"order\": [1, 1]}},\r\n"
-	"        {\"index\": 5, \"element\": \"X\", \"coordinate\": [0.5, 0.0, 10.0], \"multipoles\": {\"elements\": [-0.5, 0.0, 0.0, 0.05, 0.6, 0.1, -0.2, -0.3, 0.05, -0.3]},\r\n"
-	"         \"polarizabilities\": {\"elements\": [0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.2, 2.0, 0.1, 6.0], \"order\": [1, 1]}}\r\n"
-	"      ]},\r\n"
-	"      {\"index\": 6, \"name\": \"EMPTY\", \"atoms\": []}\r\n"
-	"    ]},\r\n"
-	"    {\"classical_fragments\": [\r\n"
-	"      {\"index\": 1, \"name\": \"CL\", \"atoms\": [\r\n"
-	"        {\"index\": 6, \"element\": \"Cl\", \"coordinate\": [0.0, 5.0, 0.0]}\r\n"
-	"      ]}\r\n"
-	"    ]}\r\n"
-	"  ]\r\n"
-	"}\r\n";
+// A potential written by hand to reach what the reference file does not: atomic units, a site
+// without an element, an anisotropic tensor, and a fragment type the file lists out of order. Named
+// by an absolute path from the machine the run was on, with the file itself copied beside the .h5,
+// which is VeloxChem's own fallback.
+static const char vlx_test_custom_pot[] =
+	"@environment\n"
+	"units: au\n"
+	"xyz:\n"
+	"Na   0.0  0.0 20.0  NA_npe 4 NA\n"
+	"O    0.0  0.0 10.0  HOH_pe 5 OW\n"
+	"H    1.0  0.0 10.0  HOH_pe 5 HW1\n"
+	"H   -1.0  0.0 10.0  HOH_pe 5 HW2\n"
+	"X    0.5  0.0 10.0  HOH_pe 5 X1\n"
+	"@end\n"
+	"@charges\n"
+	"O   -0.8  HOH_pe\n"
+	"H    0.4  HOH_pe\n"
+	"Na   1.0  NA_npe\n"
+	"H    0.5  HOH_pe\n"
+	"X   -0.5  HOH_pe\n"
+	"@end\n"
+	"@polarizabilities\n"
+	"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"X   1.0 0.3 0.2 2.0 0.1 6.0  HOH_pe\n"
+	"@end\n";
 
-UTEST(vlx, pe_environment_in_full) {
-	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_custom.h5");
-	ASSERT_TRUE(vlx_test_write_pe_h5(h5, (str_t){ vlx_test_custom_json, sizeof(vlx_test_custom_json) - 1 }));
+UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_custom.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_custom.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "/cluster/scratch/run42/unittest_pe_custom.pot"));
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
 	remove(h5.ptr);
+	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
 
-	ASSERT_EQ(3u + 6u, t.sys.atom.count);
+	ASSERT_EQ(3u + 5u, t.sys.atom.count);
 
 	const double bohr = 0.5291772109029999;
 	EXPECT_NEAR(20.0 * bohr, t.state.xyz[3].z, 1e-5);
 	EXPECT_NEAR( 1.0 * bohr, t.state.xyz[5].x, 1e-5);
-	EXPECT_NEAR( 5.0 * bohr, t.state.xyz[8].y, 1e-5);
 
-	EXPECT_EQ(11, md_atom_atomic_number(&t.sys.atom, 3));
-	EXPECT_EQ(17, md_atom_atomic_number(&t.sys.atom, 8));
 	// The expansion point is a virtual site, not an atom of an unknown element
 	EXPECT_EQ(0, md_atom_atomic_number(&t.sys.atom, 7));
 	EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&t.sys.atom, 7));
 	EXPECT_EQ(MD_PARTICLE_ATOM, md_atom_particle_kind(&t.sys.atom, 4));
 
-	// The fragment without sites is no component; the numbers are the file's
-	ASSERT_EQ(4u, t.sys.component.count);
+	ASSERT_EQ(3u, t.sys.component.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
 	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("NA")));
-	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("HOH")));
-	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 3), STR_LIT("CL")));
-	EXPECT_EQ(7, md_component_seq_id(&t.sys.component, 1));
-	EXPECT_EQ(5, md_component_seq_id(&t.sys.component, 2));
-	EXPECT_EQ(1, md_component_seq_id(&t.sys.component, 3));
+	EXPECT_EQ(4, md_component_seq_id(&t.sys.component, 1));
 	EXPECT_EQ(MD_COMPONENT_KIND_ION, md_system_component_kind(&t.sys, 1));
-	const md_urange_t hoh = md_system_component_atom_range(&t.sys, 2);
-	EXPECT_EQ(4, hoh.beg);
-	EXPECT_EQ(8, hoh.end);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("HOH")));
 
-	double q[9], a[9];
-	ASSERT_EQ(9u, qm_test_series(q, 9, &t, STR_LIT("atom/charge")));
-	ASSERT_EQ(9u, qm_test_series(a, 9, &t, STR_LIT("atom/polarizability")));
+	double q[8], a[8];
+	ASSERT_EQ(8u, qm_test_series(q, 8, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(8u, qm_test_series(a, 8, &t, STR_LIT("atom/polarizability")));
 	EXPECT_NEAR( 1.0, q[3], 1e-12);
 	EXPECT_NEAR(-0.8, q[4], 1e-12);
-	EXPECT_NEAR( 0.4, q[5], 1e-12);	// The charge, the dipole after it is its own column
-	EXPECT_NEAR( 0.5, q[6], 1e-12);
+	EXPECT_NEAR( 0.4, q[5], 1e-12);
+	EXPECT_NEAR( 0.5, q[6], 1e-12);	// The HOH_pe rows interleaved with NA_npe's still go in order
 	EXPECT_NEAR(-0.5, q[7], 1e-12);
-	EXPECT_EQ(0.0, q[8]);				// No multipoles: no charge
-	EXPECT_EQ(0.0, a[3]);				// No polarizabilities: embedded non-polarizably
+	EXPECT_EQ(0.0, a[3]);
 	EXPECT_NEAR(6.0, a[4], 1e-12);
-	EXPECT_NEAR(2.0, a[5], 1e-12);		// The (1,1) block on its own
-	EXPECT_NEAR(2.0, a[6], 1e-12);
-	EXPECT_NEAR(3.0, a[7], 1e-12);		// (1 + 2 + 6) / 3, the off diagonal plays no part
-	EXPECT_EQ(0.0, a[8]);
-
-	// The orders above the charge, as written, zero where a site stops below them and absent on the
-	// QM atoms. The site with the quadrupole carries its dipole too: every order up to the highest
-	double mu[9][3], Q[9][6];
-	const md_attribute_t* dip  = qm_test_attr(&t, STR_LIT("atom/dipole"));
-	const md_attribute_t* quad = qm_test_attr(&t, STR_LIT("atom/quadrupole"));
-	ASSERT_TRUE(dip != NULL);
-	ASSERT_TRUE(quad != NULL);
-	EXPECT_EQ(3u, dip->format.components);
-	EXPECT_EQ(6u, quad->format.components);
-	ASSERT_EQ(27u, md_attribute_extract_f64(&mu[0][0], 27, dip, md_attribute_slice_all(), md_unit_elementary_charge_bohr()));
-	ASSERT_EQ(54u, md_attribute_extract_f64(&Q[0][0], 54, quad, md_attribute_slice_all(), quad->unit));
-	EXPECT_TRUE(vlx_test_absent(mu[0][0]));
-	EXPECT_TRUE(vlx_test_absent(Q[2][5]));
-	EXPECT_EQ(0.0, mu[3][2]);
-	EXPECT_NEAR(0.1, mu[5][0], 1e-12);
-	EXPECT_NEAR(0.2, mu[5][1], 1e-12);
-	EXPECT_NEAR(0.3, mu[5][2], 1e-12);
-	EXPECT_EQ(0.0, Q[5][0]);
-	EXPECT_NEAR(0.05, mu[7][2], 1e-12);
-	const double q7[6] = { 0.6, 0.1, -0.2, -0.3, 0.05, -0.3 };
-	for (int k = 0; k < 6; ++k) EXPECT_NEAR(q7[k], Q[7][k], 1e-12);
-	EXPECT_EQ(0.0, Q[8][0]);
+	EXPECT_NEAR(3.0, a[7], 1e-12);	// (1 + 2 + 6) / 3, the off diagonal plays no part
 
 	qm_test_free(&t);
 }
@@ -1047,13 +875,16 @@ UTEST(vlx, pe_environment_in_full) {
 // the sites of the embedding, both one selection per component, and either a compile error where its
 // region is not there
 UTEST(vlx, pe_regions_are_selectable) {
-	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_regions.h5");
-	ASSERT_TRUE(vlx_test_write_pe_h5(h5, (str_t){ vlx_test_custom_json, sizeof(vlx_test_custom_json) - 1 }));
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_regions.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_regions.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_regions.pot"));
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
 	remove(h5.ptr);
+	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
-	ASSERT_EQ(3u + 6u, t.sys.atom.count);
+	ASSERT_EQ(3u + 5u, t.sys.atom.count);
 
 	for (size_t i = 0; i < t.sys.atom.count; ++i) {
 		EXPECT_EQ(i < 3, (md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
@@ -1068,19 +899,18 @@ UTEST(vlx, pe_regions_are_selectable) {
 	EXPECT_EQ(3u, md_bitfield_popcount_range(&bf, 0, 3));
 
 	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
-	EXPECT_EQ(6u, md_bitfield_popcount_range(&bf, 3, 9));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(5u, md_bitfield_popcount_range(&bf, 3, 8));
 
 	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
 
-	// One selection per fragment: NA, HOH with its expansion point, CL
+	// One selection per fragment: NA, and HOH with its expansion point
 	md_array(md_bitfield_t) arr = 0;
 	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
-	ASSERT_EQ(3u, md_array_size(arr));
+	ASSERT_EQ(2u, md_array_size(arr));
 	EXPECT_EQ(1u, md_bitfield_popcount(&arr[0]));
 	EXPECT_EQ(4u, md_bitfield_popcount(&arr[1]));
-	EXPECT_EQ(1u, md_bitfield_popcount(&arr[2]));
 
 	arr = 0;
 	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
@@ -1089,10 +919,10 @@ UTEST(vlx, pe_regions_are_selectable) {
 
 	// They compose like any other selection, and take a context like the residue selectors do
 	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
-	EXPECT_EQ(6u, md_bitfield_popcount(&bf));
-	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('CL')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
 	EXPECT_EQ(1u, md_bitfield_popcount(&bf));
-	EXPECT_TRUE(md_bitfield_test_bit(&bf, 8));
+	EXPECT_TRUE(md_bitfield_test_bit(&bf, 3));
 
 	qm_test_free(&t);
 }
@@ -1100,16 +930,8 @@ UTEST(vlx, pe_regions_are_selectable) {
 // The reference potential, 50 waters around a QM water: the examples of the script reference compile
 // against it, and the environment is one selection per water
 UTEST(vlx, pe_regions_in_a_script) {
-	md_allocator_i* heap = md_get_heap_allocator();
-	md_pot_t pot = {0};
-	ASSERT_TRUE(md_pot_parse_file(&pot, STR_LIT(MD_UNITTEST_DATA_DIR "/pot/water_pe_npe.pot"), heap));
-	const str_t json = vlx_test_pe_json(&pot, heap);
-	md_pot_free(&pot, heap);
-
 	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_script.h5");
-	const bool written = vlx_test_write_pe_h5(h5, json);
-	str_free(json, heap);
-	ASSERT_TRUE(written);
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
 	remove(h5.ptr);
@@ -1137,6 +959,120 @@ UTEST(vlx, pe_regions_in_a_script) {
 	qm_test_free(&t);
 }
 
+// The fragments become components in the order of their numbers, whatever order the file lists them
+// in. VeloxChem writes the polarizable fragments first and the rest after, so a peptide that the
+// polarizable region cuts through arrives scattered: here residue 11 (polarizable), a water, then
+// residues 10 and 12. In file order that is no molecule and no backbone; in number order it is a
+// tripeptide, one instance with one backbone over all three residues. The parameters go with their
+// sites, so residue 11 keeps the polarizable type's charges in the middle of the chain.
+UTEST(vlx, pe_fragments_follow_their_numbers) {
+	static const char pot_text[] =
+		"@environment\n"
+		"units: angstrom\n"
+		"xyz:\n"
+		"N    21.463    0.376   -2.396  GLY_pe 11 N\n"
+		"C    21.899    0.981   -3.649  GLY_pe 11 CA\n"
+		"C    21.768    2.500   -3.602  GLY_pe 11 C\n"
+		"O    22.693    3.219   -3.981  GLY_pe 11 O\n"
+		"O    30.000    0.000    0.000  HOH_pe 997 OW\n"
+		"H    30.957    0.000    0.000  HOH_pe 997 HW1\n"
+		"H    29.760    0.927    0.000  HOH_pe 997 HW2\n"
+		"N    20.000    0.000    0.000  GLY_npe 10 N\n"
+		"C    21.458    0.000    0.000  GLY_npe 10 CA\n"
+		"C    22.009    0.711   -1.231  GLY_npe 10 C\n"
+		"O    22.910    1.543   -1.121  GLY_npe 10 O\n"
+		"N    20.618    2.976   -3.137  GLY_npe 12 N\n"
+		"C    20.364    4.408   -3.041  GLY_npe 12 CA\n"
+		"C    21.421    5.099   -2.187  GLY_npe 12 C\n"
+		"O    21.958    6.137   -2.575  GLY_npe 12 O\n"
+		"@end\n"
+		"@charges\n"
+		"N   -0.41  GLY_pe\n"
+		"C    0.02  GLY_pe\n"
+		"C    0.53  GLY_pe\n"
+		"O   -0.49  GLY_pe\n"
+		"O   -0.80  HOH_pe\n"
+		"H    0.40  HOH_pe\n"
+		"H    0.40  HOH_pe\n"
+		"N   -0.31  GLY_npe\n"
+		"C    0.12  GLY_npe\n"
+		"C    0.43  GLY_npe\n"
+		"O   -0.39  GLY_npe\n"
+		"@end\n"
+		"@polarizabilities\n"
+		"N   7.0 0.0 0.0 7.0 0.0 7.0  GLY_pe\n"
+		"C   8.0 0.0 0.0 8.0 0.0 8.0  GLY_pe\n"
+		"C   9.0 0.0 0.0 9.0 0.0 9.0  GLY_pe\n"
+		"O   6.5 0.0 0.0 6.5 0.0 6.5  GLY_pe\n"
+		"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+		"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+		"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+		"@end\n";
+
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_order.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_order.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, pot_text, sizeof(pot_text) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_order.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+	ASSERT_EQ(3u + 15u, t.sys.atom.count);
+
+	// QM, then residues 10, 11, 12 and the water
+	ASSERT_EQ(5u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	const int seq[5] = {0, 10, 11, 12, 997};
+	const uint32_t beg[5] = {0, 3, 7, 11, 15};
+	for (size_t c = 0; c < 5; ++c) {
+		EXPECT_EQ(seq[c], md_component_seq_id(&t.sys.component, c));
+		EXPECT_EQ(beg[c], md_system_component_atom_range(&t.sys, c).beg);
+	}
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("GLY")));
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 4), STR_LIT("HOH")));
+
+	// A fragment's sites keep the order the file gives them in
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, 3), STR_LIT("N")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, 6), STR_LIT("O")));
+	EXPECT_NEAR(20.000, t.state.xyz[3].x, 1e-5);
+	EXPECT_NEAR(21.463, t.state.xyz[7].x, 1e-5);
+	EXPECT_NEAR(20.618, t.state.xyz[11].x, 1e-5);
+	EXPECT_NEAR(30.000, t.state.xyz[15].x, 1e-5);
+
+	double q[18], a[18];
+	ASSERT_EQ(18u, qm_test_series(q, 18, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(18u, qm_test_series(a, 18, &t, STR_LIT("atom/polarizability")));
+	EXPECT_NEAR(-0.31, q[3],  1e-12);	// Residue 10, non-polarizable
+	EXPECT_NEAR( 0.43, q[5],  1e-12);
+	EXPECT_NEAR(-0.41, q[7],  1e-12);	// Residue 11, polarizable
+	EXPECT_NEAR( 0.53, q[9],  1e-12);
+	EXPECT_NEAR(-0.49, q[10], 1e-12);
+	EXPECT_NEAR(-0.31, q[11], 1e-12);	// Residue 12
+	EXPECT_NEAR(-0.80, q[15], 1e-12);	// The water
+	EXPECT_NEAR( 0.40, q[17], 1e-12);
+	EXPECT_EQ(0.0, a[3]);
+	EXPECT_NEAR(7.0, a[7],  1e-12);
+	EXPECT_NEAR(9.0, a[9],  1e-12);
+	EXPECT_EQ(0.0, a[14]);
+	EXPECT_NEAR(6.0, a[15], 1e-12);
+
+	// What viamd infers from it: the three residues one peptide, with one backbone through them all
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	EXPECT_VALID_SYSTEM(&t.sys);
+	const md_instance_idx_t inst = md_instance_find_by_comp_idx(&t.sys.instance, 1);
+	ASSERT_TRUE(inst >= 0);
+	EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_instance_entity_kind(&t.sys, inst));
+	EXPECT_EQ(3u, md_instance_component_range(&t.sys.instance, inst).end - md_instance_component_range(&t.sys.instance, inst).beg);
+	ASSERT_EQ(1u, t.sys.protein_backbone.range.count);
+	ASSERT_EQ(3u, t.sys.protein_backbone.segment.count);
+	for (size_t s = 0; s < 3; ++s) {
+		EXPECT_EQ((int)(1 + s), t.sys.protein_backbone.segment.comp_idx[s]);
+	}
+
+	qm_test_free(&t);
+}
+
 // A calculation without an embedding is QM throughout: 'qm' is all of it and 'environment' is no selection at all
 UTEST(vlx, qm_without_environment) {
 	vlx_test_t t = {0};
@@ -1154,60 +1090,52 @@ UTEST(vlx, qm_without_environment) {
 	qm_test_free(&t);
 }
 
-// What write_pe_jsonfile could not have written is not the potential the calculation ran with, so
-// none of it is used, and a potential in CPPE's format is not read. Neither is a failed load.
+// What VeloxChem would have refused is not the potential the calculation ran with, so none of it is
+// used. A potential that cannot be found leaves the environment out. Neither is a failed load.
 UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
-	static const char* texts[] = {
-		// Not JSON, or cut short
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"HOH_pe\", \"atoms\": [",
-		"{\"classical_subsystems\": [}",
-		// No environment
-		"{}",
-		"{\"quantum_subsystems\": [{\"nuclei\": []}]}",
-		"{\"classical_subsystems\": {}}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": []}]}",
-		// Sites that are not as written
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0]}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"coordinate\": [0.0, 0.0, 0.0]}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, \"0.0\", 0.0]}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [\"q\"]}}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2]}}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]}}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2, 0.3, \"0.4\"]}}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"polarizabilities\": {\"elements\": [1, 2, 3, 4, 5, 6, 7, 8, 9]}}]}]}]}",
-		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
-			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"polarizabilities\": {\"elements\": [0, 0, 0, 0, 1, 0, 0, 1, 0, 1], \"order\": [2, 2]}}]}]}]}",
-		// CPPE's own format, which a run embedded through CPPE stored
-		"@COORDINATES\n3\nAA\nO -5.672 2.390 -4.911\nH -6.099 2.789 -4.153\nH -6.322 2.449 -5.611\n@MULTIPOLES\nORDER 0\n3\n1 -0.67444\n2 0.33722\n3 0.33722\n",
-	};
-	for (size_t i = 0; i < ARRAY_SIZE(texts); ++i) {
-		const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_bad.h5");
-		ASSERT_TRUE(vlx_test_write_pe_h5(h5, str_from_cstr(texts[i])));
-		vlx_test_t t = {0};
-		const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
-		remove(h5.ptr);
+	static const char bad_pot[] =
+		"@environment\n"
+		"xyz:\n"
+		"O  0.0 0.0 0.0  HOH_pe 1 OW\n"
+		"H  1.0 0.0 0.0  HOH_pe 1 H1\n"
+		"H -1.0 0.0 0.0  HOH_pe 1 H2\n"
+		"@end\n"
+		"@charges\n"
+		"O -0.8 HOH_pe\n"
+		"H  0.4 HOH_pe\n"
+		"@end\n";
 
-		EXPECT_TRUE_MSG(loaded, texts[i]);
-		EXPECT_EQ_MSG(3u, t.sys.atom.count, texts[i]);
-		EXPECT_EQ_MSG(0u, t.sys.component.count, texts[i]);
-		EXPECT_FALSE_MSG(qm_test_has(&t, STR_LIT("atom/charge")), texts[i]);
-		EXPECT_EQ_MSG(3u, qm_test_count(&t, STR_LIT("atom/nuclear_charges")), texts[i]);
-		qm_test_free(&t);
-	}
+	const str_t pot     = STR_LIT(VLX_PE_DIR "unittest_pe_bad.pot");
+	const str_t h5_bad  = STR_LIT(VLX_PE_DIR "unittest_pe_bad.h5");
+	const str_t h5_none = STR_LIT(VLX_PE_DIR "unittest_pe_missing.h5");
+	ASSERT_TRUE(vlx_test_write_file(pot, bad_pot, sizeof(bad_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_bad,  "unittest_pe_bad.pot"));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_none, "unittest_pe_not_there.pot"));
+
+	vlx_test_t bad = {0}, none = {0};
+	const bool loaded_bad  = vlx_test_load(&bad,  h5_bad,  MEGABYTES(64));
+	const bool loaded_none = vlx_test_load(&none, h5_none, MEGABYTES(64));
+	remove(h5_bad.ptr);
+	remove(h5_none.ptr);
+	remove(pot.ptr);
+
+	EXPECT_TRUE(loaded_bad);
+	EXPECT_TRUE(loaded_none);
+	EXPECT_EQ(3u, bad.sys.atom.count);
+	EXPECT_EQ(3u, none.sys.atom.count);
+	EXPECT_EQ(0u, bad.sys.component.count);
+	EXPECT_FALSE(qm_test_has(&bad,  STR_LIT("atom/charge")));
+	EXPECT_FALSE(qm_test_has(&none, STR_LIT("atom/charge")));
+	EXPECT_EQ(3u, qm_test_count(&none, STR_LIT("atom/nuclear_charges")));
+
+	qm_test_free(&bad);
+	qm_test_free(&none);
 }
 
 // A supplemental load leaves the atoms of the system it supplements alone, so it adds no sites
 UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_supplement.h5");
-	ASSERT_TRUE(vlx_test_write_pe_h5(h5, (str_t){ vlx_test_custom_json, sizeof(vlx_test_custom_json) - 1 }));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64));
