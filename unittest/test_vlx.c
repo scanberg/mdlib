@@ -898,6 +898,9 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	EXPECT_NEAR( 0.417, q[npe.beg + 2], 1e-12);
 	EXPECT_EQ(0.0, a[npe.beg]);
 	EXPECT_EQ(0.0, a[npe.beg + 2]);
+	// Charges only: no column of dipoles or quadrupoles that would all be zero
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/dipole")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/quadrupole")));
 
 	size_t num_polarizable = 0;
 	double sum = 0.0;
@@ -949,7 +952,7 @@ static const char vlx_test_custom_json[] =
 	"         \"polarizabilities\": {\"elements\": [2.0, 0.0, 0.0, 2.0, 0.0, 2.0]}},\r\n"
 	"        {\"index\": 4, \"element\": \"H\", \"coordinate\": [-1.0, 0.0, 10.0], \"multipoles\": {\"elements\": [0.5]},\r\n"
 	"         \"polarizabilities\": {\"elements\": [0, 0, 0, 0, 2, 0, 0, 2, 0, 2], \"order\": [1, 1]}},\r\n"
-	"        {\"index\": 5, \"element\": \"X\", \"coordinate\": [0.5, 0.0, 10.0], \"multipoles\": {\"elements\": [-0.5]},\r\n"
+	"        {\"index\": 5, \"element\": \"X\", \"coordinate\": [0.5, 0.0, 10.0], \"multipoles\": {\"elements\": [-0.5, 0.0, 0.0, 0.05, 0.6, 0.1, -0.2, -0.3, 0.05, -0.3]},\r\n"
 	"         \"polarizabilities\": {\"elements\": [0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.2, 2.0, 0.1, 6.0], \"order\": [1, 1]}}\r\n"
 	"      ]},\r\n"
 	"      {\"index\": 6, \"name\": \"EMPTY\", \"atoms\": []}\r\n"
@@ -1003,7 +1006,7 @@ UTEST(vlx, pe_environment_in_full) {
 	ASSERT_EQ(9u, qm_test_series(a, 9, &t, STR_LIT("atom/polarizability")));
 	EXPECT_NEAR( 1.0, q[3], 1e-12);
 	EXPECT_NEAR(-0.8, q[4], 1e-12);
-	EXPECT_NEAR( 0.4, q[5], 1e-12);	// The charge, the dipole after it plays no part
+	EXPECT_NEAR( 0.4, q[5], 1e-12);	// The charge, the dipole after it is its own column
 	EXPECT_NEAR( 0.5, q[6], 1e-12);
 	EXPECT_NEAR(-0.5, q[7], 1e-12);
 	EXPECT_EQ(0.0, q[8]);				// No multipoles: no charge
@@ -1014,11 +1017,32 @@ UTEST(vlx, pe_environment_in_full) {
 	EXPECT_NEAR(3.0, a[7], 1e-12);		// (1 + 2 + 6) / 3, the off diagonal plays no part
 	EXPECT_EQ(0.0, a[8]);
 
+	// The orders above the charge, as written, zero where a site stops below them and absent on the
+	// QM atoms. The site with the quadrupole carries its dipole too: every order up to the highest
+	double mu[9][3], Q[9][6];
+	const md_attribute_t* dip  = qm_test_attr(&t, STR_LIT("atom/dipole"));
+	const md_attribute_t* quad = qm_test_attr(&t, STR_LIT("atom/quadrupole"));
+	ASSERT_TRUE(dip != NULL);
+	ASSERT_TRUE(quad != NULL);
+	EXPECT_EQ(3u, dip->format.components);
+	EXPECT_EQ(6u, quad->format.components);
+	ASSERT_EQ(27u, md_attribute_extract_f64(&mu[0][0], 27, dip, md_attribute_slice_all(), md_unit_elementary_charge_bohr()));
+	ASSERT_EQ(54u, md_attribute_extract_f64(&Q[0][0], 54, quad, md_attribute_slice_all(), quad->unit));
+	EXPECT_TRUE(vlx_test_absent(mu[0][0]));
+	EXPECT_TRUE(vlx_test_absent(Q[2][5]));
+	EXPECT_EQ(0.0, mu[3][2]);
+	EXPECT_NEAR(0.1, mu[5][0], 1e-12);
+	EXPECT_NEAR(0.2, mu[5][1], 1e-12);
+	EXPECT_NEAR(0.3, mu[5][2], 1e-12);
+	EXPECT_EQ(0.0, Q[5][0]);
+	EXPECT_NEAR(0.05, mu[7][2], 1e-12);
+	const double q7[6] = { 0.6, 0.1, -0.2, -0.3, 0.05, -0.3 };
+	for (int k = 0; k < 6; ++k) EXPECT_NEAR(q7[k], Q[7][k], 1e-12);
+	EXPECT_EQ(0.0, Q[8][0]);
+
 	qm_test_free(&t);
 }
 
-// What write_pe_jsonfile could not have written is not the potential the calculation ran with, so
-// none of it is used, and a potential in CPPE's format is not read. Neither is a failed load.
 // The QM region and its environment as script selections: 'qm' the calculation's own atoms, 'environment'
 // the sites of the embedding, both one selection per component, and either a compile error where its
 // region is not there
@@ -1130,6 +1154,8 @@ UTEST(vlx, qm_without_environment) {
 	qm_test_free(&t);
 }
 
+// What write_pe_jsonfile could not have written is not the potential the calculation ran with, so
+// none of it is used, and a potential in CPPE's format is not read. Neither is a failed load.
 UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
 	static const char* texts[] = {
 		// Not JSON, or cut short
@@ -1149,6 +1175,12 @@ UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
 			"{\"element\": \"O\", \"coordinate\": [0.0, \"0.0\", 0.0]}]}]}]}",
 		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
 			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [\"q\"]}}]}]}]}",
+		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
+			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2]}}]}]}]}",
+		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
+			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]}}]}]}]}",
+		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
+			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"multipoles\": {\"elements\": [0.1, 0.2, 0.3, \"0.4\"]}}]}]}]}",
 		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["
 			"{\"element\": \"O\", \"coordinate\": [0.0, 0.0, 0.0], \"polarizabilities\": {\"elements\": [1, 2, 3, 4, 5, 6, 7, 8, 9]}}]}]}]}",
 		"{\"classical_subsystems\": [{\"classical_fragments\": [{\"index\": 1, \"name\": \"A\", \"atoms\": ["

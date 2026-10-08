@@ -219,6 +219,9 @@ typedef struct vlx_mm_t {
 	dvec3_t*    coord;				// [count] bohr
 	md_label_t* element;			// [count] the symbol as written, 'X' for an expansion point
 	double*     charge;				// [count] e
+	double*     dipole;				// [count * 3] e bohr, zero where a site has none
+	double*     quadrupole;			// [count * 6] e bohr^2, xx xy xz yy yz zz, Cartesian (NOT traceless)
+	int         max_order;			// The highest multipole order any site carries, at most 2 (the quadrupole)
 	double*     polarizability;		// [count] isotropic, bohr^3 - one third of the trace of the site's tensor
 	size_t      num_fragments;
 	uint32_t*   fragment_offset;	// [num_fragments + 1] the first site of each, then count
@@ -3733,7 +3736,13 @@ static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas,
 //     classical_fragments[]     index: 1..n in residue number order - NOT the residue number
 //                               name:  the residue name of the .pot, e.g. HOH_pe
 //       atoms[]                 index, element, coordinate[3], exclusions[]
-//                               multipoles.elements[]        the charge first, any higher order after
+//                               multipoles.elements[]        all orders up to the site's highest, the
+//                                                            lowest first: q; mu x y z; Q xx xy xz yy yz
+//                                                            zz; ... - 1, 4, 10, 20 values for a site of
+//                                                            order 0..3. Q is the Cartesian second
+//                                                            moment, NOT traceless (the Taylor convention
+//                                                            of the PE literature). Above the quadrupole
+//                                                            nothing is read
 //                               polarizabilities.elements[]  order [1,1]: the (0,0), (0,1) and (1,1)
 //                                                            blocks, 1 + 3 + 6 values, the last six the
 //                                                            dipole-dipole tensor xx xy xz yy yz zz
@@ -3777,13 +3786,33 @@ static bool vlx_mm_read_site(vlx_mm_t* mm, size_t i, md_json_val_t atom) {
 	}
 	mm->coord[i] = (dvec3_t){ xyz[0], xyz[1], xyz[2] };
 
-	double charge = 0.0;
+	// The multipoles: every order up to the site's highest, so the count says which that is
+	double m[10] = {0};
 	const md_json_val_t multipoles = md_json_get(md_json_get(atom, STR_LIT("multipoles")), STR_LIT("elements"));
-	if (md_json_valid(multipoles) && md_json_count(multipoles) > 0 && !md_json_f64(&charge, md_json_first(multipoles))) {
-		MD_LOG_ERROR("VeloxChem: embedding site %zu has a charge that is not a number; the environment is not added", i + 1);
+	const size_t num_m = md_json_valid(multipoles) ? md_json_count(multipoles) : 0;
+	int order = -1;
+	for (int k = 0; k <= 8; ++k) {
+		if ((size_t)((k + 1) * (k + 2) * (k + 3) / 6) == num_m) { order = k; break; }
+	}
+	if (num_m > 0 && order < 0) {
+		MD_LOG_ERROR("VeloxChem: embedding site %zu has %zu multipole values, which are not every order up to some highest; the environment is not added", i + 1, num_m);
 		return false;
 	}
-	mm->charge[i] = charge;
+	const size_t num_read = MIN(num_m, ARRAY_SIZE(m));
+	size_t k = 0;
+	for (md_json_val_t v = md_json_first(multipoles); md_json_valid(v) && k < num_read; v = md_json_next(v), ++k) {
+		if (!md_json_f64(&m[k], v)) {
+			MD_LOG_ERROR("VeloxChem: embedding site %zu has a multipole value that is not a number; the environment is not added", i + 1);
+			return false;
+		}
+	}
+	mm->charge[i] = m[0];
+	MEMCPY(mm->dipole + 3 * i, m + 1, sizeof(double) * 3);
+	MEMCPY(mm->quadrupole + 6 * i, m + 4, sizeof(double) * 6);
+	if (order > 2 && mm->max_order <= 2) {
+		MD_LOG_INFO("VeloxChem: the embedding potential has multipoles above the quadrupole, which are not read");
+	}
+	mm->max_order = MAX(mm->max_order, order);
 
 	double iso = 0.0;
 	const md_json_val_t polarizabilities = md_json_get(atom, STR_LIT("polarizabilities"));
@@ -3845,6 +3874,8 @@ static bool vlx_mm_parse(vlx_mm_t* mm, str_t text, md_allocator_i* alloc) {
 	mm->coord           = md_alloc(alloc, sizeof(dvec3_t)    * num_sites);
 	mm->element         = md_alloc(alloc, sizeof(md_label_t) * num_sites);
 	mm->charge          = md_alloc(alloc, sizeof(double)     * num_sites);
+	mm->dipole          = md_alloc(alloc, sizeof(double)     * num_sites * 3);
+	mm->quadrupole      = md_alloc(alloc, sizeof(double)     * num_sites * 6);
 	mm->polarizability  = md_alloc(alloc, sizeof(double)     * num_sites);
 	mm->fragment_offset = md_alloc(alloc, sizeof(uint32_t)   * (num_frag + 1));
 	mm->fragment_name   = md_alloc(alloc, sizeof(md_label_t) * num_frag);
@@ -3877,6 +3908,7 @@ static bool vlx_mm_parse(vlx_mm_t* mm, str_t text, md_allocator_i* alloc) {
 	mm->fragment_offset[f] = (uint32_t)i;
 	mm->num_fragments = num_frag;
 	mm->count = num_sites;
+	mm->max_order = MIN(mm->max_order, 2);	// what is read
 	result = true;
 
 done:
@@ -3981,6 +4013,23 @@ static void vlx_publish_mm(const vlx_t* vlx) {
 
 	md_qm_publish_series(sys, STR_LIT("atom/charge"),         STR_LIT("Embedding Charge"),         md_unit_elementary_charge(),               charge, num_atoms);
 	md_qm_publish_series(sys, STR_LIT("atom/polarizability"), STR_LIT("Embedding Polarizability"), md_unit_pow(md_unit_bohr_radius(), 3),     polar,  num_atoms);
+
+	// The higher multipoles only when the potential has them, so that their absence says the
+	// potential is charges only rather than that every site's dipole is zero
+	if (vlx->mm.max_order >= 1 && vlx->mm.dipole) {
+		double* dip = md_temp_alloc_array(temp, double, num_atoms * 3);
+		for (size_t i = 0; i < num_qm * 3; ++i) dip[i] = NAN;
+		MEMCPY(dip + num_qm * 3, vlx->mm.dipole, sizeof(double) * 3 * vlx->mm.count);
+		md_qm_publish_vec3_series(sys, STR_LIT("atom/dipole"), STR_LIT("Embedding Dipole"), md_unit_elementary_charge_bohr(), (const dvec3_t*)dip, num_atoms);
+	}
+	if (vlx->mm.max_order >= 2 && vlx->mm.quadrupole) {
+		double* quad = md_temp_alloc_array(temp, double, num_atoms * 6);
+		for (size_t i = 0; i < num_qm * 6; ++i) quad[i] = NAN;
+		MEMCPY(quad + num_qm * 6, vlx->mm.quadrupole, sizeof(double) * 6 * vlx->mm.count);
+		const md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 6, .rank = 1, .shape = { (uint32_t)num_atoms } };
+		const md_unit_t unit = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
+		md_qm_publish(sys, STR_LIT("atom/quadrupole"), STR_LIT("Embedding Quadrupole"), unit, format, quad, sizeof(double) * 6 * num_atoms);
+	}
 
 	md_temp_end(temp);
 }

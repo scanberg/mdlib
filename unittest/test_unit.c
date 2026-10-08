@@ -140,6 +140,23 @@ UTEST(unit, print_scaled_pair) {
 	md_unit_print(buf, sizeof(buf), md_unit_div(md_unit_hartree(), md_unit_bohr_radius()));
 	EXPECT_STREQ("Ha/bohr", buf);
 
+	// The second a power: a quadrupole moment, a field gradient, a density
+	const md_unit_t quadrupole = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
+	md_unit_print(buf, sizeof(buf), quadrupole);
+	EXPECT_STREQ("e*bohr^2", buf);
+	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_equal(parsed, quadrupole));
+	const md_unit_t gradient = md_unit_div(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 2));
+	md_unit_print(buf, sizeof(buf), gradient);
+	EXPECT_STREQ("Ha/bohr^2", buf);
+	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_equal(parsed, gradient));
+	const md_unit_t density = md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3));
+	md_unit_print(buf, sizeof(buf), density);
+	EXPECT_STREQ("e/bohr^3", buf);
+	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_equal(parsed, density));
+
 	// Units the SI ones name exactly are left as they were
 	md_unit_print(buf, sizeof(buf), md_unit_div(md_unit_electronvolt(), md_unit_elementary_charge()));
 	EXPECT_STREQ("V", buf);

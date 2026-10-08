@@ -7,7 +7,15 @@
 //
 //     V(C) = sum_k q_k / |C - A_k|  +  s * sum_{mu,nu} D_{mu nu} (mu| 1/|r - C| |nu)
 //
-// with s the charge carried by one unit of density (-1 for electrons).
+// with s the charge carried by one unit of density (-1 for electrons). The points can carry a
+// dipole and a quadrupole besides their charge - the permanent multipoles of a polarizable
+// embedding's sites - which add, with d = C - A_k and r = |d|,
+//
+//     mu_k . d / r^3  +  1/2 sum_ab Q_k,ab (3 d_a d_b - r^2 delta_ab) / r^5
+//
+// Q is the Cartesian second moment, NOT traceless: the Taylor convention of the polarizable
+// embedding literature, V = sum_k (-1)^k / k! M^(k) . T^(k), and of md_gto_int_moments_t. Its
+// trace has no potential.
 //
 // WHY THERE ARE NO INTEGRAL MATRICES HERE
 // The potential never needs (mu|1/|r-C||nu) as a matrix, only contracted with D. So the density is
@@ -99,6 +107,8 @@ typedef struct md_gto_int_charges_t {
     uint32_t  num_points;
     double*   point_xyz;         // [num_points * 3]     bohr
     double*   point_charge;      // [num_points]         e
+    double*   point_dipole;      // [num_points * 3]     e bohr, NULL when no point has one
+    double*   point_quadrupole;  // [num_points * 6]     e bohr^2, xx xy xz yy yz zz, NULL when no point has one
 } md_gto_int_charges_t;
 
 typedef struct md_gto_int_charges_desc_t {
@@ -119,6 +129,10 @@ typedef struct md_gto_int_charges_desc_t {
     size_t        point_xyz_stride;  // bytes, 0 = packed (12 bytes)
     const double* point_charge;      // e
     size_t        num_points;
+    // Optional, at the same points: a dipole and a quadrupole each (see the top of the file for the
+    // convention). NULL for none; a point without one has zeros.
+    const double* point_dipole;      // [num_points * 3] e bohr
+    const double* point_quadrupole;  // [num_points * 6] e bohr^2, xx xy xz yy yz zz, not traceless
 
     // Screening: a gaussian whose potential cannot exceed this anywhere (hartree/e) is dropped.
     // 0 keeps everything. 1e-8 removes a third or more of the gaussians of anything bigger than a
@@ -197,6 +211,9 @@ void md_gto_int_gpu_shutdown(void);
 // A charge distribution resident on the device, as float. Create once per md_gto_int_charges_t
 // and evaluate it as often as needed. Uploaded on `stream`; work issued into the same stream
 // afterwards sees it, another stream must md_gpu_stream_wait first.
+//
+// Point dipoles and quadrupoles are not evaluated on the device yet: a distribution with any is
+// refused (NULL, logged) rather than evaluated without them. Use the CPU path for those.
 typedef struct md_gto_int_gpu_charges* md_gto_int_gpu_charges_t;
 
 md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, const md_gto_int_charges_t* charges);

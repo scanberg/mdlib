@@ -518,19 +518,22 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
         }
         if (prefix_term == num_terms) {
             // The greedy split matched the dimensions with units whose scale is not the unit's. Two
-            // predefined units with scales of their own can still name it exactly, as the atomic unit
-            // of electric potential is Ha/e and not 27.2113862459812*V.
-            for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
-                for (size_t j = 0; j < ARRAY_SIZE(predefined_units); ++j) {
-                    const md_unit_t a = predefined_units[i].unit;
-                    const md_unit_t b = predefined_units[j].unit;
-                    if (md_unit_equal(unit, md_unit_div(a, b))) {
-                        PRINT(STR_FMT"/"STR_FMT, STR_ARG(predefined_units[i].str), STR_ARG(predefined_units[j].str));
-                        return len;
-                    }
-                    if (j >= i && md_unit_equal(unit, md_unit_mul(a, b))) {
-                        PRINT(STR_FMT"*"STR_FMT, STR_ARG(predefined_units[i].str), STR_ARG(predefined_units[j].str));
-                        return len;
+            // predefined units with scales of their own can still name it exactly, one of them raised
+            // to a small power: the atomic unit of electric potential is Ha/e and not
+            // 27.2113862459812*V, that of a quadrupole moment e*bohr^2. The lowest power is tried first.
+            for (int mag = 1; mag <= 3; ++mag) {
+                for (int sign = -1; sign <= 1; sign += 2) {
+                    const int exp = sign * mag;
+                    for (size_t j = 0; j < ARRAY_SIZE(predefined_units); ++j) {
+                        if (mag > 1 && !name_can_be_raised(predefined_units[j].str)) continue;
+                        // What is left once b^exp is divided out has to be a predefined unit itself
+                        const md_unit_t a = md_unit_div(unit, md_unit_pow(predefined_units[j].unit, exp));
+                        for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+                            if (i == j || !md_unit_equal(a, predefined_units[i].unit)) continue;
+                            PRINT(STR_FMT"%c"STR_FMT, STR_ARG(predefined_units[i].str), exp < 0 ? '/' : '*', STR_ARG(predefined_units[j].str));
+                            if (mag > 1) PRINT("^%i", mag);
+                            return len;
+                        }
                     }
                 }
             }

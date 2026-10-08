@@ -484,6 +484,13 @@ done:
     return result;
 }
 
+static bool gto_int_any_nonzero(const double* v, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        if (v[i] != 0.0) return true;
+    }
+    return false;
+}
+
 bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges_desc_t* desc, md_allocator_i* alloc) {
     ASSERT(out);
     ASSERT(alloc);
@@ -525,6 +532,29 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
             out->point_charge[i] = desc->point_charge[i];
         }
         out->num_points = (uint32_t)desc->num_points;
+
+        // The higher multipoles only when some point has one: the common case, nuclei, then costs
+        // nothing more to evaluate
+        if (desc->point_dipole && gto_int_any_nonzero(desc->point_dipole, desc->num_points * 3)) {
+            out->point_dipole = md_alloc(alloc, sizeof(double) * 3 * desc->num_points);
+            if (!out->point_dipole) {
+                md_gto_int_charges_free(out, alloc);
+                return false;
+            }
+            MEMCPY(out->point_dipole, desc->point_dipole, sizeof(double) * 3 * desc->num_points);
+        }
+        if (desc->point_quadrupole && gto_int_any_nonzero(desc->point_quadrupole, desc->num_points * 6)) {
+            out->point_quadrupole = md_alloc(alloc, sizeof(double) * 6 * desc->num_points);
+            if (!out->point_quadrupole) {
+                md_gto_int_charges_free(out, alloc);
+                return false;
+            }
+            MEMCPY(out->point_quadrupole, desc->point_quadrupole, sizeof(double) * 6 * desc->num_points);
+        }
+    } else if (desc->point_dipole || desc->point_quadrupole) {
+        MD_LOG_ERROR("md_gto_int_charges_init: point multipoles given without points");
+        md_gto_int_charges_free(out, alloc);
+        return false;
     }
     return true;
 }
@@ -539,6 +569,8 @@ void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (q->coeff)        md_free(alloc, q->coeff,        sizeof(double) * q->num_coeffs);
     if (q->point_xyz)    md_free(alloc, q->point_xyz,    sizeof(double) * 3 * q->num_points);
     if (q->point_charge) md_free(alloc, q->point_charge, sizeof(double) * q->num_points);
+    if (q->point_dipole)     md_free(alloc, q->point_dipole,     sizeof(double) * 3 * q->num_points);
+    if (q->point_quadrupole) md_free(alloc, q->point_quadrupole, sizeof(double) * 6 * q->num_points);
     MEMSET(q, 0, sizeof(*q));
 }
 
@@ -550,7 +582,8 @@ static uint64_t gto_int_cost(uint32_t L) {
 
 uint64_t md_gto_int_charges_work_per_point(const md_gto_int_charges_t* q) {
     if (!q) return 0;
-    uint64_t w = q->num_points;
+    // A point charge is a step; a dipole about as much again, a quadrupole about twice that
+    uint64_t w = (uint64_t)q->num_points * (1 + (q->point_dipole ? 1 : 0) + (q->point_quadrupole ? 2 : 0));
     for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) {
         w += (uint64_t)(q->order_offset[L + 1] - q->order_offset[L]) * gto_int_cost(L);
     }
@@ -622,6 +655,22 @@ md_gto_int_moments_t md_gto_int_charges_moments(const md_gto_int_charges_t* q, c
         const double z = q->point_xyz[k * 3 + 2] - O[2];
         const double v[10] = { 1, x, y, z, x * x, x * y, x * z, y * y, y * z, z * z };
         for (int i = 0; i < 10; ++i) acc[i] += c * v[i];
+        // A dipole mu at a = A - O adds mu to the dipole and mu_i a_j + a_i mu_j to the second
+        // moment; a quadrupole adds itself to the second moment, and nothing below it
+        if (q->point_dipole) {
+            const double* mu = q->point_dipole + k * 3;
+            acc[1] += mu[0]; acc[2] += mu[1]; acc[3] += mu[2];
+            acc[4] += 2.0 * mu[0] * x;
+            acc[5] += mu[0] * y + x * mu[1];
+            acc[6] += mu[0] * z + x * mu[2];
+            acc[7] += 2.0 * mu[1] * y;
+            acc[8] += mu[1] * z + y * mu[2];
+            acc[9] += 2.0 * mu[2] * z;
+        }
+        if (q->point_quadrupole) {
+            const double* Q = q->point_quadrupole + k * 6;
+            for (int i = 0; i < 6; ++i) acc[4 + i] += Q[i];
+        }
     }
 
     m.charge = acc[0];
@@ -677,6 +726,42 @@ static double gto_int_eval_point(double field[3], const double C[3], const md_gt
         if (field) {
             const double qr3 = qr * inv_r * inv_r;
             E[0] += qr3 * d[0]; E[1] += qr3 * d[1]; E[2] += qr3 * d[2];
+        }
+        if (q->point_dipole || q->point_quadrupole) {
+            const double inv_r2 = inv_r * inv_r;
+            const double inv_r3 = inv_r2 * inv_r;
+            const double inv_r5 = inv_r3 * inv_r2;
+            if (q->point_dipole) {
+                // V = mu.d / r^3,  E = 3 (mu.d) d / r^5 - mu / r^3
+                const double* mu = q->point_dipole + k * 3;
+                const double md = mu[0] * d[0] + mu[1] * d[1] + mu[2] * d[2];
+                V += md * inv_r3;
+                if (field) {
+                    const double a = 3.0 * md * inv_r5;
+                    E[0] += a * d[0] - mu[0] * inv_r3;
+                    E[1] += a * d[1] - mu[1] * inv_r3;
+                    E[2] += a * d[2] - mu[2] * inv_r3;
+                }
+            }
+            if (q->point_quadrupole) {
+                // V = (3 d.Q.d - r^2 tr Q) / (2 r^5),
+                // E = 15/2 (d.Q.d) d / r^7 - 3 Q.d / r^5 - 3/2 tr(Q) d / r^5
+                const double* Q = q->point_quadrupole + k * 6;   // xx xy xz yy yz zz
+                const double Qd[3] = {
+                    Q[0] * d[0] + Q[1] * d[1] + Q[2] * d[2],
+                    Q[1] * d[0] + Q[3] * d[1] + Q[4] * d[2],
+                    Q[2] * d[0] + Q[4] * d[1] + Q[5] * d[2],
+                };
+                const double dQd = d[0] * Qd[0] + d[1] * Qd[1] + d[2] * Qd[2];
+                const double tr  = Q[0] + Q[3] + Q[5];
+                V += 0.5 * (3.0 * dQd - r2 * tr) * inv_r5;
+                if (field) {
+                    const double a = 7.5 * dQd * inv_r5 * inv_r2 - 1.5 * tr * inv_r5;
+                    E[0] += a * d[0] - 3.0 * Qd[0] * inv_r5;
+                    E[1] += a * d[1] - 3.0 * Qd[1] * inv_r5;
+                    E[2] += a * d[2] - 3.0 * Qd[2] * inv_r5;
+                }
+            }
         }
     }
 
@@ -821,6 +906,11 @@ typedef struct md_gto_int_gpu_charges {
 md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, const md_gto_int_charges_t* q) {
     if (!stream || !q) {
         MD_LOG_ERROR("md_gto_int_gpu_charges_create: invalid input");
+        return NULL;
+    }
+    if (q->point_dipole || q->point_quadrupole) {
+        // The resolve pass sums point charges only; evaluating without the rest would be wrong
+        MD_LOG_ERROR("md_gto_int_gpu_charges_create: point dipoles and quadrupoles are not evaluated on the GPU yet, use the CPU path");
         return NULL;
     }
 

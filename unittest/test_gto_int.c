@@ -160,6 +160,111 @@ UTEST(gto_int, point_charges) {
     md_gto_int_charges_free(&q, md_get_heap_allocator());
 }
 
+// A cluster of point charges a little around A, against the point multipoles it has there: its
+// charge, dipole and second moment about A reproduce its potential and field up to the octupole,
+// and its moments about any origin exactly. The cluster shares no code with the multipole terms, so
+// this pins the convention - the signs, the 1/2, the trace - and not only self consistency.
+UTEST(gto_int, point_multipoles_match_a_charge_cluster) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const float  A[3] = { 0.3f, -0.2f, 0.5f };
+    const double h = 3.0e-2;
+    const double dir[5][3] = { { 0.7, -0.1, 0.3 }, { -0.4, 0.8, -0.2 }, { 0.1, -0.6, -0.9 }, { -0.5, -0.3, 0.6 }, { 0.2, 0.5, 0.1 } };
+    const double cq[5] = { 1.0, -0.6, 0.8, -1.4, 0.5 };
+
+    // The cluster, and its moments about A from the positions as they are stored (float)
+    float  pos[5][3];
+    double charge = 0.0, mu[3] = {0}, Q[6] = {0};
+    for (int i = 0; i < 5; ++i) {
+        double sd[3];
+        for (int k = 0; k < 3; ++k) {
+            pos[i][k] = (float)(A[k] + h * dir[i][k]);
+            sd[k] = (double)pos[i][k] - (double)A[k];
+        }
+        charge += cq[i];
+        for (int k = 0; k < 3; ++k) mu[k] += cq[i] * sd[k];
+        Q[0] += cq[i] * sd[0] * sd[0]; Q[1] += cq[i] * sd[0] * sd[1]; Q[2] += cq[i] * sd[0] * sd[2];
+        Q[3] += cq[i] * sd[1] * sd[1]; Q[4] += cq[i] * sd[1] * sd[2]; Q[5] += cq[i] * sd[2] * sd[2];
+    }
+
+    md_gto_int_charges_t cluster = {0}, full = {0}, no_quad = {0}, no_dip = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&cluster, &(md_gto_int_charges_desc_t){ .point_xyz = &pos[0][0], .point_charge = cq, .num_points = 5 }, heap));
+    ASSERT_TRUE(md_gto_int_charges_init(&full,    &(md_gto_int_charges_desc_t){ .point_xyz = A, .point_charge = &charge, .num_points = 1, .point_dipole = mu, .point_quadrupole = Q }, heap));
+    ASSERT_TRUE(md_gto_int_charges_init(&no_quad, &(md_gto_int_charges_desc_t){ .point_xyz = A, .point_charge = &charge, .num_points = 1, .point_dipole = mu }, heap));
+    ASSERT_TRUE(md_gto_int_charges_init(&no_dip,  &(md_gto_int_charges_desc_t){ .point_xyz = A, .point_charge = &charge, .num_points = 1, .point_quadrupole = Q }, heap));
+    ASSERT_TRUE(full.point_dipole != NULL && full.point_quadrupole != NULL);
+    EXPECT_TRUE(no_quad.point_quadrupole == NULL);
+    EXPECT_TRUE(no_dip.point_dipole == NULL);
+
+    // What remains is the octupole, ~ h/r of the quadrupole term, which is itself small. Summed over
+    // the points, as at any one of them a term can be near a node of its angular dependence
+    const float pts[6][3] = { { 3.3f, -0.2f, 0.5f }, { 0.3f, 3.0f, 0.9f }, { -2.1f, -1.9f, 1.7f }, { 1.4f, 0.8f, -2.6f }, { -0.9f, 2.2f, -1.8f }, { 2.0f, -2.5f, 2.4f } };
+    double err = 0.0, errq = 0.0, errd = 0.0, eerr = 0.0, eerrq = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        double Vc, Ec[3], Vf, Ef[3], Vq, Eq[3], Vd, Ed[3];
+        md_gto_int_potential_xyz(&Vc, Ec, pts[i], 1, 0, &cluster);
+        md_gto_int_potential_xyz(&Vf, Ef, pts[i], 1, 0, &full);
+        md_gto_int_potential_xyz(&Vq, Eq, pts[i], 1, 0, &no_quad);
+        md_gto_int_potential_xyz(&Vd, Ed, pts[i], 1, 0, &no_dip);
+        EXPECT_LT(fabs(Vf - Vc), 1e-6);
+        err  += fabs(Vf - Vc);
+        errq += fabs(Vq - Vc);   // the quadrupole term, to within the octupole
+        errd += fabs(Vd - Vc);   // the dipole term, likewise
+        for (int k = 0; k < 3; ++k) {
+            EXPECT_LT(fabs(Ef[k] - Ec[k]), 1e-6);
+            eerr  += fabs(Ef[k] - Ec[k]);
+            eerrq += fabs(Eq[k] - Ec[k]);
+        }
+    }
+    EXPECT_LT(err,  0.02 * errq);
+    EXPECT_LT(err,  0.001 * errd);
+    EXPECT_LT(eerr, 0.05 * eerrq);
+
+    // The field of the multipoles is minus their gradient
+    const float step = 1.0f / 256.0f;
+    for (int i = 0; i < 6; ++i) {
+        double V, E[3];
+        md_gto_int_potential_xyz(&V, E, pts[i], 1, 0, &full);
+        for (int k = 0; k < 3; ++k) {
+            float st[4][3];
+            const float off[4] = { -2 * step, -step, step, 2 * step };
+            for (int j = 0; j < 4; ++j) { MEMCPY(st[j], pts[i], sizeof(st[j])); st[j][k] += off[j]; }
+            double Vs[4];
+            md_gto_int_potential_xyz(Vs, NULL, &st[0][0], 4, 0, &full);
+            const double dVdx = (Vs[0] - 8.0 * Vs[1] + 8.0 * Vs[2] - Vs[3]) / (12.0 * (double)step);
+            EXPECT_NEAR(-dVdx, E[k], 1e-8);
+        }
+    }
+
+    // Moments about an origin elsewhere: the multipoles carry the cluster's exactly
+    const double O[3] = { -1.0, 2.0, 0.5 };
+    const md_gto_int_moments_t mc = md_gto_int_charges_moments(&cluster, O);
+    const md_gto_int_moments_t mf = md_gto_int_charges_moments(&full, O);
+    EXPECT_NEAR(mc.charge, mf.charge, 1e-12);
+    for (int k = 0; k < 3; ++k) EXPECT_NEAR(mc.dipole[k], mf.dipole[k], 1e-12);
+    for (int k = 0; k < 6; ++k) EXPECT_NEAR(mc.second[k], mf.second[k], 1e-12);
+
+    md_gto_int_charges_free(&cluster, heap);
+    md_gto_int_charges_free(&full, heap);
+    md_gto_int_charges_free(&no_quad, heap);
+    md_gto_int_charges_free(&no_dip, heap);
+}
+
+// The trace of a quadrupole has no potential and no field: (1/2) Q:T with T traceless
+UTEST(gto_int, point_quadrupole_trace_is_silent) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const float  A[3] = { 0, 0, 0 };
+    const double zero = 0.0;
+    const double iso[6] = { 2.5, 0, 0, 2.5, 0, 2.5 };
+    md_gto_int_charges_t q = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&q, &(md_gto_int_charges_desc_t){ .point_xyz = A, .point_charge = &zero, .num_points = 1, .point_quadrupole = iso }, heap));
+    const float c[3] = { 1.1f, -0.7f, 2.3f };
+    double V, E[3];
+    md_gto_int_potential_xyz(&V, E, c, 1, 0, &q);
+    EXPECT_NEAR(0.0, V, 1e-14);
+    for (int k = 0; k < 3; ++k) EXPECT_NEAR(0.0, E[k], 1e-14);
+    md_gto_int_charges_free(&q, heap);
+}
+
 // ---------------------------------------------------------------------------
 // Against PySCF
 // ---------------------------------------------------------------------------
