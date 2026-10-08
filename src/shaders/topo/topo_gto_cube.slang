@@ -263,14 +263,15 @@ uint3 ao_ijk(uint ao) { const uint v = args.ao_ijk[min(ao, args.num_ao - 1u)]; r
 
 #define AO_WG   128
 #define TAB_CAP 4096
-#define CS_MAX  64
+#define CS_MAX  32      // shells per chunk; TAB_CAP / 132 (one s primitive) < 32, so never the binding limit
 
 groupshared float gs_tab[TAB_CAP];
-groupshared uint  gs_cs_shell[CS_MAX];
-groupshared uint  gs_cs_tab[CS_MAX + 1];
-groupshared uint  gs_cs_item[CS_MAX + 1];
-groupshared uint  gs_cs_prod[CS_MAX + 1];
-groupshared uint  gs_cs_row[CS_MAX];
+groupshared uint  gs_cs_shell[CS_MAX];     // global shell
+groupshared uint  gs_cs_pk[CS_MAX];        // l | nc << 8 | np << 16 of the candidates
+groupshared uint  gs_cs_tab[CS_MAX + 1];   // table offset; [ncs] the total
+groupshared uint  gs_cs_item[CS_MAX + 1];  // first table item (3 per entry: centre, sups over the cube and the inflated cube)
+groupshared uint  gs_cs_prod[CS_MAX + 1];  // first product
+groupshared uint  gs_cs_row[CS_MAX + 1];   // first row, relative to the batch's
 groupshared uint  gs_ncs;
 
 uint te_size(uint l) { return 20u * (l + 1u) + 2u; }
@@ -312,8 +313,8 @@ void sup_tab(uint base, uint l, float x0, float x1, float al, float alp[KA]) {
     }
 }
 
-// One table entry: centre factors at x (child centre - atom), sups over [x0, x1] and [x0i, x1i].
-void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float x1i, float al) {
+// The centre part of one table entry: the factors at x (child centre - atom) and the rounding terms.
+void tab_centre(uint base, uint l, float x, float al) {
     const uint l1 = l + 1u;
     const float t = al * x * x;
     const float E = exp_neg(t), Eup = exp_neg_up(t);
@@ -342,8 +343,6 @@ void tab_entry(uint base, uint l, float x, float x0, float x1, float x0i, float 
     // beyond exp_neg's range the value is set to 0: its error is then its whole magnitude
     gs_tab[base + 12u * l1] = t > 87.0 ? 1.0 : (float(2u * l + 14u) + 6.0 + 8.1 * t) * UF;
     gs_tab[base + 12u * l1 + 1u] = t > 87.0 ? 1.0 : (float(2u * l + 24u) + 6.0 + 8.1 * t) * UF;
-    sup_tab(base + 12u * l1 + 2u, l, x0, x1, al, alp);
-    sup_tab(base + 16u * l1 + 2u, l, x0i, x1i, al, alp);
 }
 
 // Separable remainder bounds (cpg_shell_rem in md_topo.c has the derivation). For one 1D factor
@@ -508,44 +507,63 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const float h = bt.P_h.w;
     const uint n = bt.info.y, row0 = bt.info.z, sh0 = bt.info.w, nsh = bt.info2.x;
 
-    uint next = 0, rowc = 0;                // thread 0's cursors
+    uint next = 0, rowc = 0;                // the next shell and its row (uniform)
     for (;;) {
-        // ---- chunk layout (thread 0). Written only here, read by all after the barrier below and
-        //      not again after the barrier that ends the iteration.
+        // ---- chunk layout: the next CS_MAX shells are read in parallel, then thread 0 takes as many as
+        //      fit TAB_CAP. Written only here, read by all after the barrier below and not again after
+        //      the barrier that ends the iteration.
+        if (tid < CS_MAX && next + tid < nsh) {
+            const uint g = min(args.batch_shells[sh0 + next + tid], args.num_shells - 1u);
+            const uint4 inf = args.shells[g].info;
+            gs_cs_shell[tid] = g;
+            gs_cs_pk[tid] = (inf.w & 0xFFFFu) | (min(inf.y, 0xFFFFu) << 16);
+        }
+        GroupMemoryBarrierWithGroupSync();
         if (tid == 0) {
-            uint s = next, tab = 0, item = 0, prod = 0, row = rowc, ncs = 0;
-            while (s < nsh && ncs < CS_MAX) {
-                const uint g = min(args.batch_shells[sh0 + s], args.num_shells - 1u);
-                const uint4 inf = args.shells[g].info;
-                const uint l = inf.w & 0xFFu, nc = inf.w >> 8, np = inf.y;
+            const uint cand = min(nsh - next, uint(CS_MAX));
+            uint c = 0, tab = 0, item = 0, prod = 0, row = rowc;
+            for (; c < cand; ++c) {
+                const uint pk = gs_cs_pk[c];
+                const uint l = pk & 0xFFu, nc = (pk >> 8) & 0xFFu, np = pk >> 16;
                 const uint sz = np * 6u * te_size(l);
                 if (tab + sz > TAB_CAP) break;
-                gs_cs_shell[ncs] = g; gs_cs_tab[ncs] = tab; gs_cs_item[ncs] = item; gs_cs_prod[ncs] = prod; gs_cs_row[ncs] = row;
-                tab += sz; item += np * 6u; prod += nc * 8u; row += nc; ncs++; s++;
+                gs_cs_tab[c] = tab; gs_cs_item[c] = item; gs_cs_prod[c] = prod; gs_cs_row[c] = row;
+                tab += sz; item += np * 18u; prod += nc * 8u; row += nc;
             }
-            gs_cs_tab[ncs] = tab; gs_cs_item[ncs] = item; gs_cs_prod[ncs] = prod;
-            gs_ncs = ncs;                   // 0: done (or a shell that does not fit, which the host never sends)
-            next = s; rowc = row;
+            gs_cs_tab[c] = tab; gs_cs_item[c] = item; gs_cs_prod[c] = prod; gs_cs_row[c] = row;
+            gs_ncs = c;                     // 0: done (or a shell that does not fit, which the host never sends)
         }
         GroupMemoryBarrierWithGroupSync();
         const uint ncs = gs_ncs;
         if (ncs == 0) break;                // uniform
+        next += ncs;
+        rowc = gs_cs_row[ncs];
 
-        // ---- 1D tables: (shell, primitive, axis, side)
-        // (a thread's f only grows, and with it its shell: the search resumes where it stopped)
+        // ---- 1D tables: (shell, part, primitive, axis, side), part 0 the centre factors, 1 and 2 the sups
+        //      over the cube and the inflated cube (a thread's item index only grows, and with it its
+        //      shell: the search resumes where it stopped)
         const uint nitem = gs_cs_item[ncs];
         uint cs = 0;
         for (uint f = tid; f < nitem; f += AO_WG) {
             while (cs + 1u < ncs && gs_cs_item[cs + 1u] <= f) cs++;
+            const uint pk = gs_cs_pk[cs];
+            const uint l = pk & 0xFFu, np = pk >> 16, l1 = l + 1u;
             const uint r = f - gs_cs_item[cs];
-            const uint p = r / 6u, ax = (r % 6u) / 2u, side = r % 2u;
+            const uint part = r / (np * 6u), e = r % (np * 6u);
+            const uint p = e / 6u, ax = (e % 6u) / 2u, side = e % 2u;
             const GtoShell sh = args.shells[min(gs_cs_shell[cs], args.num_shells - 1u)];
-            const uint l = sh.info.w & 0xFFu;
             const float al = args.alpha[sh.info.x + min(p, sh.info.y - 1u)];
             const float A = sh.A_r2[ax];
             const float c = P[ax] + (side != 0u ? h : -h);
-            const float hi = 1.5 * h;
-            tab_entry(gs_cs_tab[cs] + r * te_size(l), l, c - A, (c - h) - A, (c + h) - A, (c - hi) - A, (c + hi) - A, al);
+            const uint base = gs_cs_tab[cs] + e * te_size(l);
+            if (part == 0u) {
+                tab_centre(base, l, c - A, al);
+            } else {
+                float alp[KA];
+                al_pows(al, alp);
+                const float hs = part == 1u ? h : 1.5 * h;
+                sup_tab(base + (part == 1u ? 12u : 16u) * l1 + 2u, l, (c - hs) - A, (c + hs) - A, al, alp);
+            }
         }
         GroupMemoryBarrierWithGroupSync();
 
