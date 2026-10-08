@@ -1572,6 +1572,16 @@ static int cpg_local_aos(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
 
 // ----------------------------------------------------------------------------------------------- point field
 
+// Whether the cube is evaluated with D's factors (r rows) rather than as a matrix over its n local AOs.
+// Cost per cube: factors r n (20 + 15) multiply-adds for the rows, the matrix n^2 (20 + 6) for the D
+// products. The factored remainder bounds are looser (sum_k |l_k (c_k . P)| (|c_k| . E) against
+// sum_i |(D P)_i| E_i: 5-13% more cubes on the test inputs), so auto wants a clear margin: r <= n / 3.
+static bool cpg_use_factors(const cpg_ctx_t* ctx, int n) {
+    if (ctx->fac_r == 0 || ctx->form == MD_TOPO_GTO_DENSITY_MATRIX) return false;
+    if (ctx->form == MD_TOPO_GTO_DENSITY_FACTORED) return true;
+    return 3 * ctx->fac_r <= n;
+}
+
 // rho, grad, Hessian at x (deriv 0..2) over all shells within their screening radius.
 static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3], int deriv, double* rho, double g[3], double H[3][3]) {
     int ns = 0;
@@ -1583,7 +1593,36 @@ static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3]
         cpg_shell_eval(ctx, s, x, deriv, sc->V + (size_t)k * CPG_NV, CPG_NV);
         k += s->ncart;
     }
-    (void)nmi;
+    if (cpg_use_factors(ctx, n)) {
+        // the factors (cpg_box_eval): rho = sum_k l_k psi_k^2, psi_k = c_k . phi, r n nmi multiply-adds
+        // instead of n^2 ndv; the same function to rounding level (cpg_factor_density)
+        const int r = ctx->fac_r;
+        MEMSET(sc->Vf, 0, sizeof(double) * r * CPG_NV);
+        for (int i = 0; i < n; ++i) {
+            const double* ci = ctx->fac_C + (size_t)sc->L[i] * r;
+            const double* v = sc->V + (size_t)i * CPG_NV;
+            for (int q = 0; q < r; ++q) {
+                const double cq = ci[q];
+                if (cq == 0.0) continue;
+                double* vf = sc->Vf + (size_t)q * CPG_NV;
+                for (int m = 0; m < nmi; ++m) vf[m] += cq * v[m];
+            }
+        }
+        double rr = 0.0, gg[3] = {0, 0, 0}, HH[3][3] = {{0}};
+        for (int q = 0; q < r; ++q) {
+            const double l = ctx->fac_l[q];
+            const double* vf = sc->Vf + (size_t)q * CPG_NV;
+            rr += l * vf[0] * vf[0];
+            if (deriv >= 1) for (int a = 0; a < 3; ++a) gg[a] += 2.0 * l * vf[0] * vf[1 + a];
+            if (deriv >= 2) {
+                for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) HH[a][b] += 2.0 * l * (vf[M2(a, b)] * vf[0] + vf[1 + a] * vf[1 + b]);
+            }
+        }
+        if (rho) *rho = rr;
+        if (g) for (int a = 0; a < 3; ++a) g[a] = gg[a];
+        if (H) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) H[a][b] = a <= b ? HH[a][b] : HH[b][a];
+        return;
+    }
     const int ndv = deriv >= 2 ? 4 : 1;
     for (int i = 0; i < n; ++i) {
         double acc[4] = {0, 0, 0, 0};
@@ -1613,16 +1652,6 @@ static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3]
 }
 
 // ----------------------------------------------------------------------------------------------- cube enclosures
-
-// Whether the cube is evaluated with D's factors (r rows) rather than as a matrix over its n local AOs.
-// Cost per cube: factors r n (20 + 15) multiply-adds for the rows, the matrix n^2 (20 + 6) for the D
-// products. The factored remainder bounds are looser (sum_k |l_k (c_k . P)| (|c_k| . E) against
-// sum_i |(D P)_i| E_i: 5-13% more cubes on the test inputs), so auto wants a clear margin: r <= n / 3.
-static bool cpg_use_factors(const cpg_ctx_t* ctx, int n) {
-    if (ctx->fac_r == 0 || ctx->form == MD_TOPO_GTO_DENSITY_MATRIX) return false;
-    if (ctx->form == MD_TOPO_GTO_DENSITY_FACTORED) return true;
-    return 3 * ctx->fac_r <= n;
-}
 
 // Returns whether the factored form was used.
 static bool cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, cpg_eval_t* ev) {
