@@ -306,4 +306,40 @@ UTEST(topo_gto, gpu_matches_cpu) {
     md_topo_gpu_shutdown();      // releases the kernel before its device
     md_gpu_device_destroy(dev);
 }
+
+// Both forms of the GPU sweep (fgemm + epi_fact for the factors, gemm + epi_main for the matrix) reach
+// the topology of the CPU reference.
+UTEST(topo_gto, gpu_density_forms) {
+    md_gpu_device_t dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .label = "topo_gto unittest" });
+    if (!dev) UTEST_SKIP("no GPU device");
+    md_gpu_stream_t stream = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+
+    topo_gto_input_t in;
+    ASSERT_TRUE(topo_gto_load_water(&in));
+    md_topo_gto_desc_t dm = topo_gto_desc(&in), df = topo_gto_desc(&in);
+    dm.rho_min = df.rho_min = 1.0e-3;
+    dm.density_form = MD_TOPO_GTO_DENSITY_MATRIX;
+    df.density_form = MD_TOPO_GTO_DENSITY_FACTORED;
+
+    md_topo_extremum_graph_t cpu = { .alloc = in.t.alloc }, m = { .alloc = in.t.alloc }, f = { .alloc = in.t.alloc };
+    md_topo_gto_info_t ic, im, inf;
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&cpu, &ic, &dm));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto_gpu(&m, &im, &dm, stream));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto_gpu(&f, &inf, &df, stream));
+    EXPECT_TRUE(im.used_gpu);
+    EXPECT_TRUE(inf.used_gpu);
+    EXPECT_EQ(0u, im.num_gpu_factored_batches);
+    EXPECT_GT(inf.num_gpu_batches, 0u);
+    EXPECT_EQ(inf.num_gpu_batches, inf.num_gpu_factored_batches);
+    EXPECT_TRUE(inf.complete);
+    EXPECT_TRUE(topo_gto_same_graph(&cpu, &m));
+    EXPECT_TRUE(topo_gto_same_graph(&cpu, &f));
+
+    md_topo_extremum_graph_free(&cpu);
+    md_topo_extremum_graph_free(&m);
+    md_topo_extremum_graph_free(&f);
+    qm_test_free(&in.t);
+    md_topo_gpu_shutdown();
+    md_gpu_device_destroy(dev);
+}
 #endif

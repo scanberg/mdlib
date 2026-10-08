@@ -333,7 +333,7 @@ int main(int argc, char** argv) {
         printf("GEMM tiling %s%s\n", md_topo_gto_gpu_gemm_variant_name(gv), gemm_variant >= 0 ? " (--gemm)" : " (picked for this GPU)");
     }
 #endif
-    printf("density %s (CPU enclosures)\n", density_form == MD_TOPO_GTO_DENSITY_MATRIX ? "matrix" :
+    printf("density %s\n", density_form == MD_TOPO_GTO_DENSITY_MATRIX ? "matrix" :
                                              density_form == MD_TOPO_GTO_DENSITY_FACTORED ? "factored" : "auto: factored where r <= local AOs / 3");
     printf("data %s\n", data_dir);
     printf("formats .molden%s\n\n", HAVE_H5 ? ", .h5 (VeloxChem)" : " only: this mdlib was configured without MD_ENABLE_HDF5, so the .h5 inputs are skipped");
@@ -399,6 +399,9 @@ int main(int argc, char** argv) {
                        (unsigned long long)sk, ev + sk ? 100.0 * (double)sk / (double)(ev + sk) : 0.0, (unsigned long long)(ev + sk));
                 if (gpu && i0->num_gpu_batches) printf(", %llu GPU batches, %.0f local AOs on average", (unsigned long long)i0->num_gpu_batches,
                                                        (double)i0->num_gpu_rows / (double)i0->num_gpu_batches);
+                if (gpu && i0->num_gpu_batches && i0->density_rank)
+                    printf(", D of rank %u: %.0f%% of batches factored", i0->density_rank,
+                           100.0 * (double)i0->num_gpu_factored_batches / (double)i0->num_gpu_batches);
                 if (!gpu) {
                     if (i0->density_rank) printf(", D of rank %u: %.0f%% of cubes factored", i0->density_rank,
                                                  ev ? 100.0 * (double)i0->num_factored_evals / (double)ev : 0.0);

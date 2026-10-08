@@ -2840,8 +2840,9 @@ typedef struct cpg_gpu_shell_t {
 typedef struct cpg_gpu_batch_t {
     float    P_h[4];        // parent centre, child half-width
     uint32_t info[4];       // child mask, local AOs, first row, first local shell
-    uint32_t info2[4];      // number of local shells
+    uint32_t info2[4];      // number of local shells, first factor row (CPG_GPU_FACT_NONE: matrix form)
 } cpg_gpu_batch_t;
+#define CPG_GPU_FACT_NONE 0xFFFFFFFFu
 
 // Mirrors RootArgs in topo_gto_cube.slang.
 typedef struct cpg_gpu_args_t {
@@ -2855,8 +2856,8 @@ typedef struct cpg_gpu_args_t {
     float    tail_g;
     float    tail_H;
     uint32_t flags;
-    uint32_t _pad0;
-    uint32_t _pad1;
+    uint32_t fac_r;
+    uint32_t num_fbatches;
     md_gpu_addr_t batches;
     md_gpu_addr_t batch_shells;
     md_gpu_addr_t row_ao;
@@ -2873,6 +2874,10 @@ typedef struct cpg_gpu_args_t {
     md_gpu_addr_t ep;
     md_gpu_addr_t outcome;
     md_gpu_addr_t debug;
+    md_gpu_addr_t fac_C;
+    md_gpu_addr_t fac_l;
+    md_gpu_addr_t fphi;
+    md_gpu_addr_t fbatches;
 } cpg_gpu_args_t;
 
 // Layout constants shared with topo_gto_cube.slang.
@@ -2890,7 +2895,8 @@ typedef struct cpg_gpu_args_t {
 #define CPG_GPU_OUT_INFLATED   16u
 #define CPG_GPU_WHY_CHILDREN   11u             // discarded: split, but no child survived the parent's expansion
 
-enum { CPG_K_AO, CPG_K_GEMM, CPG_K_EPI, CPG_K_DECIDE, CPG_K_COUNT };
+// The four stages; GEMM and EPI have a second kernel for the batches in the factored form.
+enum { CPG_K_AO, CPG_K_GEMM, CPG_K_EPI, CPG_K_DECIDE, CPG_K_FGEMM16, CPG_K_FGEMM32, CPG_K_FGEMM64, CPG_K_EPIF, CPG_K_COUNT };
 static md_gpu_kernel_t k_topo_gto[CPG_K_COUNT] = {0};
 static md_gpu_device_t k_topo_gto_device = NULL;
 
@@ -2968,6 +2974,10 @@ static bool topo_gto_gpu_ensure(md_gpu_device_t device) {
         md_shader_topo_gto_cube_gemm_main_kernel(),
         md_shader_topo_gto_cube_epi_main_kernel(),
         md_shader_topo_gto_cube_decide_main_kernel(),
+        md_shader_topo_gto_cube_fgemm16_kernel(),
+        md_shader_topo_gto_cube_fgemm32_kernel(),
+        md_shader_topo_gto_cube_fgemm64_kernel(),
+        md_shader_topo_gto_cube_epi_fact_kernel(),
     };
     for (int i = 0; i < CPG_K_COUNT; ++i) {
         k_topo_gto[i] = md_gpu_kernel_create(device, &kd[i]);
@@ -3162,13 +3172,30 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     a.tail_g = cpg_up_f(ctx->tail_g);
     a.tail_H = cpg_up_f(ctx->tail_H);
 
+    // the factors of D in float, if any batch may use them (the same rule as the CPU's, per batch)
+    const uint32_t R_f = ctx->fac_r && ctx->form != MD_TOPO_GTO_DENSITY_MATRIX ? (uint32_t)ctx->fac_r : 0;
+    a.fac_r = R_f;
+    const uint32_t fgemm_rows = R_f <= 16 ? 16 : (R_f <= 32 ? 32 : 64);
+    const int k_fgemm = R_f <= 16 ? CPG_K_FGEMM16 : (R_f <= 32 ? CPG_K_FGEMM32 : CPG_K_FGEMM64);
+    const uint32_t fgemm_tpb = R_f ? (R_f + fgemm_rows - 1) / fgemm_rows : 0;     // row tiles per batch
+    float* fC = R_f ? (float*)md_alloc(heap, sizeof(float) * (size_t)N * R_f) : NULL;
+    float* fL = R_f ? (float*)md_alloc(heap, sizeof(float) * R_f) : NULL;
+    for (size_t i = 0; i < (size_t)N * R_f; ++i) fC[i] = (float)ctx->fac_C[i];
+    for (uint32_t k = 0; k < R_f; ++k) fL[k] = (float)ctx->fac_l[k];
+
     bool ok = cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
            && cpg_gpu_upload(stream, &a.alpha, fa, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.coeff, fc, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.ao_nrm, fn, sizeof(float) * N)
            && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N)
            && cpg_gpu_upload(stream, &a.D, fD, sizeof(float) * (size_t)N * N)
-           && cpg_gpu_upload(stream, &a.kappa, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
+           && cpg_gpu_upload(stream, &a.kappa, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM)
+           && (!R_f || (cpg_gpu_upload(stream, &a.fac_C, fC, sizeof(float) * (size_t)N * R_f)
+                        && cpg_gpu_upload(stream, &a.fac_l, fL, sizeof(float) * R_f)));
+    if (R_f) {
+        md_free(heap, fL, sizeof(float) * R_f);
+        md_free(heap, fC, sizeof(float) * (size_t)N * R_f);
+    }
     md_free(heap, fk, sizeof(float) * CPG_KI * CPG_KA * CPG_KM);
     md_free(heap, fD, sizeof(float) * (size_t)N * N);
     md_free(heap, ijk, sizeof(uint32_t) * N);
@@ -3188,6 +3215,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array(uint32_t)        hsh = 0;        // the chunk's local shells
     md_array(uint32_t)        hrow = 0;
     md_array(uint32_t)        htile = 0;      // pairs (batch, first row)
+    md_array(uint32_t)        hfb = 0;        // the chunk's factored batches
 
     // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups; candidates: every shell
     for (int s = 0; s < NS; ++s) md_array_push(pool, (uint32_t)s, heap);
@@ -3232,11 +3260,11 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     // --- device scratch, grown on demand. One set: the stream orders a chunk's uploads and kernels after
     //     the previous chunk's. Only the readback is double, as the host reads one chunk's outcomes
     //     while the next chunk runs.
-    md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0;
-    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0;
+    md_gpu_addr_t d_batches = 0, d_pool = 0, d_row_ao = 0, d_tiles = 0, d_phi = 0, d_dv = 0, d_ep = 0, d_out = 0, d_fphi = 0, d_fb = 0;
+    size_t c_batches = 0, c_pool = 0, c_row_ao = 0, c_tiles = 0, c_phi = 0, c_dv = 0, c_ep = 0, c_out = 0, c_fphi = 0, c_fb = 0;
     md_gpu_mem_t h_out[2] = { {0}, {0} };
     size_t c_hout[2] = { 0, 0 };
-    const size_t row_cap = CPG_GPU_SCRATCH_BUDGET / ((CPG_GPU_PHI_W + CPG_GPU_DV_W) * sizeof(float));
+    const size_t float_cap = CPG_GPU_SCRATCH_BUDGET / sizeof(float);   // phi + dv + fphi per chunk
     const bool profile = R->desc->profile_gpu_kernels;   // one chunk at a time, every kernel waited for and timed
     // Two chunks in flight: while the GPU runs one, the host reads the other's outcomes, makes and screens
     // the batches they split into, and builds and launches the next chunk. Chunks follow q, so they run
@@ -3259,24 +3287,34 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
             md_array_shrink(hsh, 0);
             md_array_shrink(hrow, 0);
             md_array_shrink(htile, 0);
+            md_array_shrink(hfb, 0);
             const size_t nq = md_array_size(q);
-            size_t b = qh, rows = 0, tiles = 0, count = 0;
+            size_t b = qh, rows = 0, tiles = 0, count = 0, frows = 0;
             for (; b < nq && count < chunk && count < CPG_GPU_MAX_BATCHES; ++b) {
                 const cpg_hbatch_t* bt = &q[b];
                 if (bt->nao == UINT32_MAX) continue;
                 const uint32_t n = bt->nao;
-                const size_t nt = (n + gemm_rows - 1) / gemm_rows;
-                if (count > 0 && (rows + n > row_cap || (tiles + nt) * gemm_cb > CPG_GPU_MAX_TILES)) break;
+                const bool fac = R_f && cpg_use_factors(ctx, (int)n);
+                const size_t nt = fac ? 0 : (n + gemm_rows - 1) / gemm_rows;
+                const size_t nfb = md_array_size(hfb) + (fac ? 1 : 0);
+                if (count > 0 && ((rows + n) * (CPG_GPU_PHI_W + CPG_GPU_DV_W) + (frows + (fac ? R_f : 0)) * CPG_GPU_PHI_W > float_cap ||
+                                  (tiles + nt) * gemm_cb > CPG_GPU_MAX_TILES || nfb * fgemm_tpb * 5 > CPG_GPU_MAX_TILES)) break;
                 cpg_gpu_batch_t g = { { (float)bt->P[0], (float)bt->P[1], (float)bt->P[2], (float)bt->hc },
-                                      { bt->mask, n, (uint32_t)rows, (uint32_t)md_array_size(hsh) }, { bt->lsh_cnt, 0, 0, 0 } };
+                                      { bt->mask, n, (uint32_t)rows, (uint32_t)md_array_size(hsh) },
+                                      { bt->lsh_cnt, fac ? (uint32_t)frows : CPG_GPU_FACT_NONE, 0, 0 } };
                 md_array_push(hb, g, heap);
+                if (fac) {
+                    md_array_push(hfb, (uint32_t)count, heap);
+                    frows += R_f;
+                    R->info.gpu_gemm_flop += (double)fgemm_tpb * 2.0 * fgemm_rows * 480.0 * (double)((n + 15) / 16 * 16);
+                }
                 const uint32_t* ls = pool + (bt->lsh_off - pool_base);
                 for (uint32_t s = 0; s < bt->lsh_cnt; ++s) {
                     const cpg_shell_t* cs = &ctx->shell[ls[s]];
                     md_array_push(hsh, ls[s], heap);
                     for (int c = 0; c < cs->ncart; ++c) md_array_push(hrow, cs->ao_offset + (uint32_t)c, heap);
                 }
-                for (uint32_t r0 = 0; r0 < n; r0 += gemm_rows) {
+                for (uint32_t r0 = 0; !fac && r0 < n; r0 += gemm_rows) {
                     md_array_push(htile, (uint32_t)count, heap);
                     md_array_push(htile, r0, heap);
                 }
@@ -3285,11 +3323,13 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 count++;
                 R->info.gpu_gemm_flop += (double)nt * 2.0 * gemm_rows * 288.0 * (double)((n + 15) / 16 * 16);
             }
+            const size_t nfb = md_array_size(hfb);
             cpg_gpu_chunk_t ch = { qh, b, count, count == chunk, true, slot, md_gpu_sync_none(), 0, 0.0 };
             for (int i = 0; i < nfl; ++i) ch.gpu_idle &= fl[i].count == 0;
             if (count > 0) {
                 R->info.num_gpu_batches += count;
                 R->info.num_gpu_rows += rows;
+                R->info.num_gpu_factored_batches += nfb;
                 const size_t nsh = md_array_size(hsh);
                 ok = cpg_gpu_reserve(stream, &d_batches, &c_batches, count, sizeof(cpg_gpu_batch_t))
                   && cpg_gpu_reserve(stream, &d_pool, &c_pool, MAX(nsh, 1), sizeof(uint32_t))
@@ -3298,7 +3338,9 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                   && cpg_gpu_reserve(stream, &d_phi, &c_phi, MAX(rows, 1), CPG_GPU_PHI_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_dv, &c_dv, MAX(rows, 1), CPG_GPU_DV_W * sizeof(float))
                   && cpg_gpu_reserve(stream, &d_ep, &c_ep, 8 * count, CPG_GPU_EP_W * sizeof(float))
-                  && cpg_gpu_reserve(stream, &d_out, &c_out, 8 * count, sizeof(uint32_t));
+                  && cpg_gpu_reserve(stream, &d_out, &c_out, 8 * count, sizeof(uint32_t))
+                  && cpg_gpu_reserve(stream, &d_fphi, &c_fphi, MAX(frows, 1), CPG_GPU_PHI_W * sizeof(float))
+                  && cpg_gpu_reserve(stream, &d_fb, &c_fb, MAX(nfb, 1), sizeof(uint32_t));
                 if (ok && (!h_out[slot].gpu || c_hout[slot] < 8 * count)) {
                     if (h_out[slot].gpu) md_gpu_free(stream, h_out[slot].gpu);
                     c_hout[slot] = MAX(8 * count, c_hout[slot] + c_hout[slot] / 2);
@@ -3309,7 +3351,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 ok = ok && md_gpu_upload(stream, d_batches, hb, count * sizeof(cpg_gpu_batch_t))
                         && (nsh == 0 || md_gpu_upload(stream, d_pool, hsh, nsh * sizeof(uint32_t)))
                         && (rows == 0 || md_gpu_upload(stream, d_row_ao, hrow, rows * sizeof(uint32_t)))
-                        && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)));
+                        && (tiles == 0 || md_gpu_upload(stream, d_tiles, htile, tiles * 2 * sizeof(uint32_t)))
+                        && (nfb == 0 || md_gpu_upload(stream, d_fb, hfb, nfb * sizeof(uint32_t)));
                 if (!ok) break;
                 a.num_batches = (uint32_t)count;
                 a.num_row_tiles = (uint32_t)tiles;
@@ -3321,22 +3364,29 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 a.dv = d_dv;
                 a.ep = d_ep;
                 a.outcome = d_out;
-                const md_gpu_grid_t grids[CPG_K_COUNT] = {
-                    md_gpu_grid((uint32_t)count, 1, 1),
-                    md_gpu_grid((uint32_t)(tiles * gemm_cb), 1, 1),
-                    md_gpu_grid((uint32_t)((count + 1) / 2), 1, 1),      // two batches per group
-                    md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1),
+                a.fphi = d_fphi;
+                a.fbatches = d_fb;
+                a.num_fbatches = (uint32_t)nfb;
+                const size_t nmb = count - nfb;           // batches in the matrix form
+                // in order; a zero grid is skipped
+                const struct { md_gpu_kernel_t k; md_gpu_grid_t grid; double* ms; } launch[] = {
+                    { k_topo_gto[CPG_K_AO],     md_gpu_grid((uint32_t)count, 1, 1),                                      &R->info.ms_gpu_ao },
+                    { k_gemm,                   md_gpu_grid((uint32_t)(tiles * gemm_cb), 1, 1),                          &R->info.ms_gpu_gemm },
+                    { k_topo_gto[k_fgemm],      md_gpu_grid((uint32_t)(nfb * fgemm_tpb * 5), 1, 1),                      &R->info.ms_gpu_gemm },
+                    { k_topo_gto[CPG_K_EPI],    md_gpu_grid(nmb ? (uint32_t)((count + 1) / 2) : 0, 1, 1),                &R->info.ms_gpu_epilogue },  // two batches per group
+                    { k_topo_gto[CPG_K_EPIF],   md_gpu_grid(nfb ? (uint32_t)((count + 1) / 2) : 0, 1, 1),                &R->info.ms_gpu_epilogue },
+                    { k_topo_gto[CPG_K_DECIDE], md_gpu_grid((uint32_t)((8 * count + CPG_GPU_DEC_WG - 1) / CPG_GPU_DEC_WG), 1, 1), &R->info.ms_gpu_decide },
                 };
-                double* kernel_ms[CPG_K_COUNT] = { &R->info.ms_gpu_ao, &R->info.ms_gpu_gemm, &R->info.ms_gpu_epilogue, &R->info.ms_gpu_decide };
-                for (int k = 0; k < CPG_K_COUNT && ok; ++k) {
-                    if (grids[k].x == 0) continue;
+                for (size_t k = 0; k < sizeof(launch) / sizeof(launch[0]) && ok; ++k) {
+                    if (launch[k].grid.x == 0) continue;
                     if (profile) md_gpu_stream_sync(stream);      // uploads and the previous kernel are not this kernel's time
                     const md_tick_t tk = md_tick_now();
-                    ok = md_gpu_launch(stream, k == CPG_K_GEMM ? k_gemm : k_topo_gto[k], grids[k], &a, sizeof(a));
+                    ok = md_gpu_launch(stream, launch[k].k, launch[k].grid, &a, sizeof(a));
                     if (profile && ok) {
                         md_gpu_stream_sync(stream);
-                        *kernel_ms[k] += md_tick_to_milliseconds(md_tick_now() - tk);
+                        *launch[k].ms += md_tick_to_milliseconds(md_tick_now() - tk);
                     }
+                    R->info.num_gpu_dispatches++;
                 }
                 ok = ok && md_gpu_copy(stream, h_out[slot].gpu, d_out, 8 * count * sizeof(uint32_t));
                 if (!ok) break;
@@ -3346,7 +3396,6 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                     ch.ms_profiled = md_tick_to_milliseconds(md_tick_now() - tu);
                     R->info.ms_sweep_gpu_wait += ch.ms_profiled;
                 }
-                R->info.num_gpu_dispatches += 4;
             }
             ch.t_launch = md_tick_now();
             fl[nfl++] = ch;
@@ -3488,8 +3537,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array_free(R->cur, heap);
     R->cur = esc;
 
-    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, h_out[0].gpu, h_out[1].gpu,
-                             a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.kappa };
+    md_gpu_addr_t bufs[] = { d_batches, d_pool, d_row_ao, d_tiles, d_phi, d_dv, d_ep, d_out, d_fphi, d_fb, h_out[0].gpu, h_out[1].gpu,
+                             a.shells, a.alpha, a.coeff, a.ao_nrm, a.ao_ijk, a.D, a.kappa, a.fac_C, a.fac_l };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(bufs[0]); ++i) if (bufs[i]) md_gpu_free(stream, bufs[i]);
     md_array_free(proots, heap);
     md_array_free(q, heap);
@@ -3498,6 +3547,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array_free(hsh, heap);
     md_array_free(hrow, heap);
     md_array_free(htile, heap);
+    md_array_free(hfb, heap);
     R->info.ms_sweep += md_tick_to_milliseconds(md_tick_now() - t_start);
     return ok;
 }

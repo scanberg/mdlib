@@ -123,7 +123,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 
 struct md_gto_basis_t;
 
-// How the enclosures treat rho (CPU sweep; the GPU sweep uses the matrix for now). The factored form
+// How the enclosures treat rho (CPU and GPU sweeps, the same rule per cube / batch). The factored form
 // writes D = sum_k l_k c_k c_k^T (pivoted LDL^T at setup, residual checked to rounding level) and bounds
 // rho = sum_k l_k (c_k . phi)^2: per cube r factor rows instead of n local AO rows, so the D products
 // cost r n instead of n^2 (r = rank of D: the occupied orbitals of an SCF density). Its remainder bounds
@@ -198,6 +198,7 @@ typedef struct md_topo_gto_info_t {
     uint64_t num_children_skipped;       // children of split cubes excluded by their parent's expansion, never evaluated
     uint64_t num_gpu_batches;            // batches of 8 sibling cubes the GPU evaluated
     uint64_t num_gpu_rows;               // their local AOs, summed (rows / batches = mean local AO count)
+    uint64_t num_gpu_factored_batches;   // of them, evaluated in the factored form (desc.density_form)
     double   gpu_gemm_flop;              // arithmetic issued by the D-product kernel, padding included
 } md_topo_gto_info_t;
 

@@ -21,7 +21,7 @@
 // WORK UNIT. A batch is the 8 children of one cube that split (the root lattice is grouped the same
 // way, with a mask for the children that exist). The children share one local AO list, screened by
 // the host against the union of their inflated cubes (extra AOs only add exact contributions), and
-// so one sub-block of D. A chunk of batches runs as four launches, every intermediate in device
+// so one sub-block of D. A chunk of batches runs as four stages, every intermediate in device
 // memory (rows = local AOs of all batches in the chunk, columns = channel * 8 + child):
 //
 //   ao_main     one group per batch. Per local shell, primitive, axis and child side the 1D factors
@@ -34,6 +34,12 @@
 //   epi_main    32 threads per batch: DOT[a][b] = V_a . D V_b with its error sums (which depend on
 //               a only through its derivative order), and the AO sums of the enclosures.   -> ep
 //   decide_main one thread per cube: derivatives, enclosures, tests.                       -> outcome
+//
+// FACTORED FORM. With D = sum_k l_k c_k c_k^T (md_topo.c: cpg_factor_density) a batch whose rank r is
+// well below its local AO count n (cpg_use_factors) takes fgemm + epi_fact instead of gemm_main +
+// epi_main: fgemm transforms its phi rows to r factor rows, c_k . V and |c_k| . (errors, magnitudes,
+// remainders), r n 480 multiply-adds instead of n^2 288; epi_fact runs the same sums over the r rows
+// with X = diag(l) in place of D. Both kinds of batch share a chunk; each kernel skips the other kind.
 //
 // Every sum runs in a fixed order, so a cube's result depends only on its batch, never on the chunk.
 //
@@ -100,8 +106,11 @@ struct Batch {
     float4 P_h;                 // parent centre, child half-width h; children at P +- h (all exact)
     uint4  info;                // child mask (bit s: x side s&1, y side s&2, z side s&4), local AOs n,
                                 // first row, first local shell in batch_shells
-    uint4  info2;               // number of local shells, -, -, -
+    uint4  info2;               // number of local shells, first factor row in fphi (FACT_NONE: the
+                                // batch uses D as a matrix), -, -
 };
+
+#define FACT_NONE 0xFFFFFFFFu
 
 struct RootArgs {
     uint  num_batches;
@@ -114,8 +123,8 @@ struct RootArgs {
     float tail_g;
     float tail_H;
     uint  flags;                // bit 0: write debug
-    uint  _pad0;
-    uint  _pad1;
+    uint  fac_r;                // factors of D (0: none)
+    uint  num_fbatches;         // batches in the factored form
     Batch*    batches;
     uint*     batch_shells;     // global shell index per local shell, ascending per batch
     uint*     row_ao;           // global AO index per row
@@ -132,9 +141,17 @@ struct RootArgs {
     float*    ep;               // EP_W * 8 * num_batches, by field
     uint*     outcome;          // 8 * num_batches
     float*    debug;            // optional, 16 floats per cube
+    float*    fac_C;            // D = sum_k l_k c_k c_k^T: c_k[i] at [i * fac_r + k]
+    float*    fac_l;            // l_k
+    float*    fphi;             // factor rows of the factored batches, phi's layout
+    uint*     fbatches;         // the factored batches' indices
 };
 MD_SHADER_ARGS(RootArgs);
 #define args (*md_root.args)
+
+bool batch_factored(Batch bt) { return bt.info2.y != FACT_NONE; }
+// Rows of the batch's quadratic form: its local AOs, or the factors.
+uint batch_rows(Batch bt) { return batch_factored(bt) ? args.fac_r : bt.info.y; }
 
 // ------------------------------------------------------------------------------------ multi-indices
 // Order 0..4 enumerated as in md_topo.c: by order, then i descending, then j descending.
@@ -654,6 +671,73 @@ GEMM_VARIANT(gemm_v4, 64,  4,  3,  3)   // 128      48                   10 KB
 GEMM_VARIANT(gemm_v5, 16,  4,  9,  1)   // 128      36                   19 KB
 GEMM_VARIANT(gemm_v6, 64,  8,  9,  1)   // 256      72                   22 KB
 
+
+// ---- Factored form (md_topo.c: cpg_factor_density). Per factored batch, its factor rows
+//   fphi[k][c] = sum_j X_c[k][j] phi[j][c],   X = C~^T for the 20 centre values, |C~|^T for the rest,
+// over the batch's local AOs j, C~ the factors in float. Every phi channel is transformed (the 4 value
+// errors go unused), so a factor row has phi's layout: centre values c~_k . V, and |c~_k| . (WV, MV, E)
+// as upper bounds of its value errors, magnitudes and remainder terms (epi_main). One group per
+// (factored batch, GT_-row tile of factors, column block): 5 blocks of 3 x 32 columns (480 >= PHI_W),
+// 32 x TY_ threads, GT_ / TY_ rows and 3 columns each; the sum over j in increasing order.
+#define FGEMM(NAME, GT_, TY_)                                                                            \
+groupshared float NAME##_A[GKC][GT_];                                                                   \
+groupshared float NAME##_B[GKC][96];                                                                    \
+[shader("compute")]                                                                                     \
+[numthreads(32, TY_, 1)]                                                                                \
+void NAME(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {            \
+    const uint R = args.fac_r;                                                                          \
+    const uint tpb = max((R + uint(GT_) - 1u) / uint(GT_), 1u);                                         \
+    const uint cb = gid.x % 5u, t = gid.x / 5u;                                                         \
+    const uint fb = t / tpb;                                                                            \
+    if (fb >= args.num_fbatches) return;                                                                \
+    const uint r0 = (t % tpb) * uint(GT_);                                                              \
+    const Batch bt = args.batches[min(args.fbatches[fb], args.num_batches - 1u)];                       \
+    const uint n = bt.info.y, base = bt.info.z, fbase = bt.info2.y;                                     \
+    const uint tx = gtid.x, ty = gtid.y;                                                                \
+    const uint N = args.num_ao;                                                                         \
+    const uint c0 = cb * 96u;                                                                           \
+    float acc[(GT_) / (TY_)][3];                                                                        \
+    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) [ForceUnroll] for (int j = 0; j < 3; ++j) acc[i][j] = 0.0; \
+    for (uint k0 = 0; k0 < n; k0 += GKC) {                                                              \
+        /* factor tile: GT_ factors x 16 AOs, factors fastest (consecutive in fac_C) */                 \
+        [ForceUnroll] for (int q = 0; q < ((GT_) * GKC) / (32 * (TY_)); ++q) {                          \
+            const uint e = tid + uint(32 * (TY_) * q);                                                  \
+            const uint r = e % uint(GT_), kk = e / uint(GT_);                                           \
+            float c = 0.0;                                                                              \
+            if (r0 + r < R && k0 + kk < n) {                                                            \
+                const uint aj = min(args.row_ao[base + k0 + kk], N - 1u);                               \
+                c = args.fac_C[aj * R + r0 + r];                                                        \
+            }                                                                                           \
+            NAME##_A[kk][r] = c;                                                                        \
+        }                                                                                               \
+        [ForceUnroll] for (int q = 0; q < (GKC * 96) / (32 * (TY_)); ++q) {                             \
+            const uint e = tid + uint(32 * (TY_) * q);                                                  \
+            const uint kk = e / 96u, c = e % 96u;                                                       \
+            float v = 0.0;                                                                              \
+            if (k0 + kk < n && c0 + c < PHI_W) v = args.phi[(base + k0 + kk) * PHI_W + c0 + c];         \
+            NAME##_B[kk][c] = v;                                                                        \
+        }                                                                                               \
+        GroupMemoryBarrierWithGroupSync();                                                              \
+        if (cb == 0u)      GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(0, 3))                    \
+        else if (cb == 1u) GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(1, 3))                    \
+        else               GEMM_VARIANT_STEP(NAME, GT_, TY_, 3, GEMM_ABS_MASK(2, 3))                    \
+        GroupMemoryBarrierWithGroupSync();                                                              \
+    }                                                                                                   \
+    [ForceUnroll] for (int i = 0; i < (GT_) / (TY_); ++i) {                                             \
+        const uint row = r0 + ty * uint((GT_) / (TY_)) + uint(i);                                       \
+        if (row >= R) continue;                                                                         \
+        [ForceUnroll] for (int j = 0; j < 3; ++j) {                                                     \
+            const uint col = c0 + tx + 32u * uint(j);                                                   \
+            if (col < PHI_W) args.fphi[(fbase + row) * PHI_W + col] = acc[i][j];                        \
+        }                                                                                               \
+    }                                                                                                   \
+}
+
+//    name      GT  TY      factors per tile; threads; 8 x 3 outputs per thread
+FGEMM(fgemm16,  16,  2)  // r <= 16;  64
+FGEMM(fgemm32,  32,  4)  // r <= 32; 128
+FGEMM(fgemm64,  64,  8)  // larger;  256
+
 // ================================================================================== epi_main
 // Per child cube, sums over the batch's local AOs (rows) i:
 //   DOT[a][b] = sum_i V_i[a] (D V)_i[b], a = 0..19, b = 0..9, and its error sum, which depends on a only
@@ -669,69 +753,121 @@ GEMM_VARIANT(gemm_v6, 64,  8,  9,  1)   // 256      72                   22 KB
 
 groupshared float gs_part[EPI_WG * 2][17];
 
-// AO sums of one (row, child) added into part[17]: cube [0..10], inflated cube Hessian [11..16].
-void epi_row_parts(uint row, uint k, float h, float hi, float h2, float safe, float fn, inout float part[17]) {
+// One row of the quadratic form for child k, as the enclosure sums use it: ad = |X V| plus its error
+// bound, per channel; q = |X| E[0..5]; qs = |X| (inflated E2, Ea2) in the cube's slots 1, 3..5; the row's
+// own remainder terms e (cube) and ei (inflated cube: slots 1, 3..5, 9..14).
+struct RowIn {
+    float ad[20];
+    float q[6], qs[6];
+    float e[15], ei[15];
+};
+
+// A local AO, X = D: dv and the |D| sums from gemm_main.
+RowIn row_matrix(uint row, uint k, float safe, float fn) {
+    RowIn ri;
     float* P = args.phi + row * PHI_W + k;
     float* Q = args.dv + row * DV_W + k;
     float edv[4];
     [ForceUnroll] for (int o = 0; o < 4; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
-    float ad[20];
-    [ForceUnroll] for (int m = 0; m < 20; ++m) ad[m] = abs(Q[m * 8]) + edv[order_of(m)];
-    float q[6], e[15], ei[15];
-    [ForceUnroll] for (int t = 0; t < 6; ++t) q[t] = Q[(24 + t) * 8] * safe;
-    // inflated |D| sums in the cube's slots: qs[1] = E2, qs[3 + a] = Ea2
-    float qs[6] = { 0.0, Q[30 * 8] * safe, 0.0, Q[31 * 8] * safe, Q[32 * 8] * safe, Q[33 * 8] * safe };
-    [ForceUnroll] for (int t = 0; t < 6; ++t) e[t] = P[(PC_E + t) * 8];
-    [ForceUnroll] for (int t = 0; t < 9; ++t) e[6 + t] = P[(PC_E2 + t) * 8];
-    [ForceUnroll] for (int t = 0; t < 15; ++t) ei[t] = 0.0;
-    ei[1] = P[PC_EI * 8];
-    [ForceUnroll] for (int a = 0; a < 3; ++a) ei[3 + a] = P[(PC_EI + 1 + a) * 8];
-    [ForceUnroll] for (int t = 0; t < 6; ++t) ei[9 + t] = P[(PC_EI2 + t) * 8];
+    [ForceUnroll] for (int m = 0; m < 20; ++m) ri.ad[m] = abs(Q[m * 8]) + edv[order_of(m)];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) { ri.q[t] = Q[(24 + t) * 8] * safe; ri.qs[t] = 0.0; }
+    ri.qs[1] = Q[30 * 8] * safe;
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.qs[3 + a] = Q[(31 + a) * 8] * safe;
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.e[t] = P[(PC_E + t) * 8];
+    [ForceUnroll] for (int t = 0; t < 9; ++t) ri.e[6 + t] = P[(PC_E2 + t) * 8];
+    [ForceUnroll] for (int t = 0; t < 15; ++t) ri.ei[t] = 0.0;
+    ri.ei[1] = P[PC_EI * 8];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.ei[3 + a] = P[(PC_EI + 1 + a) * 8];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.ei[9 + t] = P[(PC_EI2 + t) * 8];
+    return ri;
+}
 
+// Factor row P (fgemm), X = diag(l~), per derivative order o:
+//   MV' = |C~| MV, rounded up;                                                magnitudes
+//   EV' = |C~| WV + 4u MV'                                                    value errors
+//   EDV' = |l~| (EV' + 2u MV')                                                errors of dv = l~ V'
+// |C~| WV bounds the rounding of c~ . V and of V itself (WV = EV + (n + 2) u MV, n the GEMM length).
+// 4u MV' covers D = C~ diag(l~) C~^T + Delta with |Delta| <= 4u sum_k |l~_k c~_k c~_k^T| (the factors in
+// float; the double factorization's residual is far below that): Delta's polynomial part through the
+// DOT error sums (MV' EDV' >= 4u |l~| MV'^2), its remainder part through 'safe'. The GEMM sums have
+// non-negative terms, so 'safe' (>= 1 + (n + 64) u) rounds them up.
+void fac_row_err(float* P, float alam, float safe, float fn, out float mvp[4], out float evp[4], out float edvp[4]) {
+    [ForceUnroll] for (int o = 0; o < 4; ++o) {
+        mvp[o] = P[(PC_MV + o) * 8] * safe;
+        evp[o] = P[(PC_WV + o) * 8] * safe + 4.0 * UF * mvp[o];
+        edvp[o] = alam * (evp[o] + 2.0 * UF * mvp[o]) * safe + fn * 1e-36;
+    }
+}
+
+RowIn row_factor(uint frow, uint f, uint k, float safe, float fn) {
+    RowIn ri;
+    float* P = args.fphi + frow * PHI_W + k;
+    const float lam = args.fac_l[min(f, args.fac_r - 1u)], alam = abs(lam);
+    float mvp[4], evp[4], edvp[4];
+    fac_row_err(P, alam, safe, fn, mvp, evp, edvp);
+    [ForceUnroll] for (int m = 0; m < 20; ++m) ri.ad[m] = abs(lam * P[(PC_V + m) * 8]) + edvp[order_of(m)];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.e[t] = P[(PC_E + t) * 8] * safe;
+    [ForceUnroll] for (int t = 0; t < 9; ++t) ri.e[6 + t] = P[(PC_E2 + t) * 8] * safe;
+    [ForceUnroll] for (int t = 0; t < 15; ++t) ri.ei[t] = 0.0;
+    ri.ei[1] = P[PC_EI * 8] * safe;
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.ei[3 + a] = P[(PC_EI + 1 + a) * 8] * safe;
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.ei[9 + t] = P[(PC_EI2 + t) * 8] * safe;
+    const float aq = alam * (1.0 + 4.0 * UF);
+    [ForceUnroll] for (int t = 0; t < 6; ++t) { ri.q[t] = aq * ri.e[t]; ri.qs[t] = 0.0; }
+    ri.qs[1] = aq * ri.ei[1];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.qs[3 + a] = aq * ri.ei[3 + a];
+    return ri;
+}
+
+// The enclosure sums of one row added into part[17]: cube [0..10], inflated cube Hessian [11..16].
+void epi_row_parts(RowIn ri, float h, float hi, float h2, inout float part[17]) {
     float sum1 = 0.0, sum2 = 0.0;
-    [ForceUnroll] for (int p = 0; p < 3; ++p) { sum1 += ad[M1(p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) sum2 += ad[M2(p, r)]; }
-    const float W = ad[0] + h * sum1 + 0.5 * h2 * sum2;
-    const float W1 = ad[0] + h * sum1;
-    const float W1i = ad[0] + hi * sum1;
+    [ForceUnroll] for (int p = 0; p < 3; ++p) { sum1 += ri.ad[M1(p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) sum2 += ri.ad[M2(p, r)]; }
+    const float W = ri.ad[0] + h * sum1 + 0.5 * h2 * sum2;
+    const float W1 = ri.ad[0] + h * sum1;
+    const float W1i = ri.ad[0] + hi * sum1;
     float Wa[3], W1a[3], W1ai[3], W1ab[6], W1abi[6];
     [ForceUnroll] for (int a = 0; a < 3; ++a) {
         float t1 = 0.0, t2 = 0.0;
-        [ForceUnroll] for (int p = 0; p < 3; ++p) { t1 += ad[M2(a, p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) t2 += ad[M3(a, p, r)]; }
-        Wa[a] = ad[M1(a)] + h * t1 + 0.5 * h2 * t2;
-        W1a[a] = ad[M1(a)] + h * t1;
-        W1ai[a] = ad[M1(a)] + hi * t1;
+        [ForceUnroll] for (int p = 0; p < 3; ++p) { t1 += ri.ad[M2(a, p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) t2 += ri.ad[M3(a, p, r)]; }
+        Wa[a] = ri.ad[M1(a)] + h * t1 + 0.5 * h2 * t2;
+        W1a[a] = ri.ad[M1(a)] + h * t1;
+        W1ai[a] = ri.ad[M1(a)] + hi * t1;
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
         if (bq >= a) {
             float t1 = 0.0;
-            [ForceUnroll] for (int p = 0; p < 3; ++p) t1 += ad[M3(a, bq, p)];
-            W1ab[ab_index(a, bq)] = ad[M2(a, bq)] + h * t1;
-            W1abi[ab_index(a, bq)] = ad[M2(a, bq)] + hi * t1;
+            [ForceUnroll] for (int p = 0; p < 3; ++p) t1 += ri.ad[M3(a, bq, p)];
+            W1ab[ab_index(a, bq)] = ri.ad[M2(a, bq)] + h * t1;
+            W1abi[ab_index(a, bq)] = ri.ad[M2(a, bq)] + hi * t1;
         }
     }
-    part[0] += ad[0] * e[0];
-    part[1] += e[0] * q[0];
-    [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += e[6 + a] * W + e[2] * Wa[a] + e[6 + a] * q[2];
+    part[0] += ri.ad[0] * ri.e[0];
+    part[1] += ri.e[0] * ri.q[0];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += ri.e[6 + a] * W + ri.e[2] * Wa[a] + ri.e[6 + a] * ri.q[2];
     [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
         if (bq >= a) {
             const int t = ab_index(a, bq);
-            part[5 + t] += e[9 + t] * W1 + W1ab[t] * e[1] + e[9 + t] * q[1] + e[3 + a] * W1a[bq] + W1a[a] * e[3 + bq] + e[3 + a] * q[3 + bq];
-            part[11 + t] += ei[9 + t] * W1i + W1abi[t] * ei[1] + ei[9 + t] * qs[1] + ei[3 + a] * W1ai[bq] + W1ai[a] * ei[3 + bq] + ei[3 + a] * qs[3 + bq];
+            part[5 + t] += ri.e[9 + t] * W1 + W1ab[t] * ri.e[1] + ri.e[9 + t] * ri.q[1] + ri.e[3 + a] * W1a[bq] + W1a[a] * ri.e[3 + bq] + ri.e[3 + a] * ri.q[3 + bq];
+            part[11 + t] += ri.ei[9 + t] * W1i + W1abi[t] * ri.ei[1] + ri.ei[9 + t] * ri.qs[1] + ri.ei[3 + a] * W1ai[bq] + W1ai[a] * ri.ei[3 + bq] + ri.ei[3 + a] * ri.qs[3 + bq];
         }
     }
 }
 
-[shader("compute")]
-[numthreads(EPI_WG, 1, 1)]
-void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+// epi_main takes the batches in the matrix form, epi_fact those in the factored form (rows: the factors,
+// X = diag(l~)); each skips the other's.
+[ForceInline]
+void epi_body(uint3 gid, uint tid, bool fact) {
     const uint slot = tid >> 5, lane = tid & 31u;
     const uint g = lane >> 3, k = lane & 7u;
     const uint b = gid.x * 2u + slot;
-    const bool live = b < args.num_batches;  // not uniform per group: no early return before the barrier
     const Batch bt = args.batches[min(b, args.num_batches - 1u)];
+    const bool live = b < args.num_batches && batch_factored(bt) == fact;   // not uniform per group: no early return
     const float h = bt.P_h.w, hi = 1.5 * h;
-    const uint n = live ? bt.info.y : 0u, base = bt.info.z;
-    const float fn = float(bt.info.y);
+    const uint nrows = batch_rows(bt);
+    const uint n = live ? nrows : 0u;
+    const uint rbase = fact ? bt.info2.y : bt.info.z;
+    const float fn = float(max(bt.info.y, nrows));
     const float safe = 1.001 + (fn + 64.0) * UF;
     const float h2 = h * h;
 
@@ -740,28 +876,38 @@ void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     [ForceUnroll] for (int a = 0; a < 5; ++a) [ForceUnroll] for (int j = 0; j < 10; ++j) s[a][j] = 0.0;
     [ForceUnroll] for (int j = 0; j < 10; ++j) eo[j] = 0.0;
     for (uint i = 0; i < n; ++i) {
-        float* P = args.phi + (base + i) * PHI_W + k;
-        float* Q = args.dv + (base + i) * DV_W + k;
-        float dvb[10], edv[3];
-        [ForceUnroll] for (int j = 0; j < 10; ++j) dvb[j] = Q[j * 8];
-        [ForceUnroll] for (int o = 0; o < 3; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
-        [ForceUnroll] for (int a = 0; a < 5; ++a) {
-            const float va = P[(PC_V + 5u * g + uint(a)) * 8u];
-            [ForceUnroll] for (int j = 0; j < 10; ++j) s[a][j] += va * dvb[j];
+        float va[5], dvb[10], edv[3], ea, ma;
+        if (fact) {
+            float* P = args.fphi + (rbase + i) * PHI_W + k;
+            const float lam = args.fac_l[min(i, args.fac_r - 1u)];
+            float mvp[4], evp[4], edvp[4];
+            fac_row_err(P, abs(lam), safe, fn, mvp, evp, edvp);
+            [ForceUnroll] for (int j = 0; j < 10; ++j) dvb[j] = lam * P[(PC_V + j) * 8];
+            [ForceUnroll] for (int o = 0; o < 3; ++o) edv[o] = edvp[o];
+            [ForceUnroll] for (int a = 0; a < 5; ++a) va[a] = P[(PC_V + 5u * g + uint(a)) * 8u];
+            ea = evp[g]; ma = mvp[g];
+        } else {
+            float* P = args.phi + (rbase + i) * PHI_W + k;
+            float* Q = args.dv + (rbase + i) * DV_W + k;
+            [ForceUnroll] for (int j = 0; j < 10; ++j) dvb[j] = Q[j * 8];
+            [ForceUnroll] for (int o = 0; o < 3; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
+            [ForceUnroll] for (int a = 0; a < 5; ++a) va[a] = P[(PC_V + 5u * g + uint(a)) * 8u];
+            ea = P[(PC_EV + g) * 8u]; ma = P[(PC_MV + g) * 8u];
         }
-        const float ea = P[(PC_EV + g) * 8u], ma = P[(PC_MV + g) * 8u];
+        [ForceUnroll] for (int a = 0; a < 5; ++a) [ForceUnroll] for (int j = 0; j < 10; ++j) s[a][j] += va[a] * dvb[j];
         [ForceUnroll] for (int j = 0; j < 10; ++j) {
             const float adv = abs(dvb[j]), ed = edv[order_of(j)];
             eo[j] += ea * (adv + ed) + ma * ed + (fn + 1.0) * UF * ma * adv;
         }
     }
 
-    // ---- AO sums: lanes g and g + 4 of the rows taken 8 at a time
+    // ---- enclosure sums: lanes g and g + 4 of the rows taken 8 at a time
     float pa[17], pb[17];
     [ForceUnroll] for (int t = 0; t < 17; ++t) { pa[t] = 0.0; pb[t] = 0.0; }
     for (uint i0 = 0; i0 < n; i0 += 8u) {
-        if (i0 + g < n)      epi_row_parts(base + i0 + g, k, h, hi, h2, safe, fn, pa);
-        if (i0 + g + 4u < n) epi_row_parts(base + i0 + g + 4u, k, h, hi, h2, safe, fn, pb);
+        const uint ia = i0 + g, ib = i0 + g + 4u;
+        if (ia < n) epi_row_parts(fact ? row_factor(rbase + ia, ia, k, safe, fn) : row_matrix(rbase + ia, k, safe, fn), h, hi, h2, pa);
+        if (ib < n) epi_row_parts(fact ? row_factor(rbase + ib, ib, k, safe, fn) : row_matrix(rbase + ib, k, safe, fn), h, hi, h2, pb);
     }
 
     // ---- outputs
@@ -788,6 +934,14 @@ void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         [ForceUnroll] for (int t = 0; t < 6; ++t) o2[(EP_PI + t) * fs] = tot[11 + t];
     }
 }
+
+[shader("compute")]
+[numthreads(EPI_WG, 1, 1)]
+void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { epi_body(gid, tid, false); }
+
+[shader("compute")]
+[numthreads(EPI_WG, 1, 1)]
+void epi_fact(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { epi_body(gid, tid, true); }
 
 // ================================================================================== decide_main
 
@@ -1135,7 +1289,7 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const float h = bt.P_h.w, hi = 1.5 * h;
     const float h2 = h * h, h3 = h2 * h, hi2 = hi * hi;
     const uint n = bt.info.y;
-    const float fn = float(n);
+    const float fn = float(max(n, batch_rows(bt)));       // terms per sum: the GEMM's and the rows'
     const float safe = 1.001 + (fn + 64.0) * UF;
     const uint fs = 8u * args.num_batches;
     float* E = args.ep + cube;
