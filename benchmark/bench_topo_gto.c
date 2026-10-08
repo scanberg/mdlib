@@ -18,6 +18,10 @@
 //                   (it should be: the sums run in the same order)
 //   --fgemm <v>     factored-form GEMM tiling v (default: by the rank of D)
 //   --fgemm-sweep   the same as --gemm-sweep for the factored form's GEMM (every batch factored)
+//   --device <sel>  GPU adapter: an index from --list-devices or a case-insensitive part of its name
+//                   ("intel", "3080"); without it MD_GPU_DEVICE is honoured, then --prefer
+//   --prefer <p>    high-performance (default: discrete first) or low-power (integrated first)
+//   --list-devices  list the GPU adapters and exit
 //   --data <dir>    test_data directory (default: the source tree's)
 //   --verbose       keep mdlib's info and debug log lines (default: errors only)
 //
@@ -320,6 +324,11 @@ int main(int argc, char** argv) {
     int gemm_variant = -1;     // -1: the tiling md_topo picks for the GPU
     int fgemm_variant = -1;
     md_topo_gto_density_form_t density_form = MD_TOPO_GTO_DENSITY_AUTO;
+    const char* device_sel = NULL;
+    bool list_devices = false;
+#if MD_ENABLE_GPU
+    md_gpu_device_preference_t preference = MD_GPU_DEVICE_PREFER_DEFAULT;
+#endif
     const char* data_dir = MD_BENCHMARK_DATA_DIR;
     const char* names[64];
     int num_names = 0;
@@ -337,6 +346,18 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--gemm-sweep")) gemm_sweep = true;
         else if (!strcmp(a, "--fgemm") && i + 1 < argc) fgemm_variant = atoi(argv[++i]);
         else if (!strcmp(a, "--fgemm-sweep")) fgemm_sweep = true;
+        else if (!strcmp(a, "--device") && i + 1 < argc) device_sel = argv[++i];
+        else if (!strcmp(a, "--list-devices")) list_devices = true;
+        else if (!strcmp(a, "--prefer") && i + 1 < argc) {
+            const char* pv = argv[++i];
+#if MD_ENABLE_GPU
+            if (!strcmp(pv, "high-performance")) preference = MD_GPU_DEVICE_PREFER_HIGH_PERFORMANCE;
+            else if (!strcmp(pv, "low-power")) preference = MD_GPU_DEVICE_PREFER_LOW_POWER;
+            else { fprintf(stderr, "--prefer %s: high-performance or low-power\n", pv); return 1; }
+#else
+            (void)pv;
+#endif
+        }
         else if (!strcmp(a, "--density") && i + 1 < argc) {
             const char* f = argv[++i];
             if (!strcmp(f, "auto")) density_form = MD_TOPO_GTO_DENSITY_AUTO;
@@ -346,7 +367,7 @@ int main(int argc, char** argv) {
         }
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--density auto|matrix|factored] [--gemm v] [--gemm-sweep] [--fgemm v] [--fgemm-sweep] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
+            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--profile] [--density auto|matrix|factored] [--gemm v] [--gemm-sweep] [--fgemm v] [--fgemm-sweep] [--device sel] [--prefer high-performance|low-power] [--list-devices] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
             return 0;
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option %s (see --help)\n", a); return 1; }
@@ -374,9 +395,25 @@ int main(int argc, char** argv) {
     void* stream = NULL;
     char gpu_name[300] = "none";
 #if MD_ENABLE_GPU
+    if (list_devices) {
+        static const char* type_name[] = { "other", "discrete", "integrated", "virtual", "cpu" };
+        md_gpu_adapter_info_t adapters[16];
+        const uint32_t n = md_gpu_enumerate_adapters(adapters, 16);
+        if (n == 0) printf("no GPU adapters (%s)\n", md_gpu_last_error() ? md_gpu_last_error() : "none found");
+        for (uint32_t i = 0; i < n && i < 16; ++i) {
+            const md_gpu_adapter_info_t* ad = &adapters[i];
+            printf("%u: %s (0x%04X:0x%04X, %s)%s%s\n", i, ad->name, ad->vendor_id, ad->device_id,
+                   (unsigned)ad->type < 5 ? type_name[ad->type] : "?", ad->usable ? "" : ", not usable: ", ad->usable ? "" : ad->missing);
+        }
+        return 0;
+    }
     md_gpu_device_t dev = NULL;
     if (want_gpu) {
-        dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .label = "md_topo_gto_bench" });
+        dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .adapter = device_sel, .preference = preference, .label = "md_topo_gto_bench" });
+        if (!dev && device_sel) {
+            fprintf(stderr, "--device %s: %s (see --list-devices)\n", device_sel, md_gpu_last_error());
+            return 1;
+        }
         if (dev) {
             md_gpu_device_info_t di = {0};
             md_gpu_device_info(dev, &di);
@@ -388,6 +425,8 @@ int main(int argc, char** argv) {
         }
     }
 #else
+    (void)device_sel;
+    if (list_devices) { printf("no GPU support in this build (MD_ENABLE_GPU=OFF)\n"); return 0; }
     snprintf(gpu_name, sizeof(gpu_name), "none (MD_ENABLE_GPU=OFF)");
 #endif
     if (want_gpu && !stream) want_gpu = false;
