@@ -2089,7 +2089,7 @@ static bool md_mtl_blob_is_metallib(const void* code, size_t size) {
     return size >= 4 && memcmp(code, "MTLB", 4) == 0;
 }
 
-static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void* code, size_t size, const char* who) {
+static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void* code, size_t size, const char* who, bool precise_math) {
     /* The embedded MSL has no terminator; copy it into one so the autoreleased
        +stringWithUTF8String: can be used, which also rejects non-UTF-8. */
     char* buf = (char*)md_alloc(dev->alloc, size + 1);
@@ -2104,24 +2104,24 @@ static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void
     }
 
     NSError* err = nil;
-    MTLCompileOptions* opts = nil;
-#if defined(MD_GPU_METAL_FAST_MATH) && !MD_GPU_METAL_FAST_MATH
-    /* Built with MD_GPU_METAL_FAST_MATH=OFF: IEEE semantics, as -fno-fast-math on the offline path. */
-    opts = [[MTLCompileOptions alloc] init];
+    MTLCompileOptions* opts = nil;      /* nil: Metal's defaults, fast math */
+    if (precise_math) {
+        /* IEEE semantics, as -fno-fast-math on the offline path (compile_gpu_shaders PRECISE_MATH) */
+        opts = [[MTLCompileOptions alloc] init];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #if defined(__MAC_15_0)
-    if (@available(macOS 15.0, *)) {
-        opts.mathMode = MTLMathModeSafe;
-        opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
-    } else {
-        opts.fastMathEnabled = NO;
-    }
+        if (@available(macOS 15.0, *)) {
+            opts.mathMode = MTLMathModeSafe;
+            opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+        } else {
+            opts.fastMathEnabled = NO;
+        }
 #else
-    opts.fastMathEnabled = NO;
+        opts.fastMathEnabled = NO;
 #endif
 #pragma clang diagnostic pop
-#endif
+    }
     id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:opts error:&err];
 #if !__has_feature(objc_arc)
     [opts release];
@@ -2137,10 +2137,10 @@ static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void
     return lib;
 }
 
-static id<MTLLibrary> md_mtl_library_from_blob(md_gpu_device_t dev, const void* code, size_t size, const char* label) {
+static id<MTLLibrary> md_mtl_library_from_blob(md_gpu_device_t dev, const void* code, size_t size, const char* label, bool precise_math) {
     const char* who = label ? label : "kernel";
     if (!md_mtl_blob_is_metallib(code, size)) {
-        return md_mtl_library_from_source(dev, code, size, who);
+        return md_mtl_library_from_source(dev, code, size, who, precise_math);
     }
     NSError* err = nil;
     dispatch_data_t data = dispatch_data_create(code, size, dispatch_get_main_queue(),
@@ -2240,7 +2240,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
 
     md_gpu_kernel_t k = NULL;
     @autoreleasepool {
-        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, desc->code, desc->code_size, label);
+        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, desc->code, desc->code_size, label, desc->precise_math);
         if (lib) {
             k = md_mtl_kernel_from_library(dev, lib, desc->entry_point ? desc->entry_point : "main",
                                            label, desc->group_size, desc->args_size);
@@ -2537,8 +2537,8 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
 
     bool ok = true;
     @autoreleasepool {
-        id<MTLLibrary>  vlib = md_mtl_library_from_blob(dev, desc->vertex.code, desc->vertex.code_size, label);
-        id<MTLLibrary>  flib = has_fs && vlib ? md_mtl_library_from_blob(dev, desc->fragment.code, desc->fragment.code_size, label) : nil;
+        id<MTLLibrary>  vlib = md_mtl_library_from_blob(dev, desc->vertex.code, desc->vertex.code_size, label, desc->vertex.precise_math);
+        id<MTLLibrary>  flib = has_fs && vlib ? md_mtl_library_from_blob(dev, desc->fragment.code, desc->fragment.code_size, label, desc->fragment.precise_math) : nil;
         id<MTLFunction> vfn  = vlib ? md_mtl_find_function(vlib, desc->vertex.entry_point ? desc->vertex.entry_point : "main") : nil;
         id<MTLFunction> ffn  = flib ? md_mtl_find_function(flib, desc->fragment.entry_point ? desc->fragment.entry_point : "main") : nil;
         if (!vlib || (has_fs && !flib)) {
@@ -3356,14 +3356,14 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
     @autoreleasepool {
         /* Hand-written MSL, never through slangc, so always compiled from source. */
-        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, md_gpu_make_grid_msl, strlen(md_gpu_make_grid_msl), "md_gpu make_grid");
+        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, md_gpu_make_grid_msl, strlen(md_gpu_make_grid_msl), "md_gpu make_grid", false);
         if (!lib) return false;
         const uint32_t gs[3] = {1, 1, 1};
         dev->make_grid_kernel = md_mtl_kernel_from_library(dev, lib, "md_gpu_make_grid", "md_gpu make_grid",
                                                            gs, (uint32_t)sizeof(md_mtl_make_grid_args_t));
         MD_MTL_DROP_NEW(lib);
 
-        id<MTLLibrary> blib = md_mtl_library_from_blob(dev, md_gpu_byte_op_msl, strlen(md_gpu_byte_op_msl), "md_gpu byte_op");
+        id<MTLLibrary> blib = md_mtl_library_from_blob(dev, md_gpu_byte_op_msl, strlen(md_gpu_byte_op_msl), "md_gpu byte_op", false);
         if (!blib) return false;
         const uint32_t bgs[3] = {MD_MTL_BYTE_OP_GROUP, 1, 1};
         dev->byte_op_kernel = md_mtl_kernel_from_library(dev, blib, "md_gpu_byte_op", "md_gpu byte_op",

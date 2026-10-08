@@ -17,7 +17,15 @@
 #       VERTEX   <entry> [<entry> ...]     # vertex stages
 #       FRAGMENT <entry> [<entry> ...]     # fragment stages
 #       DEPENDS  <file> [<file> ...]       # optional: files the source #includes
+#       PRECISE_MATH                       # optional: IEEE floating point on Metal (see below)
 #   )
+#
+# PRECISE_MATH: Metal compiles with fast math by default (reassociation and other algebraic rewrites,
+# no NaN / Inf, fast math functions), and so do these shaders unless they opt out with PRECISE_MATH,
+# for code whose correctness depends on IEEE semantics (md_topo's certified kernels). The offline
+# compiler gets -fno-fast-math; for MSL compiled at runtime the generated descriptors carry
+# precise_math, which md_gpu_metal turns into the matching MTLCompileOptions. Vulkan has no fast-math
+# mode, so there it changes nothing.
 #
 # At least one of ENTRIES / VERTEX / FRAGMENT is required. Produces, for each
 # entry point, symbols
@@ -121,7 +129,7 @@ endif()
 function(compile_gpu_shaders OUT_HEADER)
     set(oneValueArgs TARGET NAMESPACE SOURCE)
     set(multiValueArgs ENTRIES VERTEX FRAGMENT DEPENDS)
-    cmake_parse_arguments(G2 "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+    cmake_parse_arguments(G2 "PRECISE_MATH" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if (NOT G2_TARGET OR NOT G2_NAMESPACE OR NOT G2_SOURCE)
         message(FATAL_ERROR "compile_gpu_shaders: TARGET, NAMESPACE and SOURCE are required")
@@ -136,6 +144,12 @@ function(compile_gpu_shaders OUT_HEADER)
     endif()
     if (G2_FRAGMENT)
         list(APPEND STAGE_ARGS --fragment ${G2_FRAGMENT})
+    endif()
+    set(MATH_ARGS "")               # descriptors: precise_math
+    set(METAL_MATH_FLAGS "")        # offline Metal compiler
+    if (G2_PRECISE_MATH)
+        set(MATH_ARGS --precise-math)
+        set(METAL_MATH_FLAGS -fno-fast-math)
     endif()
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "compile_gpu_shaders: SLANG_EXECUTABLE not defined")
@@ -184,6 +198,7 @@ function(compile_gpu_shaders OUT_HEADER)
             --bindless-space ${MD_GPU_BINDLESS_SPACE}
             --emit ${KERNELS_INL}
             --namespace ${G2_NAMESPACE}
+            ${MATH_ARGS}
             ${ABS_SRC} ${G2_ENTRIES} ${STAGE_ARGS}
         COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
         DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_SCRIPT}
@@ -225,10 +240,6 @@ function(compile_gpu_shaders OUT_HEADER)
             )
             if (MD_GPU_METAL_COMPILER)
                 set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.metallib")
-                set(METAL_MATH_FLAGS "")                    # MD_GPU_METAL_FAST_MATH, see CMakeLists.txt
-                if (DEFINED MD_GPU_METAL_FAST_MATH AND NOT MD_GPU_METAL_FAST_MATH)
-                    set(METAL_MATH_FLAGS -fno-fast-math)
-                endif()
                 add_custom_command(
                     OUTPUT ${BIN}
                     COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_MATH_FLAGS} ${MSL} -o ${AIR}

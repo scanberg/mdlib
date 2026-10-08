@@ -783,6 +783,13 @@ typedef struct md_gpu_kernel_desc_t {
     /* sizeof the argument struct. A launch passing a different size fails.
        0 = unchecked. */
     uint32_t    args_size;
+
+    /* IEEE floating point rather than the backend's default. Metal compiles
+       with fast math by default (algebraic rewrites, no NaN / Inf); this asks
+       for MTLMathModeSafe when the code is MSL compiled at runtime (a metallib
+       was compiled with -fno-fast-math already). No effect on Vulkan. Set by
+       the generated descriptor of a shader compiled with PRECISE_MATH. */
+    bool        precise_math;
 } md_gpu_kernel_desc_t;
 
 /* Normally fed straight from the generated descriptor:
@@ -912,6 +919,7 @@ typedef struct md_gpu_shader_t {
     size_t      code_size;
     const char* entry_point;
     uint32_t    args_size;        /* 0: the entry point takes no arguments  */
+    bool        precise_math;     /* as md_gpu_kernel_desc_t.precise_math    */
 } md_gpu_shader_t;
 
 typedef enum md_gpu_topology_t {

@@ -237,7 +237,7 @@ set(TOPO_SLANG_FILES
   src/shaders/topo/critical_points.slang
   src/shaders/topo/vertex_edge_extraction.slang
 )
-# The GTO critical point search: four entry points sharing one argument struct.
+# The GTO critical point search: its kernels share one argument struct.
 set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
 set(GTO_SLANG_FILES
@@ -281,16 +281,6 @@ if (MD_ENABLE_GPU)
     list(APPEND MD_DEFINES MD_GPU_BACKEND_VULKAN=1)
   elseif (MD_GPU_BACKEND STREQUAL "METAL")
     list(APPEND MD_DEFINES MD_GPU_BACKEND_METAL=1)
-    # Metal compiles with fast math unless told otherwise. OFF: IEEE semantics for every Metal shader,
-    # offline (-fno-fast-math) and at runtime (MTLCompileOptions), e.g. to compare md_topo's certified
-    # kernels, whose rounding margins assume IEEE + - *, with and without it.
-    option(MD_GPU_METAL_FAST_MATH "Compile Metal shaders with fast math (Metal's default)" ON)
-    if (MD_GPU_METAL_FAST_MATH)
-      list(APPEND MD_DEFINES MD_GPU_METAL_FAST_MATH=1)
-    else()
-      list(APPEND MD_DEFINES MD_GPU_METAL_FAST_MATH=0)
-    endif()
-    message(STATUS "mdlib: Metal fast math = ${MD_GPU_METAL_FAST_MATH}")
   endif()
   list(APPEND MD_DEFINES MD_ENABLE_GPU=1)
 
@@ -539,6 +529,7 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
+    PRECISE_MATH      # the rounding margins of the certificate assume IEEE + - * (no fast-math rewrites)
     ENTRIES   ao_main gemm_main epi_main decide_main gemm_v1 gemm_v2 gemm_v3 gemm_v4 gemm_v5 gemm_v6
               fgemm16 fgemm32 fgemm64 epi_fact
   )
