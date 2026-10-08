@@ -405,100 +405,127 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
     const uint tab0 = gs_cs_tab[cs];
     float* out = args.phi + row * PHI_W + k;
 
-    // ---- centre values, magnitudes, errors
-    float V[20], MV[20], EV[20];
-    [ForceUnroll] for (int m = 0; m < 20; ++m) { V[m] = 0.0; MV[m] = 0.0; EV[m] = 0.0; }
-    for (uint p = 0; p < np; ++p) {
-        const float cfn = args.coeff[sh.info.x + p] * nrm, acfn = abs(cfn);
-        const uint bx = tab0 + ((p * 3u + 0u) * 2u + sx) * te;
-        const uint by = tab0 + ((p * 3u + 1u) * 2u + sy) * te;
-        const uint bz = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
-        float gx[4], gy[4], gz[4], Gx[4], Gy[4], Gz[4];
-        [ForceUnroll] for (int a = 0; a < 4; ++a) {
-            gx[a] = gs_tab[bx + uint(a) * l1 + uint(e.x)]; Gx[a] = gs_tab[bx + (6u + uint(a)) * l1 + uint(e.x)];
-            gy[a] = gs_tab[by + uint(a) * l1 + uint(e.y)]; Gy[a] = gs_tab[by + (6u + uint(a)) * l1 + uint(e.y)];
-            gz[a] = gs_tab[bz + uint(a) * l1 + uint(e.z)]; Gz[a] = gs_tab[bz + (6u + uint(a)) * l1 + uint(e.z)];
+    // ---- centre values, magnitudes, errors: two passes over the primitives, derivative orders 0..2
+    //      and order 3, so that only one half of the sums is live. Each sum is the same as in one pass.
+    [ForceUnroll] for (int g = 0; g < 2; ++g) {
+        const int mb = g == 0 ? 0 : 10, me = g == 0 ? 10 : 20;
+        const int na = g == 0 ? 3 : 4;        // 1D orders a < na
+        const int ob = g == 0 ? 0 : 3, oe = g == 0 ? 3 : 4;
+        float V[10], MV[10], EV[10];
+        [ForceUnroll] for (int j = 0; j < 10; ++j) { V[j] = 0.0; MV[j] = 0.0; EV[j] = 0.0; }
+        for (uint p = 0; p < np; ++p) {
+            const float cfn = args.coeff[sh.info.x + p] * nrm, acfn = abs(cfn);
+            const uint bx = tab0 + ((p * 3u + 0u) * 2u + sx) * te;
+            const uint by = tab0 + ((p * 3u + 1u) * 2u + sy) * te;
+            const uint bz = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
+            float gx[4], gy[4], gz[4], Gx[4], Gy[4], Gz[4];
+            [ForceUnroll] for (int a = 0; a < 4; ++a) {
+                gx[a] = 0.0; gy[a] = 0.0; gz[a] = 0.0; Gx[a] = 0.0; Gy[a] = 0.0; Gz[a] = 0.0;
+                if (a < na) {
+                    gx[a] = gs_tab[bx + uint(a) * l1 + uint(e.x)]; Gx[a] = gs_tab[bx + (6u + uint(a)) * l1 + uint(e.x)];
+                    gy[a] = gs_tab[by + uint(a) * l1 + uint(e.y)]; Gy[a] = gs_tab[by + (6u + uint(a)) * l1 + uint(e.y)];
+                    gz[a] = gs_tab[bz + uint(a) * l1 + uint(e.z)]; Gz[a] = gs_tab[bz + (6u + uint(a)) * l1 + uint(e.z)];
+                }
+            }
+            float eps = 5.0 * UF;
+            eps += gs_tab[bx + 12u * l1];
+            eps += gs_tab[by + 12u * l1];
+            eps += gs_tab[bz + 12u * l1];
+            [ForceUnroll] for (int m = 0; m < 20; ++m) if (m >= mb && m < me) {
+                const int3 d = mi_of(m);
+                const float term = cfn * gx[d.x] * gy[d.y] * gz[d.z];
+                const float mag = acfn * Gx[d.x] * Gy[d.y] * Gz[d.z];
+                V[m - mb] += term; MV[m - mb] += mag; EV[m - mb] += mag * eps;
+            }
         }
-        float eps = 5.0 * UF;
-        eps += gs_tab[bx + 12u * l1];
-        eps += gs_tab[by + 12u * l1];
-        eps += gs_tab[bz + 12u * l1];
-        [ForceUnroll] for (int m = 0; m < 20; ++m) {
-            const int3 d = mi_of(m);
-            const float term = cfn * gx[d.x] * gy[d.y] * gz[d.z];
-            const float mag = acfn * Gx[d.x] * Gy[d.y] * Gz[d.z];
-            V[m] += term; MV[m] += mag; EV[m] += mag * eps;
+        float WVo[4] = { 0.0, 0.0, 0.0, 0.0 }, MVo[4] = { 0.0, 0.0, 0.0, 0.0 }, EVo[4] = { 0.0, 0.0, 0.0, 0.0 };
+        [ForceUnroll] for (int m = 0; m < 20; ++m) if (m >= mb && m < me) {
+            const float ev = (EV[m - mb] + float(np + 1u) * UF * MV[m - mb]) * 1.001 + 1e-36;
+            const int o = order_of(m);
+            WVo[o] = max(WVo[o], ev + float(n + 2u) * UF * MV[m - mb]);
+            MVo[o] = max(MVo[o], MV[m - mb]);
+            EVo[o] = max(EVo[o], ev);
         }
+        [ForceUnroll] for (int m = 0; m < 20; ++m) if (m >= mb && m < me) out[(PC_V + m) * 8] = V[m - mb];
+        [ForceUnroll] for (int o = 0; o < 4; ++o) if (o >= ob && o < oe) { out[(PC_WV + o) * 8] = WVo[o]; out[(PC_MV + o) * 8] = MVo[o]; out[(PC_EV + o) * 8] = EVo[o]; }
     }
-    float WVo[4] = { 0.0, 0.0, 0.0, 0.0 }, MVo[4] = { 0.0, 0.0, 0.0, 0.0 }, EVo[4] = { 0.0, 0.0, 0.0, 0.0 };
-    [ForceUnroll] for (int m = 0; m < 20; ++m) {
-        const float ev = (EV[m] + float(np + 1u) * UF * MV[m]) * 1.001 + 1e-36;
-        const int o = order_of(m);
-        WVo[o] = max(WVo[o], ev + float(n + 2u) * UF * MV[m]);
-        MVo[o] = max(MVo[o], MV[m]);
-        EVo[o] = max(EVo[o], ev);
-    }
-    [ForceUnroll] for (int m = 0; m < 20; ++m) out[(PC_V + m) * 8] = V[m];
-    [ForceUnroll] for (int o = 0; o < 4; ++o) { out[(PC_WV + o) * 8] = WVo[o]; out[(PC_MV + o) * 8] = MVo[o]; out[(PC_EV + o) * 8] = EVo[o]; }
 
     // ---- remainder vectors, cube and inflated cube: separable bounds (cpg_shell_rem in md_topo.c).
     //      E[0] E1, [1] E2, [2] E3, [3..5] Ea2, [6..8] Ea3, [9..14] Eab2 (a <= b); the inflated cube
     //      needs only the K = 2 slots (E2, Ea2, Eab2). Every term is a product of non-negative upper
     //      bounds and every sum adds non-negative terms, so the rounding of the whole chain (at most
     //      ~40 operations, plus the sum over primitives) is covered by one relative factor.
+    //      One loop over the primitives per group of slots, so only that group's terms are live.
     const float fE = 1.0 + float(2u * np + 96u) * UF;
-    [ForceUnroll] for (int pass = 0; pass < 2; ++pass) {
+    const float flush = float(np) * 1e-36;   // + what a flush may have lost
+    const uint ei[3] = { uint(e.x), uint(e.y), uint(e.z) };
+    // K = 2: E2, Ea2, Eab2 from the factors (be, P) = (0,3) (1,3) (2,3) per axis; cube, then inflated cube
+    [loop] for (int pass = 0; pass < 2; ++pass) {
         const float hh = pass == 0 ? h : 1.5 * h;
         float hp[7];
         hp[0] = 1.0;
         [ForceUnroll] for (int m = 1; m < 7; ++m) hp[m] = hp[m - 1] * hh;
         const uint soff = 12u * l1 + 2u + uint(pass) * 4u * l1;
-        float E[15];
-        [ForceUnroll] for (int t = 0; t < 15; ++t) E[t] = 0.0;
+        float E[10];                          // E[1], E[3..5], E[9..14]
+        [ForceUnroll] for (int t = 0; t < 10; ++t) E[t] = 0.0;
         for (uint p = 0; p < np; ++p) {
             const float w = abs(args.coeff[sh.info.x + p]) * nrm;
             uint tb[3];
             tb[0] = tab0 + ((p * 3u + 0u) * 2u + sx) * te;
             tb[1] = tab0 + ((p * 3u + 1u) * 2u + sy) * te;
             tb[2] = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
-            const uint ei[3] = { uint(e.x), uint(e.y), uint(e.z) };
-            // K = 2: E2, Ea2, Eab2 from the factors (be, P) = (0,3) (1,3) (2,3) per axis
-            {
-                float u[3][3][3], S[3][3][4];
-                [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 3; ++be) axis_terms(tb[k], l1, ei[k], be, 3, hp, soff, u[k][be], S[k][be]);
-                E[1] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][0]);
-                E[3] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][0]);
-                E[4] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][0]);
-                E[5] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][1]);
-                E[9]  += w * sep_bound(2, u[0][2], S[0][2], u[1][0], S[1][0], S[2][0]);   // xx
-                E[10] += w * sep_bound(2, u[0][1], S[0][1], u[1][1], S[1][1], S[2][0]);   // xy
-                E[11] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][1]);   // xz
-                E[12] += w * sep_bound(2, u[0][0], S[0][0], u[1][2], S[1][2], S[2][0]);   // yy
-                E[13] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][1]);   // yz
-                E[14] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][2]);   // zz
-            }
-            if (pass == 0) {
-                // K = 1: E1 from (0,2); K = 3: E3, Ea3 from (0,4) (1,4)
-                float u[3][3], S[3][4];
-                [ForceUnroll] for (int k = 0; k < 3; ++k) axis_terms(tb[k], l1, ei[k], 0, 2, hp, soff, u[k], S[k]);
-                E[0] += w * sep_bound(1, u[0], S[0], u[1], S[1], S[2]);
-                float v[3][2][3], T[3][2][4];
-                [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 2; ++be) axis_terms(tb[k], l1, ei[k], be, 4, hp, soff, v[k][be], T[k][be]);
-                E[2] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][0]);
-                E[6] += w * sep_bound(3, v[0][1], T[0][1], v[1][0], T[1][0], T[2][0]);
-                E[7] += w * sep_bound(3, v[0][0], T[0][0], v[1][1], T[1][1], T[2][0]);
-                E[8] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][1]);
-            }
+            float u[3][3][3], S[3][3][4];
+            [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 3; ++be) axis_terms(tb[k], l1, ei[k], be, 3, hp, soff, u[k][be], S[k][be]);
+            E[0] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][0]);
+            E[1] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][0]);
+            E[2] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][0]);
+            E[3] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][1]);
+            E[4] += w * sep_bound(2, u[0][2], S[0][2], u[1][0], S[1][0], S[2][0]);   // xx
+            E[5] += w * sep_bound(2, u[0][1], S[0][1], u[1][1], S[1][1], S[2][0]);   // xy
+            E[6] += w * sep_bound(2, u[0][1], S[0][1], u[1][0], S[1][0], S[2][1]);   // xz
+            E[7] += w * sep_bound(2, u[0][0], S[0][0], u[1][2], S[1][2], S[2][0]);   // yy
+            E[8] += w * sep_bound(2, u[0][0], S[0][0], u[1][1], S[1][1], S[2][1]);   // yz
+            E[9] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][2]);   // zz
         }
-        [ForceUnroll] for (int t = 0; t < 15; ++t) E[t] = E[t] * fE + float(np) * 1e-36;   // + what a flush may have lost
+        [ForceUnroll] for (int t = 0; t < 10; ++t) E[t] = E[t] * fE + flush;
         if (pass == 0) {
-            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_E + t) * 8] = E[t];
-            [ForceUnroll] for (int t = 0; t < 9; ++t) out[(PC_E2 + t) * 8] = E[6 + t];
+            out[(PC_E + 1) * 8] = E[0];
+            [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_E + 3 + a) * 8] = E[1 + a];
+            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_E2 + 3 + t) * 8] = E[4 + t];
         } else {
-            out[(PC_EI + 0) * 8] = E[1];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_EI + 1 + a) * 8] = E[3 + a];
-            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_EI2 + t) * 8] = E[9 + t];
+            out[(PC_EI + 0) * 8] = E[0];
+            [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_EI + 1 + a) * 8] = E[1 + a];
+            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_EI2 + t) * 8] = E[4 + t];
         }
+    }
+    // K = 1: E1 from (0,2); K = 3: E3, Ea3 from (0,4) (1,4); cube only
+    {
+        float hp[7];
+        hp[0] = 1.0;
+        [ForceUnroll] for (int m = 1; m < 7; ++m) hp[m] = hp[m - 1] * h;
+        const uint soff = 12u * l1 + 2u;
+        float E[5];                           // E[0], E[2], E[6..8]
+        [ForceUnroll] for (int t = 0; t < 5; ++t) E[t] = 0.0;
+        for (uint p = 0; p < np; ++p) {
+            const float w = abs(args.coeff[sh.info.x + p]) * nrm;
+            uint tb[3];
+            tb[0] = tab0 + ((p * 3u + 0u) * 2u + sx) * te;
+            tb[1] = tab0 + ((p * 3u + 1u) * 2u + sy) * te;
+            tb[2] = tab0 + ((p * 3u + 2u) * 2u + sz) * te;
+            float u[3][3], S[3][4];
+            [ForceUnroll] for (int k = 0; k < 3; ++k) axis_terms(tb[k], l1, ei[k], 0, 2, hp, soff, u[k], S[k]);
+            E[0] += w * sep_bound(1, u[0], S[0], u[1], S[1], S[2]);
+            float v[3][2][3], T[3][2][4];
+            [ForceUnroll] for (int k = 0; k < 3; ++k) [ForceUnroll] for (int be = 0; be < 2; ++be) axis_terms(tb[k], l1, ei[k], be, 4, hp, soff, v[k][be], T[k][be]);
+            E[1] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][0]);
+            E[2] += w * sep_bound(3, v[0][1], T[0][1], v[1][0], T[1][0], T[2][0]);
+            E[3] += w * sep_bound(3, v[0][0], T[0][0], v[1][1], T[1][1], T[2][0]);
+            E[4] += w * sep_bound(3, v[0][0], T[0][0], v[1][0], T[1][0], T[2][1]);
+        }
+        [ForceUnroll] for (int t = 0; t < 5; ++t) E[t] = E[t] * fE + flush;
+        out[(PC_E + 0) * 8] = E[0];
+        out[(PC_E + 2) * 8] = E[1];
+        [ForceUnroll] for (int t = 0; t < 3; ++t) out[(PC_E2 + t) * 8] = E[2 + t];
     }
 }
 
