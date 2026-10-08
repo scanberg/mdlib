@@ -68,11 +68,13 @@ Usage:
 """
 
 import argparse
+import os
 import re
 import struct
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 STRUCT_RE = re.compile(r'^struct\s+(\w+)\s*\{(.*?)^\};', re.M | re.S)
@@ -310,11 +312,22 @@ def main():
         print(f"{src.name}: no entry points given", file=sys.stderr)
         return 1
 
-    for entry in all_entries:
+    # Both targets of every entry point, compiled concurrently: one slangc each, and for a source with
+    # many heavy entry points this step is otherwise the longest serial stretch of the build.
+    # MD_GPU_SHADER_CHECK_JOBS caps the concurrency (default: the cores, at most 8).
+    def compile_entry(entry):
         spv = run_slang(args.slangc, src, entry, "spirv",
                         ["-emit-spirv-directly", "-profile", "glsl_450",
                          "-bindless-space-index", args.bindless_space], ".spv")
         msl = run_slang(args.slangc, src, entry, "metal", [], ".metal").decode('utf8', 'replace')
+        return spv, msl
+
+    jobs = int(os.environ.get("MD_GPU_SHADER_CHECK_JOBS", "0") or 0) or min(os.cpu_count() or 1, 8)
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+        compiled = dict(zip(all_entries, ex.map(compile_entry, all_entries)))
+
+    for entry in all_entries:
+        spv, msl = compiled[entry]
 
         spv_layout = spirv_struct_offsets(spv)
         structs    = msl_structs(msl)
