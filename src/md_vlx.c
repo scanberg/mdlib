@@ -93,14 +93,27 @@ typedef enum {
 
 
 
-// Internal only, and for the same reason as vlx_atomic_property_t above: what a density
-// property looks like between reading it out of the h5 file and publishing it as an attribute.
+// How the values of a dataset are laid down in the file, when they are one contiguous run of IEEE
+// floats that can be read with a plain file read. NONE: any other way - chunked, compressed, compact
+// or of another type - and read through HDF5.
+typedef enum vlx_raw_t {
+	VLX_RAW_NONE = 0,
+	VLX_RAW_F32LE,
+	VLX_RAW_F32BE,
+	VLX_RAW_F64LE,
+	VLX_RAW_F64BE,
+} vlx_raw_t;
+
+// Internal only, and for the same reason as vlx_atomic_property_t above: what a density property
+// looks like between finding it in the h5 file and publishing it as an attribute. Where its values
+// are, not the values: they are read from the file when somebody asks (vlx_density_property_provide).
 typedef struct vlx_density_property_t {
-	str_t    label;     // Display text, as authored in the file
-	str_t    name;      // Dataset name in the h5 file. The identity, and what the attribute path is built from
-	uint64_t key;
-	size_t 	 dim[2];
-	double*  data;      // dim[0] * dim[1] values, row major
+	str_t     label;    // Display text, as authored in the file
+	str_t     name;     // Dataset name in the h5 file. The identity, and what the attribute path is built from
+	str_t     dataset;  // Full path of the dataset within the file
+	int64_t   offset;   // First byte of its values in the file, -1 when they are not one run of bytes
+	vlx_raw_t raw;      // How the values at 'offset' are stored
+	size_t    dim;      // [dim x dim] in the file: VeloxChem's spherical AOs, in its AO order
 } vlx_density_property_t;
 
 #include <float.h>
@@ -241,6 +254,13 @@ typedef struct vlx_t {
 	str_t  basis_set_ident;
 	str_t  dft_func_label;
 	str_t  potfile_text;
+
+	// The file as it was read, for what is read from it later on demand (the density properties):
+	// where it is, its size and last write time then, and vlx_h5_identity of what it held.
+	str_t          filename;
+	md_file_info_t file_info;
+	uint64_t       identity;
+
 
 	size_t number_of_atoms;
 	size_t number_of_alpha_electrons;
@@ -462,18 +482,20 @@ static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, in
     return count;
 }
 
-// The number of atomic orbitals the basis set spans over the molecule, in VeloxChem's spherical basis.
+// The number of atomic orbitals the basis set spans over the molecule, in VeloxChem's spherical basis
+// or in the Cartesian one md_gto_basis_t uses.
 // A pure function of the basis set and the nuclear charges - nothing any computed block holds - which
 // is what lets the AO dimension be known before, and without, an SCF block.
 //
 // Returns 0 when an atom's element is not in the basis set. A basis that does not cover the molecule
 // has no AO count: a partial sum would be a wrong number that every dimension check downstream then
 // agrees with, where 0 stops the load at the point the cause is still visible.
-static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
+static size_t vlx_basis_num_ao(const vlx_t* vlx, bool cartesian) {
 	ASSERT(vlx);
 	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers) {
 		return 0;
 	}
+
 
 	size_t count = 0;
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
@@ -485,10 +507,19 @@ static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
 		}
 		for (size_t j = 0; j < atom_basis->basis_func_count; ++j) {
 			const basis_set_func_t* func = &vlx->basis_set.basis_func.data[atom_basis->basis_func_offset + j];
-			count += md_gto_num_sph_ao(func->type);
+			count += cartesian ? md_gto_num_cart_ao(func->type) : md_gto_num_sph_ao(func->type);
 		}
 	}
 	return count;
+}
+
+static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
+	return vlx_basis_num_ao(vlx, false);
+}
+
+// The Cartesian count: the dimension of every AO matrix after vlx_convert_ao_data_to_cartesian.
+static size_t vlx_basis_num_cart_ao(const vlx_t* vlx) {
+	return vlx_basis_num_ao(vlx, true);
 }
 
 // Build a permutation table that maps from shell order (angl→atom→func→isph)
@@ -1234,14 +1265,15 @@ done:
 	return result;
 }
 
-// Checks a square AO-basis matrix for symmetry and forces it if it is close but not
-// exact. Returns true if it was already symmetric to tolerance.
+// Forces a square AO-basis matrix symmetric when it is not already, to tolerance. Returns true when it
+// already was; the largest deviation and the largest element are reported either way, so a caller can
+// say what it found.
 //
-// Consumers of AO density matrices in this codebase read only the upper triangle, so
-// an asymmetric matrix is not merely inaccurate -- half of it is discarded without a
-// trace. Anything beyond rounding is reported with the offending magnitude so it is
-// visible rather than absorbed.
-static bool vlx_report_and_enforce_symmetry(double* mat, size_t dim, const char* label) {
+// Consumers of AO density matrices in this codebase read only the upper triangle, so an asymmetric
+// matrix is not merely inaccurate -- half of it is discarded without a trace. The SCF and transition
+// densities are symmetric by construction; density properties are a generic pass-through from the
+// file, and nothing else checks them.
+static bool vlx_symmetrize(double* mat, size_t dim, double* out_max_asym, double* out_max_abs) {
 	ASSERT(mat);
 
 	double max_asym = 0.0;
@@ -1254,16 +1286,14 @@ static bool vlx_report_and_enforce_symmetry(double* mat, size_t dim, const char*
 			max_abs  = MAX(max_abs, MAX(fabs(a), fabs(b)));
 		}
 	}
+	if (out_max_asym) *out_max_asym = max_asym;
+	if (out_max_abs)  *out_max_abs  = max_abs;
 
 	// Scale-relative, so this does not fire on accumulated rounding in a large matrix.
 	const double tolerance = 1.0e-10 * (max_abs > 0.0 ? max_abs : 1.0);
 	if (max_asym <= tolerance) {
 		return true;
 	}
-
-	MD_LOG_INFO("Density property '%s' is not symmetric (max deviation %g, largest element %g). "
-				"Symmetrizing: the density evaluation path only reads the upper triangle.",
-				label, max_asym, max_abs);
 
 	for (size_t i = 0; i < dim; ++i) {
 		for (size_t j = i + 1; j < dim; ++j) {
@@ -1716,6 +1746,74 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 	return true;
 }
 
+// Where the values of a dataset are in the file, when they are one contiguous run of IEEE floats:
+// contiguous storage, with its space allocated. VLX_RAW_NONE, and *out_offset -1, otherwise.
+static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset) {
+	ASSERT(out_offset);
+	*out_offset = -1;
+
+	vlx_raw_t raw = VLX_RAW_NONE;
+	hid_t type = H5Dget_type(dset);
+	if (type != H5I_INVALID_HID) {
+		if      (H5Tequal(type, H5T_IEEE_F64LE) > 0) raw = VLX_RAW_F64LE;
+		else if (H5Tequal(type, H5T_IEEE_F64BE) > 0) raw = VLX_RAW_F64BE;
+		else if (H5Tequal(type, H5T_IEEE_F32LE) > 0) raw = VLX_RAW_F32LE;
+		else if (H5Tequal(type, H5T_IEEE_F32BE) > 0) raw = VLX_RAW_F32BE;
+		H5Tclose(type);
+	}
+	if (raw == VLX_RAW_NONE) {
+		return VLX_RAW_NONE;
+	}
+
+	hid_t dcpl = H5Dget_create_plist(dset);
+	if (dcpl == H5I_INVALID_HID) {
+		return VLX_RAW_NONE;
+	}
+	if (H5Pget_layout(dcpl) == H5D_CONTIGUOUS) {
+		const haddr_t addr = H5Dget_offset(dset);
+		if (addr != HADDR_UNDEF) {
+			*out_offset = (int64_t)addr;
+		}
+	}
+	H5Pclose(dcpl);
+	return *out_offset >= 0 ? raw : VLX_RAW_NONE;
+}
+
+// What says WHICH calculation a file holds: its nuclear charges, its coordinates and its basis set,
+// all at the root. Two files agreeing on these hold the same molecule in the same basis, so their AO
+// matrices index the same functions in the same places - which is what a density property read from
+// the file later has to be able to rely on. Called holding the HDF5 lock.
+static bool vlx_h5_identity(uint64_t* out, hid_t root) {
+	ASSERT(out);
+
+	size_t charge_dims[2] = {0};
+	size_t coord_dims[2]  = {0};
+	const int charge_rank = h5_read_dataset_dims(charge_dims, 2, root, "nuclear_charges");
+	const int coord_rank  = h5_read_dataset_dims(coord_dims,  2, root, "atom_coordinates");
+	if (charge_rank != 1 || coord_rank != 2 || charge_dims[0] == 0 || coord_dims[0] != charge_dims[0] || coord_dims[1] != 3) {
+		return false;
+	}
+
+	const size_t num_atoms = charge_dims[0];
+	md_temp_scope_t temp = md_temp_begin();
+	double* charge = md_temp_alloc_array(temp, double, num_atoms);
+	double* coord  = md_temp_alloc_array(temp, double, num_atoms * 3);
+	char basis[256];
+	const size_t basis_len = h5_read_cstr(basis, sizeof(basis), root, "basis_set");
+
+	bool ok = charge && coord &&
+		h5_read_dataset_data(charge, num_atoms,     root, H5T_NATIVE_DOUBLE, "nuclear_charges") &&
+		h5_read_dataset_data(coord,  num_atoms * 3, root, H5T_NATIVE_DOUBLE, "atom_coordinates");
+	if (ok) {
+		uint64_t hash = md_hash64(charge, sizeof(double) * num_atoms, 0);
+		hash = md_hash64(coord, sizeof(double) * num_atoms * 3, hash);
+		hash = md_hash64(basis, basis_len, hash);
+		*out = hash;
+	}
+	md_temp_end(temp);
+	return ok;
+}
+
 static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data) {
 	(void)group_path;
 	(void)user_data;
@@ -1792,45 +1890,32 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		}
 
 
-		size_t num_points = H5Sget_simple_extent_npoints(space_id);
-		
 		H5Sclose(space_id);
 
-		// Construct a unique uint64_t key for this property.
-		uint64_t key = md_hash64(name_buf, sizeof(name_buf), 0);
+		// Where its values are, not the values. They are read when somebody asks for them
+		// (vlx_density_property_provide), and a density property nobody looks at costs nothing.
+		char dataset_path[1024];
+		if (strcmp(group_path, "/") == 0) {
+			snprintf(dataset_path, sizeof(dataset_path), "/%s", name_buf);
+		} else {
+			snprintf(dataset_path, sizeof(dataset_path), "%s/%s", group_path, name_buf);
+		}
+
+		int64_t offset = -1;
+		const vlx_raw_t raw = vlx_h5_raw_location(&offset, dataset_id);
 
 		vlx_density_property_t property = {
-			 .label = str_copy_cstr(property_label, vlx->arena),
-			 .name = str_copy_cstr(name_buf, vlx->arena),
-			 .key = key,
-			 .dim[0] = dims[0],
-			 .dim[1] = dims[1],
-			 .data = NULL,
+			 .label   = str_copy_cstr(property_label, vlx->arena),
+			 .name    = str_copy_cstr(name_buf, vlx->arena),
+			 .dataset = str_copy_cstr(dataset_path, vlx->arena),
+			 .offset  = offset,
+			 .raw     = raw,
+			 .dim     = dims[0],
 		};
 
-		md_array_resize(property.data, num_points, vlx->arena);
-		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
-		if (status < 0) {
-			MD_LOG_ERROR("Failed to read data for density property dataset '%s'", name_buf);
-			goto done;
-		}
-
-		// Symmetry is a load-bearing assumption downstream: the GL/GPU density path packs only the
-		// upper triangle (density_matrix_upper_tri_extract_float in md_gto.c) and the lower half is
-		// never read. The SCF and transition densities are symmetric by construction -- the latter is
-		// explicitly symmetrized -- but density properties are a generic pass-through from the file,
-		// so nothing has checked them until here. Report and enforce rather than letting half the
-		// matrix be silently dropped.
-		//
-		// Staged rather than published here, unlike the atomic properties above: a density property
-		// is an AO matrix, so it goes through the spherical to Cartesian conversion with the rest of
-		// the AO data and comes out a DIFFERENT SIZE. It can only be published once that has run.
-		if (dims[0] == dims[1] && dims[0] > 1) {
-			vlx_report_and_enforce_symmetry(property.data, dims[0], property_label);
-		}
-
 		md_array_push(vlx->density_properties, property, vlx->arena);
-		MD_LOG_DEBUG("Read density property '%s' with dimensions [%zu x %zu]", property_label, dims[0], dims[1]);
+		MD_LOG_DEBUG("Found density property '%s' [%zu x %zu] at '%s', %s", property_label, dims[0], dims[1], dataset_path,
+			raw != VLX_RAW_NONE ? "read from the file directly" : "read through HDF5");
 	done:
 		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
@@ -2047,18 +2132,9 @@ static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 	// basis/overlap publish, and md_qm_publish_overlap for why T^T S T is not that matrix.
 	if (!vlx_cart_convert_square(&vlx->scf.S, &basis, n_sph, n_cart, vlx->arena, "SCF overlap")) goto done;
 
-	// Density properties are AO-basis [N][N] matrices read straight from the file.
-	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-		vlx_density_property_t* prop = &vlx->density_properties[i];
-		if (!prop->data) continue;
+	// Density properties are not converted here: they are not held at all, and their provider does
+	// the same permutation and conversion each time one is read from the file.
 
-		vlx_2d_data_t view = { .size = { prop->dim[0], prop->dim[1] }, .data = prop->data };
-		if (!vlx_cart_convert_square(&view, &basis, n_sph, n_cart, vlx->arena, "Density property")) goto done;
-
-		prop->data   = view.data;
-		prop->dim[0] = view.size[0];
-		prop->dim[1] = view.size[1];
-	}
 
 	// Derive the AO -> atom map from the shell list, so it cannot drift out of
 	// step with the AO ordering the evaluator walks.
@@ -4201,6 +4277,14 @@ static bool vlx_read_h5_file(vlx_t* vlx, str_t filename, md_system_state_t* stat
 		goto done;
 	}
 
+	// The file as it is being read: the density properties are read from it again later, on demand,
+	// and have to be able to tell whether it is still this file holding this calculation.
+	vlx->filename = str_copy(filename, vlx->arena);
+	md_file_info_extract_from_path(filename, &vlx->file_info);
+	if (!vlx_h5_identity(&vlx->identity, file_id)) {
+		MD_LOG_DEBUG("VeloxChem: '" STR_FMT "' does not state its nuclear charges, coordinates and basis set at its root", STR_ARG(filename));
+	}
+
 	// The embedding environment ahead of the system, as its sites become atoms of it. It is named in
 	// the SCF settings, which the SCF block below reads for everything else.
 	if (h5_link_exists(file_id, "scf")) {
@@ -4617,16 +4701,7 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 			goto done;
 		}
 
-		// Density properties are AO matrices out of the same program as D and S, in the same AO order,
-		// and were never permuted with them - while the Cartesian conversion below has always treated
-		// them as being in shell order already. Their dimension was checked against num_ao at read.
-		for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-			vlx_density_property_t* prop = &vlx->density_properties[i];
-			vlx_2d_data_t view = { .size = { prop->dim[0], prop->dim[1] }, .data = prop->data };
-			if (!vlx_ao_permute_square_checked(&view, num_ao, remap, "Density property")) {
-				goto done;
-			}
-		}
+
 
 		// Everything is now in shell order and no further AO-basis math is
 		// performed, so this is the point to leave VeloxChem's pure/spherical
@@ -4942,6 +5017,252 @@ static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, 
 	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DIFFERENCE);
 }
 
+// ---------------------------------------------------------------------------
+// DENSITY PROPERTIES, READ FROM THE FILE ON DEMAND
+//
+// A density property is an N x N AO matrix, and N^2 grows quickly - 7.5 MB as doubles at a thousand
+// Cartesian AOs, 200 MB at five thousand - for something that may never be looked at. So it is not
+// held: what is published is a VIRTUAL attribute whose provider reads it from the file when somebody
+// asks, and keeps nothing in between. HDF5 is what makes that cheap. A dataset stored contiguously is
+// one run of bytes at an offset the library will name, so the load takes only that offset - the
+// dataset's metadata, never its values - and each read after it is a plain file read through
+// md_attribute_io_read_at, with no HDF5 call and so no lock. A dataset stored any other way (chunked,
+// compressed, filtered) is read through HDF5 instead, under the shared lock.
+//
+// What is published is the PACKED upper triangle, as float, of the Cartesian matrix
+// (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC): the form the GTO density kernels take, so a consumer can
+// have exactly that, straight into its own buffer (md_qm_extract_packed_symmetric_f32), and the
+// double matrix is only ever scratch inside the provider.
+//
+// The file can change underneath: rerunning a calculation rewrites its .h5 in place, and an offset
+// into the old layout would read whatever sits there now as a density. So the file's size and last
+// write time are kept beside the offset and checked on every read, and when either has moved the
+// metadata is rebuilt - provided the file still holds the calculation that was loaded: the same
+// nuclear charges, coordinates and basis set (vlx_h5_identity). One that does not is refused with a
+// request to reload it, since a density from a different geometry drawn over these atoms would be
+// wrong without looking it. One that does is read as it now is, which may differ from the rest of the
+// table, which is still the file as it was loaded; the log says so, and a reload makes them agree.
+// ---------------------------------------------------------------------------
+
+// A provider's own state, one per density property, released with its attribute. Variable length:
+// the AO permutation, the file and the dataset follow the struct.
+typedef struct vlx_density_source_t {
+	const md_system_t* sys;      // borrowed, for the basis: a provider never outlives its system
+	uint64_t           identity; // vlx_h5_identity of the file as it was loaded
+	md_file_time_t     mtime;    // the file as it was when 'offset' was taken
+	int64_t            size;
+	int64_t            offset;   // first byte of the values in the file, -1 to read through HDF5
+	uint32_t           raw;      // vlx_raw_t: how the values at 'offset' are stored
+	uint32_t           num_sph;  // the dataset is [num_sph x num_sph], in VeloxChem's AO order
+	uint32_t           num_cart; // published as the packed upper triangle of [num_cart x num_cart]
+	uint32_t           path_len;
+	uint32_t           dataset_len;
+	uint32_t           asymmetry_reported;
+	// int remap[num_sph], then char path[path_len + 1], then char dataset[dataset_len + 1]
+} vlx_density_source_t;
+
+static inline size_t vlx_density_source_bytes(size_t num_sph, size_t path_len, size_t dataset_len) {
+	return sizeof(vlx_density_source_t) + sizeof(int) * num_sph + path_len + 1 + dataset_len + 1;
+}
+static inline int* vlx_density_source_remap(vlx_density_source_t* src) {
+	return (int*)(src + 1);
+}
+static inline char* vlx_density_source_path(vlx_density_source_t* src) {
+	return (char*)(vlx_density_source_remap(src) + src->num_sph);
+}
+static inline char* vlx_density_source_dataset(vlx_density_source_t* src) {
+	return vlx_density_source_path(src) + src->path_len + 1;
+}
+
+// The dataset's dimensions are [n x n]. Called holding the HDF5 lock.
+static bool vlx_h5_dataset_is_square(hid_t dset, size_t n) {
+	hid_t space = H5Dget_space(dset);
+	if (space == H5I_INVALID_HID) {
+		return false;
+	}
+	hsize_t dims[2] = {0};
+	const bool ok = H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2 && dims[0] == n && dims[1] == n;
+	H5Sclose(space);
+	return ok;
+}
+
+// Takes the dataset's place in the file again, as the file is now. Called holding the HDF5 lock.
+static bool vlx_density_source_rebuild(vlx_density_source_t* src, const md_file_info_t* info) {
+	const char* path    = vlx_density_source_path(src);
+	const char* dataset = vlx_density_source_dataset(src);
+
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file == H5I_INVALID_HID) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and can no longer be read as HDF5; reload it", path);
+		return false;
+	}
+
+	bool ok = false;
+	uint64_t identity = 0;
+	if (!vlx_h5_identity(&identity, file) || identity != src->identity) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds the same molecule and basis set; reload it to see its density properties", path);
+	} else {
+		hid_t dset = h5_link_exists(file, dataset) ? H5Dopen(file, dataset, H5P_DEFAULT) : H5I_INVALID_HID;
+		if (dset != H5I_INVALID_HID && vlx_h5_dataset_is_square(dset, src->num_sph)) {
+			int64_t offset = -1;
+			src->raw    = vlx_h5_raw_location(&offset, dset);
+			src->offset = offset;
+			src->mtime  = info->modified_time;
+			src->size   = (int64_t)info->size;
+			ok = true;
+			MD_LOG_INFO("VeloxChem: '%s' has changed since it was loaded; '%s' is read from it as it is now, while the rest of what was loaded is not until it is reloaded", path, dataset);
+		} else {
+			MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds '%s' as a [%u x %u] matrix; reload it", path, dataset, src->num_sph, src->num_sph);
+		}
+		if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// The values, from the run of bytes at 'offset', as double. Read straight into 'out' when they are
+// stored as native doubles already, which is what VeloxChem writes.
+static bool vlx_density_source_read_raw(double* out, size_t count, const char* path, int64_t offset, vlx_raw_t raw, md_attribute_io_t* io) {
+	const uint16_t probe = 1;
+	const bool host_le = *(const uint8_t*)&probe == 1;
+	const bool is_f64  = (raw == VLX_RAW_F64LE || raw == VLX_RAW_F64BE);
+	const bool file_le = (raw == VLX_RAW_F64LE || raw == VLX_RAW_F32LE);
+	const size_t elem  = is_f64 ? 8 : 4;
+	const size_t bytes = count * elem;
+
+	if (is_f64 && file_le == host_le) {
+		return md_attribute_io_read_at(io, str_from_cstr(path), offset, out, bytes) == bytes;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	uint8_t* buf = (uint8_t*)md_temp_alloc(temp, bytes);
+	const bool ok = buf && md_attribute_io_read_at(io, str_from_cstr(path), offset, buf, bytes) == bytes;
+	if (ok) {
+		for (size_t i = 0; i < count; ++i) {
+			uint8_t b[8];
+			const uint8_t* p = buf + i * elem;
+			for (size_t k = 0; k < elem; ++k) {
+				b[k] = (file_le == host_le) ? p[k] : p[elem - 1 - k];
+			}
+			if (is_f64) {
+				double v; MEMCPY(&v, b, 8); out[i] = v;
+			} else {
+				float v;  MEMCPY(&v, b, 4); out[i] = (double)v;
+			}
+		}
+	}
+	md_temp_end(temp);
+	return ok;
+}
+
+// The values through HDF5: for a dataset that is not one run of bytes in the file.
+static bool vlx_density_source_read_hdf5(double* out, vlx_density_source_t* src) {
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	hid_t file = H5Fopen(vlx_density_source_path(src), H5F_ACC_RDONLY, H5P_DEFAULT);
+	hid_t dset = (file != H5I_INVALID_HID && h5_link_exists(file, vlx_density_source_dataset(src))) ? H5Dopen(file, vlx_density_source_dataset(src), H5P_DEFAULT) : H5I_INVALID_HID;
+	const bool ok = dset != H5I_INVALID_HID && vlx_h5_dataset_is_square(dset, src->num_sph) &&
+		H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out) >= 0;
+	if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	if (file != H5I_INVALID_HID) H5Fclose(file);
+	md_hdf5_unlock(lock);
+	return ok;
+}
+
+// Reads one density property from its file into the packed upper triangle of its Cartesian matrix:
+// read, symmetrize, permute into shell order, convert to Cartesian, pack. Read whole only - an element
+// of a packed triangle is not worth reading the file for.
+static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	if (slice && slice->num_idx > 0) {
+		MD_LOG_ERROR("'" STR_FMT "' is read whole, not by element", STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t n_sph  = src->num_sph;
+	const size_t n_cart = src->num_cart;
+	const size_t len    = n_cart * (n_cart + 1) / 2;
+	if (cap != len) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
+		return 0;
+	}
+	const char* path = vlx_density_source_path(src);
+
+	md_file_info_t info = {0};
+	if (!md_file_info_extract_from_path(str_from_cstr(path), &info)) {
+		MD_LOG_ERROR("VeloxChem: '%s', which '" STR_FMT "' is read from, can no longer be found; reload it", path, STR_ARG(attr->path));
+		return 0;
+	}
+
+	// The offset and its encoding are shared by every thread reading this attribute, and a rebuild
+	// rewrites them, so they are read - and rebuilt when stale - holding the lock.
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	const bool current = (info.modified_time == src->mtime && (int64_t)info.size == src->size) || vlx_density_source_rebuild(src, &info);
+	const int64_t   offset = src->offset;
+	const vlx_raw_t raw    = (vlx_raw_t)src->raw;
+	md_hdf5_unlock(lock);
+	if (!current) {
+		return 0;
+	}
+
+	// Two matrices of scratch, never three: the permutation goes through the Cartesian buffer, which is
+	// the larger, before the conversion writes into it.
+	md_temp_scope_t temp = md_temp_begin();
+	double* sph  = md_temp_alloc_array(temp, double, n_sph * n_sph);
+	double* cart = md_temp_alloc_array(temp, double, n_cart * n_cart);
+	bool ok = sph && cart;
+	if (ok) {
+		ok = (raw != VLX_RAW_NONE && offset >= 0) ? vlx_density_source_read_raw(sph, n_sph * n_sph, path, offset, raw, io) : vlx_density_source_read_hdf5(sph, src);
+		if (!ok) {
+			MD_LOG_ERROR("VeloxChem: failed to read '%s' from '%s'", vlx_density_source_dataset(src), path);
+		}
+	}
+
+	if (ok) {
+		double max_asym = 0.0, max_abs = 0.0;
+		if (!vlx_symmetrize(sph, n_sph, &max_asym, &max_abs)) {
+			lock = md_hdf5_lock();
+			const bool report = !src->asymmetry_reported;
+			src->asymmetry_reported = 1;
+			md_hdf5_unlock(lock);
+			if (report) {
+				MD_LOG_INFO("Density property '" STR_FMT "' is not symmetric (max deviation %g, largest element %g). "
+							"Symmetrizing: the density evaluation path only reads the upper triangle.", STR_ARG(attr->path), max_asym, max_abs);
+			}
+		}
+
+		const int* remap = vlx_density_source_remap(src);
+		for (size_t i = 0; i < n_sph; ++i) {
+			const size_t si = (size_t)remap[i];
+			for (size_t j = 0; j < n_sph; ++j) {
+				cart[i * n_sph + j] = sph[si * n_sph + (size_t)remap[j]];
+			}
+		}
+		MEMCPY(sph, cart, sizeof(double) * n_sph * n_sph);
+
+		md_gto_basis_t basis = {0};
+		ok = md_gto_basis_extract_attributes(&basis, &src->sys->attributes, md_temp_allocator(temp)) &&
+			md_gto_basis_num_sph_ao(&basis) == n_sph && md_gto_basis_num_ao(&basis) == n_cart &&
+			md_gto_sph_to_cart_matrix(cart, sph, &basis) == n_cart;
+		if (!ok) {
+			MD_LOG_ERROR("'" STR_FMT "': the published basis does not span the %zu spherical AOs it was read in", STR_ARG(attr->path), n_sph);
+		}
+	}
+
+	if (ok) {
+		float* out = (float*)dst;
+		size_t k = 0;
+		for (size_t i = 0; i < n_cart; ++i) {
+			for (size_t j = i; j < n_cart; ++j) {
+				out[k++] = (float)cart[i * n_cart + j];
+			}
+		}
+	}
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
 void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	ASSERT(sys);
 
@@ -5083,39 +5404,81 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		md_temp_end(temp);
 	}
 
-	// ---- Density properties: AO basis {A,A} matrices carried through from the file as they were
-	// found. Unlike the SCF densities above these are not derived from anything else the table
-	// holds - there is nothing to compute them from - so they are resident, one path per property.
+	// ---- Density properties: published, never held. Each is a virtual attribute read from the file
+	// when somebody asks (see DENSITY PROPERTIES, READ FROM THE FILE ON DEMAND above), as the packed
+	// upper triangle of its Cartesian matrix: {A(A+1)/2}, float, MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC.
 	//
 	// The path is built from the DATASET NAME, not from the label and not from the index. An index
 	// silently re-points at a different property whenever the set changes across a reload, and a
 	// label is display text that two datasets are free to share.
-	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-		const vlx_density_property_t* prop = &vlx->density_properties[i];
-		if (!prop || !prop->data || prop->dim[0] == 0 || prop->dim[1] == 0) {
-			continue;
-		}
-
-		str_t name = str_empty(prop->name) ? prop->label : prop->name;
-		if (str_empty(name)) {
-			continue;
-		}
-
-		char path_buf[256];
-		str_t path = md_qm_attribute_path(path_buf, sizeof(path_buf), STR_LIT("vlx/density_property"), name);
-		if (str_empty(path)) {
-			continue;
-		}
-
-		// The label is what the file called it for a human, the path is its identity. When they are
-		// the same word there is nothing for the label to add, and an absent one is a valid state.
-		str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
-
-		md_attribute_format_t format = {
-			.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-			.shape = { (uint32_t)prop->dim[0], (uint32_t)prop->dim[1] },
+	const size_t num_density_properties = md_array_size(vlx->density_properties);
+	if (num_density_properties > 0 && vlx->ao_remap && vlx->num_sph_ao > 0 && !str_empty(vlx->filename)) {
+		const size_t n_sph  = vlx->num_sph_ao;
+		const size_t n_cart = vlx_basis_num_cart_ao(vlx);
+		const md_attribute_format_t format = {
+			.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = { (uint32_t)(n_cart * (n_cart + 1) / 2) },
 		};
-		md_qm_publish(sys, path, label, md_unit_none(), format, prop->data, prop->dim[0] * prop->dim[1] * sizeof(double));
+
+		for (size_t i = 0; i < num_density_properties; ++i) {
+			const vlx_density_property_t* prop = &vlx->density_properties[i];
+			if (prop->dim != n_sph || str_empty(prop->dataset)) {
+				continue;
+			}
+
+			str_t name = str_empty(prop->name) ? prop->label : prop->name;
+			if (str_empty(name)) {
+				continue;
+			}
+
+			char path_buf[256];
+			str_t path = md_qm_attribute_path(path_buf, sizeof(path_buf), STR_LIT("vlx/density_property"), name);
+			if (str_empty(path)) {
+				continue;
+			}
+
+			// The label is what the file called it for a human, the path is its identity. When they are
+			// the same word there is nothing for the label to add, and an absent one is a valid state.
+			str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
+
+			const size_t bytes = vlx_density_source_bytes(n_sph, vlx->filename.len, prop->dataset.len);
+			vlx_density_source_t* src = (vlx_density_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+			if (!src) {
+				continue;
+			}
+			*src = (vlx_density_source_t){
+				.sys         = sys,
+				.identity    = vlx->identity,
+				.mtime       = vlx->file_info.modified_time,
+				.size        = (int64_t)vlx->file_info.size,
+				.offset      = prop->offset,
+				.raw         = (uint32_t)prop->raw,
+				.num_sph     = (uint32_t)n_sph,
+				.num_cart    = (uint32_t)n_cart,
+				.path_len    = (uint32_t)vlx->filename.len,
+				.dataset_len = (uint32_t)prop->dataset.len,
+			};
+			MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
+			char* src_path = vlx_density_source_path(src);
+			MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
+			src_path[vlx->filename.len] = '\0';
+			char* src_dataset = vlx_density_source_dataset(src);
+			MEMCPY(src_dataset, prop->dataset.ptr, prop->dataset.len);
+			src_dataset[prop->dataset.len] = '\0';
+
+			const md_attribute_virtual_t virt = { .provider = vlx_density_property_provide, .user_data = src, .user_data_size = bytes };
+			const md_attribute_id_t id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+				.path   = path,
+				.format = format,
+				.flags  = MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC,
+				.unit   = md_unit_none(),
+				.label  = label,
+				.virt   = &virt,
+			});
+			// Only a published attribute releases its user_data
+			if (id == MD_ATTRIBUTE_INVALID) {
+				md_free(sys->attributes.alloc, src, bytes);
+			}
+		}
 	}
 
 	// The number of EXCITED STATES, which only a linear response resolves.

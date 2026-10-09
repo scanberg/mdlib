@@ -76,8 +76,11 @@ struct md_system_state_t;
 //   vlx/opt/{energy,coordinate}                              {P} per optimisation step;
 //                                                            vlx/opt/state_index and
 //                                                            vlx/opt/irc_ts_index are rank 0
-//   vlx/density_property/<dataset name>                      {A,A} density properties as the file
-//                                                            carried them
+//   vlx/density_property/<dataset name>                      {A(A+1)/2} f32, PACKED_SYMMETRIC: the
+//                                                            upper triangle of each density property
+//                                                            the file carries, Cartesian. Virtual:
+//                                                            read from the file on every extract, so
+//                                                            the file has to stay where it was
 //   atom/<dataset name>                                      per atom properties from the file; NAN
 //                                                            for the embedding's sites when they are
 //                                                            atoms of the system

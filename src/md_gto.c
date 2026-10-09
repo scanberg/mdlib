@@ -1166,10 +1166,27 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* density_matrix, bool include_gradients, md_gto_op_t op)
 {
+    ASSERT(basis);
+    ASSERT(density_matrix);
+
+    uint32_t num_cgtos, num_pgtos;
+    gto_basis_count(&num_cgtos, &num_pgtos, basis);
+
+    md_temp_scope_t temp = md_temp_begin();
+    float* upper_tri = (float*)md_temp_alloc(temp, sizeof(float) * density_matrix_upper_tri_size(num_cgtos));
+    density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
+    md_gto_grid_evaluate_density_packed_GL(vol_tex, grid, basis, atom_xyz, atom_xyz_stride, upper_tri, include_gradients, op);
+    md_temp_end(temp);
+}
+
+void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+    const float* upper_tri, bool include_gradients, md_gto_op_t op)
+{
     ASSERT(grid);
     ASSERT(basis);
     ASSERT(atom_xyz);
-    ASSERT(density_matrix);
+    ASSERT(upper_tri);
 
     uint32_t num_cgtos, num_pgtos;
     gto_basis_count(&num_cgtos, &num_pgtos, basis);
@@ -1180,10 +1197,9 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     uint32_t* cgto_off_len = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_cgtos * 2);
     PGTO*     pgto         = (PGTO*)    md_temp_alloc(temp, sizeof(PGTO)     * num_pgtos);
     size_t    tri_len      = density_matrix_upper_tri_size(num_cgtos);
-    float*    upper_tri    = (float*)   md_temp_alloc(temp, sizeof(float)    * tri_len);
 
     gto_expand_basis(cgto_xyz, cgto_r, cgto_off_len, pgto, basis, atom_xyz, atom_xyz_stride, 1.0e-6);
-    density_matrix_upper_tri_extract_float(upper_tri, density_matrix, num_cgtos);
+
 
     // Recombine into float4 for the GL path, which keeps its own xyzr SSBO layout.
     vec4_t* cgto_xyzr = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_cgtos);
@@ -1217,6 +1233,12 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
     const double* density_matrix, bool include_gradients, md_gto_op_t op) {
     (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)atom_xyz_stride; (void)density_matrix; (void)include_gradients; (void)op;
+}
+
+void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+    const float* upper_tri, bool include_gradients, md_gto_op_t op) {
+    (void)vol_tex; (void)grid; (void)basis; (void)atom_xyz; (void)atom_xyz_stride; (void)upper_tri; (void)include_gradients; (void)op;
 }
 
 #endif

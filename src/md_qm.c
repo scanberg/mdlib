@@ -51,6 +51,91 @@ md_attribute_id_t md_qm_publish_virtual(md_system_t* sys, str_t path, str_t labe
     });
 }
 
+// The matrix 'slice' narrows 'attr' to: N, and whether it is packed. 0 when it is not one symmetric matrix.
+static size_t qm_symmetric_dim(bool* out_packed, const md_attribute_t* attr, md_attribute_slice_t slice) {
+    md_attribute_format_t format = {0};
+    if (!attr || !md_attribute_slice_format(&format, attr, slice) || format.components != 1) {
+        return 0;
+    }
+    const bool packed = (attr->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) != 0;
+    size_t n = 0;
+    if (packed) {
+        n = format.rank == 1 ? md_attribute_packed_symmetric_dim(format.shape[0]) : 0;
+    } else if (format.rank == 2 && format.shape[0] == format.shape[1]) {
+        n = format.shape[0];
+    }
+    if (n == 0) {
+        MD_LOG_ERROR("'" STR_FMT "' does not slice down to one symmetric matrix", STR_ARG(attr->path));
+        return 0;
+    }
+    if (out_packed) *out_packed = packed;
+    return n;
+}
+
+size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice) {
+    bool packed = false;
+    const size_t n = qm_symmetric_dim(&packed, attr, slice);
+    if (n == 0 || !dst) {
+        return n;
+    }
+    const size_t len = n * (n + 1) / 2;
+    if (cap < len) {
+        MD_LOG_ERROR("'" STR_FMT "': room for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
+        return 0;
+    }
+
+    if (packed) {
+        return md_attribute_extract_f32(dst, len, attr, slice, md_unit_none()) == len ? n : 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    double* full = md_temp_alloc_array(temp, double, n * n);
+    size_t result = 0;
+    if (full && md_attribute_extract_f64(full, n * n, attr, slice, md_unit_none()) == n * n) {
+        size_t k = 0;
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = i; j < n; ++j) {
+                dst[k++] = (float)full[i * n + j];
+            }
+        }
+        result = n;
+    }
+    md_temp_end(temp);
+    return result;
+}
+
+size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice) {
+    bool packed = false;
+    const size_t n = qm_symmetric_dim(&packed, attr, slice);
+    if (n == 0 || !dst) {
+        return n;
+    }
+    if (cap < n * n) {
+        MD_LOG_ERROR("'" STR_FMT "': room for %zu values, the matrix has %zu", STR_ARG(attr->path), cap, n * n);
+        return 0;
+    }
+
+    if (!packed) {
+        return md_attribute_extract_f64(dst, n * n, attr, slice, md_unit_none()) == n * n ? n : 0;
+    }
+
+    const size_t len = n * (n + 1) / 2;
+    md_temp_scope_t temp = md_temp_begin();
+    float* tri = md_temp_alloc_array(temp, float, len);
+    size_t result = 0;
+    if (tri && md_attribute_extract_f32(tri, len, attr, slice, md_unit_none()) == len) {
+        size_t k = 0;
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = i; j < n; ++j) {
+                dst[i * n + j] = dst[j * n + i] = (double)tri[k++];
+            }
+        }
+        result = n;
+    }
+    md_temp_end(temp);
+    return result;
+}
+
 md_attribute_id_t md_qm_publish_scalar(md_system_t* sys, str_t path, str_t label, md_unit_t unit, double value) {
     // The value is copied, so a local is fine.
     md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 0 };

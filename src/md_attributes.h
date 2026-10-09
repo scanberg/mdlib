@@ -71,6 +71,15 @@ typedef enum md_attribute_flags_t {
     // the nearest "time" at or above its group (see FRAME AXES). Verified on create, so publish the
     // axis first. A virtual temporal attribute can only be extracted a frame at a time.
     MD_ATTRIBUTE_FLAG_TEMPORAL = 1,
+
+    // The INNERMOST index axis is the upper triangle of a symmetric N x N matrix, packed row major -
+    // row i holds columns i..N-1 - so its extent is N(N+1)/2. Nothing about indexing, slicing or
+    // extracting changes: an outer axis still indexes whole matrices, and the values are read like
+    // any other. The flag is what says they ARE a matrix, and md_attribute_packed_symmetric_dim gives
+    // N back. For matrices large enough that holding the lower half as well, or as double, matters -
+    // AO density matrices are N^2 in the basis. Verified on create: rank >= 1, one component, and a
+    // triangular innermost extent.
+    MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC = 2,
 } md_attribute_flags_t;
 
 // LAYOUT. Two independent things:
@@ -260,6 +269,10 @@ size_t md_attribute_slice_count(const md_attribute_t* attr, md_attribute_slice_t
 
 // The format of what the slice yields: the fixed leading axes removed.
 bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t* attr, md_attribute_slice_t slice);
+
+// N for a packed symmetric extent of N(N+1)/2 (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC); 0 when the extent
+// is not a triangular number.
+size_t md_attribute_packed_symmetric_dim(size_t extent);
 
 // EXTRACTION
 // Copies a slice into dst, converting the stored type and the stored unit to dst_unit. Returns the

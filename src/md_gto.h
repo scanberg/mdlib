@@ -256,6 +256,13 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const double* density_matrix, bool include_gradients, md_gto_op_t op);
 
+// The same over a density matrix already packed: its upper triangle as float, row i holding columns
+// i..N-1, N(N+1)/2 values (md_qm_extract_packed_symmetric_f32 gives it). The form the shader takes, so
+// a caller holding it this way never has to make the full double matrix only for it to be packed here.
+void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+	const float* upper_tri, bool include_gradients, md_gto_op_t op);
+
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;
 	res |= ((uint32_t)i) <<  0;

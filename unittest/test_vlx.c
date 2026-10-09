@@ -1155,19 +1155,27 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 }
 
 // ---------------------------------------------------------------------------
-// THE SCF BLOCK IS OPTIONAL
+// DENSITY PROPERTIES
 //
 // What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with
-// the nuclear charges. These make copies of h2o.h5 carrying a density property - the SCF alpha
-// density itself, in the file's own AO order and spherical basis, which is what a density property
-// written by VeloxChem is - with the SCF block kept, and with it deleted.
+// the nuclear charges - not the SCF block. And a density property is not held: it is a virtual
+// attribute read from the file on every extract, as the packed upper triangle of its Cartesian
+// matrix. These make copies of h2o.h5 carrying one - the SCF alpha density itself, in the file's own
+// AO order and spherical basis, which is what a density property written by VeloxChem is.
 // ---------------------------------------------------------------------------
 
 #define VLX_TEST_DENSITY_PROPERTY "vlx/density_property/test_density"
+#define VLX_TEST_H2O_NUM_CART 25u	// 24 spherical AOs, one d shell
 
-// A copy of h2o.h5 with scf/D_alpha added at the root as the density property 'test_density', and
-// with the SCF block then deleted when 'drop_scf'.
-static bool vlx_test_write_density_property_h5(str_t dst, bool drop_scf) {
+typedef struct vlx_test_density_file_t {
+	bool drop_scf;		// delete the SCF block afterwards
+	bool compress;		// store the property chunked (and deflated where HDF5 has the filter): not one run of bytes
+	bool padding;		// write a same sized dataset of 1e6 ahead of it, which takes the place it would otherwise have had
+	bool move_atom;		// a different geometry: the first atom moved by 0.1 bohr
+} vlx_test_density_file_t;
+
+// A copy of h2o.h5 with scf/D_alpha added at the root as the density property 'test_density'
+static bool vlx_test_write_density_property_h5(str_t dst, vlx_test_density_file_t opt) {
 	md_file_t in = {0};
 	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
 	const size_t size = (size_t)md_file_size(in);
@@ -1193,23 +1201,41 @@ static bool vlx_test_write_density_property_h5(str_t dst, bool drop_scf) {
 		if (H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2) {
 			count = (size_t)(dims[0] * dims[1]);
 			data  = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
-			if (H5Dread(src, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0) {
-				hid_t dst_set = H5Dcreate2(file, "test_density", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-				if (dst_set >= 0) {
-					ok = H5Dwrite(dst_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+			ok = H5Dread(src, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
 
-					const char* label = "Test Density";
-					hid_t type   = H5Tcopy(H5T_C_S1);
-					H5Tset_size(type, H5T_VARIABLE);
-					H5Tset_cset(type, H5T_CSET_UTF8);
-					hid_t scalar = H5Screate(H5S_SCALAR);
-					hid_t attr   = H5Acreate2(dst_set, "density_property", type, scalar, H5P_DEFAULT, H5P_DEFAULT);
-					ok = ok && attr >= 0 && H5Awrite(attr, type, &label) >= 0;
-					if (attr >= 0) H5Aclose(attr);
-					H5Sclose(scalar);
-					H5Tclose(type);
-					H5Dclose(dst_set);
-				}
+			if (ok && opt.padding) {
+				double* pad = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
+				for (size_t i = 0; i < count; ++i) pad[i] = 1.0e6;
+				hid_t pad_set = H5Dcreate2(file, "aaa_padding", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+				ok = pad_set >= 0 && H5Dwrite(pad_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, pad) >= 0;
+				if (pad_set >= 0) H5Dclose(pad_set);
+				md_free(md_get_heap_allocator(), pad, sizeof(double) * count);
+			}
+
+			hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+			if (opt.compress) {
+				const hsize_t chunk[2] = { dims[0], dims[1] };
+				H5Pset_chunk(dcpl, 2, chunk);
+				if (H5Zfilter_avail(H5Z_FILTER_DEFLATE) > 0) H5Pset_deflate(dcpl, 6);
+			}
+			hid_t dst_set = ok ? H5Dcreate2(file, "test_density", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
+			H5Pclose(dcpl);
+			if (dst_set >= 0) {
+				ok = H5Dwrite(dst_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+
+				const char* label = "Test Density";
+				hid_t type   = H5Tcopy(H5T_C_S1);
+				H5Tset_size(type, H5T_VARIABLE);
+				H5Tset_cset(type, H5T_CSET_UTF8);
+				hid_t scalar = H5Screate(H5S_SCALAR);
+				hid_t attr   = H5Acreate2(dst_set, "density_property", type, scalar, H5P_DEFAULT, H5P_DEFAULT);
+				ok = ok && attr >= 0 && H5Awrite(attr, type, &label) >= 0;
+				if (attr >= 0) H5Aclose(attr);
+				H5Sclose(scalar);
+				H5Tclose(type);
+				H5Dclose(dst_set);
+			} else {
+				ok = false;
 			}
 		}
 		H5Sclose(space);
@@ -1217,20 +1243,82 @@ static bool vlx_test_write_density_property_h5(str_t dst, bool drop_scf) {
 	}
 	if (data) md_free(md_get_heap_allocator(), data, sizeof(double) * count);
 
-	if (ok && drop_scf) {
+	if (ok && opt.move_atom) {
+		hid_t coord = H5Dopen2(file, "atom_coordinates", H5P_DEFAULT);
+		double xyz[3 * 3] = {0};
+		ok = coord >= 0 && H5Dread(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
+		xyz[0] += 0.1;
+		ok = ok && H5Dwrite(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
+		if (coord >= 0) H5Dclose(coord);
+	}
+	if (ok && opt.drop_scf) {
 		ok = H5Ldelete(file, "scf", H5P_DEFAULT) >= 0;
 	}
 	H5Fclose(file);
 	return ok;
 }
 
-static double vlx_test_max_abs_diff(const double* a, const double* b, size_t n) {
+// The packed upper triangle of the symmetric matrix at 'path', from the test's own arena. NULL when absent
+// or not symmetric; *out_n receives N.
+static float* vlx_test_packed(size_t* out_n, const vlx_test_t* t, str_t path) {
+	const md_attribute_t* attr = qm_test_attr(t, path);
+	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, attr, md_attribute_slice_all());
+	if (n == 0) return NULL;
+	const size_t len = n * (n + 1) / 2;
+	float* dst = (float*)md_alloc(t->alloc, sizeof(float) * len);
+	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, md_attribute_slice_all()) != n) return NULL;
+	*out_n = n;
+	return dst;
+}
+
+static double vlx_test_max_abs_diff_f32(const float* a, const float* b, size_t n) {
 	double m = 0.0;
 	for (size_t i = 0; i < n; ++i) {
-		const double d = fabs(a[i] - b[i]);
+		const double d = fabs((double)a[i] - (double)b[i]);
 		m = d > m ? d : m;
 	}
 	return m;
+}
+
+// Not held: a virtual attribute, read from the file each time, as the packed float upper triangle
+UTEST(vlx, density_property_is_read_from_the_file) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_virtual.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	ASSERT_TRUE(loaded);
+
+	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(attr != NULL);
+	EXPECT_TRUE(md_attribute_is_virtual(attr));
+	EXPECT_TRUE((attr->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) != 0);
+	EXPECT_EQ(MD_ATTRIBUTE_TYPE_F32, attr->format.type);
+	EXPECT_EQ(1u, attr->format.rank);
+	EXPECT_EQ(VLX_TEST_H2O_NUM_CART * (VLX_TEST_H2O_NUM_CART + 1) / 2, attr->format.shape[0]);
+
+	// Readable as either form, and the two agree
+	size_t n = 0;
+	float* packed = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(packed != NULL);
+	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
+	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
+	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, ARRAY_SIZE(full), attr, md_attribute_slice_all()));
+	size_t k = 0;
+	double max_diff = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		for (size_t j = i; j < n; ++j, ++k) {
+			max_diff = fmax(max_diff, fabs(full[i * n + j] - (double)packed[k]));
+			max_diff = fmax(max_diff, fabs(full[j * n + i] - (double)packed[k]));
+		}
+	}
+	EXPECT_EQ(0.0, max_diff);
+
+	// Gone with its file
+	remove(h5.ptr);
+	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, attr, md_attribute_slice_all()));
+
+	qm_test_free(&t);
 }
 
 // A density property is an AO matrix in the same order as the SCF density, so it has to go through
@@ -1238,21 +1326,21 @@ static double vlx_test_max_abs_diff(const double* a, const double* b, size_t n) 
 // equal to the density reconstructed from the coefficients.
 UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
 	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, false));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
 
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
-	remove(h5.ptr);
 	ASSERT_TRUE(loaded);
 
 	size_t n_prop = 0, n_dens = 0;
-	double* prop = qm_test_matrix(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n_prop);
-	double* dens = qm_test_matrix(&t, STR_LIT("orbital/alpha/density"), &n_dens);
+	float* prop = vlx_test_packed(&n_prop, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* dens = vlx_test_packed(&n_dens, &t, STR_LIT("orbital/alpha/density"));
+	remove(h5.ptr);
 	ASSERT_TRUE(prop != NULL);
 	ASSERT_TRUE(dens != NULL);
-	ASSERT_EQ(25u, n_prop);		// Cartesian: 24 spherical AOs, one d shell
+	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n_prop);
 	ASSERT_EQ(n_dens, n_prop);
-	EXPECT_LT(vlx_test_max_abs_diff(prop, dens, n_prop * n_prop), 1.0e-8);
+	EXPECT_LT(vlx_test_max_abs_diff_f32(prop, dens, n_prop * (n_prop + 1) / 2), 1.0e-6);
 
 	qm_test_free(&t);
 }
@@ -1263,15 +1351,13 @@ UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
 UTEST(vlx, density_property_without_scf) {
 	const str_t h5_scf    = STR_LIT(VLX_PE_DIR "unittest_density_property_scf.h5");
 	const str_t h5_no_scf = STR_LIT(VLX_PE_DIR "unittest_density_property_no_scf.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_scf,    false));
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_no_scf, true));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_scf,    (vlx_test_density_file_t){0}));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_no_scf, (vlx_test_density_file_t){ .drop_scf = true }));
 
 	vlx_test_t ref = {0};
 	vlx_test_t t   = {0};
 	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MEGABYTES(64));
 	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MEGABYTES(64));
-	remove(h5_scf.ptr);
-	remove(h5_no_scf.ptr);
 	ASSERT_TRUE(loaded_ref);
 	ASSERT_TRUE(loaded);
 
@@ -1279,12 +1365,14 @@ UTEST(vlx, density_property_without_scf) {
 
 	// The density property, identical to the one read alongside an SCF block
 	size_t n = 0, n_ref = 0;
-	double* prop     = qm_test_matrix(&t,   STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n);
-	double* prop_ref = qm_test_matrix(&ref, STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n_ref);
+	float* prop     = vlx_test_packed(&n,     &t,   STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* prop_ref = vlx_test_packed(&n_ref, &ref, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5_scf.ptr);
+	remove(h5_no_scf.ptr);
 	ASSERT_TRUE(prop != NULL);
 	ASSERT_TRUE(prop_ref != NULL);
 	ASSERT_EQ(n_ref, n);
-	EXPECT_EQ(0.0, vlx_test_max_abs_diff(prop, prop_ref, n * n));
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(prop, prop_ref, n * (n + 1) / 2));
 
 	// The basis and its overlap belong to the basis set, not to the orbitals
 	md_gto_basis_t basis = {0};
@@ -1311,5 +1399,75 @@ UTEST(vlx, density_property_without_scf) {
 	EXPECT_TRUE(qm_test_has(&t, STR_LIT("dipole/electric_transition/origin")));
 
 	qm_test_free(&ref);
+	qm_test_free(&t);
+}
+
+// A dataset that is not one run of bytes - chunked, compressed - is read through HDF5, to the same values
+UTEST(vlx, density_property_compressed_is_read_through_hdf5) {
+	const str_t h5_plain = STR_LIT(VLX_PE_DIR "unittest_density_property_plain.h5");
+	const str_t h5_comp  = STR_LIT(VLX_PE_DIR "unittest_density_property_compressed.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_plain, (vlx_test_density_file_t){0}));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_comp,  (vlx_test_density_file_t){ .compress = true }));
+
+	vlx_test_t plain = {0};
+	vlx_test_t comp  = {0};
+	ASSERT_TRUE(vlx_test_load(&plain, h5_plain, MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&comp,  h5_comp,  MEGABYTES(64)));
+
+	size_t n = 0, n_comp = 0;
+	float* a = vlx_test_packed(&n,      &plain, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* b = vlx_test_packed(&n_comp, &comp,  STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5_plain.ptr);
+	remove(h5_comp.ptr);
+	ASSERT_TRUE(a != NULL);
+	ASSERT_TRUE(b != NULL);
+	ASSERT_EQ(n, n_comp);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(a, b, n * (n + 1) / 2));
+
+	qm_test_free(&plain);
+	qm_test_free(&comp);
+}
+
+// Rewritten in place with the same calculation, the property has moved within the file: the old
+// offset now holds the padding. It is found again where it is now.
+UTEST(vlx, density_property_follows_a_rewritten_file) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_rewritten.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	size_t n = 0, n_after = 0;
+	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(before != NULL);
+
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true }));
+	float* after = vlx_test_packed(&n_after, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5.ptr);
+	ASSERT_TRUE(after != NULL);
+	ASSERT_EQ(n, n_after);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(before, after, n * (n + 1) / 2));
+
+	qm_test_free(&t);
+}
+
+// Rewritten with a different geometry, the file no longer holds the calculation that was loaded, and
+// its density is not drawn over these atoms
+UTEST(vlx, density_property_refuses_a_different_calculation) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_moved.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	size_t n = 0;
+	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(before != NULL);
+
+	// Padded as well, so the change is seen by size even where the file system keeps coarse times
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true, .move_atom = true }));
+	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, attr, md_attribute_slice_all());
+	remove(h5.ptr);
+	EXPECT_EQ(0u, got);
+
 	qm_test_free(&t);
 }
