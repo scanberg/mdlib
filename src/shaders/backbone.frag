@@ -13,7 +13,7 @@ layout (std140) uniform ubo {
     uint u_atom_mask;
     uint u_atom_base_index;
     uint u_bond_base_index;
-    uint _pad;
+    uint u_backbone_base_index;
 
     vec4  u_scale;
     uvec4 u_res;

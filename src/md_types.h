@@ -507,6 +507,9 @@ extern "C" {
 const char* md_particle_kind_name(md_particle_kind_t kind);
 const char* md_component_kind_name(md_component_kind_t kind);
 const char* md_entity_kind_name(md_entity_kind_t kind);
+const char* md_secondary_structure_name(md_secondary_structure_t ss);
+const char* md_hybridization_name(md_hybridization_t hyb);
+const char* md_bond_origin_name(md_bond_origin_t origin);
 
 // Element property functions
 str_t md_atomic_number_name(md_atomic_number_t z);

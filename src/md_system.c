@@ -71,6 +71,41 @@ const char* md_entity_kind_name(md_entity_kind_t kind) {
     }
 }
 
+const char* md_secondary_structure_name(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_UNKNOWN:        return "unknown";
+    case MD_SECONDARY_STRUCTURE_COIL:           return "coil";
+    case MD_SECONDARY_STRUCTURE_TURN:           return "turn";
+    case MD_SECONDARY_STRUCTURE_BEND:           return "bend";
+    case MD_SECONDARY_STRUCTURE_HELIX_310:      return "3-10 helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:    return "alpha helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:       return "pi helix";
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:     return "beta sheet";
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:    return "beta bridge";
+    default:                                    return "";
+    }
+}
+
+const char* md_hybridization_name(md_hybridization_t hyb) {
+    switch (hyb) {
+    case MD_HYBRIDIZATION_UNKNOWN:  return "unknown";
+    case MD_HYBRIDIZATION_SP:       return "sp";
+    case MD_HYBRIDIZATION_SP2:      return "sp2";
+    case MD_HYBRIDIZATION_SP3:      return "sp3";
+    default:                        return "";
+    }
+}
+
+const char* md_bond_origin_name(md_bond_origin_t origin) {
+    switch (origin) {
+    case MD_BOND_ORIGIN_FILE:       return "file";
+    case MD_BOND_ORIGIN_TOPOLOGY:   return "topology";
+    case MD_BOND_ORIGIN_USER:       return "user";
+    case MD_BOND_ORIGIN_INFERRED:   return "inferred";
+    default:                        return "";
+    }
+}
+
 void md_system_free(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);

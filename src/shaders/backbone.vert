@@ -46,7 +46,7 @@ layout (std140) uniform ubo {
     uint u_atom_mask;
     uint u_atom_base_index;
     uint u_bond_base_index;
-    uint _pad;
+    uint u_backbone_base_index;
 
     vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -)
     uvec4 u_res;    // (S: segments per residue, P: profile vertex count, O: cap outline vertex count, K: ribbon face subdivisions)
@@ -294,6 +294,8 @@ void main() {
     out_frag.view_velocity = vec3(u_world_to_view * vec4(r.velocity, 0.0));
     out_frag.color         = texelFetch(u_atom_color_buffer, int(atom_idx));
     out_frag.view_normal   = mat3(u_world_to_view_normal) * normal;
-    out_frag.picking_idx   = u_atom_base_index + atom_idx;
+    // The instance is the part of the spline that belongs to one residue: it picks as that backbone segment (control
+    // point c is segment c), not as its CA, which other representations may show and pick as an atom of its own
+    out_frag.picking_idx   = u_backbone_base_index + c;
     gl_Position = u_view_to_clip * view_coord;
 }
