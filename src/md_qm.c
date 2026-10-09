@@ -365,7 +365,7 @@ bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
     return ok;
 }
 
-bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const dvec3_t coord_angstrom[], size_t count) {
+bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const dvec3_t coord_angstrom[], size_t count) {
     ASSERT(sys);
 
     if (count == 0 || !atomic_number || !coord_angstrom) {
@@ -382,13 +382,29 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
     md_attribute_id_t z_id = md_qm_publish(sys, STR_LIT("qm/atom/atomic_number"), STR_LIT("Atomic Number"),
                                            md_unit_none(), z_format, atomic_number, count * sizeof(uint8_t));
 
+    // The charge the electrons see: the atomic number unless the reader knows better (an effective
+    // core potential). Published in every case, see md_qm.h.
+    md_attribute_id_t q_id = MD_ATTRIBUTE_INVALID;
+    {
+        md_temp_scope_t temp = md_temp_begin();
+        double* charge = md_temp_alloc_array(temp, double, count);
+        if (charge) {
+            for (size_t i = 0; i < count; ++i) {
+                charge[i] = nuclear_charge ? nuclear_charge[i] : (double)atomic_number[i];
+            }
+            q_id = md_qm_publish_series(sys, STR_LIT("qm/atom/nuclear_charge"), STR_LIT("Nuclear Charge"),
+                                        md_unit_elementary_charge(), charge, count);
+        }
+        md_temp_end(temp);
+    }
+
     // Angstrom, matching the system's own coordinates rather than the bohr the evaluator works in.
     // This is the geometry the CALCULATION was run at, which need not be where the system's atoms
     // are now - a trajectory frame or an optimisation step moves them.
     md_attribute_id_t xyz_id = md_qm_publish_vec3_series(sys, STR_LIT("qm/atom/coordinate"), STR_LIT("Coordinate"),
                                                          md_unit_angstrom(), coord_angstrom, count);
 
-    return z_id != MD_ATTRIBUTE_INVALID && xyz_id != MD_ATTRIBUTE_INVALID;
+    return z_id != MD_ATTRIBUTE_INVALID && q_id != MD_ATTRIBUTE_INVALID && xyz_id != MD_ATTRIBUTE_INVALID;
 }
 
 // ---------------------------------------------------------------------------

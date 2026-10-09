@@ -57,8 +57,9 @@ static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
     }
     if (out->num_atoms == 0) return false;
 
+    // The charge the electrons were solved against, which is not the atomic number under an ECP
     out->atom_z = (double*)md_alloc(t->alloc, sizeof(double) * out->num_atoms);
-    if (qm_test_series(out->atom_z, out->num_atoms, t, STR_LIT("qm/atom/atomic_number")) != out->num_atoms) return false;
+    if (qm_test_series(out->atom_z, out->num_atoms, t, STR_LIT("qm/atom/nuclear_charge")) != out->num_atoms) return false;
 
     size_t dim = 0;
     out->D = qm_test_matrix(t, STR_LIT("orbital/total/density"), &dim);
@@ -463,6 +464,78 @@ UTEST(gto_int, grid_matches_points) {
     qm_test_free(&t);
 }
 
+// The evaluators use a tabulated Boys function, and a written out potential for orders 0..2; a
+// distribution without the table (boys_table NULL) is evaluated by the series and the general
+// recursion. The two must agree to rounding for every order, and over every regime of T = p r^2:
+// the Taylor expansion of the table, the asymptote with exp(-T), and the asymptote without it.
+UTEST(gto_int, tabulated_boys_matches_series) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+
+    // One normalised primitive per shell, l = 0..4 on each of three atoms: pairs up to g x g (L = 8)
+    enum { NA = 3, NL = 5, NS = NA * NL };
+    const float atom_xyz[NA][3] = { {0.0f, 0.0f, 0.0f}, {1.6f, 0.4f, -0.3f}, {-0.7f, 1.3f, 0.9f} };
+    const float expo[NL] = { 9.5f, 1.3f, 0.9f, 0.7f, 0.15f };
+    md_gto_shell_t shells[NS];
+    float alpha[NS], coeff[NS];
+    for (int a = 0; a < NA; ++a) for (int l = 0; l < NL; ++l) {
+        const int s = a * NL + l;
+        alpha[s] = expo[l] * (1.0f + 0.1f * a);
+        coeff[s] = (float)md_qm_primitive_norm_factor((uint32_t)l, alpha[s]);
+        shells[s] = (md_gto_shell_t){ .atom_idx = (uint32_t)a, .primitive_offset = (uint32_t)s, .num_primitives = 1, .l = (uint32_t)l };
+    }
+    md_gto_basis_t basis = { .num_shells = NS, .num_primitives = NS, .shells = shells, .alpha = alpha, .coeff = coeff };
+    const size_t N = md_gto_basis_num_ao(&basis);
+    double* D = (double*)md_alloc(alloc, sizeof(double) * N * N);
+    uint32_t rng = 4711u;
+    for (size_t i = 0; i < N; ++i) for (size_t j = 0; j <= i; ++j) {
+        rng = rng * 1664525u + 1013904223u;
+        const double v = ((double)(rng >> 8) / (double)(1u << 24) - 0.5) * (i == j ? 1.0 : 0.2);
+        D[i * N + j] = D[j * N + i] = v;
+    }
+    const double Z[NA] = { 3.0, 1.0, 2.0 };
+
+    md_gto_int_charges_t q = {0};
+    md_gto_int_charges_desc_t desc = {
+        .basis = &basis, .atom_xyz = &atom_xyz[0][0], .density_matrix = D, .density_scale = -1.0,
+        .point_xyz = &atom_xyz[0][0], .point_charge = Z, .num_points = NA,
+    };
+    ASSERT_TRUE(md_gto_int_charges_init(&q, &desc, alloc));
+    ASSERT_TRUE(q.boys_table != NULL);
+    EXPECT_EQ(8u, q.max_order);
+
+    // Points on rays out from near the first atom to 60 bohr, geometrically spaced: with exponents
+    // from 0.3 to 21 that puts T anywhere from ~0 to ~1e5
+    enum { NR = 7, NSTEP = 40, NP = NR * NSTEP };
+    float pts[NP][3];
+    for (int r = 0; r < NR; ++r) {
+        const float dir[3] = { cosf(0.9f * r) * sinf(0.5f + 0.4f * r), sinf(0.9f * r) * sinf(0.5f + 0.4f * r), cosf(0.5f + 0.4f * r) };
+        for (int s = 0; s < NSTEP; ++s) {
+            const float d = 0.02f * powf(3000.0f, (float)s / (NSTEP - 1));
+            for (int k = 0; k < 3; ++k) pts[r * NSTEP + s][k] = 0.05f + d * dir[k];
+        }
+    }
+
+    double V_tab[NP], E_tab[NP * 3], V_ser[NP], E_ser[NP * 3], V_tab_only[NP];
+    md_gto_int_potential_xyz(V_tab, E_tab, &pts[0][0], NP, 0, &q);
+    md_gto_int_potential_xyz(V_tab_only, NULL, &pts[0][0], NP, 0, &q);   // the written out orders
+    double* table = q.boys_table;
+    q.boys_table = NULL;
+    md_gto_int_potential_xyz(V_ser, E_ser, &pts[0][0], NP, 0, &q);
+    q.boys_table = table;
+
+    double worst_V = 0.0, worst_E = 0.0;
+    for (int i = 0; i < NP; ++i) {
+        worst_V = MAX(worst_V, fabs(V_tab[i] - V_ser[i]) / MAX(1.0, fabs(V_ser[i])));
+        worst_V = MAX(worst_V, fabs(V_tab_only[i] - V_ser[i]) / MAX(1.0, fabs(V_ser[i])));
+        for (int k = 0; k < 3; ++k) worst_E = MAX(worst_E, fabs(E_tab[3 * i + k] - E_ser[3 * i + k]) / MAX(1.0, fabs(E_ser[3 * i + k])));
+    }
+    printf("tabulated vs series Boys, s..g: max rel diff V %.2e, E %.2e\n", worst_V, worst_E);
+    EXPECT_LT(worst_V, 1e-13);
+    EXPECT_LT(worst_E, 1e-13);
+
+    md_arena_allocator_destroy(alloc);
+}
+
 #ifdef MD_HDF5
 // VeloxChem water: no external potential to compare with, but the reader publishes the ground state
 // dipole VeloxChem computed, and the far field of a correct density and nuclei IS that dipole. This
@@ -520,7 +593,7 @@ static bool int_test_gpu_grid(float* out, md_gpu_stream_t stream, const md_gto_i
         .sample_offset = { so[0], so[1], so[2] }, .op = MD_GTO_OP_SET,
         .work_per_dispatch = work_per_dispatch,
     };
-    md_gto_int_gpu_potential_launch(stream, &desc);
+    if (!md_gto_int_gpu_potential_launch(stream, &desc)) return false;
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
     MEMCPY(out, rb.cpu, sizeof(float) * nv);

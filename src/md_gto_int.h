@@ -109,6 +109,11 @@ typedef struct md_gto_int_charges_t {
     double*   point_charge;      // [num_points]         e
     double*   point_dipole;      // [num_points * 3]     e bohr, NULL when no point has one
     double*   point_quadrupole;  // [num_points * 6]     e bohr^2, xx xy xz yy yz zz, NULL when no point has one
+
+    // The Boys function tabulated for the CPU evaluators (see md_gto_int.c), built with the
+    // gaussians. NULL is valid - a distribution assembled any other way, or deserialised, is
+    // evaluated with the series instead, to the same values, about three times more slowly.
+    double*   boys_table;
 } md_gto_int_charges_t;
 
 typedef struct md_gto_int_charges_desc_t {
@@ -124,7 +129,8 @@ typedef struct md_gto_int_charges_desc_t {
 
     // POINT PART: sum_k point_charge[k] delta(r - point_xyz[k]), normally the nuclei.
     // Use the charge the electrons were computed against: with an effective core potential that
-    // is Z minus the core electrons, not the atomic number.
+    // is Z minus the core electrons, not the atomic number. The QM readers publish it as
+    // qm/atom/nuclear_charge (md_qm_publish_atoms).
     const float*  point_xyz;         // bohr
     size_t        point_xyz_stride;  // bytes, 0 = packed (12 bytes)
     const double* point_charge;      // e
@@ -175,8 +181,9 @@ md_gto_int_moments_t md_gto_int_charges_moments(const md_gto_int_charges_t* char
 // ---------------------------------------------------------------------------
 // CPU EVALUATION  (reference, double precision)
 // ---------------------------------------------------------------------------
-// Single threaded and not vectorised: ~100 ns per gaussian and point. Hand the _sub variant to
-// worker threads for anything but small systems, or use the GPU path.
+// Single threaded and not vectorised: ~30 ns per gaussian and point for the potential, ~130 with the
+// field (26 atoms in def2-SVP, ~7500 gaussians: ~0.2 ms per point). Hand the _sub variant, or slices
+// of the points, to worker threads for anything but small systems, or use the GPU path.
 // At a point charge itself the potential is infinite; points closer than 1e-10 bohr to one skip
 // that charge's term rather than returning inf. Everywhere else the result is exact up to the
 // screening threshold the distribution was built with.
@@ -236,13 +243,16 @@ typedef struct md_gto_int_gpu_potential_desc_t {
 } md_gto_int_gpu_potential_desc_t;
 
 // Issue a potential evaluation over the grid into `stream`. Asynchronous: no readbacks, no waits.
+// Returns false, logged, when nothing was issued - invalid input, a kernel that could not be made,
+// no memory for the accumulator - and out_tex is then left as it was: a caller about to read the
+// texture back must not take its contents for the potential.
 //
 // Every term is evaluated in float and summed in 64 bit fixed point (2^-32 hartree/e resolution),
 // so the sum over tens of thousands of gaussians - which cancels against the nuclei to a few
 // percent of either - loses nothing in the summation, the result does not depend on how the work
 // was split, and no fast-math setting can reassociate it away. Plain float summation would be off
 // by ~5e-4 au on C60, a few percent of its surface potential.
-void md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc);
+bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc);
 
 #endif
 

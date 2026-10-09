@@ -913,7 +913,9 @@ static bool molden_publish(md_system_t* sys, const molden_t* molden, md_allocato
     md_qm_publish_str(sys, STR_LIT("molden/title"),   STR_LIT("Title"),   molden->title);
     md_qm_publish_str(sys, STR_LIT("molden/program"), STR_LIT("Program"), molden->program);
 
-    md_qm_publish_atoms(sys, molden->atomic_number, molden->coord, md_array_size(molden->atomic_number));
+    // Molden states no effective core charges ([Atoms] has one number per atom, read as the
+    // element), so the nuclear charges are the atomic numbers
+    md_qm_publish_atoms(sys, molden->atomic_number, NULL, molden->coord, md_array_size(molden->atomic_number));
 
     if (molden->has_gto) {
         char buf[32];

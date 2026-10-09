@@ -62,6 +62,16 @@ UTEST(molden, parse) {
     EXPECT_EQ(1.0, zz[1]);
     EXPECT_EQ(1.0, zz[2]);
 
+    // Molden states no effective core charges, so the nuclear charges are the atomic numbers - and
+    // they are published all the same, so that a consumer never has to choose between the two
+    const md_attribute_t* nq = qm_test_attr(&t, STR_LIT("qm/atom/nuclear_charge"));
+    ASSERT_TRUE(nq != NULL);
+    double qq[3] = {0};
+    ASSERT_EQ(md_attribute_extract_f64(qq, 3, nq, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
+    EXPECT_EQ(8.0, qq[0]);
+    EXPECT_EQ(1.0, qq[1]);
+    EXPECT_EQ(1.0, qq[2]);
+
     // cc-pVDZ on water: O gets 3s 2p 1d, each H 2s 1p - twelve shells over twenty-two primitives.
     md_gto_basis_t basis = {0};
     ASSERT_TRUE(qm_test_basis(&basis, &t));

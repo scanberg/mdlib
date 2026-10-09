@@ -94,6 +94,88 @@ static void gto_int_boys(double* F, int nmax, double T) {
     for (int n = nmax - 1; n >= 0; --n) F[n] = (2.0 * T * F[n + 1] + e) / (2 * n + 1);
 }
 
+// The same, tabulated: what the evaluators use, because the series above is most of what evaluating
+// a gaussian at a point costs (it needs dozens of terms, each with a division, at the T a surface
+// sees). The table holds F_n(k DT) for n < BOYS_TAB_NN. Below TMAX, F_nmax is the Taylor expansion
+// about the nearest node - dF_n/dT = -F_{n+1}, so with d = T_k - T and |d| <= DT/2
+//     F_n(T) = sum_j F_{n+j}(T_k) d^j / j!
+// which leaves (DT/2)^TERMS / TERMS! < 1e-15 relative - then the downward recursion as above.
+// Above TMAX, erf(sqrt T) is 1 to 2e-17 and F_0 its asymptote. The GPU kernel does the same in float.
+//
+// The table is built by md_gto_int_charges_init and owned by the distribution (see boys_table in
+// md_gto_int.h): mdlib has no thread-safe one-time initialisation, and ~50 kB and ~50 us per
+// distribution is nothing beside building it.
+#define GTO_INT_BOYS_TAB_DT     0.1
+#define GTO_INT_BOYS_TAB_INV_DT 10.0
+#define GTO_INT_BOYS_TAB_TMAX   36.0
+#define GTO_INT_BOYS_TAB_TERMS  8
+#define GTO_INT_BOYS_TAB_ROWS   ((int)(GTO_INT_BOYS_TAB_TMAX * GTO_INT_BOYS_TAB_INV_DT) + 2)
+#define GTO_INT_BOYS_TAB_NN     (GTO_INT_MAX_R_ORDER + GTO_INT_BOYS_TAB_TERMS)
+#define GTO_INT_BOYS_TAB_SIZE   (GTO_INT_BOYS_TAB_ROWS * GTO_INT_BOYS_TAB_NN)
+
+// The nodes come from the series even where gto_int_boys would switch to erf, so that the table
+// is the series wherever it is used.
+static void gto_int_boys_table_fill(double* tab) {
+    for (int k = 0; k < GTO_INT_BOYS_TAB_ROWS; ++k) {
+        const double T = k * GTO_INT_BOYS_TAB_DT;
+        double* F = tab + k * GTO_INT_BOYS_TAB_NN;
+        const int nmax = GTO_INT_BOYS_TAB_NN - 1;
+        if (T < 1.0e-15) {
+            for (int n = 0; n <= nmax; ++n) F[n] = 1.0 / (2 * n + 1);
+            continue;
+        }
+        const double e = exp(-T);
+        double term = 1.0 / (2 * nmax + 1);
+        double sum  = term;
+        for (int j = 1; j < 400; ++j) {
+            term *= 2.0 * T / (2 * nmax + 2 * j + 1);
+            sum  += term;
+            if (term < 1.0e-17 * sum) break;
+        }
+        F[nmax] = e * sum;
+        for (int n = nmax - 1; n >= 0; --n) F[n] = (2.0 * T * F[n + 1] + e) / (2 * n + 1);
+    }
+}
+
+STATIC_ASSERT(GTO_INT_BOYS_TAB_TERMS == 8, "gto_int_boys_tab unrolls the expansion for 8 terms");
+
+// Above this exp(-T) is below 1e-17 of (2n+1) F_n(T) for every n <= GTO_INT_MAX_R_ORDER (~1e-24 at
+// T = 80, n = 9), so the upward recursion leaves it out. That saves the exp where most pairs of a
+// gaussian and a point of any sizeable molecule are, and where it is slowest: it underflows from
+// T = 708 on, and with errno semantics that is a slow path.
+#define GTO_INT_BOYS_TAB_TNOEXP 80.0
+
+static inline void gto_int_boys_tab(double* F, int nmax, double T, const double* tab) {
+    if (T < GTO_INT_BOYS_TAB_TMAX) {
+        const double e = exp(-T);
+        const int    k = (int)(T * GTO_INT_BOYS_TAB_INV_DT + 0.5);
+        const double d = k * GTO_INT_BOYS_TAB_DT - T;
+        const double* c = tab + k * GTO_INT_BOYS_TAB_NN + nmax;
+        double f = c[7] * (1.0 / 5040.0);
+        f = c[6] * (1.0 / 720.0) + d * f;
+        f = c[5] * (1.0 / 120.0) + d * f;
+        f = c[4] * (1.0 / 24.0)  + d * f;
+        f = c[3] * (1.0 / 6.0)   + d * f;
+        f = c[2] * 0.5           + d * f;
+        f = c[1]                 + d * f;
+        F[nmax] = c[0] + d * f;
+        for (int n = nmax - 1; n >= 0; --n) F[n] = (2.0 * T * F[n + 1] + e) * (1.0 / (2 * n + 1));
+    } else {
+        const double e = T < GTO_INT_BOYS_TAB_TNOEXP ? exp(-T) : 0.0;
+        const double inv2T = 0.5 / T;
+        F[0] = 0.5 * sqrt(GTO_INT_PI / T);
+        for (int n = 0; n < nmax; ++n) F[n + 1] = ((2 * n + 1) * F[n] - e) * inv2T;
+    }
+}
+
+static inline void gto_int_boys_eval(double* F, int nmax, double T, const double* tab) {
+    if (tab) {
+        gto_int_boys_tab(F, nmax, T, tab);
+    } else {
+        gto_int_boys(F, nmax, T);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hermite Coulomb integrals
 // ---------------------------------------------------------------------------
@@ -102,9 +184,10 @@ static void gto_int_boys(double* F, int nmax, double T) {
 //     R^n_000       = (-2p)^n F_n(p |X|^2)
 //     R^n_{t+1,u,v} = t R^{n+1}_{t-1,u,v} + X_x R^{n+1}_{t,u,v}     (likewise for u, v)
 // run from the top auxiliary index down, so every level only reads the one above it.
-static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z) {
+// boys_tab: the distribution's table, NULL for the series.
+static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z, const double* boys_tab) {
     double F[GTO_INT_MAX_R_ORDER + 1] = {0};
-    gto_int_boys(F, L, p * (x * x + y * y + z * z));
+    gto_int_boys_eval(F, L, p * (x * x + y * y + z * z), boys_tab);
 
     double buf[2][GTO_INT_MAX_R];
     double* cur = buf[0];
@@ -509,6 +592,14 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
             md_gto_int_charges_free(out, alloc);
             return false;
         }
+        if (out->num_gaussians > 0) {
+            out->boys_table = md_alloc(alloc, sizeof(double) * GTO_INT_BOYS_TAB_SIZE);
+            if (!out->boys_table) {
+                md_gto_int_charges_free(out, alloc);
+                return false;
+            }
+            gto_int_boys_table_fill(out->boys_table);
+        }
     }
 
     if (desc->num_points > 0) {
@@ -571,6 +662,7 @@ void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (q->point_charge) md_free(alloc, q->point_charge, sizeof(double) * q->num_points);
     if (q->point_dipole)     md_free(alloc, q->point_dipole,     sizeof(double) * 3 * q->num_points);
     if (q->point_quadrupole) md_free(alloc, q->point_quadrupole, sizeof(double) * 6 * q->num_points);
+    if (q->boys_table)       md_free(alloc, q->boys_table,       sizeof(double) * GTO_INT_BOYS_TAB_SIZE);
     MEMSET(q, 0, sizeof(*q));
 }
 
@@ -683,18 +775,56 @@ md_gto_int_moments_t md_gto_int_charges_moments(const md_gto_int_charges_t* q, c
 // CPU evaluation
 // ---------------------------------------------------------------------------
 
+// The potential of the gaussians [beg, end), all of order L <= 2, with the recursion written out:
+// these are the products of s and p shells and nearly all gaussians of a typical basis (95% for
+// def2-SVP), and at that size the general recursion below is mostly bookkeeping. Called with a
+// literal L, so that each order compiles to its own loop.
+static inline double gto_int_potential_low_order(uint32_t L, uint32_t beg, uint32_t end, const double C[3], const md_gto_int_charges_t* q) {
+    double V = 0.0;
+    double F[3];
+    for (uint32_t g = beg; g < end; ++g) {
+        const double* P = q->center + g * 3;
+        const double* h = q->coeff + q->coeff_offset[g];
+        const double  p = q->exponent[g];
+        const double  x = P[0] - C[0], y = P[1] - C[1], z = P[2] - C[2];
+        gto_int_boys_eval(F, (int)L, p * (x * x + y * y + z * z), q->boys_table);
+        // R_000 = F_0, R_t00 etc. with s1 = R^1_000 = -2p F_1 and s2 = R^2_000 = 4p^2 F_2
+        double v = h[0] * F[0];
+        if (L >= 1) {
+            const double s1 = -2.0 * p * F[1];
+            v += s1 * (h[1] * x + h[2] * y + h[3] * z);
+            if (L >= 2) {
+                const double s2 = 4.0 * p * p * F[2];
+                v += h[4] * (x * x * s2 + s1) + h[5] * (x * y * s2) + h[6] * (x * z * s2)
+                   + h[7] * (y * y * s2 + s1) + h[8] * (y * z * s2) + h[9] * (z * z * s2 + s1);
+            }
+        }
+        V += v;
+    }
+    return V;
+}
+
 static double gto_int_eval_point(double field[3], const double C[3], const md_gto_int_charges_t* q) {
     double V = 0.0;
     double E[3] = {0, 0, 0};
     double R[GTO_INT_MAX_R];
 
+    // The potential alone of orders 0..2 written out, everything else by the general recursion
+    uint32_t g_first = 0;
+    if (!field) {
+        V += gto_int_potential_low_order(0, q->order_offset[0], q->order_offset[1], C, q);
+        V += gto_int_potential_low_order(1, q->order_offset[1], q->order_offset[2], C, q);
+        V += gto_int_potential_low_order(2, q->order_offset[2], q->order_offset[3], C, q);
+        g_first = q->order_offset[3];
+    }
+
     uint32_t L = 0;
-    for (uint32_t g = 0; g < q->num_gaussians; ++g) {
+    for (uint32_t g = g_first; g < q->num_gaussians; ++g) {
         gto_int_order_of(q, g, &L);
         const double* P = q->center + g * 3;
         const double* h = q->coeff + q->coeff_offset[g];
         const int Lr = (int)L + (field ? 1 : 0);
-        gto_int_hermite_R(R, Lr, q->exponent[g], P[0] - C[0], P[1] - C[1], P[2] - C[2]);
+        gto_int_hermite_R(R, Lr, q->exponent[g], P[0] - C[0], P[1] - C[1], P[2] - C[2], q->boys_table);
 
         uint32_t i = 0;
         double s = 0.0, ex = 0.0, ey = 0.0, ez = 0.0;
@@ -1028,27 +1158,30 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
     m[3][3] = 1.0f;
 }
 
-void md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc) {
+bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc) {
     if (!stream || !desc || !desc->charges || !desc->out_tex || !desc->grid) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: invalid input");
-        return;
+        return false;
     }
     const md_gto_int_gpu_charges* g = desc->charges;
     const md_grid_t* grid = desc->grid;
-    if (grid->dim[0] <= 0 || grid->dim[1] <= 0 || grid->dim[2] <= 0) return;
+    if (grid->dim[0] <= 0 || grid->dim[1] <= 0 || grid->dim[2] <= 0) {
+        MD_LOG_ERROR("md_gto_int_gpu_potential_launch: empty grid");
+        return false;
+    }
 
     const md_gpu_storage_tex_t out = md_gpu_texture_storage(desc->out_tex, 0);
     if (!out.handle) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: out_tex needs MD_GPU_TEX_STORAGE usage");
-        return;
+        return false;
     }
     md_gpu_kernel_t k_resolve = gto_int_kernel(&gto_int_k_resolve, md_shader_eval_gto_int_potential_resolve_kernel());
     if (!k_resolve) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: kernels unavailable (md_gto_int_gpu_initialize not called?)");
-        return;
+        return false;
     }
     for (uint32_t L = 0; L <= g->max_order; ++L) {
-        if (g->order_offset[L + 1] > g->order_offset[L] && !gto_int_order_kernel(L)) return;
+        if (g->order_offset[L + 1] > g->order_offset[L] && !gto_int_order_kernel(L)) return false;   // logged by gto_int_kernel
     }
 
     const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
@@ -1109,6 +1242,7 @@ void md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
     }
     md_gpu_temp_end(stream, scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
+    return a.accum != 0;
 }
 
 #endif

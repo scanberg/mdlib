@@ -42,7 +42,7 @@ static bool bench_esp_load(bench_esp_t* b) {
         return false;
     }
     const md_attribute_t* c = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"));
-    const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/atomic_number"));
+    const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/nuclear_charge"));
     const md_attribute_t* d = md_attributes_find(&sys.attributes, STR_LIT("orbital/total/density"));
     if (!d) d = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/density"));
     if (!c || !z || !d || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
@@ -95,6 +95,23 @@ UBENCH_EX(gto_int, charges_build_mol) {
     UBENCH_DO_BENCHMARK() {
         bench_esp_charges(&q, &b, 1e-8, md_get_heap_allocator());
         md_gto_int_charges_free(&q, md_get_heap_allocator());
+    }
+    md_arena_allocator_destroy(b.arena);
+}
+
+// The CPU reference on 1024 voxels of the grid's middle - a slice of what a worker thread gets
+// when a surface band is evaluated on the CPU. Per voxel it is one evaluation of every gaussian.
+UBENCH_EX(gto_int, potential_cpu_mol_1024) {
+    bench_esp_t b;
+    if (!bench_esp_load(&b)) return;
+    md_gto_int_charges_t q = {0};
+    bench_esp_charges(&q, &b, 1e-8, b.arena);
+    const int len[3] = { 16, 16, 4 };
+    const int off[3] = { (b.grid.dim[0] - len[0]) / 2, (b.grid.dim[1] - len[1]) / 2, (b.grid.dim[2] - len[2]) / 2 };
+    float* out = md_arena_allocator_push(b.arena, sizeof(float) * md_grid_num_points(&b.grid));
+    const float so[3] = { 0.5f, 0.5f, 0.5f };
+    UBENCH_DO_BENCHMARK() {
+        md_gto_int_potential_grid_sub(out, &b.grid, so, off, len, &q);
     }
     md_arena_allocator_destroy(b.arena);
 }

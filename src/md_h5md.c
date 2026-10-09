@@ -17,6 +17,8 @@
 #include <core/md_vec_math.h>
 
 #include <hdf5.h>
+#include "md_hdf5.h"
+
 
 #include <inttypes.h>
 #include <math.h>
@@ -28,35 +30,19 @@
 
 // ### LOCK ###
 // HDF5 is not thread safe unless it was built to be, and a provider may be entered from any number
-// of threads. Every HDF5 call this reader makes is therefore made holding this lock. Initialised on
-// first use, as md_allocator.c does its thread key: the first call into this reader must not race
-// another first call, which a loader never does.
-static md_mutex_t h5md_mutex;
-static bool       h5md_mutex_ready = false;
+// of threads. Every HDF5 call this reader makes is therefore made holding the shared mdlib HDF5 lock
+// (md_hdf5.h) - shared, because HDF5's global state is shared with the other HDF5 readers, and a lock
+// of this reader's own would not serialise it against them. Holding it also silences HDF5's own error
+// printing: it prints its stack to stderr on every failed probe, and probing for optional objects is
+// most of what H5MD reading is.
+typedef md_hdf5_lock_t h5md_lock_t;
 
-typedef struct h5md_lock_t {
-    H5E_auto2_t func;
-    void*       client_data;
-} h5md_lock_t;
-
-// Takes the lock and silences HDF5's own error printing for as long as it is held: it prints its
-// stack to stderr on every failed probe, and probing for optional objects is most of what H5MD
-// reading is.
 static h5md_lock_t h5md_lock(void) {
-    if (!h5md_mutex_ready) {
-        md_mutex_init(&h5md_mutex);
-        h5md_mutex_ready = true;
-    }
-    md_mutex_lock(&h5md_mutex);
-    h5md_lock_t lock = {0};
-    H5Eget_auto2(H5E_DEFAULT, &lock.func, &lock.client_data);
-    H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
-    return lock;
+    return md_hdf5_lock();
 }
 
 static void h5md_unlock(h5md_lock_t lock) {
-    H5Eset_auto2(H5E_DEFAULT, lock.func, lock.client_data);
-    md_mutex_unlock(&h5md_mutex);
+    md_hdf5_unlock(lock);
 }
 
 // ### HDF5 HELPERS ###

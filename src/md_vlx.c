@@ -16,6 +16,8 @@
 #include <md_pot.h>
 
 #include <hdf5.h>
+#include "md_hdf5.h"
+
 
 // ---------------------------------------------------------------------------
 // Reader-internal types.
@@ -761,25 +763,19 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	return true;
 }
 
-// HDF5 prints a full diagnostic stack to stderr for every failed call. This reader
-// probes for optional data constantly and reports its own failures through MD_LOG_*
-// with the offending field name, so the automatic handler is pure noise. Silence it
-// for the duration of a parse and restore whatever the host application had set --
-// mdlib must not leave global HDF5 state modified.
-typedef struct h5_error_scope_t {
-	H5E_auto2_t func;
-	void*       client_data;
-} h5_error_scope_t;
+// Every HDF5 call this reader makes is made inside one of these scopes: the shared mdlib HDF5 lock
+// (md_hdf5.h), which serialises it against the other HDF5 readers and the providers they leave behind,
+// and which also silences HDF5's own error printing - this reader probes for optional data constantly
+// and reports its own failures through MD_LOG_* with the offending field name, so the automatic
+// handler is pure noise. Taken at the outermost function that touches HDF5; it is not recursive.
+typedef md_hdf5_lock_t h5_error_scope_t;
 
 static h5_error_scope_t h5_error_scope_begin(void) {
-	h5_error_scope_t scope = {0};
-	H5Eget_auto2(H5E_DEFAULT, &scope.func, &scope.client_data);
-	H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
-	return scope;
+	return md_hdf5_lock();
 }
 
 static void h5_error_scope_end(h5_error_scope_t scope) {
-	H5Eset_auto2(H5E_DEFAULT, scope.func, scope.client_data);
+	md_hdf5_unlock(scope);
 }
 
 // H5Lexists() only tolerates a missing *final* path component. If an intermediate
@@ -5330,7 +5326,7 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 	// works in: a consumer comparing this geometry against md_system_state_t should not have to
 	// convert first. This is the geometry the CALCULATION was run at, which is not necessarily where
 	// the system's atoms are now - a trajectory frame or an optimisation step moves them.
-	md_qm_publish_atoms(sys, vlx->atomic_numbers, vlx->atom_coordinates, vlx->number_of_atoms);
+	md_qm_publish_atoms(sys, vlx->atomic_numbers, NULL, vlx->atom_coordinates, vlx->number_of_atoms);
 
 	return true;
 }

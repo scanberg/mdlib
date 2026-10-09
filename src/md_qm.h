@@ -161,10 +161,18 @@ size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num
 // basis/shell/atom_index indexes the QM ATOM DOMAIN (qm/atom/*), not the system's atoms.
 bool md_qm_publish_basis(struct md_system_t* sys, const struct md_gto_basis_t* basis);
 
-// qm/atom/{atomic_number,coordinate} - the atoms the calculation covered, in ITS order and at ITS
-// geometry, which is not necessarily the system's atom set. Coordinates are taken in ANGSTROM, to
-// match the system's own, and are published as such.
-bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const dvec3_t coord_angstrom[], size_t count);
+// qm/atom/{atomic_number,nuclear_charge,coordinate} - the atoms the calculation covered, in ITS order
+// and at ITS geometry, which is not necessarily the system's atom set. Coordinates are taken in
+// ANGSTROM, to match the system's own, and are published as such.
+//
+// nuclear_charge (e, f64) is the charge of each nucleus as the electrons of the calculation see it:
+// the atomic number, less the core electrons an effective core potential replaces. It is what the
+// density was solved against, so it is what an electrostatic potential, a dipole or a nuclear
+// repulsion has to be computed from - with Z instead, the potential of an ECP calculation is off by
+// n_core / r. Optional: NULL publishes the atomic numbers, which is right for an all electron
+// calculation and the most a reader can say when its format does not state the charges. The
+// attribute is published either way, so a consumer reads it and never chooses.
+bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const dvec3_t coord_angstrom[], size_t count);
 
 // basis/overlap - the AO overlap S[a][b] = <phi_a|phi_b> over the Cartesian AOs md_gto evaluates, as
 // a VIRTUAL attribute computed from basis/shell/*, basis/primitive/* and qm/atom/coordinate, which

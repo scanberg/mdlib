@@ -322,6 +322,8 @@ if (MD_ENABLE_HDF5)
     src/md_trexio.h
     src/md_h5md.c
     src/md_h5md.h
+    src/md_hdf5.c
+    src/md_hdf5.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
