@@ -2403,25 +2403,36 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
     if (capacity == 0) return false;
-    if (sys->protein_backbone.segment.count == 0) return false;
     if (sys->component.count == 0) return false;
 
+    const md_protein_backbone_data_t* backbone = &sys->protein_backbone;
+    if (backbone->segment.count == 0) return false;
+    if (backbone->range.count == 0 || !backbone->range.offset) return false;
+
     ASSERT(sys->component.name);
-    ASSERT(sys->protein_backbone.segment.comp_idx);
+    ASSERT(backbone->segment.comp_idx);
 
-    size_t size = MIN(capacity, sys->protein_backbone.segment.count);
+    // Walked range by range, because the residue before a proline is pre-proline only when it precedes it in the same
+    // chain. The first segment of a range has no predecessor: segment i - 1 is then the last residue of another chain,
+    // or, for i == 0, the byte before the caller's buffer.
+    for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
+        const size_t beg = backbone->range.offset[range_idx];
+        const size_t end = MIN((size_t)backbone->range.offset[range_idx + 1], capacity);
 
-    for (size_t i = 0; i < size; ++i) {
-        size_t comp_idx = sys->protein_backbone.segment.comp_idx[i];
+        for (size_t i = beg; i < end; ++i) {
+            const size_t comp_idx = backbone->segment.comp_idx[i];
 
-        str_t name = md_component_name(&sys->component, comp_idx);
-        if (str_eq(name, STR_LIT("GLY"))) {
-            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
-        } else if (str_eq(name, STR_LIT("PRO"))) {
-            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PROLINE;
-            ramachandran_types[i - 1] = MD_RAMACHANDRAN_TYPE_PREPROL;
-        } else {
-            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GENERAL;
+            str_t name = md_component_name(&sys->component, comp_idx);
+            if (str_eq(name, STR_LIT("GLY"))) {
+                ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
+            } else if (str_eq(name, STR_LIT("PRO"))) {
+                ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PROLINE;
+                if (i > beg) {
+                    ramachandran_types[i - 1] = MD_RAMACHANDRAN_TYPE_PREPROL;
+                }
+            } else {
+                ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GENERAL;
+            }
         }
     }
 
