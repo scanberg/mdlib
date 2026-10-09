@@ -819,6 +819,8 @@ static md_array(uint64_t) make_bitfield(size_t num_bits, md_allocator_i* alloc) 
 }
 
 static void bitfield_set_all(uint64_t* bits, size_t num_bits) {
+    // No bits is a NULL bitfield (make_bitfield), which memset must not be handed even for zero bytes
+    if (num_bits == 0) return;
     size_t num_bytes = DIV_UP(num_bits, 8);
     MEMSET(bits, 0xFF, num_bytes);
 }
@@ -2412,24 +2414,26 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     ASSERT(sys->component.name);
     ASSERT(backbone->segment.comp_idx);
 
-    // Walked range by range, because the residue before a proline is pre-proline only when it precedes it in the same
-    // chain. The first segment of a range has no predecessor: segment i - 1 is then the last residue of another chain,
-    // or, for i == 0, the byte before the caller's buffer.
+    // The types are MolProbity's (mmtbx.validation.ramalyze), decided in its order: glycine, proline, then pre-proline
+    // for any other residue followed by a proline. A glycine or a proline before a proline keeps its own type.
+    //
+    // Walked range by range, because a residue is pre-proline only when the proline follows it in the same chain. The
+    // last segment of a range has no successor; segment i + 1 is then the first residue of another chain.
     for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
-        const size_t beg = backbone->range.offset[range_idx];
-        const size_t end = MIN((size_t)backbone->range.offset[range_idx + 1], capacity);
+        const size_t range_beg = backbone->range.offset[range_idx];
+        const size_t range_end = backbone->range.offset[range_idx + 1];
+        // Written up to the capacity, but the successor is read from the system, so the last written type is still
+        // decided by the segment after it.
+        const size_t end = MIN(range_end, capacity);
 
-        for (size_t i = beg; i < end; ++i) {
-            const size_t comp_idx = backbone->segment.comp_idx[i];
-
-            str_t name = md_component_name(&sys->component, comp_idx);
+        for (size_t i = range_beg; i < end; ++i) {
+            const str_t name = md_component_name(&sys->component, backbone->segment.comp_idx[i]);
             if (str_eq(name, STR_LIT("GLY"))) {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
             } else if (str_eq(name, STR_LIT("PRO"))) {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PROLINE;
-                if (i > beg) {
-                    ramachandran_types[i - 1] = MD_RAMACHANDRAN_TYPE_PREPROL;
-                }
+            } else if (i + 1 < range_end && str_eq(md_component_name(&sys->component, backbone->segment.comp_idx[i + 1]), STR_LIT("PRO"))) {
+                ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PREPROL;
             } else {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GENERAL;
             }

@@ -1293,7 +1293,7 @@ md_gl_rep_t md_gl_rep_create(md_gl_mol_t mol_handle) {
         rep->mol_id = mol_handle.id;
         rep->pal_id = 0;
         rep->atom_color = gl_buffer_create(mol->atom_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
-        const uint32_t color = (uint32_t)((255 << 24) | (127 << 16) | (127 << 8) | (127 << 0));
+        const uint32_t color = (255u << 24) | (127u << 16) | (127u << 8) | (127u << 0);
         glBindBuffer(GL_ARRAY_BUFFER, rep->atom_color.id);
         uint32_t* data = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {

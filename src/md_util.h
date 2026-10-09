@@ -89,7 +89,8 @@ bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t seconda
 // Backbone angles (phi, psi) from the coordinates of a frame
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
-// Ramachandran type (General / Glycine / Proline / Preproline) from the residue names of sys->protein_backbone
+// Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
+// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
 // THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the

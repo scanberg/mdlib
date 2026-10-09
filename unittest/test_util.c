@@ -2518,3 +2518,50 @@ UTEST(util, min_max_distance_groups) {
     EXPECT_EQ(0, i0);
     EXPECT_EQ(0, i1);
 }
+
+UTEST(util, ramachandran_classify) {
+    // Two chains, both starting with a proline, the second right after a residue which is not one:
+    //   chain 0: PRO GLY PRO ALA PRO PRO SER
+    //   chain 1: PRO ALA
+    const char* names[9] = { "PRO", "GLY", "PRO", "ALA", "PRO", "PRO", "SER", "PRO", "ALA" };
+    md_label_t labels[9];
+    md_component_idx_t comp_idx[9];
+    for (int i = 0; i < 9; ++i) {
+        labels[i]   = make_label(str_from_cstr(names[i]));
+        comp_idx[i] = i;
+    }
+    uint32_t range_offset[3] = { 0, 7, 9 };
+
+    md_system_t sys = {0};
+    sys.component.count = 9;
+    sys.component.name  = labels;
+    sys.protein_backbone.range.count      = 2;
+    sys.protein_backbone.range.offset     = range_offset;
+    sys.protein_backbone.segment.count    = 9;
+    sys.protein_backbone.segment.comp_idx = comp_idx;
+
+    // MolProbity's types: a glycine or a proline before a proline keeps its own type, and the last residue of a chain
+    // is not pre-proline because of the first residue of the next
+    enum {
+        G = MD_RAMACHANDRAN_TYPE_GENERAL,
+        Y = MD_RAMACHANDRAN_TYPE_GLYCINE,
+        P = MD_RAMACHANDRAN_TYPE_PROLINE,
+        R = MD_RAMACHANDRAN_TYPE_PREPROL,
+    };
+    const md_ramachandran_type_t expected[9] = { P, Y, P, R, P, P, G, P, G };
+
+    // A guard on each side of the buffer catches a write outside it
+    md_ramachandran_type_t buf[1 + 9 + 1];
+    MEMSET(buf, 0xAB, sizeof(buf));
+    EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 9, &sys));
+    EXPECT_EQ(0xAB, buf[0]);
+    EXPECT_EQ(0xAB, buf[10]);
+    for (int i = 0; i < 9; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
+
+    // A capacity short of the segments: the last type written is still decided by the segment after it
+    MEMSET(buf, 0xAB, sizeof(buf));
+    EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 4, &sys));
+    EXPECT_EQ(0xAB, buf[0]);
+    for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
+    EXPECT_EQ(0xAB, buf[5]);
+}

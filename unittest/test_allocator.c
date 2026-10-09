@@ -98,6 +98,32 @@ UTEST(allocator, arena_extended) {
     md_arena_allocator_destroy(arena);
 }
 
+UTEST(allocator, arena_shrink_not_last) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+
+    uint8_t* a = md_alloc(arena, 64);
+    ASSERT_NE(a, NULL);
+    for (int i = 0; i < 64; ++i) a[i] = (uint8_t)i;
+
+    uint8_t* b = md_alloc(arena, 64);
+    ASSERT_NE(b, NULL);
+    MEMSET(b, 0xCD, 64);
+
+    // a is no longer the last allocation: it is shrunk where it is, keeping what fits
+    uint8_t* a_shrunk = md_realloc(arena, a, 64, 16);
+    EXPECT_EQ(a, a_shrunk);
+    for (int i = 0; i < 16; ++i) EXPECT_EQ((uint8_t)i, a_shrunk[i]);
+
+    // Grown again it moves, carrying the 16 bytes it has
+    uint8_t* a_grown = md_realloc(arena, a_shrunk, 16, 128);
+    ASSERT_NE(a_grown, NULL);
+    for (int i = 0; i < 16; ++i) EXPECT_EQ((uint8_t)i, a_grown[i]);
+
+    for (int i = 0; i < 64; ++i) EXPECT_EQ(0xCD, b[i]);
+
+    md_arena_allocator_destroy(arena);
+}
+
 UTEST(allocator, vm_arena) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
     ASSERT_TRUE(arena);

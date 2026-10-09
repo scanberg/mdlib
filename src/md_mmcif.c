@@ -674,6 +674,7 @@ done:
 static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(atom_entries);
     ASSERT(state);
+    ASSERT(alloc);
     ASSERT(state->in_loop == true);
 
     int table[ATOM_SITE_COUNT];
@@ -710,7 +711,11 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     bool have_auth_seq_id  = table[ATOM_SITE_AUTH_SEQ_ID]  != -1;
     bool have_auth_asym_id = table[ATOM_SITE_AUTH_ASYM_ID] != -1;
 
-    str_t tok[64] = {0};
+    // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
+    // the row is sized by them rather than by a fixed bound.
+    str_t* tok = md_alloc(alloc, sizeof(str_t) * num_cols);
+    MEMSET(tok, 0, sizeof(str_t) * num_cols);
+
     while (mmcif_advance_to_next_line(state)) {
         str_t peek;
         if (!mmcif_peek_token(&peek, state)) {
